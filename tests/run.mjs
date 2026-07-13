@@ -14,6 +14,8 @@ const suites = [
   "banner/banner.test.mjs",
   "statusline/statusline.test.mjs",
   "scheme/sandbox.test.mjs",
+  "scheme/tool.test.mjs",
+  "scheme/rendering.test.mjs",
   "web/context7-client.test.mjs",
   "web/context7-tools.test.mjs",
   "web/context7-rendering.test.mjs",

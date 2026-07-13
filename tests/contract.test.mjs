@@ -13,6 +13,7 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 try {
   const load = jiti(import.meta.url, { moduleCache: false });
   const register = (await load("../src/index.ts")).default;
+  const { childToolNames, createChildTools } = await load("../src/tool-catalog.ts");
   const tools = new Map();
   const commands = new Map();
   const shortcuts = new Map();
@@ -37,8 +38,12 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "docs", "fd", "fetch", "libs", "pwsh",
-    "rg", "scheme_eval", "search", "subagent", "time", "todo",
+    "rg", "scheme", "search", "subagent", "time", "todo",
   ]);
+  assert.ok(childToolNames.includes("scheme"));
+  assert.ok(!childToolNames.includes("scheme_eval"));
+  assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
+  assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline"]);
   assert.equal(commands.has("prompt-inspect"), false);
   assert.deepEqual([...shortcuts.keys()], ["alt+i"]);

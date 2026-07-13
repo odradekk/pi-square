@@ -82,26 +82,112 @@ test("evalScheme write access allows writes inside the caller cwd", async () => 
 
 // REGRESSION-PROOF: bypassing the `maxOutputBytes` budget in `appendChunk()`
 // would let stdout exceed the configured byte ceiling.
-test("evalScheme truncates stdout to the configured maxOutputBytes budget", async () => {
+test("evalScheme streams accepted bytes and reports the shared output cap", async () => {
+  const events = [];
   const result = await evalScheme('(display "abcdefghijklmnopqrstuvwxyz")', {
     timeoutMs: 2_000,
     maxOutputBytes: 10,
+    onOutput(event) { events.push(event); },
   });
 
   assert.equal(result.stdout, "abcdefghij", "stdout should stop exactly at the shared byte budget");
   assert.equal(result.stderr, "", "the byte budget should not fabricate stderr output");
   assert.equal(result.exitCode, 0, "output truncation should not count as a runtime failure");
+  assert.equal(result.truncated, true, "discarded bytes must be reported");
+  assert.equal(Buffer.concat(events.map((event) => Buffer.from(event.chunk))).toString("utf8"), "abcdefghij");
+  assert.ok(events.some((event) => event.truncated), "the stream must expose the cap transition");
 
   const broken = "abcdefghijklmnopqrstuvwxyz";
   assert.notEqual(result.stdout, broken, "dropping the byte cap would expose the full stdout payload");
 });
 
+test("evalScheme emits stdout and stderr stream identities", async () => {
+  const events = [];
+  const result = await evalScheme(
+    '(begin (display "out") (flush-output-port) (display "err" (current-error-port)) (flush-output-port (current-error-port)))',
+    { timeoutMs: 2_000, onOutput(event) { events.push(event); } },
+  );
+
+  assert.equal(result.stdout.trimEnd(), "out");
+  assert.match(result.stderr, /err/);
+  assert.ok(events.some((event) => event.stream === "stdout" && Buffer.from(event.chunk).includes(Buffer.from("out"))));
+  assert.ok(events.some((event) => event.stream === "stderr" && Buffer.from(event.chunk).includes(Buffer.from("err"))));
+});
+
+test("evalScheme resolves a pre-aborted call without spawning work", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const result = await evalScheme('(display "never")', { signal: controller.signal });
+
+  assert.equal(result.aborted, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.stdout, "");
+  assert.equal(result.exitCode, -1);
+});
+
+test("evalScheme streams output before completion and then aborts the running process", async () => {
+  const controller = new AbortController();
+  const events = [];
+  const execution = evalScheme(
+    '(begin (display "ready") (newline) (flush-output-port) (let loop ((n 0)) (if (< n 200000000) (loop (+ n 1)) (display "done"))))',
+    {
+      timeoutMs: 2_000,
+      signal: controller.signal,
+      onOutput(event) {
+        events.push(event);
+        if (Buffer.from(event.chunk).includes(Buffer.from("ready"))) controller.abort();
+      },
+    },
+  );
+  const result = await execution;
+
+  assert.equal(result.aborted, true);
+  assert.equal(result.timedOut, false);
+  assert.match(result.stdout, /ready/);
+  assert.ok(events.some((event) => Buffer.from(event.chunk).includes(Buffer.from("ready"))));
+  assert.ok(result.durationMs < 2_000, "abort should terminate the process promptly");
+});
+
 // REGRESSION-PROOF: removing the timeout kill path, or failing to clamp the
 // timeout to a positive integer, would leave non-terminating code running.
+test("evalScheme abort kills fullaccess descendants on POSIX", async () => {
+  if (process.platform === "win32") return;
+
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-scheme-tree-test-"));
+  const startedPath = join(dir, "started.txt");
+  const escapedPath = join(dir, "escaped.txt");
+  const childScript = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(startedPath)},'started');setTimeout(()=>fs.writeFileSync(${JSON.stringify(escapedPath)},'escaped'),750)`;
+  const command = `node -e ${JSON.stringify(childScript)}`;
+  const controller = new AbortController();
+  const execution = evalScheme(`(system ${JSON.stringify(command)})`, {
+    access: "fullaccess",
+    timeoutMs: 3_000,
+    signal: controller.signal,
+  });
+
+  try {
+    for (let attempt = 0; attempt < 80 && !existsSync(startedPath); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(existsSync(startedPath), true, "the descendant must start before cancellation");
+    controller.abort();
+    const result = await execution;
+    await new Promise((resolve) => setTimeout(resolve, 900));
+
+    assert.equal(result.aborted, true);
+    assert.equal(existsSync(escapedPath), false, "the cancelled descendant must not outlive the Scheme process group");
+  } finally {
+    controller.abort();
+    await execution.catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("evalScheme marks infinite loops as timed out and kills the child", async () => {
   const result = await evalScheme("(let loop () (loop))", { timeoutMs: 5 });
 
   assert.equal(result.timedOut, true, "non-terminating code should hit the timeout path");
+  assert.equal(result.aborted, false, "timeout and user cancellation must remain distinct");
   assert.equal(result.exitCode, -1, "killed children should currently surface as exitCode -1");
   assert.ok(result.durationMs < 2_000, "timeout handling should return promptly");
 

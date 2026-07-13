@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createSearchToolDefinitions } from "./search";
-import { createSchemeEvalToolDefinition } from "./scheme/tools/scheme-eval";
+import { createSchemeToolDefinition } from "./scheme/tools/scheme";
 import { createPwshToolDefinition } from "./shell/tools/pwsh";
 import { createDocsToolDefinition } from "./web/tools/docs";
 import { createFetchToolDefinition } from "./web/tools/fetch";
@@ -14,7 +14,7 @@ const SUPPORTED_EXTENSION_TOOLS = [
   "fetch",
   "libs",
   "docs",
-  "scheme_eval",
+  "scheme",
   "pwsh",
 ] as const;
 
@@ -29,7 +29,7 @@ function createDefinitions(): Map<SupportedExtensionTool, ToolDefinition> {
     ["fetch", createFetchToolDefinition() as ToolDefinition],
     ["libs", createLibsToolDefinition() as ToolDefinition],
     ["docs", createDocsToolDefinition() as ToolDefinition],
-    ["scheme_eval", createSchemeEvalToolDefinition() as ToolDefinition],
+    ["scheme", createSchemeToolDefinition() as ToolDefinition],
     ["pwsh", createPwshToolDefinition() as ToolDefinition],
   ]);
 }

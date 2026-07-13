@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { verifyWasmIntegrity } from "./integrity";
-import { registerSchemeEvalTool } from "./tools/scheme-eval";
+import { registerSchemeTool } from "./tools/scheme";
 
 function warn(ctx: any, pi: any, message: string): void {
   if (ctx?.hasUI && ctx.ui?.notify) {
@@ -17,12 +17,12 @@ function warn(ctx: any, pi: any, message: string): void {
 }
 
 export default function registerSchemeSandbox(pi: ExtensionAPI): void {
-  registerSchemeEvalTool(pi);
+  registerSchemeTool(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     const check = verifyWasmIntegrity();
     if (!check.ok) {
-      warn(ctx, pi, `Scheme WASM integrity check failed: ${check.failures.join(", ")}. scheme_eval tool may not work correctly.`);
+      warn(ctx, pi, `Scheme WASM integrity check failed: ${check.failures.join(", ")}. scheme tool may not work correctly.`);
     }
   });
 }

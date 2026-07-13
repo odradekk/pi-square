@@ -46,7 +46,7 @@ try {
 
   const expectedTools = [
     "ask", "docs", "fd", "fetch", "libs", "pwsh",
-    "rg", "scheme_eval", "search", "subagent", "time", "todo",
+    "rg", "scheme", "search", "subagent", "time", "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));
