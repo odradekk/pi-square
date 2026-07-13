@@ -169,11 +169,14 @@ test("YAML system replaces the inherited core while call instructions append", a
   );
 });
 
-test("fresh sessions use native built-in tools with no customTools", async () => {
+test("fresh sessions resolve and persist the portable shell capability", async () => {
   reset();
-  await runSubagentTask(freshInput({ definition: definition({ tools: ["read", "edit", "bash"] }) }));
+  const result = await runSubagentTask(freshInput({ definition: definition({ tools: ["read", "edit", "shell"] }) }));
   assert.ok(lastCall().tools.includes("read"));
   assert.ok(lastCall().tools.includes("edit"));
+  assert.ok(lastCall().tools.includes("bash"));
+  assert.ok(!lastCall().tools.includes("shell"));
+  assert.deepEqual(result.details.agent.tools, ["read", "edit", "shell"]);
   assert.equal(lastCall().customTools, undefined);
 });
 

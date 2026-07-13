@@ -45,6 +45,24 @@ Calls and results use Pi-native collapsible renderers. Collapsed rows show actio
 
 The bundled `rg` and `fd` tools expose schema-validated search parameters while retaining wrapper-owned protocol and safety flags. Their Pi-native collapsible presentation keeps calls auditable without adding noise: the call shows every explicitly supplied parameter and omits unspecified defaults, while the collapsed result shows only result, paging, truncation, and error status. Expanding `rg` groups matches by file with aligned line/column gutters, exact match highlighting, subdued context, and continuation notices; expanding `fd` shows a compact path list with directory/basename hierarchy. Valid local text paths are clickable when the terminal supports hyperlinks, while byte paths and UNC/network paths remain inert. Display text escapes terminal controls and invalid bytes without changing model-facing content, CLI arguments, paging, or the existing `rg` excerpt and content budgets.
 
+## Platform shell tools
+
+Model-callable shell tools are platform-exclusive. Linux, macOS, and other non-Windows hosts expose Pi's native `bash` tool and do not register `pwsh`. Windows exposes `pwsh`, removes `bash` from the active tool set, and blocks later `bash` calls even if it is manually re-enabled. PowerShell 7 is preferred, with Windows PowerShell 5.1 as the fallback. If neither runtime is available, Windows fails closed with a startup diagnostic and a structured unavailable result instead of enabling bash. This policy applies to top-level sessions and subagents; Pi's user-invoked `!command` Bash Mode remains unchanged.
+
+Both shell tools show the complete submitted command with display-only syntax highlighting, preserving the exact text passed to the process. Single-line commands use `$` or `PS>` prompts; multiline commands retain their newlines and indentation, and optional cwd/timeout metadata remains subdued. Display copies remove terminal escape sequences without altering model-facing arguments.
+
+`pwsh` now uses the same bounded streaming presentation as Pi's native bash tool. Output snapshots update at approximately 100 ms intervals, collapsed results keep the last five visual lines, expanded results show the complete selected tail, and elapsed time plus PowerShell flavor/version remain visible. Model-facing stdout and stderr are merged in arrival order and limited to the last 2,000 lines or 50 KiB. When that limit is exceeded, the complete merged output is written to a private temporary log and the result reports its path. Successful output no longer includes the old `-- pwsh flavor=...` footer; nonzero exits, timeouts, and cancellation append bash-style status text, with structured metadata retained in `details`.
+
+Subagent YAML should request the portable virtual capability under `tools`:
+
+```yaml
+tools:
+  - read
+  - shell
+```
+
+`shell` resolves to built-in bash off Windows and extension tool pwsh on Windows, and the logical capability is persisted so resumed sessions re-resolve it for the current platform. Explicit platform-incompatible shell names are rejected. Existing persisted definitions containing the former `bash` plus `pwsh` pair, or the old full built-in default list, migrate to `shell` during resume.
+
 ## Scheme sandbox
 
 The `scheme` tool evaluates R6RS Chez Scheme in the bundled WASM sandbox. Its Pi-native TUI shows the complete submitted source and effective access mode, streams stdout and cleaned stderr while evaluation is running, keeps the last five visual lines in the collapsed view, and reveals all captured output when expanded. Calls can be cancelled, and timeout or cancellation terminates the runtime process tree. `readonly` (the default) mounts the working directory read-only at `/work`; `write` makes that mount writable; `fullaccess` exposes the host under `/host` and enables `system()`. Stdout and stderr share a 512 KiB capture limit; reaching it is reported in the TUI without changing the model-facing output format or writing a temporary full-output log.

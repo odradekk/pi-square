@@ -45,13 +45,15 @@ try {
   assert.ok(paths[0].endsWith("/packages/pi-square/src/index.ts"));
 
   const expectedTools = [
-    "ask", "docs", "fd", "fetch", "libs", "pwsh",
+    "ask", "docs", "fd", "fetch", "libs",
     "rg", "scheme", "search", "subagent", "time", "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));
   assert.deepEqual(extensionTools, expectedTools);
   assert.ok(!allToolNames.includes("ask_user"));
+  assert.ok(!allToolNames.includes("pwsh"), "pwsh must not be registered off Windows");
+  assert.ok(allToolNames.includes("bash"), "bash must remain registered off Windows");
 
   const commands = extensionsResult.runtime.getCommands().map((command) => command.name).sort();
   const extensionCommands = commands.filter((name) => !name.startsWith("skill:"));
@@ -74,7 +76,7 @@ try {
       contextFiles: resourceLoader.getAgentsFiles().agentsFiles,
       cwd,
       skills,
-      selectedTools: expectedTools,
+      selectedTools: [...expectedTools, "bash"],
     },
   );
   const systemPrompt = promptPatch?.systemPrompt ?? "";
@@ -87,6 +89,9 @@ try {
     assert.ok(tool, `tool not active: ${name}`);
     return tool;
   };
+  const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
+  assert.equal(bashResult.content[0].text, "pi-square-bash");
+
   const timeResult = await toolByName("time").execute("smoke:time", {}, undefined, undefined);
   assert.match(timeResult.content[0].text, /ISO 8601:/);
 

@@ -11,7 +11,7 @@
 
 - `src/index.ts` is the single extension entry point. It loads configuration on session start and registers each feature module.
 - `src/core/` owns shared configuration, diagnostics, and path handling. Configuration is schema-validated and merges agent-level `config/pi-square.json` with project-level `.pi/config/pi-square.json`.
-- Feature directories under `src/` own individual tools or UI behavior: `ask-user/`, `banner/`, `notifications/`, `prompt-manager/`, `scheme/`, `search/`, `shell/`, `statusline/`, `subagents/`, `time/`, `todo/`, and `web/`.
+- Feature directories under `src/` own individual tools or UI behavior: `ask-user/`, `banner/`, `notifications/`, `prompt-manager/`, `scheme/`, `search/`, `shell/`, `statusline/`, `subagents/`, `time/`, `todo/`, and `web/`. `src/shell/` owns platform shell selection, PowerShell process execution, bounded streaming output, and shared bash/PowerShell command presentation.
 - `src/tool-catalog.ts` defines the extension tools that may be exposed to subagents.
 - `skills/` contains discoverable Pi skills. Each skill owns its instructions and supporting resources inside its directory.
 - `resources/subagents/` contains the YAML definitions for bundled subagent roles.
@@ -41,6 +41,7 @@ Documentation must describe the repository as it exists. Do not claim that a com
 - Validate external configuration and tool inputs at their boundaries. Reject unknown or invalid configuration rather than relying on unchecked values internally.
 - Keep non-secret settings in agent-level `config/pi-square.json` or project-level `.pi/config/pi-square.json`. Credentials and model definitions belong to Pi-owned `auth.json` and `models.json`; never commit secrets.
 - Preserve feature ownership and avoid unrelated refactors. Add shared abstractions only when multiple modules have a demonstrated common requirement.
+- Keep model-callable shell tools platform-exclusive: non-Windows sessions expose bash only, Windows sessions expose pwsh only, and subagents request the portable `shell` capability rather than declaring both names.
 - Add or update focused tests for behavior changes. Defect fixes require a regression test, and public contract changes require contract coverage.
 - Treat `bin/` and `wasm/` as security-sensitive vendored assets. Do not modify or replace them without verifying provenance, supported targets, runtime constraints, and applicable notices.
 - Keep `THIRD_PARTY_NOTICES.md` synchronized with every vendored binary or licensing change.
@@ -53,6 +54,7 @@ Apply the current gates according to the change risk:
 
 - For code changes, run `npm test` and `npm run typecheck`.
 - Also run `npm run smoke` when a change affects extension loading, module or tool registration, prompt composition, skill discovery, configuration integration, or other end-to-end Pi behavior.
+- Changes to shell platform selection, PowerShell encoding, process-tree cancellation, or streaming require real Windows validation with PowerShell 7 and Windows PowerShell 5.1 before commit, in addition to injected-platform and Linux process tests.
 - For documentation-only changes, verify referenced paths, versions, commands, and links against the repository. Code checks are not required unless the documentation change accompanies code.
 - Report every check run and any check that could not run. A passing type check does not replace behavioral testing.
 

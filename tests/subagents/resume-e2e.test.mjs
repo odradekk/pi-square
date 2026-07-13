@@ -171,6 +171,42 @@ test("resume restores original model, tools, effort, and system prompt", async (
   }
 });
 
+test("resume migrates the former dual-shell declaration to a portable shell intent", async () => {
+  const cwd = root();
+  const id = "subagent_00000000-0000-4000-8000-000000000083";
+  process.env.PI_AGENT_DIR = cwd;
+  state.createCalls = [];
+  state.openedPaths = [];
+  state.prompts = [];
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const first = await runSubagentTask({
+      ctx: ctx(cwd),
+      id,
+      mode: "fg",
+      task: "initial",
+      definition: { name: "worker", description: "worker", source: "agent", filePath: "worker.yaml", tools: ["read", "shell"], skills: [] },
+    });
+    const runPath = join(first.details.artifactsDir, "run.json");
+    const legacy = JSON.parse(readFileSync(runPath, "utf8"));
+    legacy.agent.tools = ["read", "bash"];
+    legacy.agent.extensionTools = ["pwsh"];
+    writeFileSync(runPath, `${JSON.stringify(legacy, null, 2)}\n`, "utf8");
+
+    const resumed = await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
+    assert.equal(resumed.status, "completed");
+    assert.ok(state.createCalls.at(-1).tools.includes("bash"));
+    assert.ok(!state.createCalls.at(-1).tools.includes("pwsh"));
+    assert.deepEqual(resumed.details.agent.tools, ["read", "shell"]);
+    assert.equal(resumed.details.agent.extensionTools, undefined);
+    const persisted = JSON.parse(readFileSync(runPath, "utf8"));
+    assert.deepEqual(persisted.agent.tools, ["read", "shell"]);
+    assert.equal(persisted.agent.extensionTools, undefined);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("frozen prompt snapshots remove only Pi's runtime date and cwd suffix", () => {
   const frozen = __testables.freezeSystemPrompt(
     "CORE\n\nCONTEXT\nCurrent date: 2026-07-13\nCurrent working directory: /work",

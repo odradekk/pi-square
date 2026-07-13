@@ -64,14 +64,17 @@ prompt: |
 # If omitted, or written as tools: [], the child gets ALL built-in tools.
 # Built-in tools available in the current code:
 # - read
-# - bash
+# - bash              (non-Windows only; prefer the portable shell capability)
 # - edit
 # - write
 # - grep
 # - find
 # - ls
+# - shell             (resolves to bash off Windows and pwsh on Windows)
 #
-# This example is intentionally read-only, so it keeps only inspection tools.
+# Explicit pwsh belongs to extensionTools and is Windows-only. Use shell for a
+# portable agent definition. This example is intentionally read-only, so it
+# keeps only inspection tools.
 tools:
   - read
   - grep

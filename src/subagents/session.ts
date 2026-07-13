@@ -27,6 +27,7 @@ import {
   SubagentError,
 } from "./errors";
 import { tryAcquireRunLease } from "./lease";
+import { resolveSubagentTools } from "./tool-policy";
 import type { ActiveSubagentConfig, SubagentRunDetails, SubagentTimelineItem, SubagentUsage } from "./types";
 
 const DEFAULT_SUBAGENT_SYSTEM_PROMPT = `You are a delegated Pi subagent operating in an isolated session.
@@ -44,9 +45,7 @@ const MAX_LIVE_TEXT = 2000;
 const MAX_RAW_SESSION_OUTPUT = 12000;
 const MAX_TOOL_ERRORS = 20;
 const MAX_CONTENT_TOOL_ERRORS = 3;
-const ALLOWED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const ALLOWED_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-type AllowedToolName = typeof ALLOWED_TOOL_NAMES[number];
 type AllowedEffort = typeof ALLOWED_EFFORTS[number];
 
 function clip(text: string, max = MAX_TIMELINE_TEXT): string {
@@ -57,11 +56,6 @@ function clip(text: string, max = MAX_TIMELINE_TEXT): string {
 
 function normalizeMaybePath(value: string): string {
   return value.startsWith("@") ? value.slice(1) : value;
-}
-
-function normalizeToolName(value: string): AllowedToolName | null {
-  const normalized = value.trim() as AllowedToolName;
-  return (ALLOWED_TOOL_NAMES as readonly string[]).includes(normalized) ? normalized : null;
 }
 
 function normalizeEffort(value?: string): AllowedEffort | null {
@@ -295,44 +289,6 @@ export function resolveSubagentCwd(baseCwd: string, maybeCwd?: string): string {
   if (!input) return baseCwd;
   const normalized = normalizeMaybePath(input);
   return isAbsolute(normalized) ? normalized : resolve(baseCwd, normalized);
-}
-
-// Validate the built-in tool allowlist against the supported names. Pi
-// constructs the built-in tools itself from the `tools` name list passed to
-// `createAgentSession`; this function only resolves which names are allowed
-// and reports any unsupported entries.
-function resolveBuiltInToolNames(selected?: string[]): { normalized: string[]; errors: string[] } {
-  if (!selected || selected.length === 0) {
-    return { normalized: [...ALLOWED_TOOL_NAMES] as string[], errors: [] as string[] };
-  }
-
-  const normalized: AllowedToolName[] = [];
-  const errors: string[] = [];
-  for (const item of selected) {
-    const name = normalizeToolName(item);
-    if (!name) {
-      errors.push(`Unsupported tool '${item}'. Supported built-in tools: ${ALLOWED_TOOL_NAMES.join(", ")}.`);
-      continue;
-    }
-    if (!normalized.includes(name)) normalized.push(name);
-  }
-
-  return { normalized: normalized.map((name) => String(name)), errors };
-}
-
-function resolveExtensionToolNames(selected?: string[]): { normalized: string[]; errors: string[] } {
-  const normalized: string[] = [];
-  const errors: string[] = [];
-  for (const item of selected ?? []) {
-    const name = item.trim();
-    if (!name) continue;
-    if ((ALLOWED_TOOL_NAMES as readonly string[]).includes(name)) {
-      errors.push(`Built-in tool '${name}' must be listed under tools, not extensionTools.`);
-      continue;
-    }
-    if (!normalized.includes(name)) normalized.push(name);
-  }
-  return { normalized, errors };
 }
 
 function createChildResourceLoader(input: {
@@ -740,10 +696,11 @@ export async function runSubagentTask(input: {
     definitionPrompt: resolveDefinitionPrompt(input.definition),
     parentMessages: input.contextMessages,
   });
-  const builtInTools = resolveBuiltInToolNames(input.definition?.tools);
-  const extensionTools = resolveExtensionToolNames(input.definition?.extensionTools);
-  const extensionToolNames = extensionTools.normalized;
-  const customTools = createChildTools(extensionToolNames);
+  const resolvedTools = resolveSubagentTools({
+    tools: input.definition?.tools,
+    extensionTools: input.definition?.extensionTools,
+  });
+  const customTools = createChildTools(resolvedTools.extensionTools);
   const selectedSkillNames = (input.definition?.skills ?? []).map((item) => item.trim()).filter(Boolean);
   const skillsDisabled = selectedSkillNames.length === 1 && selectedSkillNames[0].toLowerCase() === "none";
   const modelSpec = input.modelOverride ?? input.definition?.model;
@@ -797,7 +754,14 @@ export async function runSubagentTask(input: {
       sessionFile,
       sessionId,
       phase: "running",
-      agent: buildActiveConfig(input.definition, builtInTools.normalized, extensionToolNames, selectedSkillNames, modelSpec, resolvedEffort ?? effortSpec),
+      agent: buildActiveConfig(
+        input.definition,
+        resolvedTools.persistedTools,
+        resolvedTools.persistedExtensionTools,
+        selectedSkillNames,
+        modelSpec,
+        resolvedEffort ?? effortSpec,
+      ),
       task: input.task,
       initialTask: input.task,
       cwd,
@@ -816,7 +780,7 @@ export async function runSubagentTask(input: {
       : initialSessionManager;
     writeRunState(artifactsDir, details);
 
-    const startupErrors = [...builtInTools.errors, ...extensionTools.errors, ...customTools.errors];
+    const startupErrors = [...resolvedTools.errors, ...customTools.errors];
     if (resolvedModel.error) startupErrors.push(resolvedModel.error);
     if (input.effortOverride && !resolvedEffort) {
       startupErrors.push(`Unsupported thinkingLevel '${input.effortOverride}'. Supported values: ${ALLOWED_EFFORTS.join(", ")}.`);
@@ -875,7 +839,7 @@ export async function runSubagentTask(input: {
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
       resourceLoader,
       thinkingLevel: resolvedEffort ?? undefined,
-      tools: [...builtInTools.normalized, ...extensionToolNames],
+      tools: [...resolvedTools.builtInTools, ...resolvedTools.extensionTools],
       ...(customTools.definitions.length > 0 ? { customTools: customTools.definitions } : {}),
       sessionManager,
       settingsManager: createChildSettings(),
@@ -941,10 +905,11 @@ export async function resumeSubagentTask(input: {
     const persisted = validated.details;
     const runCwd = persisted.cwd;
     const prompt = buildDelegatedPrompt({ task: input.task, parentMessages: input.contextMessages });
-    const builtInTools = resolveBuiltInToolNames(persisted.agent?.tools);
-    const extensionTools = resolveExtensionToolNames(persisted.agent?.extensionTools);
-    const extensionToolNames = extensionTools.normalized;
-    const customTools = createChildTools(extensionToolNames);
+    const resolvedTools = resolveSubagentTools({
+      tools: persisted.agent?.tools,
+      extensionTools: persisted.agent?.extensionTools,
+    });
+    const customTools = createChildTools(resolvedTools.extensionTools);
     const selectedSkillNames = persisted.agent?.skills ?? [];
     const modelSpec = persisted.agent?.model ?? persisted.model;
     const effortSpec = persisted.agent?.effort;
@@ -955,6 +920,15 @@ export async function resumeSubagentTask(input: {
 
     details = {
       ...persisted,
+      agent: persisted.agent
+        ? {
+            ...persisted.agent,
+            tools: resolvedTools.persistedTools,
+            extensionTools: resolvedTools.persistedExtensionTools.length > 0
+              ? resolvedTools.persistedExtensionTools
+              : undefined,
+          }
+        : undefined,
       mode: "resume",
       task: input.task,
       systemPromptSnapshot: systemPrompt,
@@ -975,7 +949,7 @@ export async function resumeSubagentTask(input: {
     pushTimeline(details, { kind: "status", text: `resuming subagent ${input.id}` });
     writeRunState(artifactsDir, details);
 
-    const startupErrors = [...builtInTools.errors, ...extensionTools.errors, ...customTools.errors];
+    const startupErrors = [...resolvedTools.errors, ...customTools.errors];
     if (resolvedModel.error) startupErrors.push(resolvedModel.error);
     if (effortSpec && !resolvedEffort) startupErrors.push(`Unsupported effort '${effortSpec}'. Supported values: ${ALLOWED_EFFORTS.join(", ")}.`);
     if (startupErrors.length > 0) {
@@ -1010,7 +984,7 @@ export async function resumeSubagentTask(input: {
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
       resourceLoader,
       thinkingLevel: resolvedEffort ?? undefined,
-      tools: [...builtInTools.normalized, ...extensionToolNames],
+      tools: [...resolvedTools.builtInTools, ...resolvedTools.extensionTools],
       ...(customTools.definitions.length > 0 ? { customTools: customTools.definitions } : {}),
       sessionManager,
       settingsManager: createChildSettings(),

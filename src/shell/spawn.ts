@@ -103,39 +103,22 @@ export async function probePwsh(): Promise<PwshProbe> {
   return { available: false, binary: null, reason: "pwsh not found on PATH (install PowerShell 7+)" };
 }
 
+export type PwshOutputStream = "stdout" | "stderr";
+
 export interface PwshRunOptions {
   command: string;
   binary: PwshBinary;
   timeoutMs: number;
   cwd?: string;
-  maxOutputBytes: number;
   signal?: AbortSignal;
+  onData?: (chunk: Buffer, stream: PwshOutputStream) => void;
 }
 
 export interface PwshRunResult {
-  stdout: string;
-  stderr: string;
   exitCode: number;
   timedOut: boolean;
   aborted: boolean;
-  truncated: boolean;
   durationMs: number;
-}
-
-function appendChunk(chunks: Buffer[], chunk: Buffer | string, remaining: { value: number }, truncated: { value: boolean }): void {
-  if (remaining.value <= 0) {
-    truncated.value = true;
-    return;
-  }
-  const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-  if (buffer.byteLength <= remaining.value) {
-    chunks.push(buffer);
-    remaining.value -= buffer.byteLength;
-    return;
-  }
-  chunks.push(buffer.subarray(0, remaining.value));
-  remaining.value = 0;
-  truncated.value = true;
 }
 
 function killTree(pid: number): void {
@@ -145,9 +128,13 @@ function killTree(pid: number): void {
     return;
   }
   try {
-    process.kill(pid, "SIGKILL");
+    process.kill(-pid, "SIGKILL");
   } catch {
-    // Ignore — process already exited.
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Ignore — process already exited.
+    }
   }
 }
 
@@ -160,21 +147,22 @@ function killTree(pid: number): void {
  */
 export async function runPwsh(options: PwshRunOptions): Promise<PwshRunResult> {
   const startTime = Date.now();
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  const remaining = { value: Math.max(1, Math.floor(options.maxOutputBytes)) };
-  const truncated = { value: false };
-  let timedOut = false;
-  let aborted = false;
+  if (options.signal?.aborted) {
+    return { exitCode: -1, timedOut: false, aborted: true, durationMs: 0 };
+  }
 
   return await new Promise<PwshRunResult>((resolve, reject) => {
+    let timedOut = false;
+    let aborted = false;
+    let settled = false;
+    let outputError: Error | undefined;
     const child = spawn(options.binary.name, pwshArgs(options.command), {
       cwd: options.cwd,
+      detached: !IS_WINDOWS,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       env: { ...process.env, ...RUNTIME_UTF8_ENV },
     });
-
     const childPid = child.pid;
 
     const timer = setTimeout(() => {
@@ -182,40 +170,50 @@ export async function runPwsh(options: PwshRunOptions): Promise<PwshRunResult> {
       if (childPid !== undefined) killTree(childPid);
     }, Math.max(1, Math.floor(options.timeoutMs)));
 
+    const cleanup = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
     const onAbort = () => {
       aborted = true;
       if (childPid !== undefined) killTree(childPid);
     };
-    if (options.signal) {
-      if (options.signal.aborted) {
-        onAbort();
-      } else {
-        options.signal.addEventListener("abort", onAbort, { once: true });
-      }
-    }
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
 
-    child.stdout.on("data", (chunk) => appendChunk(stdoutChunks, chunk, remaining, truncated));
-    child.stderr.on("data", (chunk) => appendChunk(stderrChunks, chunk, remaining, truncated));
+    const forward = (stream: PwshOutputStream) => (chunk: Buffer | string) => {
+      if (outputError) return;
+      try {
+        options.onData?.(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk), stream);
+      } catch (error) {
+        outputError = error instanceof Error ? error : new Error(String(error));
+        if (childPid !== undefined) killTree(childPid);
+      }
+    };
+    child.stdout.on("data", forward("stdout"));
+    child.stderr.on("data", forward("stderr"));
 
     child.on("error", (error) => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
+      if (settled) return;
+      settled = true;
+      cleanup();
       reject(error);
     });
 
     child.on("close", (code) => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (outputError) {
+        reject(outputError);
+        return;
+      }
       resolve({
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
         exitCode: typeof code === "number" ? code : -1,
         timedOut,
         aborted,
-        truncated: truncated.value,
         durationMs: Date.now() - startTime,
       });
     });
-
   });
 }

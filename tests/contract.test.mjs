@@ -20,6 +20,7 @@ try {
   const renderers = new Map();
   const events = new Map();
   const entries = [];
+  let activeTools = ["read", "bash"];
   const pi = {
     registerTool(definition) { tools.set(definition.name, definition); },
     registerCommand(name, definition) { commands.set(name, definition); },
@@ -33,15 +34,20 @@ try {
     },
     getThinkingLevel() { return "high"; },
     getAllTools() { return [...tools.values()]; },
+    getActiveTools() { return [...activeTools]; },
+    setActiveTools(names) { activeTools = [...names]; },
   };
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "docs", "fd", "fetch", "libs", "pwsh",
+    "ask", "docs", "fd", "fetch", "libs",
     "rg", "scheme", "search", "subagent", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
   assert.ok(!childToolNames.includes("scheme_eval"));
+  assert.ok(!childToolNames.includes("pwsh"));
+  assert.deepEqual(createChildTools(["pwsh"]).definitions, []);
+  assert.deepEqual(createChildTools(["pwsh"], "win32").definitions.map((tool) => tool.name), ["pwsh"]);
   const askTool = tools.get("ask");
   assert.equal(typeof askTool?.renderCall, "function");
   assert.equal(typeof askTool?.renderResult, "function");
@@ -81,6 +87,9 @@ try {
     await handler({ type: "session_start", reason: "startup" }, ctx);
   }
   assert.ok(shortcuts.has("alt+s"), "statusline shortcut should register from effective config");
+  assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should gain command highlighting after session start");
+  assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should retain Pi's native result renderer");
+  assert.deepEqual(activeTools, ["read", "bash"]);
 
   const promptHandler = events.get("before_agent_start")[0];
   const nativePrompt = "NATIVE SYSTEM\n\nNATIVE CONTEXT\n";
