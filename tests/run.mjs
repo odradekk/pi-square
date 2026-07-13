@@ -9,6 +9,8 @@ const suites = [
   "native-prompt.test.mjs",
   "prompt-manager.test.mjs",
   "todo.test.mjs",
+  "todo/widget.test.mjs",
+  "todo/rendering.test.mjs",
   "contract.test.mjs",
   "ask/ui.test.mjs",
   "ask/integration.test.mjs",

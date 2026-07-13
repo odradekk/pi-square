@@ -507,9 +507,9 @@ function questions(input) {
     await events.get("session_start")({}, ctx);
     const tool = tools.get("todo");
     const created = await tool.execute("todo-1", {
-      action: "create",
+      action: "set",
       title: "UI regression",
-      todos: [{ id: "verify", text: "A long todo item that must remain inside a narrow terminal", completed: false }],
+      todos: [{ id: "verify", text: "A long todo item that must remain inside a narrow terminal", status: "pending" }],
     }, undefined, undefined, ctx);
     assert.equal(created.details.widget, "shown");
     assert.ok(recorder.render(30).every((line) => visibleWidth(line) <= 30));

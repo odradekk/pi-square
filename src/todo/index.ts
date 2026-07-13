@@ -1,411 +1,230 @@
-import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { stripVTControlCharacters } from "node:util";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { renderTodoCall, renderTodoResult } from "./render";
+import {
+  TODO_ENTRY_TYPE_V2,
+  applyTodoAction,
+  cloneTodoState,
+  currentTodo,
+  emptyTodoState,
+  readTodoState,
+  stateEntry,
+  todoCounts,
+} from "./state";
+import type { TodoAction, TodoDetails, TodoError, TodoParams, TodoState } from "./types";
+import { TODO_LIMITS, TodoOperationError } from "./validation";
+import { syncTodoWidget } from "./widget";
 
-// ── Types ────────────────────────────────────────────────────────────────
-
-type TodoAction = "create" | "set" | "replace" | "add" | "update" | "check" | "uncheck" | "clear" | "list" | "status";
-type WidgetState = "shown" | "cleared" | "unavailable";
-
-interface TodoInputItem {
-  id?: string;
-  text?: string;
-  completed?: boolean;
-}
-
-interface TodoItem {
-  id: string;
-  text: string;
-  completed: boolean;
-}
-
-interface TodoDetails {
-  action: TodoAction;
-  title: string;
-  totalCount: number;
-  completedCount: number;
-  incompleteCount: number;
-  widget: WidgetState;
-  items: TodoItem[];
-  error?: string;
-}
-
-// ── Schema ───────────────────────────────────────────────────────────────
-
-const TodoActionSchema = Type.Union([
-  Type.Literal("create"),
-  Type.Literal("set"),
-  Type.Literal("replace"),
-  Type.Literal("add"),
-  Type.Literal("update"),
-  Type.Literal("check"),
-  Type.Literal("uncheck"),
-  Type.Literal("clear"),
-  Type.Literal("list"),
-  Type.Literal("status"),
-], {
-  description:
-    "create/set/replace = replace the current list; add = append items; " +
-    "update = edit text and/or completion; check/uncheck = mark items; " +
-    "clear = remove all todos and close the widget; list/status = read current todos.",
+const TodoIdSchema = Type.String({
+  description: "Stable ASCII id used by later actions; generated as todo-N when omitted",
+  minLength: 1,
+  maxLength: TODO_LIMITS.id,
+  pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$",
 });
+
+const TodoTitleSchema = Type.String({
+  description: "Concise title shown in the persistent widget",
+  minLength: 1,
+  maxLength: TODO_LIMITS.title,
+});
+
+const TodoTextSchema = Type.String({
+  description: "Single-line task text",
+  minLength: 1,
+  maxLength: TODO_LIMITS.text,
+});
+
+const TODO_ACTIONS = [
+  "set",
+  "add",
+  "update",
+  "start",
+  "pause",
+  "check",
+  "uncheck",
+  "clear",
+  "list",
+] as const;
 
 const TodoItemSchema = Type.Object({
-  id: Type.Optional(Type.String({
-    description: "Stable id used later by update/check/uncheck. If omitted, an id like todo-1 is generated.",
+  id: Type.Optional(TodoIdSchema),
+  text: TodoTextSchema,
+  status: Type.Optional(StringEnum(["pending", "in_progress", "completed"] as const, {
+    description: "Initial state; defaults to pending",
+    default: "pending",
   })),
-  text: Type.String({ description: "Todo item text shown in the widget" }),
-  completed: Type.Optional(Type.Boolean({ description: "Whether this item is already complete (default: false)" })),
+}, { additionalProperties: false });
+
+const TodoItemsSchema = Type.Array(TodoItemSchema, {
+  description: "Items for set or add",
+  minItems: 1,
+  maxItems: TODO_LIMITS.items,
 });
 
-const TodoParams = Type.Object({
-  action: TodoActionSchema,
-  title: Type.Optional(Type.String({ description: "Optional title shown at the top of the persistent todo widget" })),
-  todos: Type.Optional(Type.Array(TodoItemSchema, {
-    description: "Items for create/set/replace, or items to append for add",
+export const TodoParamsSchema = Type.Object({
+  action: StringEnum(TODO_ACTIONS, {
+    description:
+      "set replaces the list; add appends; update changes text or title; start/pause select current work; "
+      + "check/uncheck change completion; clear removes the list; list reads it",
+  }),
+  title: Type.Optional(TodoTitleSchema),
+  todos: Type.Optional(TodoItemsSchema),
+  id: Type.Optional(TodoIdSchema),
+  ids: Type.Optional(Type.Array(TodoIdSchema, {
+    description: "Multiple item ids for check or uncheck",
+    minItems: 1,
+    maxItems: TODO_LIMITS.items,
+    uniqueItems: true,
   })),
-  id: Type.Optional(Type.String({ description: "Single item id for update/check/uncheck" })),
-  ids: Type.Optional(Type.Array(Type.String(), { description: "Multiple item ids for update/check/uncheck" })),
-  text: Type.Optional(Type.String({ description: "New text for update, or a single item text for add" })),
-  completed: Type.Optional(Type.Boolean({ description: "Completion state for update" })),
+  text: Type.Optional(TodoTextSchema),
+  advance: Type.Optional(Type.Boolean({
+    description: "Start the next pending item after checking the current item (default: true)",
+    default: true,
+  })),
+}, {
+  additionalProperties: false,
+  description: "Manage the current session's bounded, persistent three-state task list",
 });
 
-// ── Widget rendering ─────────────────────────────────────────────────────
+function serialize(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
 
-const DEFAULT_TITLE = "Task Todo";
-const WIDGET_KEY = "todo";
+function safeMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return stripVTControlCharacters(raw)
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .slice(0, 1_000) || "Unknown todo failure";
+}
 
-function showTodoWidget(ui: ExtensionUIContext, title: string, items: TodoItem[]): void {
-  const snapshot = {
-    title,
-    items: items.map((item) => ({ ...item })),
-  };
-
-  if (!snapshot.items.some((item) => !item.completed)) {
-    ui.setWidget(WIDGET_KEY, undefined);
-    return;
+function actionFromParams(params: unknown): TodoAction {
+  if (params && typeof params === "object") {
+    const action = (params as { action?: unknown }).action;
+    if (TODO_ACTIONS.includes(action as TodoAction)) return action as TodoAction;
   }
-
-  ui.setWidget(WIDGET_KEY, (_tui, theme) => {
-    return {
-      render(width: number): string[] {
-        if (width < 8) return [truncateToWidth(snapshot.title, Math.max(1, width))];
-
-        const completed = snapshot.items.filter((item) => item.completed).length;
-        const total = snapshot.items.length;
-        const ratioColor = completed > 0 ? "accent" : "dim";
-        const header =
-          theme.fg("accent", "● ") +
-          theme.fg("text", snapshot.title) +
-          theme.fg("borderMuted", " · ") +
-          theme.fg(ratioColor, `${completed}/${total} done`);
-        const out: string[] = [truncateToWidth(header, width), theme.fg("borderMuted", "─".repeat(width))];
-
-        for (const item of snapshot.items) {
-          const mark = item.completed ? theme.fg("success", "✓") : theme.fg("dim", "○");
-          const id = theme.fg("muted", item.id);
-          const separator = theme.fg("borderMuted", " · ");
-          const text = theme.fg(item.completed ? "dim" : "text", item.text);
-          out.push(truncateToWidth(`${mark} ${id}${separator}${text}`, width));
-        }
-        return out;
-      },
-
-      invalidate(): void {},
-    };
-  }, { placement: "aboveEditor" });
+  return "list";
 }
 
-function syncWidget(ctx: any, title: string, items: TodoItem[]): WidgetState {
-  const hasUI = Boolean(ctx?.hasUI && ctx.ui);
-  if (!hasUI) return "unavailable";
-
-  if (items.some((item) => !item.completed)) {
-    showTodoWidget(ctx.ui, title, items);
-    return "shown";
-  }
-
-  ctx.ui.setWidget(WIDGET_KEY, undefined);
-  return "cleared";
-}
-
-// ── Pi session persistence ───────────────────────────────────────────────
-
-const TODO_ENTRY_TYPE = "pi-square.todo.v1";
-
-interface TodoStateEntry {
-  version: 1;
-  title: string;
-  items: TodoItem[];
-}
-
-function readBranchState(ctx: any): { title: string; items: TodoItem[] } | null {
-  const entries: any[] = ctx?.sessionManager?.getBranch?.() ?? [];
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry?.type !== "custom" || entry.customType !== TODO_ENTRY_TYPE) continue;
-    const data = entry.data as TodoStateEntry | undefined;
-    if (data?.version !== 1 || typeof data.title !== "string" || !Array.isArray(data.items)) return null;
-
-    const usedIds = new Set<string>();
-    const items: TodoItem[] = [];
-    for (const item of data.items) {
-      if (!item || typeof item.id !== "string" || typeof item.text !== "string") continue;
-      const id = normalizeId(item.id);
-      const text = item.text.trim();
-      if (!id || !text || usedIds.has(id)) continue;
-      usedIds.add(id);
-      items.push({ id, text, completed: item.completed === true });
-    }
-    return { title: data.title.trim() || DEFAULT_TITLE, items };
-  }
-  return null;
-}
-
-// ── State helpers ────────────────────────────────────────────────────────
-
-function normalizeId(id: string): string {
-  return id.trim().replace(/\s+/g, "-");
-}
-
-function nextGeneratedId(used: Set<string>): string {
-  let i = 1;
-  while (used.has(`todo-${i}`)) i++;
-  return `todo-${i}`;
-}
-
-function makeUniqueId(base: string, used: Set<string>): string {
-  const normalized = normalizeId(base);
-  let id = normalized || nextGeneratedId(used);
-  if (!used.has(id)) return id;
-
-  let i = 2;
-  while (used.has(`${id}-${i}`)) i++;
-  return `${id}-${i}`;
-}
-
-function normalizeInputItems(rawItems: TodoInputItem[], usedIds: Set<string>): TodoItem[] {
-  return rawItems.map((raw) => {
-    const text = typeof raw.text === "string" ? raw.text.trim() : "";
-    if (!text) throw new Error("Todo item text must be a non-empty string.");
-
-    const baseId = typeof raw.id === "string" && raw.id.trim()
-      ? raw.id
-      : nextGeneratedId(usedIds);
-    const id = makeUniqueId(baseId, usedIds);
-    usedIds.add(id);
-
-    return {
-      id,
-      text,
-      completed: raw.completed === true,
-    };
-  });
-}
-
-function idsFromParams(params: any): string[] {
-  const ids = new Set<string>();
-  if (typeof params.id === "string" && params.id.trim()) ids.add(normalizeId(params.id));
-  if (Array.isArray(params.ids)) {
-    for (const id of params.ids) {
-      if (typeof id === "string" && id.trim()) ids.add(normalizeId(id));
-    }
-  }
-  return [...ids];
-}
-
-function snapshotDetails(action: TodoAction, title: string, items: TodoItem[], widget: WidgetState, error?: string): TodoDetails {
-  const completedCount = items.filter((item) => item.completed).length;
+function detailsFor(
+  action: TodoAction,
+  state: TodoState,
+  widget: TodoDetails["widget"],
+  changed: boolean,
+  error?: TodoError,
+): TodoDetails {
+  const current = currentTodo(state.items);
   return {
+    version: 1,
+    status: error ? "error" : "ok",
     action,
-    title,
-    totalCount: items.length,
-    completedCount,
-    incompleteCount: items.length - completedCount,
+    changed,
+    stateVersion: 2,
+    title: state.title,
+    counts: todoCounts(state.items),
+    ...(current ? { currentId: current.id } : {}),
     widget,
-    items: items.map((item) => ({ ...item })),
+    items: state.items.map((item) => ({ ...item })),
     ...(error ? { error } : {}),
   };
 }
 
-function formatTodoStatus(details: TodoDetails): string {
-  if (details.error) {
-    return `Error: ${details.error}`;
+function safeSyncWidget(context: any, state: TodoState): TodoDetails["widget"] {
+  try {
+    return syncTodoWidget(context, state);
+  } catch {
+    return "unavailable";
   }
-
-  if (details.items.length === 0) {
-    const widgetNote = details.widget === "unavailable"
-      ? "Widget unavailable (no interactive UI)."
-      : "Widget cleared.";
-    return `No active todos. ${widgetNote}`;
-  }
-
-  const lines = [
-    `# ${details.title}`,
-    `${details.completedCount}/${details.totalCount} completed. Widget: ${details.widget}.`,
-    "",
-    ...details.items.map((item) => `- [${item.completed ? "x" : " "}] ${item.id}: ${item.text}`),
-  ];
-  return lines.join("\n");
 }
 
-// ── Extension ────────────────────────────────────────────────────────────
+interface TodoRuntime {
+  tool: ToolDefinition<typeof TodoParamsSchema, TodoDetails>;
+  restore(context: unknown): void;
+}
 
-export default function todo(pi: ExtensionAPI) {
-  let title = DEFAULT_TITLE;
-  let items: TodoItem[] = [];
+export function createTodoRuntime(pi: Pick<ExtensionAPI, "appendEntry">): TodoRuntime {
+  let state = emptyTodoState();
   let initialized = false;
 
-  function restoreSessionState(ctx: any): void {
-    const restored = readBranchState(ctx);
-    title = restored?.title ?? DEFAULT_TITLE;
-    items = restored?.items ?? [];
+  function restore(context: unknown): void {
+    state = readTodoState(context);
     initialized = true;
+    safeSyncWidget(context, state);
   }
 
-  function restoreAndSync(ctx: any): void {
-    restoreSessionState(ctx);
-    syncWidget(ctx, title, items);
-  }
-
-  pi.on("session_start", (_event, ctx) => restoreAndSync(ctx));
-  pi.on("session_tree", (_event, ctx) => restoreAndSync(ctx));
-
-  pi.registerTool({
+  const tool: ToolDefinition<typeof TodoParamsSchema, TodoDetails> = {
     name: "todo",
     label: "Todo",
     description:
-      "Create, update, check off, clear, or inspect the current Pi session todo list. " +
-      "When any todo item is incomplete, the current list is displayed as a persistent above-editor widget. " +
-      "The widget automatically closes when every item is complete or when the list is cleared.",
+      "Create and maintain a bounded three-state task list for the current Pi session. "
+      + "The Agent owns updates; incomplete work remains visible in a read-only above-editor widget. "
+      + "Returns versioned JSON with the complete current snapshot.",
     promptSnippet:
-      "Use todo to maintain a concise task checklist. Incomplete todos stay visible above the editor; " +
-      "mark each item complete as soon as it is done.",
+      "Use todo for non-trivial work: set a concise plan, keep one item in progress, check items promptly, and pause when waiting.",
     promptGuidelines: [
-      "Before starting a non-trivial or multi-step task, call todo with action=list to inspect any current list, then action=create/set to publish the planned checklist.",
-      "Keep todo items short, concrete, and verifiable; prefer 2-6 items for normal coding tasks.",
-      "After finishing each listed item, immediately call todo with action=check and that item's id.",
-      "Use action=update when the plan changes, action=add when a new necessary step appears, and action=clear only when abandoning the list or after the task no longer needs a visible checklist.",
-      "Route questions to the user through ask; reserve todo for task state.",
+      "Before non-trivial multi-step work, call todo with action=set and 2-6 short, verifiable items; the first pending item starts automatically.",
+      "Complete the current item with action=check; the next pending item starts automatically unless advance is false.",
+      "Use action=start to switch current work, action=pause while waiting, action=add for newly discovered work, and action=update only for text or title changes.",
+      "Use action=list before replacing an existing list, and action=clear only when abandoning work or when a completed list no longer needs a snapshot.",
+      "Todo ids are stable ASCII identifiers. Omit ids when generated todo-N ids are sufficient.",
     ],
     executionMode: "sequential",
-    parameters: TodoParams,
+    parameters: TodoParamsSchema,
 
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (!initialized) restoreSessionState(ctx);
-
-      const action = params.action as TodoAction;
-      let error: string | undefined;
-      let mutated = false;
+    async execute(_toolCallId, params, _signal, _onUpdate, context) {
+      if (!initialized) {
+        state = readTodoState(context);
+        initialized = true;
+      }
+      const action = actionFromParams(params);
+      const previous = cloneTodoState(state);
 
       try {
-        const nextTitle = typeof params.title === "string" && params.title.trim()
-          ? params.title.trim()
-          : undefined;
-
-        switch (action) {
-          case "create":
-          case "set":
-          case "replace": {
-            if (!Array.isArray(params.todos)) {
-              throw new Error("action=create/set/replace requires a todos array.");
-            }
-            title = nextTitle ?? DEFAULT_TITLE;
-            items = normalizeInputItems(params.todos, new Set<string>());
-            mutated = true;
-            break;
+        const transition = applyTodoAction(previous, params as TodoParams);
+        if (transition.changed) {
+          try {
+            pi.appendEntry(TODO_ENTRY_TYPE_V2, stateEntry(transition.state));
+          } catch (error) {
+            throw new TodoOperationError("TODO_PERSISTENCE_FAILED", safeMessage(error));
           }
-
-          case "add": {
-            const rawItems: TodoInputItem[] = Array.isArray(params.todos)
-              ? params.todos
-              : (typeof params.text === "string" ? [{ id: params.id, text: params.text, completed: params.completed }] : []);
-            if (rawItems.length === 0) {
-              throw new Error("action=add requires todos or text.");
-            }
-            if (nextTitle) title = nextTitle;
-            items = items.concat(normalizeInputItems(rawItems, new Set(items.map((item) => item.id))));
-            mutated = true;
-            break;
-          }
-
-          case "update": {
-            const targetIds = idsFromParams(params);
-            if (targetIds.length === 0) throw new Error("action=update requires id or ids.");
-            const missing = targetIds.filter((id) => !items.some((item) => item.id === id));
-            if (missing.length > 0) throw new Error(`Unknown todo id(s): ${missing.join(", ")}.`);
-
-            const hasText = typeof params.text === "string";
-            const hasCompleted = typeof params.completed === "boolean";
-            if (!hasText && !hasCompleted && !nextTitle) {
-              throw new Error("action=update requires text, completed, or title.");
-            }
-            const newText = hasText ? String(params.text).trim() : undefined;
-            if (hasText && !newText) throw new Error("Updated todo text must be non-empty.");
-            if (nextTitle) title = nextTitle;
-
-            items = items.map((item) => targetIds.includes(item.id)
-              ? {
-                ...item,
-                ...(newText ? { text: newText } : {}),
-                ...(hasCompleted ? { completed: params.completed } : {}),
-              }
-              : item,
-            );
-            mutated = true;
-            break;
-          }
-
-          case "check":
-          case "uncheck": {
-            const targetIds = idsFromParams(params);
-            if (targetIds.length === 0) throw new Error(`action=${action} requires id or ids.`);
-            const missing = targetIds.filter((id) => !items.some((item) => item.id === id));
-            if (missing.length > 0) throw new Error(`Unknown todo id(s): ${missing.join(", ")}.`);
-            if (nextTitle) title = nextTitle;
-            const completed = action === "check";
-            items = items.map((item) => targetIds.includes(item.id) ? { ...item, completed } : item);
-            mutated = true;
-            break;
-          }
-
-          case "clear":
-            title = nextTitle ?? DEFAULT_TITLE;
-            items = [];
-            mutated = true;
-            break;
-
-          case "list":
-          case "status":
-            if (nextTitle) {
-              title = nextTitle;
-              mutated = true;
-            }
-            break;
-
-          default:
-            throw new Error(`Unsupported todo action: ${String(action)}.`);
+          state = transition.state;
         }
-
-        if (mutated) {
-          const snapshot: TodoStateEntry = {
-            version: 1,
-            title,
-            items: items.map((item) => ({ ...item })),
-          };
-          pi.appendEntry(TODO_ENTRY_TYPE, snapshot);
-        }
-      } catch (err) {
-        error = err instanceof Error ? err.message : String(err);
+        const widget = safeSyncWidget(context, state);
+        const details = detailsFor(action, state, widget, transition.changed);
+        return {
+          content: [{ type: "text" as const, text: serialize(details) }],
+          details,
+        };
+      } catch (error) {
+        const todoError: TodoError = error instanceof TodoOperationError
+          ? { code: error.code, message: error.message }
+          : { code: "TODO_INTERNAL_ERROR", message: safeMessage(error) };
+        state = previous;
+        const widget = safeSyncWidget(context, state);
+        const details = detailsFor(action, state, widget, false, todoError);
+        return {
+          content: [{ type: "text" as const, text: serialize(details) }],
+          isError: true,
+          details,
+        };
       }
-
-      const widget = syncWidget(ctx, title, items);
-      const details = snapshotDetails(action, title, items, widget, error);
-
-      return {
-        content: [{ type: "text" as const, text: formatTodoStatus(details) }],
-        details,
-      };
     },
-  });
+
+    renderCall(args, theme, context) {
+      return renderTodoCall(args, theme, context);
+    },
+    renderResult(result, options, theme, context) {
+      return renderTodoResult(result, options, theme, context);
+    },
+  };
+
+  return { tool, restore };
+}
+
+export default function registerTodo(pi: ExtensionAPI): void {
+  const runtime = createTodoRuntime(pi);
+  pi.on("session_start", (_event, context) => runtime.restore(context));
+  pi.on("session_tree", (_event, context) => runtime.restore(context));
+  pi.registerTool(runtime.tool);
 }

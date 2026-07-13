@@ -91,10 +91,12 @@ try {
   assert.match(timeResult.content[0].text, /ISO 8601:/);
 
   const todoResult = await toolByName("todo").execute("smoke:todo", {
-    action: "create",
+    action: "set",
     todos: [{ id: "smoke", text: "verify native state" }],
   }, undefined, undefined);
-  assert.equal(todoResult.details.totalCount, 1);
+  assert.equal(todoResult.details.counts.total, 1);
+  assert.equal(todoResult.details.currentId, "smoke");
+  assert.equal(JSON.parse(todoResult.content[0].text).version, 1);
 
   const rgResult = await toolByName("rg").execute("smoke:rg", {
     pattern: "pi-square-smoke-needle",

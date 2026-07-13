@@ -48,6 +48,14 @@ try {
   assert.equal(askTool?.parameters?.properties?.questions?.maxItems, 10);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.allowComment?.default, false);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
+  const todoTool = tools.get("todo");
+  assert.equal(typeof todoTool?.renderCall, "function");
+  assert.equal(typeof todoTool?.renderResult, "function");
+  assert.equal(todoTool?.parameters?.type, "object");
+  assert.equal(todoTool?.parameters?.anyOf, undefined);
+  assert.deepEqual(todoTool?.parameters?.required, ["action"]);
+  assert.equal(todoTool?.parameters?.properties?.action?.enum?.length, 9);
+  assert.ok(!childToolNames.includes("todo"));
   assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline"]);
