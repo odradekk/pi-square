@@ -171,6 +171,8 @@ test("Markdown display sanitization removes terminal controls and neutralizes so
     "\x1b]0;owned\x07[x](javascript:alert(1))",
     "[x][bad]",
     "[bad]: javascript:alert(1)",
+    "[remote](https://evil.example/path)",
+    "www.evil.example user@evil.example",
     "<javascript:alert(1)>",
     "> [shortcut]",
     ">",
@@ -181,12 +183,14 @@ test("Markdown display sanitization removes terminal controls and neutralizes so
     "```",
   ].join("\n"));
   assert.equal(safe.includes("\x1b"), false);
-  assert.ok(safe.includes("\\[x](javascript:alert(1))"));
+  assert.ok(safe.includes("\\[x](javascript\\:alert(1))"));
   assert.ok(safe.includes("\\[x]\\[bad]"));
-  assert.ok(safe.includes("\\[bad]: javascript:alert(1)"));
-  assert.ok(safe.includes("\\<javascript:alert(1)>"));
+  assert.ok(safe.includes("\\[bad]: javascript\\:alert(1)"));
+  assert.ok(safe.includes("\\[remote](https\\://evil.example/path)"));
+  assert.ok(safe.includes("www\\.evil.example user\\@evil.example"));
+  assert.ok(safe.includes("\\<javascript\\:alert(1)>"));
   assert.ok(safe.includes("> \\[shortcut]"));
-  assert.ok(safe.includes("> \\[shortcut]: javascript:alert(1)"));
+  assert.ok(safe.includes("> \\[shortcut]: javascript\\:alert(1)"));
   assert.ok(safe.includes("`[inline](javascript:literal)`"), "inline code stays exact");
   assert.ok(safe.includes("```md\n[code](javascript:literal)\n```"), "fenced code stays exact");
 });

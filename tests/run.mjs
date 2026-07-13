@@ -16,6 +16,7 @@ const suites = [
   "scheme/sandbox.test.mjs",
   "web/context7-client.test.mjs",
   "web/context7-tools.test.mjs",
+  "web/context7-rendering.test.mjs",
   "web/search-fetch-tools.test.mjs",
   "search/run.mjs",
   ...readdirSync(join(testsDir, "subagents"))

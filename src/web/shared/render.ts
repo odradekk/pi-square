@@ -90,6 +90,26 @@ function neutralizeMarkdownLinks(line: string): string {
       i++;
       continue;
     }
+    const scheme = /^[A-Za-z][A-Za-z\d+.-]*:/.exec(line.slice(i));
+    const atTokenBoundary = i === 0 || !/[A-Za-z\d+.-]/.test(line[i - 1]);
+    if (scheme && atTokenBoundary && !isEscapedAt(line, i + scheme[0].length - 1)) {
+      output += `${scheme[0].slice(0, -1)}\\:`;
+      i += scheme[0].length;
+      continue;
+    }
+    const www = /^www\./i.exec(line.slice(i));
+    if (www && atTokenBoundary && !isEscapedAt(line, i + 3)) {
+      output += `${www[0].slice(0, 3)}\\.`;
+      i += www[0].length;
+      continue;
+    }
+    const email = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/.exec(line.slice(i));
+    const atEmailBoundary = i === 0 || !/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]/.test(line[i - 1]);
+    if (email && atEmailBoundary) {
+      output += email[0].replace("@", "\\@");
+      i += email[0].length;
+      continue;
+    }
     output += line[i];
     i++;
   }
