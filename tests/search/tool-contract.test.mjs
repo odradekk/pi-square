@@ -113,7 +113,9 @@ test("createRgToolDefinition returns object with name rg and execute", async () 
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   assert.equal(def.name, "rg");
   assert.equal(typeof def.execute, "function");
-  assert.equal(def.renderResult, undefined);
+  assert.equal(typeof def.renderCall, "function");
+  assert.equal(typeof def.renderResult, "function");
+  assert.equal(def.renderShell, undefined);
 });
 
 test("createFdToolDefinition returns object with name fd and execute", async () => {
@@ -121,7 +123,9 @@ test("createFdToolDefinition returns object with name fd and execute", async () 
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   assert.equal(def.name, "fd");
   assert.equal(typeof def.execute, "function");
-  assert.equal(def.renderResult, undefined);
+  assert.equal(typeof def.renderCall, "function");
+  assert.equal(typeof def.renderResult, "function");
+  assert.equal(def.renderShell, undefined);
 });
 
 // ---------- index.ts registration ----------

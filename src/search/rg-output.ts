@@ -19,10 +19,12 @@ import {
   STDOUT_CAP,
 } from "./contracts";
 import type {
+  DisplayRange,
   LineKind,
   PageDetails,
   RgFileDetail,
   RgLineDetail,
+  RgLineDisplay,
   Submatch,
   TextContent,
   TextEncoding,
@@ -297,6 +299,174 @@ function excerptContext(text: string, limit: number): { display: string; excerpt
     display: escapeControls(text.substring(0, limit)) + `\u2026 (${text.length} units)`,
     excerpted: true,
   };
+}
+
+function terminalEscape(codePoint: number, value: string): string {
+  if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+    if (codePoint <= 0xff) return `\\x${codePoint.toString(16).padStart(2, "0")}`;
+    return `\\u${codePoint.toString(16).padStart(4, "0")}`;
+  }
+  return value;
+}
+
+function escapeTerminalTextWithMap(value: string): { text: string; boundaries: number[] } {
+  let text = "";
+  const boundaries = new Array<number>(value.length + 1).fill(0);
+  for (let i = 0; i < value.length;) {
+    const codePoint = value.codePointAt(i)!;
+    const units = codePoint > 0xffff ? 2 : 1;
+    const escaped = terminalEscape(codePoint, value.slice(i, i + units));
+    boundaries[i] = text.length;
+    if (units === 2) boundaries[i + 1] = text.length;
+    text += escaped;
+    boundaries[i + units] = text.length;
+    i += units;
+  }
+  return { text, boundaries };
+}
+
+function mergeDisplayRanges(ranges: DisplayRange[]): DisplayRange[] {
+  const sorted = ranges
+    .filter((range) => range.start >= 0 && range.end > range.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: DisplayRange[] = [];
+  for (const range of sorted) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+}
+
+const fatalUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+function byteOffsetToUtf16(rawBytes: Buffer, offset: number): number | null {
+  if (!Number.isInteger(offset) || offset < 0 || offset > rawBytes.length) return null;
+  try {
+    return fatalUtf8.decode(rawBytes.subarray(0, offset)).length;
+  } catch {
+    return null;
+  }
+}
+
+function buildTextLineDisplay(item: DisplayItem, limit: number): RgLineDisplay {
+  const text = item.text;
+  const excerpted = text.length > limit;
+  let start = 0;
+  let end = text.length;
+  if (excerpted) {
+    let center = 0;
+    if (item.submatches.length > 0) {
+      center = byteOffsetToUtf16(item.rawBytes, item.submatches[0].startByte) ?? 0;
+    }
+    const half = Math.floor(limit / 2);
+    start = Math.max(0, center - half);
+    end = Math.min(text.length, start + limit);
+    if (end - start < limit) start = Math.max(0, end - limit);
+  }
+
+  const escaped = escapeTerminalTextWithMap(text.substring(start, end));
+  const leading = start > 0 ? "\u2026" : "";
+  const trailing = end < text.length ? "\u2026" : "";
+  let suffix = "";
+  if (excerpted) {
+    let hidden = 0;
+    for (const submatch of item.submatches) {
+      const position = byteOffsetToUtf16(item.rawBytes, submatch.startByte);
+      if (position === null || position < start || position >= end) hidden++;
+    }
+    suffix = ` (${text.length} units${hidden > 0 ? `, ${hidden} hidden` : ""})`;
+  }
+
+  const highlights: DisplayRange[] = [];
+  if (item.kind === "match") {
+    for (const submatch of item.submatches) {
+      const matchStart = byteOffsetToUtf16(item.rawBytes, submatch.startByte);
+      const matchEnd = byteOffsetToUtf16(item.rawBytes, submatch.endByte);
+      if (matchStart === null || matchEnd === null || matchEnd < matchStart) continue;
+      const visibleStart = Math.max(start, matchStart);
+      const visibleEnd = Math.min(end, matchEnd);
+      if (visibleEnd <= visibleStart) continue;
+      highlights.push({
+        start: leading.length + escaped.boundaries[visibleStart - start],
+        end: leading.length + escaped.boundaries[visibleEnd - start],
+      });
+    }
+  }
+
+  return {
+    text: leading + escaped.text + trailing + suffix,
+    highlights: mergeDisplayRanges(highlights),
+    excerpted,
+  };
+}
+
+function buildByteLineDisplay(item: DisplayItem, limit: number): RgLineDisplay {
+  const raw = item.rawBytes;
+  const excerpted = raw.length > limit;
+  let start = 0;
+  let end = raw.length;
+  if (excerpted) {
+    const center = item.submatches[0]?.startByte ?? 0;
+    const half = Math.floor(limit / 2);
+    start = Math.max(0, Math.min(raw.length, center) - half);
+    end = Math.min(raw.length, start + limit);
+    if (end - start < limit) start = Math.max(0, end - limit);
+  }
+
+  let escaped = "";
+  const boundaries = new Array<number>(end - start + 1).fill(0);
+  for (let i = start; i < end; i++) {
+    boundaries[i - start] = escaped.length;
+    const byte = raw[i];
+    escaped += byte >= 0x20 && byte <= 0x7e
+      ? String.fromCharCode(byte)
+      : `\\x${byte.toString(16).padStart(2, "0")}`;
+    boundaries[i - start + 1] = escaped.length;
+  }
+
+  const leading = start > 0 ? "\u2026" : "";
+  const trailing = end < raw.length ? "\u2026" : "";
+  let hidden = 0;
+  const highlights: DisplayRange[] = [];
+  if (item.kind === "match") {
+    for (const submatch of item.submatches) {
+      if (
+        !Number.isInteger(submatch.startByte)
+        || !Number.isInteger(submatch.endByte)
+        || submatch.startByte < 0
+        || submatch.endByte < submatch.startByte
+        || submatch.endByte > raw.length
+      ) {
+        continue;
+      }
+      if (submatch.startByte < start || submatch.startByte >= end) hidden++;
+      const visibleStart = Math.max(start, submatch.startByte);
+      const visibleEnd = Math.min(end, submatch.endByte);
+      if (visibleEnd <= visibleStart) continue;
+      highlights.push({
+        start: leading.length + boundaries[visibleStart - start],
+        end: leading.length + boundaries[visibleEnd - start],
+      });
+    }
+  }
+  const suffix = excerpted
+    ? ` (${raw.length} bytes${hidden > 0 ? `, ${hidden} hidden` : ""})`
+    : "";
+  return {
+    text: leading + escaped + trailing + suffix,
+    highlights: mergeDisplayRanges(highlights),
+    excerpted,
+  };
+}
+
+function buildLineDisplay(item: DisplayItem, limit: number): RgLineDisplay {
+  return item.textEncoding === "bytes"
+    ? buildByteLineDisplay(item, limit)
+    : buildTextLineDisplay(item, limit);
 }
 
 // ---------- event extraction ----------
@@ -647,13 +817,21 @@ function buildResult(
     if (!items) continue;
     const meta = fileMeta.get(pathKey)!;
     const lines: RgLineDetail[] = [];
+    let continuation: RgFileDetail["continuation"];
     for (const item of items) {
-      if (item.kind === "continuation") continue;
+      if (item.kind === "continuation") {
+        continuation = {
+          omitted: item.extraCount ?? 0,
+          nextOffset: actualNext,
+        };
+        continue;
+      }
       const detail: RgLineDetail = {
         kind: item.kind as LineKind,
         line: item.line,
         text: item.text,
         textEncoding: item.textEncoding,
+        display: buildLineDisplay(item, opts.lineExcerptLimit),
       };
       if (item.rawTextBase64) detail.rawTextBase64 = item.rawTextBase64;
       if (item.kind === "match") {
@@ -669,6 +847,7 @@ function buildResult(
       lines,
     };
     if (meta.rawPathBase64) file.rawPathBase64 = meta.rawPathBase64;
+    if (continuation) file.continuation = continuation;
     files.push(file);
   }
 

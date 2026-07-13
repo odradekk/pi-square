@@ -109,6 +109,17 @@ export interface Submatch {
   endByte: number;
 }
 
+export interface DisplayRange {
+  start: number;
+  end: number;
+}
+
+export interface RgLineDisplay {
+  text: string;
+  highlights: DisplayRange[];
+  excerpted: boolean;
+}
+
 export interface RgLineDetail {
   kind: LineKind;
   line: number;
@@ -117,6 +128,12 @@ export interface RgLineDetail {
   rawTextBase64?: string;
   column?: number;
   submatches?: Submatch[];
+  display?: RgLineDisplay;
+}
+
+export interface RgContinuationDetail {
+  omitted: number;
+  nextOffset: number | null;
 }
 
 export interface RgFileDetail {
@@ -124,6 +141,13 @@ export interface RgFileDetail {
   pathEncoding: TextEncoding;
   rawPathBase64?: string;
   lines: RgLineDetail[];
+  continuation?: RgContinuationDetail;
+}
+
+export interface SearchRenderMetadata {
+  version: 1;
+  executionCwd: string;
+  platform: string;
 }
 
 export interface RgDetails {
@@ -133,6 +157,7 @@ export interface RgDetails {
   stderr?: string;
   stderrTruncated: boolean;
   files: RgFileDetail[];
+  presentation?: SearchRenderMetadata;
 }
 
 export interface FdPathDetail {
@@ -149,4 +174,5 @@ export interface FdDetails {
   stderr?: string;
   stderrTruncated: boolean;
   paths: FdPathDetail[];
+  presentation?: SearchRenderMetadata;
 }

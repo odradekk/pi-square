@@ -125,6 +125,35 @@ test("column counts Unicode code points, not UTF-8 bytes or UTF-16 units", async
   assert.equal(col, 3, `column must be 3 (code points), got ${col}`);
 });
 
+test("display metadata maps UTF-8 submatches to safe UTF-16 display ranges", async () => {
+  const { RgAccumulator } = await loadModule("src/search/rg-output.ts");
+  const text = "a�😀targetz";
+  const acc = new RgAccumulator({ offset: 0, limit: 5 });
+  acc.push(
+    rgMatch("a.ts", 1, text, [[8, 14, "target"]]) + "\n" +
+    rgSummary(1) + "\n" + rgEnd() + "\n",
+  );
+  const result = acc.finish({ naturalEnd: true, exitCode: 0, stderr: "" });
+  const display = result.details.files[0].lines[0].display;
+  assert.equal(display.text, text);
+  assert.deepEqual(display.highlights, [{ start: 4, end: 10 }]);
+  assert.equal(display.excerpted, false);
+});
+
+test("byte-encoded display uses \\xNN tokens with byte-accurate highlights", async () => {
+  const { RgAccumulator } = await loadModule("src/search/rg-output.ts");
+  const bytes = Buffer.from([0xff, 0x41, 0x00]);
+  const acc = new RgAccumulator({ offset: 0, limit: 5 });
+  acc.push(
+    rgMatch("a.ts", 1, "unused", [[0, 1, "invalid"]], { textBase64: bytes.toString("base64") }) + "\n" +
+    rgSummary(1) + "\n" + rgEnd() + "\n",
+  );
+  const result = acc.finish({ naturalEnd: true, exitCode: 0, stderr: "" });
+  const display = result.details.files[0].lines[0].display;
+  assert.equal(display.text, "\\xffA\\x00");
+  assert.deepEqual(display.highlights, [{ start: 0, end: 4 }]);
+});
+
 test("base64 path and text fields are preserved in details", async () => {
   const { RgAccumulator } = await loadModule("src/search/rg-output.ts");
   const acc = new RgAccumulator({ offset: 0, limit: 5 });
@@ -738,6 +767,7 @@ test("continuation marker includes omitted count and nextOffset", async () => {
   // Must NOT include the extra match text
   assert.ok(!text.includes("second"), "extra match text must not appear");
   assert.ok(!text.includes("third"), "extra match text must not appear");
+  assert.deepEqual(result.details.files[0].continuation, { omitted: 2, nextOffset: 1 });
 });
 
 test("continuation marker is absent when no extra matches in context window", async () => {

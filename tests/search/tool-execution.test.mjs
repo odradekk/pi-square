@@ -181,6 +181,11 @@ test("rg executes in extension cwd without retaining streamed stdout", async () 
   assert.equal(observedOptions.cwd, "/workspace");
   assert.equal(observedOptions.captureStdout, false);
   assert.equal(result.details.files[0].path, "src/a.ts");
+  assert.deepEqual(result.details.presentation, {
+    version: 1,
+    executionCwd: "/workspace",
+    platform: process.platform,
+  });
 });
 
 // ---------- fd execution tests ----------
@@ -208,6 +213,11 @@ test("fd executes in extension cwd without retaining streamed stdout", async () 
   assert.equal(observedOptions.cwd, "/workspace");
   assert.equal(observedOptions.captureStdout, false);
   assert.equal(result.details.paths[0].path, "src/a.ts");
+  assert.deepEqual(result.details.presentation, {
+    version: 1,
+    executionCwd: "/workspace",
+    platform: process.platform,
+  });
 });
 
 test("fd stdout cap rejects execution", async () => {

@@ -27,6 +27,10 @@ The package provides the matched `pi-square-theme-dark` and `pi-square-theme-lig
 
 In the TUI, `session_start` replaces the built-in header with a small π² arch mark rendered through `ctx.ui.setHeader()`, colored from the active theme's `accent`/`muted`/`dim` tokens. Set `"banner": { "enabled": false }` in `config/pi-square.json` to restore Pi's built-in header instead.
 
+## Local search tools
+
+The bundled `rg` and `fd` tools expose schema-validated search parameters while retaining wrapper-owned protocol and safety flags. Their Pi-native collapsible presentation keeps calls auditable without adding noise: the call shows every explicitly supplied parameter and omits unspecified defaults, while the collapsed result shows only result, paging, truncation, and error status. Expanding `rg` groups matches by file with aligned line/column gutters, exact match highlighting, subdued context, and continuation notices; expanding `fd` shows a compact path list with directory/basename hierarchy. Valid local text paths are clickable when the terminal supports hyperlinks, while byte paths and UNC/network paths remain inert. Display text escapes terminal controls and invalid bytes without changing model-facing content, CLI arguments, paging, or the existing `rg` excerpt and content budgets.
+
 ## Web and documentation tools
 
 The `search`, `fetch`, `libs`, and `docs` tools run through Jina and Context7. `search` and `fetch` render with Pi's native collapsible tool presentation: the collapsed row shows a one-line semantic summary (query/URL, returned/dedup/failed or fetched/failed/retried counts, and any error), and expanding the row reveals the full content: ranked results with clickable links for `search`, and per-page sections with clickable URLs, metadata, and the untruncated Markdown body for `fetch`. They keep the default Pi shell, use theme tokens for color, and never alter the model-facing `content` text. The display-only Markdown copy strips terminal control sequences and renders page-authored link targets inert; validated result and page-header links remain clickable.

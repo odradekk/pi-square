@@ -14,6 +14,7 @@ import {
   STDOUT_CAP,
 } from "../contracts";
 import { RgAccumulator } from "../rg-output";
+import { renderRgCall, renderRgResult } from "../render";
 import type { RunCommandOptions, RunCommandResult } from "../runner";
 
 // ---------- deps ----------
@@ -131,8 +132,19 @@ export function createRgToolDefinition(deps: RgToolDeps) {
           binary,
           stderr: stderrText || undefined,
           stderrTruncated: result.stderrTruncated,
+          presentation: {
+            version: 1 as const,
+            executionCwd: cwd,
+            platform: process.platform,
+          },
         },
       };
+    },
+    renderCall(args: any, theme: any, context: any) {
+      return renderRgCall(args, theme, context);
+    },
+    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
+      return renderRgResult(result, options, theme);
     },
   };
 }
