@@ -17,26 +17,41 @@ export function truncateToWidth(text, width, ellipsis = "…", pad = false) {
 
 export function wrapTextWithAnsi(text, width) {
   const target = Math.max(1, width);
-  const characters = Array.from(String(text));
-  if (characters.length === 0) return [""];
   const lines = [];
-  for (let index = 0; index < characters.length; index += target) {
-    lines.push(characters.slice(index, index + target).join(""));
+  for (const sourceLine of String(text).split("\n")) {
+    const characters = Array.from(sourceLine);
+    if (characters.length === 0) {
+      lines.push("");
+      continue;
+    }
+    for (let index = 0; index < characters.length; index += target) {
+      lines.push(characters.slice(index, index + target).join(""));
+    }
   }
   return lines;
 }
 
-// ── Minimal fakes for @earendil-works/pi-coding-agent's getSelectListTheme ──
-// and @earendil-works/pi-tui's SelectList/Input. These are NOT faithful
-// reimplementations of the real components — they cover only the input
-// surface `extensions/ask/prompt.ts` actually drives (arrow/enter/escape
-// navigation, single-line value editing), enough to unit-test
-// promptQuestions()'s own orchestration logic without depending on a real
-// terminal or the full pi-tui package (unavailable via plain Node
-// resolution in this workspace; see ui.test.mjs's jiti alias).
+export function matchesKey(data, key) {
+  const matches = {
+    space: data === " ",
+    escape: data === "\x1b",
+    enter: data === "\r" || data === "\n",
+    up: data === "\x1b[A" || data === "\x1bOA",
+    down: data === "\x1b[B" || data === "\x1bOB",
+    pageUp: data === "\x1b[5~",
+    pageDown: data === "\x1b[6~",
+    "shift+pageUp": data === "\x1b[5;2~",
+    "shift+pageDown": data === "\x1b[6;2~",
+  };
+  return Boolean(matches[key]);
+}
+
+export function keyHint(_binding, label) {
+  return String(label);
+}
 
 export function getSelectListTheme() {
-  const identity = (s) => String(s);
+  const identity = (value) => String(value);
   return {
     selectedPrefix: identity,
     selectedText: identity,
@@ -67,72 +82,89 @@ export class SelectList {
   invalidate() {}
 
   render(width) {
-    return this.items.map((item, i) => {
-      const prefix = i === this.selectedIndex ? "> " : "  ";
-      return truncateToWidth(prefix + (item.label ?? item.value), width, "", true);
-    });
+    const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.items.length - this.maxVisible));
+    const end = Math.min(start + this.maxVisible, this.items.length);
+    const output = [];
+    for (let index = start; index < end; index += 1) {
+      const item = this.items[index];
+      const prefix = index === this.selectedIndex ? "> " : "  ";
+      output.push(truncateToWidth(prefix + (item.label ?? item.value), width, "", true));
+    }
+    return output;
   }
 
   handleInput(data) {
-    if (data === "\x1b[A" || data === "\x1bOA") { // allow-ansi: keyboard-input
+    if (matchesKey(data, "up")) {
       this.selectedIndex = this.selectedIndex === 0 ? this.items.length - 1 : this.selectedIndex - 1;
       this.onSelectionChange?.(this.items[this.selectedIndex]);
       return;
     }
-    if (data === "\x1b[B" || data === "\x1bOB") { // allow-ansi: keyboard-input
+    if (matchesKey(data, "down")) {
       this.selectedIndex = this.selectedIndex === this.items.length - 1 ? 0 : this.selectedIndex + 1;
       this.onSelectionChange?.(this.items[this.selectedIndex]);
       return;
     }
-    if (data === "\r" || data === "\n") {
+    if (matchesKey(data, "enter")) {
       const item = this.items[this.selectedIndex];
       if (item) this.onSelect?.(item);
       return;
     }
-    if (data === "\x1b" || data === "\x03") {
-      this.onCancel?.();
-      return;
-    }
+    if (matchesKey(data, "escape") || data === "\x03") this.onCancel?.();
   }
 }
 
-export class Input {
-  constructor() {
+export class Editor {
+  constructor(_tui, _theme, _options = {}) {
     this.value = "";
     this.focused = false;
     this.onSubmit = undefined;
-    this.onEscape = undefined;
+    this.onChange = undefined;
   }
 
-  getValue() {
-    return this.value;
-  }
-
-  setValue(value) {
-    this.value = String(value ?? "");
-  }
-
+  getText() { return this.value; }
+  getExpandedText() { return this.value; }
+  setText(value) { this.value = String(value ?? ""); }
   invalidate() {}
-
-  render(width) {
-    return [truncateToWidth(`> ${this.value}`, width, "", true)];
-  }
+  render(width) { return wrapTextWithAnsi(`> ${this.value}`, width).map((line) => truncateToWidth(line, width, "", true)); }
 
   handleInput(data) {
-    if (data === "\r" || data === "\n") {
+    if (matchesKey(data, "enter")) {
       this.onSubmit?.(this.value);
       return;
     }
-    if (data === "\x1b") {
-      this.onEscape?.();
+    if (data === "\x1b[13;2u") {
+      this.value += "\n";
+      this.onChange?.(this.value);
       return;
     }
     if (data === "\x7f" || data === "\b") {
       this.value = this.value.slice(0, -1);
+      this.onChange?.(this.value);
+      return;
+    }
+    if (data.startsWith("\x1b[200~") && data.endsWith("\x1b[201~")) {
+      this.value += data.slice(6, -6);
+      this.onChange?.(this.value);
       return;
     }
     if (data.length >= 1 && data.charCodeAt(0) >= 32 && !data.startsWith("\x1b")) {
       this.value += data;
+      this.onChange?.(this.value);
     }
   }
+}
+
+export class Container {
+  constructor() { this.children = []; }
+  addChild(child) { this.children.push(child); }
+  clear() { this.children = []; }
+  invalidate() { for (const child of this.children) child.invalidate?.(); }
+  render(width) { return this.children.flatMap((child) => child.render(width)); }
+}
+
+export class Text {
+  constructor(text = "") { this.text = text; }
+  setText(text) { this.text = String(text); }
+  invalidate() {}
+  render(width) { return wrapTextWithAnsi(this.text, width).map((line) => truncateToWidth(line, width, "")); }
 }

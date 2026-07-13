@@ -42,6 +42,12 @@ try {
   ]);
   assert.ok(childToolNames.includes("scheme"));
   assert.ok(!childToolNames.includes("scheme_eval"));
+  const askTool = tools.get("ask");
+  assert.equal(typeof askTool?.renderCall, "function");
+  assert.equal(typeof askTool?.renderResult, "function");
+  assert.equal(askTool?.parameters?.properties?.questions?.maxItems, 10);
+  assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.allowComment?.default, false);
+  assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
   assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline"]);
