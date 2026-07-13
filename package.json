@@ -1,0 +1,47 @@
+{
+  "name": "pi-square",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified local extension package for Pi",
+  "type": "module",
+  "license": "MIT",
+  "author": "s1n",
+  "keywords": [
+    "pi-package"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.0",
+    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
+    "@types/node": "^24.0.0",
+    "jiti": "^2.7.0",
+    "typebox": "1.1.38",
+    "typescript": "^7.0.2"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  },
+  "scripts": {
+    "test": "node ./tests/run.mjs",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node ./tests/smoke.mjs",
+    "changeset": "changeset",
+    "changeset:status": "changeset status",
+    "changeset:version": "changeset version"
+  }
+}

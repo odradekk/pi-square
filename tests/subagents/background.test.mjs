@@ -1,0 +1,139 @@
+import assert from "node:assert/strict";
+
+import {
+  createPiStub,
+  getRunSubagentTaskCalls,
+  loadBackgroundModule,
+  run,
+  setRunSubagentTaskMock,
+  test,
+  waitFor,
+} from "./lib/test-helpers.mjs";
+
+const {
+  cancelBackgroundJobs,
+  createBackgroundState,
+  createQueuedJob,
+  startBackgroundJob,
+} = await loadBackgroundModule();
+
+const ID = "subagent_00000000-0000-4000-8000-000000000021";
+
+function usage() {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+}
+
+function details(phase = "running", overrides = {}) {
+  return {
+    version: 2,
+    id: ID,
+    mode: "bg",
+    artifactsDir: `/tmp/subagents/${ID}`,
+    sessionFile: `/tmp/subagents/${ID}/session.jsonl`,
+    sessionId: "native-session",
+    phase,
+    task: "smoke task",
+    cwd: "/tmp/subagents",
+    startedAt: 10,
+    finalText: phase === "done" ? "ACK" : "",
+    retries: 0,
+    toolErrors: [],
+    usage: usage(),
+    timeline: [{ kind: "status", text: "partial update" }],
+    ...overrides,
+  };
+}
+
+function observedState() {
+  const state = createBackgroundState();
+  let changes = 0;
+  state.onChange = () => { changes += 1; };
+  return { state, changes: () => changes, reset: () => { changes = 0; } };
+}
+
+function queuedJob(observed) {
+  return createQueuedJob({
+    state: observed.state,
+    id: ID,
+    task: "smoke task",
+    cwd: "/tmp/subagents",
+    definition: { name: "worker", model: "gpt-test", effort: "low", description: "smoke", source: "agent", filePath: "worker.yaml", tools: [], skills: [] },
+  });
+}
+
+test("queue insertion stores the unified public id and emits", () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const job = queuedJob(observed);
+  assert.equal(observed.changes(), 1);
+  assert.equal(job.id, ID);
+  assert.equal(job.details.id, ID);
+  assert.equal(job.details.mode, "bg");
+  assert.equal(observed.state.jobs.get(ID), job);
+});
+
+test("cancelBackgroundJobs accepts the public id", () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const job = queuedJob(observed);
+  observed.reset();
+  const result = cancelBackgroundJobs({ state: observed.state, id: ID, reason: "Stop now." });
+  assert.equal(result.canceled[0].id, ID);
+  assert.equal(job.status, "aborted");
+  assert.equal(job.details.phase, "aborted");
+  assert.equal(observed.changes(), 1);
+});
+
+test("pre-aborted jobs never invoke the child", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const job = queuedJob(observed);
+  observed.reset();
+  job.status = "aborted";
+  job.abortController.abort();
+  setRunSubagentTaskMock(async () => { throw new Error("must not execute"); });
+
+  startBackgroundJob({ pi: createPiStub().api, state: observed.state, job, ctx: {}, task: "smoke task" });
+  await waitFor(() => job.details.errorInfo?.code === "ABORTED", "pre-aborted cleanup");
+  assert.equal(getRunSubagentTaskCalls().length, 0);
+  assert.equal(observed.changes(), 1);
+});
+
+test("running, partial, and final transitions preserve one id", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const job = queuedJob(observed);
+  observed.reset();
+  const pi = createPiStub();
+  setRunSubagentTaskMock(async (input) => {
+    input.onUpdate({ content: [{ type: "text", text: "partial" }], details: details("running", { liveText: "partial" }) });
+    return { content: "ACK", details: details("done", { endedAt: 20, durationMs: 10 }) };
+  });
+
+  const contextMessages = [{ role: "user", text: "parent context" }];
+  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", contextMessages });
+  await waitFor(() => job.status === "done", "done background job");
+  assert.equal(observed.changes(), 3);
+  assert.equal(getRunSubagentTaskCalls()[0].id, ID);
+  assert.equal(getRunSubagentTaskCalls()[0].mode, "bg");
+  assert.deepEqual(getRunSubagentTaskCalls()[0].contextMessages, contextMessages);
+  assert.equal(job.details.id, ID);
+  assert.equal(pi.sent[0].message.details.id, ID);
+});
+
+test("thrown background failures become structured run failures", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const job = queuedJob(observed);
+  observed.reset();
+  const pi = createPiStub();
+  setRunSubagentTaskMock(async () => { throw new Error("synthetic failure"); });
+
+  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task" });
+  await waitFor(() => job.status === "error", "error background job");
+  assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
+  assert.match(job.details.error, /synthetic failure/);
+  assert.equal(pi.sent.length, 1);
+});
+
+await run();

@@ -1,0 +1,117 @@
+# Pi subagent example
+#
+# Discovery:
+# - User-wide definitions: ~/.pi/agent/subagents/*.yaml
+# - Project-local definitions: nearest .pi/subagents/*.yaml walking up from cwd
+#
+# This file is intentionally verbose. It is meant to be copied, renamed, and edited.
+#
+# Quick use from the parent agent:
+# - foreground: subagent mode:"fg" agent:"example_scout" task:"Find where background jobs are stored."
+# - background: subagent mode:"bg" agent:"example_scout" task:"Scan the repo for duplicate config loaders."
+#
+# Important limits of the current subagent runtime:
+# - child sessions only get built-in tools: read, bash, edit, write, grep, find, ls
+# - child sessions receive only extension tools named in extensionTools
+# - YAML names must be unique across both user and project subagent directories
+
+# Required.
+# Choose a unique name. This is what the parent passes as agent:"...".
+name: example_scout
+
+# Optional.
+# Leave blank to inherit the parent session's current model.
+# If set, the format must be provider/model.
+# Example: anthropic/claude-sonnet-4-5
+model:
+
+# Optional.
+# Leave blank to inherit the parent session's thinking level.
+# Supported values in the current code: off, minimal, low, medium, high, xhigh
+# This example sets a concrete default so the behavior is stable.
+effort: low
+
+# Required.
+# This text is shown to the parent model before delegation decisions.
+# Write when-to-use guidance, not marketing copy.
+description: >
+  Fast read-only repository reconnaissance for locating files, symbols, configs,
+  and concrete evidence before planning or editing. Use it for codebase lookup and
+  diagnosis while keeping code changes with an implementation agent.
+
+# Optional.
+# If present, this REPLACES the default subagent system prompt.
+# Keep it narrow: role, boundaries, evidence standard, output shape.
+system: |
+  You are a repository reconnaissance subagent.
+  Inspect the workspace, gather evidence, and answer briefly.
+  Operate read-only and keep the workspace unchanged.
+  Prefer exact file paths, symbols, and short factual notes over broad commentary.
+  State the specific evidence gap when the available material is insufficient.
+
+# Optional.
+# If present, this text is prepended before every delegated task.
+# Use it for durable operating rules that should apply on every invocation.
+prompt: |
+  Verify file paths and relevant code before concluding.
+  Quote concrete evidence when possible.
+  End with three short sections:
+  - findings
+  - relevant files
+  - remaining uncertainty
+
+# Optional allowlist.
+# If omitted, or written as tools: [], the child gets ALL built-in tools.
+# Built-in tools available in the current code:
+# - read
+# - bash
+# - edit
+# - write
+# - grep
+# - find
+# - ls
+#
+# This example is intentionally read-only, so it keeps only inspection tools.
+tools:
+  - read
+  - grep
+  - find
+  - ls
+
+# Optional allowlist for extension tools.
+# If omitted or empty, the child gets NO extension tools (default: none).
+# When populated, only the listed extension tools are loaded into the child session.
+# Extensions are loaded and filtered at session start — only extensions containing
+# at least one whitelisted tool are kept.
+#
+# Common extension tools:
+# - rg                (ripgrep search — pi-square search tools)
+# - fd                (file finder — pi-square search tools)
+# - search            (web search — pi-square web tools)
+# - fetch             (web page reader — pi-square web tools)
+# - libs              (library discovery — pi-square web tools)
+# - docs              (library docs — pi-square web tools)
+#
+# This example does not use extension tools.
+extensionTools: []
+
+# Optional allowlist.
+# If omitted, or written as skills: [], the child gets ALL discovered skills.
+# That is a subtle point in the current implementation: [] means "no restriction",
+# not "disable all skills".
+#
+# To disable ALL skills, use the sentinel value:
+# skills:
+#   - None
+#
+# This example leaves skills unrestricted so the file demonstrates the default.
+# To pin a specific skill, list it explicitly, for example:
+# skills:
+#   - frontend-design
+skills: []
+
+# Optional visibility switch for the parent agent.
+# Default is true when omitted.
+# A false value keeps this subagent out of the injected catalog and unavailable
+# to parent calls through the subagent tool.
+visible: false
