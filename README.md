@@ -27,6 +27,10 @@ The package provides the matched `pi-square-theme-dark` and `pi-square-theme-lig
 
 In the TUI, `session_start` replaces the built-in header with a small π² arch mark rendered through `ctx.ui.setHeader()`, colored from the active theme's `accent`/`muted`/`dim` tokens. Set `"banner": { "enabled": false }` in `config/pi-square.json` to restore Pi's built-in header instead.
 
+## Web and documentation tools
+
+The `search`, `fetch`, `libs`, and `docs` tools run through Jina and Context7. `search` and `fetch` render with Pi's native collapsible tool presentation: the collapsed row shows a one-line semantic summary (query/URL, returned/dedup/failed or fetched/failed/retried counts, and any error), and expanding the row reveals the full content: ranked results with clickable links for `search`, and per-page sections with clickable URLs, metadata, and the untruncated Markdown body for `fetch`. They keep the default Pi shell, use theme tokens for color, and never alter the model-facing `content` text. The display-only Markdown copy strips terminal control sequences and renders page-authored link targets inert; validated result and page-header links remain clickable.
+
 ## Configuration
 
 Non-secret settings live in `config/pi-square.json` at agent or project scope. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.

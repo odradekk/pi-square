@@ -49,6 +49,18 @@ export interface SearchResult {
   matches: SearchResultMatch[];
 }
 
+/**
+ * Small structured render copy of a merged search result.
+ * Holds only the lightweight fields the TUI needs to render the expanded
+ * result list; the full model-facing text stays in `content`.
+ */
+export interface SearchResultDetail {
+  title: string;
+  url: string;
+  description: string;
+  provenance: string;
+}
+
 export interface SearchFailedQuery {
   query: string;
   error: string;
@@ -61,6 +73,8 @@ export interface SearchDetails {
   phase: "searching" | "merging" | "done";
   totalBeforeDedup?: number;
   totalAfterDedup?: number;
+  /** Structured render copy of the merged results (success path only). */
+  results?: SearchResultDetail[];
   error?: string;
 }
 
@@ -80,12 +94,41 @@ export interface FetchFailedUrl {
   retried: boolean;
 }
 
+/**
+ * Ordered per-page display metadata for the fetch result.
+ *
+ * `start`/`end` are UTF-16 offsets into the final `content` string that bound
+ * the page's serialized section; `bodyStart` bounds just the Markdown body
+ * (page content plus optional links/images sections), excluding the metadata
+ * header. Renderers slice `result.content[0].text` with these offsets so the
+ * large body text is never duplicated inside `details`.
+ */
+export interface FetchDisplayPage {
+  url: string;
+  title: string;
+  description?: string;
+  finalUrl?: string;
+  lines: number;
+  tokens?: number;
+  usage?: string;
+  retried: boolean;
+  error?: string;
+  /** Inclusive start offset of this page's serialized section in `content`. */
+  start: number;
+  /** Exclusive end offset of this page's serialized section in `content`. */
+  end: number;
+  /** Start offset of the Markdown body within `content` (success pages only). */
+  bodyStart?: number;
+}
+
 export interface FetchDetails {
   urls: string[];
   succeeded: number;
   failed: number;
   results: FetchPageMeta[];
   failedUrls: FetchFailedUrl[];
+  /** Ordered per-page display metadata with content offsets (completed batch only). */
+  pages?: FetchDisplayPage[];
   phase: "fetching" | "done";
   error?: string;
 }

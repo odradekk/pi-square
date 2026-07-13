@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { Text } from "@earendil-works/pi-tui";
 
 /**
@@ -40,6 +41,123 @@ export function normalizeUrl(url: string): string {
   } catch {
     return url.replace(/\/+$/, "");
   }
+}
+
+/** Removes terminal escape sequences and non-printing controls from display-only text. */
+export function sanitizeTerminalText(value: string): string {
+  return stripVTControlCharacters(String(value))
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+    .replace(/\r\n?/g, "\n");
+}
+
+function markdownFenceCandidate(line: string): string {
+  let candidate = line;
+  while (/^ {0,3}> ?/.test(candidate)) candidate = candidate.replace(/^ {0,3}> ?/, "");
+  return candidate.replace(/^ {0,3}(?:(?:[-+*]|\d+[.)])\s+)? {0,3}/, "");
+}
+
+function isEscapedAt(text: string, index: number): boolean {
+  let slashes = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
+  return slashes % 2 === 1;
+}
+
+function neutralizeMarkdownLinks(line: string): string {
+  let output = "";
+  for (let i = 0; i < line.length;) {
+    if (line[i] === "`") {
+      let runLength = 1;
+      while (line[i + runLength] === "`") runLength++;
+      const marker = "`".repeat(runLength);
+      const closing = line.indexOf(marker, i + runLength);
+      if (closing >= 0) {
+        output += line.slice(i, closing + runLength);
+        i = closing + runLength;
+        continue;
+      }
+    }
+    if (line[i] === "[" && !isEscapedAt(line, i)) {
+      output += "\\[";
+      i++;
+      continue;
+    }
+    if (
+      line[i] === "<"
+      && !isEscapedAt(line, i)
+      && /^[A-Za-z][A-Za-z\d+.-]*:/.test(line.slice(i + 1))
+    ) {
+      output += "\\<";
+      i++;
+      continue;
+    }
+    output += line[i];
+    i++;
+  }
+  return output;
+}
+
+/**
+ * Sanitizes untrusted Markdown for terminal rendering without changing model-facing content.
+ * Source-authored links are rendered inert outside code; the tool adds its own validated
+ * HTTP(S) heading links separately.
+ */
+export function sanitizeMarkdownForTerminal(value: string): string {
+  const lines = sanitizeTerminalText(value).split("\n");
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+
+  return lines.map((line) => {
+    const candidate = markdownFenceCandidate(line);
+    if (fence) {
+      const closing = new RegExp(`^${fence.marker}{${fence.length},}\\s*$`);
+      if (closing.test(candidate)) fence = undefined;
+      return line;
+    }
+
+    const opening = /^(`{3,}|~{3,})(.*)$/.exec(candidate);
+    if (opening && (opening[1][0] === "~" || !opening[2].includes("`"))) {
+      fence = { marker: opening[1][0] as "`" | "~", length: opening[1].length };
+      return line;
+    }
+
+    let unquoted = line;
+    while (/^ {0,3}> ?/.test(unquoted)) unquoted = unquoted.replace(/^ {0,3}> ?/, "");
+    if (/^(?: {4}|\t)/.test(unquoted)) return line;
+    return neutralizeMarkdownLinks(line);
+  }).join("\n");
+}
+
+/** Escapes untrusted plain text before placing it in Markdown labels or prose. */
+export function escapeMarkdownText(value: string): string {
+  return sanitizeTerminalText(value).replace(/\s+/g, " ").trim().replace(/([\\`*_[\]<>#])/g, "\\$1");
+}
+
+/** Formats a safe HTTP(S) Markdown link, falling back to escaped plain text. */
+export function formatMarkdownLink(label: string, url: string): string {
+  const safeUrl = sanitizeTerminalText(url).trim();
+  const escapedLabel = escapeMarkdownText(label || safeUrl);
+  try {
+    const parsed = new URL(safeUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return `[${escapedLabel}](<${parsed.toString()}>)`;
+    }
+  } catch {
+    // Fall through to inert text for malformed or unsupported URLs.
+  }
+  return `${escapedLabel} (${escapeMarkdownText(safeUrl)})`;
+}
+
+/** Formats a safe HTTP(S) URL as a visible Markdown autolink. */
+export function formatMarkdownUrl(url: string): string {
+  const safeUrl = sanitizeTerminalText(url).trim();
+  try {
+    const parsed = new URL(safeUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return `<${parsed.toString()}>`;
+    }
+  } catch {
+    // Fall through to inert text for malformed or unsupported URLs.
+  }
+  return escapeMarkdownText(safeUrl);
 }
 
 /**
