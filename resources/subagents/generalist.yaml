@@ -52,6 +52,7 @@ tools:
 extensionTools:
   - rg
   - fd
+  - sg
   - search
   - fetch
   - libs

@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, bundled search, web, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
+`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, and structural code search, web, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
 
 ## Runtime contract
 
@@ -53,7 +53,9 @@ Calls and results use Pi-native collapsible renderers. Collapsed rows show actio
 
 ## Local search tools
 
-The bundled `rg` and `fd` tools expose schema-validated search parameters while retaining wrapper-owned protocol and safety flags. Their Pi-native collapsible presentation keeps calls auditable without adding noise: the call shows every explicitly supplied parameter and omits unspecified defaults, while the collapsed result shows only result, paging, truncation, and error status. Expanding `rg` groups matches by file with aligned line/column gutters, exact match highlighting, subdued context, and continuation notices; expanding `fd` shows a compact path list with directory/basename hierarchy. Valid local text paths are clickable when the terminal supports hyperlinks, while byte paths and UNC/network paths remain inert. Display text escapes terminal controls and invalid bytes without changing model-facing content, CLI arguments, paging, or the existing `rg` excerpt and content budgets.
+The bundled `rg` and `fd` tools expose schema-validated text-search and file-discovery parameters while retaining wrapper-owned protocol and safety flags. The `sg` tool adds read-only syntax-tree search through the exact `@ast-grep/cli` dependency. It accepts exactly one AST `pattern` or node `kind`, plus optional language, selector, strictness, path, glob, context, and paging filters. The wrapper always runs `ast-grep run` with streaming JSON and never exposes rewrite, interactive update, scan, project scaffolding, LSP, raw arguments, PATH fallback, or system `sg`. Use `sg` for syntax-aware code shapes across formatting differences, `rg` for text, configuration, documentation, and unsupported languages, and `fd` to locate files. `sg` is syntactic tree-sitter search; it does not provide type-aware references, definitions, call hierarchies, or other language-server semantics.
+
+All three tools use Pi-native collapsible presentation. Calls show every explicitly supplied parameter and omit unspecified defaults, while collapsed results show only result, paging, truncation, and error status. Expanded `rg` results group matches by file with aligned line/column gutters, exact match highlighting, subdued context, and continuation notices; expanded `fd` results show compact path hierarchy; expanded `sg` results group structural matches by file and include bounded metavariable captures. Valid local text paths are clickable when the terminal supports hyperlinks, while byte paths and UNC/network paths remain inert. Display text escapes terminal controls, model-facing output stays within explicit budgets, and zero-progress pages fail instead of looping.
 
 ## Subagent presentation
 
@@ -81,7 +83,7 @@ instructions: |
 output: |
   Return findings, relevant files, gaps, and confidence.
 tools: [read, ls]
-extensionTools: [rg, fd]
+extensionTools: [rg, fd, sg]
 skills: [none]
 visible: true
 ```
@@ -92,8 +94,8 @@ The five visible package roles are intentionally complementary:
 
 | Role | Responsibility | Default capabilities |
 | --- | --- | --- |
-| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `rg`, `fd`; no skills |
-| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | Local read-only retrieval; no skills |
+| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `rg`, `fd`, `sg`; no skills |
+| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | Local read-only retrieval including `rg`, `fd`, and `sg`; no skills |
 | `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `search`, `fetch`, `libs`, `docs`; no skills |
 | `librarian` | Research authorized GitHub repositories, files, trees, and commits | Only the four authenticated `github_*` tools; no skills |
 | `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, search, web, Context7, Scheme, and all discovered skills; no GitHub PAT tools |

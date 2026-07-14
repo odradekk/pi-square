@@ -22,6 +22,8 @@ import type {
   RgFileDetail,
   RgLineDetail,
   SearchRenderMetadata,
+  SgDetails,
+  SgMatchDetail,
 } from "./contracts";
 
 interface RenderOptions {
@@ -102,24 +104,28 @@ function formatCallValue(value: unknown): string {
 }
 
 function buildCallText(
-  name: "rg" | "fd",
+  name: "rg" | "fd" | "sg",
   args: any,
   theme: any,
 ): string {
   const hasArgs = args !== null && typeof args === "object";
-  const pattern = hasArgs && hasOwn(args, "pattern")
+  const query = hasArgs && hasOwn(args, "pattern")
     ? sanitizeSearchLine(args.pattern)
-    : name === "fd" && hasArgs
-      ? "(all files)"
-      : "(building...)";
-  let text = theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("accent", pattern);
+    : name === "sg" && hasArgs && hasOwn(args, "kind")
+      ? `kind:${sanitizeSearchLine(args.kind)}`
+      : name === "fd" && hasArgs
+        ? "(all files)"
+        : "(building...)";
+  let text = theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("accent", query);
   if (hasArgs && hasOwn(args, "path")) {
     text += theme.fg("muted", " in ") + theme.fg("accent", sanitizeSearchLine(args.path));
   }
 
   const order = name === "rg"
     ? ["case", "literal", "word", "hidden", "noIgnore", "offset", "limit", "includeGlobs", "excludeGlobs", "types", "beforeContext", "afterContext", "maxDepth"]
-    : ["case", "hidden", "noIgnore", "offset", "limit", "matchMode", "types", "extensions", "excludeGlobs", "minDepth", "maxDepth"];
+    : name === "sg"
+      ? ["language", "selector", "strictness", "hidden", "noIgnore", "offset", "limit", "includeGlobs", "excludeGlobs", "beforeContext", "afterContext"]
+      : ["case", "hidden", "noIgnore", "offset", "limit", "matchMode", "types", "extensions", "excludeGlobs", "minDepth", "maxDepth"];
   const metadata = order
     .filter((key) => hasOwn(args, key))
     .map((key) => `${key}=${formatCallValue(args[key])}`);
@@ -139,7 +145,13 @@ export function renderFdCall(args: any, theme: any, context: any): Component {
   return text;
 }
 
-function truncationLabels(details: RgDetails | FdDetails): string[] {
+export function renderSgCall(args: any, theme: any, context: any): Component {
+  const text = context?.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+  text.setText(buildCallText("sg", args, theme));
+  return text;
+}
+
+function truncationLabels(details: RgDetails | FdDetails | SgDetails): string[] {
   const labels: string[] = [];
   if (details.truncation.lineExcerpts > 0) labels.push(`${details.truncation.lineExcerpts} line excerpts`);
   if (details.truncation.contextLinesOmitted > 0) labels.push(`${details.truncation.contextLinesOmitted} context lines omitted`);
@@ -182,6 +194,25 @@ function fdSummary(details: FdDetails | undefined, theme: any, fallback?: string
   let text = theme.fg("success", "✓") + " " + theme.fg("text", `${returned} ${returned === 1 ? "path" : "paths"}`);
   const extras: string[] = [];
   extras.push(`${details.page.total ?? returned} total`);
+  if (details.page.offset > 0) extras.push(`offset ${details.page.offset}`);
+  if (details.page.hasMore && details.page.nextOffset !== null) extras.push(`next ${details.page.nextOffset}`);
+  extras.push(...truncationLabels(details));
+  if (extras.length > 0) text += "  " + theme.fg("muted", extras.join(" · "));
+  return text;
+}
+
+function sgSummary(details: SgDetails | undefined, theme: any, fallback?: string): string {
+  if (!details?.page) {
+    const text = compactFallback(fallback || "", "sg failed");
+    return theme.fg("error", `✗ ${text}`);
+  }
+  const returned = details.page.returned;
+  if (returned === 0) return theme.fg("dim", "No structural matches");
+  let text = theme.fg("success", "✓") + " " + theme.fg("text", `${returned} ${returned === 1 ? "structural match" : "structural matches"}`);
+  const files = new Set(details.matches.map((match) => match.path)).size;
+  text += theme.fg("muted", ` in ${files} ${files === 1 ? "file" : "files"}`);
+  const extras: string[] = [];
+  if (details.page.total !== undefined) extras.push(`${details.page.total} total`);
   if (details.page.offset > 0) extras.push(`offset ${details.page.offset}`);
   if (details.page.hasMore && details.page.nextOffset !== null) extras.push(`next ${details.page.nextOffset}`);
   extras.push(...truncationLabels(details));
@@ -238,6 +269,12 @@ function styleFileTitle(file: RgFileDetail, presentation: SearchRenderMetadata |
   const visible = sanitizeSearchLine(file.path);
   const styled = theme.fg("accent", theme.bold(visible));
   return linkPath(styled, file.pathEncoding === "text" ? file.path : undefined, file.pathEncoding, presentation);
+}
+
+function styleSgFileTitle(path: string, presentation: SearchRenderMetadata | undefined, theme: any): string {
+  const visible = sanitizeSearchLine(path);
+  const styled = theme.fg("accent", theme.bold(visible));
+  return linkPath(styled, path, "text", presentation);
 }
 
 function safeRanges(text: string, ranges: DisplayRange[]): DisplayRange[] {
@@ -302,7 +339,37 @@ function addRgFiles(container: Container, details: RgDetails, theme: any): void 
   });
 }
 
-function addFooter(container: Container, details: RgDetails | FdDetails, theme: any): void {
+function addSgMatches(container: Container, details: SgDetails, theme: any): void {
+  const byFile = new Map<string, SgMatchDetail[]>();
+  for (const match of details.matches) {
+    const fileMatches = byFile.get(match.path) ?? [];
+    fileMatches.push(match);
+    byFile.set(match.path, fileMatches);
+  }
+  const lineDigits = Math.max(1, ...details.matches.map((match) => String(match.range.start.line).length));
+  const columnDigits = Math.max(1, ...details.matches.map((match) => String(match.range.start.column).length));
+  let fileIndex = 0;
+  for (const [path, matches] of byFile) {
+    if (fileIndex > 0) container.addChild(new Spacer(1));
+    container.addChild(new Text(styleSgFileTitle(path, details.presentation, theme), 0, 0));
+    for (const match of matches) {
+      const line = String(match.range.start.line).padStart(lineDigits);
+      const column = String(match.range.start.column).padStart(columnDigits);
+      const prefix = theme.fg("accent", `${line}:${column}`) + theme.fg("dim", " │ ");
+      container.addChild(new HangingText(prefix, theme.fg("toolOutput", sanitizeSearchLine(match.displayText))));
+      if (match.metaVariables.length > 0) {
+        const capturePrefix = theme.fg("dim", `${" ".repeat(lineDigits + columnDigits + 1)} │ `);
+        const captures = match.metaVariables
+          .map((meta) => `$${sanitizeSearchLine(meta.name)}=${sanitizeSearchLine(meta.text)}`)
+          .join(" · ");
+        container.addChild(new HangingText(capturePrefix, theme.fg("muted", captures)));
+      }
+    }
+    fileIndex += 1;
+  }
+}
+
+function addFooter(container: Container, details: RgDetails | FdDetails | SgDetails, theme: any): void {
   const notices = truncationLabels(details);
   if (details.page.hasMore && details.page.nextOffset !== null) {
     notices.unshift(`More results available at offset ${details.page.nextOffset}`);
@@ -344,6 +411,27 @@ export function renderRgResult(result: any, options: RenderOptions, theme: any):
   container.addChild(new Text(summary, 0, 0));
   container.addChild(new Spacer(1));
   addRgFiles(container, details!, theme);
+  addFooter(container, details!, theme);
+  return container;
+}
+
+export function renderSgResult(result: any, options: RenderOptions, theme: any): Component {
+  const details = result?.details as SgDetails | undefined;
+  const content = firstText(result) ?? "";
+  if (options.isPartial) return new Text(theme.fg("muted", "Searching structure…"), 0, 0);
+  const summary = sgSummary(details, theme, content);
+  const hasResults = (details?.page?.returned ?? 0) > 0;
+  const expandable = hasResults || (!details?.page && content.length > 0);
+  if (!options.expanded || !expandable) {
+    const hint = expandable ? `  ${keyHint("app.tools.expand", "to expand")}` : "";
+    return new Text(summary + hint, 0, 0);
+  }
+  if (!validPresentation(details?.presentation)) return legacyExpanded(summary, content, theme);
+
+  const container = new Container();
+  container.addChild(new Text(summary, 0, 0));
+  container.addChild(new Spacer(1));
+  addSgMatches(container, details!, theme);
   addFooter(container, details!, theme);
   return container;
 }

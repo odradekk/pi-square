@@ -130,7 +130,7 @@ test("createFdToolDefinition returns object with name fd and execute", async () 
 
 // ---------- index.ts registration ----------
 
-test("index registers only rg and fd, no command, no hook", async () => {
+test("index registers rg, fd, and sg with no command or hook", async () => {
   const mod = await loadModule("src/search/index.ts");
   const tools = [];
   const commands = [];
@@ -141,7 +141,7 @@ test("index registers only rg and fd, no command, no hook", async () => {
     on: (event) => hooks.push(event),
   };
   mod.default(mockPi);
-  assert.deepEqual(tools.sort(), ["fd", "rg"]);
+  assert.deepEqual(tools.sort(), ["fd", "rg", "sg"]);
   assert.equal(commands.length, 0, "no commands should be registered");
   assert.equal(hooks.length, 0, "no session hooks should be registered");
 });

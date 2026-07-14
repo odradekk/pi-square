@@ -95,10 +95,34 @@ function fdDetails(overrides = {}) {
   };
 }
 
-test("rg and fd keep the default Pi shell and define native renderers", async () => {
+function sgDetails(overrides = {}) {
+  return {
+    page: { offset: 0, limit: 5, returned: 1, hasMore: true, nextOffset: 1, total: 3 },
+    truncation: { lineExcerpts: 0, contextLinesOmitted: 0, contentBudgetReached: false },
+    binary: "/bin/ast-grep",
+    stderrTruncated: false,
+    presentation: { version: 1, executionCwd: "/repo", platform: "linux" },
+    matches: [{
+      path: "src/a b.ts",
+      language: "TypeScript",
+      text: "call(value)",
+      displayText: "  call(value)",
+      range: { byteOffset: { start: 10, end: 21 }, start: { line: 4, column: 3 }, end: { line: 4, column: 14 } },
+      metaVariables: [{ name: "ARG", text: "value" }],
+    }],
+    ...overrides,
+  };
+}
+
+test("rg, fd, and sg keep the default Pi shell and define native renderers", async () => {
   const rgModule = await loadModule("src/search/tools/rg.ts");
   const fdModule = await loadModule("src/search/tools/fd.ts");
-  for (const def of [definition(rgModule, "createRgToolDefinition"), definition(fdModule, "createFdToolDefinition")]) {
+  const sgModule = await loadModule("src/search/tools/sg.ts");
+  for (const def of [
+    definition(rgModule, "createRgToolDefinition"),
+    definition(fdModule, "createFdToolDefinition"),
+    definition(sgModule, "createSgToolDefinition"),
+  ]) {
     assert.equal(typeof def.renderCall, "function");
     assert.equal(typeof def.renderResult, "function");
     assert.equal(def.renderShell, undefined);
@@ -163,6 +187,40 @@ test("fd renderCall shows every explicit filter and omits unspecified defaults",
   const minimal = plain(def.renderCall({ pattern: "name" }, plainTheme, NO_CONTEXT), 80);
   assert.equal(minimal.includes("limit="), false);
   assert.equal(minimal.includes("case="), false);
+});
+
+test("sg renderCall shows pattern or kind and every explicit filter", async () => {
+  const sgModule = await loadModule("src/search/tools/sg.ts");
+  const def = definition(sgModule, "createSgToolDefinition");
+  const output = plain(def.renderCall({
+    pattern: "call($ARG)", path: "src", language: "ts", selector: "call_expression", strictness: "ast",
+    hidden: false, noIgnore: true, offset: 0, limit: 10, includeGlobs: ["**/*.ts"], excludeGlobs: ["vendor/**"],
+    beforeContext: 1, afterContext: 2,
+  }, plainTheme, NO_CONTEXT), 240);
+  for (const expected of [
+    "sg call($ARG) in src", "language=ts", "selector=call_expression", "strictness=ast", "hidden=false",
+    "noIgnore=true", "offset=0", "limit=10", "includeGlobs=[**/*.ts]", "excludeGlobs=[vendor/**]",
+    "beforeContext=1", "afterContext=2",
+  ]) assert.ok(output.includes(expected), `missing ${expected}`);
+  assert.ok(plain(def.renderCall({ kind: "function_declaration" }, plainTheme, NO_CONTEXT)).includes("sg kind:function_declaration"));
+});
+
+test("collapsed sg result hides source preview and expanded result shows captures", async () => {
+  await setToolCapabilities(true);
+  const sgModule = await loadModule("src/search/tools/sg.ts");
+  const def = definition(sgModule, "createSgToolDefinition");
+  const collapsed = plain(def.renderResult({ content: [{ type: "text", text: "secret preview" }], details: sgDetails() }, { expanded: false, isPartial: false }, plainTheme));
+  assert.ok(collapsed.includes("1 structural match in 1 file"));
+  assert.ok(collapsed.includes("3 total"));
+  assert.equal(collapsed.includes("secret preview"), false);
+
+  const raw = rendered(def.renderResult({ content: [{ type: "text", text: "stable" }], details: sgDetails() }, { expanded: true, isPartial: false }, ansiTheme), 80).join("\n");
+  const output = stripVTControlCharacters(raw);
+  assert.ok(output.includes("src/a b.ts"));
+  assert.ok(output.includes("4:3 │   call(value)"));
+  assert.ok(output.includes("$ARG=value"));
+  assert.ok(output.includes("More results available at offset 1"));
+  assert.ok(raw.includes("\x1b]8;;file:///repo/src/a%20b.ts"));
 });
 
 test("collapsed rg and fd results show summaries without previews", async () => {
@@ -305,12 +363,14 @@ test("rendering escapes terminal controls before applying trusted styles", async
   assert.equal(renderModule.sanitizeSearchMultiline("a\x1b]0;owned\x07b\x00\n c"), "ab\\x00\n c");
 });
 
-test("rg and fd render within 40, 80, and 120 columns", async () => {
+test("rg, fd, and sg render within 40, 80, and 120 columns", async () => {
   await setToolCapabilities(false);
   const rgModule = await loadModule("src/search/tools/rg.ts");
   const fdModule = await loadModule("src/search/tools/fd.ts");
+  const sgModule = await loadModule("src/search/tools/sg.ts");
   const rg = definition(rgModule, "createRgToolDefinition");
   const fd = definition(fdModule, "createFdToolDefinition");
+  const sg = definition(sgModule, "createSgToolDefinition");
   const longLine = "long readable source segment ".repeat(15);
   const details = rgDetails({
     files: [{
@@ -322,6 +382,7 @@ test("rg and fd render within 40, 80, and 120 columns", async () => {
   for (const width of [40, 80, 120]) {
     assertWidth(rg.renderResult({ content: [{ type: "text", text: "stable" }], details }, { expanded: true, isPartial: false }, ansiTheme), width);
     assertWidth(fd.renderResult({ content: [{ type: "text", text: "stable" }], details: fdDetails() }, { expanded: true, isPartial: false }, ansiTheme), width);
+    assertWidth(sg.renderResult({ content: [{ type: "text", text: "stable" }], details: sgDetails() }, { expanded: true, isPartial: false }, ansiTheme), width);
   }
 });
 

@@ -1,11 +1,11 @@
-// Deterministic CLI argument builders for rg and fd.
+// Deterministic CLI argument builders for rg, fd, and sg.
 //
-// Both builders emit fixed wrapper-owned flags first, then validated filters,
+// All builders emit fixed wrapper-owned flags first, then validated filters,
 // then a `--` separator, then positional pattern/path values. No user value
 // can become an option because everything after `--` is positional and all
 // filter values are consumed as arguments to their owning flag.
 
-import type { CaseMode, FdToolParams, RgToolParams } from "./contracts";
+import type { CaseMode, FdToolParams, RgToolParams, SgToolParams } from "./contracts";
 
 function caseFlag(caseMode: CaseMode | undefined, smart: string): string {
   if (caseMode === "sensitive") return "-s";
@@ -106,5 +106,47 @@ export function buildFdArgs(params: FdToolParams): string[] {
   }
 
   args.push("--", pattern, searchPath);
+  return args;
+}
+
+export function buildSgArgs(params: SgToolParams): string[] {
+  const hasPattern = typeof params.pattern === "string" && params.pattern.length > 0;
+  const hasKind = typeof params.kind === "string" && params.kind.length > 0;
+  if (hasPattern === hasKind) {
+    throw new Error("Exactly one of pattern or kind must be provided");
+  }
+  if (!hasPattern && (params.selector !== undefined || params.strictness !== undefined)) {
+    throw new Error("selector and strictness require pattern");
+  }
+
+  const args: string[] = ["run", "--json=stream", "--color=never"];
+  if (hasPattern) args.push("--pattern", params.pattern!);
+  else args.push("--kind", params.kind!);
+  if (params.language !== undefined) args.push("--lang", params.language);
+  if (params.selector !== undefined) args.push("--selector", params.selector);
+  if (params.strictness !== undefined) args.push("--strictness", params.strictness);
+  if (params.hidden) args.push("--no-ignore", "hidden");
+  if (params.noIgnore) {
+    for (const ignoreType of ["dot", "exclude", "global", "vcs"]) {
+      args.push("--no-ignore", ignoreType);
+    }
+  }
+  if (params.includeGlobs) {
+    for (const glob of params.includeGlobs) {
+      if (glob.startsWith("!")) {
+        throw new Error(`Include glob must not begin with '!': ${glob}`);
+      }
+      args.push("--globs", glob);
+    }
+  }
+  if (params.excludeGlobs) {
+    for (const glob of params.excludeGlobs) args.push("--globs", `!${glob}`);
+  }
+  const before = params.beforeContext ?? 0;
+  const after = params.afterContext ?? 0;
+  if (before > 0) args.push("--before", String(before));
+  if (after > 0) args.push("--after", String(after));
+
+  args.push("--", params.path ?? ".");
   return args;
 }

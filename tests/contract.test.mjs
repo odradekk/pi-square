@@ -41,10 +41,12 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "rg", "scheme", "search",
+    "github_search", "github_tree", "libs", "rg", "scheme", "search", "sg",
     "subagent", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
+  assert.ok(childToolNames.includes("sg"));
+  assert.deepEqual(createChildTools(["sg"]).definitions.map((definition) => definition.name), ["sg"]);
   assert.ok(!childToolNames.includes("scheme_eval"));
   assert.ok(!childToolNames.includes("pwsh"));
   assert.deepEqual(createChildTools(["pwsh"]).definitions, []);

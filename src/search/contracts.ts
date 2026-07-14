@@ -42,6 +42,8 @@ export type FdMatchMode = "regex" | "glob" | "fixed";
 
 export type FdFileType = "file" | "directory" | "symlink" | "executable";
 
+export type SgStrictness = "cst" | "smart" | "ast" | "relaxed" | "signature" | "template";
+
 export type LineKind = "match" | "context";
 
 export type TextEncoding = "text" | "bytes";
@@ -85,6 +87,23 @@ export interface FdToolParams {
   excludeGlobs?: string[];
   minDepth?: number;
   maxDepth?: number;
+}
+
+export interface SgToolParams {
+  pattern?: string;
+  kind?: string;
+  language?: string;
+  selector?: string;
+  strictness?: SgStrictness;
+  path?: string;
+  hidden?: boolean;
+  noIgnore?: boolean;
+  offset?: number;
+  limit?: number;
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+  beforeContext?: number;
+  afterContext?: number;
 }
 
 // ---------- Detail interfaces ----------
@@ -174,5 +193,44 @@ export interface FdDetails {
   stderr?: string;
   stderrTruncated: boolean;
   paths: FdPathDetail[];
+  presentation?: SearchRenderMetadata;
+}
+
+export interface SgPosition {
+  line: number;
+  column: number;
+}
+
+export interface SgRange {
+  byteOffset: {
+    start: number;
+    end: number;
+  };
+  start: SgPosition;
+  end: SgPosition;
+}
+
+export interface SgMetaVariableDetail {
+  name: string;
+  text: string;
+  range?: SgRange;
+}
+
+export interface SgMatchDetail {
+  path: string;
+  language: string;
+  text: string;
+  displayText: string;
+  range: SgRange;
+  metaVariables: SgMetaVariableDetail[];
+}
+
+export interface SgDetails {
+  page: PageDetails;
+  truncation: TruncationDetails;
+  binary: string;
+  stderr?: string;
+  stderrTruncated: boolean;
+  matches: SgMatchDetail[];
   presentation?: SearchRenderMetadata;
 }

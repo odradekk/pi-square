@@ -43,5 +43,8 @@
     "changeset": "changeset",
     "changeset:status": "changeset status",
     "changeset:version": "changeset version"
+  },
+  "dependencies": {
+    "@ast-grep/cli": "0.44.1"
   }
 }

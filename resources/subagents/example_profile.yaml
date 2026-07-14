@@ -50,6 +50,7 @@ tools:
 extensionTools:
   - rg
   - fd
+  - sg
 
 # Omitted or [] loads all discovered skills. Use [none] to disable every skill.
 skills:

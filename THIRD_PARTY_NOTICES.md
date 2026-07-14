@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors prebuilt third-party binaries for cross-platform file search.
+This extension vendors prebuilt search binaries and installs an exact native structural-search dependency.
 
 ## Included Software
 
@@ -18,13 +18,27 @@ This extension vendors prebuilt third-party binaries for cross-platform file sea
   - `10.3.0` for `darwin-x64` (official fd release for this target)
 - Distributed binaries are unmodified upstream release artifacts.
 
+### ast-grep (`sg`)
+- Upstream: https://github.com/ast-grep/ast-grep
+- License: MIT
+- Version: `0.44.1`, installed as the exact `@ast-grep/cli` npm dependency.
+- Supported pi-square targets use the unmodified official optional packages `@ast-grep/cli-linux-x64-gnu`, `@ast-grep/cli-linux-arm64-gnu`, `@ast-grep/cli-darwin-x64`, `@ast-grep/cli-darwin-arm64`, `@ast-grep/cli-win32-x64-msvc`, and `@ast-grep/cli-win32-arm64-msvc` at the same version.
+- The upstream package also declares a Windows ia32 optional package, but pi-square does not add that architecture to its supported target set.
+
+### detect-libc
+- Upstream: https://github.com/lovell/detect-libc
+- License: Apache-2.0
+- Version: `2.1.2`, installed transitively by `@ast-grep/cli` for native-package detection.
+
 ## libc Boundary
 
 - rg `linux-x64` is statically linked and has no runtime library dependency.
-- fd `linux-x64` and both `linux-arm64` binaries (rg and fd) require glibc at runtime.
-- macOS and Windows binaries have no additional C library boundary.
+- fd `linux-x64` and both `linux-arm64` vendored binaries (rg and fd) require glibc at runtime.
+- The supported ast-grep Linux x64 and arm64 npm packages require glibc; the CLI package does not provide musl targets.
+- macOS and Windows search binaries have no additional C library boundary.
 
 ## Notes
 
-- These binaries are bundled in `bin/` and Git-tracked. There is no download, integrity manifest, hash verification, or system-binary fallback.
-- The wrapper tools exposed by the extension are built on top of `rg` and `fd`.
+- The rg and fd binaries are bundled in `bin/` and Git-tracked. There is no download, integrity manifest, hash verification, or system-binary fallback for them.
+- ast-grep is installed by npm with lockfile integrity metadata and platform-specific optional dependencies. Its wrapper resolves the native package directly at runtime and never falls back to PATH or a system `sg` command.
+- The exposed `sg` wrapper is read-only even though upstream ast-grep also supports rewriting and project scanning.

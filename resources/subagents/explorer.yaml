@@ -48,6 +48,7 @@ tools:
 extensionTools:
   - rg
   - fd
+  - sg
 
 skills:
   - none
