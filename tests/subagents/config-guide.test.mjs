@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import { stripVTControlCharacters } from "node:util";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,6 +11,9 @@ import { run, test } from "./lib/test-helpers.mjs";
 
 initTheme();
 const packageRoot = resolve(import.meta.dirname, "..", "..");
+const cleanCwd = join(tmpdir(), `pi-square-config-guide-${process.pid}`);
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = join(cleanCwd, "agent");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { discoverSubagents } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
 const {
@@ -41,8 +45,8 @@ function plain(component, width = 80) {
 }
 
 test("guide builder is bounded, source-aware, and excludes prompt bodies and the user request", () => {
-  const registry = discoverSubagents(packageRoot);
-  const guide = buildSubagentConfigGuide(registry, packageRoot);
+  const registry = discoverSubagents(cleanCwd);
+  const guide = buildSubagentConfigGuide(registry, cleanCwd);
   assert.equal(SUBAGENT_CONFIG_GUIDE_TYPE, "pi-square.subagent-config-guide");
   assert.equal(guide.details.version, 1);
   assert.equal(guide.details.definitionCount, registry.definitions.length);
@@ -58,7 +62,7 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
 });
 
 test("collapsed guide is one native-style summary and expanded guide reveals bounded metadata", () => {
-  const guide = buildSubagentConfigGuide(discoverSubagents(packageRoot), packageRoot);
+  const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
   assert.match(collapsed, /\[Subagent Config Guide\]/);
   assert.match(collapsed, /6 definitions/);
@@ -90,7 +94,7 @@ test("guide renderer uses custom-message shell tokens and sanitizes damaged cont
 });
 
 test("real themes keep guide cards bounded at 40, 80, and 120 columns", () => {
-  const guide = buildSubagentConfigGuide(discoverSubagents(packageRoot), packageRoot);
+  const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
   for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
     const theme = loadThemeFromPath(join(packageRoot, "themes", file));
     for (const width of [40, 80, 120]) {
@@ -102,4 +106,9 @@ test("real themes keep guide cards bounded at 40, 80, and 120 columns", () => {
   }
 });
 
-await run();
+try {
+  await run();
+} finally {
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+}

@@ -29,34 +29,40 @@ function write(path, content) {
 
 async function withRoot(fn) {
   const dir = root();
-  const previous = process.env.PI_AGENT_DIR;
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   try {
     await fn(dir);
   } finally {
-    if (previous === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = previous;
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-test("package V2 definitions expose the five inherited-model roles without diagnostics", () => {
-  const registry = discoverSubagents(packageRoot);
-  assert.deepEqual(registry.errors, []);
-  assert.deepEqual(
-    filterVisibleSubagents(registry).definitions.map((item) => item.name),
-    ["crawler", "explorer", "generalist", "librarian", "oracle"],
-  );
-  assert.equal(registry.definitions.find((item) => item.name === "example_profile").visible, false);
-  for (const definition of filterVisibleSubagents(registry).definitions) {
-    assert.equal(definition.model, undefined, `${definition.name} model must inherit`);
-    assert.equal(definition.effort, undefined, `${definition.name} effort must inherit`);
-    assert.equal(definition.inheritParentSystem, true, `${definition.name} must inherit the parent system`);
-    assert.ok(definition.policy?.length > 40, `${definition.name} needs a clear policy`);
-    assert.ok(definition.instructions?.includes("## Objective"), `${definition.name} needs structured instructions`);
-    assert.ok(definition.output?.includes("### Confidence") || definition.name === "generalist", `${definition.name} needs a bounded output contract`);
-    assert.ok((definition.instructions?.length ?? 0) < 2_000, `${definition.name} instructions should stay concise`);
-  }
+test("package V2 definitions expose the five inherited-model roles without diagnostics", async () => {
+  await withRoot((dir) => {
+    const registry = discoverSubagents(join(dir, "repo"));
+    assert.deepEqual(registry.errors, []);
+    assert.deepEqual(
+      filterVisibleSubagents(registry).definitions.map((item) => item.name),
+      ["crawler", "explorer", "generalist", "librarian", "oracle"],
+    );
+    assert.equal(registry.definitions.find((item) => item.name === "example_profile").visible, false);
+    for (const definition of filterVisibleSubagents(registry).definitions) {
+      assert.equal(definition.model, undefined, `${definition.name} model must inherit`);
+      assert.equal(definition.effort, undefined, `${definition.name} effort must inherit`);
+      assert.equal(definition.inheritParentSystem, true, `${definition.name} must inherit the parent system`);
+      assert.ok(definition.policy?.length > 40, `${definition.name} needs a clear policy`);
+      assert.ok(definition.instructions?.includes("## Objective"), `${definition.name} needs structured instructions`);
+      assert.ok(definition.output?.includes("### Confidence") || definition.name === "generalist", `${definition.name} needs a bounded output contract`);
+      assert.ok((definition.instructions?.length ?? 0) < 2_000, `${definition.name} instructions should stay concise`);
+    }
+  });
 });
 
 test("project and user overlays merge per field with project precedence", () => {
