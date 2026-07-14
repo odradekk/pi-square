@@ -587,7 +587,7 @@ async function promptSession(input: {
         if (message?.role !== "assistant") break;
         accumulateUsage(details.usage, message.usage);
         const model = formatModel(message.model);
-        if (model) details.model = model;
+        if (model && (model.includes("/") || !details.model)) details.model = model;
         if (message.stopReason === "error" || message.stopReason === "aborted") {
           terminalAssistantError = String(message.errorMessage ?? message.stopReason);
           emitUpdate();
@@ -771,6 +771,7 @@ export async function runSubagentTask(input: {
   const modelSpec = input.modelOverride ?? input.definition?.model;
   const effortSpec = input.effortOverride ?? input.definition?.effort;
   const resolvedModel = resolveModelFromSpec(modelSpec, input.ctx);
+  const effectiveModelSpec = modelSpec?.trim() || formatModel(resolvedModel.model ?? input.ctx.model);
   const resolvedEffort = input.effortOverride
     ? normalizeEffort(input.effortOverride)
     : input.definition?.effort
@@ -827,13 +828,13 @@ export async function runSubagentTask(input: {
         resolvedTools.persistedTools,
         resolvedTools.persistedExtensionTools,
         selectedSkillNames,
-        modelSpec,
+        effectiveModelSpec,
         resolvedEffort ?? effortSpec,
       ),
       task: input.task,
       initialTask: input.task,
       cwd,
-      model: modelSpec?.trim() || formatModel(resolvedModel.model ?? input.ctx.model),
+      model: effectiveModelSpec,
       startedAt: nowMs(),
       finalText: "",
       retries: 0,

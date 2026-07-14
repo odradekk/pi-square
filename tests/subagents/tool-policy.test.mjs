@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import jiti from "jiti";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const subagentsDir = resolve(__dirname, "..", "..", "resources", "subagents");
+const packageRoot = resolve(__dirname, "..", "..");
+const subagentsDir = join(packageRoot, "resources", "subagents");
+const load = jiti(import.meta.url, { moduleCache: false });
+const { resolveSubagentTools } = await load(join(packageRoot, "src", "subagents", "tool-policy.ts"));
 
-// Minimal YAML parser sufficient for extracting lists from our flat YAML.
 function parseList(yamlText, key) {
   const lines = yamlText.split("\n");
   const values = [];
@@ -29,47 +32,90 @@ function parseList(yamlText, key) {
   return values;
 }
 
-const parseExtensionTools = (yamlText) => parseList(yamlText, "extensionTools");
-
 function loadYaml(name) {
-  const path = join(subagentsDir, name);
-  return readFileSync(path, "utf8");
+  return readFileSync(join(subagentsDir, name), "utf8");
 }
 
 const tests = [];
+function test(name, fn) { tests.push({ name, fn }); }
 
-function test(name, fn) {
-  tests.push({ name, fn });
-}
+const matrix = {
+  "explorer.yaml": {
+    tools: ["read", "ls"],
+    extensionTools: ["rg", "fd"],
+    skills: ["none"],
+  },
+  "oracle.yaml": {
+    tools: ["read", "ls"],
+    extensionTools: ["rg", "fd"],
+    skills: ["none"],
+  },
+  "crawler.yaml": {
+    tools: ["read"],
+    extensionTools: ["search", "fetch", "libs", "docs"],
+    skills: ["none"],
+  },
+  "librarian.yaml": {
+    tools: ["none"],
+    extensionTools: ["github_search", "github_read", "github_tree", "github_commit"],
+    skills: ["none"],
+  },
+  "generalist.yaml": {
+    tools: ["read", "write", "edit", "shell", "ls"],
+    extensionTools: ["rg", "fd", "search", "fetch", "libs", "docs", "scheme"],
+    skills: [],
+  },
+};
 
-test("librarian has search, fetch, libs, docs but not docs_search", () => {
-  const yaml = loadYaml("librarian.yaml");
-  const tools = parseExtensionTools(yaml);
-  for (const required of ["search", "fetch", "libs", "docs"]) {
-    assert.ok(tools.includes(required), `librarian should include ${required} in extensionTools`);
+test("bundled role tool and skill capabilities match the least-privilege matrix", () => {
+  for (const [file, expected] of Object.entries(matrix)) {
+    const yaml = loadYaml(file);
+    assert.deepEqual(parseList(yaml, "tools"), expected.tools, `${file} built-in tools`);
+    assert.deepEqual(parseList(yaml, "extensionTools"), expected.extensionTools, `${file} extension tools`);
+    assert.deepEqual(parseList(yaml, "skills"), expected.skills, `${file} skills`);
   }
-  assert.ok(!tools.includes("docs_search"), "librarian must not include docs_search");
 });
 
-test("worker uses the portable shell capability and keeps shell names out of extensionTools", () => {
-  const yaml = loadYaml("worker.yaml");
-  const tools = parseList(yaml, "tools");
-  const extensionTools = parseExtensionTools(yaml);
-  assert.ok(tools.includes("shell"), "worker should request the platform shell capability");
-  assert.ok(!tools.includes("bash"), "worker should not hard-code bash");
-  for (const required of ["search", "fetch", "libs", "docs"]) {
-    assert.ok(extensionTools.includes(required), `worker should include ${required} in extensionTools`);
-  }
-  for (const forbidden of ["docs_search", "pwsh", "bash", "shell"]) {
-    assert.ok(!extensionTools.includes(forbidden), `worker extensionTools must not include ${forbidden}`);
-  }
+test("none disables every built-in while preserving explicit extension tools", () => {
+  const resolved = resolveSubagentTools({
+    tools: ["none"],
+    extensionTools: ["github_search", "github_read"],
+  }, "linux");
+  assert.deepEqual(resolved.errors, []);
+  assert.deepEqual(resolved.builtInTools, []);
+  assert.deepEqual(resolved.extensionTools, ["github_search", "github_read"]);
+  assert.deepEqual(resolved.persistedTools, ["none"]);
+  assert.deepEqual(resolved.persistedExtensionTools, ["github_search", "github_read"]);
 });
 
-test("no subagent YAML contains docs_search", () => {
-  const files = readdirSync(subagentsDir).filter((f) => f.endsWith(".yaml"));
+test("none is case-insensitive, mutually exclusive, and fails closed", () => {
+  const resolved = resolveSubagentTools({ tools: ["NONE", "read"] }, "linux");
+  assert.deepEqual(resolved.builtInTools, []);
+  assert.deepEqual(resolved.extensionTools, []);
+  assert.deepEqual(resolved.persistedTools, ["none"]);
+  assert.ok(resolved.errors.some((error) => error.includes("must be the only entry")));
+});
+
+test("omitted tools retain portable runtime defaults", () => {
+  const linux = resolveSubagentTools({}, "linux");
+  const windows = resolveSubagentTools({}, "win32");
+  assert.ok(linux.builtInTools.includes("bash"));
+  assert.ok(!linux.extensionTools.includes("pwsh"));
+  assert.ok(!windows.builtInTools.includes("bash"));
+  assert.ok(windows.extensionTools.includes("pwsh"));
+  assert.ok(linux.persistedTools.includes("shell"));
+  assert.ok(windows.persistedTools.includes("shell"));
+});
+
+test("no bundled subagent requests legacy, platform-specific, or misplaced tools", () => {
+  const files = readdirSync(subagentsDir).filter((file) => file.endsWith(".yaml"));
   for (const file of files) {
     const yaml = loadYaml(file);
+    const extensionTools = parseList(yaml, "extensionTools");
     assert.ok(!yaml.includes("docs_search"), `${file} must not contain docs_search`);
+    for (const forbidden of ["bash", "pwsh", "shell", "none"]) {
+      assert.ok(!extensionTools.includes(forbidden), `${file} must not place ${forbidden} in extensionTools`);
+    }
   }
 });
 

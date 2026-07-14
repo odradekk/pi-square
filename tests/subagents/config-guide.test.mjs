@@ -51,7 +51,9 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
   assert.match(guide.content, /Subagent Config Guide/);
   assert.match(guide.content, /resources\/subagents\/explorer\.yaml/);
   assert.match(guide.content, /next user message is the only authorized configuration request/i);
-  assert.doesNotMatch(guide.content, /Operate as a read-only workspace explorer|hide worker in this project/);
+  assert.match(guide.content, /tools: \[none\] disables every built-in tool/);
+  assert.match(guide.content, /resume keeps the original frozen values/);
+  assert.doesNotMatch(guide.content, /Locate and explain the local code evidence|hide generalist in this project/);
   assert.ok(guide.content.length < 32_000);
 });
 
@@ -59,7 +61,7 @@ test("collapsed guide is one native-style summary and expanded guide reveals bou
   const guide = buildSubagentConfigGuide(discoverSubagents(packageRoot), packageRoot);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
   assert.match(collapsed, /\[Subagent Config Guide\]/);
-  assert.match(collapsed, /5 definitions/);
+  assert.match(collapsed, /6 definitions/);
   assert.match(collapsed, /package/);
   assert.match(collapsed, /expand/);
   assert.doesNotMatch(collapsed, /promptVersion|explorer\.yaml/);

@@ -1,4 +1,10 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  createGitHubCommitToolDefinition,
+  createGitHubReadToolDefinition,
+  createGitHubSearchToolDefinition,
+  createGitHubTreeToolDefinition,
+} from "./github/tools";
 import { createSearchToolDefinitions } from "./search";
 import { createSchemeToolDefinition } from "./scheme/tools/scheme";
 import { isWindowsPlatform } from "./shell/platform";
@@ -15,6 +21,10 @@ const BASE_EXTENSION_TOOLS = [
   "fetch",
   "libs",
   "docs",
+  "github_search",
+  "github_read",
+  "github_tree",
+  "github_commit",
   "scheme",
 ] as const;
 
@@ -33,6 +43,10 @@ function createDefinitions(platform: NodeJS.Platform): Map<SupportedExtensionToo
     ["fetch", createFetchToolDefinition() as ToolDefinition],
     ["libs", createLibsToolDefinition() as ToolDefinition],
     ["docs", createDocsToolDefinition() as ToolDefinition],
+    ["github_search", createGitHubSearchToolDefinition() as ToolDefinition],
+    ["github_read", createGitHubReadToolDefinition() as ToolDefinition],
+    ["github_tree", createGitHubTreeToolDefinition() as ToolDefinition],
+    ["github_commit", createGitHubCommitToolDefinition() as ToolDefinition],
     ["scheme", createSchemeToolDefinition() as ToolDefinition],
   ]);
   if (isWindowsPlatform(platform)) definitions.set("pwsh", createPwshToolDefinition() as ToolDefinition);

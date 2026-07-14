@@ -189,6 +189,18 @@ test("fresh sessions resolve and persist the portable shell capability", async (
   assert.equal(lastCall().customTools, undefined);
 });
 
+test("none starts a child with only the requested GitHub custom tools", async () => {
+  reset();
+  const result = await runSubagentTask(freshInput({
+    definition: definition({ tools: ["none"], extensionTools: ["github_search", "github_read"], skills: ["none"] }),
+  }));
+  assert.deepEqual(lastCall().tools, ["github_search", "github_read"]);
+  assert.deepEqual(lastCall().customTools.map((tool) => tool.name), ["github_search", "github_read"]);
+  assert.deepEqual(result.details.agent.tools, ["none"]);
+  assert.deepEqual(result.details.agent.extensionTools, ["github_search", "github_read"]);
+  assert.deepEqual(result.details.agent.skills, ["none"]);
+});
+
 test("built-in names under extensionTools fail before child creation", async () => {
   reset();
   const result = await runSubagentTask(freshInput({ definition: definition({ tools: ["read"], extensionTools: ["read"] }) }));
@@ -197,15 +209,38 @@ test("built-in names under extensionTools fail before child creation", async () 
   assert.equal(sdkState.calls.length, 0);
 });
 
-test("YAML defaults, inherited effort, and model registry compat remain intact", async () => {
+test("YAML defaults, inherited model and effort, and model registry compat remain intact", async () => {
   reset();
   await runSubagentTask(freshInput({ definition: definition({ effort: "low" }) }));
   assert.equal(lastCall().thinkingLevel, "low");
   assert.equal(lastCall().model.compat.supportsDeveloperRole, false);
 
-  const inherited = await runSubagentTask(freshInput({ definition: definition({ effort: undefined }) }));
+  const inherited = await runSubagentTask(freshInput({ definition: definition({ model: undefined, effort: undefined }) }));
   assert.equal(lastCall().thinkingLevel, "medium");
+  assert.equal(inherited.details.agent.model, "inherited/main-model");
   assert.equal(inherited.details.agent.effort, "medium");
+});
+
+test("a bare provider response cannot downgrade the qualified model frozen for resume", async () => {
+  reset();
+  sdkState.sessionFactory = (input) => {
+    const listeners = [];
+    const message = { role: "assistant", content: [{ type: "text", text: "ACK" }], usage: {}, model: input.model.id };
+    return {
+      agent: { state: { systemPrompt: "system" }, abort() {} },
+      state: { messages: [message] },
+      subscribe(listener) { listeners.push(listener); return () => {}; },
+      async prompt() {
+        for (const listener of listeners) listener({ type: "agent_start" });
+        for (const listener of listeners) listener({ type: "message_end", message });
+        for (const listener of listeners) listener({ type: "agent_end" });
+      },
+      dispose() {},
+    };
+  };
+  const result = await runSubagentTask(freshInput({ definition: definition({ model: undefined, effort: undefined }) }));
+  assert.equal(result.details.agent.model, "inherited/main-model");
+  assert.equal(result.details.model, "inherited/main-model");
 });
 
 test("non-DeepSeek overrides retain model registry compatibility", async () => {

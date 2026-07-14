@@ -72,9 +72,23 @@ output: |
   Return findings, relevant files, gaps, and confidence.
 tools: [read, ls]
 extensionTools: [rg, fd]
-skills: []
+skills: [none]
 visible: true
 ```
+
+Package profiles omit `model` and `effort`. A fresh run inherits the parent session's current values and freezes the resolved values for deterministic same-ID resume; an explicit call override still takes precedence, and following a newly selected parent model requires a fresh ID. Omitted or empty `tools` selects the runtime built-in defaults, while the exclusive `tools: [none]` sentinel disables every built-in tool. Extension tools remain explicit opt-ins. Omitted or empty `skills` loads all discovered skills; `skills: [none]` disables them.
+
+The five visible package roles are intentionally complementary:
+
+| Role | Responsibility | Default capabilities |
+| --- | --- | --- |
+| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `rg`, `fd`; no skills |
+| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | Local read-only retrieval; no skills |
+| `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `search`, `fetch`, `libs`, `docs`; no skills |
+| `librarian` | Research authorized GitHub repositories, files, trees, and commits | Only the four authenticated `github_*` tools; no skills |
+| `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, search, web, Context7, Scheme, and all discovered skills; no GitHub PAT tools |
+
+This catalog replaces the former package `thinker` and `worker` IDs; the former external-research `librarian` role becomes `crawler`, and `librarian` now means GitHub-only research. Existing agent/project overlays are trusted local definitions and are not renamed automatically, so migrate those filenames and `name` fields explicitly when the new package roles should apply.
 
 The child SYSTEM is assembled as immutable subagent governance, optional parent system core, YAML `policy`, and call-specific `systemPrompt`; Pi then adds child-cwd project context, selected skills, date, and cwd. The delegated user message is assembled as replayed `instructions`, reference-only parent history, the current task, and replayed `output`. Parent history may provide facts and confirmed decisions but is not task authorization. Fresh runs persist a frozen effective SYSTEM plus instructions/output and a hash/provenance manifest. Resume replays those snapshots under the same ID; applying a changed definition starts a fresh ID instead.
 
@@ -106,7 +120,7 @@ tools:
 
 The `scheme` tool evaluates R6RS Chez Scheme in the bundled WASM sandbox. Its Pi-native TUI shows the complete submitted source and effective access mode, streams stdout and cleaned stderr while evaluation is running, keeps the last five visual lines in the collapsed view, and reveals all captured output when expanded. Calls can be cancelled, and timeout or cancellation terminates the runtime process tree. `readonly` (the default) mounts the working directory read-only at `/work`; `write` makes that mount writable; `fullaccess` exposes the host under `/host` and enables `system()`. Stdout and stderr share a 512 KiB capture limit; reaching it is reported in the TUI without changing the model-facing output format or writing a temporary full-output log.
 
-The tool was renamed from `scheme_eval` to `scheme`. Custom subagent YAML must use `scheme` in `extensionTools`; the old name is not registered as an alias. Bundled subagents do not enable Scheme by default.
+The tool was renamed from `scheme_eval` to `scheme`. Custom subagent YAML must use `scheme` in `extensionTools`; the old name is not registered as an alias. The bundled Generalist enables Scheme; the four read-only specialists do not.
 
 ## Web and documentation tools
 
@@ -114,7 +128,7 @@ The `search`, `fetch`, `libs`, and `docs` tools run through Jina and Context7 an
 
 ## GitHub tools
 
-The parent Pi session exposes four authenticated, read-only GitHub.com tools: `github_search` searches repositories or default-branch code; `github_read` reads a UTF-8 file or the repository README with line pagination; `github_tree` browses a repository-relative path with depth 1-4; and `github_commit` returns commit metadata, changed-file pages, and available bounded patches. These tools are intentionally absent from the subagent tool catalog and bundled subagent definitions. They use the GitHub REST API version `2026-03-10`, Node's native `fetch`, and Pi-native collapsible renderers with the default tool shell.
+The parent Pi session exposes four authenticated, read-only GitHub.com tools: `github_search` searches repositories or default-branch code; `github_read` reads a UTF-8 file or the repository README with line pagination; `github_tree` browses a repository-relative path with depth 1-4; and `github_commit` returns commit metadata, changed-file pages, and available bounded patches. The same definitions are opt-in child capabilities for trusted local subagent configurations. Of the bundled roles, only Librarian requests them; it uses `tools: [none]` and has no general web, Context7, local filesystem, shell, or write tools. Generalist and the other specialists do not receive GitHub PAT capabilities. They use the GitHub REST API version `2026-03-10`, Node's native `fetch`, and Pi-native collapsible renderers with the default tool shell.
 
 Set `GITHUB_TOKEN` or add a PAT to Pi-owned `auth.json`; the environment variable takes precedence:
 
@@ -128,7 +142,7 @@ Set `GITHUB_TOKEN` or add a PAT to Pi-owned `auth.json`; the environment variabl
 
 A fine-grained PAT should grant access only to the repositories it needs and use read-only Contents permission when private repository contents or commits must be read. All tools fail before network access when no token is configured. Requests stay on `https://api.github.com`, carry an explicit API version and user agent, accept at most one same-origin redirect, retry one transient `502`/`503`/`504`, and never send the PAT to another origin. Authentication failures, SSO/permission failures, rate limits, inaccessible resources, validation failures, cancellation, malformed responses, and local response caps remain distinct result states.
 
-Results are deliberately bounded and explicit about incompleteness. Search exposes GitHub's `incomplete_results`, 1,000-result window, pagination, and rate metadata; GitHub itself limits code search to the default branch, files smaller than 384 KiB, and 10 authenticated requests per minute. File reads accept at most 2 MiB and return at most 50 KiB/2,000 lines per call. Tree traversal uses at most 20 API requests, 100 KiB of output, 200 returned entries, and reports the Contents API's 1,000-entry directory boundary. Commit output is capped at 100 KiB with at most 50 changed files per page and a separate patch budget; unavailable binary patches and locally omitted patches are labeled. The module creates no cache, log, or artifact, and redacts PAT-shaped text from model and TUI output. Normal Pi persistence still applies: private paths, source excerpts, and commit patches returned by these tools are written to the session JSONL.
+Results are deliberately bounded and explicit about incompleteness. Search exposes GitHub's `incomplete_results`, 1,000-result window, pagination, and rate metadata; GitHub itself limits code search to the default branch, files smaller than 384 KiB, and 10 authenticated requests per minute. File reads accept at most 2 MiB and return at most 50 KiB/2,000 lines per call. Tree traversal uses at most 20 API requests, 100 KiB of output, 200 returned entries, and reports the Contents API's 1,000-entry directory boundary. Commit output is capped at 100 KiB with at most 50 changed files per page and a separate patch budget; unavailable binary patches and locally omitted patches are labeled. The module creates no cache, log, or GitHub-specific artifact, and redacts PAT-shaped text from model and TUI output. Normal Pi persistence still applies: private paths, source excerpts, and commit patches are written to the parent session JSONL or, when Librarian invokes the tools, its persistent child session and resumable artifacts.
 
 ## Configuration
 

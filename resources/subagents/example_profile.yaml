@@ -1,0 +1,60 @@
+# Pi subagent V2 overlay reference
+#
+# Discovery precedence is package < agent < nearest project:
+#   resources/subagents/*.yaml
+#   ~/.pi/agent/subagents/*.yaml
+#   <project>/.pi/subagents/*.yaml
+#
+# Higher layers replace only declared fields. Omit a field to inherit it, use null
+# to clear a scalar, and use [] to clear an inherited list. Package files are
+# read-only at runtime; create agent or project overlays for customization.
+
+promptVersion: 2
+name: example_profile
+
+# Omit model and effort to inherit the parent session values at fresh-run startup.
+# A resumed ID keeps the values frozen by its original run. Explicit examples:
+# model: provider/model-id
+# effort: high
+
+description: >
+  Hidden reference profile demonstrating every supported V2 configuration field.
+
+# Defaults to true when omitted. False isolates the profile from the parent system
+# core, but immutable subagent governance and child-cwd project context still apply.
+inheritParentSystem: true
+
+# Optional SYSTEM-layer constraints. They augment governance and the inherited
+# parent core; they never replace either one.
+policy: |
+  Keep the workspace unchanged and operate only within the delegated scope.
+
+# Replayed before every fresh or resumed task.
+instructions: |
+  Verify relevant evidence before concluding.
+  Distinguish observed facts from inference.
+
+# Replayed after every task as the delivery contract.
+output: |
+  Return findings, relevant evidence, remaining uncertainty, and confidence.
+
+# Built-in tools are explicit. Omitted or [] selects the runtime defaults.
+# Use [none] to disable all built-in tools; none must be the only list item.
+tools:
+  - read
+  - ls
+
+# Extension tools are opt-in. Supported names are validated at runtime and may be
+# platform-specific. Authenticated GitHub tools can be requested here by trusted
+# local definitions; returned private content persists in the child session.
+extensionTools:
+  - rg
+  - fd
+
+# Omitted or [] loads all discovered skills. Use [none] to disable every skill.
+skills:
+  - none
+
+# False removes the effective definition from the catalog without deleting lower
+# layers. A higher overlay may set true or null to reveal it again.
+visible: false

@@ -69,10 +69,9 @@ try {
   assert.deepEqual(todoTool?.parameters?.required, ["action"]);
   assert.equal(todoTool?.parameters?.properties?.action?.enum?.length, 9);
   assert.ok(!childToolNames.includes("todo"));
-  for (const name of ["github_search", "github_read", "github_tree", "github_commit"]) {
-    assert.ok(!childToolNames.includes(name), `${name} must remain parent-only`);
-    assert.equal(createChildTools([name]).definitions.length, 0, `${name} must not resolve for child sessions`);
-  }
+  const githubToolNames = ["github_search", "github_read", "github_tree", "github_commit"];
+  for (const name of githubToolNames) assert.ok(childToolNames.includes(name), `${name} must be opt-in for child sessions`);
+  assert.deepEqual(createChildTools(githubToolNames).definitions.map((definition) => definition.name), githubToolNames);
   assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline", "subagent"]);

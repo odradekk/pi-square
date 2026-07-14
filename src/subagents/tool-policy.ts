@@ -2,6 +2,7 @@ import { isWindowsPlatform } from "../shell/platform";
 
 const BUILT_IN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const NON_SHELL_BUILT_INS = BUILT_IN_TOOL_NAMES.filter((name) => name !== "bash");
+const NO_BUILT_IN_TOOLS = "none";
 
 type BuiltInToolName = typeof BUILT_IN_TOOL_NAMES[number];
 
@@ -33,18 +34,26 @@ export function resolveSubagentTools(
   const windows = isWindowsPlatform(platform);
   const requestedTools = (input.tools ?? []).map((name) => name.trim()).filter(Boolean);
   const requestedExtensionTools = (input.extensionTools ?? []).map((name) => name.trim()).filter(Boolean);
+  const normalizedTools = requestedTools.map((name) => name.toLowerCase());
   const useDefaults = requestedTools.length === 0;
+  const noneRequested = normalizedTools.includes(NO_BUILT_IN_TOOLS);
   const legacyPortableShell = requestedTools.includes("bash") && requestedExtensionTools.includes("pwsh");
   const legacyDefaultTools = requestedTools.length === BUILT_IN_TOOL_NAMES.length
     && BUILT_IN_TOOL_NAMES.every((name) => requestedTools.includes(name));
-  const shellRequested = useDefaults || requestedTools.includes("shell") || legacyPortableShell || legacyDefaultTools;
+  const shellRequested = !noneRequested
+    && (useDefaults || requestedTools.includes("shell") || legacyPortableShell || legacyDefaultTools);
   const errors: string[] = [];
   const builtInTools: string[] = [];
   const extensionTools: string[] = [];
   const persistedTools: string[] = [];
   const persistedExtensionTools: string[] = [];
 
-  const toolsToResolve = useDefaults ? [...NON_SHELL_BUILT_INS] : requestedTools;
+  if (noneRequested) {
+    persistedTools.push(NO_BUILT_IN_TOOLS);
+    if (requestedTools.length !== 1) errors.push("Tool 'none' must be the only entry in tools.");
+  }
+
+  const toolsToResolve = useDefaults ? [...NON_SHELL_BUILT_INS] : noneRequested ? [] : requestedTools;
   for (const rawName of toolsToResolve) {
     if (rawName === "shell") {
       if (!persistedTools.includes("shell")) persistedTools.push("shell");
@@ -55,7 +64,7 @@ export function resolveSubagentTools(
       continue;
     }
     if (!isBuiltInTool(rawName)) {
-      errors.push(`Unsupported tool '${rawName}'. Supported built-in tools: ${BUILT_IN_TOOL_NAMES.join(", ")}, shell.`);
+      errors.push(`Unsupported tool '${rawName}'. Supported built-in tools: ${BUILT_IN_TOOL_NAMES.join(", ")}, shell, none.`);
       continue;
     }
     if (rawName === "bash" && windows) {
