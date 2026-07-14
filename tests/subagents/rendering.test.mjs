@@ -192,6 +192,27 @@ function result(runDetails, text = `ID: ${runDetails.id}\n\n${runDetails.finalTe
   assert.match(unknownRendered, /mystery  called\s+→ running/);
   assert.doesNotMatch(unknownRendered, /s3cr3t|private|password/);
 
+  const newTools = details({
+    phase: "running",
+    finalText: "",
+    liveText: "",
+    timeline: [
+      { kind: "tool", phase: "start", text: "sg {\"pattern\":\"call($ARG)\",\"path\":\"src\",\"language\":\"ts\"}" },
+      { kind: "tool", phase: "start", text: "github_search {\"kind\":\"code\",\"query\":\"repo:owner/name symbol\"}" },
+      { kind: "tool", phase: "start", text: "github_read {\"repo\":\"owner/name\",\"path\":\"src/index.ts\",\"ref\":\"main\"}" },
+      { kind: "tool", phase: "start", text: "github_tree {\"repo\":\"owner/name\",\"path\":\"src\",\"depth\":2}" },
+      { kind: "tool", phase: "start", text: "github_commit {\"repo\":\"owner/name\",\"ref\":\"abc123\",\"page\":2}" },
+    ],
+  });
+  const newToolsRendered = plain(renderSubagentResult(result(newTools, "running"), { expanded: true, isPartial: true }, plainTheme, context({ isError: true })));
+  for (const expected of [
+    "sg  /call($ARG)/ in src · ts",
+    "github_search  code: repo:owner/name symbol",
+    "github_read  owner/name:src/index.ts @main",
+    "github_tree  owner/name:src · depth 2",
+    "github_commit  owner/name@abc123 · page 2",
+  ]) assert.match(newToolsRendered, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
   const completedLs = details({
     phase: "running",
     finalText: "",

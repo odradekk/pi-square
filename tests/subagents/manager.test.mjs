@@ -97,6 +97,7 @@ function data(overrides = {}) {
   return {
     running: [{ id: details.id, status: "running", createdAt: 1, updatedAt: 2, details }],
     session: [{ ...details, phase: "done", finalText: "done" }],
+    activeSessionIds: [],
     definitions: discoverSubagents(packageRoot).definitions,
     errors: [],
     ...overrides,
@@ -159,6 +160,30 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
   manager.dispose();
 });
 
+test("manager activity uses specialized sg and GitHub summaries", () => {
+  const sg = runDetails({
+    timeline: [{ kind: "tool", phase: "start", text: "sg {\"kind\":\"identifier\",\"path\":\"src\",\"password\":\"private\"}" }],
+  });
+  const manager = new SubagentManager(data({
+    running: [{ id: sg.id, status: "running", createdAt: 1, updatedAt: 2, details: sg }],
+  }), tui(), theme, keybindings, () => {});
+  const rendered = render(manager, 100);
+  assert.match(rendered, /ACTIVITY  sg kind:identifier in src/);
+  assert.doesNotMatch(rendered, /password|private/);
+  manager.dispose();
+
+  const github = runDetails({
+    timeline: [{ kind: "tool", phase: "start", text: "github_read {\"repo\":\"owner/name\",\"path\":\"README.md\",\"ref\":\"main\",\"token\":\"private\"}" }],
+  });
+  const githubManager = new SubagentManager(data({
+    running: [{ id: github.id, status: "running", createdAt: 1, updatedAt: 2, details: github }],
+  }), tui(), theme, keybindings, () => {});
+  const githubRendered = render(githubManager, 100);
+  assert.match(githubRendered, /ACTIVITY  github_read owner\/name:README.md @main/);
+  assert.doesNotMatch(githubRendered, /token|private/);
+  githubManager.dispose();
+});
+
 test("manager keeps resume task, review, and queueing inside one focused component", () => {
   const finished = runDetails({ phase: "done", finalText: "done" });
   const initial = data({ running: [], session: [finished] });
@@ -179,6 +204,29 @@ test("manager keeps resume task, review, and queueing inside one focused compone
   assert.match(render(manager, 80), /Queued resume/);
   assert.equal(closed, 0);
   manager.dispose();
+});
+
+test("manager blocks active leases but permits inactive stale running sessions", () => {
+  const stale = runDetails({ phase: "running" });
+  const staleData = data({ running: [], session: [stale], activeSessionIds: [] });
+  const staleManager = new SubagentManager(staleData, tui(), theme, keybindings, () => {}, fakeServices(staleData).services);
+  staleManager.handleInput("\x1b[C");
+  staleManager.handleInput("\r");
+  assert.match(render(staleManager, 80), /SESSION \/ RESUME/);
+  staleManager.dispose();
+
+  const activeData = data({ running: [], session: [stale], activeSessionIds: [stale.id] });
+  const activeFake = fakeServices(activeData);
+  const activeManager = new SubagentManager(activeData, tui(), theme, keybindings, () => {}, activeFake.services);
+  activeManager.handleInput("\x1b[C");
+  assert.match(render(activeManager, 100), /resume unavailable while active/);
+  activeManager.handleInput("\r");
+  const activeRendered = render(activeManager, 100);
+  assert.match(activeRendered, /is active and cannot b/);
+  assert.match(activeRendered, /resume unavailable while active/);
+  assert.doesNotMatch(activeRendered, /SESSION \/ RESUME/);
+  assert.equal(activeFake.calls.some((call) => call[0] === "resume"), false);
+  activeManager.dispose();
 });
 
 test("definition overlay editing stays in manager through scope, field, mode, editor, and review", () => {

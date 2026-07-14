@@ -15,7 +15,7 @@ export interface InspectionReport {
   isStale: boolean;
   active: boolean;
   resumable: boolean;
-  resumeBlockReason?: "already_running";
+  resumeBlockReason?: "subagent_active";
   warnings: string[];
   rendered: string;
 }
@@ -38,7 +38,7 @@ export function inspectRun(id: string, now = Date.now()): InspectionReport {
   if (persisted.toolErrors.length > 0) warnings.push(`${persisted.toolErrors.length} tool call(s) failed during the run.`);
 
   const resumable = !active;
-  const resumeBlockReason = active ? "already_running" as const : undefined;
+  const resumeBlockReason = active ? "subagent_active" as const : undefined;
   const rendered = renderReport(persisted, {
     artifactsDir: validated.artifactsDir,
     mtimeMs,
@@ -112,7 +112,7 @@ function renderReport(
     lines.push("  ✓ Subagent can be resumed with the same ID and native session history.");
     lines.push(`  → subagent({ mode: "resume", id: "${details.id}", task: "..." })`);
   } else {
-    lines.push("  → active: resume would return already_running without starting another execution.");
+    lines.push("  → active: resume is blocked with SUBAGENT_ACTIVE until the current execution stops.");
   }
   for (const warning of ctx.warnings) lines.push(`  ! ${warning}`);
   return lines.join("\n");

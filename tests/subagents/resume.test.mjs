@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -129,18 +129,28 @@ test("missing and malformed JSONL fail before SessionManager.open", async () => 
   }
 });
 
-test("an active ID returns already_running without opening the session", async () => {
+test("an active ID throws SUBAGENT_ACTIVE without changing persisted history", async () => {
   const agentRoot = root();
   process.env.PI_AGENT_DIR = agentRoot;
+  let lease;
   try {
-    writeValidRun(agentRoot, { phase: "running" });
-    const lease = tryAcquireRunLease(ID);
+    const details = writeValidRun(agentRoot, { phase: "running" });
+    const runFile = join(details.artifactsDir, "run.json");
+    const sessionBefore = readFileSync(details.sessionFile, "utf8");
+    const runBefore = readFileSync(runFile, "utf8");
+    lease = tryAcquireRunLease(ID);
     assert.equal(lease.acquired, true);
-    const result = await resumeSubagentTask({ ctx: ctx(agentRoot), id: ID, task: "continue" });
-    assert.equal(result.status, "already_running");
-    assert.deepEqual(result.details, { status: "already_running", id: ID });
-    lease.lease.release();
+
+    const error = await captureFailure(agentRoot);
+    assert.equal(error.info.code, "SUBAGENT_ACTIVE");
+    assert.equal(error.info.operation, "resume");
+    assert.equal(error.info.id, ID);
+    assert.equal(error.info.retryable, true);
+    assert.match(error.info.suggestedAction, /Wait.*finish.*cancel/i);
+    assert.equal(readFileSync(details.sessionFile, "utf8"), sessionBefore);
+    assert.equal(readFileSync(runFile, "utf8"), runBefore);
   } finally {
+    if (lease?.acquired) lease.lease.release();
     rmSync(agentRoot, { recursive: true, force: true });
   }
 });

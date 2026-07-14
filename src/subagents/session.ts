@@ -29,6 +29,7 @@ import {
 } from "./errors";
 import { tryAcquireRunLease } from "./lease";
 import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./prompt";
+import { formatToolCall } from "./tool-display";
 import { resolveSubagentTools } from "./tool-policy";
 import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, SubagentTimelineItem, SubagentUsage } from "./types";
 
@@ -213,51 +214,6 @@ function accumulateUsage(target: SubagentUsage, usage: any): void {
     ? Number(usage.cost?.total ?? 0) || 0
     : Number(usage.cost ?? 0) || 0;
   target.cost += costTotal;
-}
-
-function shortenPath(rawPath: string): string {
-  return rawPath.length > 48 ? `${rawPath.slice(0, 45)}...` : rawPath;
-}
-
-function formatToolCall(toolName: string, args: any): string {
-  switch (toolName) {
-    case "read": {
-      const path = shortenPath(String(args?.path ?? args?.file_path ?? "..."));
-      const offset = args?.offset;
-      const limit = args?.limit;
-      if (typeof offset === "number" || typeof limit === "number") {
-        const start = typeof offset === "number" ? offset : 1;
-        const end = typeof limit === "number" ? start + limit - 1 : undefined;
-        return `read ${path}:${start}${end ? `-${end}` : ""}`;
-      }
-      return `read ${path}`;
-    }
-    case "grep": {
-      const pattern = String(args?.pattern ?? "");
-      const path = shortenPath(String(args?.path ?? "."));
-      return `grep /${clip(pattern, 40) || "..."}/ in ${path}`;
-    }
-    case "find": {
-      const pattern = String(args?.pattern ?? "");
-      const path = shortenPath(String(args?.path ?? "."));
-      return `find ${clip(pattern, 40) || "..."} in ${path}`;
-    }
-    case "ls": {
-      const path = shortenPath(String(args?.path ?? "."));
-      return `ls ${path}`;
-    }
-    case "bash": {
-      return `bash ${clip(String(args?.command ?? ""), 80)}`;
-    }
-    case "edit": {
-      return `edit ${shortenPath(String(args?.path ?? "..."))}`;
-    }
-    case "write": {
-      return `write ${shortenPath(String(args?.path ?? "..."))}`;
-    }
-    default:
-      return `${toolName} ${clip(JSON.stringify(args ?? {}), 80)}`;
-  }
 }
 
 function formatToolResult(toolName: string, result: any): string {
@@ -935,9 +891,11 @@ export async function runSubagentTask(input: {
   }
 }
 
-export type ResumeSubagentResult =
-  | { status: "completed"; content: string; details: SubagentRunDetails }
-  | { status: "already_running"; content: string; details: { status: "already_running"; id: string } };
+export type ResumeSubagentResult = {
+  status: "completed";
+  content: string;
+  details: SubagentRunDetails;
+};
 
 /** Reopens one inactive subagent conversation and appends a new task. */
 export async function resumeSubagentTask(input: {
@@ -963,11 +921,14 @@ export async function resumeSubagentTask(input: {
 
   const leaseResult = tryAcquireRunLease(input.id);
   if (!leaseResult.acquired) {
-    return {
-      status: "already_running",
-      content: `Subagent ${input.id} is already running; resume was not started.`,
-      details: { status: "already_running", id: input.id },
-    };
+    throw createSubagentError({
+      code: "SUBAGENT_ACTIVE",
+      message: `Subagent '${input.id}' is active and cannot be resumed concurrently.`,
+      operation: "resume",
+      id: input.id,
+      retryable: true,
+      suggestedAction: "Wait for the active run to finish, or cancel it before retrying resume.",
+    });
   }
 
   let details: SubagentRunDetails | undefined;

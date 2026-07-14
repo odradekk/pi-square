@@ -21,16 +21,14 @@ function tool() {
 
 const ctx = { cwd: "/tmp", sessionManager: { getSessionId: () => "parent-resume-session", getBranch: () => [] } };
 
-test("active resume is a normal already_running result", async () => {
-  setRunSubagentTaskMock(async ({ id }) => ({
-    status: "already_running",
-    content: `Subagent ${id} is already running; resume was not started.`,
-    details: { status: "already_running", id },
-  }));
+test("active resume rejection is returned as a tool error", async () => {
+  setRunSubagentTaskMock(async () => { throw new Error("active resume conflict"); });
   const result = await tool().execute("resume-active", { mode: "resume", id: ID, task: "continue" }, undefined, undefined, ctx);
-  assert.equal(result.isError, undefined);
-  assert.deepEqual(result.details, { status: "already_running", id: ID });
-  assert.match(result.content[0].text, /already running/);
+  assert.equal(result.isError, true);
+  assert.equal(result.details.status, "error");
+  assert.equal(result.details.error.operation, "resume");
+  assert.equal(result.details.error.id, ID);
+  assert.match(result.content[0].text, /active resume conflict/);
 });
 
 test("resume exceptions become clear structured tool failures", async () => {

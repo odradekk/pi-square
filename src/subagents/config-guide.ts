@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, type Component } from "@earendil-works/pi-tui";
 import type { SubagentRegistry } from "./definitions";
-import { sanitizeSubagentDisplay } from "./render";
+import { sanitizeSubagentDisplay } from "./display";
 
 export const SUBAGENT_CONFIG_GUIDE_TYPE = "pi-square.subagent-config-guide";
 const MAX_DEFINITIONS = 50;

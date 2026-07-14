@@ -66,7 +66,7 @@ test("completed runs are resumable when inactive", () => {
   }
 });
 
-test("active runs are reported as already_running and not resumable", () => {
+test("active runs are reported as SUBAGENT_ACTIVE and not resumable", () => {
   const agentRoot = root();
   process.env.PI_AGENT_DIR = agentRoot;
   try {
@@ -76,7 +76,8 @@ test("active runs are reported as already_running and not resumable", () => {
     const report = inspectRun(ID);
     assert.equal(report.active, true);
     assert.equal(report.resumable, false);
-    assert.equal(report.resumeBlockReason, "already_running");
+    assert.equal(report.resumeBlockReason, "subagent_active");
+    assert.match(report.rendered, /SUBAGENT_ACTIVE/);
     lease.lease.release();
   } finally {
     rmSync(agentRoot, { recursive: true, force: true });

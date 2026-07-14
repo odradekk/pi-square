@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import {
   getMarkdownTheme,
   keyHint,
@@ -14,6 +13,8 @@ import {
   wrapTextWithAnsi,
   type Component,
 } from "@earendil-works/pi-tui";
+import { sanitizeSubagentDisplay } from "./display";
+import { toolEventDisplay, type ToolEventDisplay } from "./tool-display";
 import type {
   SubagentErrorInfo,
   SubagentNotificationDetails,
@@ -22,14 +23,13 @@ import type {
   SubagentUsage,
 } from "./types";
 
+export { sanitizeSubagentDisplay } from "./display";
+
 const CALL_TASK_LINES = 3;
 const LIVE_MARKDOWN_LINES = 5;
 const RECENT_TIMELINE_ITEMS = 8;
 const ROW_GAP = 3;
 const STACK_INDENT = 2;
-const AUTH_HEADER_PATTERN = /(authorization\s*:\s*)[^,;\r\n]+/gi;
-const SECRET_ASSIGNMENT_PATTERN = /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[=:]\s*)([^\s,;]+)/gi;
-const BEARER_PATTERN = /(bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
 
 export interface SubagentRenderState {
   startedAt?: number;
@@ -154,16 +154,6 @@ class MarkdownVisualTail implements Component {
   }
 }
 
-export function sanitizeSubagentDisplay(value: unknown): string {
-  return stripVTControlCharacters(typeof value === "string" ? value : String(value ?? ""))
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "   ")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-    .replace(AUTH_HEADER_PATTERN, "$1[REDACTED]")
-    .replace(SECRET_ASSIGNMENT_PATTERN, "$1[REDACTED]")
-    .replace(BEARER_PATTERN, "$1[REDACTED]");
-}
-
 function hasOwn(value: unknown, key: string): boolean {
   return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
 }
@@ -253,75 +243,6 @@ function statusPresentation(phase: string, theme: Theme): string {
   }
 }
 
-function clipInline(value: unknown, max: number): string {
-  const codePoints = Array.from(String(value ?? "").trim());
-  return codePoints.length <= max ? codePoints.join("") : `${codePoints.slice(0, Math.max(0, max - 3)).join("")}...`;
-}
-
-interface ToolEventDisplay {
-  tool: string;
-  summary: string;
-}
-
-function toolDisplayFromJson(toolName: string, args: any): ToolEventDisplay {
-  let summary: string;
-  switch (toolName) {
-    case "pwsh":
-      summary = clipInline(args?.command, 80);
-      break;
-    case "rg":
-      summary = `/${clipInline(args?.pattern || "...", 40)}/ in ${clipInline(args?.path || ".", 48)}`;
-      break;
-    case "fd":
-      summary = `${clipInline(args?.pattern || ".", 40)} in ${clipInline(args?.path || ".", 48)}`;
-      break;
-    case "search": {
-      const queries = Array.isArray(args?.queries) ? args.queries : [];
-      summary = `${queries.length} quer${queries.length === 1 ? "y" : "ies"}: ${clipInline(queries[0] || "...", 50)}`;
-      break;
-    }
-    case "fetch": {
-      const urls = Array.isArray(args?.urls) ? args.urls : [];
-      summary = `${urls.length} URL${urls.length === 1 ? "" : "s"}`;
-      break;
-    }
-    case "libs":
-      summary = clipInline(args?.libraryName || "...", 60);
-      break;
-    case "docs":
-      summary = clipInline(args?.libraryId || "...", 60);
-      break;
-    default:
-      summary = "called";
-      break;
-  }
-  return {
-    tool: sanitizeSubagentDisplay(toolName),
-    summary: sanitizeSubagentDisplay(summary),
-  };
-}
-
-function semanticToolEvent(item: SubagentTimelineItem): ToolEventDisplay {
-  const original = sanitizeSubagentDisplay(item.text).trim();
-  if (item.phase === "start") {
-    const jsonCall = /^([A-Za-z0-9_.-]+)\s+(\{.*\})$/s.exec(original);
-    if (jsonCall) {
-      const toolName = jsonCall[1] ?? "tool";
-      try {
-        return toolDisplayFromJson(toolName, JSON.parse(jsonCall[2] ?? "{}"));
-      } catch {
-        return { tool: toolName, summary: "called" };
-      }
-    }
-  }
-
-  const colon = /^([A-Za-z0-9_.-]+):\s*(.*)$/s.exec(original);
-  if (colon) return { tool: colon[1] ?? "tool", summary: colon[2] ?? "" };
-  const spaced = /^([A-Za-z0-9_.-]+)\s+(.*)$/s.exec(original);
-  if (spaced) return { tool: spaced[1] ?? "tool", summary: spaced[2] ?? "" };
-  return { tool: original || "tool", summary: "" };
-}
-
 type ToolCallStatus = "running" | "done" | "failed";
 
 interface ToolActivity {
@@ -348,7 +269,7 @@ function buildActivityItems(timeline: SubagentTimelineItem[]): ActivityItem[] {
       continue;
     }
 
-    const display = semanticToolEvent(item);
+    const display = toolEventDisplay(item);
     if (item.phase === "start") {
       const activity: ToolActivity = { kind: "tool", display, status: "running" };
       items.push(activity);

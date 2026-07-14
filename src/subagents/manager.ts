@@ -41,8 +41,10 @@ import {
   type SubagentDefinitionPatch,
   writeDefinitionPatch,
 } from "./definitions";
+import { sanitizeSubagentDisplay } from "./display";
+import { isRunLeaseActive } from "./lease";
 import { compileFreshPrompt, promptDefinitionHash } from "./prompt";
-import { sanitizeSubagentDisplay } from "./render";
+import { latestToolCallSummary } from "./tool-display";
 import type { SubagentRuntimeState } from "./tool";
 import type { BackgroundJobSnapshot, SubagentRunDetails } from "./types";
 
@@ -52,6 +54,7 @@ type WritableScope = "agent" | "project";
 interface ManagerSnapshot {
   running: BackgroundJobSnapshot[];
   session: SubagentRunDetails[];
+  activeSessionIds?: string[];
   definitions: SubagentDefinition[];
   errors: string[];
 }
@@ -157,11 +160,6 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m`;
 }
 
-function latestToolCall(details: SubagentRunDetails): string {
-  const item = [...details.timeline].reverse().find((entry) => entry.kind === "tool" && entry.phase === "start");
-  return item ? sanitizeSubagentDisplay(item.text).replace(/\s+/g, " ").trim() : "working";
-}
-
 function definitionValue(definition: SubagentDefinition, field: SubagentDefinitionField): unknown {
   return definition[field];
 }
@@ -181,9 +179,11 @@ function activeJobs(state: SubagentRuntimeState): BackgroundJobSnapshot[] {
 }
 
 function snapshot(state: SubagentRuntimeState, parentSessionId: string): ManagerSnapshot {
+  const session = listParentSessionRuns(parentSessionId);
   return {
     running: activeJobs(state),
-    session: listParentSessionRuns(parentSessionId),
+    session,
+    activeSessionIds: session.filter((run) => isRunLeaseActive(run.id)).map((run) => run.id),
     definitions: [...state.registry.definitions].sort((a, b) => a.name.localeCompare(b.name)),
     errors: [...state.registry.errors],
   };
@@ -249,8 +249,8 @@ function createProductionServices(
     queueResume(id, task) {
       const details = listParentSessionRuns(parentSessionId).find((item) => item.id === id);
       if (!details) return { ok: false, message: `Subagent '${id}' does not belong to the current session.` };
-      if (details.phase === "running" || details.phase === "cancelling") {
-        return { ok: false, message: `Subagent '${id}' is already active.` };
+      if (isRunLeaseActive(id)) {
+        return { ok: false, message: `Subagent '${id}' is active and cannot be resumed concurrently.` };
       }
       const job = createQueuedResumeJob({ state: state.background, details, task, parentSessionId });
       startBackgroundResumeJob({ pi, state: state.background, job, ctx, task, parentSessionId });
@@ -402,6 +402,10 @@ export class SubagentManager implements Component, Focusable {
 
   private selectedRun(): SubagentRunDetails | undefined {
     return this.data.session[this.selectedIndex()];
+  }
+
+  private runIsActive(run: SubagentRunDetails | undefined): boolean {
+    return Boolean(run && this.data.activeSessionIds?.includes(run.id));
   }
 
   private selectedDefinition(): SubagentDefinition | undefined {
@@ -825,7 +829,13 @@ export class SubagentManager implements Component, Focusable {
     }
     if (this.tab() === "session") {
       const run = this.selectedRun();
-      if (run && run.phase !== "running" && run.phase !== "cancelling") this.openTask("resume", run);
+      if (!run) return;
+      if (this.runIsActive(run)) {
+        this.flash = { kind: "error", text: `Subagent '${run.id}' is active and cannot be resumed concurrently.` };
+        this.tui.requestRender();
+        return;
+      }
+      this.openTask("resume", run);
       return;
     }
     const definition = this.selectedDefinition();
@@ -848,8 +858,10 @@ export class SubagentManager implements Component, Focusable {
       return this.data.session.map((run, index) => {
         const marker = index === selected ? this.theme.fg("accent", "›") : " ";
         const name = run.agent?.name ?? "generic";
-        const phaseColor = run.phase === "done" ? "success" : run.phase === "error" ? "error" : "muted";
-        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${this.theme.fg(phaseColor, run.phase)}`;
+        const active = this.runIsActive(run);
+        const phase = active ? "active" : run.phase === "running" || run.phase === "cancelling" ? `${run.phase} (inactive)` : run.phase;
+        const phaseColor = active ? "warning" : run.phase === "done" ? "success" : run.phase === "error" ? "error" : "muted";
+        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${this.theme.fg(phaseColor, phase)}`;
       });
     }
     if (this.data.definitions.length === 0) return [this.theme.fg("dim", "No valid V2 definitions")];
@@ -867,7 +879,7 @@ export class SubagentManager implements Component, Focusable {
       return [
         `ID  ${job.id}`,
         `TASK  ${sanitizeSubagentDisplay(job.details.task)}`,
-        `ACTIVITY  ${latestToolCall(job.details)}`,
+        `ACTIVITY  ${latestToolCallSummary(job.details.timeline)}`,
         `USAGE  ${job.details.usage.turns} turns · ${formatDuration(Date.now() - job.details.startedAt)}`,
       ];
     }
@@ -914,7 +926,11 @@ export class SubagentManager implements Component, Focusable {
       return `${keyHint("tui.select.confirm", this.view.confirmLabel)} · ${this.theme.fg("dim", "↑/↓ scroll · ")}${keyHint("tui.select.cancel", "back")}`;
     }
     if (this.tab() === "running") return "enter cancel · ←/→ tabs · esc close";
-    if (this.tab() === "session") return "enter resume · f fresh · d delete history · ←/→ tabs · esc close";
+    if (this.tab() === "session") {
+      return this.runIsActive(this.selectedRun())
+        ? "resume unavailable while active · f fresh · d delete history · ←/→ tabs · esc close"
+        : "enter resume · f fresh · d delete history · ←/→ tabs · esc close";
+    }
     return "enter edit · n new · h hide/show · d delete overlay · ←/→ tabs · esc close";
   }
 

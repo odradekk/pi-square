@@ -500,26 +500,14 @@ export function startBackgroundResumeJob(input: {
     state: input.state,
     job: input.job,
     operation: "resume",
-    execute: async (onUpdate) => {
-      const result = await resumeSubagentTask({
-        ctx: input.ctx,
-        id: input.job.id,
-        task: input.task,
-        parentSessionId: input.parentSessionId,
-        signal: input.job.abortController.signal,
-        onUpdate,
-      });
-      if (result.status === "already_running") {
-        throw createSubagentError({
-          code: "SUBAGENT_FAILED",
-          message: result.content,
-          operation: "resume",
-          id: input.job.id,
-          retryable: true,
-        });
-      }
-      return result;
-    },
+    execute: (onUpdate) => resumeSubagentTask({
+      ctx: input.ctx,
+      id: input.job.id,
+      task: input.task,
+      parentSessionId: input.parentSessionId,
+      signal: input.job.abortController.signal,
+      onUpdate,
+    }),
   });
 }
 

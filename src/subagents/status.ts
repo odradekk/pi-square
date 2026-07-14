@@ -1,7 +1,8 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
-import { sanitizeSubagentDisplay } from "./render";
+import { sanitizeSubagentDisplay } from "./display";
+import { latestToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./types";
 
 export const STALE_RUNNING_THRESHOLD_MS = 60 * 60 * 1000;
@@ -30,15 +31,6 @@ function shortId(id: string): string {
   return id.replace(/^subagent_/, "").slice(0, 8);
 }
 
-function latestCall(job: BackgroundJobSnapshot): string {
-  const call = [...(job.details.timeline ?? [])]
-    .reverse()
-    .find((item) => item?.kind === "tool" && item.phase === "start");
-  if (!call) return "working";
-  const normalized = sanitizeSubagentDisplay(call.text).replace(/\s+/g, " ").trim();
-  return normalized || "working";
-}
-
 function activeJobs(jobs: BackgroundJobSnapshot[]): BackgroundJobSnapshot[] {
   return jobs
     .filter((job) => ACTIVE_STATUSES.has(job.status))
@@ -57,7 +49,7 @@ function statusText(theme: Theme, status: BackgroundJobSnapshot["status"]): stri
 function jobText(theme: Theme, job: BackgroundJobSnapshot): string {
   const role = sanitizeSubagentDisplay(job.details.agent?.name ?? "generic").replace(/\s+/g, " ").trim() || "generic";
   const identity = theme.fg("accent", role) + theme.fg("dim", ` ${shortId(job.id)}`);
-  const call = truncateToWidth(latestCall(job), MAX_CALL_WIDTH, "...");
+  const call = truncateToWidth(latestToolCallSummary(job.details.timeline), MAX_CALL_WIDTH, "...");
   return `${identity} ${statusText(theme, job.status)}${theme.fg("dim", " · ")}${theme.fg("text", call)}`;
 }
 

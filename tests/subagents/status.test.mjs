@@ -73,6 +73,21 @@ test("native status prioritizes active jobs and exposes no tool results", () => 
   assert.equal(renderNativeSubagentStatus(plainTheme(), [{ ...jobs[0], status: "done" }]), undefined);
 });
 
+test("native status uses specialized sg and GitHub summaries without result payloads", () => {
+  const jobs = [
+    job("subagent_dddddddd-dddd-4ddd-8ddd-dddddddddddd", "running", 1, "explorer", toolTimeline(
+      "sg {\"pattern\":\"call($A)\",\"path\":\"src\",\"language\":\"ts\"}",
+    )),
+    job("subagent_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "running", 2, "librarian", toolTimeline(
+      "github_commit {\"repo\":\"owner/name\",\"ref\":\"abc123\",\"token\":\"private\"}",
+    )),
+  ];
+  const rendered = renderNativeSubagentStatus(plainTheme(), jobs);
+  assert.match(rendered, /sg \/call\(\$A\)\/ in src · ts/);
+  assert.match(rendered, /github_commit owner\/name@abc123/);
+  assert.doesNotMatch(rendered, /SECRET TOOL RESULT|token|private/);
+});
+
 test("native status bounds unicode-safe visible output and strips controls", () => {
   const longCall = `read ${"界".repeat(100)}\npassword=private-value`;
   const jobs = [
