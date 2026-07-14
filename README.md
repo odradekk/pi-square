@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, bundled search, web, GitHub, and documentation tools, subagents, the status line, a Scheme sandbox, and PowerShell execution.
+`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, bundled search, web, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
 
 ## Runtime contract
 
@@ -22,6 +22,16 @@
 ## Themes
 
 The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their near-monochrome palette uses low-contrast surfaces, one cool blue-gray accent for structure, and restrained semantic status colors. Both variants include explicit HTML export colors and the complete Pi 0.80.6 theme token set.
+
+## Enhanced footer
+
+The TUI defaults to a two-line editorial footer that preserves Pi's native data semantics while improving hierarchy and responsive behavior. The first row aligns project path, git branch, and session name against provider, model display name, and thinking level. The second groups cumulative input/output, cache read/write and latest hit rate, subscription-aware cost, and a thin context bar with native 70% warning and 90% error thresholds. Data is read directly from Pi's read-only session manager, model registry, context API, and footer data provider on every render; the extension does not poll git, persist duplicate usage state, or copy internal session data.
+
+At 120 columns the footer shows all available fields. At 80 columns it keeps core usage and context while dropping session/provider detail. At 40 columns it prioritizes context risk, model/thinking, and the project basename. The matched dark and light themes use one restrained accent, dim/muted supporting text, and semantic color only for risk or cancellation; the footer has no background cards, emoji, or decorative animation.
+
+Active background subagents continue to publish through Pi's official `ctx.ui.setStatus()` API. A conditional third row displays the active count and, by priority (`cancelling`, `running`, then `queued`), at most two role/short-ID/status/latest-tool summaries followed by `+N` overflow. Tool calls are sanitized and credential-redacted, tool result payloads never enter the footer, and the status is removed when no background work remains. Other extension statuses remain visible after the subagent summary in stable key order.
+
+Set `"footer": { "mode": "native" }` in configuration V2 to restore Pi's built-in `FooterComponent`; `enhanced` is the default. The former `/statusline` command, `alt+s` shortcut, and `statusline.enabled`/`statusline.shortcut` settings are not registered.
 
 ## Banner
 
@@ -96,7 +106,7 @@ Run details use persistence version 3 and are indexed by the parent Pi session. 
 
 `/subagent` with no arguments temporarily replaces the editor with a non-overlay Pi-native three-tab manager and restores the original editor text when closed. Its adaptive 72–104-column workbench is single-column on narrow terminals and splits into list/detail columns when space permits. `RUNNING` shows current-session queued/background work and can cancel it through a real `cancelling` transition while retaining resumable artifacts. `SESSION` shows V3 children created or resumed by the current parent session and supports `Resume original`, `Start fresh with current definition`, and confirmed history deletion. `DEFINITIONS` shows effective values and field sources, with project-default or explicitly agent-scoped create/edit/hide/delete actions. Task editors, scope/field choices, `inherit`/`set`/`clear` controls, YAML/effective-diff review, and destructive confirmations remain inside one focus-preserving manager workflow. Manager-started resume/fresh actions enter the session-owned background lifecycle, remain visible and cancellable, and return completion notifications. Package definitions are never edited in place.
 
-`/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses Pi's native skill-card visual language without claiming to be a skill; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands. While the custom status line is enabled, active background work appears on a bounded second footer row with agent, short ID, phase, latest sanitized tool call parameters, turns, and elapsed time; narrow terminals degrade to compact identity/status segments and `+N` overflow. Tool result payloads never enter the footer.
+`/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses Pi's native skill-card visual language without claiming to be a skill; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands.
 
 ## Platform shell tools
 
@@ -146,7 +156,21 @@ Results are deliberately bounded and explicit about incompleteness. Search expos
 
 ## Configuration
 
-Non-secret settings live in `config/pi-square.json` at agent or project scope. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
+Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict and supports footer mode and the optional banner setting:
+
+```json
+{
+  "version": 2,
+  "footer": {
+    "mode": "enhanced"
+  },
+  "banner": {
+    "enabled": false
+  }
+}
+```
+
+`footer.mode` accepts only `enhanced` or `native`; `enhanced` is the default. V1 is no longer accepted. Migrate by deleting the complete `statusline` object and changing `"version": 1` to `"version": 2`; use `footer.mode` for the new startup-only fallback. Unknown fields reject that configuration layer rather than being ignored. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
 
 ## Development
 

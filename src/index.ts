@@ -3,13 +3,13 @@ import registerAskUser from "./ask-user";
 import registerBanner from "./banner";
 import { DEFAULT_CONFIG, loadConfig, type PiSquareConfig } from "./core/config";
 import { emitDiagnostics } from "./core/diagnostics";
+import registerFooter from "./footer";
 import registerGitHub from "./github";
 import registerNotifications from "./notifications";
 import registerPromptManager from "./prompt-manager";
 import registerSchemeSandbox from "./scheme";
 import registerSearchTools from "./search";
 import registerShellTools from "./shell";
-import registerStatusline from "./statusline";
 import registerSubagents from "./subagents";
 import registerTime from "./time";
 import registerTodo from "./todo";
@@ -32,9 +32,9 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerWebTools(pi);
   registerGitHub(pi);
   const subagents = registerSubagents(pi);
+  registerFooter(pi, () => config);
   registerSchemeSandbox(pi);
   registerShellTools(pi);
-  registerStatusline(pi, () => config, subagents);
   registerBanner(pi, () => config);
   registerPromptManager(pi, subagents);
 }

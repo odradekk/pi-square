@@ -5,10 +5,9 @@ import { diagnostic, type DiagnosticMessage } from "./diagnostics";
 import { getAgentPath, getProjectPath } from "./paths";
 
 const ConfigLayerSchema = Type.Object({
-  version: Type.Optional(Type.Literal(1)),
-  statusline: Type.Optional(Type.Object({
-    enabled: Type.Optional(Type.Boolean()),
-    shortcut: Type.Optional(Type.String({ minLength: 1 })),
+  version: Type.Optional(Type.Literal(2)),
+  footer: Type.Optional(Type.Object({
+    mode: Type.Optional(Type.Union([Type.Literal("enhanced"), Type.Literal("native")])),
   }, { additionalProperties: false })),
   banner: Type.Optional(Type.Object({
     enabled: Type.Optional(Type.Boolean()),
@@ -18,10 +17,9 @@ const ConfigLayerSchema = Type.Object({
 type ConfigLayer = Static<typeof ConfigLayerSchema>;
 
 export interface PiSquareConfig {
-  version: 1;
-  statusline: {
-    enabled: boolean;
-    shortcut: string;
+  version: 2;
+  footer: {
+    mode: "enhanced" | "native";
   };
   banner: {
     enabled: boolean;
@@ -29,8 +27,8 @@ export interface PiSquareConfig {
 }
 
 export const DEFAULT_CONFIG: Readonly<PiSquareConfig> = Object.freeze({
-  version: 1,
-  statusline: Object.freeze({ enabled: true, shortcut: "alt+s" }),
+  version: 2,
+  footer: Object.freeze({ mode: "enhanced" as const }),
   banner: Object.freeze({ enabled: true }),
 });
 
@@ -42,6 +40,19 @@ function readLayer(path: string): { value?: ConfigLayer; diagnostics: Diagnostic
   } catch (error) {
     return {
       diagnostics: [diagnostic("warning", `pi-square config ignored at ${path}: ${error instanceof Error ? error.message : String(error)}`)],
+    };
+  }
+  if (
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && ((value as { version?: unknown }).version === 1 || Object.hasOwn(value, "statusline"))
+  ) {
+    return {
+      diagnostics: [diagnostic(
+        "warning",
+        `pi-square config ignored at ${path}: configuration V1 and the former statusline settings are no longer supported; remove statusline and set version to 2`,
+      )],
     };
   }
   if (!Value.Check(ConfigLayerSchema, value)) {
@@ -56,10 +67,9 @@ function readLayer(path: string): { value?: ConfigLayer; diagnostics: Diagnostic
 function mergeLayer(base: PiSquareConfig, layer: ConfigLayer | undefined): PiSquareConfig {
   if (!layer) return base;
   return {
-    version: 1,
-    statusline: {
-      enabled: layer.statusline?.enabled ?? base.statusline.enabled,
-      shortcut: layer.statusline?.shortcut ?? base.statusline.shortcut,
+    version: 2,
+    footer: {
+      mode: layer.footer?.mode ?? base.footer.mode,
     },
     banner: {
       enabled: layer.banner?.enabled ?? base.banner.enabled,

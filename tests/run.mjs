@@ -22,7 +22,10 @@ const suites = [
   "ask/tool.test.mjs",
   "ask/rendering.test.mjs",
   "banner/banner.test.mjs",
-  "statusline/statusline.test.mjs",
+  ...readdirSync(join(testsDir, "footer"))
+    .filter((name) => name.endsWith(".test.mjs"))
+    .sort()
+    .map((name) => `footer/${name}`),
   "scheme/sandbox.test.mjs",
   "scheme/tool.test.mjs",
   "scheme/rendering.test.mjs",

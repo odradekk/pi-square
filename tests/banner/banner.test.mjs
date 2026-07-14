@@ -20,7 +20,7 @@ function makePi() {
 
 test("tui session_start with banner enabled sets a header that renders the π² mark", async () => {
   const { pi, handlers } = makePi();
-  registerBanner(pi, () => ({ version: 1, statusline: { enabled: true, shortcut: "alt+s" }, banner: { enabled: true } }));
+  registerBanner(pi, () => ({ version: 2, footer: { mode: "enhanced" }, banner: { enabled: true } }));
   assert.deepEqual([...handlers.keys()], ["session_start"]);
 
   const headerCalls = [];
@@ -37,7 +37,7 @@ test("tui session_start with banner enabled sets a header that renders the π² 
 
 test("banner.enabled=false restores the built-in header instead of setting one", async () => {
   const { pi, handlers } = makePi();
-  registerBanner(pi, () => ({ version: 1, statusline: { enabled: true, shortcut: "alt+s" }, banner: { enabled: false } }));
+  registerBanner(pi, () => ({ version: 2, footer: { mode: "enhanced" }, banner: { enabled: false } }));
 
   const headerCalls = [];
   const ctx = { mode: "tui", ui: { setHeader(factory) { headerCalls.push(factory); } } };
@@ -49,7 +49,7 @@ test("banner.enabled=false restores the built-in header instead of setting one",
 
 test("non-tui sessions never touch the header", async () => {
   const { pi, handlers } = makePi();
-  registerBanner(pi, () => ({ version: 1, statusline: { enabled: true, shortcut: "alt+s" }, banner: { enabled: true } }));
+  registerBanner(pi, () => ({ version: 2, footer: { mode: "enhanced" }, banner: { enabled: true } }));
 
   const headerCalls = [];
   const ctx = { mode: "headless", ui: { setHeader(factory) { headerCalls.push(factory); } } };

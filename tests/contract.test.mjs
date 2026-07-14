@@ -74,7 +74,7 @@ try {
   assert.deepEqual(createChildTools(githubToolNames).definitions.map((definition) => definition.name), githubToolNames);
   assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
-  assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline", "subagent"]);
+  assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
   assert.deepEqual([...shortcuts.keys()], ["alt+i"]);
   assert.deepEqual([...renderers.keys()], [
@@ -99,7 +99,7 @@ try {
   for (const handler of events.get("session_start") ?? []) {
     await handler({ type: "session_start", reason: "startup" }, ctx);
   }
-  assert.ok(shortcuts.has("alt+s"), "statusline shortcut should register from effective config");
+  assert.equal(shortcuts.has("alt+s"), false, "native footer must not register the former statusline shortcut");
   assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should gain command highlighting after session start");
   assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should retain Pi's native result renderer");
   assert.deepEqual(activeTools, ["read", "bash"]);

@@ -13,29 +13,53 @@ try {
   mkdirSync(join(agentDir, "config"), { recursive: true });
   mkdirSync(join(projectDir, ".pi", "config"), { recursive: true });
   writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
-    version: 1,
-    statusline: { shortcut: "alt+x" },
+    version: 2,
+    footer: { mode: "native" },
+    banner: { enabled: false },
   }));
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
-    version: 1,
-    statusline: { enabled: false },
-    banner: { enabled: false },
+    version: 2,
+    footer: { mode: "enhanced" },
+    banner: { enabled: true },
   }));
 
   const load = jiti(import.meta.url, { moduleCache: false });
   const { loadConfig, DEFAULT_CONFIG } = await load("../src/core/config.ts");
+  assert.equal(DEFAULT_CONFIG.version, 2);
+  assert.equal(DEFAULT_CONFIG.footer.mode, "enhanced");
   assert.equal(DEFAULT_CONFIG.banner.enabled, true);
   const loaded = loadConfig(projectDir);
-  assert.equal(loaded.config.statusline.enabled, false);
-  assert.equal(loaded.config.statusline.shortcut, "alt+x");
-  assert.equal(loaded.config.banner.enabled, false);
+  assert.equal(loaded.config.version, 2);
+  assert.equal(loaded.config.footer.mode, "enhanced");
+  assert.equal(loaded.config.banner.enabled, true);
   assert.equal(loaded.diagnostics.length, 0);
 
-  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({ version: 1, unknown: true }));
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 1,
+    statusline: { enabled: false },
+    banner: { enabled: true },
+  }));
+  const legacy = loadConfig(projectDir);
+  assert.equal(legacy.config.footer.mode, "native", "invalid project layer must not replace valid agent settings");
+  assert.equal(legacy.config.banner.enabled, false, "invalid project layer must not replace valid agent settings");
+  assert.equal(legacy.diagnostics.length, 1);
+  assert.match(legacy.diagnostics[0].message, /configuration V1 and the former statusline settings are no longer supported/);
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({ version: 2, unknown: true }));
   const invalid = loadConfig(projectDir);
-  assert.equal(invalid.config.statusline.shortcut, "alt+x");
+  assert.equal(invalid.config.footer.mode, "native");
+  assert.equal(invalid.config.banner.enabled, false);
   assert.equal(invalid.diagnostics.length, 1);
   assert.match(invalid.diagnostics[0].message, /config ignored/);
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    footer: { mode: "decorative" },
+  }));
+  const invalidMode = loadConfig(projectDir);
+  assert.equal(invalidMode.config.footer.mode, "native");
+  assert.equal(invalidMode.diagnostics.length, 1);
+  assert.match(invalidMode.diagnostics[0].message, /config ignored/);
   console.log("config tests: OK");
 } finally {
   if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;

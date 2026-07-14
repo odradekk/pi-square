@@ -58,7 +58,7 @@ try {
 
   const commands = extensionsResult.runtime.getCommands().map((command) => command.name).sort();
   const extensionCommands = commands.filter((name) => !name.startsWith("skill:"));
-  assert.deepEqual(extensionCommands, ["context", "prompt-manager", "statusline", "subagent"]);
+  assert.deepEqual(extensionCommands, ["context", "prompt-manager", "subagent"]);
   assert.ok(!commands.includes("prompt-inspect"));
 
   const skills = resourceLoader.getSkills().skills;
