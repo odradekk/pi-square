@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, bundled search, web and documentation tools, subagents, the status line, a Scheme sandbox, and PowerShell execution.
+`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, bundled search, web, GitHub, and documentation tools, subagents, the status line, a Scheme sandbox, and PowerShell execution.
 
 ## Runtime contract
 
@@ -111,6 +111,24 @@ The tool was renamed from `scheme_eval` to `scheme`. Custom subagent YAML must u
 ## Web and documentation tools
 
 The `search`, `fetch`, `libs`, and `docs` tools run through Jina and Context7 and use Pi's native collapsible presentation. Collapsed rows show concise result, omission, retry, redirect, token, and error status without content previews. Expanded `search` and `fetch` results reveal ranked links or complete per-page Markdown; expanded `libs` results show ranked Context7 IDs, descriptions, all available selection metadata, and validated sources; expanded `docs` results show the complete selected Rules, Code, and Documentation sections with per-snippet token counts and syntax-highlighted code. All four tools retain the default Pi shell, theme-driven colors, provider ordering, and unchanged model-facing `content`. Display-only Markdown removes terminal controls and neutralizes provider-authored link targets outside code, while tool-validated HTTP(S) result, page, and source links remain clickable.
+
+## GitHub tools
+
+The parent Pi session exposes four authenticated, read-only GitHub.com tools: `github_search` searches repositories or default-branch code; `github_read` reads a UTF-8 file or the repository README with line pagination; `github_tree` browses a repository-relative path with depth 1-4; and `github_commit` returns commit metadata, changed-file pages, and available bounded patches. These tools are intentionally absent from the subagent tool catalog and bundled subagent definitions. They use the GitHub REST API version `2026-03-10`, Node's native `fetch`, and Pi-native collapsible renderers with the default tool shell.
+
+Set `GITHUB_TOKEN` or add a PAT to Pi-owned `auth.json`; the environment variable takes precedence:
+
+```json
+{
+  "github": {
+    "key": "github_pat_..."
+  }
+}
+```
+
+A fine-grained PAT should grant access only to the repositories it needs and use read-only Contents permission when private repository contents or commits must be read. All tools fail before network access when no token is configured. Requests stay on `https://api.github.com`, carry an explicit API version and user agent, accept at most one same-origin redirect, retry one transient `502`/`503`/`504`, and never send the PAT to another origin. Authentication failures, SSO/permission failures, rate limits, inaccessible resources, validation failures, cancellation, malformed responses, and local response caps remain distinct result states.
+
+Results are deliberately bounded and explicit about incompleteness. Search exposes GitHub's `incomplete_results`, 1,000-result window, pagination, and rate metadata; GitHub itself limits code search to the default branch, files smaller than 384 KiB, and 10 authenticated requests per minute. File reads accept at most 2 MiB and return at most 50 KiB/2,000 lines per call. Tree traversal uses at most 20 API requests, 100 KiB of output, 200 returned entries, and reports the Contents API's 1,000-entry directory boundary. Commit output is capped at 100 KiB with at most 50 changed files per page and a separate patch budget; unavailable binary patches and locally omitted patches are labeled. The module creates no cache, log, or artifact, and redacts PAT-shaped text from model and TUI output. Normal Pi persistence still applies: private paths, source excerpts, and commit patches returned by these tools are written to the session JSONL.
 
 ## Configuration
 

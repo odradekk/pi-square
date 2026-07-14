@@ -45,8 +45,9 @@ try {
   assert.ok(paths[0].endsWith("/packages/pi-square/src/index.ts"));
 
   const expectedTools = [
-    "ask", "docs", "fd", "fetch", "libs",
-    "rg", "scheme", "search", "subagent", "time", "todo",
+    "ask", "docs", "fd", "fetch", "github_commit", "github_read",
+    "github_search", "github_tree", "libs", "rg", "scheme", "search",
+    "subagent", "time", "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));

@@ -30,6 +30,9 @@ const suites = [
   "web/context7-tools.test.mjs",
   "web/context7-rendering.test.mjs",
   "web/search-fetch-tools.test.mjs",
+  "github/client.test.mjs",
+  "github/tools.test.mjs",
+  "github/rendering.test.mjs",
   "search/run.mjs",
   ...readdirSync(join(testsDir, "subagents"))
     .filter((name) => name.endsWith(".test.mjs"))

@@ -40,8 +40,9 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "docs", "fd", "fetch", "libs",
-    "rg", "scheme", "search", "subagent", "time", "todo",
+    "ask", "docs", "fd", "fetch", "github_commit", "github_read",
+    "github_search", "github_tree", "libs", "rg", "scheme", "search",
+    "subagent", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
   assert.ok(!childToolNames.includes("scheme_eval"));
@@ -68,6 +69,10 @@ try {
   assert.deepEqual(todoTool?.parameters?.required, ["action"]);
   assert.equal(todoTool?.parameters?.properties?.action?.enum?.length, 9);
   assert.ok(!childToolNames.includes("todo"));
+  for (const name of ["github_search", "github_read", "github_tree", "github_commit"]) {
+    assert.ok(!childToolNames.includes(name), `${name} must remain parent-only`);
+    assert.equal(createChildTools([name]).definitions.length, 0, `${name} must not resolve for child sessions`);
+  }
   assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline", "subagent"]);
