@@ -1,6 +1,7 @@
 ---
 name: write-a-skill
-description: Create new agent skills with proper structure, progressive disclosure, and bundled resources following the Pi / Agent Skills standard. Use when the user wants to create, write, or build a new skill.
+description: Create new agent skills with proper structure, progressive disclosure, and bundled resources following the Pi / Agent Skills standard.
+disable-model-invocation: true
 ---
 
 # Writing Skills

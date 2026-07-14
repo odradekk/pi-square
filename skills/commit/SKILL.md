@@ -4,12 +4,9 @@ description: >
   Classify and commit uncommitted changes into semantic groups with per-group
   interactive confirmation, using the full Conventional Commits prefix set
   (feat, fix, refactor, perf, docs, test, style, build, ci, chore).
-  Use when: user asks to commit, organize commits, or split an uncommitted working
+  Use when user asks to commit, organize commits, or split an uncommitted working
   tree into clean conventional commits.
-  Do not use when: user wants code review, planning, brainstorming, PR/MR creation,
-  or a single unstructured "commit everything" pass.
 argument-hint: "[optional language or context instructions]"
-allowed-tools: [bash, read, write, ask]
 ---
 
 # Commit

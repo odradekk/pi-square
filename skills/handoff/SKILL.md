@@ -1,5 +1,6 @@
 ---
 name: handoff
+disable-model-invocation: true
 description: Compact the current conversation into a handoff document so a fresh agent can pick the work up. Use when the user asks to hand off, resume later, switch sessions, or summarize the conversation for continuation.
 ---
 

@@ -2,11 +2,8 @@
 name: zoom-out
 description: >
   Map an unfamiliar code area at a higher level: modules, callers, data flow, ownership, and strategic context.
-  Use when: user asks to zoom out, explain how an area fits together, map callers,
-  understand a subsystem, or step back from low-level debugging.
-  Do not use when: user asks for a specific edit, exact symbol lookup, or direct bug fix.
+disable-model-invocation: true
 argument-hint: "[file, symbol, subsystem, or behavior]"
-allowed-tools: [read, rg, fd, subagent]
 ---
 
 # Zoom Out

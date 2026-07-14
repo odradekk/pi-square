@@ -4,7 +4,6 @@ description: >
   Run a Principle Questioning loop after code generation: the agent quizzes the user
   on data flow, state, complexity, and edge cases of the produced code before treating
   it as accepted, preventing rubber-stamping of AI output.
-  Use when: user invokes via /skill:manual-programming.
 disable-model-invocation: true
 ---
 

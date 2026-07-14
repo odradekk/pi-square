@@ -3,11 +3,9 @@ name: diagnose
 description: >
   Run a disciplined diagnosis loop for hard bugs and performance regressions:
   reproduce, minimise, hypothesise, instrument, fix, and regression-test.
-  Use when: user says diagnose/debug, reports broken behavior, failing tests,
+  Use when user says diagnose/debug, reports broken behavior, failing tests,
   thrown errors, flaky behavior, or performance regression.
-  Do not use when: user already asks for a specific small edit with a known cause.
 argument-hint: "[bug report, failing command, symptom, or performance regression]"
-allowed-tools: [bash, read, write, edit, rg, fd, ask, subagent]
 ---
 
 # Diagnose

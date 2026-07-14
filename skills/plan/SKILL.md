@@ -2,12 +2,7 @@
 name: plan
 description: >
   Turn a decided goal into a reviewable, decision-complete implementation plan, scaled to the task's size.
-  Use when: "plan this out", "create a roadmap", "break this into phases", "break this into steps",
-  "give me a step-by-step", "how should I build this", or before starting a non-trivial multi-step change.
-  Do not use when: the goal is still undecided and needs divergent exploration (use brainstorm),
-  the task is a single known edit with an obvious cause, or something is broken and needs root-causing (use diagnose).
 argument-hint: "[feature, task, or goal to plan]"
-allowed-tools: [read, rg, fd, search, write, ask, subagent, todo]
 ---
 
 # Plan — Decision-Complete Implementation Planning
@@ -62,7 +57,7 @@ Every step must be decision-complete: the file to change, the nature of the chan
 
 Before presenting, scan the plan against `${PI_SKILL_DIR}/references/review-checklist.md`. The placeholder scan is mandatory for every tier. For Standard and Deep, also run the self-review section of the checklist. For Standard/Deep, fold any fixes back into the plan file by rewriting it before presenting — the presented file must be the reviewed version, not the first draft.
 
-For **Deep** tasks only, run an adversarial pass: delegate the drafted plan to a `thinker` subagent with the critique brief in the review checklist, then fold genuine findings back into the plan. Skip this for Light and Standard — it is ceremony there.
+For **Deep** tasks only, run an adversarial pass: delegate the drafted plan to an `oracle` subagent with the critique brief in the review checklist, then fold genuine findings back into the plan. Skip this for Light and Standard — it is ceremony there.
 
 ## Phase 4: Approval checkpoint
 

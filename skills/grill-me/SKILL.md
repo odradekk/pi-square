@@ -3,11 +3,8 @@ name: grill-me
 description: >
   Stress-test a plan or design by asking one decision-shaping question at a time,
   with a recommended answer for each question.
-  Use when: user says grill me, stress-test this plan, challenge my design,
-  find missing assumptions, or interrogate this proposal.
-  Do not use when: the user asks for direct implementation, routine debugging, or a factual answer.
+disable-model-invocation: true
 argument-hint: "[plan, design, proposal, or decision]"
-allowed-tools: [ask, read, rg, fd, subagent]
 ---
 
 # Grill Me

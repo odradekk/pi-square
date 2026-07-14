@@ -4,13 +4,9 @@ description: >
   Open a Pull Request on GitHub (via `gh`) or a Merge Request on GitLab (via `glab`)
   from the current branch, composing a structured title and Changelog-style description
   derived from the branch's Conventional Commits. Supports draft/ready, labels,
-  reviewers, assignees.
-  Use when: user asks to open a PR, create an MR, submit changes for review, or push
+  reviewers, assignees. Use when user asks to open a PR, create an MR, submit changes for review, or push
   a feature branch upstream for merge.
-  Do not use when: user wants to make commits (use /skill:commit), perform code review,
-  do post-merge cleanup, or work on a target system without `gh` or `glab` configured.
 argument-hint: "[optional language, target branch, or context instructions]"
-allowed-tools: [bash, read, write, ask]
 ---
 
 # Pull Request / Merge Request

@@ -26,7 +26,7 @@ If the scan finds nothing, the plan passes this gate. If it finds anything, the 
 
 ## Adversarial pass (Deep only)
 
-Delegate the drafted plan to a `thinker` subagent. Brief:
+Delegate the drafted plan to an `oracle` subagent. Brief:
 
 > Task: critique this implementation plan as an adversarial reviewer. The plan is below.
 > Context: <the goal, the tier, the key constraints from exploration>.

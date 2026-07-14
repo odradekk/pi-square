@@ -3,13 +3,8 @@ name: brainstorm
 description: >
   Guide divergent-to-convergent thinking for any idea, concept, requirement, or feature,
   producing an actionable markdown deliverable.
-  Use when: "brainstorm", "let's brainstorm", "help me think through", "explore this idea",
-  "I have an idea", "let's diverge", or the user presents a vague idea needing structured exploration.
-  Do not use when: user says "plan this out", "create a roadmap", "break this into phases",
-  "break this into steps", "give me a step-by-step", "how do I do this",
-  wants code review, adversarial review, or pair programming.
+disable-model-invocation: true
 argument-hint: "[idea, topic, or problem to explore]"
-allowed-tools: [read, rg, fd, search, write, ask, subagent]
 ---
 
 # Brainstorm — Diverge-Converge Facilitator
@@ -123,7 +118,7 @@ Once the draft is confirmed, ask in a single combined prompt:
 
 "Draft is confirmed. Want an independent perspective review (an outside agent critiquing completeness, feasibility, blind spots, actionability), or is there anything else to add? Otherwise I'll write the file."
 
-- **Review requested.** Delegate to an independent reviewer (e.g. a `thinker` or `worker` subagent) with the draft and a critique brief covering completeness, feasibility, blind spots, and actionability. Present the feedback, ask which points to incorporate, update the draft.
+- **Review requested.** Delegate to an independent reviewer (e.g. an `oracle` or `generalist` subagent) with the draft and a critique brief covering completeness, feasibility, blind spots, and actionability. Present the feedback, ask which points to incorporate, update the draft.
 - **Supplements offered.** Incorporate them and re-present the draft.
 - **Neither.** Proceed.
 
