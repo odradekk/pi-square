@@ -12,7 +12,8 @@ export const DEFAULT_FD_MATCH_MODE: FdMatchMode = "regex";
 // ---------- Schema bounds ----------
 
 export const MIN_LIMIT = 1;
-export const MAX_LIMIT = 50;
+export const MAX_LIMIT = 100;
+export const MAX_SG_LIMIT = 50;
 export const MAX_OFFSET = 1_000_000;
 
 export const MIN_CONTEXT = 0;

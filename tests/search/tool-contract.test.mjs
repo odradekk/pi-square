@@ -29,13 +29,19 @@ test("rg schema requires pattern", async () => {
   assert.ok(def.parameters.required.includes("pattern"));
 });
 
-test("rg schema offset bounded 0-1000000 and limit bounded 1-50", async () => {
+test("rg and fd schemas bound offset to 1000000 and limit to 1-100", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
-  const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
-  assert.equal(def.parameters.properties.offset.minimum, 0);
-  assert.equal(def.parameters.properties.offset.maximum, 1_000_000);
-  assert.equal(def.parameters.properties.limit.minimum, 1);
-  assert.equal(def.parameters.properties.limit.maximum, 50);
+  const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
+  const definitions = [
+    createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP }),
+    createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP }),
+  ];
+  for (const def of definitions) {
+    assert.equal(def.parameters.properties.offset.minimum, 0);
+    assert.equal(def.parameters.properties.offset.maximum, 1_000_000);
+    assert.equal(def.parameters.properties.limit.minimum, 1);
+    assert.equal(def.parameters.properties.limit.maximum, 100);
+  }
 });
 
 test("rg schema rejects empty pattern, path, glob, and type strings", async () => {
