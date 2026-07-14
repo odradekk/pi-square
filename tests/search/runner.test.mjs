@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { loadModule, run, test } from "./lib/test-helpers.mjs";
 
@@ -29,6 +31,17 @@ test("runCommand applies cwd and can stream without retaining stdout", async () 
   assert.equal(Buffer.concat(chunks).toString(), tmpdir());
 });
 
+test("runCommand applies an explicit environment and streams stderr", async () => {
+  const { runCommand } = await loadModule("src/search/runner.ts");
+  const stderr = [];
+  const result = await runCommand(process.execPath, ["-e", "process.stdout.write(process.env.PI_RUNNER_TEST || '');process.stderr.write('progress')"], {
+    env: { ...process.env, PI_RUNNER_TEST: "isolated" },
+    onStderrChunk: (chunk) => stderr.push(chunk),
+  });
+  assert.equal(result.stdout.toString(), "isolated");
+  assert.equal(Buffer.concat(stderr).toString(), "progress");
+});
+
 test("runCommand reports non-zero exit code", async () => {
   const { runCommand } = await loadModule("src/search/runner.ts");
   const [cmd, args] = nodeOut("process.exit(3)");
@@ -46,6 +59,32 @@ test("runCommand detects abort via AbortSignal", async () => {
   setTimeout(() => controller.abort(), 50);
   const result = await promise;
   assert.equal(result.status, "aborted");
+});
+
+test("runCommand abort kills a spawned process tree", async () => {
+  const { runCommand } = await loadModule("src/search/runner.ts");
+  const root = mkdtempSync(join(tmpdir(), "pi-process-tree-"));
+  const pidFile = join(root, "child.pid");
+  const parentCode = `const {spawn}=require('node:child_process');const fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},1000);`;
+  const controller = new AbortController();
+  try {
+    const promise = runCommand(process.execPath, ["-e", parentCode], {
+      signal: controller.signal,
+      killTree: true,
+      timeout: 5000,
+    });
+    const deadline = Date.now() + 3000;
+    while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(existsSync(pidFile), "grandchild pid must be recorded");
+    const grandchildPid = Number(readFileSync(pidFile, "utf8"));
+    controller.abort();
+    const result = await promise;
+    assert.equal(result.status, "aborted");
+    await new Promise((resolve) => setTimeout(resolve, process.platform === "win32" ? 500 : 100));
+    assert.throws(() => process.kill(grandchildPid, 0), "grandchild must not survive process-tree cancellation");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("runCommand enforces injected timeout", async () => {

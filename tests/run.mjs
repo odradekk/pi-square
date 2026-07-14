@@ -36,6 +36,10 @@ const suites = [
   "github/client.test.mjs",
   "github/tools.test.mjs",
   "github/rendering.test.mjs",
+  "codegraph/binary.test.mjs",
+  "codegraph/tool.test.mjs",
+  "codegraph/rendering.test.mjs",
+  "codegraph/integration.test.mjs",
   "search/run.mjs",
   ...readdirSync(join(testsDir, "subagents"))
     .filter((name) => name.endsWith(".test.mjs"))

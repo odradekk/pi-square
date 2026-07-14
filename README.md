@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, and structural code search, web, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
+`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, web, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
 
 ## Runtime contract
 
@@ -57,6 +57,16 @@ The bundled `rg` and `fd` tools expose schema-validated text-search and file-dis
 
 All three tools use Pi-native collapsible presentation. Calls show every explicitly supplied parameter and omit unspecified defaults, while collapsed results show only result, paging, truncation, and error status. Expanded `rg` results group matches by file with aligned line/column gutters, exact match highlighting, subdued context, and continuation notices; expanded `fd` results show compact path hierarchy; expanded `sg` results group structural matches by file and include bounded metavariable captures. Valid local text paths are clickable when the terminal supports hyperlinks, while byte paths and UNC/network paths remain inert. Display text escapes terminal controls, model-facing output stays within explicit budgets, and zero-progress pages fail instead of looping.
 
+## Semantic CodeGraph tool
+
+The `codegraph` tool integrates the exact `@colbymchenry/codegraph` `1.4.1` platform bundle for local semantic code intelligence. Use `operation: explore` for cross-file behavior, call paths, architecture, and impact; exact text remains an `rg` concern, AST shapes remain an `sg` concern, and known files should be read directly. Explore returns CodeGraph's line-numbered source and relationship Markdown with a 24,000-character model-facing cap. `status` returns structured index health and statistics.
+
+The parent session also exposes index lifecycle operations. `init` creates `.codegraph/codegraph.db` only after Pi confirmation, `sync` performs an incremental update, and `reindex` replaces an unhealthy or version-stale database only after separate confirmation. Explore checks index health first and automatically runs a bounded incremental sync when files changed; it never silently initializes or fully rebuilds an index. Missing indexes and rebuild requirements are recoverable results so the model can request initialization once or fall back to `rg`, `sg`, and `read`.
+
+Every path is canonicalized and must remain at or below the session cwd, including through symlinks. CodeGraph runs as a cancellable foreground process with bounded stdout/stderr and process-tree termination; pi-square does not start its MCP daemon or watcher. The wrapper resolves the installed platform package directly and invokes its bundled Node runtime without PATH lookup or the npm shim, so the shim's network download fallback is unreachable. It also forces `DO_NOT_TRACK=1`, disables CodeGraph telemetry/update checks/downloads/watchers, and performs no CodeGraph network requests. The platform package is large because it includes a complete runtime; the installed Linux x64 package is approximately 226 MiB unpacked.
+
+Explorer, Oracle, and Generalist receive a read-only child definition limited to `explore` and `status`. Only the parent definition can initialize, synchronize, or rebuild an index. Crawler and Librarian do not receive CodeGraph.
+
 ## Subagent presentation
 
 The `subagent` tool uses a Pi-native, collapsible editorial layout across foreground runs, resumed sessions, and background queue results. The primary tool presentation is unframed, with a restrained near-monochrome hierarchy, width-aware title and status columns, subtle section rules, and responsive activity ledgers instead of decorative cards, emoji, or undifferentiated log rows. Background completion follow-ups reuse Pi's native tool shell, including success/error backgrounds and padding, so asynchronous results remain visually consistent with ordinary tool output. Calls identify the agent and user-facing mode, show a bounded three-visual-line task preview, and report explicit model, effort, context, cwd, and custom-instruction overrides without displaying custom system-prompt text.
@@ -83,7 +93,7 @@ instructions: |
 output: |
   Return findings, relevant files, gaps, and confidence.
 tools: [read, ls]
-extensionTools: [rg, fd, sg]
+extensionTools: [rg, fd, sg, codegraph]
 skills: [none]
 visible: true
 ```
@@ -94,11 +104,11 @@ The five visible package roles are intentionally complementary:
 
 | Role | Responsibility | Default capabilities |
 | --- | --- | --- |
-| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `rg`, `fd`, `sg`; no skills |
-| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | Local read-only retrieval including `rg`, `fd`, and `sg`; no skills |
+| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `rg`, `fd`, `sg`, read-only `codegraph`; no skills |
+| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | Local read-only retrieval including `rg`, `fd`, `sg`, and `codegraph`; no skills |
 | `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `search`, `fetch`, `libs`, `docs`; no skills |
 | `librarian` | Research authorized GitHub repositories, files, trees, and commits | Only the four authenticated `github_*` tools; no skills |
-| `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, search, web, Context7, Scheme, and all discovered skills; no GitHub PAT tools |
+| `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, read-only CodeGraph, search, web, Context7, Scheme, and all discovered skills; no GitHub PAT tools |
 
 This catalog replaces the former package `thinker` and `worker` IDs; the former external-research `librarian` role becomes `crawler`, and `librarian` now means GitHub-only research. Existing agent/project overlays are trusted local definitions and are not renamed automatically, so migrate those filenames and `name` fields explicitly when the new package roles should apply.
 
@@ -182,6 +192,12 @@ Run the quality gates from the package root:
 npm test
 npm run typecheck
 npm run smoke
+```
+
+Run the optional, non-blocking deterministic CodeGraph retrieval comparison separately. It reports one semantic query against a fixed three-file fixture versus an `rg` plus known-file-read baseline; it is not a model-quality benchmark and is not part of `npm test`:
+
+```bash
+npm run eval:codegraph
 ```
 
 ## Versioning

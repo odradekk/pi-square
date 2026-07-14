@@ -45,7 +45,7 @@ try {
   assert.ok(paths[0].endsWith("/packages/pi-square/src/index.ts"));
 
   const expectedTools = [
-    "ask", "docs", "fd", "fetch", "github_commit", "github_read",
+    "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
     "github_search", "github_tree", "libs", "rg", "scheme", "search",
     "subagent", "time", "todo",
   ];
@@ -114,6 +114,12 @@ try {
     path: ".",
   }, undefined, undefined);
   assert.match(rgResult.content[0].text, /sample\.txt/);
+
+  const codegraphResult = await toolByName("codegraph").execute("smoke:codegraph", {
+    operation: "status",
+  }, undefined, undefined);
+  assert.equal(codegraphResult.details.code, "NOT_INDEXED");
+  assert.equal(codegraphResult.details.phase, "recoverable");
 
   console.log("pi-square smoke: OK");
 } finally {

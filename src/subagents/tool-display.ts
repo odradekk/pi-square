@@ -53,6 +53,14 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
       summary = `${query} in ${shortenPath(args?.path || ".")}${language ? ` · ${language}` : ""}`;
       break;
     }
+    case "codegraph": {
+      const operation = clipInline(args?.operation || "...", 16);
+      const path = shortenPath(args?.projectPath || ".");
+      summary = operation === "explore"
+        ? `explore: ${clipInline(args?.query || "...", 60)} in ${path}`
+        : `${operation} ${path}`;
+      break;
+    }
     case "ls":
       summary = shortenPath(args?.path || ".");
       break;

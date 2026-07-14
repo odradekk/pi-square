@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors prebuilt search binaries and installs an exact native structural-search dependency.
+This extension vendors prebuilt search binaries and installs exact native structural-search and semantic-code-intelligence dependencies.
 
 ## Included Software
 
@@ -30,15 +30,32 @@ This extension vendors prebuilt search binaries and installs an exact native str
 - License: Apache-2.0
 - Version: `2.1.2`, installed transitively by `@ast-grep/cli` for native-package detection.
 
+### CodeGraph
+- Upstream: https://github.com/colbymchenry/codegraph
+- License: MIT
+- Version: `1.4.1`, installed as the exact `@colbymchenry/codegraph` npm dependency.
+- Supported pi-square targets use the unmodified official optional packages `@colbymchenry/codegraph-linux-x64`, `@colbymchenry/codegraph-linux-arm64`, `@colbymchenry/codegraph-darwin-x64`, `@colbymchenry/codegraph-darwin-arm64`, `@colbymchenry/codegraph-win32-x64`, and `@colbymchenry/codegraph-win32-arm64` at the same version.
+- Each platform package contains the CodeGraph application, parser WASM assets and their upstream license files, and a self-contained Node.js runtime. The installed Linux x64 package is 234,498,802 bytes unpacked; other target sizes vary.
+- pi-square invokes the platform bundle directly and does not execute the main package's npm shim, network self-heal, MCP daemon, updater, installer, or uninstaller.
+
+### Node.js runtime carried by CodeGraph
+- Upstream: https://github.com/nodejs/node
+- License: Node.js license (MIT terms plus bundled third-party notices)
+- Version observed in the CodeGraph `1.4.1` Linux x64 platform artifact: `24.16.0`.
+- The runtime is an unmodified component of the upstream CodeGraph platform artifact; pi-square does not separately vendor or modify it.
+
 ## libc Boundary
 
 - rg `linux-x64` is statically linked and has no runtime library dependency.
 - fd `linux-x64` and both `linux-arm64` vendored binaries (rg and fd) require glibc at runtime.
 - The supported ast-grep Linux x64 and arm64 npm packages require glibc; the CLI package does not provide musl targets.
-- macOS and Windows search binaries have no additional C library boundary.
+- The verified CodeGraph Linux x64 bundled runtime dynamically links glibc, libstdc++, libgcc, libm, libdl, and libpthread. CodeGraph publishes generic Linux x64/arm64 packages and no musl-specific package.
+- macOS and Windows search and CodeGraph binaries have no additional C library boundary documented here.
 
 ## Notes
 
 - The rg and fd binaries are bundled in `bin/` and Git-tracked. There is no download, integrity manifest, hash verification, or system-binary fallback for them.
 - ast-grep is installed by npm with lockfile integrity metadata and platform-specific optional dependencies. Its wrapper resolves the native package directly at runtime and never falls back to PATH or a system `sg` command.
 - The exposed `sg` wrapper is read-only even though upstream ast-grep also supports rewriting and project scanning.
+- CodeGraph is installed by npm with lockfile integrity metadata for the main package and all six optional platform packages. The wrapper verifies the platform package version and required runtime/entry files before execution, then forces telemetry, update checks, downloads, and watchers off.
+- CodeGraph index databases live under each explicitly initialized project's `.codegraph/` directory and are not vendored or persisted by pi-square itself.

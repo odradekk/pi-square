@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAskUser from "./ask-user";
 import registerBanner from "./banner";
+import registerCodeGraph from "./codegraph";
 import { DEFAULT_CONFIG, loadConfig, type PiSquareConfig } from "./core/config";
 import { emitDiagnostics } from "./core/diagnostics";
 import registerFooter from "./footer";
@@ -29,6 +30,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerTodo(pi);
   registerTime(pi);
   registerSearchTools(pi);
+  registerCodeGraph(pi);
   registerWebTools(pi);
   registerGitHub(pi);
   const subagents = registerSubagents(pi);

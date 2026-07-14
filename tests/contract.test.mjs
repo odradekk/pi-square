@@ -40,13 +40,24 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "docs", "fd", "fetch", "github_commit", "github_read",
+    "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
     "github_search", "github_tree", "libs", "rg", "scheme", "search", "sg",
     "subagent", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
   assert.ok(childToolNames.includes("sg"));
+  assert.ok(childToolNames.includes("codegraph"));
   assert.deepEqual(createChildTools(["sg"]).definitions.map((definition) => definition.name), ["sg"]);
+  const childCodeGraph = createChildTools(["codegraph"]).definitions[0];
+  assert.equal(childCodeGraph.parameters.type, "object");
+  assert.equal(childCodeGraph.parameters.anyOf, undefined);
+  assert.deepEqual(childCodeGraph.parameters.required, ["operation"]);
+  assert.deepEqual(childCodeGraph.parameters.properties.operation.enum, ["explore", "status"]);
+  const parentCodeGraph = tools.get("codegraph");
+  assert.equal(parentCodeGraph.parameters.type, "object");
+  assert.equal(parentCodeGraph.parameters.anyOf, undefined);
+  assert.deepEqual(parentCodeGraph.parameters.required, ["operation"]);
+  assert.deepEqual(parentCodeGraph.parameters.properties.operation.enum, ["explore", "status", "init", "sync", "reindex"]);
   assert.ok(!childToolNames.includes("scheme_eval"));
   assert.ok(!childToolNames.includes("pwsh"));
   assert.deepEqual(createChildTools(["pwsh"]).definitions, []);

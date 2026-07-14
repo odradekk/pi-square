@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createCodeGraphDefinition } from "./codegraph";
 import {
   createGitHubCommitToolDefinition,
   createGitHubReadToolDefinition,
@@ -18,6 +19,7 @@ const BASE_EXTENSION_TOOLS = [
   "rg",
   "fd",
   "sg",
+  "codegraph",
   "search",
   "fetch",
   "libs",
@@ -41,6 +43,7 @@ function createDefinitions(platform: NodeJS.Platform): Map<SupportedExtensionToo
     ["rg", rg as ToolDefinition],
     ["fd", fd as ToolDefinition],
     ["sg", sg as ToolDefinition],
+    ["codegraph", createCodeGraphDefinition(false) as ToolDefinition],
     ["search", createSearchToolDefinition() as ToolDefinition],
     ["fetch", createFetchToolDefinition() as ToolDefinition],
     ["libs", createLibsToolDefinition() as ToolDefinition],

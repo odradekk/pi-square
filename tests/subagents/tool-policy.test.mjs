@@ -42,12 +42,12 @@ function test(name, fn) { tests.push({ name, fn }); }
 const matrix = {
   "explorer.yaml": {
     tools: ["read", "ls"],
-    extensionTools: ["rg", "fd", "sg"],
+    extensionTools: ["rg", "fd", "sg", "codegraph"],
     skills: ["none"],
   },
   "oracle.yaml": {
     tools: ["read", "ls"],
-    extensionTools: ["rg", "fd", "sg"],
+    extensionTools: ["rg", "fd", "sg", "codegraph"],
     skills: ["none"],
   },
   "crawler.yaml": {
@@ -62,7 +62,7 @@ const matrix = {
   },
   "generalist.yaml": {
     tools: ["read", "write", "edit", "shell", "ls"],
-    extensionTools: ["rg", "fd", "sg", "search", "fetch", "libs", "docs", "scheme"],
+    extensionTools: ["rg", "fd", "sg", "codegraph", "search", "fetch", "libs", "docs", "scheme"],
     skills: [],
   },
 };

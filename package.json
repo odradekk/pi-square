@@ -40,11 +40,13 @@
     "test": "node ./tests/run.mjs",
     "typecheck": "tsc --noEmit",
     "smoke": "node ./tests/smoke.mjs",
+    "eval:codegraph": "node ./tests/codegraph/eval.mjs",
     "changeset": "changeset",
     "changeset:status": "changeset status",
     "changeset:version": "changeset version"
   },
   "dependencies": {
-    "@ast-grep/cli": "0.44.1"
+    "@ast-grep/cli": "0.44.1",
+    "@colbymchenry/codegraph": "1.4.1"
   }
 }

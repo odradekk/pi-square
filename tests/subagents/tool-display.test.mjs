@@ -29,6 +29,17 @@ test("sg summaries show structural query, path, and language", () => {
   );
 });
 
+test("CodeGraph summaries expose only operation, query, and project path", () => {
+  assert.equal(
+    formatToolCall("codegraph", { operation: "explore", query: "How does auth work?", projectPath: "services/api", secret: "private" }),
+    "codegraph explore: How does auth work? in services/api",
+  );
+  assert.equal(
+    formatToolCall("codegraph", { operation: "reindex", projectPath: ".", secret: "private" }),
+    "codegraph reindex .",
+  );
+});
+
 test("GitHub summaries expose only bounded identity and paging arguments", () => {
   assert.equal(
     formatToolCall("github_search", { kind: "code", query: "repo:owner/name symbol", password: "private" }),
