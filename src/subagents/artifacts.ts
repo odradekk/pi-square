@@ -5,11 +5,12 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { subagentsStateRoot } from "./agent-paths";
 import { createSubagentError, normalizeSubagentError, SubagentError } from "./errors";
 import type { SubagentRunDetails } from "./types";
@@ -17,6 +18,14 @@ import type { SubagentRunDetails } from "./types";
 const PUBLIC_ID_PATTERN = /^subagent_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRANSIENT_FS_CODES = new Set(["EAGAIN", "EBUSY", "EMFILE", "ENFILE", "ETIMEDOUT"]);
 const FS_RETRY_DELAYS_MS = [100, 200, 400] as const;
+const PARENT_INDEX_VERSION = 1 as const;
+
+interface ParentSessionRunIndex {
+  version: typeof PARENT_INDEX_VERSION;
+  parentSessionId: string;
+  runIds: string[];
+  updatedAt: number;
+}
 
 function sleepSync(ms: number): void {
   const view = new Int32Array(new SharedArrayBuffer(4));
@@ -85,13 +94,13 @@ export function ensureArtifactsDir(id: string): string {
 
 function validateRunStateShape(value: unknown, expectedId?: string): SubagentRunDetails {
   const details = value as SubagentRunDetails;
-  if (!details || typeof details !== "object" || details.version !== 2) {
+  if (!details || typeof details !== "object" || details.version !== 3) {
     throw new Error("run.json has an unsupported format version");
   }
   if (!isValidSubagentId(details.id) || (expectedId && details.id !== expectedId)) {
     throw new Error("run.json subagent ID does not match its artifacts directory");
   }
-  if (!["running", "done", "error", "aborted"].includes(details.phase)) {
+  if (!["running", "cancelling", "done", "error", "aborted"].includes(details.phase)) {
     throw new Error("run.json has an invalid phase");
   }
   if (!["fg", "bg", "resume"].includes(details.mode)) {
@@ -99,6 +108,15 @@ function validateRunStateShape(value: unknown, expectedId?: string): SubagentRun
   }
   if (typeof details.sessionFile !== "string" || typeof details.sessionId !== "string") {
     throw new Error("run.json does not identify a native session");
+  }
+  if (typeof details.originParentSessionId !== "string" || typeof details.lastParentSessionId !== "string") {
+    throw new Error("run.json does not identify its parent session");
+  }
+  if (details.promptSnapshot?.version !== 2 || typeof details.promptSnapshot.system !== "string") {
+    throw new Error("run.json has no V2 prompt snapshot");
+  }
+  if (details.promptSnapshot.manifest?.contractVersion !== 2 || typeof details.promptSnapshot.manifest.effectiveSystemHash !== "string") {
+    throw new Error("run.json has an invalid prompt manifest");
   }
   if (typeof details.artifactsDir !== "string" || typeof details.task !== "string" || typeof details.cwd !== "string") {
     throw new Error("run.json is missing required fields");
@@ -141,6 +159,101 @@ export function tryReadRunState(artifactsDir: string): SubagentRunDetails | unde
     return readRunState(artifactsDir);
   } catch {
     return undefined;
+  }
+}
+
+function parentIndexPath(parentSessionId: string): string {
+  const normalized = parentSessionId.trim();
+  if (!normalized) throw new Error("parent session ID is empty");
+  const digest = createHash("sha256").update(normalized, "utf8").digest("hex");
+  return resolvePath(subagentsStateRoot(), "sessions", `${digest}.json`);
+}
+
+function readParentIndex(parentSessionId: string): ParentSessionRunIndex {
+  const path = parentIndexPath(parentSessionId);
+  const raw = withTransientFsRetries(() => readFileSync(path, "utf8"));
+  const value = JSON.parse(raw) as ParentSessionRunIndex;
+  if (value?.version !== PARENT_INDEX_VERSION || value.parentSessionId !== parentSessionId || !Array.isArray(value.runIds)) {
+    throw new Error("parent session index has an unsupported format");
+  }
+  return {
+    ...value,
+    runIds: value.runIds.filter((id, index, all) => isValidSubagentId(id) && all.indexOf(id) === index),
+  };
+}
+
+export function recordParentSessionRun(parentSessionId: string, id: string): void {
+  assertValidSubagentId(id, "persistence");
+  try {
+    const path = parentIndexPath(parentSessionId);
+    let current: ParentSessionRunIndex = {
+      version: PARENT_INDEX_VERSION,
+      parentSessionId,
+      runIds: [],
+      updatedAt: Date.now(),
+    };
+    if (existsSync(path)) current = readParentIndex(parentSessionId);
+    current.runIds = [id, ...current.runIds.filter((candidate) => candidate !== id)];
+    current.updatedAt = Date.now();
+    withTransientFsRetries(() => mkdirSync(dirname(path), { recursive: true }));
+    const tmp = `${path}.tmp`;
+    withTransientFsRetries(() => writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`, "utf8"));
+    withTransientFsRetries(() => renameSync(tmp, path));
+  } catch (error) {
+    throw normalizeSubagentError(error, {
+      code: "PERSISTENCE_FAILED",
+      message: "Unable to update the parent-session subagent index.",
+      operation: "persistence",
+      id,
+      retries: fsRetryCount(error),
+    });
+  }
+}
+
+export function listParentSessionRuns(parentSessionId: string): SubagentRunDetails[] {
+  let index: ParentSessionRunIndex;
+  try {
+    index = readParentIndex(parentSessionId);
+  } catch {
+    return [];
+  }
+  return index.runIds
+    .map((id) => tryReadRunState(artifactsDirFor(id)))
+    .filter((details): details is SubagentRunDetails => Boolean(details))
+    .filter((details) => details.originParentSessionId === parentSessionId || details.lastParentSessionId === parentSessionId)
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
+
+export function deleteParentSessionRun(parentSessionId: string, id: string): void {
+  assertValidSubagentId(id, "persistence");
+  const details = tryReadRunState(artifactsDirFor(id));
+  if (!details || (details.originParentSessionId !== parentSessionId && details.lastParentSessionId !== parentSessionId)) {
+    throw createSubagentError({
+      code: "SUBAGENT_NOT_FOUND",
+      message: `Subagent '${id}' does not belong to the current parent session.`,
+      operation: "delete",
+      id,
+      retryable: false,
+    });
+  }
+  try {
+    withTransientFsRetries(() => rmSync(artifactsDirFor(id), { recursive: true, force: true }));
+    const path = parentIndexPath(parentSessionId);
+    if (!existsSync(path)) return;
+    const index = readParentIndex(parentSessionId);
+    index.runIds = index.runIds.filter((candidate) => candidate !== id);
+    index.updatedAt = Date.now();
+    const tmp = `${path}.tmp`;
+    withTransientFsRetries(() => writeFileSync(tmp, `${JSON.stringify(index, null, 2)}\n`, "utf8"));
+    withTransientFsRetries(() => renameSync(tmp, path));
+  } catch (error) {
+    throw normalizeSubagentError(error, {
+      code: "PERSISTENCE_FAILED",
+      message: "Unable to delete subagent history.",
+      operation: "delete",
+      id,
+      retries: fsRetryCount(error),
+    });
   }
 }
 

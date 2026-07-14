@@ -57,17 +57,19 @@ test("requesting more messages returns every eligible message in chronological o
   ]);
 });
 
-test("delegated prompt labels parent history and keeps current task last", () => {
+test("delegated prompt isolates reference-only history between profile, task, and output", () => {
   const prompt = buildDelegatedPrompt({
-    definitionPrompt: "Use repository evidence.",
+    instructions: "Use repository evidence.",
     parentMessages: collectParentContextMessages(sessionManager, 2),
     task: "Inspect the parser.",
+    output: "Return findings only.",
   });
   assert.match(prompt, /^\[Subagent profile instructions\]/);
-  assert.match(prompt, /historical messages come from the parent session/);
-  assert.match(prompt, /Parent assistant:\nold assistant/);
-  assert.match(prompt, /User:\ncurrent user/);
-  assert.ok(prompt.endsWith("[Current delegated task]\nInspect the parser."));
+  assert.match(prompt, /Parent conversation history — reference only/);
+  assert.match(prompt, /"role":"assistant","text":"old assistant"/);
+  assert.match(prompt, /"role":"user","text":"current user"/);
+  assert.match(prompt, /\[Current delegated task\]\nInspect the parser\./);
+  assert.ok(prompt.endsWith("[Output contract]\nReturn findings only."));
   assert.doesNotMatch(prompt, /secret reasoning|tool output|notification/);
 });
 

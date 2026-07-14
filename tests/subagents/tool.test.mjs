@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  createPromptSnapshot,
   getRunSubagentTaskCalls,
   loadToolModule,
   run,
@@ -45,12 +46,15 @@ function subagentTool() {
 
 function runDetails(id, overrides = {}) {
   return {
-    version: 2,
+    version: 3,
     id,
     mode: "fg",
     artifactsDir: `/tmp/${id}`,
     sessionFile: `/tmp/${id}/session.jsonl`,
     sessionId: "native",
+    originParentSessionId: "parent-session",
+    lastParentSessionId: "parent-session",
+    promptSnapshot: createPromptSnapshot(),
     phase: "done",
     task: "task",
     cwd: "/tmp/subagents",
@@ -108,6 +112,7 @@ test("fg passes the frozen clean parent context into the child", async () => {
     cwd: "/tmp",
     model: { provider: "test", id: "model" },
     sessionManager: {
+      getSessionId: () => "parent-session",
       getBranch: () => [
         { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "secret" }, { type: "text", text: "assistant text" }] } },
         { type: "message", message: { role: "user", content: [{ type: "text", text: "current user" }] } },
@@ -118,6 +123,7 @@ test("fg passes the frozen clean parent context into the child", async () => {
   assert.equal(result.isError, undefined);
   const call = getRunSubagentTaskCalls()[0];
   assert.equal(call.mode, "fg");
+  assert.equal(call.parentSessionId, "parent-session");
   assert.match(call.id, /^subagent_[0-9a-f-]{36}$/i);
   assert.deepEqual(call.contextMessages, [
     { role: "assistant", text: "assistant text" },

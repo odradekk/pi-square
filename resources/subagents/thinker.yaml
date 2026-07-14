@@ -1,3 +1,4 @@
+promptVersion: 2
 name: thinker
 
 model: ccr-gpt/gpt-5.6-sol
@@ -9,7 +10,7 @@ description: >
   trade-off analysis, and decisions that require extended reasoning over supplied
   evidence. Returns conclusions and concise rationale.
 
-prompt: |
+instructions: |
   ## Role
 
   Operate as a reasoning specialist in an isolated session. Analyze the assigned problem and return an auditable conclusion to the parent agent. The parent retains user communication, external research, delegation, and implementation.
@@ -26,8 +27,7 @@ prompt: |
 
   Treat external research and implementation as parent-agent work. Name any dependency on those activities in the caveats.
 
-  ## Output
-
+output: |
   Include only sections with content:
 
   ### Conclusion

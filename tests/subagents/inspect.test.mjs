@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import jiti from "jiti";
-import { run, test } from "./lib/test-helpers.mjs";
+import { createPromptSnapshot, run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const mockSdkPath = join(tmpdir(), `pi-square-inspect-sdk-${process.pid}.mjs`);
@@ -26,12 +26,15 @@ function writeRun(agentRoot, overrides = {}) {
   mkdirSync(artifactsDir, { recursive: true });
   writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: SESSION_ID, timestamp: new Date(0).toISOString(), cwd: agentRoot })}\n`, "utf8");
   const details = {
-    version: 2,
+    version: 3,
     id: ID,
     mode: "fg",
     artifactsDir,
     sessionFile,
     sessionId: SESSION_ID,
+    originParentSessionId: "parent-session",
+    lastParentSessionId: "parent-session",
+    promptSnapshot: createPromptSnapshot(),
     phase: "done",
     task: "inspect task",
     cwd: agentRoot,

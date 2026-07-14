@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import jiti from "jiti";
-import { run, test } from "./lib/test-helpers.mjs";
+import { createPromptSnapshot, run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const mockSdkPath = join(tmpdir(), `pi-square-subagents-empty-output-sdk-mock-${process.pid}.mjs`);
@@ -28,12 +28,15 @@ const { deriveTerminalPhase, buildReturnContent, collectLastMessages } = __testa
 function baseDetails(overrides = {}) {
   const id = "subagent_00000000-0000-4000-8000-000000000051";
   return {
-    version: 2,
+    version: 3,
     id,
     mode: "fg",
     artifactsDir: `/tmp/subagents/${id}`,
     sessionFile: `/tmp/subagents/${id}/session.jsonl`,
     sessionId: "native-session",
+    originParentSessionId: "parent-session",
+    lastParentSessionId: "parent-session",
+    promptSnapshot: createPromptSnapshot(),
     phase: "running",
     task: "task",
     cwd: "/tmp/subagents",

@@ -32,7 +32,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   const subagents = registerSubagents(pi);
   registerSchemeSandbox(pi);
   registerShellTools(pi);
-  registerStatusline(pi, () => config);
+  registerStatusline(pi, () => config, subagents);
   registerBanner(pi, () => config);
   registerPromptManager(pi, subagents);
 }

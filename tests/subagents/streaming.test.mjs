@@ -23,14 +23,30 @@ function wait(ms) {
 function makeDetails(artifactsDir, overrides = {}) {
   const id = `subagent_${randomUUID()}`;
   return {
-    version: 2,
+    version: 3,
     id,
     mode: "fg",
     artifactsDir,
     sessionFile: join(artifactsDir, "session.jsonl"),
     sessionId: randomUUID(),
+    originParentSessionId: "parent-session",
+    lastParentSessionId: "parent-session",
+    promptSnapshot: {
+      version: 2,
+      system: "test system",
+      manifest: {
+        contractVersion: 2,
+        governanceVersion: 1,
+        inheritParentSystem: true,
+        effectiveSystemHash: "hash",
+        governanceHash: "hash",
+        contextCount: 0,
+        fieldSources: {},
+        sourceFiles: [],
+      },
+    },
     phase: "running",
-    agent: { name: "worker", effort: "high" },
+    agent: { promptVersion: 2, name: "worker", effort: "high", inheritParentSystem: true },
     task: "Stream a bounded answer.",
     cwd: "/tmp/project",
     model: "provider/model",

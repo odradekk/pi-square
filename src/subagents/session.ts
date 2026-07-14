@@ -14,6 +14,7 @@ import {
   artifactsDirFor,
   ensureArtifactsDir,
   initializeSessionFile,
+  recordParentSessionRun,
   validateRunArtifacts,
   writeRunState,
 } from "./artifacts";
@@ -27,17 +28,9 @@ import {
   SubagentError,
 } from "./errors";
 import { tryAcquireRunLease } from "./lease";
+import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./prompt";
 import { resolveSubagentTools } from "./tool-policy";
-import type { ActiveSubagentConfig, SubagentRunDetails, SubagentTimelineItem, SubagentUsage } from "./types";
-
-const DEFAULT_SUBAGENT_SYSTEM_PROMPT = `You are a delegated Pi subagent operating in an isolated session.
-
-Complete the assigned task within its stated scope and return a result the parent agent can reuse directly.
-
-- Use available tools to gather required evidence.
-- Keep user interaction and further delegation with the parent agent.
-- Preserve workspace content outside the authorized scope.
-- Report the result, supporting evidence, validation, and any remaining blocker.`;
+import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, SubagentTimelineItem, SubagentUsage } from "./types";
 
 const MAX_TIMELINE_ITEMS = 120;
 const MAX_TIMELINE_TEXT = 1600;
@@ -342,20 +335,31 @@ function createChildResourceLoader(input: {
   };
 }
 
-function resolveDefinitionPrompt(definition?: SubagentDefinition): string | undefined {
-  return definition?.prompt?.trim() ? definition.prompt.trim() : undefined;
+function resolveParentSessionId(ctx: ExtensionContext, explicit?: string): string {
+  const id = String(explicit ?? ctx.sessionManager?.getSessionId?.() ?? "").trim();
+  if (id) return id;
+  throw createSubagentError({
+    code: "PERSISTENCE_FAILED",
+    message: "The parent Pi session has no stable session ID.",
+    operation: "persistence",
+    retryable: false,
+  });
 }
 
-function resolveDefinitionSystem(
-  definition?: SubagentDefinition,
-  extra?: string,
-  inheritedSystemCore?: string,
-): string {
-  const base = definition?.system?.trim()
-    ? definition.system.trim()
-    : inheritedSystemCore?.trim() || DEFAULT_SUBAGENT_SYSTEM_PROMPT.trim();
-  const suffix = String(extra ?? "").trim();
-  return suffix ? `${base}\n\n${suffix}` : base;
+function updateSnapshotContext(
+  snapshot: SubagentPromptSnapshot,
+  messages: ParentContextMessage[] | undefined,
+): SubagentPromptSnapshot {
+  const contextCount = messages?.length ?? 0;
+  const contextHash = contextCount > 0 ? hashPromptValue(JSON.stringify(messages)) : undefined;
+  return {
+    ...snapshot,
+    manifest: {
+      ...snapshot.manifest,
+      contextCount,
+      ...(contextHash ? { contextHash } : { contextHash: undefined }),
+    },
+  };
 }
 
 function buildActiveConfig(
@@ -368,14 +372,15 @@ function buildActiveConfig(
 ): ActiveSubagentConfig | undefined {
   const model = modelOverride ?? definition?.model;
   const effort = effortOverride ?? definition?.effort;
-  if (!definition && normalizedTools.length === 0 && extensionTools.length === 0 && normalizedSkills.length === 0 && !model && !effort) return undefined;
   return {
+    promptVersion: 2,
     name: definition?.name,
     model,
     effort,
     description: definition?.description,
     source: definition?.source,
     filePath: definition?.filePath,
+    inheritParentSystem: definition?.inheritParentSystem ?? true,
     tools: normalizedTools.length > 0 ? normalizedTools : undefined,
     extensionTools: extensionTools.length > 0 ? extensionTools : undefined,
     skills: normalizedSkills.length > 0 ? normalizedSkills : undefined,
@@ -730,6 +735,7 @@ export async function runSubagentTask(input: {
   id: string;
   mode: "fg" | "bg";
   task: string;
+  parentSessionId?: string;
   contextMessages?: ParentContextMessage[];
   cwd?: string;
   inheritedSystemCore?: string;
@@ -742,9 +748,17 @@ export async function runSubagentTask(input: {
   onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentRunDetails }) => void;
 }): Promise<{ content: string; details: SubagentRunDetails }> {
   const cwd = resolveSubagentCwd(input.ctx.cwd, input.cwd);
+  const parentSessionId = resolveParentSessionId(input.ctx, input.parentSessionId);
+  let promptSnapshot = compileFreshPrompt({
+    definition: input.definition,
+    inheritedSystemCore: input.inheritedSystemCore,
+    callPolicy: input.systemPrompt,
+    parentMessages: input.contextMessages,
+  });
   const prompt = buildDelegatedPrompt({
     task: input.task,
-    definitionPrompt: resolveDefinitionPrompt(input.definition),
+    instructions: promptSnapshot.instructions,
+    output: promptSnapshot.output,
     parentMessages: input.contextMessages,
   });
   const resolvedTools = resolveSubagentTools({
@@ -798,12 +812,15 @@ export async function runSubagentTask(input: {
     }
 
     details = {
-      version: 2,
+      version: 3,
       id: input.id,
       mode: input.mode,
       artifactsDir,
       sessionFile,
       sessionId,
+      originParentSessionId: parentSessionId,
+      lastParentSessionId: parentSessionId,
+      promptSnapshot,
       phase: "running",
       agent: buildActiveConfig(
         input.definition,
@@ -830,6 +847,7 @@ export async function runSubagentTask(input: {
       ? SessionManager.open(sessionFile, artifactsDir, cwd)
       : initialSessionManager;
     writeRunState(artifactsDir, details);
+    recordParentSessionRun(parentSessionId, input.id);
 
     const startupErrors = [...resolvedTools.errors, ...customTools.errors];
     if (resolvedModel.error) startupErrors.push(resolvedModel.error);
@@ -858,14 +876,9 @@ export async function runSubagentTask(input: {
       selectedMessages: input.contextMessages?.length ?? 0,
     });
 
-    const systemPrompt = resolveDefinitionSystem(
-      input.definition,
-      input.systemPrompt,
-      input.inheritedSystemCore,
-    );
     const resourceLoader = createChildResourceLoader({
       cwd,
-      systemPrompt,
+      systemPrompt: promptSnapshot.system,
       selectedSkills: selectedSkillNames,
     });
     await resourceLoader.reload();
@@ -895,7 +908,12 @@ export async function runSubagentTask(input: {
       sessionManager,
       settingsManager: createChildSettings(),
     });
-    details.systemPromptSnapshot = freezeSystemPrompt(getSystemPromptSnapshot(created, systemPrompt));
+    promptSnapshot = finalizePromptSnapshot(
+      promptSnapshot,
+      freezeSystemPrompt(getSystemPromptSnapshot(created, promptSnapshot.system)) ?? promptSnapshot.system,
+    );
+    details.promptSnapshot = promptSnapshot;
+    writeRunState(artifactsDir, details);
     return await promptSession({
       session: created.session,
       prompt,
@@ -925,6 +943,7 @@ export async function resumeSubagentTask(input: {
   ctx: ExtensionContext;
   id: string;
   task: string;
+  parentSessionId?: string;
   contextMessages?: ParentContextMessage[];
   signal?: AbortSignal;
   onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentRunDetails }) => void;
@@ -952,10 +971,17 @@ export async function resumeSubagentTask(input: {
 
   let details: SubagentRunDetails | undefined;
   try {
+    const parentSessionId = resolveParentSessionId(input.ctx, input.parentSessionId);
     const validated = validateRunArtifacts(input.id);
     const persisted = validated.details;
     const runCwd = persisted.cwd;
-    const prompt = buildDelegatedPrompt({ task: input.task, parentMessages: input.contextMessages });
+    let promptSnapshot = updateSnapshotContext(persisted.promptSnapshot, input.contextMessages);
+    const prompt = buildDelegatedPrompt({
+      task: input.task,
+      instructions: promptSnapshot.instructions,
+      output: promptSnapshot.output,
+      parentMessages: input.contextMessages,
+    });
     const resolvedTools = resolveSubagentTools({
       tools: persisted.agent?.tools,
       extensionTools: persisted.agent?.extensionTools,
@@ -966,8 +992,7 @@ export async function resumeSubagentTask(input: {
     const effortSpec = persisted.agent?.effort;
     const resolvedModel = resolveModelFromSpec(modelSpec, input.ctx);
     const resolvedEffort = normalizeEffort(effortSpec);
-    const systemPrompt = freezeSystemPrompt(persisted.systemPromptSnapshot)
-      ?? DEFAULT_SUBAGENT_SYSTEM_PROMPT.trim();
+    const systemPrompt = freezeSystemPrompt(promptSnapshot.system) ?? promptSnapshot.system;
 
     details = {
       ...persisted,
@@ -982,7 +1007,8 @@ export async function resumeSubagentTask(input: {
         : undefined,
       mode: "resume",
       task: input.task,
-      systemPromptSnapshot: systemPrompt,
+      lastParentSessionId: parentSessionId,
+      promptSnapshot: { ...promptSnapshot, system: systemPrompt },
       phase: "running",
       finalText: "",
       liveText: "",
@@ -999,6 +1025,7 @@ export async function resumeSubagentTask(input: {
     };
     pushTimeline(details, { kind: "status", text: `resuming subagent ${input.id}` });
     writeRunState(artifactsDir, details);
+    recordParentSessionRun(parentSessionId, input.id);
 
     const startupErrors = [...resolvedTools.errors, ...customTools.errors];
     if (resolvedModel.error) startupErrors.push(resolvedModel.error);
@@ -1040,7 +1067,12 @@ export async function resumeSubagentTask(input: {
       sessionManager,
       settingsManager: createChildSettings(),
     });
-    details.systemPromptSnapshot = freezeSystemPrompt(getSystemPromptSnapshot(created, systemPrompt));
+    promptSnapshot = finalizePromptSnapshot(
+      promptSnapshot,
+      freezeSystemPrompt(getSystemPromptSnapshot(created, systemPrompt)) ?? systemPrompt,
+    );
+    details.promptSnapshot = promptSnapshot;
+    writeRunState(artifactsDir, details);
     const result = await promptSession({
       session: created.session,
       prompt,

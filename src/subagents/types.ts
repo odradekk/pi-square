@@ -1,5 +1,5 @@
 export type SubagentMode = "fg" | "bg" | "resume";
-export type SubagentPhase = "running" | "done" | "error" | "aborted";
+export type SubagentPhase = "running" | "cancelling" | "done" | "error" | "aborted";
 
 export type SubagentErrorCode =
   | "INVALID_ARGUMENT"
@@ -20,7 +20,6 @@ export interface SubagentErrorInfo {
   operation: string;
   id?: string;
   retryable: boolean;
-  /** Number of retries after the initial attempt. */
   retries: number;
   cause?: string;
   suggestedAction?: string;
@@ -48,37 +47,71 @@ export interface SubagentToolError {
   message: string;
 }
 
+export interface PromptSourceRef {
+  source: "package" | "agent" | "project";
+  filePath: string;
+  contentHash: string;
+}
+
+export interface PromptManifest {
+  contractVersion: 2;
+  governanceVersion: 1;
+  inheritParentSystem: boolean;
+  effectiveSystemHash: string;
+  governanceHash: string;
+  parentSystemHash?: string;
+  policyHash?: string;
+  callPolicyHash?: string;
+  instructionsHash?: string;
+  outputHash?: string;
+  definitionHash?: string;
+  contextCount: number;
+  contextHash?: string;
+  fieldSources: Record<string, PromptSourceRef>;
+  sourceFiles: PromptSourceRef[];
+}
+
+export interface SubagentPromptSnapshot {
+  version: 2;
+  /** Complete effective SYSTEM without Pi's volatile date/cwd suffix. */
+  system: string;
+  /** V2 profile instructions replayed for every task. */
+  instructions?: string;
+  /** V2 output contract replayed after every task. */
+  output?: string;
+  manifest: PromptManifest;
+}
+
 export interface ActiveSubagentConfig {
+  promptVersion: 2;
   name?: string;
   model?: string;
   effort?: string;
   description?: string;
   source?: "package" | "agent" | "project";
   filePath?: string;
+  inheritParentSystem: boolean;
   tools?: string[];
   extensionTools?: string[];
   skills?: string[];
 }
 
 export interface SubagentRunDetails {
-  version: 2;
-  /** The only public identifier for this subagent conversation. */
+  version: 3;
   id: string;
-  /** Invocation mode for the latest execution of this conversation. */
   mode: SubagentMode;
-  /** Directory under agent state/subagents/<id>/. */
   artifactsDir: string;
-  /** Native Pi JSONL session file. */
   sessionFile: string;
-  /** Native Pi session UUID; never used as a public identifier. */
+  /** Native child Pi session UUID; never used as a public identifier. */
   sessionId: string;
-  /** System prompt captured on the first run and reused by resume. */
-  systemPromptSnapshot?: string;
+  /** Parent Pi session that created this child. */
+  originParentSessionId: string;
+  /** Parent Pi session that most recently ran or resumed this child. */
+  lastParentSessionId: string;
+  promptSnapshot: SubagentPromptSnapshot;
   phase: SubagentPhase;
   agent?: ActiveSubagentConfig;
-  /** Latest user-visible delegated task, excluding injected parent history. */
   task: string;
-  /** First delegated task for diagnostic display. */
   initialTask?: string;
   cwd: string;
   model?: string;
@@ -93,7 +126,6 @@ export interface SubagentRunDetails {
   lastEvent?: string;
   error?: string;
   errorInfo?: SubagentErrorInfo;
-  /** Number of model retries performed during the latest execution. */
   retries: number;
   toolErrors: SubagentToolError[];
   usage: SubagentUsage;
@@ -102,7 +134,7 @@ export interface SubagentRunDetails {
 
 export interface BackgroundJobSnapshot {
   id: string;
-  status: "queued" | "running" | "done" | "error" | "aborted";
+  status: "queued" | "running" | "cancelling" | "done" | "error" | "aborted";
   createdAt: number;
   updatedAt: number;
   details: SubagentRunDetails;

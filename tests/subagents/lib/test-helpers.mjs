@@ -98,6 +98,26 @@ export function renderSubagentNotification() {
   return new Text("subagent notification");
 }
 
+export function createPromptSnapshot(overrides = {}) {
+  return {
+    version: 2,
+    system: "test system prompt",
+    instructions: "test instructions",
+    output: "test output",
+    manifest: {
+      contractVersion: 2,
+      governanceVersion: 1,
+      inheritParentSystem: true,
+      effectiveSystemHash: "system-hash",
+      governanceHash: "governance-hash",
+      contextCount: 0,
+      fieldSources: {},
+      sourceFiles: [],
+    },
+    ...overrides,
+  };
+}
+
 export function formatUsage(usage, model, durationMs) {
   const parts = [];
   if (usage.turns > 0) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);

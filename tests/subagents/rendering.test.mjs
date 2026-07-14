@@ -66,14 +66,30 @@ function assertNoEmojiPresentation(text) {
 
 function details(overrides = {}) {
   return {
-    version: 2,
+    version: 3,
     id: "subagent_12345678-abcd-4abc-8abc-123456789abc",
     mode: "fg",
     artifactsDir: "/tmp/private-artifacts",
     sessionFile: "/tmp/private-artifacts/session.jsonl",
     sessionId: "native-private-id",
+    originParentSessionId: "parent-private-id",
+    lastParentSessionId: "parent-private-id",
+    promptSnapshot: {
+      version: 2,
+      system: "private system",
+      manifest: {
+        contractVersion: 2,
+        governanceVersion: 1,
+        inheritParentSystem: true,
+        effectiveSystemHash: "hash",
+        governanceHash: "hash",
+        contextCount: 0,
+        fieldSources: {},
+        sourceFiles: [],
+      },
+    },
     phase: "done",
-    agent: { name: "explorer", effort: "high" },
+    agent: { promptVersion: 2, name: "explorer", effort: "high", inheritParentSystem: true },
     task: "Inspect the parser and report concrete evidence.",
     cwd: "/tmp/project",
     model: "provider/model",

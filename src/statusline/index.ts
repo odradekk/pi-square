@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG, type PiSquareConfig } from "../core/config";
+import type { SubagentFeature } from "../subagents";
 import { refreshGitSnapshot } from "./git.ts";
 import { resolveModelMeta } from "./model.ts";
 import { installStatusline, updateLastUsage } from "./statusline.ts";
@@ -15,10 +16,15 @@ function syncCurrentModel(state: StatuslineState, ctx: ExtensionContext): void {
   state.currentModelName = model.name;
 }
 
-function applyFooter(state: StatuslineState, ctx: ExtensionContext, pi: ExtensionAPI): void {
+function applyFooter(
+  state: StatuslineState,
+  ctx: ExtensionContext,
+  pi: ExtensionAPI,
+  subagents?: Pick<SubagentFeature, "getBackgroundJobs">,
+): void {
   if (!ctx.hasUI) return;
   if (state.enabled) {
-    installStatusline(ctx, pi, state);
+    installStatusline(ctx, pi, state, () => subagents?.getBackgroundJobs() ?? []);
   } else {
     state.tuiRef = null;
     ctx.ui.setFooter(undefined);
@@ -30,19 +36,21 @@ function setEnabled(
   ctx: ExtensionContext,
   pi: ExtensionAPI,
   enabled: boolean,
+  subagents?: Pick<SubagentFeature, "getBackgroundJobs">,
 ): void {
   if (state.enabled === enabled) {
     notify(ctx, `Status line: already ${enabled ? "on" : "off"}`, "info");
     return;
   }
   state.enabled = enabled;
-  applyFooter(state, ctx, pi);
+  applyFooter(state, ctx, pi, subagents);
   notify(ctx, `Status line: ${enabled ? "on" : "off"}`, "info");
 }
 
 export default function registerStatusline(
   pi: ExtensionAPI,
   getConfig: () => PiSquareConfig,
+  subagents?: Pick<SubagentFeature, "getBackgroundJobs" | "subscribeBackground">,
 ): void {
   const state: StatuslineState = {
     config: { ...DEFAULT_CONFIG.statusline },
@@ -56,6 +64,7 @@ export default function registerStatusline(
     cwd: "",
     git: { branch: null, dirty: false, staged: 0, unstaged: 0, untracked: 0 },
   };
+  let unsubscribeBackground: (() => void) | undefined;
 
   function registerShortcut(shortcut: string): void {
     if (!shortcut || state.registeredShortcuts.has(shortcut)) return;
@@ -64,7 +73,7 @@ export default function registerStatusline(
       description: "Toggle custom status line",
       handler: async (ctx) => {
         if (state.activeShortcut !== shortcut) return;
-        setEnabled(state, ctx, pi, !state.enabled);
+        setEnabled(state, ctx, pi, !state.enabled, subagents);
       },
     });
   }
@@ -77,7 +86,14 @@ export default function registerStatusline(
     state.cwd = ctx.cwd;
     state.git = refreshGitSnapshot(ctx.cwd);
     syncCurrentModel(state, ctx);
-    applyFooter(state, ctx, pi);
+    applyFooter(state, ctx, pi, subagents);
+    unsubscribeBackground?.();
+    unsubscribeBackground = subagents?.subscribeBackground(() => state.tuiRef?.requestRender());
+  });
+
+  pi.on("session_shutdown", async () => {
+    unsubscribeBackground?.();
+    unsubscribeBackground = undefined;
   });
 
   pi.on("turn_end", async (event, ctx) => {
@@ -96,11 +112,11 @@ export default function registerStatusline(
     handler: async (args, ctx) => {
       const value = args?.trim().toLowerCase();
       if (!value) {
-        setEnabled(state, ctx, pi, !state.enabled);
+        setEnabled(state, ctx, pi, !state.enabled, subagents);
         return;
       }
       if (value === "on" || value === "off") {
-        setEnabled(state, ctx, pi, value === "on");
+        setEnabled(state, ctx, pi, value === "on", subagents);
         return;
       }
       notify(ctx, `Invalid status line value "${value}". Use on | off.`, "warning");

@@ -177,10 +177,10 @@ function firstText(result: any): string {
 
 function isRunDetails(value: unknown): value is SubagentRunDetails {
   const details = value as Partial<SubagentRunDetails> | undefined;
-  return details?.version === 2
+  return details?.version === 3
     && typeof details.id === "string"
     && (details.mode === "fg" || details.mode === "bg" || details.mode === "resume")
-    && (details.phase === "running" || details.phase === "done" || details.phase === "error" || details.phase === "aborted");
+    && (details.phase === "running" || details.phase === "cancelling" || details.phase === "done" || details.phase === "error" || details.phase === "aborted");
 }
 
 function formatCount(count: number): string {
@@ -243,6 +243,8 @@ function statusPresentation(phase: string, theme: Theme): string {
       return theme.fg("warning", "× aborted");
     case "queued":
       return theme.fg("muted", "— queued");
+    case "cancelling":
+      return theme.fg("warning", "× cancelling");
     case "active":
       return theme.fg("warning", "→ active");
     default:
@@ -582,7 +584,11 @@ function renderRunResult(
 ): void {
   const fallback = sanitizeSubagentDisplay(firstText(result));
   const queued = !options.isPartial && details.mode === "bg" && details.phase === "running";
-  const phase = queued ? "queued" : options.isPartial ? "running" : details.phase;
+  const phase = queued
+    ? "queued"
+    : options.isPartial && details.phase !== "cancelling"
+      ? "running"
+      : details.phase;
   addHeader(component, details, phase, theme, notification && !options.expanded);
 
   if (queued) {

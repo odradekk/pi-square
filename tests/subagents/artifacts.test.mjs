@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import jiti from "jiti";
-import { run, test } from "./lib/test-helpers.mjs";
+import { createPromptSnapshot, run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -12,11 +12,14 @@ const artifacts = await load(join(packageRoot, "src", "subagents", "artifacts.ts
 const {
   artifactsDirFor,
   createSubagentId,
+  deleteParentSessionRun,
   ensureArtifactsDir,
   initializeSessionFile,
   isValidSubagentId,
+  listParentSessionRuns,
   listRunDirs,
   readRunState,
+  recordParentSessionRun,
   tryReadRunState,
   validateRunArtifacts,
   writeRunState,
@@ -33,12 +36,15 @@ function makeTempRoot() {
 function details(root, overrides = {}) {
   const artifactsDir = join(root, "state", "subagents", ID);
   return {
-    version: 2,
+    version: 3,
     id: ID,
     mode: "fg",
     artifactsDir,
     sessionFile: join(artifactsDir, "session.jsonl"),
     sessionId: SESSION_ID,
+    originParentSessionId: "parent-session",
+    lastParentSessionId: "parent-session",
+    promptSnapshot: createPromptSnapshot(),
     phase: "running",
     task: "task",
     cwd: "/tmp/project",
@@ -78,7 +84,7 @@ test("artifactsDirFor returns <agentDir>/state/subagents/<id>", () => {
   assert.equal(artifactsDirFor(ID), resolve(root, "state", "subagents", ID));
 });
 
-test("writeRunState and readRunState round trip version 2 details", () => {
+test("writeRunState and readRunState round trip version 3 details", () => {
   const root = makeTempRoot();
   process.env.PI_AGENT_DIR = root;
   try {
@@ -100,6 +106,22 @@ test("old run-state versions are rejected", () => {
     writeFileSync(join(dir, "run.json"), JSON.stringify({ ...details(root), version: 1 }), "utf8");
     assert.throws(() => readRunState(dir), /unsupported format version/);
     assert.equal(tryReadRunState(dir), undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("parent-session index lists only owned V3 runs and supports confirmed deletion", () => {
+  const root = makeTempRoot();
+  try {
+    const { dir } = createValidArtifacts(root);
+    recordParentSessionRun("parent-session", ID);
+    assert.deepEqual(listParentSessionRuns("different-parent"), []);
+    assert.deepEqual(listParentSessionRuns("parent-session").map((item) => item.id), [ID]);
+    assert.throws(() => deleteParentSessionRun("different-parent", ID), /SUBAGENT_NOT_FOUND/);
+    deleteParentSessionRun("parent-session", ID);
+    assert.equal(existsSync(dir), false);
+    assert.deepEqual(listParentSessionRuns("parent-session"), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -89,7 +89,26 @@ function ctx(cwd) {
   return {
     cwd,
     model: { id: "fake-model", provider: "fake-provider", api: "fake-api", contextWindow: 100000 },
+    sessionManager: { getSessionId() { return "parent-resume-e2e-session"; } },
     modelRegistry: { find(provider, id) { return provider === "fake-provider" && id === "fake-model" ? { id, provider, api: "fake-api", contextWindow: 100000 } : undefined; } },
+  };
+}
+
+function definition(overrides = {}) {
+  return {
+    promptVersion: 2,
+    name: "worker",
+    description: "worker",
+    instructions: "PROFILE INSTRUCTIONS",
+    output: "OUTPUT CONTRACT",
+    inheritParentSystem: true,
+    visible: true,
+    source: "agent",
+    filePath: "worker.yaml",
+    fieldSources: {},
+    layers: [],
+    skills: [],
+    ...overrides,
   };
 }
 
@@ -121,7 +140,7 @@ test("done subagents resume with the same public and native session IDs", async 
     assert.equal(resumed.details.sessionId, sessionId);
     assert.equal(resumed.details.phase, "done");
     assert.deepEqual(state.openedPaths, [sessionFile]);
-    assert.match(state.prompts.at(-1), /historical messages come from the parent session/);
+    assert.match(state.prompts.at(-1), /Parent conversation history — reference only/);
     assert.ok(state.prompts.at(-1).endsWith("[Current delegated task]\ncontinue with a new instruction"));
 
     const persisted = JSON.parse(readFileSync(join(resumed.details.artifactsDir, "run.json"), "utf8"));
@@ -152,7 +171,7 @@ test("resume restores original model, tools, effort, and system prompt", async (
       modelOverride: "fake-provider/fake-model",
       effortOverride: "high",
       systemPrompt: "extra system",
-      definition: { name: "worker", description: "worker", source: "agent", filePath: "worker.yaml", tools: ["read", "edit"], skills: [] },
+      definition: definition({ tools: ["read", "edit"] }),
     });
     const original = state.createCalls.at(-1);
     await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
@@ -166,6 +185,8 @@ test("resume restores original model, tools, effort, and system prompt", async (
     assert.equal(original.resourceLoader.getSkills().skills.length, 1);
     assert.deepEqual(resumed.resourceLoader.getSkills().skills, []);
     assert.equal(resumed.customTools, undefined);
+    assert.match(state.prompts.at(-1), /\[Subagent profile instructions\]\nPROFILE INSTRUCTIONS/);
+    assert.match(state.prompts.at(-1), /\[Output contract\]\nOUTPUT CONTRACT$/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -185,7 +206,7 @@ test("resume migrates the former dual-shell declaration to a portable shell inte
       id,
       mode: "fg",
       task: "initial",
-      definition: { name: "worker", description: "worker", source: "agent", filePath: "worker.yaml", tools: ["read", "shell"], skills: [] },
+      definition: definition({ tools: ["read", "shell"] }),
     });
     const runPath = join(first.details.artifactsDir, "run.json");
     const legacy = JSON.parse(readFileSync(runPath, "utf8"));

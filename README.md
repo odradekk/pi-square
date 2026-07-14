@@ -51,7 +51,38 @@ The `subagent` tool uses a Pi-native, collapsible editorial layout across foregr
 
 While a foreground or resumed child is running, the result updates at approximately 100 ms intervals. The compact view aligns the latest child tool summary with its textual status, renders the last five visual lines of live Markdown, and combines concise usage with the expand hint in a responsive footer. Live text is retained as a Unicode-safe 2,000-code-point rolling tail without changing the complete final response. Completed results collapse to a one-line conclusion; errors and aborts expose their actionable summary immediately. Status uses monochrome text glyphs such as `→ running`, `✓ done`, `✗ error`, `— queued`, and `× aborted`, never emoji presentation characters.
 
-Expanded results separate `TASK`, `LIVE` or `RESULT`, `ACTIVITY`, and `ISSUES` with label-led rules while preserving the full width and native formatting of Markdown. Tool activity uses a responsive two-column ledger that shows only the invoked tool and sanitized, formatted call arguments; matching completion events update the row to running, done, or failed without rendering tool result payloads. Status moves to a right-aligned continuation line on narrow terminals. Full IDs appear only where operationally useful: queued and resumed calls, expanded metadata, and shortened background notifications. Normal results omit system prompts, raw session JSON, and artifact paths. Rendering removes terminal controls and redacts common credential forms without changing model-facing content, details v2 persistence, background delivery, or fg/bg/resume semantics.
+Expanded results separate `TASK`, `LIVE` or `RESULT`, `ACTIVITY`, and `ISSUES` with label-led rules while preserving the full width and native formatting of Markdown. Tool activity uses a responsive two-column ledger that shows only the invoked tool and sanitized, formatted call arguments; matching completion events update the row to running, done, or failed without rendering tool result payloads. Status moves to a right-aligned continuation line on narrow terminals. Full IDs appear only where operationally useful: queued and resumed calls, expanded metadata, and shortened background notifications. Normal results omit system prompts, raw session JSON, and artifact paths. Rendering removes terminal controls and redacts common credential forms without changing model-facing content or background delivery.
+
+## Subagent V2 prompts and manager
+
+Subagent definitions now require `promptVersion: 2`. Discovery composes package, user, and project definitions in that order, so the nearest project `.pi/subagents/*.yaml` has the highest precedence, followed by `~/.pi/agent/subagents/*.yaml`, then package definitions. Same-name files are field overlays rather than whole-definition replacements: omitted fields inherit, `null` clears a scalar override, and an empty array clears an inherited list. Every effective field retains its source scope, path, and SHA-256 for manager display and prompt drift checks. `visible: false` removes an effective definition from the parent catalog and tool lookup without modifying the read-only package file.
+
+V2 separates prompt authority explicitly:
+
+```yaml
+promptVersion: 2
+name: explorer
+description: Read-only repository evidence gathering.
+inheritParentSystem: true
+policy: |
+  Keep the workspace unchanged.
+instructions: |
+  Verify paths and distinguish observation from inference.
+output: |
+  Return findings, relevant files, gaps, and confidence.
+tools: [read, ls]
+extensionTools: [rg, fd]
+skills: []
+visible: true
+```
+
+The child SYSTEM is assembled as immutable subagent governance, optional parent system core, YAML `policy`, and call-specific `systemPrompt`; Pi then adds child-cwd project context, selected skills, date, and cwd. The delegated user message is assembled as replayed `instructions`, reference-only parent history, the current task, and replayed `output`. Parent history may provide facts and confirmed decisions but is not task authorization. Fresh runs persist a frozen effective SYSTEM plus instructions/output and a hash/provenance manifest. Resume replays those snapshots under the same ID; applying a changed definition starts a fresh ID instead.
+
+Run details use persistence version 3 and are indexed by the parent Pi session. Legacy v2 artifact directories are ignored by the new manager and cannot resume, but are not automatically deleted. Normal rendering never exposes prompt snapshots, source manifests, raw session files, or artifact paths.
+
+`/subagent` with no arguments opens a Pi-native three-tab manager. `RUNNING` shows current-session queued/background work and can cancel it through a real `cancelling` transition while retaining resumable artifacts. `SESSION` shows V3 children created or resumed by the current parent session and supports `Resume original`, `Start fresh with current definition`, and confirmed history deletion; manager-started resume/fresh actions enter the same session-owned background lifecycle so they remain visible, cancellable, and notification-backed. `DEFINITIONS` shows effective values and field sources, with project-default or explicitly user-scoped create/edit/hide/delete actions. Editing uses `inherit`, `set`, and `clear` states and previews both canonical layer YAML and the resulting effective change before an atomic write. Package definitions are never edited in place.
+
+`/subagent <request>` sends the parent agent a bounded V2 configuration guideline, current effective-definition metadata, and the original request. It does not directly parse mutation subcommands. While the custom status line is enabled, active background work appears on a bounded second footer row with agent, short ID, phase, latest sanitized tool call parameters, turns, and elapsed time; narrow terminals degrade to compact identity/status segments and `+N` overflow. Tool result payloads never enter the footer.
 
 ## Platform shell tools
 

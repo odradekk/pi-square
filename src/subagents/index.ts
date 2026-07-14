@@ -1,18 +1,25 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PromptManagerSegment } from "../prompt-manager/types";
-import { abortAllBackgroundJobs, createBackgroundState } from "./background";
+import {
+  abortAllBackgroundJobs,
+  createBackgroundState,
+  listBackgroundJobs,
+  subscribeBackgroundState,
+} from "./background";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
+import { registerSubagentManager } from "./manager";
 import { registerSubagentTool, type SubagentRuntimeState } from "./tool";
 
 function formatSubagentCatalog(state: SubagentRuntimeState): string {
-  if (state.registry.definitions.length === 0) return "";
+  const definitions = filterVisibleSubagents(state.registry).definitions;
+  if (definitions.length === 0) return "";
 
   const lines = [
     "## Available YAML-defined subagents",
     "Use the subagent tool with agent: \"name\" when one of these specialized child agents fits the task.",
   ];
 
-  for (const definition of state.registry.definitions) {
+  for (const definition of definitions) {
     const model = definition.model?.trim() ? definition.model : "inherit current";
     const effort = definition.effort?.trim() ? definition.effort : "inherit current";
     const tools = definition.tools?.length ? definition.tools.join(", ") : "any built-in";
@@ -24,9 +31,11 @@ function formatSubagentCatalog(state: SubagentRuntimeState): string {
   return lines.join("\n");
 }
 
-interface SubagentFeature {
+export interface SubagentFeature {
   buildSubagentCatalog(cwd: string, turnSeq: number): PromptManagerSegment;
   setInheritedSystemCore(systemPrompt: string | undefined): void;
+  getBackgroundJobs(): ReturnType<typeof listBackgroundJobs>;
+  subscribeBackground(listener: () => void): () => void;
 }
 
 export default function registerSubagents(pi: ExtensionAPI): SubagentFeature {
@@ -38,11 +47,12 @@ export default function registerSubagents(pi: ExtensionAPI): SubagentFeature {
   };
 
   const refresh = (cwd: string) => {
-    state.registry = filterVisibleSubagents(discoverSubagents(cwd));
+    state.registry = discoverSubagents(cwd);
   };
   state.refresh = refresh;
 
   registerSubagentTool(pi, state);
+  registerSubagentManager(pi, state);
 
   pi.on("session_start", async (_event, ctx) => {
     state.sessionCtx = ctx;
@@ -69,12 +79,18 @@ export default function registerSubagents(pi: ExtensionAPI): SubagentFeature {
         category: "catalog",
         phase: "dynamic-suffix",
         text: formatSubagentCatalog(state),
-        details: [{ label: "agents", value: String(state.registry.definitions.length) }],
+        details: [{ label: "agents", value: String(filterVisibleSubagents(state.registry).definitions.length) }],
         turnSeq,
       };
     },
     setInheritedSystemCore(systemPrompt) {
       state.inheritedSystemCore = systemPrompt;
+    },
+    getBackgroundJobs() {
+      return listBackgroundJobs(state.background);
+    },
+    subscribeBackground(listener) {
+      return subscribeBackgroundState(state.background, listener);
     },
   };
 }

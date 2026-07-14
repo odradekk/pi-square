@@ -19,7 +19,7 @@ function tool() {
   return tools.get("subagent");
 }
 
-const ctx = { cwd: "/tmp", sessionManager: { getBranch: () => [] } };
+const ctx = { cwd: "/tmp", sessionManager: { getSessionId: () => "parent-resume-session", getBranch: () => [] } };
 
 test("active resume is a normal already_running result", async () => {
   setRunSubagentTaskMock(async ({ id }) => ({

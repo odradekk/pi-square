@@ -69,7 +69,7 @@ try {
   assert.ok(!childToolNames.includes("todo"));
   assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
-  assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline"]);
+  assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
   assert.deepEqual([...shortcuts.keys()], ["alt+i"]);
   assert.deepEqual([...renderers.keys()], ["pi-square.subagent-notification"]);

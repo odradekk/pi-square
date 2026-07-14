@@ -1,37 +1,112 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, extname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getPackagePath } from "../core/paths";
 
-/** YAML-loaded subagent profile owned by user or project discovery. */
-export interface SubagentDefinition {
-  /** Unique catalog name used to select the subagent. */
-  name: string;
-  model?: string;
-  effort?: string;
-  /** Parent-facing routing summary shown in the subagent catalog. */
-  description: string;
-  system?: string;
-  prompt?: string;
-  /** Built-in tool allowlist; empty or omitted means all built-in tools. */
-  tools?: string[];
-  /** Extension tool allowlist passed into the child session. */
-  extensionTools?: string[];
-  /** Skill allowlist; empty or omitted means all discovered skills. */
-  skills?: string[];
-  /** Parent-agent catalog visibility; omitted definitions default to visible. */
-  visible?: boolean;
-  /** Discovery layer that supplied this definition. */
-  source: "package" | "agent" | "project";
+export type SubagentDefinitionSource = "package" | "agent" | "project";
+export type SubagentDefinitionField =
+  | "description"
+  | "model"
+  | "effort"
+  | "policy"
+  | "instructions"
+  | "output"
+  | "inheritParentSystem"
+  | "tools"
+  | "extensionTools"
+  | "skills"
+  | "visible";
+
+export interface SubagentDefinitionSourceRef {
+  source: SubagentDefinitionSource;
   filePath: string;
+  contentHash: string;
 }
 
-/** Discovered subagent definitions plus parser diagnostics for one cwd. */
+export interface SubagentDefinitionPatch {
+  promptVersion: 2;
+  name: string;
+  description?: string | null;
+  model?: string | null;
+  effort?: string | null;
+  policy?: string | null;
+  instructions?: string | null;
+  output?: string | null;
+  inheritParentSystem?: boolean | null;
+  tools?: string[] | null;
+  extensionTools?: string[] | null;
+  skills?: string[] | null;
+  visible?: boolean | null;
+}
+
+export interface SubagentDefinitionLayer extends SubagentDefinitionSourceRef {
+  patch: SubagentDefinitionPatch;
+}
+
+/** Effective V2 subagent profile assembled from package, agent, and project overlays. */
+export interface SubagentDefinition {
+  promptVersion: 2;
+  name: string;
+  description: string;
+  model?: string;
+  effort?: string;
+  policy?: string;
+  instructions?: string;
+  output?: string;
+  inheritParentSystem: boolean;
+  tools?: string[];
+  extensionTools?: string[];
+  skills?: string[];
+  visible: boolean;
+  /** Highest-precedence layer contributing to this effective definition. */
+  source: SubagentDefinitionSource;
+  filePath: string;
+  fieldSources: Partial<Record<SubagentDefinitionField, SubagentDefinitionSourceRef>>;
+  layers: SubagentDefinitionLayer[];
+}
+
+/** Discovered effective definitions plus parser and overlay diagnostics for one cwd. */
 export interface SubagentRegistry {
   definitions: SubagentDefinition[];
   errors: string[];
   projectDir: string | null;
 }
+
+const DEFINITION_FIELDS = [
+  "description",
+  "model",
+  "effort",
+  "policy",
+  "instructions",
+  "output",
+  "inheritParentSystem",
+  "tools",
+  "extensionTools",
+  "skills",
+  "visible",
+] as const satisfies readonly SubagentDefinitionField[];
+const STRING_FIELDS = new Set<SubagentDefinitionField>([
+  "description",
+  "model",
+  "effort",
+  "policy",
+  "instructions",
+  "output",
+]);
+const ARRAY_FIELDS = new Set<SubagentDefinitionField>(["tools", "extensionTools", "skills"]);
+const BOOLEAN_FIELDS = new Set<SubagentDefinitionField>(["inheritParentSystem", "visible"]);
+const KNOWN_FIELDS = new Set(["promptVersion", "name", ...DEFINITION_FIELDS]);
+const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function isDirectory(path: string): boolean {
   try {
@@ -64,8 +139,7 @@ function splitInlineArray(body: string): string[] {
   const items: string[] = [];
   let current = "";
   let quote: string | null = null;
-  for (let i = 0; i < body.length; i += 1) {
-    const ch = body[i];
+  for (const ch of body) {
     if (quote) {
       if (ch === quote) quote = null;
       current += ch;
@@ -89,30 +163,38 @@ function splitInlineArray(body: string): string[] {
   return items;
 }
 
-function parseYamlScalar(value: string): string {
-  return stripQuotes(value).replace(/\\n/g, "\n");
+function parseYamlScalar(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === "null" || trimmed === "~") return null;
+  return stripQuotes(trimmed).replace(/\\n/g, "\n");
 }
 
-function parseYamlBoolean(value: unknown, fieldName: string, filePath: string): { value?: boolean; error?: string } {
-  if (value === undefined) return { value: undefined };
-  if (typeof value !== "string") {
-    return { error: `${filePath}: field '${fieldName}' must be true or false` };
-  }
-
+function parseBoolean(value: unknown, fieldName: string, filePath: string): { value?: boolean | null; error?: string } {
+  if (value === null) return { value: null };
+  if (typeof value !== "string") return { error: `${filePath}: field '${fieldName}' must be true, false, or null` };
   const normalized = value.trim().toLowerCase();
   if (normalized === "true") return { value: true };
   if (normalized === "false") return { value: false };
-  return { error: `${filePath}: field '${fieldName}' must be true or false` };
+  return { error: `${filePath}: field '${fieldName}' must be true, false, or null` };
 }
 
-function parseYamlDefinition(text: string, filePath: string, source: SubagentDefinition["source"]): { definition?: SubagentDefinition; errors: string[] } {
+function hashContent(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function parseYamlDefinition(
+  text: string,
+  filePath: string,
+  source: SubagentDefinitionSource,
+): { layer?: SubagentDefinitionLayer; errors: string[] } {
   const errors: string[] = [];
   const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const data: Record<string, string | string[] | boolean> = {};
+  const data: Record<string, string | string[] | null> = {};
+  const seen = new Set<string>();
 
   let i = 0;
   while (i < lines.length) {
-    const rawLine = lines[i];
+    const rawLine = lines[i] ?? "";
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith("#")) {
       i += 1;
@@ -126,69 +208,64 @@ function parseYamlDefinition(text: string, filePath: string, source: SubagentDef
       continue;
     }
 
-    const key = match[1] === "Prompt" ? "prompt" : match[1];
+    const key = match[1] ?? "";
+    if (!KNOWN_FIELDS.has(key)) errors.push(`${filePath}: unknown field '${key}'`);
+    if (seen.has(key)) errors.push(`${filePath}: duplicate field '${key}'`);
+    seen.add(key);
     const rest = (match[2] ?? "").trim();
 
     if (rest === "|" || rest === ">") {
-      const currentIndent = rawLine.match(/^(\s*)/)?.[1].length ?? 0;
+      const currentIndent = rawLine.match(/^(\s*)/)?.[1]?.length ?? 0;
       let probe = i + 1;
       let blockIndent = currentIndent + 1;
       while (probe < lines.length) {
-        const candidate = lines[probe];
+        const candidate = lines[probe] ?? "";
         if (!candidate.trim()) {
           probe += 1;
           continue;
         }
-        blockIndent = candidate.match(/^(\s*)/)?.[1].length ?? 0;
+        blockIndent = candidate.match(/^(\s*)/)?.[1]?.length ?? 0;
         break;
-      }
-      if (blockIndent <= currentIndent) {
-        data[key] = "";
-        i += 1;
-        continue;
       }
       const blockLines: string[] = [];
       i += 1;
       while (i < lines.length) {
-        const nextLine = lines[i];
-        const indent = nextLine.match(/^(\s*)/)?.[1].length ?? 0;
+        const nextLine = lines[i] ?? "";
+        const indent = nextLine.match(/^(\s*)/)?.[1]?.length ?? 0;
         if (nextLine.trim() && indent < blockIndent) break;
-        if (!nextLine.trim()) {
-          blockLines.push("");
-          i += 1;
-          continue;
-        }
-        blockLines.push(nextLine.slice(blockIndent));
+        blockLines.push(nextLine.trim() ? nextLine.slice(blockIndent) : "");
         i += 1;
       }
-      data[key] = rest === ">" ? blockLines.join(" ").replace(/\s+/g, " ").trim() : blockLines.join("\n").trim();
+      const value = rest === ">"
+        ? blockLines.join(" ").replace(/\s+/g, " ").trim()
+        : blockLines.join("\n").trim();
+      data[key] = value || null;
       continue;
     }
 
     if (rest.startsWith("[") && rest.endsWith("]")) {
-      const values = splitInlineArray(rest.slice(1, -1));
-      data[key] = values;
+      data[key] = splitInlineArray(rest.slice(1, -1));
       i += 1;
       continue;
     }
 
     if (!rest) {
-      const nextIndent = (lines[i + 1]?.match(/^(\s*)/)?.[1].length ?? 0);
+      const nextIndent = lines[i + 1]?.match(/^(\s*)/)?.[1]?.length ?? 0;
       const nextTrimmed = lines[i + 1]?.trim() ?? "";
       if (nextTrimmed.startsWith("- ") && nextIndent > 0) {
         const items: string[] = [];
         i += 1;
         while (i < lines.length) {
-          const nextLine = lines[i];
-          const itemMatch = nextLine.match(/^\s*-\s*(.*)$/);
+          const itemMatch = (lines[i] ?? "").match(/^\s*-\s*(.*)$/);
           if (!itemMatch) break;
-          items.push(parseYamlScalar(itemMatch[1] ?? ""));
+          const parsed = parseYamlScalar(itemMatch[1] ?? "");
+          if (typeof parsed === "string" && parsed.trim()) items.push(parsed.trim());
           i += 1;
         }
-        data[key] = items.filter(Boolean);
+        data[key] = items;
         continue;
       }
-      data[key] = "";
+      data[key] = null;
       i += 1;
       continue;
     }
@@ -197,93 +274,162 @@ function parseYamlDefinition(text: string, filePath: string, source: SubagentDef
     i += 1;
   }
 
+  const versionRaw = data.promptVersion;
+  if (versionRaw !== "2") errors.push(`${filePath}: field 'promptVersion' must be 2`);
   const name = typeof data.name === "string" ? data.name.trim() : "";
-  const description = typeof data.description === "string" ? data.description.trim() : "";
   if (!name) errors.push(`${filePath}: missing required field 'name'`);
-  if (!description) errors.push(`${filePath}: missing required field 'description'`);
+  else if (!NAME_PATTERN.test(name)) errors.push(`${filePath}: field 'name' must match ${NAME_PATTERN}`);
 
-  const tools = Array.isArray(data.tools) ? data.tools.map((item) => item.trim()).filter(Boolean) : undefined;
-  const extensionTools = Array.isArray(data.extensionTools) ? data.extensionTools.map((item) => item.trim()).filter(Boolean) : undefined;
-  const skills = Array.isArray(data.skills) ? data.skills.map((item) => item.trim()).filter(Boolean) : undefined;
-  const parsedVisible = parseYamlBoolean(data.visible, "visible", filePath);
-  if (parsedVisible.error) errors.push(parsedVisible.error);
-  const visible = parsedVisible.value ?? true;
+  const patch: Partial<SubagentDefinitionPatch> = { promptVersion: 2, name };
+  for (const field of DEFINITION_FIELDS) {
+    if (!seen.has(field)) continue;
+    const value = data[field];
+    if (STRING_FIELDS.has(field)) {
+      if (value !== null && typeof value !== "string") {
+        errors.push(`${filePath}: field '${field}' must be a string or null`);
+      } else {
+        (patch as Record<string, unknown>)[field] = typeof value === "string" ? value.trim() || null : null;
+      }
+      continue;
+    }
+    if (ARRAY_FIELDS.has(field)) {
+      if (value !== null && !Array.isArray(value)) {
+        errors.push(`${filePath}: field '${field}' must be an array or null`);
+      } else {
+        (patch as Record<string, unknown>)[field] = value === null
+          ? null
+          : [...new Set(value.map((item) => item.trim()).filter(Boolean))];
+      }
+      continue;
+    }
+    if (BOOLEAN_FIELDS.has(field)) {
+      const parsed = parseBoolean(value, field, filePath);
+      if (parsed.error) errors.push(parsed.error);
+      else (patch as Record<string, unknown>)[field] = parsed.value;
+    }
+  }
 
   if (errors.length > 0) return { errors };
-
   return {
-    definition: {
-      name,
-      model: typeof data.model === "string" && data.model.trim() ? data.model.trim() : undefined,
-      effort: typeof data.effort === "string" && data.effort.trim() ? data.effort.trim() : undefined,
-      description,
-      system: typeof data.system === "string" && data.system.trim() ? data.system.trim() : undefined,
-      prompt: typeof data.prompt === "string" && data.prompt.trim() ? data.prompt.trim() : undefined,
-      tools,
-      extensionTools,
-      skills,
-      visible,
+    layer: {
       source,
       filePath,
+      contentHash: hashContent(text),
+      patch: patch as SubagentDefinitionPatch,
     },
     errors,
   };
 }
 
-function loadDefinitionsFromDir(dir: string, source: SubagentDefinition["source"]): { definitions: SubagentDefinition[]; errors: string[] } {
-  const definitions: SubagentDefinition[] = [];
+function loadDefinitionsFromDir(
+  dir: string,
+  source: SubagentDefinitionSource,
+): { layers: SubagentDefinitionLayer[]; errors: string[] } {
+  const layers: SubagentDefinitionLayer[] = [];
   const errors: string[] = [];
-  if (!isDirectory(dir)) return { definitions, errors };
+  if (!isDirectory(dir)) return { layers, errors };
 
-  let entries: string[] = [];
+  let entries: string[];
   try {
-    entries = readdirSync(dir);
+    entries = readdirSync(dir).sort();
   } catch (error) {
-    errors.push(`${dir}: unable to read directory (${error instanceof Error ? error.message : String(error)})`);
-    return { definitions, errors };
+    return { layers, errors: [`${dir}: unable to read directory (${error instanceof Error ? error.message : String(error)})`] };
   }
 
+  const seenNames = new Map<string, string>();
   for (const entry of entries) {
     if (!/\.ya?ml$/i.test(entry)) continue;
     const filePath = join(dir, entry);
     try {
       const parsed = parseYamlDefinition(readFileSync(filePath, "utf8"), filePath, source);
-      definitions.push(...(parsed.definition ? [parsed.definition] : []));
       errors.push(...parsed.errors);
+      if (!parsed.layer) continue;
+      const previous = seenNames.get(parsed.layer.patch.name);
+      if (previous) {
+        errors.push(`Duplicate subagent name '${parsed.layer.patch.name}' in ${filePath} and ${previous}. Names must be unique within a discovery layer.`);
+        continue;
+      }
+      seenNames.set(parsed.layer.patch.name, filePath);
+      layers.push(parsed.layer);
     } catch (error) {
       errors.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  return { layers, errors };
+}
 
-  return { definitions, errors };
+function sourceRef(layer: SubagentDefinitionLayer): SubagentDefinitionSourceRef {
+  return { source: layer.source, filePath: layer.filePath, contentHash: layer.contentHash };
+}
+
+function mergeDefinitionLayers(name: string, layers: SubagentDefinitionLayer[]): { definition?: SubagentDefinition; errors: string[] } {
+  const values: Partial<Record<SubagentDefinitionField, unknown>> = {};
+  const fieldSources: Partial<Record<SubagentDefinitionField, SubagentDefinitionSourceRef>> = {};
+
+  for (const layer of layers) {
+    for (const field of DEFINITION_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(layer.patch, field)) continue;
+      const raw = layer.patch[field];
+      values[field] = raw === null ? undefined : Array.isArray(raw) ? [...raw] : raw;
+      fieldSources[field] = sourceRef(layer);
+    }
+  }
+
+  const description = typeof values.description === "string" ? values.description.trim() : "";
+  if (!description) {
+    return { errors: [`Effective subagent '${name}' is missing required field 'description' after overlay resolution.`] };
+  }
+  const top = layers.at(-1);
+  if (!top) return { errors: [`Effective subagent '${name}' has no definition layers.`] };
+
+  return {
+    definition: {
+      promptVersion: 2,
+      name,
+      description,
+      ...(typeof values.model === "string" ? { model: values.model } : {}),
+      ...(typeof values.effort === "string" ? { effort: values.effort } : {}),
+      ...(typeof values.policy === "string" ? { policy: values.policy } : {}),
+      ...(typeof values.instructions === "string" ? { instructions: values.instructions } : {}),
+      ...(typeof values.output === "string" ? { output: values.output } : {}),
+      inheritParentSystem: typeof values.inheritParentSystem === "boolean" ? values.inheritParentSystem : true,
+      ...(Array.isArray(values.tools) ? { tools: [...values.tools] as string[] } : {}),
+      ...(Array.isArray(values.extensionTools) ? { extensionTools: [...values.extensionTools] as string[] } : {}),
+      ...(Array.isArray(values.skills) ? { skills: [...values.skills] as string[] } : {}),
+      visible: typeof values.visible === "boolean" ? values.visible : true,
+      source: top.source,
+      filePath: top.filePath,
+      fieldSources,
+      layers: layers.map((layer) => ({ ...layer, patch: structuredClone(layer.patch) })),
+    },
+    errors: [],
+  };
 }
 
 export function discoverSubagents(cwd: string): SubagentRegistry {
   const projectDir = findNearestProjectSubagentsDir(cwd);
-  const layers = [
+  const loaded = [
     loadDefinitionsFromDir(getPackagePath("resources", "subagents"), "package"),
     loadDefinitionsFromDir(join(getAgentDir(), "subagents"), "agent"),
-    projectDir ? loadDefinitionsFromDir(projectDir, "project") : { definitions: [], errors: [] },
+    projectDir ? loadDefinitionsFromDir(projectDir, "project") : { layers: [], errors: [] },
   ];
+  const errors = loaded.flatMap((layer) => layer.errors);
+  const grouped = new Map<string, SubagentDefinitionLayer[]>();
+  for (const layer of loaded.flatMap((item) => item.layers)) {
+    const current = grouped.get(layer.patch.name) ?? [];
+    current.push(layer);
+    grouped.set(layer.patch.name, current);
+  }
 
-  const errors = layers.flatMap((layer) => layer.errors);
-  const effective = new Map<string, SubagentDefinition>();
-
-  for (const layer of layers) {
-    const seenInLayer = new Map<string, string>();
-    for (const definition of layer.definitions) {
-      const previous = seenInLayer.get(definition.name);
-      if (previous) {
-        errors.push(`Duplicate subagent name '${definition.name}' in ${definition.filePath} and ${previous}. Names must be unique within a discovery layer.`);
-        continue;
-      }
-      seenInLayer.set(definition.name, definition.filePath);
-      effective.set(definition.name, definition);
-    }
+  const definitions: SubagentDefinition[] = [];
+  for (const [name, layers] of grouped) {
+    const merged = mergeDefinitionLayers(name, layers);
+    errors.push(...merged.errors);
+    if (merged.definition) definitions.push(merged.definition);
   }
 
   return {
-    definitions: [...effective.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    definitions: definitions.sort((a, b) => a.name.localeCompare(b.name)),
     errors,
     projectDir,
   };
@@ -292,6 +438,120 @@ export function discoverSubagents(cwd: string): SubagentRegistry {
 export function filterVisibleSubagents(registry: SubagentRegistry): SubagentRegistry {
   return {
     ...registry,
-    definitions: registry.definitions.filter((definition) => (definition.visible ?? true) !== false),
+    definitions: registry.definitions.filter((definition) => definition.visible),
   };
 }
+
+function scalarYaml(value: string): string {
+  return JSON.stringify(value);
+}
+
+function blockYaml(field: string, value: string): string[] {
+  return [`${field}: |`, ...value.split("\n").map((line) => `  ${line}`)];
+}
+
+export function serializeDefinitionPatch(patch: SubagentDefinitionPatch): string {
+  if (!NAME_PATTERN.test(patch.name)) throw new Error(`Invalid subagent name '${patch.name}'.`);
+  const lines = ["promptVersion: 2", `name: ${scalarYaml(patch.name)}`];
+  for (const field of DEFINITION_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(patch, field)) continue;
+    const value = patch[field];
+    if (value === null) {
+      lines.push(`${field}: null`);
+    } else if (Array.isArray(value)) {
+      if (value.length === 0) lines.push(`${field}: []`);
+      else lines.push(`${field}:`, ...value.map((item) => `  - ${scalarYaml(item)}`));
+    } else if (typeof value === "boolean") {
+      lines.push(`${field}: ${value}`);
+    } else if (typeof value === "string") {
+      if (["description", "policy", "instructions", "output"].includes(field)) lines.push(...blockYaml(field, value));
+      else lines.push(`${field}: ${scalarYaml(value)}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function definitionScopeDir(scope: "agent" | "project", cwd: string): string {
+  if (scope === "agent") return join(getAgentDir(), "subagents");
+  return findNearestProjectSubagentsDir(cwd) ?? join(cwd, ".pi", "subagents");
+}
+
+export function definitionOverlayPath(scope: "agent" | "project", cwd: string, name: string): string {
+  if (!NAME_PATTERN.test(name)) throw new Error(`Invalid subagent name '${name}'.`);
+  return join(definitionScopeDir(scope, cwd), `${name}.yaml`);
+}
+
+export function previewDefinitionPatch(input: {
+  registry: SubagentRegistry;
+  cwd: string;
+  scope: "agent" | "project";
+  patch: SubagentDefinitionPatch;
+}): { content: string; filePath: string; definition?: SubagentDefinition; errors: string[] } {
+  const content = serializeDefinitionPatch(input.patch);
+  const current = input.registry.definitions.find((definition) => definition.name === input.patch.name);
+  const existingLayer = current?.layers.find((layer) => layer.source === input.scope);
+  const filePath = existingLayer?.filePath ?? definitionOverlayPath(input.scope, input.cwd, input.patch.name);
+  const retained = (current?.layers ?? []).filter((layer) => layer.source !== input.scope);
+  const candidate: SubagentDefinitionLayer = {
+    source: input.scope,
+    filePath,
+    contentHash: hashContent(content),
+    patch: structuredClone(input.patch),
+  };
+  const rank: Record<SubagentDefinitionSource, number> = { package: 0, agent: 1, project: 2 };
+  const merged = mergeDefinitionLayers(input.patch.name, [...retained, candidate].sort((a, b) => rank[a.source] - rank[b.source]));
+  return { content, filePath, definition: merged.definition, errors: merged.errors };
+}
+
+function validateOverlayFilePath(scope: "agent" | "project", cwd: string, filePath: string): string {
+  const scopeDir = resolve(definitionScopeDir(scope, cwd));
+  const candidate = resolve(filePath);
+  if (dirname(candidate) !== scopeDir || ![".yaml", ".yml"].includes(extname(candidate).toLowerCase())) {
+    throw new Error(`Definition path '${filePath}' is outside the ${scope} subagent directory.`);
+  }
+  return candidate;
+}
+
+export function writeDefinitionPatch(input: {
+  cwd: string;
+  scope: "agent" | "project";
+  patch: SubagentDefinitionPatch;
+  filePath?: string;
+}): { filePath: string; content: string } {
+  const content = serializeDefinitionPatch(input.patch);
+  const filePath = validateOverlayFilePath(
+    input.scope,
+    input.cwd,
+    input.filePath ?? definitionOverlayPath(input.scope, input.cwd, input.patch.name),
+  );
+  const parsed = parseYamlDefinition(content, filePath, input.scope);
+  if (!parsed.layer || parsed.errors.length > 0) throw new Error(parsed.errors.join(" ") || "Invalid subagent definition.");
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp`;
+  writeFileSync(tmp, content, "utf8");
+  renameSync(tmp, filePath);
+  return { filePath, content };
+}
+
+export function deleteDefinitionOverlay(input: {
+  cwd: string;
+  scope: "agent" | "project";
+  name: string;
+  filePath?: string;
+}): boolean {
+  const filePath = validateOverlayFilePath(
+    input.scope,
+    input.cwd,
+    input.filePath ?? definitionOverlayPath(input.scope, input.cwd, input.name),
+  );
+  if (!existsSync(filePath)) return false;
+  rmSync(filePath);
+  return true;
+}
+
+export const __testables = {
+  findNearestProjectSubagentsDir,
+  hashContent,
+  mergeDefinitionLayers,
+  parseYamlDefinition,
+};

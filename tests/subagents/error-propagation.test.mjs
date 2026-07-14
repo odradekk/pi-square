@@ -76,7 +76,7 @@ test("foreground envelope exposes silent child tool failures as a structured err
       cwd: "/tmp/subagents",
       model: { provider: "test", id: "model", contextWindow: 100000 },
       modelRegistry: { find() { return undefined; } },
-      sessionManager: { getBranch: () => [] },
+      sessionManager: { getSessionId: () => "parent-error-session", getBranch: () => [] },
     },
   );
   assert.equal(result.isError, true);

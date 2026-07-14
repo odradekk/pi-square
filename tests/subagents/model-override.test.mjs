@@ -89,18 +89,26 @@ function ctx() {
   return {
     cwd: "/tmp/subagents",
     model: { provider: "inherited", id: "main-model", contextWindow: 100000 },
+    sessionManager: { getSessionId() { return "parent-model-override-session"; } },
     modelRegistry: { find(provider, id) { return knownModels.get(`${provider}/${id}`); } },
   };
 }
 
 function definition(overrides = {}) {
   return {
+    promptVersion: 2,
     name: "explorer",
     model: "cpa/deepseek-v4-flash",
     effort: "low",
     description: "test subagent",
+    instructions: "PROFILE INSTRUCTIONS",
+    output: "OUTPUT CONTRACT",
+    inheritParentSystem: true,
+    visible: true,
     source: "agent",
     filePath: "explorer.yaml",
+    fieldSources: {},
+    layers: [],
     tools: [],
     skills: [],
     ...overrides,
@@ -146,27 +154,28 @@ test("child settings enable compaction and one observable retry layer", async ()
   });
 });
 
-test("child inherits the parent SYSTEM core and exposes native child context files", async () => {
+test("child layers immutable governance before the parent SYSTEM core and exposes native child context files", async () => {
   reset();
   await runSubagentTask(freshInput({
     definition: undefined,
     inheritedSystemCore: "PARENT SYSTEM\n\nPARENT APPEND",
   }));
-  assert.equal(lastCall().resourceLoader.getSystemPrompt(), "PARENT SYSTEM\n\nPARENT APPEND");
+  const system = lastCall().resourceLoader.getSystemPrompt();
+  assert.match(system, /^You are a delegated Pi subagent/);
+  assert.match(system, /<parent_system_core>\nPARENT SYSTEM\n\nPARENT APPEND\n<\/parent_system_core>/);
   assert.deepEqual(lastCall().resourceLoader.getAgentsFiles().agentsFiles, sdkState.agentsFiles);
 });
 
-test("YAML system replaces the inherited core while call instructions append", async () => {
+test("V2 policy layers after the parent core and before call-specific policy", async () => {
   reset();
   await runSubagentTask(freshInput({
     inheritedSystemCore: "PARENT SYSTEM",
-    systemPrompt: "CALL-SPECIFIC INSTRUCTIONS",
-    definition: definition({ system: "PROFILE SYSTEM" }),
+    systemPrompt: "CALL-SPECIFIC POLICY",
+    definition: definition({ policy: "PROFILE POLICY" }),
   }));
-  assert.equal(
-    lastCall().resourceLoader.getSystemPrompt(),
-    "PROFILE SYSTEM\n\nCALL-SPECIFIC INSTRUCTIONS",
-  );
+  const system = lastCall().resourceLoader.getSystemPrompt();
+  assert.ok(system.indexOf("PARENT SYSTEM") < system.indexOf("PROFILE POLICY"));
+  assert.ok(system.indexOf("PROFILE POLICY") < system.indexOf("CALL-SPECIFIC POLICY"));
 });
 
 test("fresh sessions resolve and persist the portable shell capability", async () => {

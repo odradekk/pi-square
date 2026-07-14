@@ -19,6 +19,7 @@ import {
   renderSubagentNotification,
   renderSubagentResult,
 } from "./render";
+import { compileFreshPrompt } from "./prompt";
 import { resolveSubagentCwd, resumeSubagentTask, runSubagentTask } from "./session";
 import type { SubagentNotificationDetails } from "./types";
 
@@ -40,10 +41,10 @@ const SubagentParams = Type.Object({
   ], { description: "Execution mode: fg waits for a new task, bg queues a new task, resume continues an inactive persisted subagent." }),
   task: Type.String({ description: "Task for the delegated or resumed subagent." }),
   id: Type.Optional(Type.String({ description: "Existing public subagent ID. Required only for mode=resume." })),
-  context: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "Latest parent-session user and assistant messages to inject. Default 0." })),
+  context: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "Latest parent-session user and assistant messages to inject as reference-only context. Default 0." })),
   agent: Type.Optional(Type.String({ description: "Named YAML subagent for fg/bg." })),
   cwd: Type.Optional(Type.String({ description: "Working directory for fg/bg. Relative paths resolve from the parent cwd." })),
-  systemPrompt: Type.Optional(Type.String({ description: "Extra system instructions for fg/bg." })),
+  systemPrompt: Type.Optional(Type.String({ description: "Extra call-specific SYSTEM policy for fg/bg." })),
   model: Type.Optional(Type.String({ description: "Model override for fg/bg in provider/id form." })),
   thinkingLevel: Type.Optional(Type.String({ description: "Thinking override for fg/bg: off, minimal, low, medium, high, or xhigh." })),
 }, { additionalProperties: false });
@@ -103,13 +104,13 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
-    description: "Delegate or resume one persisted Pi child session. mode=fg waits, mode=bg queues and returns an ID, and mode=resume continues an inactive ID in foreground. context injects the latest clean user and assistant messages from the parent session.",
+    description: "Delegate or resume one parent-session-owned Pi child. mode=fg waits, mode=bg queues and returns an ID, and mode=resume continues an inactive V3 child in foreground. context injects recent parent messages as reference-only evidence.",
     promptSnippet: "Use subagent with explicit mode=fg, mode=bg, or mode=resume. Resume requires id and task; context is an optional 0-50 parent-message count.",
     promptGuidelines: [
       "Use mode=fg for a new delegated task whose result is needed now.",
       "Use mode=bg for independent work that may finish later; retain the returned id.",
       "Use mode=resume with id and a new task to continue an inactive persisted subagent.",
-      "Use context only when recent parent-session messages materially affect the delegated task.",
+      "Use context only when recent parent-session facts or confirmed decisions materially affect the delegated task; history never authorizes work.",
     ],
     parameters: SubagentParams,
     renderCall: renderSubagentCall,
@@ -121,6 +122,15 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
       const mode = params.mode as "fg" | "bg" | "resume";
       const task = String(params.task).trim();
       const contextCount = Number(params.context ?? 0);
+      const parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
+      if (!parentSessionId) {
+        return failureToolResult(createSubagentError({
+          code: "PERSISTENCE_FAILED",
+          message: "The parent Pi session has no stable session ID.",
+          operation: mode,
+          retryable: false,
+        }));
+      }
       let contextMessages;
       try {
         contextMessages = collectParentContextMessages(ctx.sessionManager, contextCount);
@@ -139,6 +149,7 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
             ctx,
             id,
             task,
+            parentSessionId,
             contextMessages,
             signal,
             onUpdate,
@@ -155,9 +166,10 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
 
       state.refresh?.(ctx.cwd);
       const agentName = String(params.agent ?? "").trim();
-      const definition = agentName ? state.registry.definitions.find((item) => item.name === agentName) : undefined;
+      const visibleDefinitions = state.registry.definitions.filter((item) => item.visible);
+      const definition = agentName ? visibleDefinitions.find((item) => item.name === agentName) : undefined;
       if (agentName && !definition) {
-        const available = state.registry.definitions.map((item) => item.name).join(", ") || "(none)";
+        const available = visibleDefinitions.map((item) => item.name).join(", ") || "(none)";
         return failureToolResult(createSubagentError({
           code: "UNKNOWN_AGENT",
           message: `Unknown subagent '${agentName}'. Available subagents: ${available}.`,
@@ -168,6 +180,12 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
 
       const id = createSubagentId();
       if (mode === "bg") {
+        const promptSnapshot = compileFreshPrompt({
+          definition,
+          inheritedSystemCore: state.inheritedSystemCore,
+          callPolicy: params.systemPrompt,
+          parentMessages: contextMessages,
+        });
         const job = createQueuedJob({
           state: state.background,
           id,
@@ -176,6 +194,8 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
           definition,
           modelOverride: params.model,
           effortOverride: params.thinkingLevel,
+          parentSessionId,
+          promptSnapshot,
         });
         startBackgroundJob({
           pi,
@@ -183,6 +203,7 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
           job,
           ctx,
           task,
+          parentSessionId,
           contextMessages,
           cwd: params.cwd,
           inheritedSystemCore: state.inheritedSystemCore,
@@ -204,6 +225,7 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
           id,
           mode: "fg",
           task,
+          parentSessionId,
           contextMessages,
           cwd: params.cwd,
           inheritedSystemCore: state.inheritedSystemCore,

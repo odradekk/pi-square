@@ -46,6 +46,38 @@ test("footer preserves the five-field content and width degradation", () => {
   assert.doesNotMatch(narrow, /example-project/);
 });
 
+test("background strip shows live call parameters without tool outputs and degrades with +N", () => {
+  const { renderSubagentStatusline } = statuslineModule;
+  const job = (id, name, call) => ({
+    id,
+    status: "running",
+    createdAt: 1,
+    updatedAt: 2,
+    details: {
+      startedAt: Date.now() - 2000,
+      agent: { name },
+      usage: { turns: 2 },
+      timeline: [
+        { kind: "tool", phase: "start", text: call },
+        { kind: "tool", phase: "end", text: `${name}: SECRET TOOL OUTPUT` },
+      ],
+    },
+  });
+  const jobs = [
+    job("subagent_11111111-1111-4111-8111-111111111111", "worker", "ls src/components"),
+    job("subagent_22222222-2222-4222-8222-222222222222", "explorer", "rg /needle/ in src"),
+  ];
+  const full = renderSubagentStatusline(plainTheme(), 200, jobs, Date.now());
+  assert.match(full, /subagents 2/);
+  assert.match(full, /worker 11111111 running · ls src\/components · 2t/);
+  assert.match(full, /explorer 22222222 running · rg \/needle\/ in src · 2t/);
+  assert.doesNotMatch(full, /SECRET TOOL OUTPUT/);
+  const narrow = renderSubagentStatusline(plainTheme(), 32, jobs, Date.now());
+  assert.ok(narrow.length <= 32);
+  assert.match(narrow, /\+\d/);
+  assert.equal(renderSubagentStatusline(plainTheme(), 80, [{ ...jobs[0], status: "done" }]), null);
+});
+
 test("command and configured shortcut toggle the custom footer", async () => {
   const handlers = new Map();
   const commands = new Map();
@@ -56,9 +88,18 @@ test("command and configured shortcut toggle the custom footer", async () => {
     registerShortcut(key, definition) { shortcuts.set(key, definition); },
     getThinkingLevel() { return "high"; },
   };
-  registerStatusline(pi, () => configured);
+  let backgroundListener;
+  let unsubscribed = false;
+  const subagents = {
+    getBackgroundJobs() { return []; },
+    subscribeBackground(listener) {
+      backgroundListener = listener;
+      return () => { unsubscribed = true; };
+    },
+  };
+  registerStatusline(pi, () => configured, subagents);
 
-  assert.deepEqual([...handlers.keys()].sort(), ["model_select", "session_start", "turn_end"]);
+  assert.deepEqual([...handlers.keys()].sort(), ["model_select", "session_shutdown", "session_start", "turn_end"]);
   assert.deepEqual([...commands.keys()], ["statusline"]);
 
   const footerCalls = [];
@@ -76,6 +117,10 @@ test("command and configured shortcut toggle the custom footer", async () => {
 
   await handlers.get("session_start")({}, ctx);
   assert.equal(typeof footerCalls.at(-1), "function");
+  let renderRequests = 0;
+  footerCalls.at(-1)({ requestRender() { renderRequests += 1; } }, plainTheme());
+  backgroundListener();
+  assert.equal(renderRequests, 1);
   assert.ok(shortcuts.has("alt+x"));
   await commands.get("statusline").handler("", ctx);
   assert.equal(footerCalls.at(-1), undefined);
@@ -87,6 +132,8 @@ test("command and configured shortcut toggle the custom footer", async () => {
   assert.equal(typeof footerCalls.at(-1), "function");
   await commands.get("statusline").handler("sideways", ctx);
   assert.equal(notifications.at(-1).level, "warning");
+  await handlers.get("session_shutdown")();
+  assert.equal(unsubscribed, true);
 });
 
 let failed = 0;

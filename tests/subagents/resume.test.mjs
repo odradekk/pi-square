@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import jiti from "jiti";
-import { run, test } from "./lib/test-helpers.mjs";
+import { createPromptSnapshot, run, test } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const mockSdkPath = join(tmpdir(), `pi-square-resume-validation-sdk-${process.pid}.mjs`);
@@ -31,12 +31,15 @@ function root() {
 function baseDetails(agentRoot, overrides = {}) {
   const artifactsDir = join(agentRoot, "state", "subagents", ID);
   return {
-    version: 2,
+    version: 3,
     id: ID,
     mode: "fg",
     artifactsDir,
     sessionFile: join(artifactsDir, "session.jsonl"),
     sessionId: SESSION_ID,
+    originParentSessionId: "parent-session",
+    lastParentSessionId: "parent-session",
+    promptSnapshot: createPromptSnapshot(),
     phase: "error",
     task: "task",
     cwd: "/tmp/project",
@@ -59,7 +62,11 @@ function writeValidRun(agentRoot, overrides = {}) {
 }
 
 function ctx(agentRoot) {
-  return { cwd: agentRoot, modelRegistry: { find() { return undefined; } } };
+  return {
+    cwd: agentRoot,
+    sessionManager: { getSessionId() { return "parent-session"; } },
+    modelRegistry: { find() { return undefined; } },
+  };
 }
 
 async function captureFailure(agentRoot, id = ID) {

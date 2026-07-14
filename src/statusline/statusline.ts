@@ -1,6 +1,8 @@
 import { basename } from "node:path";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { sanitizeSubagentDisplay } from "../subagents/render";
+import type { BackgroundJobSnapshot } from "../subagents/types";
 import type { GitSnapshot, StatuslineState } from "./types.ts";
 
 const GAUGE_WIDTH = 16;
@@ -132,7 +134,86 @@ export function renderStatuslineContent(
   return truncateToWidth(identity, width);
 }
 
-export function installStatusline(ctx: ExtensionContext, pi: ExtensionAPI, state: StatuslineState): void {
+function shortId(id: string): string {
+  return id.replace(/^subagent_/, "").slice(0, 8);
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
+  return `${Math.floor(ms / 60_000)}m`;
+}
+
+function latestCall(job: BackgroundJobSnapshot): string {
+  const call = [...(job.details.timeline ?? [])]
+    .reverse()
+    .find((item) => item?.kind === "tool" && item.phase === "start");
+  if (!call) return "working";
+  return sanitizeSubagentDisplay(call.text).replace(/\s+/g, " ").trim() || "working";
+}
+
+function activeStatus(theme: any, status: BackgroundJobSnapshot["status"]): string {
+  if (status === "queued") return theme.fg("muted", "queued");
+  if (status === "cancelling") return theme.fg("warning", "cancelling");
+  return theme.fg("warning", "running");
+}
+
+function jobSummary(theme: any, job: BackgroundJobSnapshot, compact: boolean, now: number): string {
+  const identity = theme.fg("accent", job.details.agent?.name ?? "generic")
+    + theme.fg("dim", ` ${shortId(job.id)}`);
+  const status = activeStatus(theme, job.status);
+  if (compact) return `${identity} ${status}`;
+  const elapsed = formatElapsed(Math.max(0, now - job.details.startedAt));
+  const turns = Math.max(0, job.details.usage?.turns ?? 0);
+  return `${identity} ${status}${theme.fg("dim", " · ")}${theme.fg("text", latestCall(job))}${theme.fg("dim", ` · ${turns}t · ${elapsed}`)}`;
+}
+
+export function renderSubagentStatusline(
+  theme: any,
+  width: number,
+  jobs: BackgroundJobSnapshot[],
+  now = Date.now(),
+): string | null {
+  const active = jobs.filter((job) => job.status === "queued" || job.status === "running" || job.status === "cancelling");
+  if (active.length === 0) return null;
+  const separator = theme.fg("borderMuted", " │ ");
+  const prefix = theme.fg("muted", `subagents ${active.length}`);
+  let line = prefix;
+  let shown = 0;
+
+  for (const job of active) {
+    const full = jobSummary(theme, job, false, now);
+    const compact = jobSummary(theme, job, true, now);
+    const remainingAfter = active.length - shown - 1;
+    const overflow = remainingAfter > 0 ? `${separator}${theme.fg("dim", `+${remainingAfter}`)}` : "";
+    const fullCandidate = `${line}${separator}${full}${overflow}`;
+    const compactCandidate = `${line}${separator}${compact}${overflow}`;
+    if (visibleWidth(fullCandidate) <= width) {
+      line += `${separator}${full}`;
+      shown += 1;
+      continue;
+    }
+    if (visibleWidth(compactCandidate) <= width) {
+      line += `${separator}${compact}`;
+      shown += 1;
+    }
+    break;
+  }
+
+  const hidden = active.length - shown;
+  if (hidden > 0) {
+    const suffix = `${separator}${theme.fg("dim", `+${hidden}`)}`;
+    if (visibleWidth(line + suffix) <= width) line += suffix;
+  }
+  return truncateToWidth(line, width);
+}
+
+export function installStatusline(
+  ctx: ExtensionContext,
+  pi: ExtensionAPI,
+  state: StatuslineState,
+  getBackgroundJobs: () => BackgroundJobSnapshot[] = () => [],
+): void {
   ctx.ui.setFooter((tui: any, theme: any) => {
     state.tuiRef = tui;
     return {
@@ -142,7 +223,10 @@ export function installStatusline(ctx: ExtensionContext, pi: ExtensionAPI, state
       invalidate() {},
       render(width: number): string[] {
         try {
-          return [renderStatuslineContent(theme, width, ctx, pi, state)];
+          const lines = [renderStatuslineContent(theme, width, ctx, pi, state)];
+          const subagents = renderSubagentStatusline(theme, width, getBackgroundJobs());
+          if (subagents) lines.push(subagents);
+          return lines;
         } catch {
           return [truncateToWidth(theme.fg("dim", "—"), width)];
         }
