@@ -11,7 +11,7 @@
 
 - `src/index.ts` is the single extension entry point. It loads configuration on session start and registers each feature module.
 - `src/core/` owns shared configuration, diagnostics, and path handling. Configuration is schema-validated and merges agent-level `config/pi-square.json` with project-level `.pi/config/pi-square.json`.
-- Feature directories under `src/` own individual tools or UI behavior: `ask-user/`, `banner/`, `notifications/`, `prompt-manager/`, `scheme/`, `search/`, `shell/`, `statusline/`, `subagents/`, `time/`, `todo/`, and `web/`. `src/shell/` owns platform shell selection, PowerShell process execution, bounded streaming output, and shared bash/PowerShell command presentation.
+- Feature directories under `src/` own individual tools or UI behavior: `ask-user/`, `banner/`, `notifications/`, `prompt-manager/`, `scheme/`, `search/`, `shell/`, `statusline/`, `subagents/`, `time/`, `todo/`, and `web/`. `src/shell/` owns platform shell selection, PowerShell process execution, bounded streaming output, and shared bash/PowerShell command presentation. `src/subagents/` owns persisted child-session execution, portable child tool policy, background delivery, bounded live-text updates, and the shared foreground/background native presentation.
 - `src/tool-catalog.ts` defines the extension tools that may be exposed to subagents.
 - `skills/` contains discoverable Pi skills. Each skill owns its instructions and supporting resources inside its directory.
 - `resources/subagents/` contains the YAML definitions for bundled subagent roles.
@@ -42,6 +42,7 @@ Documentation must describe the repository as it exists. Do not claim that a com
 - Keep non-secret settings in agent-level `config/pi-square.json` or project-level `.pi/config/pi-square.json`. Credentials and model definitions belong to Pi-owned `auth.json` and `models.json`; never commit secrets.
 - Preserve feature ownership and avoid unrelated refactors. Add shared abstractions only when multiple modules have a demonstrated common requirement.
 - Keep model-callable shell tools platform-exclusive: non-Windows sessions expose bash only, Windows sessions expose pwsh only, and subagents request the portable `shell` capability rather than declaring both names.
+- Keep subagent presentation display-only: render from the bounded v2 run details without exposing custom system prompts or normal-run artifact paths, and preserve tool content, persistence, notification delivery, and fg/bg/resume semantics unless a change explicitly updates those contracts. Its visual language is an unframed responsive editorial layout with restrained semantic color, text-style status glyphs, label-led section rules, and width-aware activity/footer alignment; ACTIVITY rows show sanitized tool calls and formatted arguments but never tool result payloads. Do not introduce emoji presentation characters, background cards, or undifferentiated log rows.
 - Add or update focused tests for behavior changes. Defect fixes require a regression test, and public contract changes require contract coverage.
 - Treat `bin/` and `wasm/` as security-sensitive vendored assets. Do not modify or replace them without verifying provenance, supported targets, runtime constraints, and applicable notices.
 - Keep `THIRD_PARTY_NOTICES.md` synchronized with every vendored binary or licensing change.

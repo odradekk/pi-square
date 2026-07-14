@@ -236,16 +236,16 @@ export function formatBackgroundIndicator(state: BackgroundState): string | null
   if (details.jobs.length === 0) return null;
 
   const parts: string[] = [];
-  if (details.queued > 0) parts.push(`⌛${details.queued}`);
-  if (details.running > 0) parts.push(`⏳${details.running}`);
+  if (details.queued > 0) parts.push(`queued ${details.queued}`);
+  if (details.running > 0) parts.push(`running ${details.running}`);
 
   const done = details.jobs.filter((job) => job.status === "done").length;
   const failed = details.jobs.filter((job) => job.status === "error").length;
   const aborted = details.jobs.filter((job) => job.status === "aborted").length;
 
-  if (done > 0) parts.push(`✓${done}`);
-  if (failed > 0) parts.push(`✗${failed}`);
-  if (aborted > 0) parts.push(`◌${aborted}`);
+  if (done > 0) parts.push(`✓ ${done}`);
+  if (failed > 0) parts.push(`✗ ${failed}`);
+  if (aborted > 0) parts.push(`× ${aborted}`);
 
   return parts.length > 0 ? parts.join(" ") : null;
 }

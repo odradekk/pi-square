@@ -54,6 +54,11 @@ try {
   assert.equal(askTool?.parameters?.properties?.questions?.maxItems, 10);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.allowComment?.default, false);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
+  const subagentTool = tools.get("subagent");
+  assert.equal(typeof subagentTool?.renderCall, "function");
+  assert.equal(typeof subagentTool?.renderResult, "function");
+  assert.equal(subagentTool?.renderShell, undefined);
+  assert.equal(typeof renderers.get("pi-square.subagent-notification"), "function");
   const todoTool = tools.get("todo");
   assert.equal(typeof todoTool?.renderCall, "function");
   assert.equal(typeof todoTool?.renderResult, "function");

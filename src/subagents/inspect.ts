@@ -112,9 +112,9 @@ function renderReport(
     lines.push("  ✓ Subagent can be resumed with the same ID and native session history.");
     lines.push(`  → subagent({ mode: "resume", id: "${details.id}", task: "..." })`);
   } else {
-    lines.push("  ◐ Subagent is active; resume would return already_running without starting another execution.");
+    lines.push("  → active: resume would return already_running without starting another execution.");
   }
-  for (const warning of ctx.warnings) lines.push(`  ⚠ ${warning}`);
+  for (const warning of ctx.warnings) lines.push(`  ! ${warning}`);
   return lines.join("\n");
 }
 

@@ -78,10 +78,10 @@ test("registerSubagentTool exposes exactly one LLM tool", () => {
   }
 });
 
-test("subagent tool delegates presentation to Pi", () => {
+test("subagent tool uses native renderers and keeps Pi's default tool shell", () => {
   const tool = subagentTool();
-  assert.equal(tool.renderCall, undefined);
-  assert.equal(tool.renderResult, undefined);
+  assert.equal(typeof tool.renderCall, "function");
+  assert.equal(typeof tool.renderResult, "function");
   assert.equal(tool.renderShell, undefined);
 });
 

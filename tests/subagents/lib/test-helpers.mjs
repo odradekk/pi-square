@@ -28,6 +28,7 @@ const load = jiti(import.meta.url, {
 const loadTool = jiti(import.meta.url, {
   moduleCache: false,
   alias: {
+    "./render": helperPath,
     "./session": helperPath,
     "./status": helperPath,
     "@earendil-works/pi-tui": helperPath,
@@ -85,7 +86,17 @@ function formatMs(ms) {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
-export const FOREGROUND_RETAIN_MS = 30_000;
+export function renderSubagentCall() {
+  return new Text("subagent call");
+}
+
+export function renderSubagentResult() {
+  return new Text("subagent result");
+}
+
+export function renderSubagentNotification() {
+  return new Text("subagent notification");
+}
 
 export function formatUsage(usage, model, durationMs) {
   const parts = [];
@@ -97,36 +108,7 @@ export function formatUsage(usage, model, durationMs) {
   if (usage.cost > 0) parts.push(`$${usage.cost.toFixed(4)}`);
   if (durationMs && durationMs > 0) parts.push(formatMs(durationMs));
   if (model) parts.push(model);
-  return parts.join(" ");
-}
-
-export function renderTimelineItem(item, theme) {
-  if (item.kind === "assistant") {
-    return theme.fg("toolOutput", item.text);
-  }
-
-  if (item.kind === "error") {
-    return theme.fg("error", item.text);
-  }
-
-  if (item.kind === "tool") {
-    const prefix = item.phase === "start" ? "→ " : item.isError ? "✗ " : "✓ ";
-    const color = item.isError ? "error" : item.phase === "start" ? "muted" : "dim";
-    return theme.fg(color, prefix + item.text);
-  }
-
-  return theme.fg("dim", item.text);
-}
-
-export function agentLabel(details) {
-  if (details.agent?.name) return details.agent.name;
-  return "generic";
-}
-
-export function iconFor(details, isPartial, theme) {
-  if (isPartial || details.phase === "running") return theme.fg("warning", "⏳");
-  if (details.phase === "error") return theme.fg("error", "✗");
-  return theme.fg("success", "✓");
+  return parts.join(" · ");
 }
 
 export function createPiStub() {

@@ -92,6 +92,11 @@ try {
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
+  const subagentDefinition = session.getToolDefinition("subagent");
+  assert.equal(typeof subagentDefinition?.renderCall, "function");
+  assert.equal(typeof subagentDefinition?.renderResult, "function");
+  assert.equal(subagentDefinition?.renderShell, undefined);
+
   const timeResult = await toolByName("time").execute("smoke:time", {}, undefined, undefined);
   assert.match(timeResult.content[0].text, /ISO 8601:/);
 

@@ -42,6 +42,7 @@ Complete the assigned task within its stated scope and return a result the paren
 const MAX_TIMELINE_ITEMS = 120;
 const MAX_TIMELINE_TEXT = 1600;
 const MAX_LIVE_TEXT = 2000;
+const LIVE_UPDATE_THROTTLE_MS = 100;
 const MAX_RAW_SESSION_OUTPUT = 12000;
 const MAX_TOOL_ERRORS = 20;
 const MAX_CONTENT_TOOL_ERRORS = 3;
@@ -52,6 +53,12 @@ function clip(text: string, max = MAX_TIMELINE_TEXT): string {
   const normalized = String(text ?? "").trim();
   if (!normalized) return "";
   return normalized.length > max ? `${normalized.slice(0, max - 3)}...` : normalized;
+}
+
+function appendLiveTextTail(current: string | undefined, delta: unknown, max = MAX_LIVE_TEXT): string {
+  const combined = `${current ?? ""}${String(delta ?? "")}`;
+  const codePoints = Array.from(combined);
+  return codePoints.length <= max ? combined : codePoints.slice(-max).join("");
 }
 
 function normalizeMaybePath(value: string): string {
@@ -455,29 +462,70 @@ async function promptSession(input: {
   const { session, prompt, details } = input;
   let persistenceFailure: SubagentError | undefined;
   let terminalAssistantError: string | undefined;
+  let liveUpdateTimer: NodeJS.Timeout | undefined;
+  let liveUpdateDirty = false;
+  let lastLiveUpdateAt = 0;
 
-  const emitUpdate = () => {
-    if (!persistenceFailure) {
-      try {
-        writeRunState(details.artifactsDir, details);
-      } catch (error) {
-        persistenceFailure = normalizeSubagentError(error, {
-          code: "PERSISTENCE_FAILED",
-          message: "Unable to persist subagent progress.",
-          operation: details.mode,
-          id: details.id,
-          retries: 3,
-        });
-        applyRunFailure(details, persistenceFailure);
-      }
-    }
+  const clearLiveUpdateTimer = () => {
+    if (!liveUpdateTimer) return;
+    clearTimeout(liveUpdateTimer);
+    liveUpdateTimer = undefined;
+  };
+  const publishUpdate = () => {
     input.onUpdate?.({
-      content: [{ type: "text", text: details.finalText || details.liveText || `(subagent ${details.id} running...)` }],
+      content: [{ type: "text", text: details.liveText || details.finalText || `(subagent ${details.id} running...)` }],
       details: {
         ...details,
-        liveText: clip(details.liveText ?? "", MAX_LIVE_TEXT),
+        agent: details.agent ? { ...details.agent } : undefined,
+        liveText: details.liveText ?? "",
+        toolErrors: details.toolErrors.map((item) => ({ ...item })),
+        usage: { ...details.usage },
+        timeline: details.timeline.map((item) => ({ ...item })),
       },
     });
+  };
+  const persistProgress = () => {
+    if (persistenceFailure) return;
+    try {
+      writeRunState(details.artifactsDir, details);
+    } catch (error) {
+      persistenceFailure = normalizeSubagentError(error, {
+        code: "PERSISTENCE_FAILED",
+        message: "Unable to persist subagent progress.",
+        operation: details.mode,
+        id: details.id,
+        retries: 3,
+      });
+      applyRunFailure(details, persistenceFailure);
+    }
+  };
+  const emitUpdate = () => {
+    clearLiveUpdateTimer();
+    liveUpdateDirty = false;
+    lastLiveUpdateAt = Date.now();
+    persistProgress();
+    publishUpdate();
+  };
+  const emitLiveUpdate = () => {
+    if (!liveUpdateDirty) return;
+    liveUpdateDirty = false;
+    lastLiveUpdateAt = Date.now();
+    publishUpdate();
+  };
+  const scheduleLiveUpdate = () => {
+    if (!input.onUpdate) return;
+    liveUpdateDirty = true;
+    const delay = LIVE_UPDATE_THROTTLE_MS - (Date.now() - lastLiveUpdateAt);
+    if (delay <= 0) {
+      clearLiveUpdateTimer();
+      emitLiveUpdate();
+      return;
+    }
+    liveUpdateTimer ??= setTimeout(() => {
+      liveUpdateTimer = undefined;
+      emitLiveUpdate();
+    }, delay);
+    liveUpdateTimer.unref?.();
   };
 
   const onAbort = () => {
@@ -503,7 +551,8 @@ async function promptSession(input: {
       }
       case "message_update": {
         if (event.assistantMessageEvent?.type === "text_delta") {
-          details.liveText = clip(`${details.liveText ?? ""}${event.assistantMessageEvent.delta ?? ""}`, MAX_LIVE_TEXT);
+          details.liveText = appendLiveTextTail(details.liveText, event.assistantMessageEvent.delta);
+          scheduleLiveUpdate();
         }
         break;
       }
@@ -659,6 +708,8 @@ async function promptSession(input: {
     emitUpdate();
     return { content: buildReturnContent(details), details };
   } finally {
+    clearLiveUpdateTimer();
+    liveUpdateDirty = false;
     try {
       unsubscribe?.();
     } catch {
@@ -1016,4 +1067,8 @@ export const __testables = {
   collectLastMessages,
   createChildSettings,
   freezeSystemPrompt,
+  appendLiveTextTail,
+  promptSession,
+  LIVE_UPDATE_THROTTLE_MS,
+  MAX_LIVE_TEXT,
 };

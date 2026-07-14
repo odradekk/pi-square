@@ -14,6 +14,7 @@ const {
   cancelBackgroundJobs,
   createBackgroundState,
   createQueuedJob,
+  formatBackgroundIndicator,
   startBackgroundJob,
 } = await loadBackgroundModule();
 
@@ -70,6 +71,18 @@ test("queue insertion stores the unified public id and emits", () => {
   assert.equal(job.details.id, ID);
   assert.equal(job.details.mode, "bg");
   assert.equal(observed.state.jobs.get(ID), job);
+});
+
+test("background indicator uses compact text without emoji presentation glyphs", () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const job = queuedJob(observed);
+  assert.equal(formatBackgroundIndicator(observed.state), "queued 1");
+  job.status = "running";
+  assert.equal(formatBackgroundIndicator(observed.state), "running 1");
+  job.status = "aborted";
+  assert.equal(formatBackgroundIndicator(observed.state), "× 1");
+  assert.doesNotMatch(formatBackgroundIndicator(observed.state), /[⌛⏳◐◌\uFE0F]/u);
 });
 
 test("cancelBackgroundJobs accepts the public id", () => {

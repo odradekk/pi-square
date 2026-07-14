@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createSubagentId } from "./artifacts";
 import {
@@ -15,12 +14,15 @@ import {
   normalizeSubagentError,
   SubagentError,
 } from "./errors";
+import {
+  renderSubagentCall,
+  renderSubagentNotification,
+  renderSubagentResult,
+} from "./render";
 import { resolveSubagentCwd, resumeSubagentTask, runSubagentTask } from "./session";
-import type {
-  BackgroundJobSnapshot,
-  SubagentNotificationDetails,
-  SubagentUsage,
-} from "./types";
+import type { SubagentNotificationDetails } from "./types";
+
+export { formatUsage } from "./render";
 
 export interface SubagentRuntimeState {
   registry: SubagentRegistry;
@@ -45,54 +47,6 @@ const SubagentParams = Type.Object({
   model: Type.Optional(Type.String({ description: "Model override for fg/bg in provider/id form." })),
   thinkingLevel: Type.Optional(Type.String({ description: "Thinking override for fg/bg: off, minimal, low, medium, high, or xhigh." })),
 }, { additionalProperties: false });
-
-function clip(text: string, max = 140): string {
-  const normalized = String(text ?? "").trim();
-  if (!normalized) return "";
-  return normalized.length > max ? `${normalized.slice(0, max - 3)}...` : normalized;
-}
-
-function formatMs(ms?: number): string {
-  if (!ms || ms < 0) return "0ms";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60_000).toFixed(1)}m`;
-}
-
-function formatCount(count: number): string {
-  if (count < 1000) return String(count);
-  if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
-  return `${(count / 1_000_000).toFixed(1)}M`;
-}
-
-export function formatUsage(usage: SubagentUsage, model?: string, durationMs?: number): string {
-  const parts: string[] = [];
-  if (usage.turns > 0) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
-  if (usage.input > 0) parts.push(`↑${formatCount(usage.input)}`);
-  if (usage.output > 0) parts.push(`↓${formatCount(usage.output)}`);
-  if (usage.cacheRead > 0) parts.push(`R${formatCount(usage.cacheRead)}`);
-  if (usage.cacheWrite > 0) parts.push(`W${formatCount(usage.cacheWrite)}`);
-  if (usage.cost > 0) parts.push(`$${usage.cost.toFixed(4)}`);
-  if (durationMs && durationMs > 0) parts.push(formatMs(durationMs));
-  if (model) parts.push(model);
-  return parts.join(" ");
-}
-
-function statusIcon(status: BackgroundJobSnapshot["status"], theme: any): string {
-  switch (status) {
-    case "queued":
-      return theme.fg("warning", "⌛");
-    case "running":
-      return theme.fg("warning", "⏳");
-    case "done":
-      return theme.fg("success", "✓");
-    case "aborted":
-      return theme.fg("warning", "◌");
-    default:
-      return theme.fg("error", "✗");
-  }
-}
 
 function validateToolParams(params: any): SubagentError | undefined {
   const allowed = new Set(["mode", "task", "id", "context", "agent", "cwd", "systemPrompt", "model", "thinkingLevel"]);
@@ -137,23 +91,10 @@ function validateToolParams(params: any): SubagentError | undefined {
 }
 
 function registerNotificationRenderer(pi: ExtensionAPI): void {
-  pi.registerMessageRenderer<SubagentNotificationDetails>("pi-square.subagent-notification", (message, options, theme) => {
-    const details = message.details;
-    const result = details?.result;
-    if (!details || !result) return new Text(typeof message.content === "string" ? message.content : "Background subagent notification", 0, 0);
-
-    const label = result.agent?.name ?? "generic";
-    let text = `${statusIcon(details.status, theme)} ${theme.fg("toolTitle", theme.bold("background subagent"))}`;
-    text += theme.fg("muted", ` [${label}] {${details.id}}`);
-    const summary = details.status === "done" ? result.finalText || "(no output)" : result.error || "Subagent failed.";
-    text += `\n${theme.fg(details.status === "done" ? "text" : "error", clip(summary, 220))}`;
-    if (options.expanded) {
-      text += `\n${theme.fg("dim", `task: ${clip(result.task, 220)}`)}`;
-      const usage = formatUsage(result.usage, result.model, result.durationMs);
-      if (usage) text += `\n${theme.fg("dim", usage)}`;
-    }
-    return new Text(text, 0, 0);
-  });
+  pi.registerMessageRenderer<SubagentNotificationDetails>(
+    "pi-square.subagent-notification",
+    renderSubagentNotification,
+  );
 }
 
 export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeState): void {
@@ -171,6 +112,8 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
       "Use context only when recent parent-session messages materially affect the delegated task.",
     ],
     parameters: SubagentParams,
+    renderCall: renderSubagentCall,
+    renderResult: renderSubagentResult,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const validationError = validateToolParams(params);
       if (validationError) return failureToolResult(validationError);
