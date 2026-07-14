@@ -5,6 +5,7 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
+  Box,
   Container,
   Markdown,
   Text,
@@ -445,12 +446,19 @@ function addHeader(
   phase: string,
   theme: Theme,
   notification: boolean,
+  expanded: boolean,
 ): void {
-  const identityParts = [
-    theme.fg("accent", theme.bold(agentLabel(details))),
-    theme.fg("muted", modeLabel(details.mode)),
-  ];
-  if (notification) identityParts.push(theme.fg("dim", shortId(details.id)));
+  const identityParts = notification
+    ? [
+        theme.fg("toolTitle", theme.bold("subagent")),
+        theme.fg("accent", theme.bold(agentLabel(details))),
+        theme.fg("muted", modeLabel(details.mode)),
+      ]
+    : [
+        theme.fg("accent", theme.bold(agentLabel(details))),
+        theme.fg("muted", modeLabel(details.mode)),
+      ];
+  if (notification && !expanded) identityParts.push(theme.fg("dim", shortId(details.id)));
   component.addChild(new ResponsiveRow(
     identityParts.join(theme.fg("dim", " / ")),
     statusPresentation(phase, theme),
@@ -589,7 +597,7 @@ function renderRunResult(
     : options.isPartial && details.phase !== "cancelling"
       ? "running"
       : details.phase;
-  addHeader(component, details, phase, theme, notification && !options.expanded);
+  addHeader(component, details, phase, theme, notification, options.expanded);
 
   if (queued) {
     component.addChild(new Text(
@@ -752,9 +760,12 @@ export function renderSubagentNotification(
   theme: Theme,
 ): Component {
   const details = message.details?.result;
+  const error = message.details?.status === "error" || details?.phase === "error";
+  const shell = new Box(1, 1, (text) => theme.bg(error ? "toolErrorBg" : "toolSuccessBg", text));
   if (!isRunDetails(details)) {
     const fallback = sanitizeSubagentDisplay(message.content || "Background subagent notification");
-    return options.expanded ? new Text(fallback, 0, 0) : new OneVisualLine(fallback);
+    shell.addChild(options.expanded ? new Text(fallback, 0, 0) : new OneVisualLine(fallback));
+    return shell;
   }
   const component = new SubagentResultComponent();
   renderRunResult(
@@ -766,7 +777,8 @@ export function renderSubagentNotification(
     {},
     true,
   );
-  return component;
+  shell.addChild(component);
+  return shell;
 }
 
 export const __testables = {

@@ -59,6 +59,7 @@ try {
   assert.equal(typeof subagentTool?.renderResult, "function");
   assert.equal(subagentTool?.renderShell, undefined);
   assert.equal(typeof renderers.get("pi-square.subagent-notification"), "function");
+  assert.equal(typeof renderers.get("pi-square.subagent-config-guide"), "function");
   const todoTool = tools.get("todo");
   assert.equal(typeof todoTool?.renderCall, "function");
   assert.equal(typeof todoTool?.renderResult, "function");
@@ -72,7 +73,10 @@ try {
   assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "statusline", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
   assert.deepEqual([...shortcuts.keys()], ["alt+i"]);
-  assert.deepEqual([...renderers.keys()], ["pi-square.subagent-notification"]);
+  assert.deepEqual([...renderers.keys()], [
+    "pi-square.subagent-notification",
+    "pi-square.subagent-config-guide",
+  ]);
   assert.equal(events.get("before_agent_start")?.length, 1, "prompt composition must use one handler");
   assert.deepEqual(
     readdirSync(join(packageRoot, "src", "notifications", "sounds")).sort(),

@@ -325,13 +325,30 @@ function result(runDetails, text = `ID: ${runDetails.id}\n\n${runDetails.finalTe
   assert.match(collapsed, /Finding/);
   assert.doesNotMatch(collapsed, /Unique expanded tail/);
 
-  const expandedComponent = renderSubagentNotification(message, { expanded: true }, plainTheme);
+  const backgrounds = [];
+  const shellTheme = {
+    ...plainTheme,
+    bg(color, text) { backgrounds.push(color); return String(text); },
+  };
+  const expandedComponent = renderSubagentNotification(message, { expanded: true }, shellTheme);
   const expandedLines = plainLines(expandedComponent, 80);
   const expanded = expandedLines.join("\n");
   assert.doesNotMatch(expandedLines[0], /12345678/);
   assert.match(expanded, /ID  subagent_12345678/);
   assert.match(expanded, /Unique expanded tail/);
   assert.match(expanded, /Inspect the parser/);
+  assert.ok(backgrounds.includes("toolSuccessBg"));
+
+  const failed = details({ phase: "error", finalText: "", error: "failed" });
+  const errorBackgrounds = [];
+  renderSubagentNotification({
+    content: "failed",
+    details: { id: failed.id, status: "error", result: failed },
+  }, { expanded: false }, {
+    ...plainTheme,
+    bg(color, text) { errorBackgrounds.push(color); return String(text); },
+  }).render(80);
+  assert.ok(errorBackgrounds.includes("toolErrorBg"));
 }
 
 {

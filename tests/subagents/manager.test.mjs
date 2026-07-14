@@ -20,7 +20,11 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { discoverSubagents } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
 const { registerSubagentManager, __testables } = await load(join(packageRoot, "src", "subagents", "manager.ts"));
-const { SubagentManager, buildConfigurationRequest } = __testables;
+const {
+  SubagentManager,
+  managerPanelWidth,
+  managerRowBudget,
+} = __testables;
 const themeModulePath = pathToFileURL(join(
   packageRoot,
   "node_modules",
@@ -88,88 +92,157 @@ function runDetails(overrides = {}) {
   };
 }
 
+function data(overrides = {}) {
+  const details = runDetails();
+  return {
+    running: [{ id: details.id, status: "running", createdAt: 1, updatedAt: 2, details }],
+    session: [{ ...details, phase: "done", finalText: "done" }],
+    definitions: discoverSubagents(packageRoot).definitions,
+    errors: [],
+    ...overrides,
+  };
+}
+
+function tui(rows = 30) {
+  return { requestRender() {}, terminal: { rows } };
+}
+
 function render(component, width) {
   return component.render(width).map((line) => stripVTControlCharacters(line)).join("\n");
 }
 
-test("manager renders responsive tabs and never exposes prompt or tool result payloads", () => {
-  const details = runDetails();
-  const data = {
-    running: [{ id: details.id, status: "running", createdAt: 1, updatedAt: 2, details }],
-    session: [{ ...details, phase: "done", finalText: "done" }],
-    definitions: discoverSubagents(packageRoot).definitions,
-    errors: [],
+function fakeServices(initialData, overrides = {}) {
+  let current = initialData;
+  const calls = [];
+  const services = {
+    refresh() { return current; },
+    subscribe() { return () => {}; },
+    cancel(id) { calls.push(["cancel", id]); return { ok: true, message: "Cancellation requested." }; },
+    queueResume(id, task) {
+      calls.push(["resume", id, task]);
+      const source = current.session.find((item) => item.id === id);
+      const details = { ...source, phase: "running", mode: "resume", task };
+      current = { ...current, running: [{ id, status: "queued", createdAt: 1, updatedAt: 1, details }] };
+      return { ok: true, message: "Queued resume.", selectedId: id };
+    },
+    queueFresh(id, task) { calls.push(["fresh", id, task]); return { ok: true, message: "Queued fresh.", selectedId: id }; },
+    deleteHistory(id) { calls.push(["delete-history", id]); return { ok: true, message: "Deleted history." }; },
+    preview(scope, patch) {
+      calls.push(["preview", scope, patch]);
+      const before = current.definitions.find((definition) => definition.name === patch.name);
+      return {
+        content: `promptVersion: 2\nname: ${patch.name}\ndescription: ${patch.description ?? before?.description ?? ""}\n`,
+        filePath: `${packageRoot}/.pi/subagents/${patch.name}.yaml`,
+        definition: { ...before, ...patch, source: scope },
+        errors: [],
+      };
+    },
+    save(scope, patch, filePath) { calls.push(["save", scope, patch, filePath]); return { ok: true, message: "Saved overlay." }; },
+    deleteOverlay(definition, scope, filePath) { calls.push(["delete-overlay", definition.name, scope, filePath]); return { ok: true, message: "Deleted overlay." }; },
+    ...overrides,
   };
-  const tui = { requestRender() {}, terminal: { rows: 30 } };
-  const manager = new SubagentManager(data, tui, theme, keybindings, () => {});
+  return { services, calls, getData: () => current };
+}
+
+test("manager is an adaptive non-card workbench and never exposes prompt or tool result payloads", () => {
+  const manager = new SubagentManager(data(), tui(), theme, keybindings, () => {});
   const narrow = render(manager, 40);
-  const wide = render(manager, 110);
-  assert.match(narrow, /SUBAGENTS.*RUNNING.*SESSION/);
+  const wide = render(manager, 120);
+  assert.match(narrow, /^SUBAGENTS/m);
+  assert.match(narrow, /RUNNING.*SESSION.*DEFINITIONS/);
   assert.match(narrow, /ls src\/components/);
   assert.match(wide, /│/);
+  assert.equal(managerPanelWidth(40), 40);
+  assert.equal(managerPanelWidth(120), 100);
   assert.doesNotMatch(`${narrow}\n${wide}`, /SECRET SYSTEM|SECRET PROFILE|SECRET OUTPUT|SECRET TOOL OUTPUT/);
-  for (const line of wide.split("\n")) assert.ok(Array.from(line).length <= 110);
+  for (const line of wide.split("\n")) assert.ok(Array.from(line).length <= 100);
+  manager.dispose();
 });
 
-test("manager keyboard navigation reaches definitions and emits edit action", () => {
-  const actions = [];
-  const data = { running: [], session: [], definitions: discoverSubagents(packageRoot).definitions.filter((item) => item.visible), errors: [] };
-  const manager = new SubagentManager(data, { requestRender() {}, terminal: { rows: 30 } }, theme, keybindings, (action) => actions.push(action));
+test("manager keeps resume task, review, and queueing inside one focused component", () => {
+  const finished = runDetails({ phase: "done", finalText: "done" });
+  const initial = data({ running: [], session: [finished] });
+  const fake = fakeServices(initial);
+  let closed = 0;
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fake.services);
+  manager.focused = true;
   manager.handleInput("\x1b[C");
-  manager.handleInput("\x1b[C");
-  assert.match(render(manager, 80), /DEFINITIONS/);
   manager.handleInput("\r");
-  assert.equal(actions[0].kind, "edit-definition");
-  assert.ok(actions[0].name);
+  assert.match(render(manager, 80), /SESSION \/ RESUME/);
+  for (const character of "Continue with evidence") manager.handleInput(character);
+  manager.handleInput("\r");
+  assert.match(render(manager, 80), /SESSION \/ RESUME \/ REVIEW/);
+  assert.match(render(manager, 80), /Continue with evidence/);
+  manager.handleInput("\r");
+  assert.deepEqual(fake.calls.find((call) => call[0] === "resume"), ["resume", finished.id, "Continue with evidence"]);
+  assert.match(render(manager, 80), /RUNNING/);
+  assert.match(render(manager, 80), /Queued resume/);
+  assert.equal(closed, 0);
+  manager.dispose();
 });
 
-test("real dark and light themes stay bounded at 40, 80, and 120 columns", () => {
-  const details = runDetails();
-  const data = {
-    running: [{ id: details.id, status: "running", createdAt: 1, updatedAt: 2, details }],
-    session: [{ ...details, phase: "done", finalText: "done" }],
-    definitions: discoverSubagents(packageRoot).definitions,
-    errors: [],
-  };
+test("definition overlay editing stays in manager through scope, field, mode, editor, and review", () => {
+  const initial = data({ running: [], session: [] });
+  const fake = fakeServices(initial);
+  const manager = new SubagentManager(initial, tui(36), theme, keybindings, () => {}, fake.services);
+  manager.focused = true;
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\r");
+  assert.match(render(manager, 100), /DEFINITIONS \/ SCOPE/);
+  manager.handleInput("\r");
+  assert.match(render(manager, 100), /DEFINITIONS \/ FIELD/);
+  manager.handleInput("\r");
+  assert.match(render(manager, 100), /DEFINITIONS \/ OVERLAY/);
+  manager.handleInput("\x1b[B");
+  manager.handleInput("\r");
+  assert.match(render(manager, 100), /DEFINITIONS \/ VALUE/);
+  manager.handleInput("\r");
+  assert.match(render(manager, 100), /DEFINITIONS \/ REVIEW/);
+  manager.handleInput("\r");
+  assert.ok(fake.calls.some((call) => call[0] === "save"));
+  assert.match(render(manager, 100), /Saved overlay/);
+  manager.dispose();
+});
+
+test("escape walks back through manager history before restoring the editor", () => {
+  let closed = 0;
+  const initial = data({ running: [], session: [] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fakeServices(initial).services);
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\r");
+  assert.match(render(manager, 80), /DEFINITIONS \/ SCOPE/);
+  manager.handleInput("\x1b");
+  assert.match(render(manager, 80), /RUNNING.*SESSION.*DEFINITIONS/);
+  assert.equal(closed, 0);
+  manager.handleInput("\x1b");
+  assert.equal(closed, 1);
+  manager.dispose();
+});
+
+test("real dark and light themes stay bounded across widths and low terminal heights", () => {
+  const initial = data();
   for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
     const realTheme = loadThemeFromPath(join(packageRoot, "themes", file));
     for (const width of [40, 80, 120]) {
-      const manager = new SubagentManager(data, { requestRender() {}, terminal: { rows: 30 } }, realTheme, keybindings, () => {});
-      const lines = manager.render(width);
-      assert.ok(lines.length > 5);
-      for (const line of lines) assert.ok(visibleWidth(line) <= width, `${file} exceeded ${width}`);
-      assert.doesNotMatch(lines.join("\n"), /[⌛⏳◐◌\uFE0F]/u);
+      for (const rows of [18, 30]) {
+        const manager = new SubagentManager(initial, tui(rows), realTheme, keybindings, () => {});
+        const lines = manager.render(width);
+        assert.ok(lines.length <= managerRowBudget(rows));
+        assert.ok(lines.length >= 5);
+        for (const line of lines) assert.ok(visibleWidth(line) <= managerPanelWidth(width), `${file} exceeded ${width}`);
+        assert.doesNotMatch(lines.join("\n"), /[⌛⏳◐◌\uFE0F]/u);
+        manager.dispose();
+      }
     }
   }
 });
 
-test("parameterized command sends a bounded V2 guideline to the parent agent", async () => {
+test("parameterized command emits a custom guide then the raw user request as one follow-up turn", async () => {
   const commands = new Map();
-  const sent = [];
-  const registry = discoverSubagents(packageRoot);
-  const state = {
-    registry,
-    background: { jobs: new Map(), listeners: new Set() },
-    refresh() {},
-  };
-  const pi = {
-    registerCommand(name, definition) { commands.set(name, definition); },
-    sendUserMessage(message) { sent.push(message); },
-    sendMessage() {},
-    getThinkingLevel() { return "off"; },
-  };
-  registerSubagentManager(pi, state);
-  await commands.get("subagent").handler("hide worker in this project", { cwd: packageRoot, hasUI: true });
-  assert.equal(sent.length, 1);
-  assert.match(sent[0], /Subagent V2 configuration request/);
-  assert.match(sent[0], /promptVersion: 2/);
-  assert.match(sent[0], /hide worker in this project$/);
-  assert.doesNotMatch(sent[0], /SECRET|PROFILE INSTRUCTIONS|OUTPUT CONTRACT/);
-});
-
-test("no-argument command opens the native manager for a stable parent session", async () => {
-  const commands = new Map();
-  let customCalls = 0;
+  const renderers = new Map();
+  const events = [];
   const state = {
     registry: discoverSubagents(packageRoot),
     background: { jobs: new Map(), listeners: new Set() },
@@ -177,6 +250,37 @@ test("no-argument command opens the native manager for a stable parent session",
   };
   const pi = {
     registerCommand(name, definition) { commands.set(name, definition); },
+    registerMessageRenderer(name, renderer) { renderers.set(name, renderer); },
+    sendMessage(message, options) { events.push(["guide", message, options]); },
+    sendUserMessage(message, options) { events.push(["user", message, options]); },
+    getThinkingLevel() { return "off"; },
+  };
+  registerSubagentManager(pi, state);
+  await commands.get("subagent").handler("hide worker in this project", { cwd: packageRoot, hasUI: true });
+  assert.equal(renderers.has("pi-square.subagent-config-guide"), true);
+  assert.deepEqual(events.map((event) => event[0]), ["guide", "user"]);
+  assert.equal(events[0][1].customType, "pi-square.subagent-config-guide");
+  assert.match(events[0][1].content, /Subagent Config Guide/);
+  assert.match(events[0][1].content, /promptVersion: 2/);
+  assert.doesNotMatch(events[0][1].content, /hide worker in this project|Operate as a read-only workspace explorer/);
+  assert.equal(events[0][2].deliverAs, "followUp");
+  assert.equal(events[0][2].triggerTurn, undefined);
+  assert.equal(events[1][1], "hide worker in this project");
+  assert.equal(events[1][2].deliverAs, "followUp");
+});
+
+test("no-argument command opens one non-overlay manager for a stable parent session", async () => {
+  const commands = new Map();
+  let customCalls = 0;
+  let customOptions = "unset";
+  const state = {
+    registry: discoverSubagents(packageRoot),
+    background: { jobs: new Map(), listeners: new Set() },
+    refresh() {},
+  };
+  const pi = {
+    registerCommand(name, definition) { commands.set(name, definition); },
+    registerMessageRenderer() {},
     sendUserMessage() { throw new Error("must not send a user message"); },
     sendMessage() {},
     getThinkingLevel() { return "off"; },
@@ -187,18 +291,12 @@ test("no-argument command opens the native manager for a stable parent session",
     hasUI: true,
     sessionManager: { getSessionId() { return "parent-manager-session"; } },
     ui: {
-      async custom() { customCalls += 1; return { kind: "close" }; },
+      async custom(_factory, options) { customCalls += 1; customOptions = options; },
       notify() {},
     },
   });
   assert.equal(customCalls, 1);
-});
-
-test("configuration request reports effective scopes without embedding prompt bodies", () => {
-  const request = buildConfigurationRequest(discoverSubagents(packageRoot), packageRoot, "edit explorer");
-  assert.match(request, /Current effective definitions/);
-  assert.match(request, /resources\/subagents\/explorer\.yaml/);
-  assert.doesNotMatch(request, /Operate as a read-only workspace explorer/);
+  assert.equal(customOptions, undefined);
 });
 
 await run();
