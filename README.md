@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, web, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
+`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, web, PDF, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
 
 ## Runtime contract
 
@@ -144,9 +144,25 @@ The `scheme` tool evaluates R6RS Chez Scheme in the bundled WASM sandbox. Its Pi
 
 The tool was renamed from `scheme_eval` to `scheme`. Custom subagent YAML must use `scheme` in `extensionTools`; the old name is not registered as an alias. The bundled Generalist enables Scheme; the four read-only specialists do not.
 
-## Web and documentation tools
+## Web, PDF, and documentation tools
 
 The `search`, `fetch`, `libs`, and `docs` tools run through Jina and Context7 and use Pi's native collapsible presentation. Collapsed rows show concise result, omission, retry, redirect, token, and error status without content previews. Expanded `search` and `fetch` results reveal ranked links or complete per-page Markdown; expanded `libs` results show ranked Context7 IDs, descriptions, all available selection metadata, and validated sources; expanded `docs` results show the complete selected Rules, Code, and Documentation sections with per-snippet token counts and syntax-highlighted code. All four tools retain the default Pi shell, theme-driven colors, provider ordering, and unchanged model-facing `content`. Display-only Markdown removes terminal controls and neutralizes provider-authored link targets outside code, while tool-validated HTTP(S) result, page, and source links remain clickable.
+
+The parent-only `parse` tool reads explicitly selected pages from a workspace-local PDF through Firecrawl `POST /v2/parse`. `path` and `pages` are required; `pages` accepts comma-separated positive page numbers and ascending ranges such as `"1"`, `"1-3"`, or `"6, 1-4, 3, 20-22"`. Selections are sorted and de-duplicated, so the last example becomes `1-4, 6, 20-22`. A call may select at most 50 unique pages. `mode` accepts `fast`, `auto` (the default), or `ocr`; `timeout` accepts 30,000-300,000 ms; and `max_tokens` bounds the local Markdown result from 500-50,000 estimated tokens with a 12,000-token default.
+
+Before any upload, `parse` canonicalizes the path below the session cwd, rejects symlink escapes, non-PDF content, files over 50 MB, encrypted PDFs, malformed expressions, and pages beyond the document. It uses exact `@cantoo/pdf-lib` `2.7.3` to copy the sorted selected pages into an in-memory PDF, then presents an interactive confirmation containing the relative path, pages, mode, and fixed `https://api.firecrawl.dev/v2/parse` destination. Declining or cancelling sends nothing. Successful calls make one multipart request with no automatic retry, return one merged Markdown document plus bounded metadata, and explicitly report local truncation. Firecrawl does not guarantee per-page Markdown boundaries.
+
+Set `FIRECRAWL_API_KEY` or add the key to Pi-owned `auth.json`; the environment variable takes precedence:
+
+```json
+{
+  "firecrawl": {
+    "key": "fc-..."
+  }
+}
+```
+
+The key is redacted from content, errors, details, and rendering. Zero Data Retention is deliberately disabled, so Firecrawl's standard data handling applies; PDF parsing may consume per-page credits under the account's current plan. The tool is not exposed to child sessions because every local-file upload requires parent-session confirmation. Tests use generated PDFs and mocked HTTP only; an optional real one-page validation requires separate approval, a non-sensitive fixture, and configured credits.
 
 ## GitHub tools
 

@@ -41,7 +41,7 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "rg", "scheme", "search", "sg",
+    "github_search", "github_tree", "libs", "parse", "rg", "scheme", "search", "sg",
     "subagent", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
@@ -59,6 +59,8 @@ try {
   assert.deepEqual(parentCodeGraph.parameters.required, ["operation"]);
   assert.deepEqual(parentCodeGraph.parameters.properties.operation.enum, ["explore", "status", "init", "sync", "reindex"]);
   assert.ok(!childToolNames.includes("scheme_eval"));
+  assert.ok(!childToolNames.includes("parse"), "parse requires parent-session confirmation");
+  assert.equal(createChildTools(["parse"]).definitions.length, 0);
   assert.ok(!childToolNames.includes("pwsh"));
   assert.deepEqual(createChildTools(["pwsh"]).definitions, []);
   assert.deepEqual(createChildTools(["pwsh"], "win32").definitions.map((tool) => tool.name), ["pwsh"]);

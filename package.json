@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@ast-grep/cli": "0.44.1",
+    "@cantoo/pdf-lib": "2.7.3",
     "@colbymchenry/codegraph": "1.4.1"
   }
 }
