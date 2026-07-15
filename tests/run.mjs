@@ -34,6 +34,7 @@ const suites = [
   "web/context7-rendering.test.mjs",
   "web/search-fetch-tools.test.mjs",
   "web/parse-tool.test.mjs",
+  "pdf-search/pdf-search.test.mjs",
   "github/client.test.mjs",
   "github/tools.test.mjs",
   "github/rendering.test.mjs",

@@ -40,6 +40,13 @@ test("CodeGraph summaries expose only operation, query, and project path", () =>
   );
 });
 
+test("PDF search summaries expose only bounded query and path arguments", () => {
+  assert.equal(
+    formatToolCall("pdf_search", { query: "installation guide", path: "manual.pdf", secret: "private" }),
+    "pdf_search installation guide in manual.pdf",
+  );
+});
+
 test("GitHub summaries expose only bounded identity and paging arguments", () => {
   assert.equal(
     formatToolCall("github_search", { kind: "code", query: "repo:owner/name symbol", password: "private" }),

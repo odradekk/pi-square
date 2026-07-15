@@ -61,6 +61,9 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
         : `${operation} ${path}`;
       break;
     }
+    case "pdf_search":
+      summary = `${clipInline(args?.query || "...", 50)} in ${shortenPath(args?.path || "...")}`;
+      break;
     case "ls":
       summary = shortenPath(args?.path || ".");
       break;

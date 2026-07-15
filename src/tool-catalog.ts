@@ -6,6 +6,7 @@ import {
   createGitHubSearchToolDefinition,
   createGitHubTreeToolDefinition,
 } from "./github/tools";
+import { createPdfSearchToolDefinition } from "./pdf-search";
 import { createSearchToolDefinitions } from "./search";
 import { createSchemeToolDefinition } from "./scheme/tools/scheme";
 import { isWindowsPlatform } from "./shell/platform";
@@ -20,6 +21,7 @@ const BASE_EXTENSION_TOOLS = [
   "fd",
   "sg",
   "codegraph",
+  "pdf_search",
   "search",
   "fetch",
   "libs",
@@ -44,6 +46,7 @@ function createDefinitions(platform: NodeJS.Platform): Map<SupportedExtensionToo
     ["fd", fd as ToolDefinition],
     ["sg", sg as ToolDefinition],
     ["codegraph", createCodeGraphDefinition(false) as ToolDefinition],
+    ["pdf_search", createPdfSearchToolDefinition() as ToolDefinition],
     ["search", createSearchToolDefinition() as ToolDefinition],
     ["fetch", createFetchToolDefinition() as ToolDefinition],
     ["libs", createLibsToolDefinition() as ToolDefinition],

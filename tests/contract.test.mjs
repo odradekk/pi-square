@@ -41,12 +41,14 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "parse", "rg", "scheme", "search", "sg",
+    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search", "sg",
     "subagent", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
   assert.ok(childToolNames.includes("sg"));
   assert.ok(childToolNames.includes("codegraph"));
+  assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
+  assert.deepEqual(createChildTools(["pdf_search"]).definitions.map((definition) => definition.name), ["pdf_search"]);
   assert.deepEqual(createChildTools(["sg"]).definitions.map((definition) => definition.name), ["sg"]);
   const childCodeGraph = createChildTools(["codegraph"]).definitions[0];
   assert.equal(childCodeGraph.parameters.type, "object");

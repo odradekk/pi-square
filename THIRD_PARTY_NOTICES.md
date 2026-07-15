@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors prebuilt search binaries and installs exact native structural-search and semantic-code-intelligence dependencies.
+This extension vendors prebuilt search binaries and installs exact structural-search, semantic-code-intelligence, PDF-processing, and related native runtime dependencies.
 
 ## Included Software
 
@@ -30,6 +30,21 @@ This extension vendors prebuilt search binaries and installs exact native struct
 - License: Apache-2.0
 - Version: `2.1.2`, installed transitively by `@ast-grep/cli` for native-package detection.
 
+### PDF.js (`pdfjs-dist`)
+- Upstream: https://github.com/mozilla/pdf.js
+- License: Apache-2.0
+- Version: `6.1.200`, installed as an exact npm dependency with a Node requirement of `>=22.13.0 || >=24`.
+- The unmodified distribution is approximately 36 MiB unpacked and includes JavaScript builds, 168 Adobe CMap files, standard Foxit and Liberation fonts, ICC profiles, and JBIG2, OpenJPEG, and QCMS WASM assets.
+- Bundled component notices remain in the package: Foxit fonts use a BSD-style license, Liberation fonts use SIL OFL 1.1, OpenJPEG uses BSD-2-Clause, PDFium JBIG2 uses a BSD-style license, and QCMS uses MIT terms. The package also carries separate PDF.js wrapper notices for the WASM artifacts.
+- `pi-square` loads the Node legacy ESM build for local text extraction, resolves CMap/font/WASM directories directly from the installed package, passes PDF bytes in memory, and disables worker fetches. It does not use a CDN, remote asset fallback, browser worker, rendering API, or external process.
+
+### `@napi-rs/canvas`
+- Upstream: https://github.com/Brooooooklyn/canvas
+- License: MIT
+- Version: `1.0.2`, installed transitively as PDF.js's optional Node canvas dependency.
+- The package declares exact `1.0.2` optional native artifacts for Android arm64, macOS x64/arm64, Linux arm glibc, Linux x64/arm64 glibc and musl, Linux riscv64 glibc, and Windows x64/arm64. npm installs only the matching artifact; lockfile integrity metadata covers every declared target.
+- `pdf_search` does not call canvas or PDF rendering APIs. PDF.js may load the matching optional package during Node initialization to provide geometry primitives.
+
 ### CodeGraph
 - Upstream: https://github.com/colbymchenry/codegraph
 - License: MIT
@@ -49,6 +64,7 @@ This extension vendors prebuilt search binaries and installs exact native struct
 - rg `linux-x64` is statically linked and has no runtime library dependency.
 - fd `linux-x64` and both `linux-arm64` vendored binaries (rg and fd) require glibc at runtime.
 - The supported ast-grep Linux x64 and arm64 npm packages require glibc; the CLI package does not provide musl targets.
+- PDF.js itself is portable JavaScript/WASM. Its optional canvas dependency provides separate glibc and musl artifacts for Linux x64/arm64, but pi-square's existing supported Linux boundary remains constrained by its ast-grep and CodeGraph dependencies.
 - The verified CodeGraph Linux x64 bundled runtime dynamically links glibc, libstdc++, libgcc, libm, libdl, and libpthread. CodeGraph publishes generic Linux x64/arm64 packages and no musl-specific package.
 - macOS and Windows search and CodeGraph binaries have no additional C library boundary documented here.
 
@@ -58,4 +74,5 @@ This extension vendors prebuilt search binaries and installs exact native struct
 - ast-grep is installed by npm with lockfile integrity metadata and platform-specific optional dependencies. Its wrapper resolves the native package directly at runtime and never falls back to PATH or a system `sg` command.
 - The exposed `sg` wrapper is read-only even though upstream ast-grep also supports rewriting and project scanning.
 - CodeGraph is installed by npm with lockfile integrity metadata for the main package and all six optional platform packages. The wrapper verifies the platform package version and required runtime/entry files before execution, then forces telemetry, update checks, downloads, and watchers off.
+- PDF.js and its optional canvas packages are installed by npm with lockfile integrity metadata. `pdf_search` resolves only package-local assets and keeps extracted text in bounded memory; it creates no PDF cache, index, or artifact on disk.
 - CodeGraph index databases live under each explicitly initialized project's `.codegraph/` directory and are not vendored or persisted by pi-square itself.

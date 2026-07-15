@@ -7,6 +7,7 @@ import { emitDiagnostics } from "./core/diagnostics";
 import registerFooter from "./footer";
 import registerGitHub from "./github";
 import registerNotifications from "./notifications";
+import registerPdfSearch from "./pdf-search";
 import registerPromptManager from "./prompt-manager";
 import registerSchemeSandbox from "./scheme";
 import registerSearchTools from "./search";
@@ -30,6 +31,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerTodo(pi);
   registerTime(pi);
   registerSearchTools(pi);
+  registerPdfSearch(pi);
   registerCodeGraph(pi);
   registerWebTools(pi);
   registerGitHub(pi);
