@@ -1,5 +1,11 @@
 # @odradekk/pi-square
 
+## 1.0.1
+
+### Patch Changes
+
+- f1308a1: Move bundled subagent definitions from `resources/subagents` to the package-root `subagents` directory while preserving agent and project overlay paths.
+
 ## 1.0.0
 
 ### Major Changes
