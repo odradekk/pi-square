@@ -1,6 +1,6 @@
 {
   "name": "@odradekk/pi-square",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Unified local extension package for Pi",
   "type": "module",
   "license": "MIT",
