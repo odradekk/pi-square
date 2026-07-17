@@ -8,6 +8,7 @@ const suites = [
   "config.test.mjs",
   "native-prompt.test.mjs",
   "prompt-manager.test.mjs",
+  "release/package.test.mjs",
   "shell/platform.test.mjs",
   "shell/output.test.mjs",
   "shell/spawn.test.mjs",

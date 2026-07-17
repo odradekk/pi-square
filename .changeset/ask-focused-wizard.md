@@ -1,5 +1,5 @@
 ---
-"pi-square": major
+"@odradekk/pi-square": major
 ---
 
 Replace the `ask` tool's docked per-question widget with a focused, persistent Pi-native wizard and a versioned answer protocol.

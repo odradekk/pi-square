@@ -1,5 +1,5 @@
 ---
-"pi-square": major
+"@odradekk/pi-square": major
 ---
 
 Redesign subagent configuration, prompt authority, persistence, and interactive management around a breaking V2 contract.

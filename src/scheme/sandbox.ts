@@ -129,7 +129,7 @@ export async function evalScheme(code: string, options: SandboxOptions = {}): Pr
     const env = access === "fullaccess"
       ? { ...process.env, __SANDBOX_MODE: "fullaccess", __SANDBOX_MOUNT_ROOT: "/" }
       : { __SANDBOX_MODE: access, __SANDBOX_MOUNT_ROOT: process.cwd() };
-    const child = spawn("node", args, {
+    const child = spawn(process.execPath, args, {
       cwd: wasmDir,
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],

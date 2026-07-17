@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   loadSandboxModule,
@@ -10,6 +11,13 @@ import {
 } from "./lib/test-helpers.mjs";
 
 const { evalScheme } = await loadSandboxModule("src/sandbox.ts");
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+
+test("sandbox launches the WASM runner through the current absolute Node executable", () => {
+  const source = readFileSync(join(packageRoot, "src/scheme/sandbox.ts"), "utf8");
+  assert.match(source, /spawn\(process\.execPath, args,/);
+  assert.doesNotMatch(source, /spawn\(["']node["'], args,/);
+});
 
 async function withTempCwd(fn) {
   const previousCwd = process.cwd();

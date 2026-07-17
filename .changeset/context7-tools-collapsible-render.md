@@ -1,5 +1,5 @@
 ---
-"pi-square": minor
+"@odradekk/pi-square": minor
 ---
 
 Add Pi-native collapsible presentation for the Context7 `libs` and `docs` tools.

@@ -1,5 +1,5 @@
 ---
-"pi-square": major
+"@odradekk/pi-square": major
 ---
 
 Rename the `scheme_eval` tool to `scheme` and add Pi-native streaming presentation.

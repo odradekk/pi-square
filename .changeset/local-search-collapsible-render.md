@@ -1,5 +1,5 @@
 ---
-"pi-square": minor
+"@odradekk/pi-square": minor
 ---
 
 Add Pi-native collapsible presentation for the bundled `rg` and `fd` tools.

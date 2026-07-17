@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+const changesets = JSON.parse(readFileSync(join(packageRoot, ".changeset/config.json"), "utf8"));
+const ciWorkflow = readFileSync(join(packageRoot, ".github/workflows/ci.yml"), "utf8");
+const releaseWorkflow = readFileSync(join(packageRoot, ".github/workflows/release.yml"), "utf8");
+
+assert.equal(pkg.name, "@odradekk/pi-square");
+assert.equal(pkg.private, undefined);
+assert.deepEqual(pkg.engines, { node: ">=24 <25" });
+assert.deepEqual(pkg.publishConfig, {
+  access: "public",
+  provenance: true,
+  registry: "https://registry.npmjs.org/",
+});
+assert.equal(pkg.scripts.release, "changeset publish");
+assert.deepEqual(pkg.peerDependencies, {
+  "@earendil-works/pi-ai": "0.80.6",
+  "@earendil-works/pi-coding-agent": "0.80.6",
+  "@earendil-works/pi-tui": "0.80.6",
+  typebox: "1.1.38",
+});
+assert.equal(changesets.access, "public");
+assert.equal(changesets.privatePackages, undefined);
+assert.ok(pkg.files.includes("src"));
+assert.ok(pkg.files.includes("bin"));
+assert.ok(pkg.files.includes("wasm"));
+assert.ok(pkg.files.includes("CHANGELOG.md"));
+assert.ok(!pkg.files.includes("tests"));
+assert.ok(existsSync(join(packageRoot, "LICENSE")));
+assert.match(ciWorkflow, /npm run package:check/);
+assert.match(releaseWorkflow, /environment:\n      name: npm/);
+assert.match(releaseWorkflow, /id-token: write/);
+assert.match(releaseWorkflow, /publish: npm run release/);
+assert.doesNotMatch(releaseWorkflow, /NPM_TOKEN/);
+
+for (const name of readdirSync(join(packageRoot, ".changeset"))) {
+  if (!name.endsWith(".md") || name === "README.md") continue;
+  const content = readFileSync(join(packageRoot, ".changeset", name), "utf8");
+  assert.match(content, /^---\n"@odradekk\/pi-square": (patch|minor|major)\n---\n/);
+}
+
+console.log("release package metadata tests passed");
