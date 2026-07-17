@@ -36,6 +36,7 @@ assert.ok(existsSync(join(packageRoot, "LICENSE")));
 assert.match(ciWorkflow, /npm run package:check/);
 assert.match(releaseWorkflow, /environment:\n      name: npm/);
 assert.match(releaseWorkflow, /id-token: write/);
+assert.match(releaseWorkflow, /npm install --global npm@11\.18\.0/);
 assert.match(releaseWorkflow, /version: npm run version-packages/);
 assert.match(releaseWorkflow, /publish: npm run release/);
 assert.doesNotMatch(releaseWorkflow, /NPM_TOKEN/);
