@@ -409,7 +409,7 @@ function mergeDefinitionLayers(name: string, layers: SubagentDefinitionLayer[]):
 export function discoverSubagents(cwd: string): SubagentRegistry {
   const projectDir = findNearestProjectSubagentsDir(cwd);
   const loaded = [
-    loadDefinitionsFromDir(getPackagePath("resources", "subagents"), "package"),
+    loadDefinitionsFromDir(getPackagePath("subagents"), "package"),
     loadDefinitionsFromDir(join(getAgentDir(), "subagents"), "agent"),
     projectDir ? loadDefinitionsFromDir(projectDir, "project") : { layers: [], errors: [] },
   ];

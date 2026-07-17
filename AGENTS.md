@@ -17,7 +17,7 @@
 - `src/ssh/` owns the parent-only persistent SSH tool, exact `ssh2` client integration, pinned host verification, agent/private-key authentication, masked secret input, bounded in-memory output cursors, connection/session limits, idle cleanup, lifecycle teardown, and native presentation. It supports one POSIX foreground command per shell and no child exposure, arbitrary targets, password parameters, agent forwarding, output artifacts, transparent reconnect, SFTP, jump hosts, proxies, or port forwarding.
 - `src/tool-catalog.ts` defines the extension tools that may be exposed to subagents.
 - `skills/` contains discoverable Pi skills. Each skill owns its instructions and supporting resources inside its directory.
-- `resources/subagents/` contains the required `promptVersion: 2` YAML definitions for bundled subagent roles. Effective definitions overlay package, agent, and nearest-project fields in that precedence order.
+- `subagents/` contains the required `promptVersion: 2` YAML definitions for bundled subagent roles. Effective definitions overlay package, agent, and nearest-project fields in that precedence order.
 - `themes/` contains the matched light and dark Pi themes.
 - `bin/` vendors cross-platform `rg` and `fd` executables. `wasm/` contains the Scheme runtime and its no-spawn safety layer.
 - `tests/` contains contract, unit, integration, and smoke coverage. `tests/run.mjs` is the main test-suite orchestrator, while `tests/smoke.mjs` exercises a real Pi session.

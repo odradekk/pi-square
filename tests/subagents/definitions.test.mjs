@@ -53,6 +53,9 @@ test("package V2 definitions expose the five inherited-model roles without diagn
       ["crawler", "explorer", "generalist", "librarian", "oracle"],
     );
     assert.equal(registry.definitions.find((item) => item.name === "example_profile").visible, false);
+    for (const definition of registry.definitions) {
+      assert.equal(definition.layers[0]?.filePath, join(packageRoot, "subagents", `${definition.name}.yaml`));
+    }
     for (const definition of filterVisibleSubagents(registry).definitions) {
       assert.equal(definition.model, undefined, `${definition.name} model must inherit`);
       assert.equal(definition.effort, undefined, `${definition.name} effort must inherit`);

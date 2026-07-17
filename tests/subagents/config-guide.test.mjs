@@ -53,7 +53,7 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
   assert.ok(guide.details.includedDefinitionCount <= 50);
   assert.deepEqual(guide.details.scopes, ["package"]);
   assert.match(guide.content, /Subagent Config Guide/);
-  assert.match(guide.content, /resources\/subagents\/explorer\.yaml/);
+  assert.match(guide.content, /subagents\/explorer\.yaml/);
   assert.match(guide.content, /next user message is the only authorized configuration request/i);
   assert.match(guide.content, /tools: \[none\] disables every built-in tool/);
   assert.match(guide.content, /resume keeps the original frozen values/);

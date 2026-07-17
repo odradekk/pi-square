@@ -21,9 +21,9 @@
   ],
   "files": [
     "bin",
-    "resources",
     "skills",
     "src",
+    "subagents",
     "themes",
     "wasm",
     "CHANGELOG.md",

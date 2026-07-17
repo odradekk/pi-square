@@ -1,7 +1,7 @@
 # Pi subagent V2 overlay reference
 #
 # Discovery precedence is package < agent < nearest project:
-#   resources/subagents/*.yaml
+#   subagents/*.yaml
 #   ~/.pi/agent/subagents/*.yaml
 #   <project>/.pi/subagents/*.yaml
 #

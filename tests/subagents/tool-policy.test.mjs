@@ -6,7 +6,7 @@ import jiti from "jiti";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, "..", "..");
-const subagentsDir = join(packageRoot, "resources", "subagents");
+const subagentsDir = join(packageRoot, "subagents");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { resolveSubagentTools } = await load(join(packageRoot, "src", "subagents", "tool-policy.ts"));
 

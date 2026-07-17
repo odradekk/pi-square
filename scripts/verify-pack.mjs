@@ -7,7 +7,7 @@ if (!Array.isArray(packs) || packs.length !== 1) {
 }
 
 const pack = packs[0];
-const allowedRoots = new Set(["bin", "resources", "skills", "src", "themes", "wasm"]);
+const allowedRoots = new Set(["bin", "skills", "src", "subagents", "themes", "wasm"]);
 const allowedFiles = new Set([
   "CHANGELOG.md",
   "LICENSE",
@@ -21,6 +21,12 @@ const requiredFiles = [
   "THIRD_PARTY_NOTICES.md",
   "package.json",
   "src/index.ts",
+  "subagents/crawler.yaml",
+  "subagents/example_profile.yaml",
+  "subagents/explorer.yaml",
+  "subagents/generalist.yaml",
+  "subagents/librarian.yaml",
+  "subagents/oracle.yaml",
   "wasm/scheme.wasm",
 ];
 const paths = new Set(pack.files.map((file) => file.path));
