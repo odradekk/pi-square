@@ -41,8 +41,9 @@ try {
   await runner.emit({ type: "session_start", reason: "startup" });
 
   const paths = runner.getExtensionPaths().map((path) => path.replaceAll("\\", "/"));
+  const expectedExtensionPath = join(packageRoot, "src/index.ts").replaceAll("\\", "/");
   assert.equal(paths.length, 1, `expected one extension entry, got ${paths.join(", ")}`);
-  assert.ok(paths[0].endsWith("/packages/pi-square/src/index.ts"));
+  assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
