@@ -39,7 +39,7 @@ jobs:
         id: changesets
         uses: changesets/action@6a0a831ff30acef54f2c6aa1cbbc1096b066edaf # v1.7.0
         with:
-          version: npm run changeset:version
+          version: npm run version-packages
           commit: "chore: version package"
           title: "chore: version package"
           commitMode: github-api

@@ -17,6 +17,7 @@ assert.deepEqual(pkg.publishConfig, {
   provenance: true,
   registry: "https://registry.npmjs.org/",
 });
+assert.equal(pkg.scripts["version-packages"], "changeset version && npm install --package-lock-only --ignore-scripts");
 assert.equal(pkg.scripts.release, "changeset publish");
 assert.deepEqual(pkg.peerDependencies, {
   "@earendil-works/pi-ai": "0.80.6",
@@ -35,6 +36,7 @@ assert.ok(existsSync(join(packageRoot, "LICENSE")));
 assert.match(ciWorkflow, /npm run package:check/);
 assert.match(releaseWorkflow, /environment:\n      name: npm/);
 assert.match(releaseWorkflow, /id-token: write/);
+assert.match(releaseWorkflow, /version: npm run version-packages/);
 assert.match(releaseWorkflow, /publish: npm run release/);
 assert.doesNotMatch(releaseWorkflow, /NPM_TOKEN/);
 
