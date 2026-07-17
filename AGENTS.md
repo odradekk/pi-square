@@ -92,3 +92,67 @@ Add a changeset for every change that requires a package release and select the 
 - **major:** Breaking changes to schemas, configuration formats, tool contracts, public behavior, or supported Pi/runtime compatibility.
 
 Tests, internal refactors, and repository maintenance that do not change shipped behavior or published documentation do not require a release. When uncertain, choose the smallest level that accurately communicates the compatibility impact and explain the decision in the changeset.
+
+## Package Maintenance and Release Runbook
+
+### Routine Maintenance
+
+1. Start from an up-to-date `main` with a clean package worktree, then run `npm ci`. Do not mix release work with unrelated parent-repository or local configuration changes.
+2. Make the smallest coherent implementation change. Keep the Node.js, Pi, ESM, package resource, platform, security, and ownership contracts above unless the change explicitly updates and documents them.
+3. Update owned tests and documentation in the same change. Synchronize `README.md` for user-visible behavior, `AGENTS.md` for durable maintainer policy, and `THIRD_PARTY_NOTICES.md` for dependency, native binary, WASM, provenance, or licensing changes.
+4. Keep `package-lock.json` synchronized with every dependency or package metadata change. Update the three `@earendil-works/pi-*` development and peer versions together when changing the supported Pi version, and update the runtime contract in both `README.md` and this file.
+5. Add one changeset for every release-relevant change. Use `patch`, `minor`, or `major` according to the policy above; do not edit `package.json.version` or `CHANGELOG.md` manually.
+6. Run the applicable local gates before opening a pull request:
+
+   ```bash
+   npm test
+   npm run typecheck
+   npm run smoke
+   npm run package:check
+   npm run changeset:status
+   ```
+
+7. Review `npm run package:check` for the package name, allowlisted files, executable assets, compressed and unpacked size limits, and absence of tests, credentials, local configuration, `.changeset`, or other development-only files.
+8. Commit focused Conventional Commits, push a topic branch, open a ready pull request against `main`, and merge only after the `CI` workflow passes. Never bypass repository hooks or required checks for a release.
+
+Documentation-only repository policy changes that are not included in the npm tarball do not need a changeset. User-visible README changes, package metadata changes, compatibility changes, and shipped asset changes do.
+
+### Standard Release
+
+1. Merge release-relevant pull requests with their changesets into `main`. The `Release` workflow must create or update the `chore: version package` pull request; maintainers do not run a separate local version commit.
+2. Review the Version Packages pull request before merging. Confirm all of the following:
+   - `package.json` and both root version fields in `package-lock.json` contain the same intended version.
+   - `CHANGELOG.md` accurately groups every pending major, minor, and patch change.
+   - Expected changeset files are consumed and unrelated files are absent.
+   - The calculated version follows SemVer and no version with that number already exists on npm.
+3. Merge the Version Packages pull request only when the release contents are final. A push to `main` with no remaining changesets causes `scripts/check-release.mjs` to check whether that exact version is unpublished.
+4. When the publish job waits on the protected `npm` GitHub Environment, review the version, commit, workflow run, and npm registry state, then approve the deployment. Approval authorizes an irreversible registry write.
+5. The publish job must use the pinned Node.js and npm versions, run `npm ci`, all tests, type checking, smoke coverage, and `npm run package:check`, then invoke `npm run release`. Publishing must use npm trusted publishing through OIDC; do not add `NPM_TOKEN`, `NODE_AUTH_TOKEN`, or another long-lived write credential to repository or environment secrets.
+6. Changesets must publish the package, move `latest`, create the `v<version>` Git tag, and create the matching GitHub Release. A successful compile or npm upload alone is not a completed release.
+
+### Post-Release Verification
+
+After every release, verify all public surfaces before declaring completion:
+
+```bash
+npm view @odradekk/pi-square name version dist-tags --json
+npm view @odradekk/pi-square@<version> dist --json
+gh release list --repo odradekk/pi-square --limit 5
+RELEASE_AGENT_DIR="$(mktemp -d)"
+PI_CODING_AGENT_DIR="$RELEASE_AGENT_DIR" pi install npm:@odradekk/pi-square
+```
+
+- Confirm `latest` points to the new stable version and no bootstrap, prerelease, or deprecated version owns `latest`.
+- Confirm npm exposes an attestation URL and SLSA provenance for the released version, and that the provenance identifies `odradekk/pi-square`, `.github/workflows/release.yml`, `main`, and the `npm` Environment.
+- Confirm the GitHub Release is non-draft, non-prerelease, and uses the expected `v<version>` tag.
+- Install into an isolated `PI_CODING_AGENT_DIR`; verify the package version, allowlisted assets, TypeScript extension entry, skills, themes, and representative tool registration without changing the maintainer's active Pi configuration.
+- For a release defect, publish a new patch version through the same workflow. npm versions are immutable: never overwrite, reuse, or silently replace a published version.
+
+### Failure Recovery and Security
+
+- Before npm accepts a version, fix the cause in a normal pull request and rerun the protected workflow. The registry preflight makes retries safe by skipping versions that already exist.
+- If trusted publishing returns `ENEEDAUTH` or `E404`, do not fall back to a write token. Verify the npm CLI version, `id-token: write`, GitHub-hosted runner, package `repository.url`, and the case-sensitive npm trusted-publisher fields: owner `odradekk`, repository `pi-square`, workflow `release.yml`, Environment `npm`, and allowed action `npm publish`.
+- If npm accepted the version but tag or GitHub Release creation failed, first verify the registry version and integrity, then rerun or repair only the missing Git metadata. Do not publish the same version again.
+- Keep the `npm` Environment restricted to `main` with required reviewer approval. Keep Actions pinned to reviewed commit SHAs and preserve the minimum job-level permissions.
+- Keep npm package publishing set to require 2FA and disallow traditional tokens. Any temporary bootstrap credential must be short-lived, scoped to the minimum package operation, kept out of files and logs, and revoked immediately after OIDC succeeds.
+- Treat unexpected tarball files, missing provenance, changed native asset hashes, registry/tag divergence, or a release from an unrecognized workflow as a release-blocking security incident.
