@@ -41,7 +41,7 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search", "sg",
+    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search", "sg", "ssh",
     "subagent", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
@@ -63,6 +63,15 @@ try {
   assert.ok(!childToolNames.includes("scheme_eval"));
   assert.ok(!childToolNames.includes("parse"), "parse requires parent-session confirmation");
   assert.equal(createChildTools(["parse"]).definitions.length, 0);
+  assert.ok(!childToolNames.includes("ssh"), "ssh must remain parent-only");
+  assert.equal(createChildTools(["ssh"]).definitions.length, 0);
+  const sshTool = tools.get("ssh");
+  assert.equal(sshTool.parameters.type, "object");
+  assert.equal(sshTool.parameters.anyOf, undefined);
+  assert.deepEqual(sshTool.parameters.required, ["operation"]);
+  assert.deepEqual(sshTool.parameters.properties.operation.enum, [
+    "connect", "command", "read", "input", "secret_input", "interrupt", "close", "list",
+  ]);
   assert.ok(!childToolNames.includes("pwsh"));
   assert.deepEqual(createChildTools(["pwsh"]).definitions, []);
   assert.deepEqual(createChildTools(["pwsh"], "win32").definitions.map((tool) => tool.name), ["pwsh"]);

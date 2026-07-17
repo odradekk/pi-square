@@ -16,6 +16,22 @@ try {
     version: 2,
     footer: { mode: "native" },
     banner: { enabled: false },
+    ssh: {
+      maxSessions: 6,
+      profiles: [{
+        name: "ops",
+        defaultTarget: "primary",
+        targets: [{
+          name: "primary",
+          host: "ops.example.test",
+          username: "deploy",
+          fingerprints: ["SHA256:AAAAAAAAAAAAAAAAAAAAAA"],
+        }],
+        auth: { method: "agent" },
+        confirmCommands: "never",
+        maxSessions: 2,
+      }],
+    },
   }));
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
     version: 2,
@@ -32,7 +48,23 @@ try {
   assert.equal(loaded.config.version, 2);
   assert.equal(loaded.config.footer.mode, "enhanced");
   assert.equal(loaded.config.banner.enabled, true);
+  assert.equal(loaded.config.ssh.maxSessions, 6);
+  assert.equal(loaded.config.ssh.profiles.length, 1);
+  assert.equal(loaded.config.ssh.profiles[0].targets[0].port, 22);
+  assert.equal(loaded.config.ssh.profiles[0].idleTimeoutMinutes, 30);
+  assert.equal(loaded.config.ssh.profiles[0].confirmCommands, "never");
   assert.equal(loaded.diagnostics.length, 0);
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    footer: { mode: "enhanced" },
+    ssh: { profiles: [] },
+  }));
+  const projectSsh = loadConfig(projectDir);
+  assert.equal(projectSsh.config.footer.mode, "native", "a project layer containing SSH settings must be rejected atomically");
+  assert.equal(projectSsh.config.ssh.profiles[0].name, "ops");
+  assert.equal(projectSsh.diagnostics.length, 1);
+  assert.match(projectSsh.diagnostics[0].message, /config ignored/);
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
     version: 1,
@@ -60,6 +92,24 @@ try {
   assert.equal(invalidMode.config.footer.mode, "native");
   assert.equal(invalidMode.diagnostics.length, 1);
   assert.match(invalidMode.diagnostics[0].message, /config ignored/);
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    ssh: {
+      maxSessions: 1,
+      profiles: [{
+        name: "bad",
+        targets: [{ name: "one", host: "host", username: "user", fingerprints: ["SHA256:AAAAAAAAAAAAAAAAAAAAAA"] }],
+        auth: { method: "privateKey" },
+        maxSessions: 2,
+      }],
+    },
+  }));
+  rmSync(join(projectDir, ".pi", "config", "pi-square.json"));
+  const semanticInvalid = loadConfig(projectDir);
+  assert.equal(semanticInvalid.config.ssh.profiles.length, 0);
+  assert.equal(semanticInvalid.diagnostics.length, 1);
+  assert.match(semanticInvalid.diagnostics[0].message, /privateKey auth requires privateKeyPath|maxSessions exceeds/);
   console.log("config tests: OK");
 } finally {
   if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;

@@ -21,6 +21,7 @@
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "^24.0.0",
+    "@types/ssh2": "1.15.5",
     "jiti": "^2.7.0",
     "typebox": "1.1.38",
     "typescript": "^7.0.2"
@@ -49,6 +50,7 @@
     "@ast-grep/cli": "0.44.1",
     "@cantoo/pdf-lib": "2.7.3",
     "@colbymchenry/codegraph": "1.4.1",
-    "pdfjs-dist": "6.1.200"
+    "pdfjs-dist": "6.1.200",
+    "ssh2": "1.17.0"
   }
 }

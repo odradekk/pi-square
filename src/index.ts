@@ -12,6 +12,7 @@ import registerPromptManager from "./prompt-manager";
 import registerSchemeSandbox from "./scheme";
 import registerSearchTools from "./search";
 import registerShellTools from "./shell";
+import registerSshTool from "./ssh";
 import registerSubagents from "./subagents";
 import registerTime from "./time";
 import registerTodo from "./todo";
@@ -39,6 +40,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerFooter(pi, () => config);
   registerSchemeSandbox(pi);
   registerShellTools(pi);
+  registerSshTool(pi, () => config);
   registerBanner(pi, () => config);
   registerPromptManager(pi, subagents);
 }

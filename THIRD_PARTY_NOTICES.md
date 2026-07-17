@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors prebuilt search binaries and installs exact structural-search, semantic-code-intelligence, PDF-processing, and related native runtime dependencies.
+This extension vendors prebuilt search binaries and installs exact structural-search, semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
 
 ## Included Software
 
@@ -45,6 +45,14 @@ This extension vendors prebuilt search binaries and installs exact structural-se
 - The package declares exact `1.0.2` optional native artifacts for Android arm64, macOS x64/arm64, Linux arm glibc, Linux x64/arm64 glibc and musl, Linux riscv64 glibc, and Windows x64/arm64. npm installs only the matching artifact; lockfile integrity metadata covers every declared target.
 - `pdf_search` does not call canvas or PDF rendering APIs. PDF.js may load the matching optional package during Node initialization to provide geometry primitives.
 
+### ssh2
+- Upstream: https://github.com/mscdex/ssh2
+- License: MIT
+- Version: `1.17.0`, installed as an exact npm dependency. The upstream package is CommonJS and declares Node.js `>=10.16.0`; pi-square uses an explicit ESM-to-CommonJS bridge and validates the client on Node.js 24 with an in-process SSH server.
+- Runtime dependencies are `asn1` `0.2.6` (MIT), `safer-buffer` `2.1.2` (MIT), `bcrypt-pbkdf` `1.0.2` (BSD-3-Clause), and `tweetnacl` `0.14.5` (Unlicense).
+- Upstream optionally installs `cpu-features` `0.0.10` (MIT), with `buildcheck` `0.0.7` and `nan` `2.28.0` (both MIT), to accelerate supported crypto paths. The addon is optional and ssh2 retains its portable JavaScript fallback when it is absent or cannot build.
+- pi-square uses only the SSH client, interactive shell/PTY, agent/private-key authentication, keepalive, host-verification, signal, and channel stream APIs. It does not expose ssh2's server, SFTP, forwarding, agent-forwarding, password, keyboard-interactive, proxy, or connection-hopping capabilities.
+
 ### CodeGraph
 - Upstream: https://github.com/colbymchenry/codegraph
 - License: MIT
@@ -65,6 +73,7 @@ This extension vendors prebuilt search binaries and installs exact structural-se
 - fd `linux-x64` and both `linux-arm64` vendored binaries (rg and fd) require glibc at runtime.
 - The supported ast-grep Linux x64 and arm64 npm packages require glibc; the CLI package does not provide musl targets.
 - PDF.js itself is portable JavaScript/WASM. Its optional canvas dependency provides separate glibc and musl artifacts for Linux x64/arm64, but pi-square's existing supported Linux boundary remains constrained by its ast-grep and CodeGraph dependencies.
+- ssh2 is portable JavaScript. Its optional `cpu-features` accelerator is a Node native addon compiled only when the local build environment supports it; failure or absence does not remove SSH functionality.
 - The verified CodeGraph Linux x64 bundled runtime dynamically links glibc, libstdc++, libgcc, libm, libdl, and libpthread. CodeGraph publishes generic Linux x64/arm64 packages and no musl-specific package.
 - macOS and Windows search and CodeGraph binaries have no additional C library boundary documented here.
 
@@ -75,4 +84,5 @@ This extension vendors prebuilt search binaries and installs exact structural-se
 - The exposed `sg` wrapper is read-only even though upstream ast-grep also supports rewriting and project scanning.
 - CodeGraph is installed by npm with lockfile integrity metadata for the main package and all six optional platform packages. The wrapper verifies the platform package version and required runtime/entry files before execution, then forces telemetry, update checks, downloads, and watchers off.
 - PDF.js and its optional canvas packages are installed by npm with lockfile integrity metadata. `pdf_search` resolves only package-local assets and keeps extracted text in bounded memory; it creates no PDF cache, index, or artifact on disk.
+- ssh2 and its transitive packages are installed by npm with lockfile integrity metadata. The SSH wrapper always supplies a pinned-fingerprint `hostVerifier`, disables agent forwarding, keeps remote output in bounded memory, and creates no SSH cache, log, socket, or artifact.
 - CodeGraph index databases live under each explicitly initialized project's `.codegraph/` directory and are not vendored or persisted by pi-square itself.

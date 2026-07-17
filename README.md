@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, web, PDF, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
+`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
 
 ## Runtime contract
 
@@ -124,6 +124,16 @@ Run details use persistence version 3 and are indexed by the parent Pi session. 
 
 `/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses Pi's native skill-card visual language without claiming to be a skill; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands.
 
+## Persistent SSH shell
+
+The parent session exposes one `ssh` tool for bounded persistent remote POSIX shells. `connect` selects an agent-configured profile and allowlisted target, verifies its pinned OpenSSH SHA-256 host fingerprint, authenticates with an SSH agent or private-key file, and returns a session ID. `command` preserves the same remote shell's working directory, exported environment, and other shell state across calls. A session permits one foreground command at a time; `read`, `input`, `secret_input`, and `interrupt` continue a command that exceeds the bounded wait or pauses for input, while `close` and `list` manage the current connection set.
+
+`input` is only for non-secret text. `secret_input` opens a dedicated masked TUI prompt and writes the submitted bytes once to the current channel; the value is never a tool argument or result and is not written to a pi-square log or artifact. Encrypted private keys use the same masked prompt during connection. Secret input is unavailable outside the interactive TUI. Agent forwarding and password login are disabled.
+
+Profiles and target fingerprints are accepted only from agent-level `config/pi-square.json`; a project layer containing `ssh` is rejected atomically. Selecting a non-default allowlisted target requires confirmation the first time that exact endpoint is used in each parent Pi session. Each profile sets `confirmCommands` to `always` (the default) or `never`; command classification is deliberately absent because shell text cannot be reliably classified as destructive. Unknown and changed host keys fail closed.
+
+Connections live only for the current parent Pi session. The default limits are eight sessions globally, three per profile, and a 30-minute idle timeout; running foreground commands are not treated as idle. Transport loss invalidates the session instead of silently reconnecting with lost shell state. Output uses a 256 KiB in-memory ring per session and 24,000-character cursor pages, reports expired cursors and truncation, removes terminal control sequences from model and TUI copies, bounds profile/session listings, and never spills remote output to local files. The first version supports direct connections and Bourne-compatible POSIX shells; full-screen TUI programs, SFTP/remote file tools, ProxyJump, proxies, port forwarding, arbitrary targets, child-agent access, and cross-Pi-session persistence are out of scope.
+
 ## Platform shell tools
 
 Model-callable shell tools are platform-exclusive. Linux, macOS, and other non-Windows hosts expose Pi's native `bash` tool and do not register `pwsh`. Windows exposes `pwsh`, removes `bash` from the active tool set, and blocks later `bash` calls even if it is manually re-enabled. PowerShell 7 is preferred, with Windows PowerShell 5.1 as the fallback. If neither runtime is available, Windows fails closed with a startup diagnostic and a structured unavailable result instead of enabling bash. This policy applies to top-level sessions and subagents; Pi's user-invoked `!command` Bash Mode remains unchanged.
@@ -188,7 +198,7 @@ Results are deliberately bounded and explicit about incompleteness. Search expos
 
 ## Configuration
 
-Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict and supports footer mode and the optional banner setting:
+Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict. SSH profiles are the exception to normal overlay behavior: they are accepted only from the agent-level file and cannot be supplied or changed by a project repository.
 
 ```json
 {
@@ -198,9 +208,40 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
   },
   "banner": {
     "enabled": false
+  },
+  "ssh": {
+    "maxSessions": 8,
+    "profiles": [
+      {
+        "name": "development",
+        "defaultTarget": "primary",
+        "targets": [
+          {
+            "name": "primary",
+            "host": "dev.example.com",
+            "port": 22,
+            "username": "developer",
+            "fingerprints": [
+              "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ]
+          }
+        ],
+        "auth": {
+          "method": "agent"
+        },
+        "confirmCommands": "always",
+        "maxSessions": 3,
+        "idleTimeoutMinutes": 30,
+        "connectTimeoutMs": 20000,
+        "keepaliveIntervalMs": 15000,
+        "keepaliveCountMax": 3
+      }
+    ]
   }
 }
 ```
+
+Replace the sample fingerprint with the target's independently verified OpenSSH SHA-256 fingerprint. Agent authentication uses `auth.socket` when supplied, then `SSH_AUTH_SOCK`, with Pageant as the Windows fallback. Private-key authentication instead uses `{ "method": "privateKey", "privateKeyPath": "~/.ssh/id_ed25519" }`; key content and passphrases do not belong in configuration.
 
 `footer.mode` accepts only `enhanced` or `native`; `enhanced` is the default. V1 is no longer accepted. Migrate by deleting the complete `statusline` object and changing `"version": 1` to `"version": 2`; use `footer.mode` for the new startup-only fallback. Unknown fields reject that configuration layer rather than being ignored. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
 
