@@ -8,7 +8,17 @@
 
 # pi-square
 
-`pi-square` is the single local extension package for this Pi agent. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
+`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
+
+## Installation
+
+Install the public npm package for the current user:
+
+```bash
+pi install npm:@odradekk/pi-square
+```
+
+Use `-l` to install it for only the current project. The package requires Pi 0.80.6 and Node.js 24.
 
 ## Runtime contract
 
@@ -271,4 +281,6 @@ npm run changeset:status
 npm run changeset:version
 ```
 
-Create a changeset with each release-relevant change. `changeset:status` previews pending releases, and `changeset:version` consumes pending changesets to update `package.json` and `CHANGELOG.md`. Changesets compares work against the configured `main` branch, so a newly initialized repository needs an initial commit before change detection commands can run. The package remains private: Changesets updates its version but does not create publication tags, and the repository has no publish lifecycle script.
+Create a changeset with each release-relevant change. `changeset:status` previews pending releases, and `changeset:version` consumes pending changesets to update `package.json` and `CHANGELOG.md`. Changesets compares work against the configured `main` branch, so a newly initialized repository needs an initial commit before change detection commands can run.
+
+The public package is released from `main` by `.github/workflows/release.yml`. Changesets opens a Version Packages pull request; after that pull request is merged, the protected `npm` environment requires approval before CI publishes with npm trusted publishing. CI creates the npm provenance statement, package tag, and GitHub release. Run `npm run package:check` locally to inspect and validate the publication tarball.

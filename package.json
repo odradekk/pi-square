@@ -1,19 +1,49 @@
 {
-  "name": "pi-square",
+  "name": "@odradekk/pi-square",
   "version": "0.1.0",
-  "private": true,
   "description": "Unified local extension package for Pi",
   "type": "module",
   "license": "MIT",
   "author": "s1n",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/odradekk/pi-square.git"
+  },
+  "homepage": "https://github.com/odradekk/pi-square#readme",
+  "bugs": {
+    "url": "https://github.com/odradekk/pi-square/issues"
+  },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "extension"
   ],
+  "files": [
+    "bin",
+    "resources",
+    "skills",
+    "src",
+    "themes",
+    "wasm",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
+    "typebox": "1.1.38"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
@@ -41,10 +71,12 @@
     "test": "node ./tests/run.mjs",
     "typecheck": "tsc --noEmit",
     "smoke": "node ./tests/smoke.mjs",
+    "package:check": "npm pack --dry-run --json | node ./scripts/verify-pack.mjs",
     "eval:codegraph": "node ./tests/codegraph/eval.mjs",
     "changeset": "changeset",
     "changeset:status": "changeset status",
-    "changeset:version": "changeset version"
+    "changeset:version": "changeset version",
+    "release": "changeset publish"
   },
   "dependencies": {
     "@ast-grep/cli": "0.44.1",

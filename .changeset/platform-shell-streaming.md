@@ -1,5 +1,5 @@
 ---
-"pi-square": major
+"@odradekk/pi-square": major
 ---
 
 Make model-callable shell tools platform-exclusive and give PowerShell Pi-native streaming output.

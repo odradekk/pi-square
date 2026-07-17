@@ -1,5 +1,5 @@
 ---
-"pi-square": minor
+"@odradekk/pi-square": minor
 ---
 
 Add four authenticated, parent-only GitHub.com research tools with Pi-native collapsible presentation.

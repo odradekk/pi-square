@@ -1,5 +1,5 @@
 ---
-"pi-square": minor
+"@odradekk/pi-square": minor
 ---
 
 Add a Pi-native streaming and collapsible presentation for persisted subagents.

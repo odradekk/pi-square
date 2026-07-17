@@ -1,5 +1,5 @@
 ---
-"pi-square": minor
+"@odradekk/pi-square": minor
 ---
 
 Add Pi-native collapsible TUI presentation for the `search` and `fetch` web tools.

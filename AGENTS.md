@@ -5,7 +5,7 @@
 - **Name:** `pi-square` (pi-squared).
 - **Language:** TypeScript using ECMAScript modules. Tests and supporting scripts also use JavaScript ESM.
 - **Purpose:** A unified local extension package for the Pi coding agent. It provides prompt management, interactive and session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, GitHub, and documentation tools, subagents, TUI customizations, a Scheme sandbox, PowerShell execution, skills, and themes.
-- **Built on:** Node.js 24, Pi 0.80.6, the Pi extension API, Pi TUI and AI packages, and TypeBox. The package is private and is loaded by Pi from `src/index.ts`.
+- **Built on:** Node.js 24, Pi 0.80.6, the Pi extension API, Pi TUI and AI packages, and TypeBox. The public npm package is loaded by Pi directly from `src/index.ts`.
 
 ## Architecture
 
@@ -79,13 +79,13 @@ Apply the current gates according to the change risk:
 - For documentation-only changes, verify referenced paths, versions, commands, and links against the repository. Code checks are not required unless the documentation change accompanies code.
 - Report every check run and any check that could not run. A passing type check does not replace behavioral testing.
 
-There is currently no CI workflow or configured linter. The planned lint gate is ESLint flat config with typescript-eslint, covering `src/**/*.ts` and applying appropriate JavaScript rules to `tests/**/*.mjs`. Do not require `npm run lint` until the dependencies, configuration, script, and an initial passing baseline are committed.
+GitHub Actions runs tests, type checking, smoke coverage, and publication tarball validation for pull requests and `main`. There is currently no configured linter. The planned lint gate is ESLint flat config with typescript-eslint, covering `src/**/*.ts` and applying appropriate JavaScript rules to `tests/**/*.mjs`. Do not require `npm run lint` until the dependencies, configuration, script, and an initial passing baseline are committed.
 
 ## Versioning
 
-This project uses Changesets for package versions and release notes. The CLI is installed as a development dependency and configured in `.changeset/config.json`. Because `pi-square` is private, Changesets updates its version and changelog but does not create publication tags; the repository has no publish script.
+This project publishes the public npm package `@odradekk/pi-square` with Changesets. The CLI is installed as a development dependency and configured in `.changeset/config.json`. The release workflow creates a Version Packages pull request from pending changesets, then publishes the merged version through the protected `npm` GitHub Environment with npm trusted publishing. CI creates provenance, the package tag, and the GitHub release; repository secrets must never contain a long-lived npm publishing token.
 
-Add a changeset for every change that requires a package release and select the version level for the entire `pi-square` package. Use `npm run changeset` to create one, `npm run changeset:status` to inspect pending releases, and `npm run changeset:version` to consume pending changesets and update package metadata and `CHANGELOG.md`. Change detection compares against `main` and therefore requires the repository to have an initial commit.
+Add a changeset for every change that requires a package release and select the version level for the entire `@odradekk/pi-square` package. Use `npm run changeset` to create one, `npm run changeset:status` to inspect pending releases, and `npm run changeset:version` to consume pending changesets and update package metadata and `CHANGELOG.md`. Use `npm run package:check` before release to verify the allowlisted tarball. Change detection compares against `main` and therefore requires the repository to have an initial commit.
 
 - **patch:** Backward-compatible fixes and corrections, including metadata and documentation fixes.
 - **minor:** New backward-compatible capabilities, such as tools, skills, themes, configuration options, or other non-breaking additions.

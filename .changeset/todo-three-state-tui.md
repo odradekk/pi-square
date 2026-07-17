@@ -1,5 +1,5 @@
 ---
-"pi-square": major
+"@odradekk/pi-square": major
 ---
 
 Replace the session todo's binary checklist with a strict three-state workflow and a responsive Pi-native presentation.
