@@ -58,6 +58,20 @@ function observedState() {
   return { state, changes: () => changes, reset: () => { changes = 0; } };
 }
 
+function assertCompletion(pi, status) {
+  assert.equal(pi.sent.length, 1);
+  assert.equal(pi.sent[0].message.customType, "pi-square.subagent-notification");
+  assert.equal(pi.sent[0].message.display, true);
+  assert.equal(pi.sent[0].message.details.id, ID);
+  assert.equal(pi.sent[0].message.details.status, status);
+  assert.equal(pi.sent[0].message.details.result.id, ID);
+  assert.match(pi.sent[0].message.content, new RegExp(`^\\[Background subagent ${status}\\]`));
+  assert.deepEqual(pi.sent[0].options, {
+    triggerTurn: true,
+    deliverAs: "steer",
+  });
+}
+
 function queuedJob(observed) {
   return createQueuedJob({
     state: observed.state,
@@ -127,7 +141,8 @@ test("running cancellation remains resumable and exposes a real cancelling trans
     await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
     return { content: "aborted", details: details("aborted", { error: "Canceled from manager." }) };
   });
-  startBackgroundJob({ pi: createPiStub().api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  const pi = createPiStub();
+  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   await waitFor(() => job.status === "running", "running background job");
   const canceled = cancelBackgroundJobs({ state: observed.state, id: ID, reason: "Canceled from manager." });
   assert.equal(canceled.canceled[0].status, "cancelling");
@@ -135,6 +150,7 @@ test("running cancellation remains resumable and exposes a real cancelling trans
   await waitFor(() => job.status === "aborted", "aborted background job");
   assert.equal(job.details.phase, "aborted");
   assert.equal(job.details.id, ID);
+  assert.equal(pi.sent.length, 0);
 });
 
 test("pre-aborted jobs never invoke the child", async () => {
@@ -146,10 +162,12 @@ test("pre-aborted jobs never invoke the child", async () => {
   job.abortController.abort();
   setRunSubagentTaskMock(async () => { throw new Error("must not execute"); });
 
-  startBackgroundJob({ pi: createPiStub().api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  const pi = createPiStub();
+  startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
   await waitFor(() => job.details.errorInfo?.code === "ABORTED", "pre-aborted cleanup");
   assert.equal(getRunSubagentTaskCalls().length, 0);
   assert.equal(observed.changes(), 1);
+  assert.equal(pi.sent.length, 0);
 });
 
 test("running, partial, and final transitions preserve one id", async () => {
@@ -171,7 +189,7 @@ test("running, partial, and final transitions preserve one id", async () => {
   assert.equal(getRunSubagentTaskCalls()[0].mode, "bg");
   assert.deepEqual(getRunSubagentTaskCalls()[0].contextMessages, contextMessages);
   assert.equal(job.details.id, ID);
-  assert.equal(pi.sent[0].message.details.id, ID);
+  assertCompletion(pi, "done");
 });
 
 test("manager resumes use the cancellable background lifecycle and frozen snapshot", async () => {
@@ -196,7 +214,7 @@ test("manager resumes use the cancellable background lifecycle and frozen snapsh
   await waitFor(() => job.status === "done", "done background resume");
   assert.equal(job.details.mode, "resume");
   assert.equal(job.details.promptSnapshot, persisted.promptSnapshot);
-  assert.equal(pi.sent[0].message.details.id, ID);
+  assertCompletion(pi, "done");
 });
 
 test("thrown background failures become structured run failures", async () => {
@@ -211,7 +229,7 @@ test("thrown background failures become structured run failures", async () => {
   await waitFor(() => job.status === "error", "error background job");
   assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
   assert.match(job.details.error, /synthetic failure/);
-  assert.equal(pi.sent.length, 1);
+  assertCompletion(pi, "error");
 });
 
 await run();

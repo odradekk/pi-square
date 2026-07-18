@@ -161,7 +161,7 @@ function notifyCompletion(pi: ExtensionAPI, job: BackgroundJob): void {
     },
     {
       triggerTurn: true,
-      deliverAs: "followUp",
+      deliverAs: "steer",
     },
   );
 }
