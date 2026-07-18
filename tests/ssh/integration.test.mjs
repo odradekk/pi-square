@@ -80,7 +80,6 @@ function makeConfig(expectedFingerprint) {
       defaultTarget: "local",
       targets: [{ name: "local", host: "127.0.0.1", port: address.port, username: "tester", fingerprints: [expectedFingerprint] }],
       auth: { method: "privateKey", privateKeyPath },
-      confirmCommands: "never",
       maxSessions: 2,
       idleTimeoutMinutes: 30,
       connectTimeoutMs: 5_000,

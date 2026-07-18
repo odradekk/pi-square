@@ -12,7 +12,6 @@ const profile = {
     { name: "alternate", host: "two.test", port: 2222, username: "ops", fingerprints: ["SHA256:BBBBBBBBBBBBBBBBBBBBBB"] },
   ],
   auth: { method: "agent", socket: "fake" },
-  confirmCommands: "always",
   maxSessions: 3,
   idleTimeoutMinutes: 30,
   connectTimeoutMs: 1_000,
@@ -130,6 +129,7 @@ const ctx = { hasUI: true, mode: "tui", ui };
 let response = await tool.execute("1", { operation: "list" }, undefined, undefined, ctx);
 assert.equal(response.isError, undefined);
 assert.equal(parse(response).profiles[0].name, "ops");
+assert.equal(Object.hasOwn(parse(response).profiles[0], "confirmCommands"), false);
 assert.equal(JSON.stringify(parse(response)), JSON.stringify(parse(response)).replace(/SHA256:[^"}]+/g, ""), "list must not expose pinned fingerprints");
 
 response = await tool.execute("2", { operation: "connect", profile: "ops", target: "alternate", label: "deploy" }, undefined, undefined, ctx);
@@ -144,11 +144,11 @@ assert.equal(confirmations.length, 1, "an identical alternate endpoint is approv
 response = await tool.execute("4", { operation: "command", session: sessionId, command: "pwd" }, undefined, undefined, ctx);
 assert.equal(parse(response).code, "COMMAND_COMPLETED");
 assert.equal(parse(response).output, "ok\n");
-assert.equal(confirmations.length, 2);
+assert.equal(confirmations.length, 1, "remote commands must not request confirmation");
 
-ui.confirm = async () => false;
+ui.confirm = async () => { throw new Error("remote commands must bypass confirmation"); };
 response = await tool.execute("5", { operation: "command", session: sessionId, command: "rm file" }, undefined, undefined, ctx);
-assert.equal(parse(response).status, "declined");
+assert.equal(parse(response).code, "COMMAND_COMPLETED");
 
 const session = manager.get(sessionId);
 session.isRunning = true;
@@ -179,6 +179,38 @@ manager.sessions.set(noTuiSession.id, noTuiSession);
 response = await tool.execute("12", { operation: "secret_input", session: noTuiSession.id }, undefined, undefined, { hasUI: true, mode: "rpc", ui });
 assert.equal(parse(response).code, "SECRET_INPUT_UNAVAILABLE");
 controller.resetApprovals();
+
+const concurrentManager = new FakeManager();
+const concurrentTool = createSshToolController(concurrentManager).definition;
+let resolveConfirmation;
+let concurrentConfirmations = 0;
+const concurrentCtx = {
+  hasUI: true,
+  mode: "tui",
+  ui: {
+    async confirm() {
+      concurrentConfirmations += 1;
+      return await new Promise((resolve) => { resolveConfirmation = resolve; });
+    },
+  },
+};
+const firstConnect = concurrentTool.execute("concurrent-1", { operation: "connect", profile: "ops", target: "alternate" }, undefined, undefined, concurrentCtx);
+const secondConnect = concurrentTool.execute("concurrent-2", { operation: "connect", profile: "ops", target: "alternate" }, undefined, undefined, concurrentCtx);
+assert.equal(concurrentConfirmations, 1, "only one confirmation may be active");
+resolveConfirmation(true);
+const connected = await Promise.all([firstConnect, secondConnect]);
+assert.deepEqual(connected.map((result) => parse(result).code), ["CONNECTED", "CONNECTED"]);
+assert.equal(concurrentConfirmations, 1, "an approved endpoint must be rechecked after leaving the confirmation queue");
+
+concurrentCtx.ui.confirm = async () => { throw new Error("remote commands must bypass confirmation"); };
+const commandResults = await Promise.all(connected.map((result, index) => concurrentTool.execute(
+  `concurrent-command-${index}`,
+  { operation: "command", session: parse(result).session.id, command: `printf ${index}` },
+  undefined,
+  undefined,
+  concurrentCtx,
+)));
+assert.deepEqual(commandResults.map((result) => parse(result).code), ["COMMAND_COMPLETED", "COMMAND_COMPLETED"]);
 
 const largeProfiles = Array.from({ length: 64 }, (_, profileIndex) => ({
   ...profile,

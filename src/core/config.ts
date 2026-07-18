@@ -41,7 +41,6 @@ const SshProfileSchema = Type.Object({
   targets: Type.Array(SshTargetSchema, { minItems: 1, maxItems: 32 }),
   defaultTarget: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
   auth: SshAuthSchema,
-  confirmCommands: Type.Optional(Type.Union([Type.Literal("always"), Type.Literal("never")])),
   maxSessions: Type.Optional(Type.Integer({ minimum: 1, maximum: SSH_PROFILE_SESSION_HARD_MAX })),
   idleTimeoutMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: SSH_IDLE_TIMEOUT_HARD_MAX_MINUTES })),
   connectTimeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 120_000 })),
@@ -82,7 +81,6 @@ export interface SshProfileConfig {
   targets: SshTargetConfig[];
   defaultTarget: string;
   auth: SshAuthConfig;
-  confirmCommands: "always" | "never";
   maxSessions: number;
   idleTimeoutMinutes: number;
   connectTimeoutMs: number;
@@ -113,6 +111,21 @@ export const DEFAULT_CONFIG: Readonly<PiSquareConfig> = Object.freeze({
   ssh: Object.freeze({ maxSessions: 8, profiles: Object.freeze([]) }) as unknown as SshConfig,
 });
 
+function legacyConfirmCommandsPath(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const ssh = (value as { ssh?: unknown }).ssh;
+  if (!ssh || typeof ssh !== "object" || Array.isArray(ssh)) return undefined;
+  const profiles = (ssh as { profiles?: unknown }).profiles;
+  if (!Array.isArray(profiles)) return undefined;
+  for (let index = 0; index < profiles.length; index += 1) {
+    const profile = profiles[index];
+    if (profile && typeof profile === "object" && !Array.isArray(profile) && Object.hasOwn(profile, "confirmCommands")) {
+      return `/ssh/profiles/${index}/confirmCommands`;
+    }
+  }
+  return undefined;
+}
+
 function readLayer<T extends TSchema>(
   path: string,
   schema: T,
@@ -136,6 +149,15 @@ function readLayer<T extends TSchema>(
       diagnostics: [diagnostic(
         "warning",
         `pi-square config ignored at ${path}: configuration V1 and the former statusline settings are no longer supported; remove statusline and set version to 2`,
+      )],
+    };
+  }
+  const confirmCommandsPath = legacyConfirmCommandsPath(value);
+  if (confirmCommandsPath) {
+    return {
+      diagnostics: [diagnostic(
+        "warning",
+        `pi-square config ignored at ${path}: ${confirmCommandsPath} is no longer supported; remove confirmCommands because SSH commands now run without per-command confirmation`,
       )],
     };
   }
@@ -195,7 +217,6 @@ function normalizeSsh(layer: AgentConfigLayer["ssh"]): SshConfig {
       auth: profile.auth.method === "agent"
         ? { method: "agent", ...(profile.auth.socket ? { socket: profile.auth.socket } : {}) }
         : { method: "privateKey", privateKeyPath: profile.auth.privateKeyPath! },
-      confirmCommands: profile.confirmCommands ?? "always",
       maxSessions: profile.maxSessions ?? 3,
       idleTimeoutMinutes: profile.idleTimeoutMinutes ?? 30,
       connectTimeoutMs: profile.connectTimeoutMs ?? 20_000,

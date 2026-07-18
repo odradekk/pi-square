@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { ConfirmationCoordinator } from "../core/confirmation";
 import {
   SSH_COMMAND_MAX_CHARS,
   SSH_INPUT_MAX_CHARS,
@@ -151,7 +152,6 @@ function boundedList(manager: SshSessionManager): {
       name: profile.name,
       defaultTarget: profile.defaultTarget,
       targets: [],
-      confirmCommands: profile.confirmCommands,
       maxSessions: profile.maxSessions,
     };
     if (JSON.stringify([...profiles, summary]).length > SSH_LIST_SECTION_CHARS) {
@@ -189,7 +189,10 @@ export interface SshToolController {
   resetApprovals(): void;
 }
 
-export function createSshToolController(manager: SshSessionManager): SshToolController {
+export function createSshToolController(
+  manager: SshSessionManager,
+  confirmations = new ConfirmationCoordinator(),
+): SshToolController {
   const approvedTargets = new Set<string>();
 
   const definition: ToolDefinition = {
@@ -227,20 +230,24 @@ export function createSshToolController(manager: SshSessionManager): SshToolCont
           const approvalKey = `${profile.name}\0${target.name}\0${target.username}\0${target.host}\0${target.port}`;
           if (target.name !== profile.defaultTarget && !approvedTargets.has(approvalKey)) {
             if (!confirmationAvailable(ctx)) throw new SshError("CONFIRMATION_UNAVAILABLE", "Non-default SSH targets require interactive confirmation");
-            const confirmed = await ctx.ui.confirm(
-              "Connect to alternate SSH target",
-              [
-                `Profile: ${cleanDisplay(profile.name)}`,
-                `Target: ${cleanDisplay(target.name)}`,
-                `Endpoint: ${cleanDisplay(`${target.username}@${target.host}:${target.port}`)}`,
-                `Pinned fingerprints: ${target.fingerprints.map((item) => cleanDisplay(item)).join(", ")}`,
-                "",
-                "This authorizes this exact configured endpoint for the current Pi session.",
-              ].join("\n"),
-              { signal },
-            );
+            const confirmed = await confirmations.run(signal, async (confirmationSignal) => {
+              if (approvedTargets.has(approvalKey)) return true;
+              const approved = await ctx.ui.confirm(
+                "Connect to alternate SSH target",
+                [
+                  `Profile: ${cleanDisplay(profile.name)}`,
+                  `Target: ${cleanDisplay(target.name)}`,
+                  `Endpoint: ${cleanDisplay(`${target.username}@${target.host}:${target.port}`)}`,
+                  `Pinned fingerprints: ${target.fingerprints.map((item) => cleanDisplay(item)).join(", ")}`,
+                  "",
+                  "This authorizes this exact configured endpoint for the current Pi session.",
+                ].join("\n"),
+                { signal: confirmationSignal },
+              );
+              if (approved) approvedTargets.add(approvalKey);
+              return approved;
+            });
             if (!confirmed) return result(baseDetails("connect", "declined", "DECLINED", "SSH connection was declined"));
-            approvedTargets.add(approvalKey);
           }
           const requestSecret = async (purpose: string) => {
             if (ctx?.mode !== "tui" || !ctx?.ui) throw new SshError("SECRET_INPUT_UNAVAILABLE", "Encrypted SSH keys require the interactive TUI");
@@ -258,22 +265,6 @@ export function createSshToolController(manager: SshSessionManager): SshToolCont
 
         const session = manager.get(params.session!);
         if (params.operation === "command") {
-          if (session.profile.confirmCommands === "always") {
-            if (!confirmationAvailable(ctx)) throw new SshError("CONFIRMATION_UNAVAILABLE", "This SSH profile requires interactive confirmation for every command");
-            const preview = cleanDisplay(params.command, SSH_COMMAND_MAX_CHARS);
-            const confirmed = await ctx.ui.confirm(
-              "Run remote SSH command",
-              [
-                `Session: ${session.id}`,
-                `Endpoint: ${cleanDisplay(session.summary().endpoint)}`,
-                "",
-                preview,
-              ].join("\n"),
-              { signal },
-            );
-            if (!confirmed) return result(baseDetails("command", "declined", "DECLINED", "Remote SSH command was declined"));
-          }
-
           const startCursor = session.summary().newestCursor;
           let updateTimer: NodeJS.Timeout | undefined;
           const publish = () => {
@@ -377,6 +368,9 @@ export function createSshToolController(manager: SshSessionManager): SshToolCont
   };
 }
 
-export function createSshToolDefinition(manager = new SshSessionManager()): ToolDefinition {
-  return createSshToolController(manager).definition;
+export function createSshToolDefinition(
+  manager = new SshSessionManager(),
+  confirmations = new ConfirmationCoordinator(),
+): ToolDefinition {
+  return createSshToolController(manager, confirmations).definition;
 }

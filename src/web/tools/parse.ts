@@ -3,6 +3,7 @@ import { getMarkdownTheme, keyHint, type ExtensionAPI, type ToolDefinition } fro
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { ConfirmationCoordinator } from "../../core/confirmation";
 import {
   FIRECRAWL_PARSE_URL,
   FIRECRAWL_PDF_MODES,
@@ -94,6 +95,7 @@ interface ParseToolContext {
 export interface ParseToolDependencies {
   parsePdf?: typeof parsePdfWithFirecrawl;
   resolveApiKey?: () => string | null;
+  confirmations?: ConfirmationCoordinator;
 }
 
 function integerParam(value: unknown, fallback: number, minimum: number, maximum: number, name: string): number {
@@ -226,6 +228,7 @@ function update(
 export function createParseToolDefinition(dependencies: ParseToolDependencies = {}): ToolDefinition<any, ParseDetails> {
   const callFirecrawl = dependencies.parsePdf ?? parsePdfWithFirecrawl;
   const resolveApiKey = dependencies.resolveApiKey ?? (() => getServiceKey("firecrawl", "FIRECRAWL_API_KEY"));
+  const confirmations = dependencies.confirmations ?? new ConfirmationCoordinator();
 
   return {
     name: "parse",
@@ -270,6 +273,7 @@ export function createParseToolDefinition(dependencies: ParseToolDependencies = 
       if (!ctx?.hasUI || !ctx.ui) {
         return failure(details, "CONFIRMATION_UNAVAILABLE", "PDF upload requires an interactive confirmation in the parent session");
       }
+      const confirmationUi = ctx.ui;
       const apiKey = resolveApiKey();
       if (!apiKey) {
         return failure(
@@ -288,17 +292,20 @@ export function createParseToolDefinition(dependencies: ParseToolDependencies = 
         assertPagesInDocument(details.pages, loaded.totalPages);
 
         update(onUpdate, details, "confirming", "Awaiting PDF upload confirmation…");
-        const confirmed = await ctx.ui.confirm(
-          "Upload selected PDF pages to Firecrawl",
-          [
-            `File: ${details.path}`,
-            `Pages: ${details.normalizedPages} (${details.pageCount} of ${details.sourceTotalPages})`,
-            `Mode: ${details.mode}`,
-            `Destination: ${FIRECRAWL_PARSE_URL}`,
-            "",
-            "Zero Data Retention is disabled. Firecrawl's standard data handling applies, and parsing may consume per-page credits.",
-          ].join("\n"),
-          { signal },
+        const confirmed = await confirmations.run(
+          signal,
+          (confirmationSignal) => confirmationUi.confirm(
+            "Upload selected PDF pages to Firecrawl",
+            [
+              `File: ${details.path}`,
+              `Pages: ${details.normalizedPages} (${details.pageCount} of ${details.sourceTotalPages})`,
+              `Mode: ${details.mode}`,
+              `Destination: ${FIRECRAWL_PARSE_URL}`,
+              "",
+              "Zero Data Retention is disabled. Firecrawl's standard data handling applies, and parsing may consume per-page credits.",
+            ].join("\n"),
+            { signal: confirmationSignal },
+          ),
         );
         if (signal?.aborted) return failure(details, "ABORTED", "PDF parse was cancelled", "aborted");
         if (!confirmed) return declined(details);
@@ -366,8 +373,11 @@ export function createParseToolDefinition(dependencies: ParseToolDependencies = 
   };
 }
 
-export function registerParseTool(pi: ExtensionAPI): void {
-  pi.registerTool(createParseToolDefinition());
+export function registerParseTool(
+  pi: ExtensionAPI,
+  confirmations = new ConfirmationCoordinator(),
+): void {
+  pi.registerTool(createParseToolDefinition({ confirmations }));
 }
 
 function firstText(result: any): string {

@@ -140,7 +140,9 @@ The parent session exposes one `ssh` tool for bounded persistent remote POSIX sh
 
 `input` is only for non-secret text. `secret_input` opens a dedicated masked TUI prompt and writes the submitted bytes once to the current channel; the value is never a tool argument or result and is not written to a pi-square log or artifact. Encrypted private keys use the same masked prompt during connection. Secret input is unavailable outside the interactive TUI. Agent forwarding and password login are disabled.
 
-Profiles and target fingerprints are accepted only from agent-level `config/pi-square.json`; a project layer containing `ssh` is rejected atomically. Selecting a non-default allowlisted target requires confirmation the first time that exact endpoint is used in each parent Pi session. Each profile sets `confirmCommands` to `always` (the default) or `never`; command classification is deliberately absent because shell text cannot be reliably classified as destructive. Unknown and changed host keys fail closed.
+Profiles and target fingerprints are accepted only from agent-level `config/pi-square.json`; a project layer containing `ssh` is rejected atomically. Selecting a non-default allowlisted target requires confirmation the first time that exact endpoint is used in each parent Pi session. Remote commands run without per-command confirmation after a session connects; the profile/target allowlist, pinned host verification, and alternate-target confirmation remain the authorization boundary. Unknown and changed host keys fail closed.
+
+Pi exposes only one extension confirmation selector at a time, so pi-square serializes its remaining SSH endpoint, CodeGraph lifecycle, and Firecrawl upload confirmations in FIFO order. Only the confirmation prompts are serialized; approved operations can continue concurrently.
 
 Connections live only for the current parent Pi session. The default limits are eight sessions globally, three per profile, and a 30-minute idle timeout; running foreground commands are not treated as idle. Transport loss invalidates the session instead of silently reconnecting with lost shell state. Output uses a 256 KiB in-memory ring per session and 24,000-character cursor pages, reports expired cursors and truncation, removes terminal control sequences from model and TUI copies, bounds profile/session listings, and never spills remote output to local files. The first version supports direct connections and Bourne-compatible POSIX shells; full-screen TUI programs, SFTP/remote file tools, ProxyJump, proxies, port forwarding, arbitrary targets, child-agent access, and cross-Pi-session persistence are out of scope.
 
@@ -239,7 +241,6 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
         "auth": {
           "method": "agent"
         },
-        "confirmCommands": "always",
         "maxSessions": 3,
         "idleTimeoutMinutes": 30,
         "connectTimeoutMs": 20000,
@@ -253,7 +254,7 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
 
 Replace the sample fingerprint with the target's independently verified OpenSSH SHA-256 fingerprint. Agent authentication uses `auth.socket` when supplied, then `SSH_AUTH_SOCK`, with Pageant as the Windows fallback. Private-key authentication instead uses `{ "method": "privateKey", "privateKeyPath": "~/.ssh/id_ed25519" }`; key content and passphrases do not belong in configuration.
 
-`footer.mode` accepts only `enhanced` or `native`; `enhanced` is the default. V1 is no longer accepted. Migrate by deleting the complete `statusline` object and changing `"version": 1` to `"version": 2`; use `footer.mode` for the new startup-only fallback. Unknown fields reject that configuration layer rather than being ignored. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
+`footer.mode` accepts only `enhanced` or `native`; `enhanced` is the default. V1 is no longer accepted. Migrate by deleting the complete `statusline` object and changing `"version": 1` to `"version": 2`; use `footer.mode` for the new startup-only fallback. The former SSH `confirmCommands` profile field is also no longer accepted; remove it because connected SSH sessions now run commands without per-command confirmation. Unknown fields reject that configuration layer rather than being ignored. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
 
 ## Development
 

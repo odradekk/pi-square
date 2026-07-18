@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const testsDir = dirname(fileURLToPath(import.meta.url));
 const suites = [
   "config.test.mjs",
+  "confirmation.test.mjs",
   "native-prompt.test.mjs",
   "prompt-manager.test.mjs",
   "release/package.test.mjs",

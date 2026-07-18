@@ -28,7 +28,6 @@ try {
           fingerprints: ["SHA256:AAAAAAAAAAAAAAAAAAAAAA"],
         }],
         auth: { method: "agent" },
-        confirmCommands: "never",
         maxSessions: 2,
       }],
     },
@@ -52,7 +51,7 @@ try {
   assert.equal(loaded.config.ssh.profiles.length, 1);
   assert.equal(loaded.config.ssh.profiles[0].targets[0].port, 22);
   assert.equal(loaded.config.ssh.profiles[0].idleTimeoutMinutes, 30);
-  assert.equal(loaded.config.ssh.profiles[0].confirmCommands, "never");
+  assert.equal(Object.hasOwn(loaded.config.ssh.profiles[0], "confirmCommands"), false);
   assert.equal(loaded.diagnostics.length, 0);
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
@@ -96,6 +95,23 @@ try {
   writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
     version: 2,
     ssh: {
+      profiles: [{
+        name: "legacy",
+        targets: [{ name: "one", host: "host", username: "user", fingerprints: ["SHA256:AAAAAAAAAAAAAAAAAAAAAA"] }],
+        auth: { method: "agent" },
+        confirmCommands: "always",
+      }],
+    },
+  }));
+  rmSync(join(projectDir, ".pi", "config", "pi-square.json"));
+  const legacyConfirmation = loadConfig(projectDir);
+  assert.equal(legacyConfirmation.config.ssh.profiles.length, 0);
+  assert.equal(legacyConfirmation.diagnostics.length, 1);
+  assert.match(legacyConfirmation.diagnostics[0].message, /\/ssh\/profiles\/0\/confirmCommands is no longer supported; remove confirmCommands/);
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    ssh: {
       maxSessions: 1,
       profiles: [{
         name: "bad",
@@ -105,7 +121,6 @@ try {
       }],
     },
   }));
-  rmSync(join(projectDir, ".pi", "config", "pi-square.json"));
   const semanticInvalid = loadConfig(projectDir);
   assert.equal(semanticInvalid.config.ssh.profiles.length, 0);
   assert.equal(semanticInvalid.diagnostics.length, 1);

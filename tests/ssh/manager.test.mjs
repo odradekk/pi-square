@@ -88,7 +88,6 @@ function config(overrides = {}) {
       defaultTarget: "primary",
       targets: [{ name: "primary", host: "host.test", port: 22, username: "deploy", fingerprints: [fingerprint] }],
       auth: { method: "agent", socket: "fake-agent" },
-      confirmCommands: "never",
       maxSessions: overrides.profileMax ?? 2,
       idleTimeoutMinutes: 30,
       connectTimeoutMs: 1_000,

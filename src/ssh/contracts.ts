@@ -75,7 +75,6 @@ export interface SshProfileSummary {
   name: string;
   defaultTarget: string;
   targets: Array<{ name: string; endpoint: string }>;
-  confirmCommands: "always" | "never";
   maxSessions: number;
 }
 

@@ -1,6 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 
+import { ConfirmationCoordinator } from "../core/confirmation";
 import type { RunCommandOptions, RunCommandResult } from "../core/process";
 import {
   CODEGRAPH_LIFECYCLE_OUTPUT_CAP,
@@ -27,6 +28,7 @@ export interface CodeGraphToolDeps {
     args: string[],
     options: RunCommandOptions,
   ) => Promise<RunCommandResult>;
+  confirmations?: ConfirmationCoordinator;
 }
 
 interface CodeGraphContext {
@@ -246,6 +248,7 @@ function parseStatus(stdout: Buffer): CodeGraphStatus {
 }
 
 export function createCodeGraphToolDefinition(deps: CodeGraphToolDeps, allowWrite = true) {
+  const confirmations = deps.confirmations ?? new ConfirmationCoordinator();
   return {
     name: "codegraph" as const,
     label: "CodeGraph",
@@ -376,10 +379,13 @@ export function createCodeGraphToolDefinition(deps: CodeGraphToolDeps, allowWrit
         if (!ctx?.hasUI) {
           return stateResult(operation, requestedPath, "error", "CONFIRMATION_UNAVAILABLE", "CodeGraph init requires an interactive confirmation", true);
         }
-        const confirmed = await ctx.ui.confirm(
-          "Initialize CodeGraph",
-          `Create and build a local .codegraph index in:\n${requestedPath}\n\nThis scans source files and writes a persistent SQLite database.`,
-          { signal },
+        const confirmed = await confirmations.run(
+          signal,
+          (confirmationSignal) => ctx.ui.confirm(
+            "Initialize CodeGraph",
+            `Create and build a local .codegraph index in:\n${requestedPath}\n\nThis scans source files and writes a persistent SQLite database.`,
+            { signal: confirmationSignal },
+          ),
         );
         if (signal?.aborted) return stateResult(operation, requestedPath, "aborted", "ABORTED", "CodeGraph initialization was cancelled", true);
         if (!confirmed) return stateResult(operation, requestedPath, "declined", "USER_DECLINED", "CodeGraph initialization was declined");
@@ -398,10 +404,13 @@ export function createCodeGraphToolDefinition(deps: CodeGraphToolDeps, allowWrit
         if (!ctx?.hasUI) {
           return stateResult(operation, projectPath, "error", "CONFIRMATION_UNAVAILABLE", "CodeGraph reindex requires an interactive confirmation", true);
         }
-        const confirmed = await ctx.ui.confirm(
-          "Rebuild CodeGraph index",
-          `Replace the existing CodeGraph database with a full rebuild in:\n${projectPath}\n\nSource files are not modified.`,
-          { signal },
+        const confirmed = await confirmations.run(
+          signal,
+          (confirmationSignal) => ctx.ui.confirm(
+            "Rebuild CodeGraph index",
+            `Replace the existing CodeGraph database with a full rebuild in:\n${projectPath}\n\nSource files are not modified.`,
+            { signal: confirmationSignal },
+          ),
         );
         if (signal?.aborted) return stateResult(operation, projectPath, "aborted", "ABORTED", "CodeGraph reindex was cancelled", true);
         if (!confirmed) return stateResult(operation, projectPath, "declined", "USER_DECLINED", "CodeGraph reindex was declined");
