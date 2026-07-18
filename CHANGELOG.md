@@ -1,5 +1,11 @@
 # @odradekk/pi-square
 
+## 1.0.2
+
+### Patch Changes
+
+- 8bd2740: Deliver completed background subagent results into active parent runs without requiring a manual resume.
+
 ## 1.0.1
 
 ### Patch Changes
