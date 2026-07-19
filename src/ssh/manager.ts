@@ -199,6 +199,8 @@ export class SshSession {
   private readonly decoder = new StringDecoder("utf8");
   private active?: ActiveCommand;
   private readonly listeners = new Set<() => void>();
+  private channelEnded = false;
+  private transportEnded = false;
 
   constructor(
     readonly id: string,
@@ -210,10 +212,16 @@ export class SshSession {
   ) {
     channel.on("data", (chunk: Buffer | string) => this.handleData(chunk));
     channel.stderr?.on("data", (chunk: Buffer | string) => this.handleData(chunk));
-    channel.on("close", () => this.markDisconnected("SSH shell channel closed"));
+    channel.on("close", () => {
+      this.channelEnded = true;
+      this.markDisconnected("SSH shell channel closed");
+    });
     channel.on("error", (error: unknown) => this.markDisconnected(safeReason(error)));
     client.on("error", (error: unknown) => this.markDisconnected(safeReason(error)));
-    client.on("close", () => this.markDisconnected("SSH transport closed"));
+    client.on("close", () => {
+      this.transportEnded = true;
+      this.markDisconnected("SSH transport closed");
+    });
   }
 
   get isRunning(): boolean {
@@ -326,8 +334,8 @@ export class SshSession {
     if (this.state === "closed" || this.state === "closing") return;
     this.state = "closing";
     this.disconnectReason = reason;
-    try { this.channel.end(); } catch { /* best effort */ }
-    try { this.client.end(); } catch { /* best effort */ }
+    this.endChannel();
+    this.endTransport();
     this.state = "closed";
     this.flushDecoder();
     this.finishActive(true);
@@ -373,7 +381,21 @@ export class SshSession {
     this.flushDecoder();
     this.output.end();
     this.finishActive(true);
+    this.endChannel();
+    this.endTransport();
     this.emitChange();
+  }
+
+  private endChannel(): void {
+    if (this.channelEnded) return;
+    this.channelEnded = true;
+    try { this.channel.end(); } catch { /* best effort */ }
+  }
+
+  private endTransport(): void {
+    if (this.transportEnded) return;
+    this.transportEnded = true;
+    try { this.client.end(); } catch { /* best effort */ }
   }
 
   private flushDecoder(): void {
@@ -408,26 +430,63 @@ export class SshSession {
   }
 }
 
+interface ClientErrorGuard {
+  readonly error: Error | undefined;
+  release(): void;
+}
+
+function guardClientErrorsUntilClose(client: SshClientLike): ClientErrorGuard {
+  let firstError: Error | undefined;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    client.removeListener("error", onError);
+    client.removeListener("close", onClose);
+  };
+  // ssh2 can emit a socket error and then a fatal pre-handshake error before close.
+  const onError = (error: unknown) => {
+    firstError ??= error instanceof Error ? error : new Error(String(error));
+  };
+  const onClose = () => release();
+  client.on("error", onError);
+  client.once("close", onClose);
+  return {
+    get error() { return firstError; },
+    release,
+  };
+}
+
 function waitForReady(client: SshClientLike, config: ConnectConfig, signal?: AbortSignal): Promise<void> {
   return new Promise((resolveReady, rejectReady) => {
     let settled = false;
+    const cleanup = () => {
+      client.removeListener("ready", onReady);
+      client.removeListener("error", onError);
+      client.removeListener("close", onClose);
+      signal?.removeEventListener("abort", onAbort);
+    };
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      signal?.removeEventListener("abort", onAbort);
+      cleanup();
       if (error) rejectReady(error);
       else resolveReady();
     };
+    const onReady = () => finish();
+    const onError = (error: Error) => finish(error);
+    const onClose = () => finish(new SshError("CONNECTION_CLOSED", "SSH connection closed before authentication completed"));
     const onAbort = () => {
       finish(new SshError("ABORTED", "SSH connection was cancelled"));
       try { client.destroy(); } catch { /* best effort */ }
     };
-    client.once("ready", () => finish());
-    client.once("error", (error: Error) => finish(error));
-    client.once("close", () => finish(new SshError("CONNECTION_CLOSED", "SSH connection closed before authentication completed")));
+    client.once("ready", onReady);
+    client.once("error", onError);
+    client.once("close", onClose);
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      client.connect(config);
+      if (signal?.aborted) onAbort();
+      else client.connect(config);
     } catch (error) {
       finish(error instanceof Error ? error : new Error(String(error)));
     } finally {
@@ -525,12 +584,19 @@ export class SshSessionManager {
     this.pendingConnections += 1;
     this.pendingByProfile.set(profile.name, profilePending + 1);
     const client = this.createClient();
+    const clientErrorGuard = guardClientErrorsUntilClose(client);
+    let session: SshSession | undefined;
     this.pendingClients.add(client);
     try {
       const config = await connectConfig(profile, target, requestSecret);
       await waitForReady(client, config, signal);
+      if (clientErrorGuard.error) throw clientErrorGuard.error;
       const channel = await openShell(client, signal);
-      const session = new SshSession(
+      if (clientErrorGuard.error) {
+        try { channel.end(); } catch { /* best effort */ }
+        throw clientErrorGuard.error;
+      }
+      session = new SshSession(
         `ssh-${randomBytes(8).toString("hex")}`,
         label,
         profile,
@@ -538,6 +604,7 @@ export class SshSessionManager {
         client,
         channel,
       );
+      clientErrorGuard.release();
       try {
         await session.bootstrap(signal);
       } catch (error) {
@@ -548,7 +615,10 @@ export class SshSessionManager {
       this.pruneDisconnected();
       return session;
     } catch (error) {
-      try { client.end(); } catch { /* best effort */ }
+      if (session) session.close("SSH connection setup failed");
+      else {
+        try { client.end(); } catch { /* best effort */ }
+      }
       if (error instanceof SshError) throw error;
       throw new SshError("CONNECTION_FAILED", safeReason(error));
     } finally {
@@ -612,6 +682,7 @@ export class SshSessionManager {
       .filter((session) => session.state === "disconnected")
       .sort((left, right) => left.lastActivityAt - right.lastActivityAt);
     for (const session of disconnected.slice(0, Math.max(0, disconnected.length - DISCONNECTED_RECORD_LIMIT))) {
+      session.close("Disconnected SSH record pruned");
       this.sessions.delete(session.id);
     }
   }

@@ -58,6 +58,15 @@ const expanded = plain(definition.renderResult(result, { expanded: true, isParti
 assert.match(expanded, /one/);
 assert.match(expanded, /six/);
 
+const progressResult = {
+  content: [{ type: "text", text: JSON.stringify({ output: "progress 0%\r\u001b[2Kprogress 50%\r\u001b[2Kprogress 100%\ncomplete\n" }) }],
+  details,
+};
+const projectedProgress = plain(definition.renderResult(progressResult, { expanded: true, isPartial: true }, theme), 80);
+assert.match(projectedProgress, /progress 100%/);
+assert.match(projectedProgress, /complete/);
+assert.doesNotMatch(projectedProgress, /progress (?:0|50)%/, "rendering must not expand overwritten progress states into lines");
+
 for (const width of [40, 80, 120]) {
   for (const component of [call, definition.renderResult(result, { expanded: false, isPartial: false }, theme), definition.renderResult(result, { expanded: true, isPartial: false }, theme)]) {
     for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${JSON.stringify(line)}`);

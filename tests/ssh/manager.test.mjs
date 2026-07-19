@@ -62,6 +62,7 @@ class FakeClient extends EventEmitter {
   constructor() {
     super();
     this.channel = new FakeChannel();
+    this.endCalls = 0;
   }
 
   connect(config) {
@@ -70,7 +71,10 @@ class FakeClient extends EventEmitter {
   }
 
   shell(_window, callback) { setImmediate(() => callback(undefined, this.channel)); }
-  end() { this.emit("close"); }
+  end() {
+    this.endCalls += 1;
+    this.emit("close");
+  }
   destroy() { this.emit("close"); }
 }
 
@@ -97,6 +101,37 @@ function config(overrides = {}) {
   };
 }
 
+class DoubleErrorClient extends FakeClient {
+  connect(config) {
+    this.config = config;
+    setImmediate(() => this.emit("error", new Error("read ECONNRESET")));
+  }
+
+  end() {
+    this.endCalls += 1;
+    setImmediate(() => {
+      this.emit("error", new Error("Connection lost before handshake"));
+      this.emit("close");
+    });
+  }
+}
+
+const doubleErrorClients = [];
+const doubleErrorManager = new SshSessionManager(() => {
+  const client = new DoubleErrorClient();
+  doubleErrorClients.push(client);
+  return client;
+});
+doubleErrorManager.configure(config());
+await assert.rejects(
+  () => doubleErrorManager.connect("ops", undefined, undefined, async () => undefined),
+  /read ECONNRESET/,
+);
+await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+assert.equal(doubleErrorClients[0].endCalls, 1);
+assert.equal(doubleErrorClients[0].listenerCount("error"), 0, "failed clients must release the handshake error guard after close");
+doubleErrorManager.dispose();
+
 const clients = [];
 const manager = new SshSessionManager(() => {
   const client = new FakeClient();
@@ -112,6 +147,8 @@ assert.equal(clients[0].config.agent, "fake-agent");
 assert.equal(clients[0].config.agentForward, false);
 assert.equal(clients[0].config.hostVerifier(hostKey), true);
 assert.equal(clients[0].config.hostVerifier(Buffer.from("wrong")), false);
+assert.equal(clients[0].listenerCount("error"), 1, "the connected session must own the only client error listener");
+assert.equal(clients[0].listenerCount("close"), 1, "handshake listeners must be removed after ownership transfer");
 
 let command = await session.command("pwd", 100);
 assert.equal(command.state, "completed");
@@ -142,8 +179,10 @@ assert.equal(session.summary().commandState, "idle");
 
 clients[0].channel.emit("close");
 assert.equal(session.summary().state, "disconnected");
+assert.equal(clients[0].endCalls, 1, "a closed shell channel must release its SSH transport");
 await assert.rejects(() => session.command("pwd", 1), /disconnected/);
 manager.close(session.id);
+assert.equal(clients[0].endCalls, 1, "closing a disconnected session must not end its transport twice");
 assert.equal(manager.list().length, 0);
 
 const limitedClients = [];

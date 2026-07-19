@@ -32,4 +32,11 @@ assert.equal(page.cursorExpired, true);
 assert.equal(page.text, "🙂", "trimming must not split a UTF-8 code point");
 assert.equal(page.oldestCursor, 2);
 
+const terminal = new SshOutputBuffer(100, 100);
+const rawProgress = "progress 0%\rprogress 100%\n";
+terminal.append(rawProgress);
+page = terminal.read(0);
+assert.equal(page.text, rawProgress, "the session ring must preserve raw terminal bytes");
+assert.equal(page.nextCursor, rawProgress.length, "output cursors must remain based on raw appended text");
+
 console.log("ssh output buffer tests: OK");

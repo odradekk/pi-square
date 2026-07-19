@@ -16,6 +16,7 @@ const suites = [
   "shell/pwsh.test.mjs",
   "shell/rendering.test.mjs",
   "ssh/buffer.test.mjs",
+  "ssh/terminal-output.test.mjs",
   "ssh/manager.test.mjs",
   "ssh/tool.test.mjs",
   "ssh/rendering.test.mjs",

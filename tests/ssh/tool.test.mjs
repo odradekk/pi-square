@@ -27,6 +27,8 @@ class FakeSession {
     this.isRunning = true;
     this.inputs = [];
     this.interrupts = 0;
+    this.listeners = new Set();
+    this.commandOutput = undefined;
   }
 
   summary() {
@@ -44,14 +46,23 @@ class FakeSession {
     };
   }
 
-  subscribe() { return () => {}; }
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
   async command(command) {
     this.lastCommand = command;
+    const text = this.commandOutput ?? "ok\n";
+    if (this.commandOutput !== undefined) {
+      this.readText = text;
+      for (const listener of this.listeners) listener();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
     this.isRunning = false;
     return {
       state: "completed",
       exitCode: 0,
-      page: { text: "ok\n", requestedCursor: 3, cursor: 3, nextCursor: 6, oldestCursor: 0, newestCursor: 6, cursorExpired: false, hasMore: false, droppedChars: 0 },
+      page: { text, requestedCursor: 3, cursor: 3, nextCursor: 3 + text.length, oldestCursor: 0, newestCursor: 3 + text.length, cursorExpired: false, hasMore: false, droppedChars: 0 },
     };
   }
   async read(cursor = 0) {
@@ -146,6 +157,23 @@ assert.equal(parse(response).code, "COMMAND_COMPLETED");
 assert.equal(parse(response).output, "ok\n");
 assert.equal(confirmations.length, 1, "remote commands must not request confirmation");
 
+const progressOutput = "progress 0%\r\u001b[2Kprogress 50%\r\u001b[2Kprogress 100%\ncomplete\n";
+const streamingSession = manager.get(sessionId);
+streamingSession.isRunning = true;
+streamingSession.commandOutput = progressOutput;
+const updates = [];
+response = await tool.execute(
+  "4-progress",
+  { operation: "command", session: sessionId, command: "install package" },
+  undefined,
+  (update) => updates.push(parse(update)),
+  ctx,
+);
+assert.equal(parse(response).output, "progress 100%\ncomplete\n");
+assert.ok(updates.length > 0, "a running command must publish a throttled update");
+assert.equal(updates.at(-1).output, "progress 100%\ncomplete\n", "live and final output must share terminal projection semantics");
+streamingSession.commandOutput = undefined;
+
 ui.confirm = async () => { throw new Error("remote commands must bypass confirmation"); };
 response = await tool.execute("5", { operation: "command", session: sessionId, command: "rm file" }, undefined, undefined, ctx);
 assert.equal(parse(response).code, "COMMAND_COMPLETED");
@@ -163,6 +191,9 @@ session.readText = "safe\u0000\u001b]8;;https://attacker.test\u0007link\u001b]8;
 response = await tool.execute("7", { operation: "read", session: sessionId }, undefined, undefined, ctx);
 assert.doesNotMatch(response.content[0].text, /attacker\.test|\\u0000/, "remote controls must not survive in model content");
 assert.match(parse(response).output, /safelink/);
+session.readText = progressOutput;
+response = await tool.execute("7-progress", { operation: "read", session: sessionId }, undefined, undefined, ctx);
+assert.equal(parse(response).output, "progress 100%\ncomplete\n", "read results must collapse overwritten progress states");
 response = await tool.execute("8", { operation: "input", session: sessionId, data: "yes" }, undefined, undefined, ctx);
 assert.equal(parse(response).code, "INPUT_SENT");
 response = await tool.execute("9", { operation: "interrupt", session: sessionId }, undefined, undefined, ctx);

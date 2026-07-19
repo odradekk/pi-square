@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -25,6 +24,7 @@ import { sshErrorCode, sshErrorMessage, SshError } from "./errors";
 import { SshSessionManager } from "./manager";
 import { renderSshCall, renderSshResult } from "./render";
 import { promptSecret } from "./secret-input";
+import { projectTerminalOutput } from "./terminal-output";
 
 const OPERATIONS = ["connect", "command", "read", "input", "secret_input", "interrupt", "close", "list"] as const;
 const NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._-]*$";
@@ -61,10 +61,7 @@ const allowedFields: Record<SshOperation, ReadonlySet<string>> = {
 };
 
 function cleanDisplay(value: unknown, max = 4_000): string {
-  return stripVTControlCharacters(String(value ?? ""))
-    .replace(/\r\n?/g, "\n")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-    .slice(0, max);
+  return projectTerminalOutput(value, max);
 }
 
 function validateParams(params: SshToolParams): void {
@@ -203,6 +200,7 @@ export function createSshToolController(
     promptGuidelines: [
       "SSH is remote write-capable. Respect confirmation boundaries and inspect the selected profile/target before executing commands.",
       "Only one foreground command may run per SSH session. Use read, input, secret_input, or interrupt until it completes.",
+      "Do not use exec or exit when later calls must reuse the persistent shell or receive its completion marker; either command may end the SSH session.",
       "Never put passwords, passphrases, tokens, or other secrets in command or input parameters; request secret_input instead.",
       "SSH sessions preserve remote shell state but do not survive Pi shutdown or transport disconnection.",
     ],
