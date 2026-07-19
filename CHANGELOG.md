@@ -1,5 +1,11 @@
 # @odradekk/pi-square
 
+## 2.0.1
+
+### Patch Changes
+
+- 0ebee57: Contain repeated SSH handshake errors without crashing Pi, release disconnected transports, and collapse overwritten single-line progress updates in model and TUI output.
+
 ## 2.0.0
 
 ### Major Changes
