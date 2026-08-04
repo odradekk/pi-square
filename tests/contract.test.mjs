@@ -42,7 +42,7 @@ try {
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
     "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search", "sg", "ssh",
-    "subagent", "time", "todo",
+    "subagent_delegate", "subagent_resume", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
   assert.ok(childToolNames.includes("sg"));
@@ -81,10 +81,25 @@ try {
   assert.equal(askTool?.parameters?.properties?.questions?.maxItems, 10);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.allowComment?.default, false);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
-  const subagentTool = tools.get("subagent");
-  assert.equal(typeof subagentTool?.renderCall, "function");
-  assert.equal(typeof subagentTool?.renderResult, "function");
-  assert.equal(subagentTool?.renderShell, undefined);
+  const delegateTool = tools.get("subagent_delegate");
+  const resumeTool = tools.get("subagent_resume");
+  for (const subagentTool of [delegateTool, resumeTool]) {
+    assert.equal(typeof subagentTool?.renderCall, "function");
+    assert.equal(typeof subagentTool?.renderResult, "function");
+    assert.equal(subagentTool?.renderShell, undefined);
+  }
+  // Provider-compatibility contract: both subagent schemas are strict top-level
+  // objects without unions; delegate must not declare id (GPT models populate
+  // every declared property, which the fg/bg validation rejected).
+  for (const schema of [delegateTool?.parameters, resumeTool?.parameters]) {
+    assert.equal(schema?.type, "object");
+    assert.equal(schema?.anyOf, undefined);
+    assert.equal(schema?.additionalProperties, false);
+  }
+  assert.deepEqual(delegateTool?.parameters?.required, ["mode", "task"]);
+  assert.equal(delegateTool?.parameters?.properties?.id, undefined);
+  assert.deepEqual(delegateTool?.parameters?.properties?.mode?.anyOf?.map((branch) => branch.const), ["fg", "bg"]);
+  assert.deepEqual(resumeTool?.parameters?.required, ["id", "task"]);
   assert.equal(typeof renderers.get("pi-square.subagent-notification"), "function");
   assert.equal(typeof renderers.get("pi-square.subagent-config-guide"), "function");
   const todoTool = tools.get("todo");

@@ -110,7 +110,7 @@ function renderReport(
   lines.push("", "Resume assessment:");
   if (ctx.resumable) {
     lines.push("  ✓ Subagent can be resumed with the same ID and native session history.");
-    lines.push(`  → subagent({ mode: "resume", id: "${details.id}", task: "..." })`);
+    lines.push(`  → subagent_resume({ id: "${details.id}", task: "..." })`);
   } else {
     lines.push("  → active: resume is blocked with SUBAGENT_ACTIVE until the current execution stops.");
   }

@@ -16,14 +16,14 @@ function tool() {
     registry: { definitions: [], errors: [], projectDir: null },
     background: { jobs: new Map() },
   });
-  return tools.get("subagent");
+  return tools.get("subagent_resume");
 }
 
 const ctx = { cwd: "/tmp", sessionManager: { getSessionId: () => "parent-resume-session", getBranch: () => [] } };
 
 test("active resume rejection is returned as a tool error", async () => {
   setRunSubagentTaskMock(async () => { throw new Error("active resume conflict"); });
-  const result = await tool().execute("resume-active", { mode: "resume", id: ID, task: "continue" }, undefined, undefined, ctx);
+  const result = await tool().execute("resume-active", { id: ID, task: "continue" }, undefined, undefined, ctx);
   assert.equal(result.isError, true);
   assert.equal(result.details.status, "error");
   assert.equal(result.details.error.operation, "resume");
@@ -33,7 +33,7 @@ test("active resume rejection is returned as a tool error", async () => {
 
 test("resume exceptions become clear structured tool failures", async () => {
   setRunSubagentTaskMock(async () => { throw new Error("native session file is missing"); });
-  const result = await tool().execute("resume-missing", { mode: "resume", id: ID, task: "continue" }, undefined, undefined, ctx);
+  const result = await tool().execute("resume-missing", { id: ID, task: "continue" }, undefined, undefined, ctx);
   assert.equal(result.isError, true);
   assert.equal(result.details.status, "error");
   assert.equal(result.details.error.operation, "resume");

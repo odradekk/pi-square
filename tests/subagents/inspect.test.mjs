@@ -60,7 +60,7 @@ test("completed runs are resumable when inactive", () => {
     assert.equal(report.resumable, true);
     assert.equal(report.active, false);
     assert.match(report.rendered, /same ID and native session history/);
-    assert.match(report.rendered, /mode: "resume"/);
+    assert.match(report.rendered, /subagent_resume\(\{ id:/);
   } finally {
     rmSync(agentRoot, { recursive: true, force: true });
   }
