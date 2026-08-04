@@ -59,7 +59,7 @@ try {
 
   const commands = extensionsResult.runtime.getCommands().map((command) => command.name).sort();
   const extensionCommands = commands.filter((name) => !name.startsWith("skill:"));
-  assert.deepEqual(extensionCommands, ["context", "prompt-manager", "subagent"]);
+  assert.deepEqual(extensionCommands, ["context", "display", "prompt-manager", "subagent"]);
   assert.ok(!commands.includes("prompt-inspect"));
 
   const skills = resourceLoader.getSkills().skills;
@@ -94,11 +94,11 @@ try {
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
-  for (const toolName of ["subagent_delegate", "subagent_resume"]) {
-    const subagentDefinition = session.getToolDefinition(toolName);
-    assert.equal(typeof subagentDefinition?.renderCall, "function");
-    assert.equal(typeof subagentDefinition?.renderResult, "function");
-    assert.equal(subagentDefinition?.renderShell, undefined);
+  for (const toolName of ["read", "grep", "find", "ls", "edit", "write", "bash", "subagent_delegate", "subagent_resume"]) {
+    const definition = session.getToolDefinition(toolName);
+    assert.equal(typeof definition?.renderCall, "function", `${toolName} must render calls through pi-square`);
+    assert.equal(typeof definition?.renderResult, "function", `${toolName} must render results through pi-square`);
+    assert.equal(definition?.renderShell, "self", `${toolName} must own its display shell`);
   }
 
   const timeResult = await toolByName("time").execute("smoke:time", {}, undefined, undefined);

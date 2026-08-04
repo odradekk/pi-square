@@ -14,14 +14,14 @@ function plainTheme() {
   };
 }
 
-function setup(mode = "enhanced") {
+function setup() {
   const handlers = new Map();
   const calls = [];
   const pi = {
     on(name, handler) { handlers.set(name, handler); },
     getThinkingLevel() { return "high"; },
   };
-  registerFooter(pi, () => ({ version: 2, footer: { mode }, banner: { enabled: true } }));
+  registerFooter(pi);
   const ctx = {
     mode: "tui",
     cwd: packageRoot,
@@ -39,7 +39,7 @@ function setup(mode = "enhanced") {
 }
 
 {
-  const { handlers, calls, ctx } = setup("enhanced");
+  const { handlers, calls, ctx } = setup();
   assert.deepEqual([...handlers.keys()].sort(), ["session_shutdown", "session_start"]);
   await handlers.get("session_start")({}, ctx);
   assert.equal(typeof calls.at(-1), "function");
@@ -66,7 +66,7 @@ function setup(mode = "enhanced") {
   assert.equal(lines.length, 3);
   assert.match(lines[0], /pi-square/);
   assert.match(lines[1], /Context/);
-  assert.match(lines[2], /^subagents 1/);
+  assert.match(lines[2], /^! subagents 1/);
   assert.match(lines[2], /ready/);
 
   ctx.model = { id: "gpt-next", name: "GPT Next", provider: "test", reasoning: true, contextWindow: 100_000 };
@@ -85,19 +85,19 @@ function setup(mode = "enhanced") {
 }
 
 {
-  const { handlers, calls, ctx } = setup("native");
+  const { handlers, calls, ctx } = setup();
   await handlers.get("session_start")({}, ctx);
-  assert.deepEqual(calls, [undefined]);
+  assert.equal(typeof calls.at(-1), "function", "deprecated footer.mode no longer selects native fallback");
 }
 
 {
-  const { handlers, calls, ctx } = setup("enhanced");
+  const { handlers, calls, ctx } = setup();
   await handlers.get("session_start")({}, { ...ctx, mode: "print" });
   assert.deepEqual(calls, []);
 }
 
 {
-  const { handlers, calls, ctx } = setup("enhanced");
+  const { handlers, calls, ctx } = setup();
   await handlers.get("session_start")({}, ctx);
   const component = calls.at(-1)({ requestRender() {} }, plainTheme(), {
     getGitBranch() { return "main"; },
@@ -112,4 +112,4 @@ function setup(mode = "enhanced") {
   assert.doesNotMatch(lines.join("\n"), /private internal failure/);
 }
 
-console.log("enhanced footer lifecycle: install, native fallback, branch updates, and cleanup OK");
+console.log("operational footer lifecycle: install, branch updates, bounded failure, and cleanup OK");

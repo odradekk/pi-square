@@ -5,7 +5,6 @@ import {
   keyHint,
   truncateToVisualLines,
   type Theme,
-  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { PwshToolDetails } from "./tools/pwsh";
@@ -212,13 +211,4 @@ export function renderPwshResult(
   rebuildResult(component, result, options, theme, state);
   component.invalidate();
   return component;
-}
-
-export function withBashCommandRendering<T extends ToolDefinition<any, any, any>>(definition: T): T {
-  return {
-    ...definition,
-    renderCall(args, theme, context) {
-      return renderCommandCall(args as Record<string, unknown>, "bash", theme, context);
-    },
-  } as T;
 }

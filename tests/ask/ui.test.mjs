@@ -393,7 +393,7 @@ function questions(input) {
   assert.match(narrow, /Skip/);
   assert.match(narrow, /Review answers →/);
   assert.doesNotMatch(narrow, /‹ Back.*Skip.*Review answers →/);
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assert.ok(recorder.render(width).every((line) => visibleWidth(line) <= width));
   }
   assert.ok(

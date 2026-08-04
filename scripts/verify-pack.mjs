@@ -21,6 +21,7 @@ const requiredFiles = [
   "THIRD_PARTY_NOTICES.md",
   "package.json",
   "src/index.ts",
+  "src/display-api.ts",
   "subagents/crawler.yaml",
   "subagents/example_profile.yaml",
   "subagents/explorer.yaml",

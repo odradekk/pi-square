@@ -363,7 +363,7 @@ test("rendering escapes terminal controls before applying trusted styles", async
   assert.equal(renderModule.sanitizeSearchMultiline("a\x1b]0;owned\x07b\x00\n c"), "ab\\x00\n c");
 });
 
-test("rg, fd, and sg render within 40, 80, and 120 columns", async () => {
+test("rg, fd, and sg render within every display boundary width", async () => {
   await setToolCapabilities(false);
   const rgModule = await loadModule("src/search/tools/rg.ts");
   const fdModule = await loadModule("src/search/tools/fd.ts");
@@ -379,7 +379,7 @@ test("rg, fd, and sg render within 40, 80, and 120 columns", async () => {
       lines: [{ kind: "match", line: 12345, column: 120, text: longLine, textEncoding: "text", display: { text: longLine, highlights: [{ start: 5, end: 13 }], excerpted: true } }],
     }],
   });
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assertWidth(rg.renderResult({ content: [{ type: "text", text: "stable" }], details }, { expanded: true, isPartial: false }, ansiTheme), width);
     assertWidth(fd.renderResult({ content: [{ type: "text", text: "stable" }], details: fdDetails() }, { expanded: true, isPartial: false }, ansiTheme), width);
     assertWidth(sg.renderResult({ content: [{ type: "text", text: "stable" }], details: sgDetails() }, { expanded: true, isPartial: false }, ansiTheme), width);

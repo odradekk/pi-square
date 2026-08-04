@@ -138,7 +138,7 @@ test("malformed details keep collapsed content private and expanded fallback com
   assert.match(expanded, /unique-tail/);
 });
 
-test("todo call and result render within 40, 80, and 120 columns", () => {
+test("todo call and result render within every display boundary width", () => {
   const longDetails = structuredClone(details);
   longDetails.title = "title ".repeat(30);
   longDetails.items = Array.from({ length: 20 }, (_, index) => ({
@@ -150,7 +150,7 @@ test("todo call and result render within 40, 80, and 120 columns", () => {
   longDetails.currentId = "item-9";
   const args = { action: "set", title: longDetails.title, todos: longDetails.items };
 
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     const components = [
       definition.renderCall(args, plainTheme, context({ expanded: true })),
       definition.renderResult(result(longDetails), { expanded: false, isPartial: false }, plainTheme, context()),

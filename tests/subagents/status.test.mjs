@@ -65,8 +65,8 @@ test("native status prioritizes active jobs and exposes no tool results", () => 
   ];
 
   const rendered = renderNativeSubagentStatus(plainTheme(), jobs);
-  assert.match(rendered, /^subagents 3 │ oracle 33333333 cancelling · /);
-  assert.match(rendered, /explorer 22222222 running · rg token in src/);
+  assert.match(rendered, /^subagents 3 │ oracle 33333333 × cancelling · /);
+  assert.match(rendered, /explorer 22222222 ⠋ running · rg token in src/);
   assert.match(rendered, /│ \+1$/);
   assert.doesNotMatch(rendered, /crawler|generalist|SECRET TOOL RESULT|exposed-token/);
   assert.match(rendered, /Authorization: \[REDACTED\]/);
@@ -126,7 +126,7 @@ test("controller follows background changes and clears the native status", () =>
   );
   state.jobs.set(running.id, running);
   for (const listener of state.listeners) listener();
-  assert.match(calls.at(-1).value, /generalist cccccccc running · edit src\/index\.ts/);
+  assert.match(calls.at(-1).value, /generalist cccccccc ⠋ running · edit src\/index\.ts/);
 
   running.status = "done";
   for (const listener of state.listeners) listener();
@@ -134,6 +134,43 @@ test("controller follows background changes and clears the native status", () =>
   controller.stop();
   assert.equal(state.listeners.size, 0);
   assert.deepEqual(calls.at(-1), { key: SUBAGENT_STATUS_KEY, value: undefined });
+});
+
+test("controller uses shared motion only while jobs are active", () => {
+  const state = createBackgroundState();
+  let motionCallback;
+  let unsubscribed = 0;
+  const runtime = {
+    subscribe(callback) {
+      motionCallback = callback;
+      return () => { unsubscribed += 1; motionCallback = undefined; };
+    },
+  };
+  const calls = [];
+  const controller = createNativeSubagentStatusController(state, runtime);
+  controller.start({
+    hasUI: true,
+    ui: { theme: plainTheme(), setStatus(_key, value) { calls.push(value); } },
+  });
+  assert.equal(motionCallback, undefined, "idle status does not animate");
+  const running = job(
+    "subagent_ffffffff-ffff-4fff-8fff-ffffffffffff",
+    "running",
+    1,
+    "explorer",
+    toolTimeline("rg display in src"),
+  );
+  state.jobs.set(running.id, running);
+  for (const listener of state.listeners) listener();
+  assert.equal(typeof motionCallback, "function");
+  assert.match(calls.at(-1), /⠋ running/);
+  motionCallback();
+  assert.match(calls.at(-1), /⠙ running/);
+  running.status = "done";
+  for (const listener of state.listeners) listener();
+  assert.equal(unsubscribed, 1);
+  assert.equal(motionCallback, undefined);
+  controller.stop();
 });
 
 test("controller never touches UI for non-interactive sessions", () => {

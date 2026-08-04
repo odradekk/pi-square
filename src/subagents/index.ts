@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PromptManagerSegment } from "../prompt-manager/types";
+import { decorateInternalTool } from "../display/internal-adapters";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   abortAllBackgroundJobs,
   createBackgroundState,
@@ -35,7 +37,7 @@ export interface SubagentFeature {
   setInheritedSystemCore(systemPrompt: string | undefined): void;
 }
 
-export default function registerSubagents(pi: ExtensionAPI): SubagentFeature {
+export default function registerSubagents(pi: ExtensionAPI, runtime?: DisplayRuntimeProvider): SubagentFeature {
   const state: SubagentRuntimeState = {
     registry: { definitions: [], errors: [], projectDir: null },
     background: createBackgroundState(),
@@ -47,10 +49,12 @@ export default function registerSubagents(pi: ExtensionAPI): SubagentFeature {
     state.registry = discoverSubagents(cwd);
   };
   state.refresh = refresh;
-  const nativeStatus = createNativeSubagentStatusController(state.background);
+  const nativeStatus = createNativeSubagentStatusController(state.background, runtime);
 
-  registerSubagentTool(pi, state);
-  registerSubagentManager(pi, state);
+  registerSubagentTool(pi, state, runtime
+    ? (definition) => decorateInternalTool(definition, runtime)
+    : undefined);
+  registerSubagentManager(pi, state, runtime);
 
   pi.on("session_start", async (_event, ctx) => {
     state.sessionCtx = ctx;

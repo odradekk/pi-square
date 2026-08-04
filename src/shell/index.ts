@@ -1,17 +1,16 @@
 import { stripVTControlCharacters } from "node:util";
 import {
-  createBashToolDefinition,
   type ExtensionAPI,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { decorateInternalTool } from "../display/internal-adapters";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import { isWindowsPlatform } from "./platform";
-import { withBashCommandRendering } from "./render";
 import { createPwshToolDefinition, getPwshProbe } from "./tools/pwsh";
 import type { PwshProbe } from "./spawn";
 
 interface ShellRegistrationOptions {
   platform?: NodeJS.Platform;
-  createBashDefinition?: (cwd: string) => ToolDefinition<any, any, any>;
   createPwshDefinition?: () => ToolDefinition<any, any, any>;
   probePwsh?: () => Promise<PwshProbe>;
 }
@@ -29,12 +28,14 @@ function safeDiagnostic(value: unknown): string {
 export default function registerShellTools(
   pi: ExtensionAPI,
   options: ShellRegistrationOptions = {},
+  runtime?: DisplayRuntimeProvider,
 ): void {
   const platform = options.platform ?? process.platform;
   const windows = isWindowsPlatform(platform);
 
   if (windows) {
-    pi.registerTool(options.createPwshDefinition?.() ?? createPwshToolDefinition());
+    const definition = options.createPwshDefinition?.() ?? createPwshToolDefinition();
+    pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
     pi.on("session_start", async (_event, ctx) => {
       const active = pi.getActiveTools();
       const allowed = active.filter((name) => name !== "bash");
@@ -50,11 +51,6 @@ export default function registerShellTools(
           ctx.ui.notify(`pwsh probe failed: ${safeDiagnostic(error instanceof Error ? error.message : error)}`, "warning");
         }
       }
-    });
-  } else {
-    pi.on("session_start", (_event, ctx) => {
-      const definition = options.createBashDefinition?.(ctx.cwd) ?? createBashToolDefinition(ctx.cwd);
-      pi.registerTool(withBashCommandRendering(definition as ToolDefinition<any, any, any>));
     });
   }
 

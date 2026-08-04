@@ -64,7 +64,7 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
     ],
   });
 
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     const lines = renderEnhancedFooter(theme, width, current);
     assert.equal(lines.length, 3, `${file} at ${width} must include the conditional status row`);
     for (const line of lines) assert.ok(visibleWidth(line) <= width, `${file} exceeded ${width} columns`);
@@ -74,20 +74,22 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
     assert.match(plain.join("\n"), /HIGH/);
     assert.match(plain[1], /Context/);
     assert.match(plain[1], /68%/);
-    assert.match(plain[2], /^subagents 1/);
+    assert.match(plain[2], /^! subagents 1/);
     assert.match(plain[2], /ready now|ready|\.\.\.$/);
     assert.doesNotMatch(plain[2], /\r|\n|\t|\u001b/);
 
-    if (width === 120) {
+    if (width >= 100) {
       assert.match(plain[0], /ccr-gpt \/ GPT 5\.6 Sol/);
       assert.match(plain[0], /footer-modernization/);
       assert.match(plain[1], /↑12k/);
       assert.match(plain[1], /Cache R8\.2k W100 80%/);
       assert.match(plain[1], /\$0\.014/);
       assert.match(plain[1], /200k/);
-    } else if (width === 80) {
+    } else if (width >= 64) {
       assert.doesNotMatch(plain[0], /ccr-gpt|footer-modernization/);
       assert.match(plain[1], /↑12k/);
+      assert.match(plain[1], /R8\.2k W100 80%/);
+      assert.match(plain[1], /\$0\.014/);
       assert.match(plain[1], /68%/);
     } else {
       assert.doesNotMatch(plain[0], /ccr-gpt|footer-modernization/);
@@ -96,6 +98,21 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
     }
   }
 }
+
+const privacy = snapshot({
+  branch: "api_key=branch-secret",
+  sessionName: "\x1b]0;owned\x07",
+  provider: "Bearer provider-secret",
+  modelName: "ghp_MODELSECRET",
+  statuses: [{ key: "external", text: "password=status-secret" }],
+});
+const privacyText = stripVTControlCharacters(renderEnhancedFooter(
+  loadThemeFromPath(join(packageRoot, "themes", "pi-square-theme-dark.json")),
+  120,
+  privacy,
+).join("\n"));
+assert.doesNotMatch(privacyText, /branch-secret|provider-secret|MODELSECRET|status-secret|owned/);
+assert.match(privacyText, /\[REDACTED\]/);
 
 function trackingTheme() {
   const calls = [];
@@ -116,4 +133,4 @@ for (const [percent, expected] of [[70, "accent"], [71, "warning"], [91, "error"
 const withoutStatuses = renderEnhancedFooter(trackingTheme(), 80, snapshot({ statuses: [] }));
 assert.equal(withoutStatuses.length, 2);
 
-console.log("enhanced footer rendering: editorial dark/light layouts at 40, 80, and 120 columns OK");
+console.log("operational footer rendering: dark/light layouts at every display boundary width OK");

@@ -10,7 +10,6 @@ initTheme();
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createPwshToolDefinition } = await load(resolve(packageRoot, "src", "shell", "tools", "pwsh.ts"));
-const { withBashCommandRendering } = await load(resolve(packageRoot, "src", "shell", "render.ts"));
 const themeModulePath = pathToFileURL(resolve(
   packageRoot,
   "node_modules",
@@ -143,25 +142,9 @@ const pwsh = createPwshToolDefinition({ probe: async () => ({ available: false, 
 }
 
 {
-  const execute = async () => ({ content: [{ type: "text", text: "ok" }] });
-  const originalResult = () => ({ render() { return ["native result"]; }, invalidate() {} });
-  const wrapped = withBashCommandRendering({
-    name: "bash",
-    label: "bash",
-    description: "native",
-    parameters: {},
-    execute,
-    renderResult: originalResult,
-  });
-  assert.equal(wrapped.execute, execute);
-  assert.equal(wrapped.renderResult, originalResult);
-  assert.match(plain(wrapped.renderCall({ command: "if true; then\n  echo ok\nfi", timeout: 2 }, plainTheme, context())), /^\$ if true; then/m);
-}
-
-{
   for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {
     const realTheme = loadThemeFromPath(resolve(packageRoot, "themes", `${themeName}.json`));
-    for (const width of [40, 80, 120]) {
+    for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
       const call = pwsh.renderCall({
         command: `Get-ChildItem -Recurse | Where-Object Name -Like \"${"x".repeat(100)}\"`,
         cwd: `C:\\${"very-long-path\\".repeat(8)}`,

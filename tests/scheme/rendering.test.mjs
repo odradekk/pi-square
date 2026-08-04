@@ -141,8 +141,8 @@ test("renderer falls back to complete content when details are absent", () => {
   assert.match(rendered, new RegExp(tail));
 });
 
-test("scheme call and result stay within 40, 80, and 120 columns", () => {
-  for (const width of [40, 80, 120]) {
+test("scheme call and result stay within every display boundary width", () => {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     const call = definition.renderCall({
       code: `(define (very-long-function-name value) (display value))\n(very-long-function-name "${"x".repeat(120)}")`,
       access: "write",

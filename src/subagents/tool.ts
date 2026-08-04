@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createSubagentId } from "./artifacts";
 import {
@@ -165,10 +165,17 @@ function registerNotificationRenderer(pi: ExtensionAPI): void {
   );
 }
 
-export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeState): void {
+export function registerSubagentTool(
+  pi: ExtensionAPI,
+  state: SubagentRuntimeState,
+  decorate?: (definition: ToolDefinition<any, any, any>) => ToolDefinition<any, any, any>,
+): void {
   registerNotificationRenderer(pi);
+  const register = (definition: ToolDefinition<any, any, any>) => {
+    pi.registerTool(decorate ? decorate(definition) : definition);
+  };
 
-  pi.registerTool({
+  register({
     name: "subagent_delegate",
     label: "Subagent Delegate",
     description: "Delegate one parent-session-owned Pi child. mode=fg waits, mode=bg queues and returns an ID, and context injects recent parent messages as reference-only evidence. Use subagent_resume to continue an inactive child.",
@@ -274,7 +281,7 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
     },
   });
 
-  pi.registerTool({
+  register({
     name: "subagent_resume",
     label: "Subagent Resume",
     description: "Resume one inactive persisted Pi child in the foreground with a new task. The id comes from an earlier subagent_delegate background run or the /subagent manager.",
@@ -286,7 +293,7 @@ export function registerSubagentTool(pi: ExtensionAPI, state: SubagentRuntimeSta
     parameters: ResumeParams,
     renderCall: (args: any, theme: any, context: any) => renderSubagentCall({ ...args, mode: "resume" }, theme, context),
     renderResult: renderSubagentResult,
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    async execute(_toolCallId, params: any, signal, onUpdate, ctx) {
       const validationError = validateResumeParams(params);
       if (validationError) return failureToolResult(validationError);
 

@@ -1,26 +1,28 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { PiSquareConfig } from "../core/config";
+import { padVisible, rightPriorityRows } from "../display/layout";
+import { sanitizeDisplayLine, truncateCodePoints } from "../display/sanitize";
 
-/**
- * The pi-square startup banner: a minimal π² arch mark, rendered via
- * ctx.ui.setHeader() so it replaces the built-in "π v<version>" header
- * in the TUI. Colors come from the active theme (accent for the mark,
- * muted/dim for the label and tagline) so the banner follows whatever
- * theme is currently selected.
- */
-function buildBannerLines(theme: Theme): string[] {
-  const arch = (text: string) => theme.fg("dim", text);
-  const mark = (text: string) => theme.bold(theme.fg("accent", text));
-  const label = (text: string) => theme.fg("muted", text);
-  const tagline = (text: string) => theme.fg("dim", text);
+let displayDiagnostic: string | undefined;
 
-  const top = `   ${arch("┌──────────────┐")}`;
-  const row1 = `   ${arch("│  │        │  │")}    ${mark("π²")}`;
-  const row2 = `   ${arch("│  │        │  │")}    ${label("pi-square")}`;
-  const bottom = `   ${arch("└──┘        └──┘")}`;
-  const foot = `                        ${tagline("unified local extension package for Pi")}`;
+export function setBannerDisplayDiagnostic(diagnostic: string | undefined): void {
+  displayDiagnostic = diagnostic
+    ? truncateCodePoints(sanitizeDisplayLine(diagnostic), 500)
+    : undefined;
+}
 
-  return ["", top, row1, row2, bottom, foot, ""];
+function buildBannerLines(theme: Theme, width: number): string[] {
+  const safe = Math.max(1, width);
+  const rail = theme.fg("success", "✓");
+  const identity = theme.fg("toolTitle", theme.bold("π²  PI-SQUARE"));
+  const mode = theme.fg("muted", "OPERATIONAL CONSOLE");
+  const tagline = theme.fg("dim", "unified local extension package for Pi");
+  return [
+    ...rightPriorityRows(`${rail} ${identity}`, mode, safe),
+    padVisible(`  ${tagline}`, safe),
+    ...(displayDiagnostic ? [padVisible(`${theme.fg("warning", "!")} ${theme.fg("warning", displayDiagnostic)}`, safe)] : []),
+    padVisible(theme.fg("borderMuted", "─".repeat(safe)), safe),
+  ];
 }
 
 export default function registerBanner(
@@ -34,8 +36,8 @@ export default function registerBanner(
       return;
     }
     ctx.ui.setHeader((_tui, theme) => ({
-      render(_width: number): string[] {
-        return buildBannerLines(theme);
+      render(width: number): string[] {
+        return buildBannerLines(theme, width);
       },
       invalidate() {},
     }));

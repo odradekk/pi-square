@@ -3,6 +3,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { renderTodoCall, renderTodoResult } from "./render";
+import { decorateInternalTool } from "../display/internal-adapters";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   TODO_ENTRY_TYPE_V2,
   applyTodoAction,
@@ -222,9 +224,9 @@ export function createTodoRuntime(pi: Pick<ExtensionAPI, "appendEntry">): TodoRu
   return { tool, restore };
 }
 
-export default function registerTodo(pi: ExtensionAPI): void {
+export default function registerTodo(pi: ExtensionAPI, displayRuntime?: DisplayRuntimeProvider): void {
   const runtime = createTodoRuntime(pi);
   pi.on("session_start", (_event, context) => runtime.restore(context));
   pi.on("session_tree", (_event, context) => runtime.restore(context));
-  pi.registerTool(runtime.tool);
+  pi.registerTool(displayRuntime ? decorateInternalTool(runtime.tool, displayRuntime) : runtime.tool);
 }

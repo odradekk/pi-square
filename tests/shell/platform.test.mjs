@@ -68,13 +68,10 @@ async function emit(runtime, name, event, ctx = {}) {
 
 {
   const runtime = createPi(["read", "bash"]);
-  registerShellTools(runtime.pi, {
-    platform: "linux",
-    createBashDefinition: (cwd) => ({ name: "bash", cwd, execute() {} }),
-  });
+  registerShellTools(runtime.pi, { platform: "linux" });
   assert.deepEqual([...runtime.tools.keys()], []);
   await emit(runtime, "session_start", { reason: "startup" }, { cwd: "/work", hasUI: false });
-  assert.equal(runtime.tools.get("bash").cwd, "/work");
+  assert.deepEqual([...runtime.tools.keys()], [], "display built-ins own non-Windows bash registration");
   assert.equal(runtime.activeSnapshots.length, 0);
   assert.deepEqual(
     await emit(runtime, "tool_call", { toolName: "pwsh", input: { command: "Write-Host no" } }),

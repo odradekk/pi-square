@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import type {
   ExtensionUIContext,
   KeybindingsManager,
@@ -12,13 +11,10 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { SSH_INPUT_MAX_CHARS } from "./contracts";
+import { sanitizeDisplayLine, truncateCodePoints } from "../display/sanitize";
 
 function sanitize(value: string): string {
-  return stripVTControlCharacters(value)
-    .replace(/\r\n?/g, "\n")
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-    .trim()
-    .slice(0, 500);
+  return truncateCodePoints(sanitizeDisplayLine(value).trim(), 500);
 }
 
 function pad(line: string, width: number): string {
@@ -39,7 +35,10 @@ class SecretInputComponent implements Component {
 
   render(width: number): string[] {
     const safeWidth = Math.max(20, width);
-    const lines = [this.theme.fg("toolTitle", this.theme.bold("SSH secret input"))];
+    const lines = [
+      `${this.theme.fg("warning", "!")} ${this.theme.fg("toolTitle", this.theme.bold("SSH SECRET INPUT"))}`,
+      this.theme.fg("borderMuted", "─".repeat(safeWidth)),
+    ];
     for (const line of wrapTextWithAnsi(this.theme.fg("muted", this.purpose), safeWidth)) lines.push(line);
     lines.push("");
     const available = Math.max(1, safeWidth - 2);

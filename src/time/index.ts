@@ -1,5 +1,7 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { decorateInternalTool } from "../display/internal-adapters";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 
 // Provides the `time` tool. Time was previously injected as a prefix on
 // every interactive user message; that was removed in favour of an
@@ -42,8 +44,8 @@ function formatNow(): string {
   ].join("\n");
 }
 
-export default function timeTool(pi: ExtensionAPI) {
-  pi.registerTool({
+export function createTimeToolDefinition(): ToolDefinition<any, Record<string, never>> {
+  return {
     name: "time",
     label: "Time",
     description:
@@ -55,5 +57,10 @@ export default function timeTool(pi: ExtensionAPI) {
         details: {},
       };
     },
-  });
+  };
+}
+
+export default function timeTool(pi: ExtensionAPI, runtime?: DisplayRuntimeProvider): void {
+  const definition = createTimeToolDefinition();
+  pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
 }

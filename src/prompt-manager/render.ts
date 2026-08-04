@@ -1,4 +1,5 @@
 import type { PromptManagerSegment } from "./types";
+import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ByRoleChars, CollapsedEntries, MessageEntrySummary } from "./decompose";
 
 // ----------------------------------------------------------------------------
@@ -23,6 +24,10 @@ function paint(theme: ThemeWrapper | null, color: string, text: string): string 
 // ----------------------------------------------------------------------------
 // Small text utilities
 // ----------------------------------------------------------------------------
+
+function clean(value: unknown): string {
+  return sanitizeDisplayLine(value).replace(/\\[nrt]/g, " ").replace(/\s+/g, " ").trim();
+}
 
 function charCount(s: string): number {
   return Array.from(s).length;
@@ -62,34 +67,29 @@ function formatShort(n: number): string {
   return (n / 1_000_000_000).toFixed(1) + "B";
 }
 
-// Box-drawing glyphs. Picked once at module scope so swapping styles
-// (round / square / double) requires only one change.
-const RULE_TOP    = "\u256D";  // ╭
-const RULE_BOTTOM = "\u2570";  // ╰
-const RULE_SIDE   = "\u2502";  // │
+const RULE = "─";
 
 // ----------------------------------------------------------------------------
 // Common rendering helpers
 // ----------------------------------------------------------------------------
 
-/** Render the "│  " prefix used for every body line of summary/verbose. */
-function sidePrefix(theme: ThemeWrapper | null, indent: number = 2): string {
-  return paint(theme, "borderMuted", RULE_SIDE) + " ".repeat(indent);
+/** Indent body rows beneath the operational status rail. */
+function sidePrefix(_theme: ThemeWrapper | null, indent: number = 2): string {
+  return " ".repeat(indent);
 }
 
-/** Open the panel with a header line. */
+/** Open the unframed operational surface with a one-cell status rail. */
 function openPanel(theme: ThemeWrapper | null, headerText: string): string {
-  return paint(theme, "borderMuted", RULE_TOP + " ") + headerText;
+  return paint(theme, "success", "✓") + " " + headerText;
 }
 
-/** Close the panel. */
+/** Close the surface with a restrained semantic rule. */
 function closePanel(theme: ThemeWrapper | null): string {
-  return paint(theme, "borderMuted", RULE_BOTTOM);
+  return paint(theme, "borderMuted", RULE.repeat(24));
 }
 
-/** Inner divider line: `│` (acts as breathing space between sub-blocks). */
-function blankInner(theme: ThemeWrapper | null): string {
-  return paint(theme, "borderMuted", RULE_SIDE);
+function blankInner(_theme: ThemeWrapper | null): string {
+  return "";
 }
 
 /** Top-level structure header text (used by summary/verbose openPanel arg). */
@@ -106,7 +106,7 @@ function headerText(theme: ThemeWrapper | null, input: PromptManagerViewInput): 
     : "";
 
   return (
-    paint(theme, "accent", "prompt manager") +
+    paint(theme, "toolTitle", "PROMPT") +
     ` ${paint(theme, "dim", "·")} ` +
     paint(theme, "muted", `turn ${input.currentTurn}.${input.subturn}`) +
     ` ${paint(theme, "dim", "·")} ` +
@@ -122,7 +122,7 @@ function errorBody(theme: ThemeWrapper | null, input: PromptManagerViewInput): s
     lines.push(
       sidePrefix(theme) +
       paint(theme, "error", "! ") +
-      paint(theme, "error", err),
+      paint(theme, "error", clean(err)),
     );
   }
   return lines;
@@ -159,7 +159,7 @@ function renderToolsSection(theme: ThemeWrapper | null, tools: ToolInfoLite[]): 
   );
 
   // Wrap tool names at ~72 cols inside the panel.
-  const names = tools.map((t) => t.name).filter(Boolean);
+  const names = tools.map((t) => clean(t.name)).filter(Boolean);
   let current = "";
   const wrapped: string[] = [];
   for (const name of names) {
@@ -204,7 +204,7 @@ function renderSystemSection(
     return {
       idx: idx + 1,
       id,
-      label: segment?.label ?? id,
+      label: clean(segment?.label ?? id),
       chars: segment ? charCount(segment.text) : 0,
       phase: segment ? phaseLabel(segment.phase) : "missing",
       phaseForColor: segment ? segment.phase : "missing",
@@ -243,7 +243,7 @@ function renderSystemSection(
       detailsStr = "  " + paint(theme, "error", "(not registered this turn)");
     } else if (row.details.length > 0) {
       const parts = row.details.map((detail) =>
-        paint(theme, "dim", detail.label + ":") + " " + paint(theme, "text", detail.value),
+        paint(theme, "dim", clean(detail.label) + ":") + " " + paint(theme, "text", clean(detail.value)),
       );
       const separator = " " + paint(theme, "dim", "·") + " ";
       detailsStr = "  " + parts.join(separator);

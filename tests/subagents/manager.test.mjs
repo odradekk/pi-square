@@ -149,7 +149,7 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
   const manager = new SubagentManager(data(), tui(), theme, keybindings, () => {});
   const narrow = render(manager, 40);
   const wide = render(manager, 120);
-  assert.match(narrow, /^SUBAGENTS/m);
+  assert.match(narrow, /^◆ SUBAGENTS/m);
   assert.match(narrow, /RUNNING.*SESSION.*DEFINITIONS/);
   assert.match(narrow, /ls src\/components/);
   assert.match(wide, /│/);
@@ -273,7 +273,7 @@ test("real dark and light themes stay bounded across widths and low terminal hei
   const initial = data();
   for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
     const realTheme = loadThemeFromPath(join(packageRoot, "themes", file));
-    for (const width of [40, 80, 120]) {
+    for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
       for (const rows of [18, 30]) {
         const manager = new SubagentManager(initial, tui(rows), realTheme, keybindings, () => {});
         const lines = manager.render(width);

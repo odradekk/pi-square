@@ -14,6 +14,7 @@ import {
   truncateToWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   createSubagentId,
   deleteParentSessionRun,
@@ -70,6 +71,7 @@ interface OperationResult {
 interface ManagerServices {
   refresh(): ManagerSnapshot;
   subscribe(listener: () => void): () => void;
+  subscribeMotion?(listener: () => void): () => void;
   cancel(id: string): OperationResult;
   queueResume(id: string, task: string): OperationResult;
   queueFresh(id: string, task: string): OperationResult;
@@ -230,6 +232,7 @@ function createProductionServices(
   ctx: ExtensionCommandContext,
   state: SubagentRuntimeState,
   parentSessionId: string,
+  runtime?: DisplayRuntimeProvider,
 ): ManagerServices {
   const refresh = () => {
     state.refresh?.(ctx.cwd);
@@ -240,6 +243,11 @@ function createProductionServices(
     subscribe(listener) {
       return subscribeBackgroundState(state.background, listener);
     },
+    ...(runtime ? {
+      subscribeMotion(listener: () => void) {
+        return (typeof runtime === "function" ? runtime() : runtime).subscribe(listener);
+      },
+    } : {}),
     cancel(id) {
       const job = state.background.jobs.get(id);
       if (!job) return { ok: false, message: `Background subagent '${id}' is no longer active.` };
@@ -340,7 +348,7 @@ export class SubagentManager implements Component, Focusable {
   private _focused = false;
   private finished = false;
   private readonly unsubscribe?: () => void;
-  private readonly interval?: NodeJS.Timeout;
+  private readonly unsubscribeMotion?: () => void;
 
   get focused(): boolean {
     return this._focused;
@@ -364,10 +372,9 @@ export class SubagentManager implements Component, Focusable {
       this.refreshData();
       this.tui.requestRender();
     });
-    this.interval = setInterval(() => {
+    this.unsubscribeMotion = services?.subscribeMotion?.(() => {
       if (this.data.running.length > 0) this.tui.requestRender();
-    }, 1000);
-    this.interval.unref?.();
+    });
   }
 
   private refreshData(selectedId?: string): void {
@@ -935,7 +942,7 @@ export class SubagentManager implements Component, Focusable {
   }
 
   private header(width: number, eyebrow?: string, title?: string): string[] {
-    const identity = this.theme.fg("toolTitle", this.theme.bold("SUBAGENTS"));
+    const identity = `${this.theme.fg("accent", "◆")} ${this.theme.fg("toolTitle", this.theme.bold("SUBAGENTS"))}`;
     if (eyebrow && title) {
       return [
         fit(`${identity}  ${this.theme.fg("dim", eyebrow)}`, width),
@@ -1115,7 +1122,7 @@ export class SubagentManager implements Component, Focusable {
 
   dispose(): void {
     this.unsubscribe?.();
-    if (this.interval) clearInterval(this.interval);
+    this.unsubscribeMotion?.();
   }
 }
 
@@ -1123,6 +1130,7 @@ async function openManager(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   state: SubagentRuntimeState,
+  runtime?: DisplayRuntimeProvider,
 ): Promise<void> {
   const parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
   if (!parentSessionId) {
@@ -1130,13 +1138,17 @@ async function openManager(
     return;
   }
   state.refresh?.(ctx.cwd);
-  const services = createProductionServices(pi, ctx, state, parentSessionId);
+  const services = createProductionServices(pi, ctx, state, parentSessionId, runtime);
   await ctx.ui.custom<void>((tui, theme, keybindings, done) => (
     new SubagentManager(snapshot(state, parentSessionId), tui, theme, keybindings, done, services)
   ));
 }
 
-export function registerSubagentManager(pi: ExtensionAPI, state: SubagentRuntimeState): void {
+export function registerSubagentManager(
+  pi: ExtensionAPI,
+  state: SubagentRuntimeState,
+  runtime?: DisplayRuntimeProvider,
+): void {
   pi.registerMessageRenderer(SUBAGENT_CONFIG_GUIDE_TYPE, renderSubagentConfigGuide);
   pi.registerCommand("subagent", {
     description: "Manage current-session subagents and V2 definitions, or ask Pi to modify configuration.",
@@ -1155,7 +1167,7 @@ export function registerSubagentManager(pi: ExtensionAPI, state: SubagentRuntime
         return;
       }
       if (!ctx.hasUI) return;
-      await openManager(pi, ctx, state);
+      await openManager(pi, ctx, state, runtime);
     },
   });
 }

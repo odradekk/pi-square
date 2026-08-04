@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
+import { decorateInternalTool } from "../display/internal-adapters";
 import { getPackageRoot } from "../core/paths";
 import { resolveBundledBinary } from "./binary";
 import { runCommand } from "./runner";
@@ -25,6 +27,11 @@ export function createSearchToolDefinitions() {
   ] as const;
 }
 
-export default function registerSearchTools(pi: ExtensionAPI): void {
-  for (const definition of createSearchToolDefinitions()) pi.registerTool(definition as any);
+export default function registerSearchTools(
+  pi: ExtensionAPI,
+  runtime?: DisplayRuntimeProvider,
+): void {
+  for (const definition of createSearchToolDefinitions()) {
+    pi.registerTool((runtime ? decorateInternalTool(definition as any, runtime) : definition) as any);
+  }
 }

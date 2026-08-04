@@ -17,6 +17,12 @@ assert.deepEqual(pkg.publishConfig, {
   provenance: true,
   registry: "https://registry.npmjs.org/",
 });
+assert.deepEqual(pkg.exports, {
+  ".": "./src/index.ts",
+  "./display": "./src/display-api.ts",
+  "./package.json": "./package.json",
+});
+assert.ok(existsSync(join(packageRoot, "src", "display-api.ts")));
 assert.equal(pkg.scripts["version-packages"], "changeset version && npm install --package-lock-only --ignore-scripts");
 assert.equal(pkg.scripts.release, "changeset publish");
 assert.deepEqual(pkg.peerDependencies, {

@@ -66,7 +66,7 @@ const partial = plain(def.renderResult({ content: [], details: details({ phase: 
 assert.match(partial, /explore/);
 assert.match(partial, /syncing files/);
 
-for (const width of [40, 80, 120]) {
+for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
   for (const component of [
     def.renderCall({ operation: "explore", query: "A very long semantic question about routing through several framework layers", projectPath: "services/backend" }, theme, context),
     def.renderResult(result, { expanded: false, isPartial: false }, theme),

@@ -1,6 +1,6 @@
-import { stripVTControlCharacters } from "node:util";
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { sanitizeDisplayLine } from "../display/sanitize";
 import { DEFAULT_TODO_TITLE, currentTodo, todoCounts } from "./state";
 import type { TodoItem, TodoState, TodoWidgetState } from "./types";
 
@@ -14,10 +14,7 @@ interface WidgetTui {
 }
 
 function sanitizeDisplay(value: unknown): string {
-  return stripVTControlCharacters(String(value ?? ""))
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return sanitizeDisplayLine(value).replace(/\\[nrt]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export function todoPanelWidth(terminalWidth: number): number {
@@ -37,9 +34,16 @@ function headerLine(state: TodoState, width: number, theme: Theme): string {
   const counts = todoCounts(state.items);
   const percent = counts.total === 0 ? 0 : Math.round((counts.completed / counts.total) * 100);
   const customTitle = state.title === DEFAULT_TODO_TITLE ? "" : `  ${sanitizeDisplay(state.title)}`;
-  const left = theme.fg("toolTitle", theme.bold("TODO")) + theme.fg("text", customTitle);
-  const paused = counts.pending > 0 && counts.inProgress === 0 ? " · PAUSED" : "";
-  const right = theme.fg(paused ? "muted" : "accent", `${counts.completed}/${counts.total} · ${percent}%${paused}`);
+  const paused = counts.pending > 0 && counts.inProgress === 0;
+  const complete = counts.total > 0 && counts.completed === counts.total;
+  const rail = complete
+    ? theme.fg("success", "✓")
+    : paused
+      ? theme.fg("warning", "–")
+      : theme.fg("accent", "◆");
+  const left = `${rail} ${theme.fg("toolTitle", theme.bold("TODO"))}${theme.fg("text", customTitle)}`;
+  const pausedLabel = paused ? " · PAUSED" : "";
+  const right = theme.fg(paused ? "muted" : "accent", `${counts.completed}/${counts.total} · ${percent}%${pausedLabel}`);
   const gap = width - visibleWidth(left) - visibleWidth(right);
   if (gap < 2) return fitLine(`${left}  ${right}`, width);
   return `${left}${" ".repeat(gap)}${right}`;

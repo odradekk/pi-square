@@ -56,7 +56,7 @@ async function exerciseTheme(themeName) {
   }]));
 
   assert.ok(panel, "focused component should mount synchronously");
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assert.ok(panel.render(width).every((line) => visibleWidth(line) <= width));
   }
   panel.handleInput("\r");

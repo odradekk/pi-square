@@ -8,6 +8,8 @@ const {
   nativePromptMetadata,
 } = await load("../src/prompt-manager/snapshot.ts");
 
+const { renderSummary } = await load("../src/prompt-manager/render.ts");
+
 const event = {
   systemPromptOptions: {
     customPrompt: "CORE",
@@ -84,5 +86,33 @@ const stale = createPromptManagerSnapshot({
 });
 assert.equal(stale.errors.length, 2);
 assert.equal(stale.systemPrompt.includes("diagnostics"), false, "diagnostics must never alter the provider prompt");
+
+const rendered = renderSummary({
+  tools: [{ name: "api_key=tool-secret" }],
+  segments: [{
+    id: "native-system",
+    label: "password=label-secret",
+    category: "system",
+    phase: "stable-prefix",
+    text: "not rendered",
+    details: [{ label: "token", value: "Bearer detail-secret" }],
+    turnSeq: 1,
+  }],
+  promptOrder: ["native-system"],
+  systemPromptChars: 12,
+  collapsedMessages: { rows: [], hiddenCount: 0, hiddenChars: 0, hiddenStart: -1 },
+  totalMessageEntries: 0,
+  totalMessageChars: 0,
+  totalLlmEntries: 0,
+  totalLlmChars: 0,
+  groundTruthTokens: 1,
+  groundTruthWindow: 100,
+  currentTurn: 1,
+  subturn: 0,
+  errors: ["api_key=error-secret\x1b]0;owned\x07"],
+});
+assert.match(rendered, /^✓ PROMPT/);
+assert.match(rendered, /\[REDACTED\]/);
+assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secret|owned|╭|╰|│/);
 
 console.log("prompt manager tests: OK");

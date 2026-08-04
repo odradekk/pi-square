@@ -324,7 +324,7 @@ test("expanded docs does not add a second display truncation layer", () => {
   assert.match(expanded, /UniqueMaximumTail/);
 });
 
-test("libs and docs render within 40, 80, and 120 columns", () => {
+test("libs and docs render within every display boundary width", () => {
   const libs = createLibsToolDefinition();
   const docs = createDocsToolDefinition();
   const libsResult = result(libsDetails({
@@ -339,7 +339,7 @@ test("libs and docs render within 40, 80, and 120 columns", () => {
     infoSnippets: [{ breadcrumb: "A long documentation breadcrumb", tokens: 50, content: "Long prose with Unicode 文档 that should wrap within narrow terminal widths." }],
     codeCounts: counts(), infoCounts: counts(), estimatedTokens: 100,
   }));
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assertWidth(libs.renderCall({ libraryName: "a-library", query: "a long query that needs wrapping", mode: "fast", limit: 10 }, plainTheme, NO_CONTEXT), width);
     assertWidth(docs.renderCall({ libraryId: "/scope/library", query: "a long query that needs wrapping", kind: "all", max_tokens: 12_000 }, plainTheme, NO_CONTEXT), width);
     assertWidth(libs.renderResult(libsResult, { expanded: true, isPartial: false }, plainTheme), width);

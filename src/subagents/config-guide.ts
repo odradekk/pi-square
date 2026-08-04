@@ -3,7 +3,7 @@ import {
   keyHint,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Text, type Component } from "@earendil-works/pi-tui";
+import { Container, Markdown, Text, type Component } from "@earendil-works/pi-tui";
 import type { SubagentRegistry } from "./definitions";
 import { sanitizeSubagentDisplay } from "./display";
 
@@ -88,27 +88,27 @@ export function renderSubagentConfigGuide(
   const scopes = Array.isArray(details?.scopes)
     ? details.scopes.filter((scope) => scope === "package" || scope === "agent" || scope === "project").join("/")
     : "";
-  const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-  const label = theme.fg("customMessageLabel", theme.bold("[Subagent Config Guide]"));
+  const container = new Container();
+  const label = `${theme.fg("success", "✓")} ${theme.fg("customMessageLabel", theme.bold("SUBAGENT CONFIG"))}`;
   if (!options.expanded) {
     const summary = [
       `${count} definition${count === 1 ? "" : "s"}`,
       scopes,
     ].filter(Boolean).join(" · ");
-    box.addChild(new Text(
+    container.addChild(new Text(
       `${label}${summary ? theme.fg("customMessageText", `  ${summary}`) : ""}${theme.fg("dim", `  ${keyHint("app.tools.expand", " expand")}`)}`,
       0,
       0,
     ));
-    return box;
+    return container;
   }
 
-  box.addChild(new Text(label, 0, 0));
+  container.addChild(new Text(`${label}\n${theme.fg("borderMuted", "─".repeat(24))}`, 0, 0));
   const content = sanitizeSubagentDisplay(message.content || "Subagent configuration guide unavailable.")
     .replace(/^\[Subagent Config Guide\]\n+/, "");
-  box.addChild(new Markdown(content, 0, 0, getMarkdownTheme(), {
+  container.addChild(new Markdown(content, 0, 0, getMarkdownTheme(), {
     color: (text) => theme.fg("customMessageText", text),
   }));
-  box.addChild(new Text(theme.fg("dim", keyHint("app.tools.expand", " collapse")), 0, 0));
-  return box;
+  container.addChild(new Text(theme.fg("dim", keyHint("app.tools.expand", " collapse")), 0, 0));
+  return container;
 }

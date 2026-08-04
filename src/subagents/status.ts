@@ -1,5 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
+import { PENDING_FRAMES } from "../display/types";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
 import { sanitizeSubagentDisplay } from "./display";
 import { latestToolCallSummary } from "./tool-display";
@@ -41,28 +43,30 @@ function activeJobs(jobs: BackgroundJobSnapshot[]): BackgroundJobSnapshot[] {
     });
 }
 
-function statusText(theme: Theme, status: BackgroundJobSnapshot["status"]): string {
-  if (status === "queued") return theme.fg("muted", "queued");
-  return theme.fg("warning", status);
+function statusText(theme: Theme, status: BackgroundJobSnapshot["status"], frame: number): string {
+  if (status === "queued") return theme.fg("muted", "– queued");
+  if (status === "cancelling") return theme.fg("warning", "× cancelling");
+  return theme.fg("warning", `${PENDING_FRAMES[frame % PENDING_FRAMES.length]} running`);
 }
 
-function jobText(theme: Theme, job: BackgroundJobSnapshot): string {
+function jobText(theme: Theme, job: BackgroundJobSnapshot, frame: number): string {
   const role = sanitizeSubagentDisplay(job.details.agent?.name ?? "generic").replace(/\s+/g, " ").trim() || "generic";
   const identity = theme.fg("accent", role) + theme.fg("dim", ` ${shortId(job.id)}`);
   const call = truncateToWidth(latestToolCallSummary(job.details.timeline), MAX_CALL_WIDTH, "...");
-  return `${identity} ${statusText(theme, job.status)}${theme.fg("dim", " · ")}${theme.fg("text", call)}`;
+  return `${identity} ${statusText(theme, job.status, frame)}${theme.fg("dim", " · ")}${theme.fg("text", call)}`;
 }
 
 export function renderNativeSubagentStatus(
   theme: Theme,
   jobs: BackgroundJobSnapshot[],
+  frame = 0,
 ): string | undefined {
   const active = activeJobs(jobs);
   if (active.length === 0) return undefined;
 
   const separator = theme.fg("dim", " │ ");
   const parts = [theme.fg("muted", `subagents ${active.length}`)];
-  for (const job of active.slice(0, MAX_VISIBLE_JOBS)) parts.push(jobText(theme, job));
+  for (const job of active.slice(0, MAX_VISIBLE_JOBS)) parts.push(jobText(theme, job, frame));
   if (active.length > MAX_VISIBLE_JOBS) parts.push(theme.fg("dim", `+${active.length - MAX_VISIBLE_JOBS}`));
 
   return truncateToWidth(parts.join(separator), MAX_STATUS_WIDTH, theme.fg("dim", "..."));
@@ -76,21 +80,38 @@ export interface NativeSubagentStatusController {
 
 export function createNativeSubagentStatusController(
   state: BackgroundState,
+  runtime?: DisplayRuntimeProvider,
 ): NativeSubagentStatusController {
   let context: ExtensionContext | undefined;
   let unsubscribe: (() => void) | undefined;
+  let unsubscribeMotion: (() => void) | undefined;
+  let frame = 0;
 
   const refresh = () => {
     if (!context?.hasUI) return;
+    const jobs = listBackgroundJobs(state);
+    const active = activeJobs(jobs).length > 0;
+    if (active && runtime && !unsubscribeMotion) {
+      unsubscribeMotion = (typeof runtime === "function" ? runtime() : runtime).subscribe(() => {
+        frame += 1;
+        refresh();
+      });
+    } else if (!active && unsubscribeMotion) {
+      unsubscribeMotion();
+      unsubscribeMotion = undefined;
+    }
     context.ui.setStatus(
       SUBAGENT_STATUS_KEY,
-      renderNativeSubagentStatus(context.ui.theme, listBackgroundJobs(state)),
+      renderNativeSubagentStatus(context.ui.theme, jobs, frame),
     );
   };
 
   const stop = () => {
     unsubscribe?.();
     unsubscribe = undefined;
+    unsubscribeMotion?.();
+    unsubscribeMotion = undefined;
+    frame = 0;
     if (context?.hasUI) context.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);
     context = undefined;
   };

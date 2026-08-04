@@ -64,7 +64,7 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
 test("collapsed guide is one native-style summary and expanded guide reveals bounded metadata", () => {
   const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
-  assert.match(collapsed, /\[Subagent Config Guide\]/);
+  assert.match(collapsed, /✓ SUBAGENT CONFIG/);
   assert.match(collapsed, /6 definitions/);
   assert.match(collapsed, /package/);
   assert.match(collapsed, /expand/);
@@ -77,7 +77,7 @@ test("collapsed guide is one native-style summary and expanded guide reveals bou
   assert.match(expanded, /collapse/);
 });
 
-test("guide renderer uses custom-message shell tokens and sanitizes damaged content", () => {
+test("guide renderer is unframed, uses semantic text tokens, and sanitizes damaged content", () => {
   const backgrounds = [];
   const theme = {
     ...plainTheme,
@@ -88,16 +88,16 @@ test("guide renderer uses custom-message shell tokens and sanitizes damaged cont
     details: { version: 1, definitionCount: 1, includedDefinitionCount: 1, scopes: ["project"] },
   }, { expanded: true }, theme);
   const rendered = plain(component);
-  assert.ok(backgrounds.includes("customMessageBg"));
+  assert.equal(backgrounds.includes("customMessageBg"), false, "guide must not use a background card");
   assert.doesNotMatch(rendered, /owned|s3cr3t|\x1b|\x07/);
   assert.match(rendered, /api_key=\[REDACTED\]/);
 });
 
-test("real themes keep guide cards bounded at 40, 80, and 120 columns", () => {
+test("real themes keep the unframed guide bounded at every display boundary width", () => {
   const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
   for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
     const theme = loadThemeFromPath(join(packageRoot, "themes", file));
-    for (const width of [40, 80, 120]) {
+    for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
       for (const expanded of [false, true]) {
         const lines = renderSubagentConfigGuide(guide, { expanded }, theme).render(width);
         for (const line of lines) assert.ok(visibleWidth(line) <= width, `${file} exceeded ${width}`);

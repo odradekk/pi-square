@@ -1,7 +1,6 @@
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { PiSquareConfig } from "../core/config";
 import { collectEnhancedFooterSnapshot } from "./data";
 import { renderEnhancedFooter } from "./render";
 
@@ -28,12 +27,7 @@ function installEnhancedFooter(
           const project = basename(ctx.cwd) || ctx.cwd || "project";
           return [
             truncateToWidth(theme.fg("accent", project), safeWidth, theme.fg("dim", "...")),
-            truncateToWidth(
-              theme.fg("error", "footer unavailable")
-                + theme.fg("dim", " · set footer.mode to native"),
-              safeWidth,
-              theme.fg("dim", "..."),
-            ),
+            truncateToWidth(theme.fg("error", "! footer unavailable"), safeWidth, theme.fg("dim", "...")),
           ];
         }
       },
@@ -41,16 +35,9 @@ function installEnhancedFooter(
   });
 }
 
-export default function registerFooter(
-  pi: ExtensionAPI,
-  getConfig: () => PiSquareConfig,
-): void {
+export default function registerFooter(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.mode !== "tui") return;
-    if (getConfig().footer.mode === "native") {
-      ctx.ui.setFooter(undefined);
-      return;
-    }
     installEnhancedFooter(ctx, pi);
   });
 

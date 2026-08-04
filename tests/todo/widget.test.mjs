@@ -67,7 +67,7 @@ test("short lists show semantic three-state rows without exposing internal ids",
     state([item(0, "completed"), item(1, "in_progress"), item(2)], "Release"),
   );
   const output = render(component, 80).join("\n");
-  assert.match(output, /^TODO  Release/);
+  assert.match(output, /^◆ TODO  Release/);
   assert.match(output, /1\/3 · 33%/);
   assert.match(output, /✓  01  Task 1/);
   assert.match(output, /◆  02  Task 2/);
@@ -78,7 +78,7 @@ test("short lists show semantic three-state rows without exposing internal ids",
 test("long lists stay within the dynamic viewport and keep the current item visible", () => {
   const items = Array.from({ length: 20 }, (_, index) => item(index, index < 8 ? "completed" : index === 10 ? "in_progress" : "pending"));
   const component = createTodoWidget({ terminal: { rows: 24 } }, plainTheme, state(items));
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     const lines = render(component, width);
     assert.ok(lines.length <= 7, `${lines.length} rows exceed budget`);
     assert.ok(lines.every((line) => visibleWidth(line) <= width));
@@ -144,7 +144,7 @@ test("real dark and light themes render bounded maximum-pressure widgets", () =>
     const theme = loadThemeFromPath(join(packageRoot, "themes", `${themeName}.json`));
     for (const rows of [18, 24, 40, 80]) {
       const component = createTodoWidget({ terminal: { rows } }, theme, state(items, "Maximum pressure"));
-      for (const width of [40, 80, 120]) {
+      for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
         const lines = component.render(width);
         assert.ok(lines.length <= todoWidgetRowBudget(rows));
         assert.ok(lines.every((line) => visibleWidth(line) <= width));
@@ -153,7 +153,7 @@ test("real dark and light themes render bounded maximum-pressure widgets", () =>
     }
   }
   assert.ok(performance.now() - started < 2_000);
-  assert.equal(renders, 24);
+  assert.equal(renders, 64);
 });
 
 let failures = 0;

@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents with an enhanced native-semantic footer, a Scheme sandbox, and PowerShell execution.
+`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents, a unified operational-console TUI, a Scheme sandbox, and PowerShell execution.
 
 ## Installation
 
@@ -31,21 +31,31 @@ Use `-l` to install it for only the current project. The package requires Pi 0.8
 
 ## Themes
 
-The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their near-monochrome palette uses low-contrast surfaces, one cool blue-gray accent for structure, and restrained semantic status colors. Both variants include explicit HTML export colors and the complete Pi 0.80.6 theme token set.
+The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their near-monochrome palette uses low-contrast surfaces, one cool blue-gray accent for structure, and restrained semantic status colors. Both variants include explicit HTML export colors and the complete Pi 0.80.6 theme token set. The display runtime itself uses only Pi's standard semantic tokens, so any valid third-party Pi theme remains supported.
 
-## Enhanced footer
+## Operational display
 
-The TUI defaults to a two-line editorial footer that preserves Pi's native data semantics while improving hierarchy and responsive behavior. The first row aligns project path, git branch, and session name against provider, model display name, and thinking level. The second groups cumulative input/output, cache read/write and latest hit rate, subscription-aware cost, and a thin context bar with native 70% warning and 90% error thresholds. Data is read directly from Pi's read-only session manager, model registry, context API, and footer data provider on every render; the extension does not poll git, persist duplicate usage state, or copy internal session data.
+Every parent-session tool, including Pi's `read`, `grep`, `find`, `ls`, `edit`, `write`, and platform shell, uses one high-density operational-console grammar. A one-cell rail identifies pending, partial, success, warning, error, and aborted states; the first row prioritizes tool identity, target, duration, and state; secondary rows carry bounded metadata, progress, previews, or diffs. Strong framing is reserved for diffs, confirmations, and managers. Terminal controls, source-authored Markdown links, malformed URLs, and common credential forms are neutralized before display without changing model-facing arguments or results.
+
+The same shared layout, sanitization, theme, diff, and motion layers serve pi-square's footer, banner, Prompt Manager, ask wizard, todo widget, subagent manager/status/notifications, and Config Guide. Ordinary Pi user and assistant messages remain native and are not patched. Collapsed output follows each tool's effective `resultMode`; expanded output remains bounded by `expandedMaxLines`; errors remain visible even when normal results are hidden.
+
+Motion is session-owned and uses one scheduler for all pending surfaces. `full` is capped at 5 FPS, `reduced` at 1 FPS, and `off` is static. Non-TTY, test, CI, and incapable terminal environments downgrade deterministically. Child sessions construct their own tool definitions without a display runtime; only parent-visible child activity summaries use the shared declarative formatter.
+
+Run `/display` to open the non-overlay manager. It provides searchable global, family, and tool nodes; effective value and source labels; current/dark/light previews at 40, 80, and 120 columns; agent/project scope selection; per-node reset; and a CURRENT/STAGED review before save. Saves use a workspace-bounded lock, full-file compare-and-swap fingerprint, symlink and identity checks, mode preservation, complete candidate validation, and atomic rename. A stale external write returns to review instead of overwriting it. Successful policy and motion saves apply immediately; resolving a renderer ownership conflict still requires `/reload`.
+
+## Operational footer
+
+The TUI uses a two-line operational footer that preserves Pi's native data semantics while improving hierarchy and responsive behavior. The first row aligns project path, git branch, and session name against provider, model display name, and thinking level. The second groups cumulative input/output, cache read/write and latest hit rate, subscription-aware cost, and a thin context bar with native 70% warning and 90% error thresholds. Data is read directly from Pi's read-only session manager, model registry, context API, and footer data provider on every render; the extension does not poll git, persist duplicate usage state, or copy internal session data.
 
 At 120 columns the footer shows all available fields. At 80 columns it keeps core usage and context while dropping session/provider detail. At 40 columns it prioritizes context risk, model/thinking, and the project basename. The matched dark and light themes use one restrained accent, dim/muted supporting text, and semantic color only for risk or cancellation; the footer has no background cards, emoji, or decorative animation.
 
 Active background subagents continue to publish through Pi's official `ctx.ui.setStatus()` API. A conditional third row displays the active count and, by priority (`cancelling`, `running`, then `queued`), at most two role/short-ID/status/latest-tool summaries followed by `+N` overflow. Tool calls are sanitized and credential-redacted, tool result payloads never enter the footer, and the status is removed when no background work remains. Other extension statuses remain visible after the subagent summary in stable key order.
 
-Set `"footer": { "mode": "native" }` in configuration V2 to restore Pi's built-in `FooterComponent`; `enhanced` is the default. The former `/statusline` command, `alt+s` shortcut, and `statusline.enabled`/`statusline.shortcut` settings are not registered.
+The redesigned footer is always installed in TUI mode. The former `footer.mode` field is accepted only as a deprecated V2 migration input, has no runtime effect, and can be explicitly removed from `/display` review. The former `/statusline` command, `alt+s` shortcut, and `statusline.enabled`/`statusline.shortcut` settings are not registered.
 
 ## Banner
 
-In the TUI, `session_start` replaces the built-in header with a small π² arch mark rendered through `ctx.ui.setHeader()`, colored from the active theme's `accent`/`muted`/`dim` tokens. Set `"banner": { "enabled": false }` in `config/pi-square.json` to restore Pi's built-in header instead.
+In the TUI, `session_start` installs a compact operational π² header through `ctx.ui.setHeader()`, colored only from standard semantic theme tokens. Display ownership and settings diagnostics appear as a bounded warning row. Set `"banner": { "enabled": false }` in `config/pi-square.json` to restore Pi's built-in header instead.
 
 ## Interactive questions
 
@@ -89,7 +99,7 @@ The pair replaces the former single `subagent` tool whose `mode=resume` branch s
 
 ## Subagent presentation
 
-The `subagent_delegate` and `subagent_resume` tools use a Pi-native, collapsible editorial layout across foreground runs, resumed sessions, and background queue results. The primary tool presentation is unframed, with a restrained near-monochrome hierarchy, width-aware title and status columns, subtle section rules, and responsive activity ledgers instead of decorative cards, emoji, or undifferentiated log rows. Background completion messages steer an active parent run at its next model boundary and trigger a new turn when the parent is idle, so asynchronous results arrive without requiring a manual resume. They reuse Pi's native tool shell, including success/error backgrounds and padding, so asynchronous results remain visually consistent with ordinary tool output. Calls identify the agent and user-facing mode, show a bounded three-visual-line task preview, and report explicit model, effort, context, cwd, and custom-instruction overrides without displaying custom system-prompt text.
+The `subagent_delegate` and `subagent_resume` tools use the shared collapsible operational-console layout across foreground runs, resumed sessions, and background queue results. The primary tool presentation is unframed, with a restrained near-monochrome hierarchy, width-aware title and status columns, subtle section rules, and responsive activity ledgers instead of decorative cards, emoji, or undifferentiated log rows. Background completion messages steer an active parent run at its next model boundary and trigger a new turn when the parent is idle, so asynchronous results arrive without requiring a manual resume. They reuse Pi's native tool shell, including success/error backgrounds and padding, so asynchronous results remain visually consistent with ordinary tool output. Calls identify the agent and user-facing mode, show a bounded three-visual-line task preview, and report explicit model, effort, context, cwd, and custom-instruction overrides without displaying custom system-prompt text.
 
 While a foreground or resumed child is running, the result updates at approximately 100 ms intervals. The compact view aligns the latest child tool summary with its textual status, renders the last five visual lines of live Markdown, and combines concise usage with the expand hint in a responsive footer. Live text is retained as a Unicode-safe 2,000-code-point rolling tail without changing the complete final response. Completed results collapse to a one-line conclusion; errors and aborts expose their actionable summary immediately. Status uses monochrome text glyphs such as `→ running`, `✓ done`, `✗ error`, `— queued`, and `× aborted`, never emoji presentation characters.
 
@@ -138,7 +148,7 @@ Run details use persistence version 3 and are indexed by the parent Pi session. 
 
 `/subagent` with no arguments temporarily replaces the editor with a non-overlay Pi-native three-tab manager and restores the original editor text when closed. Its adaptive 72–104-column workbench is single-column on narrow terminals and splits into list/detail columns when space permits. `RUNNING` shows current-session queued/background work and can cancel it through a real `cancelling` transition while retaining resumable artifacts. `SESSION` shows V3 children created or resumed by the current parent session and supports `Resume original`, `Start fresh with current definition`, and confirmed history deletion. Resume availability follows the activity lease rather than the persisted phase: an inactive stale `running` record remains recoverable, while a live lease disables the Manager action and direct resume returns an `isError: true` `SUBAGENT_ACTIVE` result without modifying session history. `DEFINITIONS` shows effective values and field sources, with project-default or explicitly agent-scoped create/edit/hide/delete actions. Task editors, scope/field choices, `inherit`/`set`/`clear` controls, YAML/effective-diff review, and destructive confirmations remain inside one focus-preserving manager workflow. Manager-started resume/fresh actions enter the session-owned background lifecycle, remain visible and cancellable, and return completion notifications. Package definitions are never edited in place.
 
-`/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses Pi's native skill-card visual language without claiming to be a skill; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands.
+`/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses the same unframed operational status rail and label-led rule as other pi-square surfaces; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands.
 
 ## Persistent SSH shell
 
@@ -214,6 +224,43 @@ A fine-grained PAT should grant access only to the repositories it needs and use
 
 Results are deliberately bounded and explicit about incompleteness. Search exposes GitHub's `incomplete_results`, 1,000-result window, pagination, and rate metadata; GitHub itself limits code search to the default branch, files smaller than 384 KiB, and 10 authenticated requests per minute. File reads accept at most 2 MiB and return at most 50 KiB/2,000 lines per call. Tree traversal uses at most 20 API requests, 100 KiB of output, 200 returned entries, and reports the Contents API's 1,000-entry directory boundary. Commit output is capped at 100 KiB with at most 50 changed files per page and a separate patch budget; unavailable binary patches and locally omitted patches are labeled. The module creates no cache, log, or GitHub-specific artifact, and redacts PAT-shaped text from model and TUI output. Normal Pi persistence still applies: private paths, source excerpts, and commit patches are written to the parent session JSONL or, when Librarian invokes the tools, its persistent child session and resumable artifacts.
 
+## Built-in ownership and adapters
+
+pi-square recreates Pi's seven public built-in definitions from Pi 0.80.6 factories at `session_start`, spreads each complete definition, and replaces only `renderShell`, `renderCall`, and `renderResult`. Schemas, prompt metadata, argument preparation, execution functions, mutation queues, and model-facing results remain Pi-owned. `write` pending output may show a workspace-bounded, 1 MB maximum projected diff; it never wraps execution or claims that preview as an authoritative final state. `edit` results use Pi's returned diff details.
+
+`read` preserves Pi's effective `images.autoResize`; non-Windows `bash` preserves `shellPath` and `shellCommandPrefix`. If Pi's global or trusted-project settings fail to parse, only those two overrides are blocked: native definitions remain on first startup, and a previously loaded valid definition remains in effect until reload. A bounded warning appears in the footer status area, banner, and `/display`.
+
+Known `pi-tool-display` global ownership blocks every built-in override. Earlier extension owners are detected per tool through Pi's public `sourceInfo`; only losing tools are marked blocked, active-tool ordering is restored exactly, and `/reload` is required after removing the conflicting renderer. Public Pi APIs cannot observe an unknown renderer that registers after pi-square and loses first-wins ownership, so this is explicitly best-effort rather than complete conflict detection. pi-square does not monkey-patch `pi.registerTool` or message component prototypes.
+
+Third-party and MCP extensions can opt in explicitly through the major-version public entry point:
+
+```ts
+import {
+  decorateToolForDisplay,
+  type ToolDisplayAdapterV1,
+} from "@odradekk/pi-square/display";
+
+const adapter: ToolDisplayAdapterV1 = {
+  version: 1,
+  title: "MCP lookup",
+  family: "remote",
+  fields: [
+    { kind: "text", source: "args", path: ["query"], phase: "call" },
+    { kind: "preview", source: "result", path: ["text"], phase: "result" },
+    { kind: "count", source: "details", path: ["count"], label: "items", phase: "result" },
+  ],
+};
+
+decorateToolForDisplay(toolDefinition, adapter);
+pi.registerTool(toolDefinition);
+```
+
+Adapter v1 is declarative: the only presentation kinds are `text`, `path`, `url`, `count`, `command`, `preview`, `diff`, and `progress`. It accepts at most 16 fields; source paths have at most eight 64-character data-property segments; labels are limited to 32 characters and titles to 80. Functions, accessors, Components, raw renderers, arbitrary theme tokens, and unknown fields are rejected. Runtime values still pass through mandatory control cleaning, redaction, and display budgets.
+
+When no matching runtime is active, the unchanged tool object and validated static adapter enter a 128-entry bounded versioned queue. Runtime installation drains the queue and decorates the same object identity retained by Pi. Shutdown and reload restore the exact original property descriptors only while pi-square still owns them; a renderer installed later by another extension is not overwritten. If pi-square is absent, the original/default shell and native renderers remain untouched. There is no automatic tool scan: each third-party definition must call the adapter API.
+
+This major release adds an explicit package export map for `.`, `./display`, and `./package.json`. Undeclared deep imports are no longer supported; consumers must use the root extension entry or the declarative display entry point.
+
 ## Configuration
 
 Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict. SSH profiles are the exception to normal overlay behavior: they are accepted only from the agent-level file and cannot be supplied or changed by a project repository.
@@ -221,8 +268,31 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
 ```json
 {
   "version": 2,
-  "footer": {
-    "mode": "enhanced"
+  "display": {
+    "motion": "full",
+    "defaults": {
+      "resultMode": "summary",
+      "previewLines": 8,
+      "expandedMaxLines": 4000,
+      "showMetadata": true,
+      "showDuration": true,
+      "wordWrap": true,
+      "diffView": "auto",
+      "diffSplitMinWidth": 120,
+      "diffCollapsedLines": 24,
+      "diffIndicators": "bars"
+    },
+    "families": {
+      "search": {
+        "resultMode": "preview"
+      }
+    },
+    "tools": {
+      "write": {
+        "diffView": "split",
+        "previewLines": 16
+      }
+    }
   },
   "banner": {
     "enabled": false
@@ -260,7 +330,9 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
 
 Replace the sample fingerprint with the target's independently verified OpenSSH SHA-256 fingerprint. Agent authentication uses `auth.socket` when supplied, then `SSH_AUTH_SOCK`, with Pageant as the Windows fallback. Private-key authentication instead uses `{ "method": "privateKey", "privateKeyPath": "~/.ssh/id_ed25519" }`; key content and passphrases do not belong in configuration.
 
-`footer.mode` accepts only `enhanced` or `native`; `enhanced` is the default. V1 is no longer accepted. Migrate by deleting the complete `statusline` object and changing `"version": 1` to `"version": 2`; use `footer.mode` for the new startup-only fallback. The former SSH `confirmCommands` profile field is also no longer accepted; remove it because connected SSH sessions now run commands without per-command confirmation. Unknown fields reject that configuration layer rather than being ignored. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
+Display policy resolution is deliberately cross-axis: package defaults, agent defaults/family/tool, then project defaults/family/tool. Project scope therefore wins over every agent-level specificity. Families are `filesystem`, `search`, `execution`, `remote`, `workflow`, and `agent`. `motion` accepts `full`, `reduced`, or `off`; `resultMode` accepts `hidden`, `summary`, or `preview`; `diffView` accepts `auto`, `split`, or `unified`; and `diffIndicators` accepts `bars`, `classic`, or `none`. `previewLines` is 1-80, `expandedMaxLines` is 0-20,000, `diffSplitMinWidth` is 70-240, and `diffCollapsedLines` is 4-240. Boolean and numeric bounds are validated at the layer boundary, tool names use a bounded stable identifier format, and `display.tools` accepts at most 128 entries. Use `/display` to inspect field-level provenance and stage safe writes instead of editing by hand.
+
+`footer.mode` is deprecated, ignored at runtime, and retained only so V2 files can be migrated through the `/display` review. V1 is no longer accepted. Migrate by deleting `footer` and the complete `statusline` object, changing `"version": 1` to `"version": 2`, and configuring the `display` section. The former SSH `confirmCommands` profile field is also no longer accepted; remove it because connected SSH sessions now run commands without per-command confirmation. Unknown fields reject that configuration layer rather than being ignored. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
 
 ## Development
 

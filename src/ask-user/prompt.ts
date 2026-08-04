@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import {
   getSelectListTheme,
   keyHint,
@@ -15,6 +14,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { sanitizeDisplayText } from "../display/sanitize";
 import type {
   AnswerDraft,
   AskProgress,
@@ -51,10 +51,7 @@ const WIDE_LAYOUT_COLUMNS = 60;
 const COMPACT_HEADER_COLUMNS = 48;
 
 function sanitizeDisplay(value: unknown): string {
-  return stripVTControlCharacters(String(value ?? ""))
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "   ")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+  return sanitizeDisplayText(value);
 }
 
 function inlineDisplay(value: unknown): string {
@@ -614,7 +611,12 @@ class AskWizard implements Component, Focusable {
   }
 
   private renderHeader(width: number): string[] {
-    const brand = this.theme.fg("toolTitle", this.theme.bold("ASK"));
+    const rail = this.mode === "review"
+      ? this.theme.fg("success", "✓")
+      : this.mode === "cancel"
+        ? this.theme.fg("warning", "×")
+        : this.theme.fg("accent", "?");
+    const brand = `${rail} ${this.theme.fg("toolTitle", this.theme.bold("ASK"))}`;
     if (this.mode === "review") {
       const { answeredCount, skippedCount } = this.counts();
       const status = width < COMPACT_HEADER_COLUMNS

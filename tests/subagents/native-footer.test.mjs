@@ -84,7 +84,7 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
     onBranchChange() { return () => {}; },
   });
 
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     const lines = footer.render(width);
     assert.equal(lines.length, 3, `${file} at ${width} columns must use the native two rows plus status row`);
     for (const line of lines) assert.ok(visibleWidth(line) <= width, `${file} footer exceeded ${width} columns`);
@@ -96,4 +96,4 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
   }
 }
 
-console.log("native Pi footer integration: dark/light themes at 40, 80, and 120 columns OK");
+console.log("native Pi footer integration: dark/light themes at every display boundary width OK");

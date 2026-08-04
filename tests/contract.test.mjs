@@ -21,6 +21,7 @@ try {
   const events = new Map();
   const entries = [];
   let activeTools = ["read", "bash"];
+  const ownSourceInfo = { path: packageRoot, source: "@odradekk/pi-square", scope: "project", origin: "package" };
   const pi = {
     registerTool(definition) { tools.set(definition.name, definition); },
     registerCommand(name, definition) { commands.set(name, definition); },
@@ -33,7 +34,7 @@ try {
       events.set(name, handlers);
     },
     getThinkingLevel() { return "high"; },
-    getAllTools() { return [...tools.values()]; },
+    getAllTools() { return [...tools.values()].map((definition) => ({ ...definition, sourceInfo: ownSourceInfo })); },
     getActiveTools() { return [...activeTools]; },
     setActiveTools(names) { activeTools = [...names]; },
   };
@@ -86,7 +87,7 @@ try {
   for (const subagentTool of [delegateTool, resumeTool]) {
     assert.equal(typeof subagentTool?.renderCall, "function");
     assert.equal(typeof subagentTool?.renderResult, "function");
-    assert.equal(subagentTool?.renderShell, undefined);
+    assert.equal(subagentTool?.renderShell, "self");
   }
   // Provider-compatibility contract: both subagent schemas are strict top-level
   // objects without unions; delegate must not declare id (GPT models populate
@@ -115,7 +116,7 @@ try {
   assert.deepEqual(createChildTools(githubToolNames).definitions.map((definition) => definition.name), githubToolNames);
   assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
-  assert.deepEqual([...commands.keys()].sort(), ["context", "prompt-manager", "subagent"]);
+  assert.deepEqual([...commands.keys()].sort(), ["context", "display", "prompt-manager", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
   assert.deepEqual([...shortcuts.keys()], ["alt+i"]);
   assert.deepEqual([...renderers.keys()], [
@@ -132,6 +133,8 @@ try {
   const ctx = {
     cwd: process.cwd(),
     hasUI: false,
+    mode: "rpc",
+    isProjectTrusted: () => false,
     model: { provider: "test", id: "test" },
     sessionManager: { getBranch: () => entries },
     getSystemPrompt: () => "",
@@ -141,8 +144,20 @@ try {
     await handler({ type: "session_start", reason: "startup" }, ctx);
   }
   assert.equal(shortcuts.has("alt+s"), false, "native footer must not register the former statusline shortcut");
-  assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should gain command highlighting after session start");
-  assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should retain Pi's native result renderer");
+  assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should use the shared display renderer after session start");
+  assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should use the shared result renderer");
+  for (const name of [
+    "rg", "fd", "sg", "pdf_search", "codegraph", "time", "scheme", "ssh", "bash",
+    "read", "grep", "find", "ls", "edit", "write",
+    "search", "fetch", "parse", "libs", "docs",
+    "github_search", "github_read", "github_tree", "github_commit",
+    "ask", "todo", "subagent_delegate", "subagent_resume",
+  ]) {
+    const tool = tools.get(name);
+    assert.equal(tool?.renderShell, "self", `${name} parent tool must use the shared display shell`);
+    assert.equal(typeof tool?.renderCall, "function", `${name} parent tool must render calls`);
+    assert.equal(typeof tool?.renderResult, "function", `${name} parent tool must render results`);
+  }
   assert.deepEqual(activeTools, ["read", "bash"]);
 
   const promptHandler = events.get("before_agent_start")[0];

@@ -74,14 +74,14 @@ test("partial, error, binary, and expanded output are explicit and sanitized", (
   assert.match(expanded, /collapse/);
 });
 
-test("real dark and light themes keep calls and results within 40, 80, and 120 columns", () => {
+test("real dark and light themes keep calls and results within every display boundary width", () => {
   const result = {
     content: [{ type: "text", text: "github_commit acme/repository@abcdef\n\n## src/a-very-long-file-name.ts\n```diff\n-long line ".repeat(8) + "\n```" }],
     details: { tool: "commit", phase: "done", repo: "acme/repository", ref: "abcdef", page: 1, limit: 20, returned: 1, hasMore: false, omittedPatches: 0, additions: 1, deletions: 1 },
   };
   for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
     const theme = loadThemeFromPath(join(packageRoot, "themes", file));
-    for (const width of [40, 80, 120]) {
+    for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
       const components = [
         renderGitHubSearchCall({ kind: "code", query: "a very long query repo:acme/repository", page: 2, limit: 50 }, theme, {}),
         renderGitHubReadCall({ repo: "acme/repository", path: "src/a-very-long-file-name.ts", ref: "feature/branch", line: 100, limit: 200 }, theme, {}),

@@ -67,7 +67,7 @@ assert.match(projectedProgress, /progress 100%/);
 assert.match(projectedProgress, /complete/);
 assert.doesNotMatch(projectedProgress, /progress (?:0|50)%/, "rendering must not expand overwritten progress states into lines");
 
-for (const width of [40, 80, 120]) {
+for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
   for (const component of [call, definition.renderResult(result, { expanded: false, isPartial: false }, theme), definition.renderResult(result, { expanded: true, isPartial: false }, theme)]) {
     for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${JSON.stringify(line)}`);
   }

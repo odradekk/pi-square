@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { decorateInternalTool } from "../display/internal-adapters";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import { verifyWasmIntegrity } from "./integrity";
-import { registerSchemeTool } from "./tools/scheme";
+import { createSchemeToolDefinition } from "./tools/scheme";
 
 function warn(ctx: any, pi: any, message: string): void {
   if (ctx?.hasUI && ctx.ui?.notify) {
@@ -16,8 +18,12 @@ function warn(ctx: any, pi: any, message: string): void {
   console.warn(message);
 }
 
-export default function registerSchemeSandbox(pi: ExtensionAPI): void {
-  registerSchemeTool(pi);
+export default function registerSchemeSandbox(
+  pi: ExtensionAPI,
+  runtime?: DisplayRuntimeProvider,
+): void {
+  const definition = createSchemeToolDefinition();
+  pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
 
   pi.on("session_start", async (_event, ctx) => {
     const check = verifyWasmIntegrity();

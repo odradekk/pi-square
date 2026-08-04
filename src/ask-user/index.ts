@@ -2,6 +2,8 @@ import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { promptQuestions } from "./prompt";
+import { decorateInternalTool } from "../display/internal-adapters";
+import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import { renderAskCall, renderAskResult } from "./render";
 import type {
   AnswerDraft,
@@ -267,6 +269,8 @@ export function createAskToolDefinition(
 export default function registerAskUser(
   pi: ExtensionAPI,
   notifications: AskUserNotifications = NO_NOTIFICATIONS,
+  runtime?: DisplayRuntimeProvider,
 ): void {
-  pi.registerTool(createAskToolDefinition(notifications));
+  const definition = createAskToolDefinition(notifications);
+  pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
 }

@@ -437,7 +437,7 @@ function result(runDetails, text = `ID: ${runDetails.id}\n\n${runDetails.finalTe
 
   for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {
     const theme = loadThemeFromPath(join(packageRoot, "themes", `${themeName}.json`));
-    for (const width of [40, 80, 120]) {
+    for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
       const components = [
         renderSubagentCall({ mode: "fg", agent: "explorer", task: pressure.task, model: "provider/model" }, theme, context()),
         renderSubagentResult(result(pressure, pressure.liveText), { expanded: false, isPartial: true }, theme, context()),

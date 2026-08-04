@@ -211,13 +211,13 @@ test("malformed details keep collapsed content private and expanded fallback com
   assert.match(expanded, new RegExp(tail));
 });
 
-test("ask call and result stay within 40, 80, and 120 columns", () => {
+test("ask call and result stay within every display boundary width", () => {
   const longQuestions = [{
     ...questions[0],
     text: `Question ${"long text ".repeat(40)}`,
     options: [{ value: "long", label: "label ".repeat(60), description: "description ".repeat(80) }],
   }];
-  for (const width of [40, 80, 120]) {
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     const components = [
       definition.renderCall({ questions: longQuestions }, plainTheme, context({ expanded: true })),
       definition.renderResult(result(doneDetails), { expanded: false, isPartial: false }, plainTheme, context()),

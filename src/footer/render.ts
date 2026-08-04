@@ -1,8 +1,8 @@
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EnhancedFooterSnapshot } from "./data";
+import { sanitizeDisplayLine } from "../display/sanitize";
 
 const WIDE_WIDTH = 100;
 const MEDIUM_WIDTH = 64;
@@ -36,6 +36,10 @@ export function formatFooterCwd(cwd: string, home: string | undefined): string {
   return relativeToHome === "" ? "~" : `~${sep}${relativeToHome}`;
 }
 
+function clean(value: unknown): string {
+  return sanitizeDisplayLine(value).replace(/\\[nrt]/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function divider(theme: Theme): string {
   return theme.fg("borderMuted", " │ ");
 }
@@ -61,11 +65,11 @@ function projectName(cwd: string): string {
 
 function projectSide(theme: Theme, snapshot: EnhancedFooterSnapshot, wide: boolean): string {
   const path = wide
-    ? formatFooterCwd(snapshot.cwd, process.env.HOME || process.env.USERPROFILE)
-    : projectName(snapshot.cwd);
+    ? clean(formatFooterCwd(snapshot.cwd, process.env.HOME || process.env.USERPROFILE))
+    : clean(projectName(snapshot.cwd));
   const parts = [theme.fg("accent", path)];
-  if (snapshot.branch) parts.push(theme.fg("muted", snapshot.branch));
-  if (wide && snapshot.sessionName) parts.push(theme.fg("muted", snapshot.sessionName));
+  if (snapshot.branch) parts.push(theme.fg("muted", clean(snapshot.branch)));
+  if (wide && snapshot.sessionName) parts.push(theme.fg("muted", clean(snapshot.sessionName)));
   return parts.join(dot(theme));
 }
 
@@ -78,8 +82,8 @@ function thinkingText(theme: Theme, snapshot: EnhancedFooterSnapshot, includeLab
 
 function modelSide(theme: Theme, snapshot: EnhancedFooterSnapshot, wide: boolean): string {
   const identity = wide && snapshot.showProvider && snapshot.provider
-    ? `${theme.fg("muted", snapshot.provider)}${theme.fg("dim", " / ")}${theme.fg("text", snapshot.modelName)}`
-    : theme.fg("text", snapshot.modelName);
+    ? `${theme.fg("muted", clean(snapshot.provider))}${theme.fg("dim", " / ")}${theme.fg("text", clean(snapshot.modelName))}`
+    : theme.fg("text", clean(snapshot.modelName));
   const thinking = thinkingText(theme, snapshot, true);
   return thinking ? `${identity}${dot(theme)}${thinking}` : identity;
 }
@@ -143,10 +147,7 @@ function usageSide(theme: Theme, snapshot: EnhancedFooterSnapshot, wide: boolean
 }
 
 function sanitizeExternalStatus(text: string): string {
-  return stripVTControlCharacters(text)
-    .replace(/[\r\n\t]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return clean(text);
 }
 
 function statusLine(theme: Theme, snapshot: EnhancedFooterSnapshot, width: number): string | undefined {
@@ -174,8 +175,10 @@ export function renderEnhancedFooter(
   const wide = safeWidth >= WIDE_WIDTH;
   const medium = safeWidth >= MEDIUM_WIDTH;
 
+  const identity = theme.fg("toolTitle", theme.bold("π²"));
+  const project = projectSide(theme, snapshot, wide);
   const first = alignWithRightPriority(
-    projectSide(theme, snapshot, wide),
+    `${identity}${divider(theme)}${project}`,
     modelSide(theme, snapshot, wide),
     safeWidth,
   );
@@ -201,7 +204,7 @@ export function renderEnhancedFooter(
     truncateToWidth(first, safeWidth, theme.fg("dim", "...")),
     truncateToWidth(second, safeWidth, theme.fg("dim", "...")),
   ];
-  const status = statusLine(theme, snapshot, safeWidth);
-  if (status) lines.push(status);
+  const status = statusLine(theme, snapshot, Math.max(1, safeWidth - 2));
+  if (status) lines.push(truncateToWidth(`${theme.fg("warning", "!")} ${status}`, safeWidth, theme.fg("dim", "...")));
   return lines;
 }
