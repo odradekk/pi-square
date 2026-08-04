@@ -48,7 +48,7 @@ try {
   const expectedTools = [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
     "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search",
-    "subagent", "time", "todo",
+    "subagent_delegate", "subagent_resume", "time", "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));
@@ -94,10 +94,12 @@ try {
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
-  const subagentDefinition = session.getToolDefinition("subagent");
-  assert.equal(typeof subagentDefinition?.renderCall, "function");
-  assert.equal(typeof subagentDefinition?.renderResult, "function");
-  assert.equal(subagentDefinition?.renderShell, undefined);
+  for (const toolName of ["subagent_delegate", "subagent_resume"]) {
+    const subagentDefinition = session.getToolDefinition(toolName);
+    assert.equal(typeof subagentDefinition?.renderCall, "function");
+    assert.equal(typeof subagentDefinition?.renderResult, "function");
+    assert.equal(subagentDefinition?.renderShell, undefined);
+  }
 
   const timeResult = await toolByName("time").execute("smoke:time", {}, undefined, undefined);
   assert.match(timeResult.content[0].text, /ISO 8601:/);
