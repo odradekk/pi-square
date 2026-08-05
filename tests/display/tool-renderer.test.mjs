@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { Type } from "typebox";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
+initTheme();
+const toolExecutionModulePath = new URL(
+  "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js",
+  import.meta.url,
+).href;
+const { ToolExecutionComponent } = await import(toolExecutionModulePath);
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
 const { decorateToolDefinition } = await load("../../src/display/tool-renderer.ts");
-const { isOperationalDisplayComponent } = await load("../../src/display/components.ts");
 
 class FakeClock {
   callbacks = new Map();
@@ -85,7 +92,7 @@ function context(overrides = {}) {
 }
 
 const call = decorated.renderCall({ query: "needle" }, theme, context());
-assert.ok(isOperationalDisplayComponent(call));
+assert.match(call.render(80).join("\n"), /Sample.*needle/);
 assert.equal(clock.callbacks.size, 1);
 for (const callback of clock.callbacks.values()) callback();
 assert.equal(invalidations, 1);
@@ -99,7 +106,13 @@ const partial = decorated.renderResult(
   theme,
   context({ isPartial: true }),
 );
-assert.notEqual(partial, call, "result slot may replace the call component");
+assert.notEqual(partial, call, "Pi keeps distinct call and result renderer slots");
+assert.deepEqual(call.render(80), [], "the call slot becomes empty as soon as a result exists");
+assert.equal(
+  [...call.render(80), ...partial.render(80)].join("\n").match(/Sample/g)?.length,
+  1,
+  "the composed tool execution renders one operational entry",
+);
 assert.equal(clock.callbacks.size, 1, "motion subscription transfers to the new component");
 
 const final = decorated.renderResult(
@@ -119,6 +132,31 @@ const errored = decorated.renderResult(
   context({ lastComponent: final, isError: true }),
 );
 assert.match(errored.render(80)[0], /×/);
+
+const piComponent = new ToolExecutionComponent(
+  "sample",
+  "pi-call-1",
+  { query: "needle" },
+  {},
+  decorated,
+  { requestRender() {} },
+  process.cwd(),
+);
+piComponent.markExecutionStarted();
+piComponent.setArgsComplete();
+assert.equal(
+  (stripVTControlCharacters(piComponent.render(80).join("\n")).match(/Sample/g) ?? []).length,
+  1,
+  "Pi call composition starts with one operational entry",
+);
+piComponent.updateResult({ content: [{ type: "text", text: "done" }], details: { count: 1 } }, false);
+const piFinal = stripVTControlCharacters(piComponent.render(80).join("\n"));
+assert.equal(
+  (piFinal.match(/Sample/g) ?? []).length,
+  1,
+  "Pi call/result composition must replace the pending entry instead of retaining it",
+);
+assert.match(piFinal, /done/);
 runtime.dispose();
 
 const asyncRuntime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: false, test: true } });

@@ -77,7 +77,7 @@ export class MotionScheduler {
 
   private intervalMs(): number | undefined {
     if (this.motion === "off") return undefined;
-    return Math.floor(1_000 / (this.motion === "full" ? MOTION_FULL_FPS : MOTION_REDUCED_FPS));
+    return Math.ceil(1_000 / (this.motion === "full" ? MOTION_FULL_FPS : MOTION_REDUCED_FPS));
   }
 
   private ensureTimer(): void {

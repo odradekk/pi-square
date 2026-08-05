@@ -84,7 +84,7 @@ export type DisplayMotion = "full" | "reduced" | "off";
 export const DISPLAY_MOTIONS: readonly DisplayMotion[] = ["full", "reduced", "off"];
 
 /** Maximum animation frame rate for full motion (frames per second). */
-export const MOTION_FULL_FPS = 5;
+export const MOTION_FULL_FPS = 30;
 /** Fixed update rate for reduced motion (frames per second). */
 export const MOTION_REDUCED_FPS = 1;
 

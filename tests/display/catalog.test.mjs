@@ -220,7 +220,7 @@ assert.equal(DISPLAY_DIFF_COLLAPSED_LINES_MIN, 4);
 assert.equal(DISPLAY_DIFF_COLLAPSED_LINES_MAX, 240);
 assert.equal(LAYOUT_COMPACT_MAX_COLUMNS, 63);
 assert.equal(LAYOUT_REGULAR_MAX_COLUMNS, 99);
-assert.equal(MOTION_FULL_FPS, 5);
+assert.equal(MOTION_FULL_FPS, 30);
 assert.equal(MOTION_REDUCED_FPS, 1);
 
 // ── Six families ─────────────────────────────────────────────────────

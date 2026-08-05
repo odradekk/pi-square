@@ -33,7 +33,7 @@ let second = 0;
 const stopFirst = scheduler.subscribe(() => { first += 1; });
 const stopSecond = scheduler.subscribe(() => { second += 1; });
 assert.equal(clock.handles.size, 1, "all subscribers share one timer");
-assert.deepEqual(clock.intervals, [200], "full motion is capped at 5 FPS");
+assert.deepEqual(clock.intervals, [34], "full motion is capped at 30 FPS");
 clock.tick();
 assert.equal(first, 1);
 assert.equal(second, 1);

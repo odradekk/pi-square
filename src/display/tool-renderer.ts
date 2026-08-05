@@ -64,6 +64,30 @@ export interface ToolDisplayState {
   displayAsyncCallDescription?: DisplayDescriptionV1;
 }
 
+class CallDisplaySlot implements Component {
+  constructor(
+    private component: OperationalDisplayComponent,
+    private state: ToolDisplayState,
+  ) {}
+
+  update(component: OperationalDisplayComponent, state: ToolDisplayState): void {
+    this.component = component;
+    this.state = state;
+  }
+
+  operationalComponent(): OperationalDisplayComponent {
+    return this.component;
+  }
+
+  render(width: number): string[] {
+    return this.state.displayPhase === "result" ? [] : this.component.render(width);
+  }
+
+  invalidate(): void {
+    this.component.invalidate();
+  }
+}
+
 function duration(state: ToolDisplayState, terminal: boolean): number | undefined {
   if (state.displayStartedAt === undefined) return undefined;
   if (terminal) state.displayEndedAt ??= Date.now();
@@ -89,11 +113,11 @@ function componentFor(
   runtime: DisplayRuntime,
   description: DisplayDescriptionV1,
   theme: Theme,
-  context: DisplayToolRenderContext<ToolDisplayState, unknown>,
+  lastComponent: Component | undefined,
   expanded: boolean,
 ): OperationalDisplayComponent {
-  const component = isOperationalDisplayComponent(context.lastComponent)
-    ? context.lastComponent
+  const component = isOperationalDisplayComponent(lastComponent)
+    ? lastComponent
     : runtime.createComponent(description, theme, { expanded });
   runtime.updateComponent(component, description, theme, { expanded });
   return component;
@@ -148,7 +172,16 @@ export function decorateToolDefinition<
         : adapter.describeCall(args, context);
       const description = applyRuntimeFields(raw, state, false, false, "call");
       const displayContext = context as DisplayToolRenderContext<ToolDisplayState, unknown>;
-      const component = componentFor(runtime, description, theme, displayContext, context.expanded);
+      const previousSlot = context.lastComponent instanceof CallDisplaySlot ? context.lastComponent : undefined;
+      const component = componentFor(
+        runtime,
+        description,
+        theme,
+        previousSlot?.operationalComponent(),
+        context.expanded,
+      );
+      const slot = previousSlot ?? new CallDisplaySlot(component, state);
+      slot.update(component, state);
       ensureMotion(
         runtime,
         component,
@@ -181,7 +214,7 @@ export function decorateToolDefinition<
           // Preview hydration is best effort and must never affect tool execution.
         });
       }
-      return component;
+      return slot;
     },
     renderResult(result, options, theme, context) {
       const runtime = resolveRuntime(runtimeProvider);
@@ -192,7 +225,7 @@ export function decorateToolDefinition<
       const raw = adapter.describeResult(result, options, context);
       const description = applyRuntimeFields(raw, state, terminal, context.isError, "result");
       const displayContext = context as DisplayToolRenderContext<ToolDisplayState, unknown>;
-      const component = componentFor(runtime, description, theme, displayContext, options.expanded);
+      const component = componentFor(runtime, description, theme, context.lastComponent, options.expanded);
       ensureMotion(
         runtime,
         component,
