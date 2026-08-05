@@ -134,6 +134,25 @@ assert.match(expandedSubagent, /ACTIVITY/);
 assert.match(expandedSubagent, /USAGE/);
 assert.doesNotMatch(running, /Completed/);
 
+const webSearch = decorateInternalTool(fake("search"), runtime);
+const webExpanded = webSearch.renderResult({
+  content: [{ type: "text", text: "model output" }],
+  details: {
+    queries: ["Pi coding agent GitHub repository"],
+    failedQueries: [],
+    count: 1,
+    phase: "done",
+    totalBeforeDedup: 1,
+    totalAfterDedup: 1,
+    results: [{ title: "earendil-works/pi", url: "https://github.com/earendil-works/pi", description: "Pi agent toolkit", provenance: "[q1#1]" }],
+  },
+}, { expanded: true, isPartial: false }, theme, context({ queries: ["Pi coding agent GitHub repository"], limit: 5 }, { expanded: true })).render(100);
+const requestLine = webExpanded.find((line) => line.includes("REQUEST"));
+const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works/pi"));
+assert.ok(webExpanded[0]?.startsWith("✓ Web search"), "tool header remains flush-left");
+assert.ok(requestLine?.startsWith("  REQUEST"), "section heading is indented into the tool body");
+assert.ok(resultTitleLine?.startsWith("    1. earendil-works/pi"), "result record is indented into the tool body");
+
 for (const child of createChildTools([
   "search", "fetch", "libs", "docs", "github_search", "github_read", "github_tree", "github_commit",
 ]).definitions) {

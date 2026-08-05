@@ -37,19 +37,20 @@ function titleLine(title: string, context: RenderContext): string {
     sanitizeDisplayLine(title).toUpperCase(),
     MAX_SECTION_TITLE_CODE_POINTS,
   ));
-  const prefix = `${label} `;
+  const prefix = `  ${label} `;
   const remainder = Math.max(0, context.width - visibleWidth(prefix));
   return padVisible(`${prefix}${styleRule(context.theme, "─".repeat(remainder))}`, context.width);
 }
 
 function wrap(prefix: string, text: string, tone: DisplayTone | undefined, context: RenderContext): string[] {
   const content = truncateCodePoints(sanitizeDisplayText(text), MAX_SECTION_TEXT_CODE_POINTS);
+  const effectivePrefix = prefix.startsWith(" ") ? `  ${prefix}` : `  ${prefix}`;
   if (context.policy.wordWrap) {
-    return wrapHanging(prefix, styleTone(context.theme, tone, content), context.width);
+    return wrapHanging(effectivePrefix, styleTone(context.theme, tone, content), context.width);
   }
   return content.split("\n").map((line, index) => padVisible(
     truncateToWidth(
-      `${index === 0 ? prefix : " ".repeat(Math.min(context.width, visibleWidth(prefix)))}${styleTone(context.theme, tone, line)}`,
+      `${index === 0 ? effectivePrefix : " ".repeat(Math.min(context.width, visibleWidth(effectivePrefix)))}${styleTone(context.theme, tone, line)}`,
       context.width,
       "...",
     ),
@@ -77,7 +78,7 @@ function renderMarkdown(block: Extract<DisplaySectionBlock, { kind: "markdown" }
     0,
     getMarkdownTheme(),
   );
-  const lines = markdown.render(context.width).map((line) => padVisible(truncateToWidth(line, context.width, "..."), context.width));
+  const lines = markdown.render(Math.max(1, context.width - 2)).map((line) => padVisible(truncateToWidth(`  ${line}`, context.width, "..."), context.width));
   markdown.invalidate();
   return boundVisual(lines, MAX_MARKDOWN_VISUAL_LINES, context);
 }
@@ -98,7 +99,8 @@ function renderCode(block: Extract<DisplaySectionBlock, { kind: "code" }>, conte
     }
   })();
   const gutter = block.lineNumbers === false ? 0 : String(sourceLines.length).length + 2;
-  const bodyWidth = Math.max(1, context.width - gutter);
+  const bodyIndent = "  ";
+  const bodyWidth = Math.max(1, context.width - gutter - visibleWidth(bodyIndent));
   const rendered: string[] = [];
   const count = Math.max(sourceLines.length, highlighted.length);
   for (let index = 0; index < count; index += 1) {
@@ -111,7 +113,7 @@ function renderCode(block: Extract<DisplaySectionBlock, { kind: "code" }>, conte
       : [truncateToWidth(body, bodyWidth, "...")];
     wrapped.forEach((line, wrappedIndex) => {
       const continuation = wrappedIndex === 0 ? number : " ".repeat(gutter);
-      rendered.push(padVisible(`${continuation}${line}`, context.width));
+      rendered.push(padVisible(`${bodyIndent}${continuation}${line}`, context.width));
     });
   }
   return boundVisual(rendered, MAX_CODE_VISUAL_LINES, context);
@@ -177,7 +179,7 @@ function pathMarker(kind: DisplayPathItem["kind"]): string {
 function renderPaths(block: Extract<DisplaySectionBlock, { kind: "paths" }>, context: RenderContext): string[] {
   const items = block.items.slice(0, MAX_SECTION_ITEMS);
   const lines = items.flatMap((item) => rightPriorityRows(
-    `${context.theme.fg("muted", pathMarker(item.kind))} ${styleTone(context.theme, item.tone, truncateCodePoints(sanitizeDisplayLine(item.path), 2_048))}`,
+    `  ${context.theme.fg("muted", pathMarker(item.kind))} ${styleTone(context.theme, item.tone, truncateCodePoints(sanitizeDisplayLine(item.path), 2_048))}`,
     item.meta ? context.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(item.meta), 256)) : "",
     context.width,
   ));
@@ -197,7 +199,7 @@ function renderMatches(block: Extract<DisplaySectionBlock, { kind: "matches" }>,
   const lines: string[] = [];
   for (const item of items) {
     lines.push(...rightPriorityRows(
-      styleTone(context.theme, item.tone ?? "accent", truncateCodePoints(sanitizeDisplayLine(matchLocation(item)), 2_048)),
+      `  ${styleTone(context.theme, item.tone ?? "accent", truncateCodePoints(sanitizeDisplayLine(matchLocation(item)), 2_048))}`,
       item.meta ? context.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(item.meta), 256)) : "",
       context.width,
     ));
@@ -215,7 +217,7 @@ function renderActivity(block: Extract<DisplaySectionBlock, { kind: "activity" }
       ? context.theme.fg("success", "✓ done")
       : context.theme.fg("accent", "→ running");
   const lines = items.flatMap((item) => rightPriorityRows(
-    `${context.theme.fg("toolTitle", truncateCodePoints(sanitizeDisplayLine(item.tool), 80))}  ${truncateCodePoints(sanitizeDisplayLine(item.summary), 1_024)}`,
+    `  ${context.theme.fg("toolTitle", truncateCodePoints(sanitizeDisplayLine(item.tool), 80))}  ${truncateCodePoints(sanitizeDisplayLine(item.summary), 1_024)}`,
     statusText(item.status),
     context.width,
   ));

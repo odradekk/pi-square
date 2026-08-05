@@ -131,6 +131,9 @@ assert.match(structuredExpanded, /MATCHES/);
 assert.match(structuredExpanded, /src\/a\.ts:12:4/);
 assert.match(structuredExpanded, /OUTPUT/);
 assert.match(structuredExpanded, /1\s+const needle/);
+const structuredLines = structuredExpanded.split("\n");
+assert.ok(structuredLines.find((line) => line.includes("MATCHES"))?.startsWith("  MATCHES"));
+assert.ok(structuredLines.find((line) => line.includes("src/a.ts:12:4"))?.startsWith("  src/a.ts:12:4"));
 for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
   const lines = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(width);
   assert.ok(lines.every((line) => visibleWidth(line) <= width));
