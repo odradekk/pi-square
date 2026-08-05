@@ -16,7 +16,6 @@ import {
 import { sanitizeSubagentDisplay } from "./display";
 import { toolEventDisplay, type ToolEventDisplay } from "./tool-display";
 import type {
-  SubagentErrorInfo,
   SubagentNotificationDetails,
   SubagentRunDetails,
   SubagentTimelineItem,
@@ -25,7 +24,6 @@ import type {
 
 export { sanitizeSubagentDisplay } from "./display";
 
-const CALL_TASK_LINES = 3;
 const LIVE_MARKDOWN_LINES = 5;
 const RECENT_TIMELINE_ITEMS = 8;
 const ROW_GAP = 3;
@@ -94,29 +92,6 @@ class FullRule implements Component {
   invalidate(): void {}
 }
 
-class VisualHead implements Component {
-  constructor(
-    private readonly text: string,
-    private readonly maxLines: number,
-    private readonly theme: Theme,
-  ) {}
-
-  render(width: number): string[] {
-    const safeWidth = Math.max(1, width);
-    const lines = this.text.split("\n").flatMap((line) => wrapTextWithAnsi(line || " ", safeWidth));
-    if (lines.length <= this.maxLines) return lines;
-    const visible = lines.slice(0, this.maxLines);
-    visible[visible.length - 1] = truncateToWidth(
-      `${visible[visible.length - 1]} ${this.theme.fg("muted", "...")}`,
-      safeWidth,
-      "...",
-    );
-    return visible;
-  }
-
-  invalidate(): void {}
-}
-
 class OneVisualLine implements Component {
   constructor(private readonly text: string) {}
 
@@ -152,10 +127,6 @@ class MarkdownVisualTail implements Component {
   invalidate(): void {
     this.markdown.invalidate();
   }
-}
-
-function hasOwn(value: unknown, key: string): boolean {
-  return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
 }
 
 function firstText(result: any): string {
@@ -565,116 +536,6 @@ function renderRunResult(
   addFooter(component, details, theme, state, false, false);
 }
 
-function renderSpecialResult(result: any, options: { expanded: boolean }, theme: Theme): Component {
-  const details = result?.details;
-  const content = sanitizeSubagentDisplay(firstText(result)).trim() || "(no output)";
-  const component = new Container();
-
-  if (details?.status === "already_running") {
-    const left = theme.fg("toolTitle", theme.bold("subagent"))
-      + theme.fg("dim", " / ")
-      + theme.fg("muted", "resumed");
-    component.addChild(new ResponsiveRow(left, statusPresentation("active", theme)));
-    component.addChild(new Text(
-      `${theme.fg("dim", "ID  ")}${theme.fg("muted", sanitizeSubagentDisplay(details.id))}`,
-      0,
-      0,
-    ));
-    return component;
-  }
-
-  const error = details?.status === "error" ? details.error as SubagentErrorInfo | undefined : undefined;
-  if (error) {
-    component.addChild(new ResponsiveRow(
-      theme.fg("toolTitle", theme.bold("subagent")),
-      statusPresentation("error", theme),
-    ));
-    if (options.expanded) component.addChild(new SectionHeading("error", theme));
-    component.addChild(new Text(theme.fg("error", sanitizeSubagentDisplay(error.message)), 0, 0));
-    if (error.suggestedAction) {
-      component.addChild(new Text(theme.fg("warning", `Next  ${sanitizeSubagentDisplay(error.suggestedAction)}`), 0, 0));
-    }
-    if (options.expanded && error.cause) {
-      component.addChild(new Text(theme.fg("dim", `Cause  ${sanitizeSubagentDisplay(error.cause)}`), 0, 0));
-    }
-    if (options.expanded) {
-      component.addChild(new FullRule(theme));
-      component.addChild(new ResponsiveRow("", expandHint(true)));
-    } else if (error.cause) {
-      component.addChild(new ResponsiveRow("", expandHint(false)));
-    }
-    return component;
-  }
-
-  if (options.expanded) component.addChild(new Text(content, 0, 0));
-  else component.addChild(new OneVisualLine(content));
-  return component;
-}
-
-export function renderSubagentCall(args: any, theme: Theme, context: any): Component {
-  const state = (context?.state ?? {}) as SubagentRenderState;
-  if (context?.executionStarted && state.startedAt === undefined) {
-    state.startedAt = Date.now();
-    state.endedAt = undefined;
-  }
-
-  const component = new Container();
-  const mode = args?.mode === "bg" || args?.mode === "resume" ? args.mode : "fg";
-  const identity = [theme.fg("toolTitle", theme.bold("subagent"))];
-  if (mode !== "resume") identity.push(theme.fg("accent", sanitizeSubagentDisplay(args?.agent || "generic")));
-  identity.push(theme.fg("muted", modeLabel(mode)));
-  component.addChild(new Text(identity.join(theme.fg("dim", " / ")), 0, 0));
-
-  const task = sanitizeSubagentDisplay(args?.task || "(building...)").trim() || "(empty task)";
-  component.addChild(new VisualHead(task, CALL_TASK_LINES, theme));
-
-  const meta: string[] = [];
-  if (hasOwn(args, "context") && Number(args.context) > 0) meta.push(`context=${Math.floor(Number(args.context))}`);
-  if (typeof args?.model === "string" && args.model) meta.push(`model=${sanitizeSubagentDisplay(args.model)}`);
-  if (typeof args?.thinkingLevel === "string" && args.thinkingLevel) meta.push(`effort=${sanitizeSubagentDisplay(args.thinkingLevel)}`);
-  if (typeof args?.cwd === "string" && args.cwd) meta.push(`cwd=${sanitizeSubagentDisplay(args.cwd)}`);
-  if (typeof args?.systemPrompt === "string" && args.systemPrompt.trim()) meta.push("custom instructions");
-  if (meta.length > 0) component.addChild(new Text(theme.fg("dim", meta.join(" · ")), 0, 0));
-  if (mode === "resume" && args?.id) {
-    component.addChild(new Text(
-      `${theme.fg("dim", "ID  ")}${theme.fg("muted", sanitizeSubagentDisplay(args.id))}`,
-      0,
-      0,
-    ));
-  }
-  return component;
-}
-
-export function renderSubagentResult(
-  result: any,
-  options: { expanded: boolean; isPartial: boolean },
-  theme: Theme,
-  context: any,
-): Component {
-  const state = (context?.state ?? {}) as SubagentRenderState;
-  if (state.startedAt === undefined) state.startedAt = Date.now();
-  if (options.isPartial && !state.interval) {
-    state.interval = setInterval(() => context?.invalidate?.(), 1000);
-    state.interval.unref?.();
-  }
-  if (!options.isPartial || context?.isError) {
-    state.endedAt ??= Date.now();
-    if (state.interval) {
-      clearInterval(state.interval);
-      state.interval = undefined;
-    }
-  }
-
-  if (!isRunDetails(result?.details)) return renderSpecialResult(result, options, theme);
-  const component = context?.lastComponent instanceof SubagentResultComponent
-    ? context.lastComponent
-    : new SubagentResultComponent();
-  component.clear();
-  renderRunResult(component, result, result.details, options, theme, state);
-  component.invalidate();
-  return component;
-}
-
 export function renderSubagentNotification(
   message: { content?: unknown; details?: SubagentNotificationDetails },
   options: { expanded: boolean },
@@ -703,7 +564,6 @@ export function renderSubagentNotification(
 }
 
 export const __testables = {
-  CALL_TASK_LINES,
   LIVE_MARKDOWN_LINES,
   RECENT_TIMELINE_ITEMS,
   substantivePreview,

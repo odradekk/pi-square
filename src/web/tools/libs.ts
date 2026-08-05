@@ -3,7 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { searchContext7Libraries, resolveContext7ApiKey } from "../clients/context7";
 import { isAbortError } from "../shared/errors";
-import { renderLibsCall, renderLibsResult } from "./context7-render";
 import {
   CONTEXT7_LIBS_DETAILS_CAP,
   CONTEXT7_LIBS_MARKDOWN_CAP,
@@ -290,12 +289,6 @@ export function createLibsToolDefinition() {
         details: readyDetails(selection),
       };
 
-    },
-    renderCall(args: any, theme: any, context: any) {
-      return renderLibsCall(args, theme, context);
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-      return renderLibsResult(result, options, theme);
     },
   };
 }

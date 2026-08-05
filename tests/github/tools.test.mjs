@@ -60,7 +60,7 @@ function base64File(path, content, extra = {}) {
   };
 }
 
-test("module exposes four strict parent tools with native renderers", () => {
+test("module exposes four strict headless parent tool definitions", () => {
   const definitions = createGitHubToolDefinitions();
   assert.deepEqual(definitions.map((tool) => tool.name), ["github_search", "github_read", "github_tree", "github_commit"]);
   for (const tool of definitions) {
@@ -68,8 +68,8 @@ test("module exposes four strict parent tools with native renderers", () => {
     assert.equal(tool.parameters.type, "object");
     assert.equal(tool.parameters.additionalProperties, false);
     assert.equal(tool.parameters.anyOf, undefined);
-    assert.equal(typeof tool.renderCall, "function");
-    assert.equal(typeof tool.renderResult, "function");
+    assert.equal(tool.renderCall, undefined);
+    assert.equal(tool.renderResult, undefined);
   }
   assert.deepEqual(createGitHubSearchToolDefinition().parameters.required.sort(), ["kind", "query"]);
   assert.deepEqual(createGitHubCommitToolDefinition().parameters.required.sort(), ["ref", "repo"]);

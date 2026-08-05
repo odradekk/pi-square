@@ -1214,10 +1214,10 @@ for (const [name, createDefinition] of [
   ["libs", createLibsToolDefinition],
   ["docs", createDocsToolDefinition],
 ]) {
-  test(`${name} keeps the default Pi shell and defines native renderers`, () => {
+  test(`${name} definitions remain headless before parent decoration`, () => {
     const definition = createDefinition();
-    assert.equal(typeof definition.renderCall, "function");
-    assert.equal(typeof definition.renderResult, "function");
+    assert.equal(definition.renderCall, undefined);
+    assert.equal(definition.renderResult, undefined);
     assert.equal(definition.renderShell, undefined);
   });
 }

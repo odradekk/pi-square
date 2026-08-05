@@ -7,7 +7,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { ShellOutputAccumulator, type ShellOutputOptions, type ShellOutputSnapshot } from "../output";
-import { renderPwshCall, renderPwshResult, type ShellRenderState } from "../render";
 import {
   probePwsh,
   runPwsh,
@@ -115,7 +114,7 @@ const PROMPT_GUIDELINES = IS_WINDOWS
 
 export function createPwshToolDefinition(
   dependencies: PwshToolDependencies = {},
-): ToolDefinition<typeof PwshParamsSchema, PwshToolDetails, ShellRenderState> {
+): ToolDefinition<typeof PwshParamsSchema, PwshToolDetails> {
   const resolveProbe = dependencies.probe ?? getPwshProbe;
   const executeRun = dependencies.run ?? runPwsh;
 
@@ -257,8 +256,6 @@ export function createPwshToolDefinition(
         clearUpdateTimer();
       }
     },
-    renderCall: renderPwshCall,
-    renderResult: renderPwshResult,
   };
 }
 

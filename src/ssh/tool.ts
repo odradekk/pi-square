@@ -22,7 +22,6 @@ import {
 } from "./contracts";
 import { sshErrorCode, sshErrorMessage, SshError } from "./errors";
 import { SshSessionManager } from "./manager";
-import { renderSshCall, renderSshResult } from "./render";
 import { promptSecret } from "./secret-input";
 import { projectTerminalOutput } from "./terminal-output";
 
@@ -356,8 +355,6 @@ export function createSshToolController(
         return failure(operation, error);
       }
     },
-    renderCall: renderSshCall,
-    renderResult: renderSshResult,
   };
 
   return {

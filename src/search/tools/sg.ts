@@ -13,7 +13,6 @@ import {
   MIN_LIMIT,
   STDOUT_CAP,
 } from "../contracts";
-import { renderSgCall, renderSgResult } from "../render";
 import type { RunCommandOptions, RunCommandResult } from "../runner";
 import { SgAccumulator } from "../sg-output";
 
@@ -121,12 +120,6 @@ export function createSgToolDefinition(deps: SgToolDeps) {
           },
         },
       };
-    },
-    renderCall(args: any, theme: any, context: any) {
-      return renderSgCall(args, theme, context);
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-      return renderSgResult(result, options, theme);
     },
   };
 }

@@ -94,7 +94,10 @@ try {
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
-  for (const toolName of ["read", "grep", "find", "ls", "edit", "write", "bash", "subagent_delegate", "subagent_resume"]) {
+  for (const toolName of [
+    "read", "grep", "find", "ls", "edit", "write", "bash",
+    ...expectedTools,
+  ]) {
     const definition = session.getToolDefinition(toolName);
     assert.equal(typeof definition?.renderCall, "function", `${toolName} must render calls through pi-square`);
     assert.equal(typeof definition?.renderResult, "function", `${toolName} must render results through pi-square`);

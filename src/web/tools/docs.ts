@@ -3,7 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { fetchContext7Context, resolveContext7ApiKey } from "../clients/context7";
 import { isAbortError } from "../shared/errors";
-import { renderDocsCall, renderDocsResult } from "./context7-render";
 import {
   CONTEXT7_DOCS_MARKDOWN_CAP,
   CONTEXT7_DOCS_DETAILS_CAP,
@@ -431,12 +430,6 @@ export function createDocsToolDefinition() {
         content: [{ type: "text" as const, text: buildText(selection) }],
         details: readyDetails(selection),
       };
-    },
-    renderCall(args: any, theme: any, context: any) {
-      return renderDocsCall(args, theme, context);
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-      return renderDocsResult(result, options, theme);
     },
   };
 }

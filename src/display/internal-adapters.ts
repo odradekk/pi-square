@@ -133,7 +133,10 @@ function summaryRows(detailsValue: unknown): { rows: { text: string }[]; metadat
   if (typeof details.message === "string" && details.message) rows.push({ text: textValue(details.message, 500) });
   if (rows.length === 0) {
     const returned = page.returned ?? details.returned;
-    rows.push({ text: returned === 0 ? "No results" : "Completed" });
+    const phase = String(details.phase ?? details.status ?? "").toLowerCase();
+    const terminal = ["success", "done", "completed", "ready"].includes(phase);
+    if (returned === 0) rows.push({ text: "No results" });
+    else if (terminal || (!phase && returned !== undefined)) rows.push({ text: "Completed" });
   }
   return { rows, metadata };
 }
@@ -154,7 +157,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         ...(preview ? { preview: { text: preview } } : {}),
       };
     },
-    describeResult(result, options) {
+    describeResult(result, options, context) {
       const text = firstText(result);
       const summary = summaryRows(result.details);
       const status = statusFor(result, options.isPartial);
@@ -166,7 +169,8 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         family,
         status,
         title,
-        metadata: summary.metadata,
+        target: targetFor(name, context.args),
+        metadata: [...metadataForArgs(name, context.args), ...summary.metadata],
         rows: summary.rows,
         durationMs,
         ...(text ? { preview: { text } } : {}),

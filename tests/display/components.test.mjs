@@ -57,6 +57,32 @@ assert.match(error, /security warning/);
 assert.match(error, /\[REDACTED\]/);
 assert.doesNotMatch(error, /abc-secret/);
 
+const noWrapDescription = {
+  version: 1,
+  tool: "rg",
+  family: "search",
+  status: "success",
+  title: "Search",
+  rows: [{ text: `row ${"long ".repeat(30)}ROW_TAIL` }],
+  preview: { text: `preview ${"wide ".repeat(30)}PREVIEW_TAIL` },
+};
+const wrappedLines = new OperationalDisplayComponent(
+  noWrapDescription,
+  { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", wordWrap: true },
+  plainTheme,
+  { expanded: false },
+).render(40);
+const clippedLines = new OperationalDisplayComponent(
+  noWrapDescription,
+  { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", wordWrap: false },
+  plainTheme,
+  { expanded: false },
+).render(40);
+assert.ok(wrappedLines.length > clippedLines.length);
+assert.equal(clippedLines.length, 3, "header, row, and preview remain one line each");
+assert.ok(clippedLines.every((line) => visibleWidth(line) === 40));
+assert.doesNotMatch(clippedLines.join("\n"), /ROW_TAIL|PREVIEW_TAIL/);
+
 const hanging = new HangingText("key=", "value ".repeat(20));
 const row = new ResponsiveRow("left ".repeat(10), "right");
 const rule = new SectionRule("details", plainTheme);

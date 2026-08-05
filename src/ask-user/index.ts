@@ -4,7 +4,6 @@ import { Type } from "typebox";
 import { promptQuestions } from "./prompt";
 import { decorateInternalTool } from "../display/internal-adapters";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
-import { renderAskCall, renderAskResult } from "./render";
 import type {
   AnswerDraft,
   AskCancelledPayload,
@@ -255,13 +254,6 @@ export function createAskToolDefinition(
       } catch (error) {
         return errorResult("ASK_UI_FAILED", safeReason(error), questions.length);
       }
-    },
-
-    renderCall(args: any, theme: any, context: any) {
-      return renderAskCall(args, theme, context);
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any, context: any) {
-      return renderAskResult(result, options, theme, context);
     },
   };
 }

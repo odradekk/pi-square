@@ -13,7 +13,6 @@ const SUITES = [
   "sg.test.mjs",
   "tool-contract.test.mjs",
   "tool-execution.test.mjs",
-  "rendering.test.mjs",
 ];
 
 let failed = 0;

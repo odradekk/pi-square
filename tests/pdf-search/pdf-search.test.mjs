@@ -3,14 +3,9 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stripVTControlCharacters } from "node:util";
 
 import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
-import { initTheme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
 import jiti from "jiti";
-
-initTheme();
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -56,15 +51,6 @@ writeFileSync(blankPath, await createPdf([""]));
 writeFileSync(encryptedPath, await createPdf(["secret"], { encrypted: true }));
 writeFileSync(outsidePath, await createPdf(["outside"]));
 try { symlinkSync(outsidePath, join(workspace, "escape.pdf")); } catch {}
-
-const plainTheme = {
-  fg(_color, text) { return String(text); },
-  bold(text) { return String(text); },
-};
-
-function render(component, width = 80) {
-  return component.render(width).map((line) => stripVTControlCharacters(line));
-}
 
 function extracted(pages) {
   const textUnits = pages.reduce((sum, page) => sum + page.length, 0);
@@ -157,7 +143,7 @@ test("cache validates file identity, refreshes LRU order, and enforces byte budg
   assert.equal(cache.bytes, 0);
 });
 
-test("tool schema is strict and child-safe, with bounded result rendering", () => {
+test("tool schema is strict and child-safe before parent decoration", () => {
   const tool = createPdfSearchToolDefinition();
   assert.equal(tool.name, "pdf_search");
   assert.equal(tool.parameters.type, "object");
@@ -167,13 +153,9 @@ test("tool schema is strict and child-safe, with bounded result rendering", () =
   assert.equal(tool.parameters.properties.path.maxLength, 4096);
   assert.equal(tool.parameters.properties.query.maxLength, 500);
   assert.equal(tool.parameters.properties.limit.maximum, 20);
-  assert.equal(typeof tool.renderCall, "function");
-  assert.equal(typeof tool.renderResult, "function");
+  assert.equal(tool.renderCall, undefined);
+  assert.equal(tool.renderResult, undefined);
   assert.equal(tool.renderShell, undefined);
-
-  const call = render(tool.renderCall({ path: "sample.pdf", query: "installation" }, plainTheme, {}), 40);
-  assert.ok(call.join("\n").includes("pdf_search"));
-  for (const line of call) assert.ok(visibleWidth(line) <= 40);
 });
 
 test("tool caches extraction, returns ranked pages, and invalidates after file change", async () => {
@@ -223,7 +205,7 @@ test("tool rejects invalid arguments and paths outside the workspace before extr
   assert.equal(calls, 0);
 });
 
-test("tool reports cancellation, extraction errors, no matches, and expanded context", async () => {
+test("tool reports cancellation, extraction errors, no matches, and matching context", async () => {
   const controller = new AbortController();
   controller.abort();
   const preCancelled = createPdfSearchToolDefinition({ async extract() { throw new Error("unreachable"); } });
@@ -238,13 +220,11 @@ test("tool reports cancellation, extraction errors, no matches, and expanded con
 
   const successful = createPdfSearchToolDefinition({ async extract() { return extracted(["needle context"]); } });
   const found = await successful.execute("t", { path: "sample.pdf", query: "needle" }, undefined, undefined, { cwd: workspace });
-  const expanded = render(successful.renderResult(found, { expanded: true, isPartial: false }, plainTheme), 80).join("\n");
-  assert.match(expanded, /Page 1/);
-  assert.match(expanded, /needle context/);
+  assert.equal(found.details.matches[0].page, 1);
+  assert.match(found.details.matches[0].context, /needle context/);
 
   const empty = await successful.execute("t", { path: "sample.pdf", query: "absent" }, undefined, undefined, { cwd: workspace });
   assert.equal(empty.details.totalMatches, 0);
-  assert.match(render(successful.renderResult(empty, { expanded: false, isPartial: false }, plainTheme), 80).join("\n"), /No matching pages/);
 });
 
 try {

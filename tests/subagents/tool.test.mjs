@@ -100,10 +100,10 @@ test("registerSubagentTool exposes the delegate and resume tools", () => {
   }
 });
 
-test("delegate and resume tools use native renderers and keep Pi's default tool shell", () => {
+test("delegate and resume definitions stay headless before parent decoration", () => {
   for (const tool of [delegateTool(), resumeTool()]) {
-    assert.equal(typeof tool.renderCall, "function");
-    assert.equal(typeof tool.renderResult, "function");
+    assert.equal(tool.renderCall, undefined);
+    assert.equal(tool.renderResult, undefined);
     assert.equal(tool.renderShell, undefined);
   }
 });

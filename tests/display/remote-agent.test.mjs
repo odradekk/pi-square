@@ -7,6 +7,7 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
 const { decorateInternalTool } = await load("../../src/display/internal-adapters.ts");
+const { decorateSubagentTool } = await load("../../src/subagents/display-adapter.ts");
 const { createChildTools } = await load("../../src/tool-catalog.ts");
 
 const theme = {
@@ -76,10 +77,47 @@ for (const [name, args, expected] of cases) {
 
   const result = { content: [{ type: "text", text: "private result body" }], details: { status: "success", returned: 1 } };
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
-  assert.doesNotMatch(collapsed.render(80).join("\n"), /private result body/);
+  const collapsedText = collapsed.render(80).join("\n");
+  const resultIdentity = name === "subagent_delegate"
+    ? /explorer/
+    : name === "subagent_resume"
+      ? /subagent_12345678/
+      : expected;
+  assert.match(collapsedText, resultIdentity, `${name} result identity`);
+  assert.doesNotMatch(collapsedText, /private result body/);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   assert.match(expanded.render(80).join("\n"), /private result body/);
 }
+
+const subagentArgs = { agent: "explorer", mode: "fg", task: "inspect runtime" };
+const subagent = decorateSubagentTool(fake("subagent_delegate"), runtime);
+const subagentDetails = {
+  version: 3,
+  id: "subagent_12345678-1234-4123-8123-123456789abc",
+  mode: "fg",
+  phase: "running",
+  agent: { name: "explorer", effort: "high" },
+  task: "inspect runtime",
+  cwd: process.cwd(),
+  model: "provider/model",
+  startedAt: Date.now() - 4_200,
+  finalText: "",
+  liveText: "scanning repository for candidates\nfound 3 matches",
+  retries: 0,
+  toolErrors: [],
+  usage: { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+  timeline: [{ kind: "tool", phase: "start", text: 'rg {"pattern":"needle","path":"src"}' }],
+};
+const running = subagent.renderResult(
+  { content: [{ type: "text", text: subagentDetails.liveText }], details: subagentDetails },
+  { expanded: false, isPartial: true },
+  theme,
+  context(subagentArgs, { isPartial: true }),
+).render(80).join("\n");
+assert.match(running, /explorer/);
+assert.match(running, /scanning repository|found 3 matches/);
+assert.match(running, /ACTIVITY.*rg.*needle/i);
+assert.doesNotMatch(running, /Completed/);
 
 for (const child of createChildTools([
   "search", "fetch", "libs", "docs", "github_search", "github_read", "github_tree", "github_commit",

@@ -19,6 +19,16 @@ const MAX_ROW_CODE_POINTS = 16_384;
 const MAX_PREVIEW_CODE_POINTS = 256_000;
 const MAX_ERROR_CODE_POINTS = 8_192;
 
+function logicalLines(prefix: string, content: string, width: number): string[] {
+  const safeWidth = Math.max(1, Math.floor(width));
+  const continuation = " ".repeat(Math.min(safeWidth, visibleWidth(prefix)));
+  return content.split("\n").map((line, index) => truncateToWidth(
+    `${index === 0 ? prefix : continuation}${line}`,
+    safeWidth,
+    "...",
+  ));
+}
+
 export class HangingText implements Component {
   constructor(private prefix: string, private content: string) {}
 
@@ -73,20 +83,33 @@ export class BoundedPreview implements Component {
     private maximumLines: number,
     private theme: Theme,
     private omittedLines = 0,
+    private wordWrap = true,
   ) {}
 
-  update(text: string, maximumLines: number, theme: Theme, omittedLines = 0): void {
+  update(text: string, maximumLines: number, theme: Theme, omittedLines = 0, wordWrap = true): void {
     this.text = text;
     this.maximumLines = maximumLines;
     this.theme = theme;
     this.omittedLines = omittedLines;
+    this.wordWrap = wordWrap;
   }
 
   render(width: number): string[] {
-    const bounded = boundedVisualLines(sanitizeDisplayText(this.text), width, this.maximumLines);
+    const safeWidth = Math.max(1, Math.floor(width));
+    const sanitized = sanitizeDisplayText(this.text);
+    const bounded = this.wordWrap
+      ? boundedVisualLines(sanitized, safeWidth, this.maximumLines)
+      : (() => {
+          const logical = sanitized.split("\n");
+          const maximum = Math.max(0, Math.floor(this.maximumLines));
+          return {
+            lines: logical.slice(0, maximum).map((line) => truncateToWidth(line, safeWidth, "...")),
+            omitted: Math.max(0, logical.length - maximum),
+          };
+        })();
     const omitted = bounded.omitted + Math.max(0, this.omittedLines);
     const lines = bounded.lines.map((line) => styleTone(this.theme, "default", line));
-    if (omitted > 0) lines.push(padVisible(this.theme.fg("muted", `... ${omitted} lines omitted`), width));
+    if (omitted > 0) lines.push(padVisible(this.theme.fg("muted", `... ${omitted} lines omitted`), safeWidth));
     return lines;
   }
 
@@ -179,7 +202,11 @@ export class OperationalDisplayComponent implements Component {
       if (description.metadata.length > selectedFields.length) {
         fields.push(this.theme.fg("muted", `${description.metadata.length - selectedFields.length} fields omitted`));
       }
-      lines.push(...wrapHanging("  ", fields.join(" · "), safe));
+      lines.push(...(
+        this.policy.wordWrap
+          ? wrapHanging("  ", fields.join(" · "), safe)
+          : logicalLines("  ", fields.join(" · "), safe)
+      ));
     }
 
     const isCall = description.phase === "call";
@@ -198,14 +225,22 @@ export class OperationalDisplayComponent implements Component {
           row.tone,
           truncateCodePoints(sanitizeDisplayText(row.text), MAX_ROW_CODE_POINTS),
         );
-        lines.push(...wrapHanging(indent, text, safe));
+        lines.push(...(
+          this.policy.wordWrap
+            ? wrapHanging(indent, text, safe)
+            : logicalLines(indent, text, safe)
+        ));
       }
       if (description.rows.length > selectedRows.length) {
         lines.push(padVisible(this.theme.fg("muted", `${description.rows.length - selectedRows.length} rows omitted`), safe));
       }
     }
 
-    const showPreview = isCall || this.options.expanded || this.policy.resultMode === "preview";
+    const showPreview = isCall
+      || description.status === "pending"
+      || description.status === "partial"
+      || this.options.expanded
+      || this.policy.resultMode === "preview";
     if (showPreview && description.preview) {
       const maximum = this.options.expanded ? this.policy.expandedMaxLines : this.policy.previewLines;
       const boundedPreviewText = truncateCodePoints(description.preview.text, MAX_PREVIEW_CODE_POINTS);
@@ -215,6 +250,7 @@ export class OperationalDisplayComponent implements Component {
         maximum,
         this.theme,
         (description.preview.omittedLines ?? 0) + (inputTruncated ? 1 : 0),
+        this.policy.wordWrap,
       );
       lines.push(...preview.render(safe));
     }
@@ -224,7 +260,11 @@ export class OperationalDisplayComponent implements Component {
 
     if (description.error) {
       const message = truncateCodePoints(sanitizeDisplayText(description.error), MAX_ERROR_CODE_POINTS);
-      lines.push(...wrapHanging("  ", this.theme.fg("error", message), safe));
+      lines.push(...(
+        this.policy.wordWrap
+          ? wrapHanging("  ", this.theme.fg("error", message), safe)
+          : logicalLines("  ", this.theme.fg("error", message), safe)
+      ));
     }
     if (description.truncated) {
       lines.push(padVisible(this.theme.fg("warning", "output truncated by display budget"), safe));

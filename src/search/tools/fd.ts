@@ -12,7 +12,6 @@ import {
   STDOUT_CAP,
 } from "../contracts";
 import { FdAccumulator } from "../fd-output";
-import { renderFdCall, renderFdResult } from "../render";
 import type { RunCommandOptions, RunCommandResult } from "../runner";
 
 // ---------- deps ----------
@@ -139,12 +138,6 @@ export function createFdToolDefinition(deps: FdToolDeps) {
           },
         },
       };
-    },
-    renderCall(args: any, theme: any, context: any) {
-      return renderFdCall(args, theme, context);
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-      return renderFdResult(result, options, theme);
     },
   };
 }

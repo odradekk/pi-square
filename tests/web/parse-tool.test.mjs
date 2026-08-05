@@ -274,7 +274,7 @@ test("Firecrawl client aborts a success body that exceeds the remote response ca
 
 // Tool behavior and contract
 
-test("parse registration and schema are strict, parent-only, and renderer-backed", () => {
+test("parse registration and schema are strict and parent-only", () => {
   const tools = new Map();
   registerParseTool({ registerTool: (definition) => tools.set(definition.name, definition) });
   const definition = tools.get("parse");
@@ -287,8 +287,8 @@ test("parse registration and schema are strict, parent-only, and renderer-backed
   assert.equal(definition.parameters.properties.timeout.maximum, 300000);
   assert.equal(definition.parameters.properties.max_tokens.maximum, 50000);
   assert.equal(definition.renderShell, undefined);
-  assert.equal(typeof definition.renderCall, "function");
-  assert.equal(typeof definition.renderResult, "function");
+  assert.equal(definition.renderCall, undefined);
+  assert.equal(definition.renderResult, undefined);
 });
 
 test("parse fails before file or network access when pre-cancelled, non-interactive, or missing a key", async () => {
@@ -465,33 +465,6 @@ test("parse redacts Firecrawl errors and returns one stable HTTP error code", as
   } finally {
     mock.restore();
   }
-});
-
-test("parse call and result renderers stay bounded and expose expanded Markdown", async () => {
-  const tool = createParseToolDefinition({
-    resolveApiKey: () => "fc-test-key",
-    parsePdf: async () => ({ markdown: "# Result\n\nBody", metadata: { numPages: 1 } }),
-  });
-  const call = tool.renderCall({ path: "sample.pdf", pages: "1", mode: "fast" }, plainTheme, NO_CONTEXT);
-  const callLines = render(call, 40);
-  assert.ok(callLines.join("\n").includes("parse"));
-  assert.ok(callLines.join("\n").includes("sample.pdf"));
-  for (const line of callLines) assert.ok(visibleWidth(line) <= 40);
-
-  const result = await tool.execute(
-    "t",
-    { path: "sample.pdf", pages: "1" },
-    undefined,
-    undefined,
-    interactiveContext(async () => true),
-  );
-  const collapsed = render(tool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, NO_CONTEXT), 80).join("\n");
-  assert.match(collapsed, /1 page parsed/);
-  assert.match(collapsed, /to expand/);
-  const expanded = render(tool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, NO_CONTEXT), 80).join("\n");
-  assert.match(expanded, /Parsed PDF/);
-  assert.match(expanded, /Body/);
-  assert.match(expanded, /to collapse/);
 });
 
 try {

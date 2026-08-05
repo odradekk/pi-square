@@ -26,13 +26,6 @@ import {
   type GitHubTreeDetails,
   type GitHubTreeEntryDetail,
 } from "./types";
-import {
-  renderGitHubCommitCall,
-  renderGitHubReadCall,
-  renderGitHubResult,
-  renderGitHubSearchCall,
-  renderGitHubTreeCall,
-} from "./render";
 
 const REPO_PATTERN = "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$";
 const SEARCH_KINDS = ["repositories", "code"] as const;
@@ -190,10 +183,6 @@ const REPO = Type.String({ pattern: REPO_PATTERN, minLength: 3, maxLength: 141, 
 const REF = Type.String({ minLength: 1, maxLength: 256, description: "Branch, tag, or commit SHA (default: repository default branch)" });
 const PATH = Type.String({ minLength: 1, maxLength: 1_024, description: "Repository-relative path without a leading slash" });
 
-function toolRenderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-  return renderGitHubResult(result, options, theme);
-}
-
 function searchItem(raw: unknown, kind: "repositories" | "code", token: string): GitHubSearchItemDetail | undefined {
   if (!isRecord(raw)) return undefined;
   if (kind === "repositories") {
@@ -307,8 +296,6 @@ export function createGitHubSearchToolDefinition(): ToolDefinition<any, any> {
         return failed(details, error);
       }
     },
-    renderCall: renderGitHubSearchCall,
-    renderResult: toolRenderResult,
   };
 }
 
@@ -462,8 +449,6 @@ export function createGitHubReadToolDefinition(): ToolDefinition<any, any> {
         return failed(details, error);
       }
     },
-    renderCall: renderGitHubReadCall,
-    renderResult: toolRenderResult,
   };
 }
 
@@ -575,8 +560,6 @@ export function createGitHubTreeToolDefinition(): ToolDefinition<any, any> {
         return failed(details, error);
       }
     },
-    renderCall: renderGitHubTreeCall,
-    renderResult: toolRenderResult,
   };
 }
 
@@ -702,8 +685,6 @@ export function createGitHubCommitToolDefinition(): ToolDefinition<any, any> {
         return failed(details, error);
       }
     },
-    renderCall: renderGitHubCommitCall,
-    renderResult: toolRenderResult,
   };
 }
 

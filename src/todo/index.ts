@@ -2,7 +2,6 @@ import { stripVTControlCharacters } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { renderTodoCall, renderTodoResult } from "./render";
 import { decorateInternalTool } from "../display/internal-adapters";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
@@ -211,13 +210,6 @@ export function createTodoRuntime(pi: Pick<ExtensionAPI, "appendEntry">): TodoRu
           details,
         };
       }
-    },
-
-    renderCall(args, theme, context) {
-      return renderTodoCall(args, theme, context);
-    },
-    renderResult(result, options, theme, context) {
-      return renderTodoResult(result, options, theme, context);
     },
   };
 

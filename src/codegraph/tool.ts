@@ -19,7 +19,7 @@ import {
   type CodeGraphStatus,
 } from "./contracts";
 import { findCodeGraphRoot, hasCodeGraphIndex, hasCodeGraphResidue, resolveCodeGraphPath } from "./paths";
-import { renderCodeGraphCall, renderCodeGraphResult, sanitizeCodeGraphText } from "./render";
+import { sanitizeCodeGraphText } from "./sanitize";
 
 export interface CodeGraphToolDeps {
   resolveBinary: () => Promise<CodeGraphBinary>;
@@ -484,13 +484,6 @@ export function createCodeGraphToolDefinition(deps: CodeGraphToolDeps, allowWrit
         stderrTruncated: command.stderrTruncated,
       };
       return result(details, bounded.text || "CodeGraph returned no relevant source for this query.");
-    },
-
-    renderCall(args: any, theme: any, context: any) {
-      return renderCodeGraphCall(args, theme, context);
-    },
-    renderResult(value: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-      return renderCodeGraphResult(value, options, theme);
     },
   };
 }

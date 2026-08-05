@@ -1,16 +1,11 @@
-import { getMarkdownTheme, keyHint, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { getServiceKey } from "../shared/auth";
 import { HttpError, errorMessage, isAbortError } from "../shared/errors";
 import { fetchJinaPage, isValidHttpUrl, type FetchJinaOptions, type JinaPageContent } from "../clients/jina";
 import {
-  formatMarkdownLink,
-  formatMarkdownUrl,
   normalizeUrl,
-  sanitizeMarkdownForTerminal,
-  sanitizeTerminalText,
   shortenUrl,
 } from "../shared/render";
 import {
@@ -331,14 +326,6 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
         };
       }
     },
-    renderCall(args: any, theme: any, context: any) {
-      const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-      text.setText(buildFetchCallText(args, theme));
-      return text;
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any, _context: any) {
-      return renderFetchResult(result, options, theme);
-    },
   };
 }
 
@@ -346,144 +333,6 @@ export function registerFetchTool(pi: ExtensionAPI): void {
   pi.registerTool(createFetchToolDefinition());
 }
 
-// === TUI rendering ===
-
-function firstText(result: any): string | undefined {
-  const c = result?.content;
-  if (Array.isArray(c)) {
-    for (const item of c) {
-      if (item?.type === "text" && typeof item.text === "string") return item.text;
-    }
-  }
-  return undefined;
-}
-
-function buildFetchCallText(args: any, theme: any): string {
-  const urls: string[] = Array.isArray(args?.urls)
-    ? args.urls.map((u: unknown) => sanitizeTerminalText(String(u)).replace(/\s+/g, " ").trim()).filter(Boolean)
-    : [];
-  const firstUrl = urls[0] ? shortenUrl(urls[0]) : "(building...)";
-  const accent = urls.length > 1 ? `${firstUrl} +${urls.length - 1}` : firstUrl;
-  let text = theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("accent", accent);
-  const meta: string[] = [args?.mode === "full" ? "full" : "readable"];
-  const maxTokens = Number(args?.max_tokens);
-  if (Number.isFinite(maxTokens) && maxTokens > 0) meta.push(`${maxTokens} tokens`);
-  if (args?.no_cache) meta.push("no-cache");
-  if (args?.include_links) meta.push("links");
-  if (args?.describe_images) meta.push("images");
-  text += theme.fg("dim", `  ${meta.join(" · ")}`);
-  return text;
-}
-
-function countFetchRetried(details: FetchDetails | undefined): number {
-  if (details?.pages?.length) {
-    return details.pages.filter((p) => p.retried).length;
-  }
-  const ok = (details?.results ?? []).filter((r) => r.retried).length;
-  const failed = (details?.failedUrls ?? []).filter((f) => f.retried).length;
-  return ok + failed;
-}
-
-function buildFetchSummary(details: FetchDetails | undefined, theme: any): string {
-  if (details?.error) {
-    const error = sanitizeTerminalText(details.error).replace(/\s+/g, " ").trim();
-    return theme.fg("error", `✗ ${error}`);
-  }
-  const ok = details?.succeeded ?? 0;
-  const failed = details?.failed ?? 0;
-  const allFailed = ok === 0 && failed > 0;
-  let text = allFailed
-    ? theme.fg("error", `✗ ${failed} ${failed === 1 ? "page" : "pages"} failed`)
-    : theme.fg("success", "✓") + " " + theme.fg("text", `${ok} ${ok === 1 ? "page" : "pages"} fetched`);
-  const extras: string[] = [];
-  if (!allFailed && failed > 0) extras.push(`${failed} failed`);
-  const retried = countFetchRetried(details);
-  if (retried > 0) extras.push(`${retried} retried`);
-  if (extras.length) text += "  " + theme.fg("muted", extras.join(" · "));
-  return text;
-}
-
-function buildFetchPageHeading(page: FetchDisplayPage): string {
-  const lines = [
-    `### ${formatMarkdownLink(page.title || page.url, page.url)}`,
-    formatMarkdownUrl(page.url),
-  ];
-  if (page.finalUrl) lines.push(`Redirected to ${formatMarkdownUrl(page.finalUrl)}`);
-  return lines.join("\n\n");
-}
-
-function buildFetchPageMeta(page: FetchDisplayPage): string {
-  const meta: string[] = [];
-  if (page.retried) meta.push("retried");
-  if (page.lines > 0) meta.push(`${page.lines} lines`);
-  if (page.usage) meta.push(page.usage);
-  else if (page.tokens !== undefined) meta.push(`${page.tokens} tokens`);
-  return meta.join(" · ");
-}
-
-function renderFetchResult(
-  result: any,
-  options: { expanded: boolean; isPartial: boolean },
-  theme: any,
-): Component {
-  const details = result?.details as FetchDetails | undefined;
-
-  if (options.isPartial) {
-    return new Text(theme.fg("muted", "Fetching…"), 0, 0);
-  }
-
-  const pages = details?.pages;
-  const legacyContent = !details?.error && !pages && Boolean(firstText(result));
-  const hasContent = (details?.succeeded ?? 0) > 0 || (pages?.length ?? 0) > 0 || legacyContent;
-
-  if (!options.expanded) {
-    let line = buildFetchSummary(details, theme);
-    if (hasContent) line += "  " + keyHint("app.tools.expand", "to expand");
-    return new Text(line, 0, 0);
-  }
-
-  // Expanded.
-  if (!pages || pages.length === 0) {
-    // Old/legacy details without page offsets: fall back to the full content.
-    if (details?.error) {
-      return new Text(buildFetchSummary(details, theme), 0, 0);
-    }
-    const text = firstText(result);
-    if (!text) return new Text(buildFetchSummary(details, theme), 0, 0);
-    const legacy = new Container();
-    legacy.addChild(new Text(buildFetchSummary(details, theme), 0, 0));
-    legacy.addChild(new Spacer(1));
-    legacy.addChild(new Markdown(sanitizeMarkdownForTerminal(text), 0, 0, getMarkdownTheme()));
-    legacy.addChild(new Spacer(1));
-    legacy.addChild(new Text(keyHint("app.tools.expand", "to collapse"), 0, 0));
-    return legacy;
-  }
-
-  const content = firstText(result) ?? "";
-  const container = new Container();
-  container.addChild(new Text(buildFetchSummary(details, theme), 0, 0));
-  container.addChild(new Spacer(1));
-  for (const page of pages) {
-    const body = page.bodyStart != null ? content.slice(page.bodyStart, page.end) : "";
-    container.addChild(new Markdown(buildFetchPageHeading(page), 0, 0, getMarkdownTheme()));
-    if (page.description) {
-      const description = sanitizeTerminalText(page.description).replace(/\s+/g, " ").trim();
-      container.addChild(new Text(theme.fg("dim", description), 0, 0));
-    }
-    const meta = buildFetchPageMeta(page);
-    if (meta) container.addChild(new Text(theme.fg("muted", meta), 0, 0));
-    if (page.error) {
-      const error = sanitizeTerminalText(page.error).replace(/\s+/g, " ").trim();
-      container.addChild(new Text(theme.fg("error", `✗ ${error}`), 0, 0));
-    } else if (body) {
-      container.addChild(new Spacer(1));
-      container.addChild(new Markdown(sanitizeMarkdownForTerminal(body), 0, 0, getMarkdownTheme()));
-    }
-    container.addChild(new Spacer(1));
-  }
-  container.addChild(new Text(keyHint("app.tools.expand", "to collapse"), 0, 0));
-  return container;
-}
 
 function serializePage(url: string, page: JinaPageContent, params: any): { text: string; bodyStart: number } {
   const lines: string[] = [];

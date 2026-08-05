@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PromptManagerSegment } from "../prompt-manager/types";
-import { decorateInternalTool } from "../display/internal-adapters";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   abortAllBackgroundJobs,
@@ -10,6 +9,7 @@ import { discoverSubagents, filterVisibleSubagents } from "./definitions";
 import { registerSubagentManager } from "./manager";
 import { createNativeSubagentStatusController } from "./status";
 import { registerSubagentTool, type SubagentRuntimeState } from "./tool";
+import { decorateSubagentTool } from "./display-adapter";
 
 function formatSubagentCatalog(state: SubagentRuntimeState): string {
   const definitions = filterVisibleSubagents(state.registry).definitions;
@@ -52,7 +52,7 @@ export default function registerSubagents(pi: ExtensionAPI, runtime?: DisplayRun
   const nativeStatus = createNativeSubagentStatusController(state.background, runtime);
 
   registerSubagentTool(pi, state, runtime
-    ? (definition) => decorateInternalTool(definition, runtime)
+    ? (definition) => decorateSubagentTool(definition, runtime)
     : undefined);
   registerSubagentManager(pi, state, runtime);
 

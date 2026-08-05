@@ -15,7 +15,6 @@ import {
 } from "./contracts";
 import { extractPdfText, PdfSearchError, type PdfTextExtractionOptions } from "./extract";
 import { normalizePdfText, searchPdfPages } from "./matcher";
-import { renderPdfSearchCall, renderPdfSearchResult } from "./render";
 
 const PdfSearchParameters = Type.Object({
   path: Type.String({
@@ -228,12 +227,6 @@ export function createPdfSearchToolDefinition(
             : errorMessage(error);
         return failure(details, code, message, startedAt);
       }
-    },
-    renderCall(args: any, theme: any, context: any) {
-      return renderPdfSearchCall(args, theme, context);
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-      return renderPdfSearchResult(result, options, theme);
     },
   };
 }

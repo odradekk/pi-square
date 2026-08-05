@@ -1,17 +1,9 @@
-import { getMarkdownTheme, keyHint, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getServiceKey } from "../shared/auth";
 import { errorMessage, isAbortError } from "../shared/errors";
 import { searchJina, type JinaSearchEntry } from "../clients/jina";
-import {
-  escapeMarkdownText,
-  formatMarkdownLink,
-  formatMarkdownUrl,
-  normalizeUrl,
-  sanitizeMarkdownForTerminal,
-  sanitizeTerminalText,
-} from "../shared/render";
+import { normalizeUrl } from "../shared/render";
 import {
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
@@ -309,136 +301,9 @@ export function createSearchToolDefinition(): ToolDefinition<any, any> {
         };
       }
     },
-    renderCall(args: any, theme: any, context: any) {
-      const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-      text.setText(buildSearchCallText(args, theme));
-      return text;
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any, _context: any) {
-      return renderSearchResult(result, options, theme);
-    },
   };
 }
 
 export function registerSearchTool(pi: ExtensionAPI): void {
   pi.registerTool(createSearchToolDefinition());
-}
-
-// === TUI rendering ===
-
-function compactCallValue(value: unknown, limit = 56): string {
-  const normalized = sanitizeTerminalText(String(value ?? "")).replace(/\s+/g, " ").trim();
-  return normalized.length > limit ? `${normalized.slice(0, limit - 3)}...` : normalized;
-}
-
-function buildSearchCallText(args: any, theme: any): string {
-  const queries: string[] = Array.isArray(args?.queries)
-    ? args.queries.map((q: unknown) => compactCallValue(q)).filter(Boolean)
-    : [];
-  const accent = queries.length ? queries.map((q) => `"${q}"`).join(", ") : "(building...)";
-  let text = theme.fg("toolTitle", theme.bold("search ")) + theme.fg("accent", accent);
-  const meta: string[] = [];
-  const limit = Number(args?.limit);
-  if (Number.isFinite(limit) && limit > 0) meta.push(`limit ${limit}`);
-  const sites: string[] = Array.isArray(args?.sites)
-    ? args.sites.map((s: unknown) => compactCallValue(s, 36)).filter(Boolean)
-    : [];
-  if (sites.length === 1) meta.push(`site ${sites[0]}`);
-  else if (sites.length > 1) meta.push(`${sites.length} sites`);
-  if (typeof args?.language === "string" && args.language) meta.push(`lang ${compactCallValue(args.language, 8)}`);
-  if (typeof args?.country === "string" && args.country) meta.push(`country ${compactCallValue(args.country, 8)}`);
-  if (args?.no_cache) meta.push("no-cache");
-  if (meta.length) text += theme.fg("dim", `  ${meta.join(" · ")}`);
-  return text;
-}
-
-function searchPhaseLabel(phase: string | undefined): string {
-  if (phase === "merging") return "Merging results…";
-  return "Searching…";
-}
-
-function buildSearchSummary(details: SearchDetails | undefined, theme: any): string {
-  if (details?.error) {
-    return theme.fg("error", `✗ ${sanitizeTerminalText(details.error).replace(/\s+/g, " ").trim()}`);
-  }
-  const count = details?.results?.length ?? details?.totalAfterDedup ?? 0;
-  let text = theme.fg("success", "✓") + " " + theme.fg("text", `${count} ${count === 1 ? "result" : "results"}`);
-  const extras: string[] = [];
-  if (details?.totalBeforeDedup != null && details?.totalAfterDedup != null) {
-    const duplicates = details.totalBeforeDedup - details.totalAfterDedup;
-    if (duplicates > 0) extras.push(`${duplicates} duplicate${duplicates === 1 ? "" : "s"}`);
-    const omitted = details.totalAfterDedup - count;
-    if (omitted > 0) extras.push(`${omitted} omitted`);
-  }
-  if (details?.failedQueries?.length) extras.push(`${details.failedQueries.length} failed`);
-  if (extras.length) text += "  " + theme.fg("muted", extras.join(" · "));
-  return text;
-}
-
-function buildSearchExpandedMarkdown(details: SearchDetails | undefined): string {
-  const results = details?.results ?? [];
-  return results
-    .map((r, i) => {
-      const lines = [
-        `**${i + 1}.** ${formatMarkdownLink(r.title || r.url, r.url)}`,
-        formatMarkdownUrl(r.url),
-      ];
-      if (r.description) lines.push(escapeMarkdownText(r.description));
-      if (r.provenance) lines.push(`\`${r.provenance}\``);
-      return lines.join("\n");
-    })
-    .join("\n\n");
-}
-
-function firstResultText(result: any): string | undefined {
-  const content = result?.content;
-  if (!Array.isArray(content)) return undefined;
-  const text = content.find((item: any) => item?.type === "text" && typeof item.text === "string");
-  return text?.text;
-}
-
-function renderSearchResult(
-  result: any,
-  options: { expanded: boolean; isPartial: boolean },
-  theme: any,
-): Component {
-  const details = result?.details as SearchDetails | undefined;
-
-  if (options.isPartial) {
-    return new Text(theme.fg("muted", searchPhaseLabel(details?.phase)), 0, 0);
-  }
-
-  const structuredResults = details?.results ?? [];
-  const legacyText = !details?.error && structuredResults.length === 0 ? firstResultText(result) : undefined;
-  const hasResultContent = structuredResults.length > 0 || Boolean(legacyText);
-  const expandable = hasResultContent || (details?.failedQueries?.length ?? 0) > 0;
-
-  if (!options.expanded) {
-    let line = buildSearchSummary(details, theme);
-    if (expandable) line += "  " + keyHint("app.tools.expand", "to expand");
-    return new Text(line, 0, 0);
-  }
-
-  if (!expandable) {
-    return new Text(buildSearchSummary(details, theme), 0, 0);
-  }
-
-  const container = new Container();
-  container.addChild(new Text(buildSearchSummary(details, theme), 0, 0));
-  if (hasResultContent) {
-    container.addChild(new Spacer(1));
-    const markdown = structuredResults.length > 0
-      ? buildSearchExpandedMarkdown(details)
-      : sanitizeMarkdownForTerminal(legacyText!);
-    container.addChild(new Markdown(markdown, 0, 0, getMarkdownTheme()));
-  }
-  for (const failed of details?.failedQueries ?? []) {
-    const query = sanitizeTerminalText(failed.query).replace(/\s+/g, " ").trim();
-    const error = sanitizeTerminalText(failed.error).replace(/\s+/g, " ").trim();
-    container.addChild(new Spacer(1));
-    container.addChild(new Text(theme.fg("error", `✗ ${query}: ${error}`), 0, 0));
-  }
-  container.addChild(new Spacer(1));
-  container.addChild(new Text(keyHint("app.tools.expand", "to collapse"), 0, 0));
-  return container;
 }

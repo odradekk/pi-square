@@ -1,7 +1,6 @@
 import { basename, extname } from "node:path";
-import { getMarkdownTheme, keyHint, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { ConfirmationCoordinator } from "../../core/confirmation";
 import {
@@ -15,7 +14,6 @@ import {
 } from "../clients/firecrawl";
 import { getServiceKey } from "../shared/auth";
 import { HttpError, errorMessage } from "../shared/errors";
-import { sanitizeMarkdownForTerminal, sanitizeTerminalText } from "../shared/render";
 import { DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS } from "../types";
 import { extractPdfPages, loadPdf, PdfInputError, resolvePdfInput } from "../parse/pdf";
 import {
@@ -353,23 +351,6 @@ export function createParseToolDefinition(dependencies: ParseToolDependencies = 
         return failure(details, code, redact(raw, apiKey), status);
       }
     },
-    renderCall(args: any, theme: any, context: any) {
-      const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-      const path = inline(args?.path || "(building…)", 80);
-      const pages = inline(args?.pages || "pages required", 60);
-      const metadata = [args?.mode || "auto"];
-      if (args?.timeout !== undefined) metadata.push(`${args.timeout} ms`);
-      if (args?.max_tokens !== undefined) metadata.push(`${args.max_tokens} tokens`);
-      text.setText(
-        theme.fg("toolTitle", theme.bold("parse "))
-        + theme.fg("accent", path)
-        + theme.fg("dim", `  pages ${pages} · ${metadata.join(" · ")}`),
-      );
-      return text;
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any) {
-      return renderParseResult(result, options, theme);
-    },
   };
 }
 
@@ -378,64 +359,4 @@ export function registerParseTool(
   confirmations = new ConfirmationCoordinator(),
 ): void {
   pi.registerTool(createParseToolDefinition({ confirmations }));
-}
-
-function firstText(result: any): string {
-  const item = Array.isArray(result?.content) ? result.content.find((entry: any) => entry?.type === "text") : undefined;
-  return typeof item?.text === "string" ? item.text : "";
-}
-
-function inline(value: unknown, maximum = 200): string {
-  const clean = sanitizeTerminalText(String(value ?? "")).replace(/\s+/g, " ").trim();
-  const points = Array.from(clean);
-  return points.length > maximum ? `${points.slice(0, maximum - 1).join("")}…` : clean;
-}
-
-function summary(details: ParseDetails | undefined, theme: any): string {
-  if (!details) return theme.fg("error", "✗ Missing parse result details");
-  if (details.status === "declined") return theme.fg("warning", "× PDF upload declined");
-  if (details.status === "error" || details.status === "aborted") {
-    const glyph = details.status === "aborted" ? "×" : "✗";
-    return theme.fg(details.status === "aborted" ? "warning" : "error", `${glyph} ${inline(details.error || details.errorCode || details.status, 160)}`);
-  }
-  const pageCount = details.pageCount ?? 0;
-  let text = theme.fg("success", "✓") + " " + theme.fg("text", `${pageCount} ${pageCount === 1 ? "page" : "pages"} parsed`);
-  const extras: string[] = [];
-  if (details.outputLines !== undefined) extras.push(`${details.outputLines} lines`);
-  if (details.truncated) extras.push("truncated");
-  if (details.incomplete) extras.push("incomplete");
-  if (details.warning) extras.push("warning");
-  if (extras.length) text += "  " + theme.fg("muted", extras.join(" · "));
-  return text;
-}
-
-function renderParseResult(
-  result: any,
-  options: { expanded: boolean; isPartial: boolean },
-  theme: any,
-): Component {
-  const details = result?.details as ParseDetails | undefined;
-  if (options.isPartial) {
-    const phase = details?.phase === "confirming"
-      ? "Awaiting confirmation…"
-      : details?.phase === "extracting"
-        ? "Extracting selected pages…"
-        : "Uploading to Firecrawl…";
-    return new Text(theme.fg("muted", phase), 0, 0);
-  }
-
-  const line = summary(details, theme);
-  const content = firstText(result);
-  const successful = details?.status === "success" && Boolean(content);
-  if (!options.expanded || !successful) {
-    return new Text(successful ? `${line}  ${keyHint("app.tools.expand", "to expand")}` : line, 0, 0);
-  }
-
-  const container = new Container();
-  container.addChild(new Text(line, 0, 0));
-  container.addChild(new Spacer(1));
-  container.addChild(new Markdown(sanitizeMarkdownForTerminal(content), 0, 0, getMarkdownTheme()));
-  container.addChild(new Spacer(1));
-  container.addChild(new Text(keyHint("app.tools.expand", "to collapse"), 0, 0));
-  return container;
 }

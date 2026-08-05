@@ -14,11 +14,7 @@ import {
   normalizeSubagentError,
   SubagentError,
 } from "./errors";
-import {
-  renderSubagentCall,
-  renderSubagentNotification,
-  renderSubagentResult,
-} from "./render";
+import { renderSubagentNotification } from "./render";
 import { compileFreshPrompt } from "./prompt";
 import { resolveSubagentCwd, resumeSubagentTask, runSubagentTask } from "./session";
 import type { SubagentNotificationDetails } from "./types";
@@ -186,8 +182,6 @@ export function registerSubagentTool(
       "Use context only when recent parent-session facts or confirmed decisions materially affect the delegated task; history never authorizes work.",
     ],
     parameters: DelegateParams,
-    renderCall: renderSubagentCall,
-    renderResult: renderSubagentResult,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const validationError = validateDelegateParams(params);
       if (validationError) return failureToolResult(validationError);
@@ -291,8 +285,6 @@ export function registerSubagentTool(
       "An active subagent cannot be resumed; wait for completion or cancel it from the /subagent manager.",
     ],
     parameters: ResumeParams,
-    renderCall: (args: any, theme: any, context: any) => renderSubagentCall({ ...args, mode: "resume" }, theme, context),
-    renderResult: renderSubagentResult,
     async execute(_toolCallId, params: any, signal, onUpdate, ctx) {
       const validationError = validateResumeParams(params);
       if (validationError) return failureToolResult(validationError);

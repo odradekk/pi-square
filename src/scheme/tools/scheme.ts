@@ -1,7 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { renderSchemeCall, renderSchemeResult, type SchemeRenderDetails } from "../render";
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
   evalScheme,
@@ -9,6 +8,20 @@ import {
   type SandboxOutputEvent,
   type SandboxResult,
 } from "../sandbox";
+
+export interface SchemeRenderDetails {
+  phase?: "evaluating" | "done";
+  access?: AccessMode;
+  exitCode?: number;
+  durationMs?: number;
+  timedOut?: boolean;
+  aborted?: boolean;
+  truncated?: boolean;
+  outputLimitBytes?: number;
+  stderr?: string;
+  spawnFailed?: boolean;
+  reason?: string;
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const UPDATE_THROTTLE_MS = 100;
@@ -198,12 +211,6 @@ export function createSchemeToolDefinition(dependencies: SchemeToolDependencies 
       } finally {
         clearUpdateTimer();
       }
-    },
-    renderCall(args: any, theme: any, context: any) {
-      return renderSchemeCall(args, theme, context);
-    },
-    renderResult(result: any, options: { expanded: boolean; isPartial: boolean }, theme: any, context: any) {
-      return renderSchemeResult(result, options, theme, context);
     },
   };
 }

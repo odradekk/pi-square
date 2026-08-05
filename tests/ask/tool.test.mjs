@@ -40,8 +40,8 @@ test("ask schema exposes strict bounded questions and option descriptions", () =
 
   assert.equal(definition.name, "ask");
   assert.equal(definition.renderShell, undefined);
-  assert.equal(typeof definition.renderCall, "function");
-  assert.equal(typeof definition.renderResult, "function");
+  assert.equal(definition.renderCall, undefined);
+  assert.equal(definition.renderResult, undefined);
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.properties.questions.minItems, 1);
   assert.equal(schema.properties.questions.maxItems, 10);

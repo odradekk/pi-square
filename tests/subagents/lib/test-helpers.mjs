@@ -86,14 +86,6 @@ function formatMs(ms) {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
-export function renderSubagentCall() {
-  return new Text("subagent call");
-}
-
-export function renderSubagentResult() {
-  return new Text("subagent result");
-}
-
 export function renderSubagentNotification() {
   return new Text("subagent notification");
 }

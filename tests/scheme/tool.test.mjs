@@ -21,12 +21,12 @@ function sandboxResult(overrides = {}) {
   };
 }
 
-test("scheme exposes the renamed contract and native renderers", () => {
+test("scheme exposes the renamed headless contract", () => {
   const definition = createSchemeToolDefinition();
   assert.equal(definition.name, "scheme");
   assert.equal(definition.renderShell, undefined);
-  assert.equal(typeof definition.renderCall, "function");
-  assert.equal(typeof definition.renderResult, "function");
+  assert.equal(definition.renderCall, undefined);
+  assert.equal(definition.renderResult, undefined);
   assert.deepEqual(definition.parameters.required, ["code"]);
   assert.equal(definition.parameters.properties.timeoutMs.minimum, 1000);
   assert.equal(definition.parameters.properties.timeoutMs.maximum, 120000);
