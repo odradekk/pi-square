@@ -16,7 +16,7 @@ import {
 const load = jiti(import.meta.url, { moduleCache: false });
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
-const { decorateBuiltinDefinition } = await load("../../src/display/builtins.ts");
+const { decorateBuiltinDefinition, __testables } = await load("../../src/display/builtins.ts");
 const root = join(import.meta.dirname, "..", "..");
 const themeModulePath = new URL(
   "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js",
@@ -45,6 +45,12 @@ function context(overrides = {}) {
 }
 
 try {
+  assert.equal(
+    __testables.safeDiagnostic("api_key=alpha token:beta password=gamma secret:delta\x1b]0;owned\x07"),
+    "api_key=[REDACTED] token:[REDACTED] password=[REDACTED] secret:[REDACTED]",
+  );
+  assert.doesNotMatch(__testables.safeDiagnostic("token=value"), /\$1|value/);
+
   const runtime = new DisplayRuntime(DEFAULT_CONFIG, { environment: { isTTY: false, test: true } });
   const marker = Symbol("marker");
   const original = {

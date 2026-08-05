@@ -1,9 +1,9 @@
-import { stripVTControlCharacters } from "node:util";
 import {
   type ExtensionAPI,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { decorateInternalTool } from "../display/internal-adapters";
+import { sanitizeDisplayLine, truncateCodePoints } from "../display/sanitize";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import { isWindowsPlatform } from "./platform";
 import { createPwshToolDefinition, getPwshProbe } from "./tools/pwsh";
@@ -20,9 +20,7 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
 }
 
 function safeDiagnostic(value: unknown): string {
-  return stripVTControlCharacters(String(value ?? ""))
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-    .slice(0, 500) || "PowerShell was not found";
+  return truncateCodePoints(sanitizeDisplayLine(value), 500) || "PowerShell was not found";
 }
 
 export default function registerShellTools(

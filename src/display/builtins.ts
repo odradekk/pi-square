@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { stripVTControlCharacters } from "node:util";
 import {
   SettingsManager,
   createBashToolDefinition,
@@ -20,6 +19,7 @@ import { setBannerDisplayDiagnostic } from "../banner";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
+import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
 import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow } from "./types";
 
 const BUILTIN_NAMES = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
@@ -34,11 +34,7 @@ type GenericDefinition = ToolDefinition<any, any, any>;
 type GenericAdapter = InternalToolDisplayAdapter<any, any, any>;
 
 function safeDiagnostic(value: unknown): string {
-  return Array.from(stripVTControlCharacters(String(value ?? ""))
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-    .replace(/(?:api[_-]?key|token|password|secret)\s*[=:]\s*\S+/gi, "$1=[REDACTED]"))
-    .slice(0, MAX_DIAGNOSTIC_CHARS)
-    .join("");
+  return truncateCodePoints(sanitizeDisplayLine(value), MAX_DIAGNOSTIC_CHARS);
 }
 
 function textContent(result: AgentToolResult<unknown>): string {

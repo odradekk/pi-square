@@ -54,6 +54,10 @@ try {
   assert.equal(oversized.reason, "oversized");
   assert.equal(oversized.size, DISPLAY_FILE_PREVIEW_MAX_BYTES + 1);
 
+  writeFileSync(join(root, "binary.dat"), Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe]));
+  const binary = await inspectWritePreview(root, "binary.dat", "replacement text");
+  assert.deepEqual(binary, { kind: "metadata", path: "binary.dat", reason: "binary", size: 5 });
+
   const unresolved = await inspectWritePreview(root, "missing/child.txt", "x");
   assert.equal(unresolved.kind, "metadata");
   assert.equal(unresolved.reason, "unresolved");

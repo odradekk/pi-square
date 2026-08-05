@@ -99,6 +99,29 @@ assert.doesNotMatch(themedA, /<B:/);
 assert.match(themedB, /<B:toolDiff/);
 assert.doesNotMatch(themedB, /<A:/);
 
+function hasUnpairedSurrogate(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return true;
+  }
+  return false;
+}
+
+const unicodeEmphasis = renderDisplayDiffLines(
+  { path: "unicode", before: "a😀z\n", after: "a😁z\n" },
+  { ...DEFAULT_DISPLAY_POLICY, diffView: "split" },
+  markerTheme("U"),
+  1_000,
+  { expanded: true },
+).join("\n");
+assert.equal(hasUnpairedSurrogate(unicodeEmphasis), false);
+assert.match(unicodeEmphasis, /😀/);
+assert.match(unicodeEmphasis, /😁/);
+
 const component = new DisplayDiffComponent(description, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false });
 assert.ok(component.render(80).length > 0);
 component.update({ ...description, projected: false }, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true });

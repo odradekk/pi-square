@@ -29,8 +29,16 @@ import { OperationalDisplayComponent } from "./components";
 import { resolveDisplayPolicyForTool } from "./policy";
 import { sanitizeDisplayLine } from "./sanitize";
 import {
+  DISPLAY_DIFF_COLLAPSED_LINES_MAX,
+  DISPLAY_DIFF_COLLAPSED_LINES_MIN,
+  DISPLAY_DIFF_SPLIT_MIN_WIDTH_MAX,
+  DISPLAY_DIFF_SPLIT_MIN_WIDTH_MIN,
+  DISPLAY_EXPANDED_MAX_LINES_MAX,
+  DISPLAY_EXPANDED_MAX_LINES_MIN,
   DISPLAY_FAMILIES,
   DISPLAY_POLICY_FIELDS,
+  DISPLAY_PREVIEW_LINES_MAX,
+  DISPLAY_PREVIEW_LINES_MIN,
   type DisplayDescriptionV1,
   type DisplayFamily,
   type DisplayLayerConfig,
@@ -247,10 +255,10 @@ function parseFieldValue(field: DisplayPolicyField, text: string): unknown {
   const number = Number(trimmed);
   if (!Number.isInteger(number)) throw new Error("expected an integer or inherit");
   const ranges: Partial<Record<DisplayPolicyField, readonly [number, number]>> = {
-    previewLines: [1, 80],
-    expandedMaxLines: [0, 20_000],
-    diffSplitMinWidth: [70, 240],
-    diffCollapsedLines: [4, 240],
+    previewLines: [DISPLAY_PREVIEW_LINES_MIN, DISPLAY_PREVIEW_LINES_MAX],
+    expandedMaxLines: [DISPLAY_EXPANDED_MAX_LINES_MIN, DISPLAY_EXPANDED_MAX_LINES_MAX],
+    diffSplitMinWidth: [DISPLAY_DIFF_SPLIT_MIN_WIDTH_MIN, DISPLAY_DIFF_SPLIT_MIN_WIDTH_MAX],
+    diffCollapsedLines: [DISPLAY_DIFF_COLLAPSED_LINES_MIN, DISPLAY_DIFF_COLLAPSED_LINES_MAX],
   };
   const range = ranges[field]!;
   if (number < range[0] || number > range[1]) throw new Error(`expected ${range[0]}-${range[1]}`);
@@ -548,7 +556,7 @@ export class DisplayManager implements Component, Focusable {
 
   render(terminalWidth: number): string[] {
     const width = panelWidth(terminalWidth);
-    const maxRows = Math.max(10, Math.min(30, this.tui.terminal.rows));
+    const maxRows = Math.max(1, Math.min(30, Math.floor(this.tui.terminal.rows)));
     const diagnostic = this.services.diagnostics?.()[0];
     const header = [
       fit(`${this.theme.fg("accent", "◆")} ${this.theme.fg("toolTitle", this.theme.bold("DISPLAY"))}  ${this.theme.fg("dim", `${this.scope.toUpperCase()} · ${this.query ? `filter=${this.query}` : "all nodes"}`)}`, width),
@@ -586,8 +594,9 @@ export class DisplayManager implements Component, Focusable {
         ? "enter save · up/down scroll · esc back"
         : "enter choose/submit · esc back"));
     const bodyBudget = Math.max(0, maxRows - header.length - footer.length);
-    return [...header, ...body.slice(0, bodyBudget), ...footer]
+    const rendered = [...header, ...body.slice(0, bodyBudget), ...footer]
       .map((line) => fit(line, width));
+    return rendered.slice(0, maxRows);
   }
 
   handleInput(data: string): void {

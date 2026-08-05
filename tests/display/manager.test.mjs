@@ -117,6 +117,10 @@ assert.throws(() => __testables.parseFieldValue("diffView", "sideways"), /expect
     assert.ok(lines.every((line) => visibleWidth(line) <= expectedWidth));
   }
   const narrow = render(manager, 40);
+  const previousRows = tui.terminal.rows;
+  tui.terminal.rows = 4;
+  assert.ok(manager.render(40).length <= 4, "manager must respect very short terminal heights");
+  tui.terminal.rows = previousRows;
   const wide = render(manager, 120);
   assert.match(narrow, /^◆ DISPLAY/m);
   assert.match(narrow, /Global defaults/);

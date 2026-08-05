@@ -55,14 +55,18 @@ async function emit(runtime, name, event, ctx = {}) {
   registerShellTools(runtime.pi, {
     platform: "win32",
     createPwshDefinition: () => ({ name: "pwsh", execute() {} }),
-    probePwsh: async () => ({ available: false, binary: null, reason: "not installed" }),
+    probePwsh: async () => ({
+      available: false,
+      binary: null,
+      reason: "not installed; api_key=pwsh-secret\x1b]0;owned\x07",
+    }),
   });
   await emit(runtime, "session_start", { reason: "startup" }, {
     cwd: "C:\\work",
     hasUI: true,
     ui: { notify(message, level) { notifications.push({ message, level }); } },
   });
-  assert.deepEqual(notifications, [{ message: "pwsh unavailable: not installed", level: "warning" }]);
+  assert.deepEqual(notifications, [{ message: "pwsh unavailable: not installed; api_key=[REDACTED]", level: "warning" }]);
   assert.deepEqual(runtime.active, ["read", "pwsh"]);
 }
 

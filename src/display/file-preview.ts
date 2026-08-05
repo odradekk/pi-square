@@ -20,7 +20,7 @@ export type DisplayFilePreview =
   | {
       readonly kind: "metadata";
       readonly path: string;
-      readonly reason: "outside" | "unresolved" | "non-regular" | "oversized" | "changed" | "unreadable";
+      readonly reason: "outside" | "unresolved" | "non-regular" | "oversized" | "binary" | "changed" | "unreadable";
       readonly size?: number;
     };
 
@@ -53,6 +53,29 @@ function sameIdentity(left: Identity, right: Identity): boolean {
     && left.size === right.size
     && left.mtimeNs === right.mtimeNs
     && left.ctimeNs === right.ctimeNs;
+}
+
+function decodeTextPreview(bytes: Uint8Array): string | undefined {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+  if (text.includes("\0")) return undefined;
+  let controls = 0;
+  let units = 0;
+  for (const character of text) {
+    units += 1;
+    const point = character.codePointAt(0)!;
+    if (
+      (point <= 0x08)
+      || point === 0x0b
+      || (point >= 0x0e && point <= 0x1f)
+      || (point >= 0x7f && point <= 0x9f)
+    ) controls += 1;
+  }
+  return controls > Math.max(1, Math.floor(units / 10)) ? undefined : text;
 }
 
 export async function inspectWritePreview(
@@ -116,10 +139,14 @@ export async function inspectWritePreview(
     if (!sameIdentity(beforeIdentity, identity(afterStats))) {
       return { kind: "metadata", path: displayPath, reason: "changed", size: Number(afterStats.size) };
     }
+    const before = decodeTextPreview(bytes);
+    if (before === undefined) {
+      return { kind: "metadata", path: displayPath, reason: "binary", size: bytes.byteLength };
+    }
     return {
       kind: "overwrite",
       path: displayPath,
-      before: bytes.toString("utf8"),
+      before,
       after,
       projected: true,
     };

@@ -351,8 +351,8 @@ async function tryReclaimStaleLock(lockPath: string, token: string, now: number)
   const firstContent = await readBoundedLock(lockPath, firstIdentity);
   if (firstContent === undefined) return undefined;
   const payload = parseLockPayload(firstContent);
-  if (!payload) return undefined;
-  if (now - Math.max(payload.created, firstIdentity.mtimeMs) < LOCK_STALE_MS) return undefined;
+  const claimedCreated = payload?.created ?? firstIdentity.mtimeMs;
+  if (now - Math.max(claimedCreated, firstIdentity.mtimeMs) < LOCK_STALE_MS) return undefined;
 
   const secondIdentity = await pathIdentity(lockPath);
   if (!secondIdentity || !sameIdentity(firstIdentity, secondIdentity)) return undefined;
@@ -468,7 +468,7 @@ export async function writeDisplayConfig(
   const lock = await acquireLock(paths.lockPath, token, testHooks);
   if (!lock) {
     throw new DisplayConfigWriteError(
-      "could not acquire display config lock after retries",
+      `could not acquire display config lock '${paths.lockPath}' after retries`,
       "DISPLAY_LOCK_TIMEOUT",
     );
   }

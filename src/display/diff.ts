@@ -45,22 +45,24 @@ function indicator(kind: "added" | "removed" | "context", policy: DisplayPolicy)
 }
 
 function emphasizePair(left: string, right: string, theme: Theme): [string, string] {
+  const leftPoints = Array.from(left);
+  const rightPoints = Array.from(right);
   let prefix = 0;
-  const maximumPrefix = Math.min(left.length, right.length);
-  while (prefix < maximumPrefix && left[prefix] === right[prefix]) prefix += 1;
+  const maximumPrefix = Math.min(leftPoints.length, rightPoints.length);
+  while (prefix < maximumPrefix && leftPoints[prefix] === rightPoints[prefix]) prefix += 1;
   let suffix = 0;
   while (
-    suffix < left.length - prefix
-    && suffix < right.length - prefix
-    && left[left.length - suffix - 1] === right[right.length - suffix - 1]
+    suffix < leftPoints.length - prefix
+    && suffix < rightPoints.length - prefix
+    && leftPoints[leftPoints.length - suffix - 1] === rightPoints[rightPoints.length - suffix - 1]
   ) suffix += 1;
-  const style = (value: string, kind: "added" | "removed") => {
-    const end = suffix > 0 ? value.length - suffix : value.length;
-    return styleDiffLine(theme, kind, value.slice(0, prefix))
-      + styleDiffLine(theme, kind, value.slice(prefix, end), end > prefix)
-      + styleDiffLine(theme, kind, value.slice(end));
+  const style = (points: readonly string[], kind: "added" | "removed") => {
+    const end = suffix > 0 ? points.length - suffix : points.length;
+    return styleDiffLine(theme, kind, points.slice(0, prefix).join(""))
+      + styleDiffLine(theme, kind, points.slice(prefix, end).join(""), end > prefix)
+      + styleDiffLine(theme, kind, points.slice(end).join(""));
   };
-  return [style(left, "removed"), style(right, "added")];
+  return [style(leftPoints, "removed"), style(rightPoints, "added")];
 }
 
 function toSplitRows(lines: readonly DiffLine[]): SplitRow[] {

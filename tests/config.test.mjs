@@ -323,7 +323,9 @@ try {
         "agent",
         { sleep: async () => {} },
       ),
-      (err) => err instanceof DisplayConfigWriteError && err.code === "DISPLAY_LOCK_TIMEOUT",
+      (err) => err instanceof DisplayConfigWriteError
+        && err.code === "DISPLAY_LOCK_TIMEOUT"
+        && err.message.includes(lockPath),
     );
     assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).token, "other-owner", "live lock must not be stolen");
     rmSync(lockPath, { force: true });
@@ -368,6 +370,17 @@ try {
     );
     assert.equal(staleLockResult.path, agentPath);
     assert.equal(existsSync(lockPath), false, "owned lock must be removed after write");
+
+    // A malformed lock is reclaimable only after its filesystem mtime becomes stale.
+    writeFileSync(lockPath, "not-json");
+    utimesSync(lockPath, staleTime, staleTime);
+    const fpMalformedLock = await readConfigFingerprint(agentPath);
+    const malformedLockResult = await writeDisplayConfig(
+      { fingerprint: fpMalformedLock, display: { motion: "reduced" } },
+      { cwd: wProjectDir, isProjectTrusted: true },
+    );
+    assert.equal(malformedLockResult.path, agentPath);
+    assert.equal(existsSync(lockPath), false, "stale malformed lock must be reclaimed");
 
     // Reject config-file, config-directory, and project .pi symlinks.
     const symlinkTarget = mkdtempSync(join(tmpdir(), "pi-square-symlink-target-"));
