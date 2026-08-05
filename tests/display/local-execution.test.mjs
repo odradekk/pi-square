@@ -80,7 +80,20 @@ for (const [name, args, expected] of [
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
   assert.doesNotMatch(collapsed.render(80).join("\n"), /model output/, `${name} summary hides preview`);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
-  assert.match(expanded.render(80).join("\n"), /model output/);
+  const expandedText = expanded.render(80).join("\n");
+  assert.match(expandedText, /model output/);
+  if (name === "rg" || name === "fd" || name === "sg" || name === "pdf_search" || name === "codegraph") {
+    assert.match(expandedText, /QUERY|SUMMARY/);
+    assert.match(expandedText, /OUTPUT|RESULTS|MATCHES/);
+  }
+  if (name === "bash" || name === "pwsh" || name === "scheme") {
+    assert.match(expandedText, /COMMAND|CODE/);
+    assert.match(expandedText, /OUTPUT/);
+  }
+  if (name === "ssh") {
+    assert.match(expandedText, /REQUEST/);
+    assert.match(expandedText, /OUTPUT/);
+  }
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assert.ok(expanded.render(width).every((line) => visibleWidth(line) <= width));
   }

@@ -1,6 +1,6 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "../display/tool-renderer";
-import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, DisplayStatus } from "../display/types";
+import type { DisplayActivityItem, DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, DisplaySection, DisplayStatus } from "../display/types";
 import { latestToolCallSummary } from "./tool-display";
 import type { SubagentRunDetails, SubagentTimelineItem } from "./types";
 
@@ -74,6 +74,62 @@ function issueRows(details: Record<string, unknown>, expanded: boolean): Display
   });
 }
 
+function activityItems(timeline: SubagentTimelineItem[]): DisplayActivityItem[] {
+  if (!Array.isArray(timeline)) return [];
+  const latest = new Map<string, SubagentTimelineItem>();
+  for (const item of timeline) {
+    if (!item || item.kind !== "tool" || typeof item.text !== "string") continue;
+    const [tool] = item.text.split(/\s+/, 1);
+    const key = tool || item.text;
+    if (item.phase === "start" || item.phase === "end") latest.set(key, item);
+  }
+  return [...latest.values()].slice(-8).map((item) => {
+    const text = item.text;
+    const separator = text.indexOf(" ");
+    const tool = separator > 0 ? text.slice(0, separator) : text;
+    return {
+      tool,
+      summary: latestToolCallSummary([item]),
+      status: item.phase === "end" ? (item.isError ? "error" : "done") : "running",
+    };
+  });
+}
+
+function issueRecords(details: Record<string, unknown>): DisplaySection | undefined {
+  if (!Array.isArray(details.toolErrors)) return undefined;
+  const items = details.toolErrors.slice(-4).flatMap((value) => {
+    const issue = record(value);
+    const message = typeof issue.message === "string" ? issue.message : typeof issue.error === "string" ? issue.error : undefined;
+    return message
+      ? [{ title: typeof issue.tool === "string" ? issue.tool : "tool", body: message, tone: "error" as const }]
+      : [];
+  });
+  return items.length > 0 ? { title: "Issues", blocks: [{ kind: "records", items }], compact: false } : undefined;
+}
+
+function usageSection(details: Record<string, unknown>): DisplaySection | undefined {
+  const usage = record(details.usage);
+  const items = [
+    typeof usage.turns === "number" ? { label: "turns", value: String(usage.turns) } : undefined,
+    typeof usage.input === "number" ? { label: "input", value: String(usage.input) } : undefined,
+    typeof usage.output === "number" ? { label: "output", value: String(usage.output) } : undefined,
+    typeof usage.cacheRead === "number" ? { label: "cacheRead", value: String(usage.cacheRead) } : undefined,
+    typeof usage.cacheWrite === "number" ? { label: "cacheWrite", value: String(usage.cacheWrite) } : undefined,
+    typeof usage.cost === "number" ? { label: "cost", value: String(usage.cost) } : undefined,
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+  return items.length > 0 ? { title: "Usage", blocks: [{ kind: "list", items }], compact: true } : undefined;
+}
+
+function markdownResult(title: string, text: string): DisplaySection | undefined {
+  if (!text) return undefined;
+  return { title, blocks: [{ kind: "markdown", text }], compact: true };
+}
+
+function activitySection(timeline: SubagentTimelineItem[], expanded: boolean): DisplaySection | undefined {
+  const items = expanded ? activityItems(timeline) : activityItems(timeline).slice(-1);
+  return items.length > 0 ? { title: "Activity", blocks: [{ kind: "activity", items }], compact: !expanded } : undefined;
+}
+
 function runTarget(details: Record<string, unknown>, args: Record<string, unknown>): string | undefined {
   const agent = record(details.agent);
   if (typeof agent.name === "string" && agent.name) return agent.name;
@@ -126,12 +182,21 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         ...activityRows(run.timeline, options.expanded),
         ...issueRows(details, options.expanded),
       ];
+      if (options.isPartial && live) {
+        rows.push({ text: selected.text, tone: "default" });
+      }
       if (!options.isPartial && !options.expanded && live) {
         rows.unshift({ text: live.split(/\r?\n/, 1)[0]!, tone: context.isError ? "error" : "default" });
       }
       if (run.mode === "bg" && run.phase === "running" && !options.isPartial) {
         rows.unshift({ text: "Queued in the parent session", tone: "muted" });
       }
+      const structuredSections = [
+        markdownResult(options.isPartial ? "Live" : "Result", live),
+        activitySection(run.timeline, options.expanded),
+        issueRecords(details),
+        usageSection(details),
+      ].filter((section): section is DisplaySection => Boolean(section));
       return {
         version: 1,
         tool: name,
@@ -141,10 +206,10 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         target: runTarget(details, args),
         metadata: metadata(details),
         rows,
+        sections: options.expanded
+          ? structuredSections
+          : structuredSections.filter((section) => section.compact === true && section.title !== "Live"),
         durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
-        ...(live && (options.isPartial || options.expanded)
-          ? { preview: { text: selected.text, omittedLines: selected.omitted } }
-          : {}),
         ...(context.isError || run.phase === "error"
           ? { error: String(run.error || text || "Subagent failed") }
           : {}),

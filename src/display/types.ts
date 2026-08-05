@@ -254,6 +254,66 @@ export interface DisplayDiffDescription {
   readonly projected?: boolean;
 }
 
+// ─── Internal structured expanded sections ───────────────────────────
+
+export interface DisplayFieldValue {
+  readonly label: string;
+  readonly value: string;
+  readonly tone?: DisplayTone;
+}
+
+export interface DisplayListItem {
+  readonly label?: string;
+  readonly value: string;
+  readonly tone?: DisplayTone;
+}
+
+export interface DisplayRecordItem {
+  readonly title: string;
+  readonly tone?: DisplayTone;
+  readonly fields?: readonly DisplayFieldValue[];
+  readonly body?: string;
+}
+
+export interface DisplayPathItem {
+  readonly path: string;
+  readonly kind?: "file" | "directory" | "symlink" | "special";
+  readonly meta?: string;
+  readonly tone?: DisplayTone;
+}
+
+export interface DisplayMatchItem {
+  readonly path: string;
+  readonly line?: number;
+  readonly column?: number;
+  readonly excerpt?: string;
+  readonly meta?: string;
+  readonly tone?: DisplayTone;
+}
+
+export interface DisplayActivityItem {
+  readonly tool: string;
+  readonly summary: string;
+  readonly status?: "running" | "done" | "error";
+}
+
+export type DisplaySectionBlock =
+  | { readonly kind: "text"; readonly text: string; readonly tone?: DisplayTone }
+  | { readonly kind: "markdown"; readonly text: string }
+  | { readonly kind: "code"; readonly text: string; readonly language?: string; readonly lineNumbers?: boolean }
+  | { readonly kind: "list"; readonly items: readonly DisplayListItem[] }
+  | { readonly kind: "records"; readonly items: readonly DisplayRecordItem[] }
+  | { readonly kind: "paths"; readonly items: readonly DisplayPathItem[] }
+  | { readonly kind: "matches"; readonly items: readonly DisplayMatchItem[] }
+  | { readonly kind: "activity"; readonly items: readonly DisplayActivityItem[] }
+  | { readonly kind: "diff"; readonly diff: DisplayDiffDescription };
+
+export interface DisplaySection {
+  readonly title: string;
+  readonly blocks: readonly DisplaySectionBlock[];
+  readonly compact?: boolean;
+}
+
 export interface DisplayDescriptionV1 {
   readonly version: 1;
   readonly tool: string;
@@ -266,6 +326,7 @@ export interface DisplayDescriptionV1 {
   readonly durationMs?: number;
   readonly rows?: readonly DisplayRow[];
   readonly preview?: DisplayPreviewDescription;
+  readonly sections?: readonly DisplaySection[];
   readonly diff?: DisplayDiffDescription;
   readonly progress?: DisplayProgressDescription;
   readonly truncated?: boolean;

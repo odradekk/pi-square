@@ -86,7 +86,13 @@ for (const [name, args, expected] of cases) {
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
   assert.doesNotMatch(collapsedText, /private result body/);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
-  assert.match(expanded.render(80).join("\n"), /private result body/);
+  const expandedText = expanded.render(80).join("\n");
+  assert.match(expandedText, /private result body/);
+  if (name === "search" || name === "fetch" || name === "libs" || name === "docs" || name === "parse" || name === "github_search" || name === "github_read" || name === "github_tree" || name === "github_commit") {
+    assert.match(expandedText, /REQUEST|SUMMARY/);
+  }
+  if (name === "ask") assert.match(expandedText, /REQUEST|RESULT/);
+  if (name === "todo") assert.match(expandedText, /ACTION|RESULT/);
 }
 
 const subagentArgs = { agent: "explorer", mode: "fg", task: "inspect runtime" };
@@ -117,6 +123,15 @@ const running = subagent.renderResult(
 assert.match(running, /explorer/);
 assert.match(running, /scanning repository|found 3 matches/);
 assert.match(running, /ACTIVITY.*rg.*needle/i);
+const expandedSubagent = subagent.renderResult(
+  { content: [{ type: "text", text: subagentDetails.liveText }], details: subagentDetails },
+  { expanded: true, isPartial: true },
+  theme,
+  context(subagentArgs, { isPartial: true, expanded: true }),
+).render(80).join("\n");
+assert.match(expandedSubagent, /LIVE/);
+assert.match(expandedSubagent, /ACTIVITY/);
+assert.match(expandedSubagent, /USAGE/);
 assert.doesNotMatch(running, /Completed/);
 
 for (const child of createChildTools([

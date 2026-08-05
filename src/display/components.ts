@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { renderDisplayDiffLines } from "./diff";
+import { renderDisplaySections } from "./sections";
 import { boundedVisualLines, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
 import { styleRule, styleStatus, styleTitle, styleTone } from "./theme";
@@ -241,7 +242,11 @@ export class OperationalDisplayComponent implements Component {
       || description.status === "partial"
       || this.options.expanded
       || this.policy.resultMode === "preview";
-    if (showPreview && description.preview) {
+    const visibleSections = description.sections ?? [];
+    const showStructuredSections = showPreview || (visibleSections.length > 0 && this.policy.resultMode === "summary");
+    if (showStructuredSections && visibleSections.length > 0) {
+      lines.push(...renderDisplaySections(visibleSections, this.policy, this.theme, safe, this.options.expanded));
+    } else if (showPreview && description.preview) {
       const maximum = this.options.expanded ? this.policy.expandedMaxLines : this.policy.previewLines;
       const boundedPreviewText = truncateCodePoints(description.preview.text, MAX_PREVIEW_CODE_POINTS);
       const inputTruncated = boundedPreviewText !== description.preview.text;

@@ -93,6 +93,49 @@ for (const component of [hanging, row, rule, bounded]) {
   }
 }
 
+const structuredDescription = {
+  version: 1,
+  tool: "rg",
+  family: "search",
+  status: "success",
+  title: "Search",
+  target: "needle",
+  sections: [
+    {
+      title: "Summary",
+      blocks: [{ kind: "list", items: [{ label: "returned", value: "2" }, { label: "status", value: "ok", tone: "success" }] }],
+      compact: true,
+    },
+    {
+      title: "Matches",
+      blocks: [{ kind: "matches", items: [{ path: "src/a.ts", line: 12, column: 4, excerpt: "const needle = true;" }] }],
+      compact: false,
+    },
+    {
+      title: "Output",
+      blocks: [{ kind: "code", text: "const needle = true;\nconsole.log(needle);", language: "ts", lineNumbers: true }],
+      compact: false,
+    },
+  ],
+};
+const structuredCollapsedDescription = {
+  ...structuredDescription,
+  sections: structuredDescription.sections.filter((section) => section.compact === true),
+};
+const structuredCollapsed = new OperationalDisplayComponent(structuredCollapsedDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(80).join("\n");
+assert.match(structuredCollapsed, /SUMMARY/);
+assert.doesNotMatch(structuredCollapsed, /MATCHES|console\.log/);
+const structuredExpanded = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(80).join("\n");
+assert.match(structuredExpanded, /SUMMARY/);
+assert.match(structuredExpanded, /MATCHES/);
+assert.match(structuredExpanded, /src\/a\.ts:12:4/);
+assert.match(structuredExpanded, /OUTPUT/);
+assert.match(structuredExpanded, /1\s+const needle/);
+for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
+  const lines = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(width);
+  assert.ok(lines.every((line) => visibleWidth(line) <= width));
+}
+
 const packageRoot = join(import.meta.dirname, "..", "..");
 const themeModulePath = pathToFileURL(join(
   packageRoot,

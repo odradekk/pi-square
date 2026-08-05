@@ -19,6 +19,7 @@ import { setBannerDisplayDiagnostic } from "../banner";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
+import { codeSection, field, recordsSection, sections, summarySection, textSection } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
 import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow } from "./types";
 
@@ -80,6 +81,59 @@ function callDescription(name: BuiltinName, args: Record<string, unknown>, execu
   };
 }
 
+function resultSections(
+  name: BuiltinName,
+  args: Record<string, unknown>,
+  text: string,
+  details: Record<string, unknown> | undefined,
+  expanded: boolean,
+): ReturnType<typeof sections> {
+  if (!expanded) return [];
+  const target = stringValue(args.path);
+  if (name === "read") {
+    return sections(
+      summarySection("File", [
+        field("path", target),
+        field("offset", args.offset),
+        field("limit", args.limit),
+      ]),
+      codeSection("Content", text, undefined, true),
+      details?.truncation ? textSection("Truncation", JSON.stringify(details.truncation), "warning") : undefined,
+    );
+  }
+  if (name === "ls") {
+    const entries = text.split("\n").filter(Boolean).slice(0, 200);
+    return sections(
+      summarySection("Directory", [field("path", target ?? ".")]),
+      recordsSection("Entries", entries.map((entry) => ({
+        title: entry,
+        tone: entry.endsWith("/") ? "accent" as const : "default" as const,
+      }))),
+    );
+  }
+  if (name === "find") {
+    const results = text.split("\n").filter(Boolean).slice(0, 200);
+    return sections(
+      summarySection("Query", [field("pattern", args.pattern), field("path", target ?? ".")]),
+      recordsSection("Results", results.map((entry) => ({ title: entry, tone: entry.endsWith("/") ? "accent" as const : "default" as const }))),
+    );
+  }
+  if (name === "grep") {
+    return sections(
+      summarySection("Query", [field("pattern", args.pattern), field("path", target ?? ".")]),
+      codeSection("Matches", text, "text", false),
+    );
+  }
+  if (name === "write") {
+    const base = sections(
+      summarySection("Target", [field("path", target), field("bytes", typeof args.content === "string" ? Buffer.byteLength(args.content) : undefined)]),
+      codeSection("Content", typeof args.content === "string" ? args.content : text, undefined, false),
+    );
+    return expanded ? base : base.filter((section) => section.title === "Target");
+  }
+  return [];
+}
+
 function resultDescription(
   name: BuiltinName,
   args: Record<string, unknown>,
@@ -102,6 +156,7 @@ function resultDescription(
     title: name.toUpperCase(),
     target,
     truncated: truncation?.truncated === true,
+    sections: resultSections(name, args, text, details, !partial),
   };
   if (name === "edit" && (typeof details?.patch === "string" || typeof details?.diff === "string")) {
     return {

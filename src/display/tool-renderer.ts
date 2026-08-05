@@ -226,6 +226,8 @@ export function decorateToolDefinition<
       const description = applyRuntimeFields(raw, state, terminal, context.isError, "result");
       const displayContext = context as DisplayToolRenderContext<ToolDisplayState, unknown>;
       const component = componentFor(runtime, description, theme, context.lastComponent, options.expanded);
+      state.displayAsyncCallDescription = undefined;
+      state.displayAsyncCallPending = false;
       ensureMotion(
         runtime,
         component,

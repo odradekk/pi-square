@@ -1,5 +1,9 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { getCatalogEntry } from "./catalog";
+import { createExecutionAdapter } from "./execution-adapters";
+import { createRemoteAdapter } from "./remote-adapters";
+import { createWorkflowAdapter } from "./workflow-adapters";
+import { createSearchAdapter } from "./search-adapters";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
 import type { DisplayFamily, DisplayMetadataEntry, DisplayStatus } from "./types";
 
@@ -189,5 +193,28 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
 ): T {
   const entry = getCatalogEntry(definition.name);
   if (!entry) throw new Error(`Missing display catalog entry for '${definition.name}'`);
-  return decorateToolDefinition(definition, runtime, createAdapter(definition.name, entry.family)) as T;
+  const base = createAdapter(definition.name, entry.family);
+  const adapter = definition.name === "rg"
+    || definition.name === "fd"
+    || definition.name === "sg"
+    || definition.name === "pdf_search"
+    || definition.name === "codegraph"
+    ? createSearchAdapter(definition.name, base)
+    : definition.name === "bash" || definition.name === "pwsh" || definition.name === "scheme"
+      ? createExecutionAdapter(definition.name, base)
+      : definition.name === "search"
+        || definition.name === "fetch"
+        || definition.name === "libs"
+        || definition.name === "docs"
+        || definition.name === "parse"
+        || definition.name === "github_search"
+        || definition.name === "github_read"
+        || definition.name === "github_tree"
+        || definition.name === "github_commit"
+        || definition.name === "ssh"
+        ? createRemoteAdapter(definition.name, base)
+        : definition.name === "ask" || definition.name === "todo" || definition.name === "time"
+          ? createWorkflowAdapter(definition.name, base)
+          : base;
+  return decorateToolDefinition(definition, runtime, adapter) as T;
 }
