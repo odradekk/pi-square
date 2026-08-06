@@ -33,6 +33,46 @@ Use `-l` to install it for only the current project. The package requires Pi 0.8
 
 The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their near-monochrome palette uses low-contrast surfaces, one cool blue-gray accent for structure, and restrained semantic status colors. Both variants include explicit HTML export colors and the complete Pi 0.80.6 theme token set. The display runtime itself uses only Pi's standard semantic tokens, so any valid third-party Pi theme remains supported.
 
+## Skills
+
+The package ships 22 discoverable skills covering the path from an idea to a shipped change. `/ask` is the router: it maps a situation onto the right skill or flow.
+
+Run `/setup` once per repository before the first engineering flow. It configures the issue tracker, the triage label vocabulary, and the domain-doc layout that the other skills assume, writing to `AGENTS.md` and `docs/agents/`.
+
+**User-invoked** (reachable when you type them):
+
+| Skill | Purpose |
+| --- | --- |
+| `ask` | Route a situation to the right skill or flow |
+| `setup` | Configure a repository for the engineering skills |
+| `grill-with-docs` | Sharpen an idea by interview, recording terms in `CONTEXT.md` and ADRs |
+| `to-spec` | Turn the current conversation into a spec on the issue tracker |
+| `to-tickets` | Split a plan or spec into tracer-bullet tickets with blocking edges |
+| `implement` | Build the work described by a spec or tickets, driving `tdd` and `code-review` |
+| `triage` | Move incoming issues through a state machine of triage roles |
+| `wayfinder` | Map an effort too large for one session as resolvable decision tickets |
+| `improve-codebase-architecture` | Survey the codebase for deepening opportunities and grill the chosen one |
+| `handoff` | Compact the session into a portable handoff document |
+
+**Model-invoked** (reachable by you or the model):
+
+| Skill | Purpose |
+| --- | --- |
+| `grilling` | The stateless interview primitive: one decision-shaping question at a time |
+| `tdd` | Red-green-refactor development, one vertical slice at a time |
+| `diagnosing-bugs` | Disciplined diagnosis loop for hard defects and performance regressions |
+| `code-review` | Two-axis review of a diff: repository standards and originating spec |
+| `codebase-design` | Deep-module vocabulary for interfaces, seams, and testability |
+| `domain-modeling` | Build and sharpen the project's ubiquitous language and ADRs |
+| `prototype` | Throwaway prototype that answers one state, logic, or UI question |
+| `research` | Background investigation against primary sources, captured as cited Markdown |
+| `resolving-merge-conflicts` | Work an in-progress merge or rebase conflict hunk by hunk |
+| `wizard` | Generate an interactive bash wizard for steps only a human can perform |
+| `commit` | Split the working tree into semantic Conventional Commits, group by group |
+| `pr` | Open a GitHub PR or GitLab MR composed from the branch's commits |
+
+Twenty of these skills are derived from [mattpocock/skills](https://github.com/mattpocock/skills) under the MIT license and have been modified for Pi; `commit` and `pr` are original to this package. See `skills/LICENSE` and `THIRD_PARTY_NOTICES.md`.
+
 ## Operational display
 
 Every parent-session tool, including Pi's `read`, `grep`, `find`, `ls`, `edit`, `write`, and platform shell, uses one high-density operational-console grammar. A one-cell rail identifies pending, partial, success, warning, error, and aborted states; the first row prioritizes tool identity, target, duration, and state; secondary rows carry bounded metadata, progress, previews, or diffs. The pending call transitions into its partial or final presentation in one visual slot instead of leaving a duplicate call entry behind. Expanded results use a closed internal section model: query/request summaries, path and match records, code and Markdown blocks, diffs, activity ledgers, issues, and diagnostics are grouped by tool semantics instead of rendering one undifferentiated text blob. Strong framing is reserved for diffs, confirmations, and managers. Terminal controls, source-authored Markdown links, malformed URLs, and common credential forms are neutralized before display without changing model-facing arguments or results.
