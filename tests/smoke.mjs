@@ -63,7 +63,10 @@ try {
   assert.ok(!commands.includes("prompt-inspect"));
 
   const skills = resourceLoader.getSkills().skills;
-  assert.ok(skills.some((skill) => skill.name === "plan"), "package skills should be discovered");
+  const skillNames = new Set(skills.map((skill) => skill.name));
+  assert.ok(skillNames.has("implement"), "derived package skills should be discovered");
+  assert.ok(skillNames.has("commit"), "original package skills should be discovered");
+  assert.ok(!skillNames.has("setup-matt-pocock-skills"), "renamed skills must not keep their upstream name");
 
   assert.equal(resourceLoader.getSystemPrompt(), "SMOKE NATIVE SYSTEM\n");
   assert.ok(resourceLoader.getAgentsFiles().agentsFiles.some((file) => file.content.includes("SMOKE PROJECT INSTRUCTIONS")));

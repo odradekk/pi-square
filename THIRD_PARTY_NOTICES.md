@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors prebuilt search binaries and installs exact structural-search, semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
+This extension vendors prebuilt search binaries, bundles third-party skill content, and installs exact structural-search, semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
 
 ## Included Software
 
@@ -67,6 +67,17 @@ This extension vendors prebuilt search binaries and installs exact structural-se
 - Version observed in the CodeGraph `1.4.1` Linux x64 platform artifact: `24.16.0`.
 - The runtime is an unmodified component of the upstream CodeGraph platform artifact; pi-square does not separately vendor or modify it.
 
+## Bundled Skill Content
+
+### mattpocock/skills
+- Upstream: https://github.com/mattpocock/skills
+- License: MIT, Copyright (c) 2026 Matt Pocock
+- Source commit: `8b36d4fb2635b3c21998dcd8144439c9e5ba7302`
+- Complete license terms are reproduced in `skills/LICENSE`, which ships in the published package.
+- Twenty skills in `skills/` are derived from the upstream `skills/engineering` and `skills/productivity` sets: `ask`, `code-review`, `codebase-design`, `diagnosing-bugs`, `domain-modeling`, `grill-with-docs`, `grilling`, `handoff`, `implement`, `improve-codebase-architecture`, `prototype`, `research`, `resolving-merge-conflicts`, `setup`, `tdd`, `to-spec`, `to-tickets`, `triage`, `wayfinder`, and `wizard`.
+- **These files are modified.** The Codex-specific `agents/openai.yaml` files and the upstream `skills/engineering/README.md` were removed; sub-agent invocations were rewritten from Claude Code's `Agent`/`subagent_type` form to Pi's `subagent_delegate` tool and bundled role names; `/clear` was renamed to Pi's `/new`; `CLAUDE.md` write targets were replaced with `AGENTS.md`; and `setup-matt-pocock-skills` and `ask-matt` were renamed to `setup` and `ask` with their cross-references updated.
+- The `commit` and `pr` skills are original pi-square work under the repository's own LICENSE and are not covered by the upstream notice.
+
 ## libc Boundary
 
 - rg `linux-x64` is statically linked and has no runtime library dependency.
@@ -86,3 +97,4 @@ This extension vendors prebuilt search binaries and installs exact structural-se
 - PDF.js and its optional canvas packages are installed by npm with lockfile integrity metadata. `pdf_search` resolves only package-local assets and keeps extracted text in bounded memory; it creates no PDF cache, index, or artifact on disk.
 - ssh2 and its transitive packages are installed by npm with lockfile integrity metadata. The SSH wrapper always supplies a pinned-fingerprint `hostVerifier`, disables agent forwarding, keeps remote output in bounded memory, and creates no SSH cache, log, socket, or artifact.
 - CodeGraph index databases live under each explicitly initialized project's `.codegraph/` directory and are not vendored or persisted by pi-square itself.
+- Bundled skills are Markdown instructions and helper scripts, Git-tracked under `skills/`. They execute no code at load time; Pi discovers them and the model reads them on demand.
