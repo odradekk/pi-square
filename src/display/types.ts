@@ -27,6 +27,9 @@ export const DISPLAY_STATUSES: readonly DisplayStatus[] = Object.freeze([
 ]);
 
 // Status-rail frames are non-emoji, fixed single-cell-width glyphs.
+// These map the flat DisplayStatus (the compatibility contract used by
+// adapters and public Adapter v1) to visual markers. Lifecycle rendering
+// uses LIFECYCLE_FRAMES below; resolveOperationalState bridges the two.
 // Braille sequences animate pending and partial; static glyphs cover terminal states.
 export const PENDING_FRAMES: readonly string[] = Object.freeze([
   "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
@@ -48,6 +51,124 @@ export const STATUS_FRAMES: Readonly<Record<DisplayStatus, readonly string[]>> =
     error: [ERROR_FRAME],
     aborted: [ABORTED_FRAME],
   });
+
+// ─── Operational lifecycle + qualifiers ──────────────────────────────
+//
+// The lifecycle-plus-qualifier model is the internal operational-state
+// expansion. Lifecycle is the primary axis (determines the status marker);
+// qualifiers are orthogonal modifiers that coexist without flattening into
+// free text. The flat DisplayStatus remains as the compatibility contract
+// for adapters and public Adapter v1; resolveOperationalState bridges the
+// two so unmigrated surfaces render through the new vocabulary.
+
+export const OPERATIONAL_LIFECYCLES = [
+  "queued",
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "aborted",
+] as const;
+export type OperationalLifecycle = (typeof OPERATIONAL_LIFECYCLES)[number];
+
+export const OPERATIONAL_QUALIFIERS = [
+  "warning",
+  "partial",
+  "retrying",
+  "cancelling",
+  "truncated",
+  "projected",
+  "needs-input",
+] as const;
+export type OperationalQualifier = (typeof OPERATIONAL_QUALIFIERS)[number];
+
+// Lifecycle state markers — the approved single-cell vocabulary.
+// queued: en-dash, pending: white circle, running: animated braille,
+// completed: check mark, failed: ballot X, aborted: multiplication sign.
+// The completed-with-warning override renders as "!".
+export const QUEUED_FRAME = "–";
+export const PENDING_MARKER = "○";
+export const RUNNING_FRAMES: readonly string[] = Object.freeze([
+  "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+]);
+export const COMPLETED_FRAME = "✓";
+export const COMPLETED_WARNING_FRAME = "!";
+export const FAILED_FRAME = "✗";
+export const ABORTED_MARKER = "×";
+
+export const LIFECYCLE_FRAMES: Readonly<
+  Record<OperationalLifecycle, readonly string[]>
+> = Object.freeze({
+  queued: [QUEUED_FRAME],
+  pending: [PENDING_MARKER],
+  running: RUNNING_FRAMES,
+  completed: [COMPLETED_FRAME],
+  failed: [FAILED_FRAME],
+  aborted: [ABORTED_MARKER],
+});
+
+export interface ResolvedOperationalState {
+  readonly lifecycle: OperationalLifecycle;
+  readonly qualifiers: readonly OperationalQualifier[];
+}
+
+/** Minimal execution context for compatibility-bridge resolution. */
+export interface OperationalContext {
+  readonly executionStarted: boolean;
+  readonly argsComplete: boolean;
+}
+
+/**
+ * Resolve the operational lifecycle and qualifiers for a description.
+ *
+ * Explicit lifecycle fields take precedence (the new Claude-like path used
+ * by migrated tools such as Time). When absent, the compatibility bridge
+ * derives lifecycle and qualifiers from the flat DisplayStatus so
+ * unmigrated surfaces render through the new marker vocabulary.
+ */
+export function resolveOperationalState(
+  status: DisplayStatus,
+  lifecycle: OperationalLifecycle | undefined,
+  qualifiers: readonly OperationalQualifier[] | undefined,
+  phase: "call" | "result",
+  context?: OperationalContext,
+): ResolvedOperationalState {
+  if (lifecycle) return { lifecycle, qualifiers: qualifiers ?? [] };
+  const bridged = bridgeStatus(status, phase, context);
+  // Preserve explicit qualifiers even when lifecycle is bridged from status.
+  if (qualifiers && qualifiers.length > 0) {
+    const merged = [...bridged.qualifiers];
+    for (const q of qualifiers) if (!merged.includes(q)) merged.push(q);
+    return { lifecycle: bridged.lifecycle, qualifiers: merged };
+  }
+  return bridged;
+}
+
+function bridgeStatus(
+  status: DisplayStatus,
+  phase: "call" | "result",
+  context?: OperationalContext,
+): ResolvedOperationalState {
+  switch (status) {
+    case "pending":
+      if (phase === "call" && context) {
+        if (context.executionStarted) return { lifecycle: "running", qualifiers: [] };
+        if (context.argsComplete) return { lifecycle: "pending", qualifiers: [] };
+        return { lifecycle: "queued", qualifiers: [] };
+      }
+      return { lifecycle: "running", qualifiers: [] };
+    case "partial":
+      return { lifecycle: "running", qualifiers: ["partial"] };
+    case "success":
+      return { lifecycle: "completed", qualifiers: [] };
+    case "warning":
+      return { lifecycle: "completed", qualifiers: ["warning"] };
+    case "error":
+      return { lifecycle: "failed", qualifiers: [] };
+    case "aborted":
+      return { lifecycle: "aborted", qualifiers: [] };
+  }
+}
 
 // ─── Result mode ─────────────────────────────────────────────────────
 
@@ -331,4 +452,11 @@ export interface DisplayDescriptionV1 {
   readonly progress?: DisplayProgressDescription;
   readonly truncated?: boolean;
   readonly error?: string;
+
+  // ─── Operational lifecycle expansion (internal) ─────────────────
+  // When set, these take precedence over `status` for marker resolution.
+  // When absent, resolveOperationalState bridges from `status` so
+  // unmigrated adapters and public Adapter v1 render correctly.
+  readonly lifecycle?: OperationalLifecycle;
+  readonly qualifiers?: readonly OperationalQualifier[];
 }

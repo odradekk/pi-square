@@ -4,11 +4,14 @@ import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
 import { boundedVisualLines, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
-import { styleRule, styleStatus, styleTitle, styleTone } from "./theme";
+import { styleRule, styleOperational, styleTitle, styleTone } from "./theme";
 import {
-  STATUS_FRAMES,
+  COMPLETED_WARNING_FRAME,
+  LIFECYCLE_FRAMES,
+  resolveOperationalState,
   type DisplayDescriptionV1,
   type DisplayPolicy,
+  type ResolvedOperationalState,
 } from "./types";
 
 const MAX_TITLE_CODE_POINTS = 80;
@@ -136,8 +139,20 @@ function progressText(description: DisplayDescriptionV1): string | undefined {
   return label;
 }
 
-function statusFrame(description: DisplayDescriptionV1, frameIndex: number): string {
-  const frames = STATUS_FRAMES[description.status];
+function resolveState(description: DisplayDescriptionV1): ResolvedOperationalState {
+  return resolveOperationalState(
+    description.status,
+    description.lifecycle,
+    description.qualifiers,
+    description.phase ?? "call",
+  );
+}
+
+function lifecycleFrame(state: ResolvedOperationalState, frameIndex: number): string {
+  if (state.lifecycle === "completed" && state.qualifiers.includes("warning")) {
+    return COMPLETED_WARNING_FRAME;
+  }
+  const frames = LIFECYCLE_FRAMES[state.lifecycle];
   return frames[frameIndex % frames.length]!;
 }
 
@@ -177,7 +192,13 @@ export class OperationalDisplayComponent implements Component {
   render(width: number): string[] {
     const safe = Math.max(1, Math.floor(width));
     const description = this.description;
-    const rail = styleStatus(this.theme, description.status, statusFrame(description, this.frameIndex));
+    const opState = resolveState(description);
+    const rail = styleOperational(
+      this.theme,
+      opState.lifecycle,
+      opState.qualifiers,
+      lifecycleFrame(opState, this.frameIndex),
+    );
     const title = styleTitle(this.theme, truncateCodePoints(
       sanitizeDisplayLine(description.title || description.tool),
       MAX_TITLE_CODE_POINTS,

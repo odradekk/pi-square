@@ -8,7 +8,11 @@ import type { Component } from "@earendil-works/pi-tui";
 import type { Static, TSchema } from "typebox";
 import { isOperationalDisplayComponent, type OperationalDisplayComponent } from "./components";
 import type { DisplayRuntime } from "./runtime";
-import type { DisplayDescriptionV1 } from "./types";
+import {
+  resolveOperationalState,
+  type DisplayDescriptionV1,
+  type OperationalContext,
+} from "./types";
 
 export type DisplayRuntimeProvider = DisplayRuntime | (() => DisplayRuntime);
 
@@ -100,11 +104,22 @@ function applyRuntimeFields(
   terminal: boolean,
   forceError: boolean,
   phase: "call" | "result",
+  operationalContext?: OperationalContext,
 ): DisplayDescriptionV1 {
+  const effectiveStatus = forceError ? "error" : description.status;
+  const resolved = resolveOperationalState(
+    effectiveStatus,
+    description.lifecycle,
+    description.qualifiers,
+    phase,
+    operationalContext,
+  );
   return {
     ...description,
     phase: description.phase ?? phase,
-    status: forceError ? "error" : description.status,
+    status: effectiveStatus,
+    lifecycle: resolved.lifecycle,
+    qualifiers: resolved.qualifiers,
     durationMs: description.durationMs ?? duration(state, terminal),
   };
 }
@@ -170,7 +185,10 @@ export function decorateToolDefinition<
       const raw = state.displayAsyncCallKey === asyncKey && state.displayAsyncCallDescription
         ? state.displayAsyncCallDescription
         : adapter.describeCall(args, context);
-      const description = applyRuntimeFields(raw, state, false, false, "call");
+      const description = applyRuntimeFields(raw, state, false, false, "call", {
+        executionStarted: context.executionStarted,
+        argsComplete: context.argsComplete,
+      });
       const displayContext = context as DisplayToolRenderContext<ToolDisplayState, unknown>;
       const previousSlot = context.lastComponent instanceof CallDisplaySlot ? context.lastComponent : undefined;
       const component = componentFor(
@@ -187,7 +205,7 @@ export function decorateToolDefinition<
         component,
         state,
         displayContext,
-        context.executionStarted && (description.status === "pending" || description.status === "partial"),
+        description.lifecycle === "running",
       );
       if (
         asyncKey !== undefined
@@ -206,7 +224,10 @@ export function decorateToolDefinition<
           ) return;
           state.displayAsyncCallPending = false;
           state.displayAsyncCallDescription = resolved;
-          const next = applyRuntimeFields(resolved, state, false, false, "call");
+          const next = applyRuntimeFields(resolved, state, false, false, "call", {
+            executionStarted: context.executionStarted,
+            argsComplete: context.argsComplete,
+          });
           runtime.updateComponent(component, next, theme, { expanded: context.expanded });
           context.invalidate();
         }).catch(() => {
@@ -233,7 +254,7 @@ export function decorateToolDefinition<
         component,
         state,
         displayContext,
-        !terminal && (description.status === "pending" || description.status === "partial"),
+        !terminal && description.lifecycle === "running",
       );
       return component;
     },

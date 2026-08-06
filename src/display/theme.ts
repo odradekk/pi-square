@@ -1,5 +1,10 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import type { DisplayStatus, DisplayTone } from "./types";
+import type {
+  DisplayStatus,
+  DisplayTone,
+  OperationalLifecycle,
+  OperationalQualifier,
+} from "./types";
 
 const TONE_TOKENS: Readonly<Record<DisplayTone, ThemeColor>> = Object.freeze({
   default: "toolOutput",
@@ -10,6 +15,9 @@ const TONE_TOKENS: Readonly<Record<DisplayTone, ThemeColor>> = Object.freeze({
   error: "error",
 });
 
+// STATUS_TOKENS and styleStatus are the retained compatibility contract
+// for the flat DisplayStatus model. Lifecycle rendering uses
+// operationalToken/styleOperational and LIFECYCLE_TOKENS above.
 const STATUS_TOKENS: Readonly<Record<DisplayStatus, ThemeColor>> = Object.freeze({
   pending: "accent",
   partial: "accent",
@@ -18,6 +26,33 @@ const STATUS_TOKENS: Readonly<Record<DisplayStatus, ThemeColor>> = Object.freeze
   error: "error",
   aborted: "warning",
 });
+
+const LIFECYCLE_TOKENS: Readonly<Record<OperationalLifecycle, ThemeColor>> =
+  Object.freeze({
+    queued: "muted",
+    pending: "accent",
+    running: "accent",
+    completed: "success",
+    failed: "error",
+    aborted: "warning",
+  });
+
+export function operationalToken(
+  lifecycle: OperationalLifecycle,
+  qualifiers: readonly OperationalQualifier[],
+): ThemeColor {
+  if (lifecycle === "completed" && qualifiers.includes("warning")) return "warning";
+  return LIFECYCLE_TOKENS[lifecycle];
+}
+
+export function styleOperational(
+  theme: Theme,
+  lifecycle: OperationalLifecycle,
+  qualifiers: readonly OperationalQualifier[],
+  text: string,
+): string {
+  return theme.fg(operationalToken(lifecycle, qualifiers), text);
+}
 
 export function styleTone(theme: Theme, tone: DisplayTone | undefined, text: string): string {
   return theme.fg(TONE_TOKENS[tone ?? "default"], text);

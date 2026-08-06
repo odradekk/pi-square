@@ -131,7 +131,7 @@ const errored = decorated.renderResult(
   theme,
   context({ lastComponent: final, isError: true }),
 );
-assert.match(errored.render(80)[0], /×/);
+assert.match(errored.render(80)[0], /✗/);
 
 const piComponent = new ToolExecutionComponent(
   "sample",

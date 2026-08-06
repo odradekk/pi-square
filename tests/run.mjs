@@ -23,6 +23,7 @@ const suites = [
   "display/conflicts.test.mjs",
   "display/public-adapter.test.mjs",
   "display/integration.test.mjs",
+  "display/operational-state.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",

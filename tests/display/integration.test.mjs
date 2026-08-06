@@ -35,7 +35,7 @@ const themes = [
 ];
 const widths = [39, 40, 63, 64, 80, 99, 100, 120];
 const states = ["pending", "partial", "success", "warning", "error", "aborted"];
-const expectedRails = { pending: "⠋", partial: "⠹", success: "✓", warning: "!", error: "×", aborted: "–" };
+const expectedRails = { pending: "⠋", partial: "⠋", success: "✓", warning: "!", error: "✗", aborted: "×" };
 
 assert.equal(new Set(DISPLAY_CATALOG.map((entry) => entry.name)).size, DISPLAY_CATALOG.length);
 assert.ok(DISPLAY_CATALOG.every((entry) => entry.parent));

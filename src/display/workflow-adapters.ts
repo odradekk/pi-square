@@ -14,7 +14,7 @@ import {
   textSection,
   type UnknownRecord,
 } from "./adapter-utils";
-import type { DisplayMetadataEntry, DisplayRecordItem, DisplaySection } from "./types";
+import type { DisplayMetadataEntry, DisplayRecordItem, DisplaySection, OperationalLifecycle } from "./types";
 
 function safeJson(text: string): unknown {
   try {
@@ -91,6 +91,20 @@ function actionFields(name: string, args: UnknownRecord, details: UnknownRecord)
   return [];
 }
 
+/**
+ * Derive an explicit lifecycle for the Time tool so it renders through the
+ * new operational path rather than the compatibility bridge.
+ */
+function timeLifecycle(
+  context: { executionStarted: boolean; argsComplete: boolean; isError: boolean },
+  phase: "call" | "result",
+): OperationalLifecycle {
+  if (phase === "result") return context.isError ? "failed" : "completed";
+  if (context.executionStarted) return "running";
+  if (context.argsComplete) return "pending";
+  return "queued";
+}
+
 export function createWorkflowAdapter(
   name: string,
   base: InternalToolDisplayAdapter<any, unknown, unknown>,
@@ -101,6 +115,7 @@ export function createWorkflowAdapter(
       const description = base.describeCall(args, context);
       const source = asRecord(args);
       return baseDescription(description, {
+        ...(name === "time" ? { lifecycle: timeLifecycle(context, "call") } : {}),
         metadata: [...(description.metadata ?? []), ...metadata(actionFields(name, source, source))].slice(0, 16),
         sections: sections(summarySection(name === "todo" ? "Action" : name === "ask" ? "Request" : "Local", actionFields(name, source, source))),
       });
@@ -131,6 +146,7 @@ export function createWorkflowAdapter(
       const hasDomain = structured.some((section) => section.title === "Tasks" || section.title === "Answers" || section.title === "Result" || section.title === "Local");
       const output = options.expanded && !hasDomain ? codeSection("Result", text, "json", false) : undefined;
       return baseDescription(description, {
+        ...(name === "time" ? { lifecycle: timeLifecycle(context, "result") } : {}),
         metadata: [...(description.metadata ?? []), ...metadata(actionFields(name, asRecord(context.args), details))].slice(0, 16),
         sections: [...structured, ...sections(output)],
         ...(options.expanded ? { preview: undefined } : {}),

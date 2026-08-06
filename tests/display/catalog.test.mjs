@@ -40,6 +40,16 @@ const {
   LAYOUT_REGULAR_MAX_COLUMNS,
   MOTION_FULL_FPS,
   MOTION_REDUCED_FPS,
+  OPERATIONAL_LIFECYCLES,
+  OPERATIONAL_QUALIFIERS,
+  LIFECYCLE_FRAMES,
+  QUEUED_FRAME,
+  PENDING_MARKER,
+  RUNNING_FRAMES,
+  COMPLETED_FRAME,
+  COMPLETED_WARNING_FRAME,
+  FAILED_FRAME,
+  ABORTED_MARKER,
 } = await load("../../src/display/types.ts");
 
 // ── Catalog validation ───────────────────────────────────────────────
@@ -165,6 +175,43 @@ assert.equal(SUCCESS_FRAME, "✓");
 assert.equal(WARNING_FRAME, "!");
 assert.equal(ERROR_FRAME, "×");
 assert.equal(ABORTED_FRAME, "–");
+
+// ── Lifecycle frames: exhaustive lifecycles + qualifiers ─────────────
+
+assert.equal(OPERATIONAL_LIFECYCLES.length, 6, "must have exactly 6 lifecycles");
+assert.equal(OPERATIONAL_QUALIFIERS.length, 7, "must have exactly 7 qualifiers");
+for (const lifecycle of OPERATIONAL_LIFECYCLES) {
+  assert.ok(LIFECYCLE_FRAMES[lifecycle], `lifecycle '${lifecycle}' must have frames`);
+  assert.ok(LIFECYCLE_FRAMES[lifecycle].length > 0, `lifecycle '${lifecycle}' must have at least one frame`);
+}
+
+// Lifecycle markers: non-emoji, single code point, fixed width
+const allLifecycleChars = [
+  QUEUED_FRAME, PENDING_MARKER, COMPLETED_FRAME,
+  COMPLETED_WARNING_FRAME, FAILED_FRAME, ABORTED_MARKER,
+  ...RUNNING_FRAMES,
+];
+for (const frame of allLifecycleChars) {
+  const codePoints = Array.from(frame);
+  assert.equal(codePoints.length, 1, `lifecycle frame '${frame}' must be a single code point`);
+  assert.equal(visibleWidth(frame), 1, `lifecycle frame '${frame}' must occupy exactly one terminal cell`);
+  assert.ok(!/^\p{Extended_Pictographic}$/u.test(codePoints[0]), `lifecycle frame '${frame}' must not be pictographic emoji`);
+}
+
+// Approved marker vocabulary
+assert.equal(QUEUED_FRAME, "–");
+assert.equal(PENDING_MARKER, "○");
+assert.equal(COMPLETED_FRAME, "✓");
+assert.equal(COMPLETED_WARNING_FRAME, "!");
+assert.equal(FAILED_FRAME, "✗");
+assert.equal(ABORTED_MARKER, "×");
+
+// Running frames are animated braille
+assert.ok(RUNNING_FRAMES.length >= 2, "running must have multiple frames for animation");
+for (const f of RUNNING_FRAMES) {
+  const cp = Array.from(f)[0].codePointAt(0);
+  assert.ok(cp >= 0x2800 && cp <= 0x28ff, `running frame '${f}' must be a Braille pattern`);
+}
 
 // ── Default policy within bounds ─────────────────────────────────────
 
