@@ -45,6 +45,8 @@ function mergeMetadata(
 const REMOTE_SUPPRESS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   fetch: new Set(["max_tokens", "include_links", "describe_images", "no_cache"]),
   search: new Set(["no_cache"]),
+  libs: new Set(["libraryName"]),
+  docs: new Set(["libraryId", "max_tokens"]),
 });
 
 function remoteSuppress(name: string): ReadonlySet<string> {
@@ -256,6 +258,20 @@ function domainSection(name: string, details: UnknownRecord, text: string, expan
 
 function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
   const counts = asRecord(details.counts);
+  const codeCounts = asRecord(details.codeCounts);
+  const infoCounts = asRecord(details.infoCounts);
+  // Docs splits counts into codeCounts/infoCounts; surface returned and
+  // omitted from each, plus the consumed token budget.
+  const num = (v: unknown): number => typeof v === "number" && Number.isFinite(v) ? v : 0;
+  const codeReturned = codeCounts.returned;
+  const codeReceived = codeCounts.received;
+  const infoReturned = infoCounts.returned;
+  const infoReceived = infoCounts.received;
+  const docsOmitted = num(codeCounts.omitted) + num(infoCounts.omitted);
+  const docsOversized = num(codeCounts.oversized) + num(infoCounts.oversized);
+  const docsInvalid = num(codeCounts.invalid) + num(infoCounts.invalid);
+  const estimatedTokens = details.estimatedTokens;
+  const maxTokens = details.maxTokens;
   return [
     field("status", details.status),
     field("phase", details.phase),
@@ -269,6 +285,31 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     field("outputLines", details.outputLines),
     field("requests", details.requestsUsed),
     field("rateRemaining", asRecord(details.rate).remaining),
+    // Docs-specific budget and count fields
+    codeReturned !== undefined && num(codeReceived) > 0
+      ? field("code", `${codeReturned}/${codeReceived ?? codeReturned}`)
+      : undefined,
+    infoReturned !== undefined && num(infoReceived) > 0
+      ? field("info", `${infoReturned}/${infoReceived ?? infoReturned}`)
+      : undefined,
+    docsOmitted > 0 ? field("omitted", docsOmitted) : undefined,
+    docsOversized > 0 ? field("oversized", docsOversized, "warning") : undefined,
+    docsInvalid > 0 ? field("invalid", docsInvalid) : undefined,
+    // Libs also surfaces invalid/oversized separately for provider-data quality
+    counts.invalid !== undefined && num(counts.invalid) > 0 ? field("invalid", counts.invalid) : undefined,
+    counts.oversized !== undefined && num(counts.oversized) > 0 ? field("oversized", counts.oversized, "warning") : undefined,
+    estimatedTokens !== undefined
+      ? field("tokens", `${estimatedTokens}/${maxTokens ?? "?"}`)
+      : undefined,
+    // Libs/docs redirect, pending, and filter indicators
+    details.redirected === true ? field("redirected", "yes", "warning") : undefined,
+    details.finalLibraryId !== undefined && details.finalLibraryId !== "" && details.finalLibraryId !== details.libraryId
+      ? field("finalLibrary", details.finalLibraryId, "muted")
+      : undefined,
+    details.retryAfter !== undefined ? field("retryAfter", `${details.retryAfter}s`) : undefined,
+    details.searchFilterApplied === true ? field("filter", "applied") : undefined,
+    details.rulesOmitted === true ? field("rules", "omitted", "warning") : undefined,
+    // Truncation and cache indicators
     details.truncated === true ? field("truncated", "yes", "warning") : undefined,
     details.incomplete === true ? field("incomplete", "yes", "warning") : undefined,
     details.remoteTruncated === true ? field("remoteTruncated", "yes", "warning") : undefined,
