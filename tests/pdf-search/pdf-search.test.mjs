@@ -211,12 +211,22 @@ test("tool reports cancellation, extraction errors, no matches, and matching con
   const preCancelled = createPdfSearchToolDefinition({ async extract() { throw new Error("unreachable"); } });
   const cancelled = await preCancelled.execute("t", { path: "sample.pdf", query: "x" }, controller.signal, undefined, { cwd: workspace });
   assert.equal(cancelled.details.errorCode, "ABORTED");
+  // Cancellation and a genuine hard failure are distinct outcomes at the
+  // tool level (status "aborted" vs. "error") and neither ever carries a
+  // partial match list — the display layer's aborted-vs-failed marker
+  // distinction relies on this invariant holding at the source.
+  assert.equal(cancelled.details.status, "aborted");
+  assert.equal(cancelled.isError, true);
+  assert.deepEqual(cancelled.details.matches, [], "cancellation carries no partial matches");
 
   const failing = createPdfSearchToolDefinition({
     async extract() { throw new PdfSearchError("NO_EXTRACTABLE_TEXT", "scanned PDF"); },
   });
   const failed = await failing.execute("t", { path: "sample.pdf", query: "x" }, undefined, undefined, { cwd: workspace });
   assert.equal(failed.details.errorCode, "NO_EXTRACTABLE_TEXT");
+  assert.equal(failed.details.status, "error", "a genuine failure never reports the aborted status");
+  assert.equal(failed.isError, true);
+  assert.deepEqual(failed.details.matches, [], "a hard failure carries no partial matches");
 
   const successful = createPdfSearchToolDefinition({ async extract() { return extracted(["needle context"]); } });
   const found = await successful.execute("t", { path: "sample.pdf", query: "needle" }, undefined, undefined, { cwd: workspace });

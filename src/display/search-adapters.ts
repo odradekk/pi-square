@@ -151,6 +151,21 @@ function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
   });
 }
 
+/**
+ * pdf_search models cancellation as a first-class outcome: an aborted
+ * search sets details.status = "aborted" and isError = true (matching a
+ * genuine failure), so the shared runtime's isError-forces-error safety
+ * net would otherwise render the failed ✗ marker instead of the distinct
+ * aborted × marker. rg/fd/sg do not model abort this way — they throw a
+ * bare Error that Pi's own generic tool-error handling renders, never
+ * reaching a structured details.status at all — so this override is scoped
+ * to pdf_search only, mirroring the identical fix already applied for
+ * CodeGraph's own structured aborted phase.
+ */
+function pdfSearchLifecycle(details: UnknownRecord): { lifecycle: OperationalLifecycle; qualifiers: OperationalQualifier[] } | undefined {
+  return stringOf(details.status) === "aborted" ? { lifecycle: "aborted", qualifiers: [] } : undefined;
+}
+
 function fdPaths(details: UnknownRecord, args: UnknownRecord): DisplayPathItem[] {
   const types = asArray(args.types).map((t) => stringOf(t)).filter((v): v is string => Boolean(v));
   const singleType = types.length === 1 ? types[0] : undefined;
@@ -440,7 +455,13 @@ export function createSearchAdapter(
         field("phase", details.phase),
         field("returned", details.returned),
         field("totalMatches", details.totalMatches),
+        // pdf_search's document/page budget: the total page count of the
+        // resolved PDF, independent of how many pages carried a match.
+        name === "pdf_search" ? field("pages", details.pageCount) : undefined,
         field("cacheHit", details.cacheHit),
+        // pdf_search's result budget: more matching pages exist beyond the
+        // returned/limit-bounded set, mirroring rg/fd/sg's page.hasMore.
+        name === "pdf_search" && details.hasMore === true ? field("hasMore", "true", "warning") : undefined,
         truncation.contentBudgetReached === true ? field("contentBudget", "reached", "warning") : undefined,
         details.stderrTruncated === true ? field("stderr", "truncated", "warning") : undefined,
         details.autoSynced === true ? field("autoSynced", "true", "success") : undefined,
@@ -505,6 +526,7 @@ export function createSearchAdapter(
       // currently populate those fields; a future tool that does would need
       // to re-surface them through a dedicated section instead of rows.
       const suppressFallback = structuredDomain && (hasStructuredContent || Boolean(error));
+      const lifecycleOverride = name === "pdf_search" ? pdfSearchLifecycle(details) : undefined;
       return baseDescription(description, {
         metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, args), name === "sg" ? sgKindModeSuppression(args) : undefined),
         sections: options.expanded
@@ -512,6 +534,7 @@ export function createSearchAdapter(
           : structured.filter((section) => section.compact === true),
         preview: suppressFallback ? undefined : description.preview,
         rows: suppressFallback ? [] : description.rows,
+        ...(lifecycleOverride ? lifecycleOverride : {}),
       });
     },
   };
