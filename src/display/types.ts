@@ -204,10 +204,10 @@ export type DisplayMotion = "full" | "reduced" | "off";
 
 export const DISPLAY_MOTIONS: readonly DisplayMotion[] = ["full", "reduced", "off"];
 
-/** Maximum animation frame rate for full motion (frames per second). */
-export const MOTION_FULL_FPS = 30;
-/** Fixed update rate for reduced motion (frames per second). */
-export const MOTION_REDUCED_FPS = 1;
+/** Minimum interval between full-motion frames in milliseconds (~29.4 FPS). */
+export const MOTION_FULL_INTERVAL_MS = 34;
+/** Fixed interval between reduced-motion frames in milliseconds (~8.3 FPS). */
+export const MOTION_REDUCED_INTERVAL_MS = 120;
 
 // ─── Family ──────────────────────────────────────────────────────────
 

@@ -33,14 +33,14 @@ let second = 0;
 const stopFirst = scheduler.subscribe(() => { first += 1; });
 const stopSecond = scheduler.subscribe(() => { second += 1; });
 assert.equal(clock.handles.size, 1, "all subscribers share one timer");
-assert.deepEqual(clock.intervals, [34], "full motion is capped at 30 FPS");
+assert.deepEqual(clock.intervals, [34], "full motion uses 34 ms interval");
 clock.tick();
 assert.equal(first, 1);
 assert.equal(second, 1);
 
 scheduler.setMode("reduced");
 assert.equal(clock.handles.size, 1);
-assert.equal(clock.intervals.at(-1), 1000, "reduced motion is 1 FPS");
+assert.equal(clock.intervals.at(-1), 120, "reduced motion uses 120 ms interval");
 clock.tick();
 assert.equal(first, 2);
 
@@ -69,5 +69,30 @@ assert.equal(failureScheduler.subscriberCount, 1, "failed subscriber is removed"
 failureClock.tick();
 assert.equal(healthy, 2);
 failureScheduler.dispose();
+
+// Idempotent disposal: calling dispose multiple times is safe.
+const idempotentClock = new FakeClock();
+const idempotentScheduler = new MotionScheduler("full", idempotentClock);
+let idempotentCount = 0;
+const stopIdempotent = idempotentScheduler.subscribe(() => { idempotentCount += 1; });
+assert.equal(idempotentClock.handles.size, 1, "timer created on first subscriber");
+idempotentScheduler.dispose();
+idempotentScheduler.dispose();
+assert.equal(idempotentScheduler.subscriberCount, 0, "no subscribers after disposal");
+assert.equal(idempotentClock.handles.size, 0, "timer removed after disposal");
+stopIdempotent();
+idempotentClock.tick();
+assert.equal(idempotentCount, 0, "no updates after disposal");
+
+// No updates after shutdown: disposed scheduler has no active timer.
+const shutdownClock = new FakeClock();
+const shutdownScheduler = new MotionScheduler("full", shutdownClock);
+let shutdownCount = 0;
+shutdownScheduler.subscribe(() => { shutdownCount += 1; });
+assert.equal(shutdownClock.handles.size, 1);
+shutdownScheduler.dispose();
+assert.equal(shutdownClock.handles.size, 0, "timer removed after disposal");
+shutdownClock.tick();
+assert.equal(shutdownCount, 0, "no callbacks fired after disposal");
 
 console.log("display motion tests: OK");

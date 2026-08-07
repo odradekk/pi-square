@@ -1,6 +1,6 @@
 import {
-  MOTION_FULL_FPS,
-  MOTION_REDUCED_FPS,
+  MOTION_FULL_INTERVAL_MS,
+  MOTION_REDUCED_INTERVAL_MS,
   type DisplayMotion,
 } from "./types";
 
@@ -77,7 +77,7 @@ export class MotionScheduler {
 
   private intervalMs(): number | undefined {
     if (this.motion === "off") return undefined;
-    return Math.ceil(1_000 / (this.motion === "full" ? MOTION_FULL_FPS : MOTION_REDUCED_FPS));
+    return this.motion === "full" ? MOTION_FULL_INTERVAL_MS : MOTION_REDUCED_INTERVAL_MS;
   }
 
   private ensureTimer(): void {

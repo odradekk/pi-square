@@ -13,7 +13,7 @@ import {
   textSection,
   type UnknownRecord,
 } from "./adapter-utils";
-import type { DisplayMetadataEntry } from "./types";
+import type { DisplayMetadataEntry, OperationalLifecycle, OperationalQualifier } from "./types";
 
 function shellCommand(args: UnknownRecord): string | undefined {
   return stringOf(args.command);
@@ -65,6 +65,29 @@ function splitSchemeOutput(text: string): { stdout: string; stderr?: string } {
   return { stdout: text.slice(0, index), stderr: text.slice(index + marker.length) };
 }
 
+/**
+ * Derive an explicit lifecycle for the Scheme tool so it renders through the
+ * new operational path with streaming, timeout, and cancellation awareness.
+ * Bash and pwsh continue using the compatibility bridge until their own migration.
+ */
+function schemeLifecycle(
+  context: { executionStarted: boolean; argsComplete: boolean },
+  isPartial: boolean,
+  isError: boolean,
+  details: UnknownRecord,
+  phase: "call" | "result",
+): { lifecycle: OperationalLifecycle; qualifiers?: readonly OperationalQualifier[] } {
+  if (phase === "result") {
+    if (isPartial) return { lifecycle: "running" };
+    if (details.aborted === true) return { lifecycle: "aborted" };
+    if (isError) return { lifecycle: "failed" };
+    return { lifecycle: "completed", ...(details.truncated === true ? { qualifiers: ["truncated"] } : {}) };
+  }
+  if (context.executionStarted) return { lifecycle: "running" };
+  if (context.argsComplete) return { lifecycle: "pending" };
+  return { lifecycle: "queued" };
+}
+
 export function createExecutionAdapter(
   name: string,
   base: InternalToolDisplayAdapter<any, unknown, unknown>,
@@ -76,6 +99,7 @@ export function createExecutionAdapter(
       const source = asRecord(args);
       const command = name === "scheme" ? schemeCode(source) : shellCommand(source);
       return baseDescription(description, {
+        ...(name === "scheme" ? schemeLifecycle(context, false, false, {}, "call") : {}),
         metadata: [...(description.metadata ?? []), ...identityMetadata(name, source, {})].slice(0, 16),
         sections: sections(
           summarySection(name === "scheme" ? "Access" : "Command", identityMetadata(name, source, {})),
@@ -102,6 +126,7 @@ export function createExecutionAdapter(
         textSection("Diagnostics", stringOf(details.reason) ?? stringOf(details.error), "warning"),
       );
       return baseDescription(description, {
+        ...(name === "scheme" ? schemeLifecycle(context, options.isPartial, context.isError, details, "result") : {}),
         metadata: [...(description.metadata ?? []), ...identityMetadata(name, args, details)].slice(0, 16),
         sections: structured,
         ...(options.expanded ? { preview: undefined } : {}),
