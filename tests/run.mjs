@@ -39,6 +39,7 @@ const suites = [
   "display/context7-libs-docs.test.mjs",
   "display/firecrawl-parse.test.mjs",
   "display/github-tools.test.mjs",
+  "display/github-tree-commit.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",

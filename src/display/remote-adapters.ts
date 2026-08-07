@@ -269,6 +269,16 @@ function domainSection(name: string, details: UnknownRecord, text: string, expan
   if (name === "docs") return docsSections(details);
   if (name === "parse") return sections(markdownSection("Markdown", text));
   if (name === "github_search" || name === "github_tree" || name === "github_commit") {
+    const records = githubRecords(name, details);
+    if (records.length > 0) return sections(recordsSection("Results", records));
+    // Empty tree directory or commit with no changed files
+    if (name === "github_tree") {
+      // When total is known and > 0, returned=0 means the offset is past
+      // the end, not an empty directory.
+      const total = typeof details.total === "number" ? details.total : undefined;
+      return sections(textSection("Results", total !== undefined && total > 0 ? `(no entries at offset ${details.offset ?? 0})` : "(empty directory)", "muted", true));
+    }
+    if (name === "github_commit") return sections(textSection("Results", "(no changed files)", "muted", true));
     return sections(recordsSection("Results", githubRecords(name, details)));
   }
   if (name === "github_read") return sections(codeSection("Content", text, "text", true));
@@ -351,6 +361,8 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     details.returnedLines !== undefined ? field("lines", `${details.returnedLines}/${details.totalLines ?? "?"}`) : undefined,
     details.truncatedLines !== undefined && num(details.truncatedLines) > 0 ? field("truncatedLines", details.truncatedLines) : undefined,
     field("author", details.author),
+    field("date", details.authoredAt),
+    field("message", details.message),
     details.verified === true ? field("verified", "yes") : details.verified === false ? field("verified", "no", "warning") : undefined,
     details.additions !== undefined ? field("additions", `+${details.additions}`, "success") : undefined,
     details.deletions !== undefined ? field("deletions", `-${details.deletions}`, "error") : undefined,
