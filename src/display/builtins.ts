@@ -69,6 +69,10 @@ function grepSearchMetadata(args: Record<string, unknown>): DisplayMetadataEntry
   ].filter((entry): entry is DisplayMetadataEntry => Boolean(entry));
 }
 
+function builtinTitle(name: BuiltinName): string {
+  return name === "bash" ? "$ ❯" : name.toUpperCase();
+}
+
 function callDescription(name: BuiltinName, args: Record<string, unknown>, executionStarted: boolean): DisplayDescriptionV1 {
   const path = stringValue(args.path);
   const command = stringValue(args.command);
@@ -88,7 +92,7 @@ function callDescription(name: BuiltinName, args: Record<string, unknown>, execu
     tool: name,
     family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
     status: executionStarted ? "pending" : "partial",
-    title: name.toUpperCase(),
+    title: builtinTitle(name),
     target: command ?? ((name === "find" || name === "grep") ? pattern : undefined) ?? path,
     metadata,
     rows,
@@ -212,7 +216,7 @@ function resultDescription(
     tool: name,
     family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
     status: partial ? "partial" : "success",
-    title: name.toUpperCase(),
+    title: builtinTitle(name),
     target,
     truncated: truncation?.truncated === true,
     sections: resultSections(name, args, text, details, !partial, isErrorResult),
@@ -251,8 +255,8 @@ function writePreviewKey(args: Record<string, unknown>): string {
 
 /**
  * Derive an explicit lifecycle for migrated Pi built-ins (Read, Edit, Write,
- * List, Find, Grep) so they render through the new operational path rather
- * than the compatibility bridge.
+ * List, Find, Grep, Bash) so they render through the new operational path
+ * rather than the compatibility bridge.
  */
 function builtinLifecycle(
   context: { executionStarted: boolean; argsComplete: boolean; isPartial: boolean; isError: boolean },
@@ -271,7 +275,7 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   return {
     describeCall(args, context) {
       const desc = callDescription(name, args as Record<string, unknown>, context.executionStarted);
-      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep")
+      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep" || name === "bash")
         ? { ...desc, lifecycle: builtinLifecycle(context, "call") }
         : desc;
     },
@@ -299,7 +303,7 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
     } : {}),
     describeResult(result, options, context) {
       const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
-      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep")
+      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep" || name === "bash")
         ? { ...desc, lifecycle: builtinLifecycle(context, "result") }
         : desc;
     },

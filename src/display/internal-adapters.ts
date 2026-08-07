@@ -44,8 +44,8 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
 
 const TITLES: Readonly<Record<string, string>> = Object.freeze({
   rg: "Text search", fd: "File search", sg: "Structure search", pdf_search: "PDF search",
-  codegraph: "CodeGraph", time: "Local time", bash: "Shell", pwsh: "PowerShell",
-  scheme: "Scheme", ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
+  codegraph: "CodeGraph", time: "Local time", bash: "$ ❯", pwsh: "PS ❯",
+  scheme: "λ ❯", ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", github_search: "GitHub search", github_read: "GitHub read",
   github_tree: "GitHub tree", github_commit: "GitHub commit", ask: "Questions", todo: "Tasks",
   subagent_delegate: "Subagent", subagent_resume: "Resume subagent",
