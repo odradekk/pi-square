@@ -81,6 +81,9 @@ function statusFor(result: AgentToolResult<unknown>, partial: boolean): DisplayS
   if (value === "error" || value === "failed") return "error";
   if (value === "aborted" || value === "cancelled" || value === "canceled" || value === "declined") return "aborted";
   if (value === "warning" || value === "incomplete") return "warning";
+  // GitHub tools set details.error/errorCode without isError; detect
+  // explicit error state from the presence of an error code.
+  if (details.errorCode !== undefined && details.errorCode !== "") return "error";
   return "success";
 }
 

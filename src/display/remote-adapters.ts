@@ -290,6 +290,7 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
   const docsOmitted = num(codeCounts.omitted) + num(infoCounts.omitted);
   const docsOversized = num(codeCounts.oversized) + num(infoCounts.oversized);
   const docsInvalid = num(codeCounts.invalid) + num(infoCounts.invalid);
+  const rateObj = asRecord(details.rate);
   const estimatedTokens = details.estimatedTokens;
   const maxTokens = details.maxTokens;
   return [
@@ -304,7 +305,11 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     field("pageCount", details.pageCount),
     field("outputLines", details.outputLines),
     field("requests", details.requestsUsed),
-    field("rateRemaining", asRecord(details.rate).remaining),
+    // GitHub rate limit: show remaining/limit format when available
+    rateObj.remaining !== undefined
+      ? field("rate", `${rateObj.remaining}/${rateObj.limit ?? "?"}`, rateObj.remaining === 0 ? "error" : undefined)
+      : undefined,
+    rateObj.retryAfter !== undefined ? field("retryAfter", `${rateObj.retryAfter}s`) : undefined,
     // Docs-specific budget and count fields
     codeReturned !== undefined && num(codeReceived) > 0
       ? field("code", `${codeReturned}/${codeReceived ?? codeReturned}`)
@@ -332,7 +337,6 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     // Truncation and cache indicators
     details.truncated === true ? field("truncated", "yes", "warning") : undefined,
     details.incomplete === true ? field("incomplete", "yes", "warning") : undefined,
-    details.remoteTruncated === true ? field("remoteTruncated", "yes", "warning") : undefined,
     details.outputTruncated === true ? field("outputTruncated", "yes", "warning") : undefined,
     booleanOf(details.cacheHit) !== undefined ? field("cacheHit", details.cacheHit) : undefined,
     // Parse-specific: upload size (privacy-relevant: how much data left
@@ -340,6 +344,21 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     details.uploadBytes !== undefined ? field("uploaded", formatBytes(details.uploadBytes)) : undefined,
     details.sourceBytes !== undefined ? field("sourceSize", formatBytes(details.sourceBytes)) : undefined,
     details.errorCode !== undefined && stringOf(details.errorCode) ? field("errorCode", details.errorCode, "muted") : undefined,
+    // GitHub-specific fields
+    field("kind", details.kind),
+    field("sha", details.sha),
+    details.binary === true ? field("binary", "yes", "warning") : undefined,
+    details.returnedLines !== undefined ? field("lines", `${details.returnedLines}/${details.totalLines ?? "?"}`) : undefined,
+    details.truncatedLines !== undefined && num(details.truncatedLines) > 0 ? field("truncatedLines", details.truncatedLines) : undefined,
+    field("author", details.author),
+    details.verified === true ? field("verified", "yes") : details.verified === false ? field("verified", "no", "warning") : undefined,
+    details.additions !== undefined ? field("additions", `+${details.additions}`, "success") : undefined,
+    details.deletions !== undefined ? field("deletions", `-${details.deletions}`, "error") : undefined,
+    details.changes !== undefined ? field("changes", details.changes) : undefined,
+    details.omittedPatches !== undefined && num(details.omittedPatches) > 0 ? field("patches", `${details.omittedPatches} omitted`, "warning") : undefined,
+    details.remoteTruncated === true ? field("remoteTruncated", "yes", "warning") : undefined,
+    details.requestBudgetExhausted === true ? field("requestBudget", "exhausted", "warning") : undefined,
+    details.hasMore === true ? field("hasMore", "yes") : undefined,
   ];
 }
 

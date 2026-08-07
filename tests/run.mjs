@@ -38,6 +38,7 @@ const suites = [
   "display/web-search-fetch.test.mjs",
   "display/context7-libs-docs.test.mjs",
   "display/firecrawl-parse.test.mjs",
+  "display/github-tools.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",
