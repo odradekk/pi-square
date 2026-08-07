@@ -60,10 +60,10 @@ export function pageMetadata(page: UnknownRecord): DisplayMetadataEntry[] {
   ]);
 }
 
-export function summarySection(title: string, entries: Array<DisplayMetadataEntry | undefined>): DisplaySection | undefined {
+export function summarySection(title: string, entries: Array<DisplayMetadataEntry | undefined>, compact = false): DisplaySection | undefined {
   const items = metadata(entries);
   return items.length > 0
-    ? { title, blocks: [{ kind: "list", items }] }
+    ? { title, blocks: [{ kind: "list", items }], compact }
     : undefined;
 }
 

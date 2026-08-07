@@ -130,6 +130,75 @@ test("init requires UI confirmation and performs zero writes when declined", asy
   }
 });
 
+test("init and reindex confirmation content adopts the shared owned-content grammar", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-codegraph-confirm-content-"));
+  const indexedRoot = mkdtempSync(join(tmpdir(), "pi-codegraph-confirm-content-indexed-"));
+  createIndex(indexedRoot);
+  try {
+    let initMessage;
+    const initDef = definition(async () => commandResult(JSON.stringify(status({ projectPath: root }))));
+    await execute(initDef, { operation: "init" }, context(root, {
+      ui: {
+        confirm: async (title, message) => {
+          initMessage = { title, message };
+          return false;
+        },
+      },
+    }));
+    assert.equal(initMessage.title, "Initialize CodeGraph");
+    // Label: value lines, a blank separator, then a plain-language
+    // consequence note — the same grammar used by ssh.ts and web/parse.ts,
+    // not a free-form paragraph.
+    const initLines = initMessage.message.split("\n");
+    assert.ok(initLines.some((line) => line.startsWith("Project: ")), "init confirmation names the project");
+    assert.ok(initLines.some((line) => line.startsWith("Action: ")), "init confirmation states the action");
+    assert.ok(initLines.includes(""), "init confirmation has a blank separator before the note");
+    assert.match(initMessage.message, /Declining performs no persistent write/, "init confirmation states the decline consequence");
+    assert.doesNotMatch(initMessage.message, /\n\n.*\n\n/, "init confirmation is not an unstructured multi-paragraph block");
+
+    let reindexMessage;
+    const reindexDef = definition(async () => commandResult(JSON.stringify(status({ projectPath: indexedRoot }))));
+    await execute(reindexDef, { operation: "reindex" }, context(indexedRoot, {
+      ui: {
+        confirm: async (title, message) => {
+          reindexMessage = { title, message };
+          return false;
+        },
+      },
+    }));
+    assert.equal(reindexMessage.title, "Rebuild CodeGraph index");
+    const reindexLines = reindexMessage.message.split("\n");
+    assert.ok(reindexLines.some((line) => line.startsWith("Project: ")), "reindex confirmation names the project");
+    assert.ok(reindexLines.some((line) => line.startsWith("Action: ")), "reindex confirmation states the action");
+    assert.ok(reindexLines.includes(""), "reindex confirmation has a blank separator before the note");
+    assert.match(reindexMessage.message, /Declining performs no persistent write/, "reindex confirmation states the decline consequence");
+    assert.doesNotMatch(reindexMessage.message, /\n\n.*\n\n/, "reindex confirmation is not an unstructured multi-paragraph block");
+
+    // Sanitization boundary: a control-character-laden project path must
+    // not leak raw ANSI/control sequences into confirmation content.
+    let sanitizedMessage;
+    const maliciousRoot = mkdtempSync(join(tmpdir(), "pi-codegraph-confirm-\x1b[31m-"));
+    try {
+      const maliciousDef = definition(async () => commandResult(JSON.stringify(status({ projectPath: maliciousRoot }))));
+      await execute(maliciousDef, { operation: "init" }, context(maliciousRoot, {
+        ui: {
+          confirm: async (_title, message) => {
+            sanitizedMessage = message;
+            return false;
+          },
+        },
+      }));
+      // eslint-disable-next-line no-control-regex
+      assert.doesNotMatch(sanitizedMessage, /\x1b\[31m/, "control sequences in the project path are sanitized before display");
+    } finally {
+      rmSync(maliciousRoot, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(indexedRoot, { recursive: true, force: true });
+  }
+});
+
 test("init accepts an upstream marker-only directory but rejects other residue", async () => {
   const markerRoot = mkdtempSync(join(tmpdir(), "pi-codegraph-marker-"));
   const residueRoot = mkdtempSync(join(tmpdir(), "pi-codegraph-residue-"));

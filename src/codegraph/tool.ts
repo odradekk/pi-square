@@ -199,6 +199,16 @@ function commandFailure(
   });
 }
 
+// Shared confirmation-content grammar: bounded, sanitized `Label: value`
+// lines followed by a blank line and a plain-language consequence note.
+// The confirmation shell itself (ctx.ui.confirm) stays Pi-native and runs
+// behind the shared FIFO coordinator; only the message content adopts this
+// grammar, matching the pattern already used by ssh.ts and web/parse.ts.
+function confirmationContent(fields: ReadonlyArray<[string, string]>, note: string): string {
+  const lines = fields.map(([label, value]) => `${label}: ${sanitizeCodeGraphText(value).replace(/\s+/g, " ").trim()}`);
+  return [...lines, "", note].join("\n");
+}
+
 function pendingChanges(status: CodeGraphStatus): number {
   const pending = status.pendingChanges;
   return (pending?.added ?? 0) + (pending?.modified ?? 0) + (pending?.removed ?? 0);
@@ -383,7 +393,14 @@ export function createCodeGraphToolDefinition(deps: CodeGraphToolDeps, allowWrit
           signal,
           (confirmationSignal) => ctx.ui.confirm(
             "Initialize CodeGraph",
-            `Create and build a local .codegraph index in:\n${requestedPath}\n\nThis scans source files and writes a persistent SQLite database.`,
+            confirmationContent(
+              [
+                ["Project", requestedPath],
+                ["Action", "create a local .codegraph index"],
+                ["Writes", "persistent SQLite database under the project path"],
+              ],
+              "This scans source files under the project path. Declining performs no persistent write.",
+            ),
             { signal: confirmationSignal },
           ),
         );
@@ -408,7 +425,14 @@ export function createCodeGraphToolDefinition(deps: CodeGraphToolDeps, allowWrit
           signal,
           (confirmationSignal) => ctx.ui.confirm(
             "Rebuild CodeGraph index",
-            `Replace the existing CodeGraph database with a full rebuild in:\n${projectPath}\n\nSource files are not modified.`,
+            confirmationContent(
+              [
+                ["Project", projectPath],
+                ["Action", "replace the existing index with a full rebuild"],
+                ["Source files", "not modified"],
+              ],
+              "This scans source files under the project path. Declining performs no persistent write.",
+            ),
             { signal: confirmationSignal },
           ),
         );
