@@ -238,8 +238,8 @@ assert.ok(
 
 // ── Default values match plan ────────────────────────────────────────
 
-assert.equal(DEFAULT_DISPLAY_POLICY.resultMode, "summary");
-assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 8);
+assert.equal(DEFAULT_DISPLAY_POLICY.resultMode, "preview");
+assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 9);
 assert.equal(DEFAULT_DISPLAY_POLICY.expandedMaxLines, 4_000);
 assert.equal(DEFAULT_DISPLAY_POLICY.showMetadata, true);
 assert.equal(DEFAULT_DISPLAY_POLICY.showDuration, true);

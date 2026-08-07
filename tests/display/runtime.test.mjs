@@ -32,7 +32,7 @@ const runtime = new DisplayRuntime(sourceConfig, { environment: { isTTY: true },
 sourceConfig.display.agent.config.tools.rg.previewLines = 70;
 assert.equal(runtime.motion, "full");
 assert.equal(runtime.policyFor("rg", "search").policy.previewLines, 9, "runtime snapshots input config");
-assert.equal(runtime.policyFor("mcp:deploy", "remote").policy.resultMode, "summary");
+assert.equal(runtime.policyFor("mcp:deploy", "remote").policy.resultMode, "preview");
 
 const plainTheme = {
   fg(_token, text) { return String(text); },

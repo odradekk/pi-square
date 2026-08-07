@@ -78,7 +78,7 @@ for (const [name, args, expected] of [
 
   const result = { content: [{ type: "text", text: "model output\nsecond line" }], details: { status: "success", returned: 2 } };
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
-  assert.doesNotMatch(collapsed.render(80).join("\n"), /model output/, `${name} summary hides preview`);
+  assert.match(collapsed.render(80).join("\n"), /model output/, `${name} preview shows content`);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
   assert.match(expandedText, /model output/);
@@ -101,15 +101,15 @@ for (const [name, args, expected] of [
 
 const dynamic = decorateInternalTool(definition("rg"), () => runtime);
 const result = { content: [{ type: "text", text: "dynamic preview" }], details: { returned: 1 } };
-assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/);
+assert.match(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "default preview shows content");
 runtime.dispose();
-const previewConfig = structuredClone(DEFAULT_CONFIG);
-previewConfig.display = {
+const summaryConfig = structuredClone(DEFAULT_CONFIG);
+summaryConfig.display = {
   motion: "off",
-  agent: { path: "/agent/config/pi-square.json", config: { tools: { rg: { resultMode: "preview" } } } },
+  agent: { path: "/agent/config/pi-square.json", config: { tools: { rg: { resultMode: "summary" } } } },
 };
-runtime = new DisplayRuntime(previewConfig, { environment: { isTTY: true } });
-assert.match(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "provider resolves replacement runtime");
+runtime = new DisplayRuntime(summaryConfig, { environment: { isTTY: true } });
+assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "provider resolves replacement runtime");
 
 const time = createTimeToolDefinition();
 const timeResult = await time.execute("time", {}, undefined, undefined, {});

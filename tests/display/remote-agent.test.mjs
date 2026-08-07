@@ -84,7 +84,7 @@ for (const [name, args, expected] of cases) {
       ? /subagent_12345678/
       : expected;
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
-  assert.doesNotMatch(collapsedText, /private result body/);
+  assert.match(collapsedText, /private result body/, `${name} preview shows result content`);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
   assert.match(expandedText, /private result body/);
@@ -150,8 +150,8 @@ const webExpanded = webSearch.renderResult({
 const requestLine = webExpanded.find((line) => line.includes("REQUEST"));
 const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works/pi"));
 assert.ok(webExpanded[0]?.startsWith("✓ Web search"), "tool header remains flush-left");
-assert.ok(requestLine?.startsWith("  REQUEST"), "section heading is indented into the tool body");
-assert.ok(resultTitleLine?.startsWith("    1. earendil-works/pi"), "result record is indented into the tool body");
+assert.ok(requestLine?.startsWith("│") && requestLine?.includes("REQUEST"), "section heading is indented under a tree rail");
+assert.ok(resultTitleLine?.startsWith("│") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under a tree rail");
 
 for (const child of createChildTools([
   "search", "fetch", "libs", "docs", "github_search", "github_read", "github_tree", "github_commit",

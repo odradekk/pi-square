@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
-import { boundedVisualLines, padVisible, rightPriorityRows, wrapHanging } from "./layout";
+import { boundedHeadTailLines, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
 import { styleRule, styleOperational, styleTitle, styleTone } from "./theme";
 import {
@@ -101,19 +101,13 @@ export class BoundedPreview implements Component {
   render(width: number): string[] {
     const safeWidth = Math.max(1, Math.floor(width));
     const sanitized = sanitizeDisplayText(this.text);
-    const bounded = this.wordWrap
-      ? boundedVisualLines(sanitized, safeWidth, this.maximumLines)
-      : (() => {
-          const logical = sanitized.split("\n");
-          const maximum = Math.max(0, Math.floor(this.maximumLines));
-          return {
-            lines: logical.slice(0, maximum).map((line) => truncateToWidth(line, safeWidth, "...")),
-            omitted: Math.max(0, logical.length - maximum),
-          };
-        })();
-    const omitted = bounded.omitted + Math.max(0, this.omittedLines);
-    const lines = bounded.lines.map((line) => styleTone(this.theme, "default", line));
-    if (omitted > 0) lines.push(padVisible(this.theme.fg("muted", `... ${omitted} lines omitted`), safeWidth));
+    const result = boundedHeadTailLines(sanitized, safeWidth, this.maximumLines, this.wordWrap);
+    const lines = result.headLines.map((line) => styleTone(this.theme, "default", line));
+    const totalOmitted = result.hiddenSourceLines + Math.max(0, this.omittedLines);
+    if (totalOmitted > 0) {
+      lines.push(padVisible(this.theme.fg("muted", `... ${totalOmitted} source lines hidden`), safeWidth));
+    }
+    lines.push(...result.tailLines.map((line) => styleTone(this.theme, "default", line)));
     return lines;
   }
 
@@ -214,6 +208,12 @@ export class OperationalDisplayComponent implements Component {
     ].filter((part): part is string => Boolean(part)).join(" · ");
     const lines = rightPriorityRows(`${rail} ${title}${target}`, this.theme.fg("muted", right), safe);
 
+    // Body content renders at a reduced width to accommodate tree rails.
+    // Each body line receives a │ continuation or └─ last-line prefix.
+    const TREE_RAIL_WIDTH = 3;
+    const bodyWidth = Math.max(1, safe - TREE_RAIL_WIDTH);
+    const body: string[] = [];
+
     if (this.policy.showMetadata && description.metadata?.length) {
       const selectedFields = description.metadata.slice(0, MAX_METADATA_FIELDS);
       const fields = selectedFields.map((field) => {
@@ -224,10 +224,10 @@ export class OperationalDisplayComponent implements Component {
       if (description.metadata.length > selectedFields.length) {
         fields.push(this.theme.fg("muted", `${description.metadata.length - selectedFields.length} fields omitted`));
       }
-      lines.push(...(
+      body.push(...(
         this.policy.wordWrap
-          ? wrapHanging("  ", fields.join(" · "), safe)
-          : logicalLines("  ", fields.join(" · "), safe)
+          ? wrapHanging("  ", fields.join(" · "), bodyWidth)
+          : logicalLines("  ", fields.join(" · "), bodyWidth)
       ));
     }
 
@@ -247,14 +247,14 @@ export class OperationalDisplayComponent implements Component {
           row.tone,
           truncateCodePoints(sanitizeDisplayText(row.text), MAX_ROW_CODE_POINTS),
         );
-        lines.push(...(
+        body.push(...(
           this.policy.wordWrap
-            ? wrapHanging(indent, text, safe)
-            : logicalLines(indent, text, safe)
+            ? wrapHanging(indent, text, bodyWidth)
+            : logicalLines(indent, text, bodyWidth)
         ));
       }
       if (description.rows.length > selectedRows.length) {
-        lines.push(padVisible(this.theme.fg("muted", `${description.rows.length - selectedRows.length} rows omitted`), safe));
+        body.push(padVisible(this.theme.fg("muted", `${description.rows.length - selectedRows.length} rows omitted`), bodyWidth));
       }
     }
 
@@ -265,8 +265,13 @@ export class OperationalDisplayComponent implements Component {
       || this.policy.resultMode === "preview";
     const visibleSections = description.sections ?? [];
     const showStructuredSections = showPreview || (visibleSections.length > 0 && this.policy.resultMode === "summary");
-    if (showStructuredSections && visibleSections.length > 0) {
-      lines.push(...renderDisplaySections(visibleSections, this.policy, this.theme, safe, this.options.expanded));
+    // Render structured sections; fall back to flat preview when sections
+    // produce no visible output (e.g. non-compact sections in collapsed mode).
+    const sectionLines = showStructuredSections && visibleSections.length > 0
+      ? renderDisplaySections(visibleSections, this.policy, this.theme, bodyWidth, this.options.expanded)
+      : [];
+    if (sectionLines.length > 0) {
+      body.push(...sectionLines);
     } else if (showPreview && description.preview) {
       const maximum = this.options.expanded ? this.policy.expandedMaxLines : this.policy.previewLines;
       const boundedPreviewText = truncateCodePoints(description.preview.text, MAX_PREVIEW_CODE_POINTS);
@@ -278,23 +283,30 @@ export class OperationalDisplayComponent implements Component {
         (description.preview.omittedLines ?? 0) + (inputTruncated ? 1 : 0),
         this.policy.wordWrap,
       );
-      lines.push(...preview.render(safe));
+      body.push(...preview.render(bodyWidth));
     }
     if (showPreview && description.diff) {
-      lines.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, safe, this.options));
+      body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
     }
 
     if (description.error) {
       const message = truncateCodePoints(sanitizeDisplayText(description.error), MAX_ERROR_CODE_POINTS);
-      lines.push(...(
+      body.push(...(
         this.policy.wordWrap
-          ? wrapHanging("  ", this.theme.fg("error", message), safe)
-          : logicalLines("  ", this.theme.fg("error", message), safe)
+          ? wrapHanging("  ", this.theme.fg("error", message), bodyWidth)
+          : logicalLines("  ", this.theme.fg("error", message), bodyWidth)
       ));
     }
     if (description.truncated) {
-      lines.push(padVisible(this.theme.fg("warning", "output truncated by display budget"), safe));
+      body.push(padVisible(this.theme.fg("warning", "output truncated by display budget"), bodyWidth));
     }
+
+    // Apply tree rails: │ for continuation, └─ for the final body line.
+    for (let i = 0; i < body.length; i++) {
+      const isLast = i === body.length - 1;
+      body[i] = (isLast ? "\u2514\u2500 " : "\u2502  ") + body[i];
+    }
+    lines.push(...body);
 
     return lines.map((line) => padVisible(truncateToWidth(line, safe, "..."), safe));
   }

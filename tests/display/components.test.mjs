@@ -29,7 +29,8 @@ const description = {
   progress: { current: 3, total: 3, label: "files" },
 };
 
-const summary = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false });
+const summaryPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "summary" };
+const summary = new OperationalDisplayComponent(description, summaryPolicy, plainTheme, { expanded: false });
 const summaryText = summary.render(80).join("\n");
 assert.match(summaryText, /✓ Search src/);
 assert.match(summaryText, /1\.3s/);
@@ -42,7 +43,7 @@ const previewPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", previe
 const preview = new OperationalDisplayComponent(description, previewPolicy, plainTheme, { expanded: false });
 const previewText = preview.render(40).join("\n");
 assert.match(previewText, /one/);
-assert.match(previewText, /2 lines omitted|3 lines omitted/);
+assert.match(previewText, /source lines hidden/);
 
 const hiddenPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "hidden" };
 const hidden = new OperationalDisplayComponent(description, hiddenPolicy, plainTheme, { expanded: false }).render(80).join("\n");
@@ -132,8 +133,8 @@ assert.match(structuredExpanded, /src\/a\.ts:12:4/);
 assert.match(structuredExpanded, /OUTPUT/);
 assert.match(structuredExpanded, /1\s+const needle/);
 const structuredLines = structuredExpanded.split("\n");
-assert.ok(structuredLines.find((line) => line.includes("MATCHES"))?.startsWith("  MATCHES"));
-assert.ok(structuredLines.find((line) => line.includes("src/a.ts:12:4"))?.startsWith("  src/a.ts:12:4"));
+assert.ok(structuredLines.find((line) => line.includes("MATCHES"))?.match(/^[│└]/));
+assert.ok(structuredLines.find((line) => line.includes("src/a.ts:12:4"))?.match(/^[│└]/));
 for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
   const lines = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(width);
   assert.ok(lines.every((line) => visibleWidth(line) <= width));

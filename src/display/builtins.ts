@@ -21,7 +21,7 @@ import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
 import { codeSection, field, recordsSection, sections, summarySection, textSection } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
-import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow } from "./types";
+import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, OperationalLifecycle } from "./types";
 
 const BUILTIN_NAMES = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
 const NON_SHELL_NAMES = BUILTIN_NAMES.filter((name) => name !== "bash");
@@ -179,10 +179,30 @@ function writePreviewKey(args: Record<string, unknown>): string {
   return createHash("sha256").update(path).update("\0").update(content).digest("hex");
 }
 
+/**
+ * Derive an explicit lifecycle for content-rich tools (Read) so they
+ * render through the new operational path rather than the compatibility bridge.
+ */
+function contentLifecycle(
+  context: { executionStarted: boolean; argsComplete: boolean; isPartial: boolean; isError: boolean },
+  phase: "call" | "result",
+): OperationalLifecycle {
+  if (phase === "result") {
+    if (context.isPartial) return "running";
+    return context.isError ? "failed" : "completed";
+  }
+  if (context.executionStarted) return "running";
+  if (context.argsComplete) return "pending";
+  return "queued";
+}
+
 function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   return {
     describeCall(args, context) {
-      return callDescription(name, args as Record<string, unknown>, context.executionStarted);
+      const desc = callDescription(name, args as Record<string, unknown>, context.executionStarted);
+      return name === "read"
+        ? { ...desc, lifecycle: contentLifecycle(context, "call") }
+        : desc;
     },
     ...(name === "write" ? {
       callDescriptionKey(args: Record<string, unknown>) {
@@ -207,7 +227,10 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
       },
     } : {}),
     describeResult(result, options, context) {
-      return resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
+      const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
+      return name === "read"
+        ? { ...desc, lifecycle: contentLifecycle(context, "result") }
+        : desc;
     },
   } as GenericAdapter;
 }

@@ -273,8 +273,8 @@ export interface DisplayPolicy {
 }
 
 export const DEFAULT_DISPLAY_POLICY: Readonly<DisplayPolicy> = Object.freeze({
-  resultMode: "summary",
-  previewLines: 8,
+  resultMode: "preview",
+  previewLines: 9,
   expandedMaxLines: 4_000,
   showMetadata: true,
   showDuration: true,
