@@ -44,12 +44,16 @@ function argMetadata(name: string, args: UnknownRecord): DisplayMetadataEntry[] 
     ]);
   }
   if (name === "sg") {
+    // selector and strictness apply only to pattern mode (per the tool's
+    // own promptGuidelines); omit them entirely when kind mode is active
+    // so the two modes present distinct, uncluttered summaries.
+    const patternMode = stringOf(args.pattern) !== undefined;
     return metadata([
       field("pattern", args.pattern),
       field("kind", args.kind),
       field("language", args.language),
-      field("selector", args.selector),
-      field("strictness", args.strictness),
+      patternMode ? field("selector", args.selector) : undefined,
+      patternMode ? field("strictness", args.strictness) : undefined,
       ...common,
     ]);
   }
@@ -183,10 +187,27 @@ const EMPTY_DOMAIN_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
  * Merge freshly computed metadata on top of base metadata, replacing any
  * entry whose label the fresh set also produces. Prevents the same arg
  * fields (pattern, case, word, ...) from appearing twice in the header.
+ * `suppress` unconditionally drops base labels that fresh intentionally
+ * omits (rather than replaces) — needed because base's own generic
+ * ARG_FIELDS metadata includes a field whenever it is present in args,
+ * regardless of whether the tool considers it applicable in the current
+ * mode (for example sg's selector/strictness apply only to pattern mode).
  */
-function mergeMetadata(base: readonly DisplayMetadataEntry[], fresh: readonly DisplayMetadataEntry[]): DisplayMetadataEntry[] {
+function mergeMetadata(
+  base: readonly DisplayMetadataEntry[],
+  fresh: readonly DisplayMetadataEntry[],
+  suppress: ReadonlySet<string> = new Set(),
+): DisplayMetadataEntry[] {
   const freshLabels = new Set(fresh.map((entry) => entry.label));
-  return [...base.filter((entry) => !freshLabels.has(entry.label)), ...fresh].slice(0, 16);
+  return [...base.filter((entry) => !freshLabels.has(entry.label) && !suppress.has(entry.label)), ...fresh].slice(0, 16);
+}
+
+/**
+ * Metadata labels sg's own promptGuidelines mark as inapplicable outside
+ * pattern mode: selector and strictness apply only when pattern is set.
+ */
+function sgKindModeSuppression(args: UnknownRecord): ReadonlySet<string> {
+  return stringOf(args.pattern) === undefined ? new Set(["selector", "strictness"]) : new Set();
 }
 
 export function createSearchAdapter(
@@ -197,9 +218,11 @@ export function createSearchAdapter(
     ...base,
     describeCall(args, context) {
       const description = base.describeCall(args, context);
+      const record = asRecord(args);
+      const suppress = name === "sg" ? sgKindModeSuppression(record) : undefined;
       return baseDescription(description, {
-        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, asRecord(args))),
-        sections: sections(querySection(name, asRecord(args))),
+        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, record), suppress),
+        sections: sections(querySection(name, record)),
       });
     },
     describeResult(result, options, context) {
@@ -288,7 +311,7 @@ export function createSearchAdapter(
       // to re-surface them through a dedicated section instead of rows.
       const suppressFallback = structuredDomain && (hasStructuredContent || Boolean(error));
       return baseDescription(description, {
-        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, args)),
+        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, args), name === "sg" ? sgKindModeSuppression(args) : undefined),
         sections: options.expanded
           ? structured
           : structured.filter((section) => section.compact === true),
