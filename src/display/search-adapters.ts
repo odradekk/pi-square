@@ -146,17 +146,25 @@ function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
   });
 }
 
-function fdPaths(details: UnknownRecord): DisplayPathItem[] {
+function fdPaths(details: UnknownRecord, args: UnknownRecord): DisplayPathItem[] {
+  const types = asArray(args.types).map((t) => stringOf(t)).filter((v): v is string => Boolean(v));
+  const singleType = types.length === 1 ? types[0] : undefined;
   return asArray(details.paths).flatMap((value) => {
     const entry = asRecord(value);
     const path = stringOf(entry.displayPath) ?? stringOf(entry.path);
-    return path
-      ? [{
-        path,
-        kind: entry.encoding === "bytes" ? "special" as const : "file" as const,
-        meta: entry.encoding === "bytes" ? "byte path" : undefined,
-      }]
-      : [];
+    if (!path) return [];
+    const kind = entry.encoding === "bytes"
+      ? "special" as const
+      : singleType === "directory"
+        ? "directory" as const
+        : singleType === "symlink"
+          ? "symlink" as const
+          : "file" as const;
+    return [{
+      path,
+      kind,
+      meta: entry.encoding === "bytes" ? "byte path" : undefined,
+    }];
   });
 }
 
@@ -202,7 +210,7 @@ export function createSearchAdapter(
       let domain: DisplaySection | undefined;
       if (name === "rg") domain = matchesSection("Matches", rgMatches(details));
       else if (name === "sg") domain = matchesSection("Matches", sgMatches(details));
-      else if (name === "fd") domain = pathsSection("Results", fdPaths(details));
+      else if (name === "fd") domain = pathsSection("Results", fdPaths(details, args));
       else if (name === "pdf_search") domain = matchesSection("Matches", pdfMatches(details));
       else if (name === "codegraph") domain = options.expanded
         ? codeSection("Results", textOf(result), "markdown", false)

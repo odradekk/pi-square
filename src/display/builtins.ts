@@ -19,9 +19,9 @@ import { setBannerDisplayDiagnostic } from "../banner";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
-import { codeSection, field, recordsSection, sections, summarySection, textSection } from "./adapter-utils";
+import { codeSection, field, pathsSection, sections, summarySection, textSection } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
-import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, OperationalLifecycle } from "./types";
+import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayPathItem, DisplayRow, OperationalLifecycle } from "./types";
 
 const BUILTIN_NAMES = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
 const NON_SHELL_NAMES = BUILTIN_NAMES.filter((name) => name !== "bash");
@@ -72,13 +72,27 @@ function callDescription(name: BuiltinName, args: Record<string, unknown>, execu
   return {
     version: 1,
     tool: name,
-    family: name === "bash" ? "execution" : name === "grep" || name === "find" ? "search" : "filesystem",
+    family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
     status: executionStarted ? "pending" : "partial",
     title: name.toUpperCase(),
-    target: command ?? path ?? (name === "find" ? pattern : undefined),
+    target: command ?? (name === "find" ? pattern : undefined) ?? path,
     metadata,
     rows,
   };
+}
+
+/**
+ * Detect path kind from a raw ls/find entry: a trailing `/` marks a directory.
+ */
+function pathKindFromEntry(entry: string): DisplayPathItem["kind"] {
+  return entry.endsWith("/") ? "directory" : "file";
+}
+
+function pathItemsFromText(text: string): DisplayPathItem[] {
+  return text.split("\n").filter(Boolean).map((entry) => ({
+    path: entry,
+    kind: pathKindFromEntry(entry),
+  }));
 }
 
 function resultSections(
@@ -87,9 +101,27 @@ function resultSections(
   text: string,
   details: Record<string, unknown> | undefined,
   expanded: boolean,
+  isError = false,
 ): ReturnType<typeof sections> {
-  if (!expanded) return [];
   const target = stringValue(args.path);
+  // ls and find produce path-list sections so collapsed results show
+  // path-kind markers, counts, and empty-result messages. Errors are
+  // surfaced through description.error, not parsed as path entries.
+  if (!isError && (name === "ls" || name === "find")) {
+    const sectionTitle = name === "ls" ? "Entries" : "Results";
+    const emptyMessage = name === "ls" ? "No entries" : "No results";
+    const summary = name === "ls"
+      ? summarySection("Directory", [field("path", target ?? ".")])
+      : summarySection("Query", [field("pattern", args.pattern), field("path", target ?? ".")]);
+    const items = pathItemsFromText(text);
+    return sections(
+      expanded ? summary : undefined,
+      items.length > 0
+        ? pathsSection(sectionTitle, items, true)
+        : textSection("Result", emptyMessage, "muted", true),
+    );
+  }
+  if (!expanded) return [];
   if (name === "read") {
     return sections(
       summarySection("File", [
@@ -99,23 +131,6 @@ function resultSections(
       ]),
       codeSection("Content", text, undefined, true),
       details?.truncation ? textSection("Truncation", JSON.stringify(details.truncation), "warning") : undefined,
-    );
-  }
-  if (name === "ls") {
-    const entries = text.split("\n").filter(Boolean).slice(0, 200);
-    return sections(
-      summarySection("Directory", [field("path", target ?? ".")]),
-      recordsSection("Entries", entries.map((entry) => ({
-        title: entry,
-        tone: entry.endsWith("/") ? "accent" as const : "default" as const,
-      }))),
-    );
-  }
-  if (name === "find") {
-    const results = text.split("\n").filter(Boolean).slice(0, 200);
-    return sections(
-      summarySection("Query", [field("pattern", args.pattern), field("path", target ?? ".")]),
-      recordsSection("Results", results.map((entry) => ({ title: entry, tone: entry.endsWith("/") ? "accent" as const : "default" as const }))),
     );
   }
   if (name === "grep") {
@@ -147,16 +162,20 @@ function resultDescription(
   const truncation = details?.truncation && typeof details.truncation === "object"
     ? details.truncation as Record<string, unknown>
     : undefined;
-  const target = stringValue(args.command) ?? stringValue(args.path);
+  const target = stringValue(args.command)
+    ?? (name === "find" ? stringValue(args.pattern) : undefined)
+    ?? stringValue(args.path);
+  const isErrorResult = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
   const description: DisplayDescriptionV1 = {
     version: 1,
     tool: name,
-    family: name === "bash" ? "execution" : name === "grep" || name === "find" ? "search" : "filesystem",
+    family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
     status: partial ? "partial" : "success",
     title: name.toUpperCase(),
     target,
     truncated: truncation?.truncated === true,
-    sections: resultSections(name, args, text, details, !partial),
+    sections: resultSections(name, args, text, details, !partial, isErrorResult),
+    ...(isErrorResult && text ? { error: text } : {}),
   };
   if (name === "edit" && (typeof details?.patch === "string" || typeof details?.diff === "string")) {
     return {
@@ -170,6 +189,15 @@ function resultDescription(
   if (name === "write" && typeof args.content === "string") {
     return { ...description, preview: { text: args.content } };
   }
+  // ls and find produce compact path-list sections; suppress the flat text
+  // preview so the structured paths render is the sole body content.
+  // Error results already carry description.error; suppress the preview.
+  if (isErrorResult) {
+    return description;
+  }
+  if ((name === "ls" || name === "find") && description.sections && description.sections.length > 0) {
+    return description;
+  }
   return text ? { ...description, preview: { text } } : description;
 }
 
@@ -180,8 +208,9 @@ function writePreviewKey(args: Record<string, unknown>): string {
 }
 
 /**
- * Derive an explicit lifecycle for filesystem tools (Read, Edit, Write) so they
- * render through the new operational path rather than the compatibility bridge.
+ * Derive an explicit lifecycle for filesystem tools (Read, Edit, Write,
+ * List, Find) so they render through the new operational path rather than
+ * the compatibility bridge.
  */
 function filesystemLifecycle(
   context: { executionStarted: boolean; argsComplete: boolean; isPartial: boolean; isError: boolean },
@@ -200,7 +229,7 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   return {
     describeCall(args, context) {
       const desc = callDescription(name, args as Record<string, unknown>, context.executionStarted);
-      return (name === "read" || name === "edit" || name === "write")
+      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find")
         ? { ...desc, lifecycle: filesystemLifecycle(context, "call") }
         : desc;
     },
@@ -228,7 +257,7 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
     } : {}),
     describeResult(result, options, context) {
       const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
-      return (name === "read" || name === "edit" || name === "write")
+      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find")
         ? { ...desc, lifecycle: filesystemLifecycle(context, "result") }
         : desc;
     },

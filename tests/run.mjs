@@ -29,6 +29,7 @@ const suites = [
   "display/edit-diffs.test.mjs",
   "display/adapter-bridge.test.mjs",
   "display/write-previews.test.mjs",
+  "display/path-list.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",

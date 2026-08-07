@@ -71,8 +71,8 @@ export function recordsSection(title: string, items: DisplayRecordItem[], compac
   return items.length > 0 ? { title, blocks: [{ kind: "records", items }], compact } : undefined;
 }
 
-export function pathsSection(title: string, items: DisplayPathItem[]): DisplaySection | undefined {
-  return items.length > 0 ? { title, blocks: [{ kind: "paths", items }], compact: false } : undefined;
+export function pathsSection(title: string, items: DisplayPathItem[], compact = false): DisplaySection | undefined {
+  return items.length > 0 ? { title, blocks: [{ kind: "paths", items }], compact } : undefined;
 }
 
 export function matchesSection(title: string, items: DisplayMatchItem[]): DisplaySection | undefined {
