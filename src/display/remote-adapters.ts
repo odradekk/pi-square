@@ -54,12 +54,48 @@ function remoteSuppress(name: string): ReadonlySet<string> {
   return REMOTE_SUPPRESS[name] ?? new Set();
 }
 
+/**
+ * SSH operation-specific target identity. The base adapter shows the
+ * operation name; override with the profile/target (connect) or session
+ * ID (command/read/input/interrupt/close) for actionable identity.
+ */
+function sshTarget(source: UnknownRecord): string | undefined {
+  const op = stringOf(source.operation);
+  if (op === "connect") {
+    const profile = stringOf(source.profile);
+    const target = stringOf(source.target);
+    return target ? `${profile ?? "?"}/${target}` : profile;
+  }
+  if (op === "list") return undefined;
+  return stringOf(source.session);
+}
+
+/**
+ * The SSH tool serializes its result as a JSON body where `body.output`
+ * carries the projected terminal text. Extract that field so the display
+ * shows clean terminal output rather than raw JSON.
+ */
+function sshOutputText(text: string): string {
+  try {
+    const body = JSON.parse(text);
+    return typeof body?.output === "string" ? body.output : text;
+  } catch {
+    return text;
+  }
+}
+
 function remoteLifecycle(name: string, isError: boolean, details: UnknownRecord): { lifecycle: import("./types").OperationalLifecycle } | undefined {
   // Parse sets isError:true even for aborted results (its failure() helper
   // does this). The base adapter's statusFor checks isError first and
   // returns "error", overriding "aborted". Set lifecycle explicitly so
   // resolveOperationalState renders × instead of ✗.
   if (name === "parse" && isError) {
+    const status = String(details.status ?? "").toLowerCase();
+    if (status === "aborted") return { lifecycle: "aborted" };
+  }
+  // SSH command/read operations also set isError:true for aborted
+  // results. Same fix: set lifecycle explicitly.
+  if (name === "ssh" && isError) {
     const status = String(details.status ?? "").toLowerCase();
     if (status === "aborted") return { lifecycle: "aborted" };
   }
@@ -231,6 +267,45 @@ function githubRecords(name: string, details: UnknownRecord): DisplayRecordItem[
   return [];
 }
 
+function sshRecords(details: UnknownRecord): { profileSection: DisplaySection | undefined; sessionSection: DisplaySection | undefined } {
+  const profiles = asArray(details.profiles).map((value) => {
+    const profile = asRecord(value);
+    const targets = asArray(profile.targets).map((tv) => {
+      const t = asRecord(tv);
+      return `${stringOf(t.name) ?? "?"}: ${stringOf(t.endpoint) ?? "?"}`;
+    }).join(", ");
+    return {
+      title: stringOf(profile.name) ?? "(unknown)",
+      fields: metadata([
+        field("defaultTarget", profile.defaultTarget),
+        targets ? field("targets", targets) : undefined,
+        field("maxSessions", profile.maxSessions),
+      ]),
+    } satisfies DisplayRecordItem;
+  });
+  const sessions = asArray(details.sessions).map((value) => {
+    const session = asRecord(value);
+    const state = stringOf(session.state);
+    const cmdState = stringOf(session.commandState);
+    return {
+      title: stringOf(session.id) ?? "(unknown)",
+      fields: metadata([
+        field("endpoint", session.endpoint),
+        field("label", session.label),
+        field("profile", session.profile),
+        field("target", session.target),
+        field("state", state, state === "connected" ? "success" : "error"),
+        field("command", cmdState, cmdState === "running" ? "accent" : "muted"),
+        field("disconnectReason", session.disconnectReason),
+      ]),
+    } satisfies DisplayRecordItem;
+  });
+  return {
+    profileSection: profiles.length > 0 ? recordsSection("Profiles", profiles) : undefined,
+    sessionSection: sessions.length > 0 ? recordsSection("Sessions", sessions) : undefined,
+  };
+}
+
 function docsSections(details: UnknownRecord): DisplaySection[] {
   const output: DisplaySection[] = [];
   const rules = details.rules && typeof details.rules === "object"
@@ -282,7 +357,15 @@ function domainSection(name: string, details: UnknownRecord, text: string, expan
     return sections(recordsSection("Results", githubRecords(name, details)));
   }
   if (name === "github_read") return sections(codeSection("Content", text, "text", true));
-  if (name === "ssh") return sections(codeSection("Output", text, "text", false));
+  if (name === "ssh") {
+    // List operations render profiles and sessions as structured records.
+    // All other operations show terminal output (projected single-line).
+    if (asRecord(details).operation === "list") {
+      const { profileSection, sessionSection } = sshRecords(details);
+      return sections(profileSection, sessionSection);
+    }
+    return sections(codeSection("Output", sshOutputText(text), "text", false));
+  }
   return sections(codeSection("Output", text, "text", false));
 }
 
@@ -371,6 +454,27 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     details.remoteTruncated === true ? field("remoteTruncated", "yes", "warning") : undefined,
     details.requestBudgetExhausted === true ? field("requestBudget", "exhausted", "warning") : undefined,
     details.hasMore === true ? field("hasMore", "yes") : undefined,
+    // SSH-specific fields: session identity, state, and cursor metadata
+    field("endpoint", asRecord(details.session).endpoint),
+    field("sessionState", asRecord(details.session).state),
+    field("commandState", asRecord(details.session).commandState),
+    field("disconnectReason", asRecord(details.session).disconnectReason),
+    details.exitCode !== undefined ? field("exitCode", details.exitCode, details.exitCode === 0 ? "success" : "error") : undefined,
+    // SSH output page cursor metadata
+    (() => {
+      const page = asRecord(details.output);
+      const expired = page.cursorExpired === true;
+      const dropped = typeof page.droppedChars === "number" ? page.droppedChars : 0;
+      const hasMore = page.hasMore === true;
+      if (expired || dropped > 0 || hasMore) {
+        const parts: string[] = [];
+        if (expired) parts.push("expired");
+        if (dropped > 0) parts.push(`${dropped} dropped`);
+        if (hasMore) parts.push("more");
+        return field("cursor", parts.join(", "), "warning");
+      }
+      return undefined;
+    })(),
   ];
 }
 
@@ -384,9 +488,11 @@ export function createRemoteAdapter(
       const description = base.describeCall(args, context);
       const source = asRecord(args);
       const requestMeta = metadata(requestFields(name, source));
+      const target = name === "ssh" ? sshTarget(source) : undefined;
       return baseDescription(description, {
         metadata: mergeMetadata(description.metadata ?? [], requestMeta, remoteSuppress(name)),
         sections: sections(requestSection("Request", name, source)),
+        ...(target ? { target } : {}),
       });
     },
     describeResult(result, options, context) {
@@ -422,12 +528,18 @@ export function createRemoteAdapter(
       // the Result section carries the message), or when collapsed with
       // domain content that the expanded sections cover.
       const suppressPreview = options.expanded || isError || Boolean(errorMessage);
+      // For SSH, extract terminal output from JSON body for the collapsed preview.
+      const sshPreview = name === "ssh" && !suppressPreview && text
+        ? { text: sshOutputText(text) }
+        : description.preview;
       const lifecycle = remoteLifecycle(name, isError, details);
+      const target = name === "ssh" ? sshTarget(args) : undefined;
       return baseDescription(description, {
         metadata: mergeMetadata(description.metadata ?? [], metadata(requestFields(name, args)), remoteSuppress(name)),
         sections: structured,
-        preview: suppressPreview ? undefined : description.preview,
+        preview: suppressPreview ? undefined : sshPreview,
         rows: [],
+        ...(target ? { target } : {}),
         ...(lifecycle ? lifecycle : {}),
       });
     },

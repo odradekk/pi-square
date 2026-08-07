@@ -40,6 +40,7 @@ const suites = [
   "display/firecrawl-parse.test.mjs",
   "display/github-tools.test.mjs",
   "display/github-tree-commit.test.mjs",
+  "display/ssh-sessions.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",
