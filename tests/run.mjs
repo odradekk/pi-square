@@ -35,6 +35,7 @@ const suites = [
   "display/codegraph.test.mjs",
   "display/pdf-search.test.mjs",
   "display/shell-execution.test.mjs",
+  "display/web-search-fetch.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",

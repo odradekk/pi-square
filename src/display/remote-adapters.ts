@@ -18,6 +18,43 @@ import {
 } from "./adapter-utils";
 import type { DisplayMetadataEntry, DisplayRecordItem, DisplaySection } from "./types";
 
+/**
+ * Merge freshly computed request metadata on top of the base adapter's
+ * generic metadata, replacing any entry whose label the fresh set also
+ * produces. Prevents the same request fields (queries, urls, mode, ...)
+ * from appearing twice in the header.
+ * `suppress` unconditionally drops base labels that fresh intentionally
+ * renames (e.g. fetch's `max_tokens` → `maxTokens`), so the raw arg-key
+ * badge doesn't appear alongside its human-readable counterpart.
+ */
+function mergeMetadata(
+  base: readonly DisplayMetadataEntry[],
+  fresh: readonly DisplayMetadataEntry[],
+  suppress: ReadonlySet<string> = new Set(),
+): DisplayMetadataEntry[] {
+  const freshLabels = new Set(fresh.map((entry) => entry.label));
+  return [...base.filter((entry) => !freshLabels.has(entry.label) && !suppress.has(entry.label)), ...fresh].slice(0, 16);
+}
+
+/**
+ * Base adapter's generic ARG_FIELDS uses raw arg-key labels (max_tokens,
+ * include_links, describe_images, no_cache) that requestFields renames to
+ * human-readable equivalents. Suppress the raw-key labels so only the
+ * readable versions survive in the header.
+ */
+const REMOTE_SUPPRESS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  fetch: new Set(["max_tokens", "include_links", "describe_images", "no_cache"]),
+  search: new Set(["no_cache"]),
+});
+
+function remoteSuppress(name: string): ReadonlySet<string> {
+  return REMOTE_SUPPRESS[name] ?? new Set();
+}
+
+function markCompact(section: DisplaySection | undefined): DisplaySection | undefined {
+  return section && section.compact === false ? { ...section, compact: true } : section;
+}
+
 function requestFields(name: string, source: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
   switch (name) {
     case "search":
@@ -249,8 +286,9 @@ export function createRemoteAdapter(
     describeCall(args, context) {
       const description = base.describeCall(args, context);
       const source = asRecord(args);
+      const requestMeta = metadata(requestFields(name, source));
       return baseDescription(description, {
-        metadata: [...(description.metadata ?? []), ...metadata(requestFields(name, source))].slice(0, 16),
+        metadata: mergeMetadata(description.metadata ?? [], requestMeta, remoteSuppress(name)),
         sections: sections(requestSection("Request", name, source)),
       });
     },
@@ -259,25 +297,39 @@ export function createRemoteAdapter(
       const args = asRecord(context.args);
       const details = asRecord(result.details);
       const text = textOf(result);
-      const error = stringOf(details.error)
+      const isError = Boolean((result as { isError?: boolean }).isError);
+      const errorText = stringOf(details.error)
         ?? stringOf(details.errorCode)
-        ?? ((result as { isError?: boolean }).isError ? text : undefined);
-      const requestSource = { ...args, ...details };
+        ?? (isError ? text : undefined);
       const domain = domainSection(name, details, text, options.expanded);
-      const structured = sections(
-        textSection("Error", error, "error"),
-        requestSection("Request", name, requestSource),
-        summarySection("Summary", summaryFields(details)),
-        ...domain,
-        options.expanded && domain.length === 0
-          ? codeSection("Output", text, "text", false)
-          : undefined,
-        stringOf(details.warning) ? textSection("Diagnostics", stringOf(details.warning), "warning") : undefined,
-      );
+      const request = requestSection("Request", name, args);
+      const summary = summarySection("Summary", summaryFields(details));
+      const output = options.expanded && domain.length === 0 && !isError && !errorText
+        ? codeSection("Output", text, "text", false)
+        : undefined;
+      const diagnostics = stringOf(details.warning)
+        ? textSection("Diagnostics", stringOf(details.warning), "warning")
+        : undefined;
+      // When isError is true, description.error (set by the base adapter)
+      // is the sole styled carrier — no separate section needed. When
+      // isError is false but details.error exists (the actual search/fetch
+      // tool behavior for cancellation, timeout, and provider failures),
+      // description.error is NOT set by the base adapter, so a compact
+      // Result section carries the message visibly.
+      const errorMessage = !isError && errorText
+        ? textSection("Result", errorText, "warning", true)
+        : undefined;
+      const structured = sections(request, summary, errorMessage, ...domain, markCompact(output), diagnostics);
+      // Suppress the raw text preview when expanded (structured sections
+      // carry the content), when there's an error (description.error or
+      // the Result section carries the message), or when collapsed with
+      // domain content that the expanded sections cover.
+      const suppressPreview = options.expanded || isError || Boolean(errorMessage);
       return baseDescription(description, {
-        metadata: [...(description.metadata ?? []), ...metadata(requestFields(name, args))].slice(0, 16),
+        metadata: mergeMetadata(description.metadata ?? [], metadata(requestFields(name, args)), remoteSuppress(name)),
         sections: structured,
-        ...(options.expanded ? { preview: undefined } : {}),
+        preview: suppressPreview ? undefined : description.preview,
+        rows: [],
       });
     },
   };
