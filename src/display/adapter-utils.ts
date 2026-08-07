@@ -75,8 +75,8 @@ export function pathsSection(title: string, items: DisplayPathItem[], compact = 
   return items.length > 0 ? { title, blocks: [{ kind: "paths", items }], compact } : undefined;
 }
 
-export function matchesSection(title: string, items: DisplayMatchItem[]): DisplaySection | undefined {
-  return items.length > 0 ? { title, blocks: [{ kind: "matches", items }], compact: false } : undefined;
+export function matchesSection(title: string, items: DisplayMatchItem[], compact = false): DisplaySection | undefined {
+  return items.length > 0 ? { title, blocks: [{ kind: "matches", items }], compact } : undefined;
 }
 
 export function textSection(title: string, text: string | undefined, tone?: "default" | "muted" | "accent" | "success" | "warning" | "error", compact = false): DisplaySection | undefined {

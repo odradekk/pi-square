@@ -19,9 +19,9 @@ import { setBannerDisplayDiagnostic } from "../banner";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
-import { codeSection, field, pathsSection, sections, summarySection, textSection } from "./adapter-utils";
+import { codeSection, field, matchesSection, pathsSection, sections, summarySection, textSection } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
-import type { DisplayDescriptionV1, DisplayMetadataEntry, DisplayPathItem, DisplayRow, OperationalLifecycle } from "./types";
+import type { DisplayDescriptionV1, DisplayMatchItem, DisplayMetadataEntry, DisplayPathItem, DisplayRow, OperationalLifecycle } from "./types";
 
 const BUILTIN_NAMES = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
 const NON_SHELL_NAMES = BUILTIN_NAMES.filter((name) => name !== "bash");
@@ -55,6 +55,20 @@ function numberMetadata(label: string, value: unknown): DisplayMetadataEntry | u
     : undefined;
 }
 
+/**
+ * grep-specific search metadata: case sensitivity, regex vs. literal, glob
+ * scope, and context lines. Surfaced in both call metadata (badges) and the
+ * expanded Query summary so search identity remains visible at every width.
+ */
+function grepSearchMetadata(args: Record<string, unknown>): DisplayMetadataEntry[] {
+  return [
+    field("glob", args.glob),
+    args.ignoreCase === true ? field("case", "insensitive") : undefined,
+    args.literal === true ? field("literal", "true") : undefined,
+    numberMetadata("context", args.context),
+  ].filter((entry): entry is DisplayMetadataEntry => Boolean(entry));
+}
+
 function callDescription(name: BuiltinName, args: Record<string, unknown>, executionStarted: boolean): DisplayDescriptionV1 {
   const path = stringValue(args.path);
   const command = stringValue(args.command);
@@ -63,9 +77,9 @@ function callDescription(name: BuiltinName, args: Record<string, unknown>, execu
     numberMetadata("offset", args.offset),
     numberMetadata("limit", args.limit),
     numberMetadata("timeout", args.timeout),
+    ...(name === "grep" ? grepSearchMetadata(args) : []),
   ].filter((entry): entry is DisplayMetadataEntry => Boolean(entry));
   const rows: DisplayRow[] = [];
-  if (name === "grep" && pattern) rows.push({ text: `query ${pattern}` });
   if (name === "find" && pattern) rows.push({ text: `pattern ${pattern}` });
   if (name === "edit" && Array.isArray(args.edits)) rows.push({ text: `${args.edits.length} exact replacement${args.edits.length === 1 ? "" : "s"}` });
   if (name === "write" && typeof args.content === "string") rows.push({ text: `${Buffer.byteLength(args.content)} bytes projected` });
@@ -75,7 +89,7 @@ function callDescription(name: BuiltinName, args: Record<string, unknown>, execu
     family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
     status: executionStarted ? "pending" : "partial",
     title: name.toUpperCase(),
-    target: command ?? (name === "find" ? pattern : undefined) ?? path,
+    target: command ?? ((name === "find" || name === "grep") ? pattern : undefined) ?? path,
     metadata,
     rows,
   };
@@ -93,6 +107,28 @@ function pathItemsFromText(text: string): DisplayPathItem[] {
     path: entry,
     kind: pathKindFromEntry(entry),
   }));
+}
+
+/**
+ * Parse standard grep output lines (`path:line:text`) into structured match items.
+ */
+function grepMatchItems(text: string): DisplayMatchItem[] {
+  return text.split("\n").filter(Boolean).flatMap((line) => {
+    const firstColon = line.indexOf(":");
+    if (firstColon === -1) return [{ path: line, tone: "accent" as const }];
+    const path = line.slice(0, firstColon);
+    const rest = line.slice(firstColon + 1);
+    const secondColon = rest.indexOf(":");
+    if (secondColon === -1) return [{ path, excerpt: rest, tone: "accent" as const }];
+    const lineNum = Number(rest.slice(0, secondColon));
+    const excerpt = rest.slice(secondColon + 1);
+    return [{
+      path,
+      ...(Number.isFinite(lineNum) ? { line: lineNum } : {}),
+      excerpt,
+      tone: "accent" as const,
+    }];
+  });
 }
 
 function resultSections(
@@ -121,6 +157,17 @@ function resultSections(
         : textSection("Result", emptyMessage, "muted", true),
     );
   }
+  if (!isError && name === "grep") {
+    const items = grepMatchItems(text);
+    return sections(
+      expanded
+        ? summarySection("Query", [field("pattern", args.pattern), field("path", target ?? "."), ...grepSearchMetadata(args)])
+        : undefined,
+      items.length > 0
+        ? matchesSection("Matches", items, true)
+        : textSection("Result", "No matches", "muted", true),
+    );
+  }
   if (!expanded) return [];
   if (name === "read") {
     return sections(
@@ -131,12 +178,6 @@ function resultSections(
       ]),
       codeSection("Content", text, undefined, true),
       details?.truncation ? textSection("Truncation", JSON.stringify(details.truncation), "warning") : undefined,
-    );
-  }
-  if (name === "grep") {
-    return sections(
-      summarySection("Query", [field("pattern", args.pattern), field("path", target ?? ".")]),
-      codeSection("Matches", text, "text", false),
     );
   }
   if (name === "write") {
@@ -163,7 +204,7 @@ function resultDescription(
     ? details.truncation as Record<string, unknown>
     : undefined;
   const target = stringValue(args.command)
-    ?? (name === "find" ? stringValue(args.pattern) : undefined)
+    ?? ((name === "find" || name === "grep") ? stringValue(args.pattern) : undefined)
     ?? stringValue(args.path);
   const isErrorResult = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
   const description: DisplayDescriptionV1 = {
@@ -189,13 +230,14 @@ function resultDescription(
   if (name === "write" && typeof args.content === "string") {
     return { ...description, preview: { text: args.content } };
   }
-  // ls and find produce compact path-list sections; suppress the flat text
-  // preview so the structured paths render is the sole body content.
-  // Error results already carry description.error; suppress the preview.
+  // ls, find, and grep produce compact structured sections (paths or
+  // matches); suppress the flat text preview so the structured render is
+  // the sole body content. Error results already carry description.error;
+  // suppress the preview there too.
   if (isErrorResult) {
     return description;
   }
-  if ((name === "ls" || name === "find") && description.sections && description.sections.length > 0) {
+  if ((name === "ls" || name === "find" || name === "grep") && description.sections && description.sections.length > 0) {
     return description;
   }
   return text ? { ...description, preview: { text } } : description;
@@ -208,11 +250,11 @@ function writePreviewKey(args: Record<string, unknown>): string {
 }
 
 /**
- * Derive an explicit lifecycle for filesystem tools (Read, Edit, Write,
- * List, Find) so they render through the new operational path rather than
- * the compatibility bridge.
+ * Derive an explicit lifecycle for migrated Pi built-ins (Read, Edit, Write,
+ * List, Find, Grep) so they render through the new operational path rather
+ * than the compatibility bridge.
  */
-function filesystemLifecycle(
+function builtinLifecycle(
   context: { executionStarted: boolean; argsComplete: boolean; isPartial: boolean; isError: boolean },
   phase: "call" | "result",
 ): OperationalLifecycle {
@@ -229,8 +271,8 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   return {
     describeCall(args, context) {
       const desc = callDescription(name, args as Record<string, unknown>, context.executionStarted);
-      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find")
-        ? { ...desc, lifecycle: filesystemLifecycle(context, "call") }
+      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep")
+        ? { ...desc, lifecycle: builtinLifecycle(context, "call") }
         : desc;
     },
     ...(name === "write" ? {
@@ -243,10 +285,10 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
         const base = callDescription(name, args, context.executionStarted);
         const preview = await inspectWritePreview(cwd, path, content);
         if (preview.kind === "create") {
-          return { ...base, target: preview.path, lifecycle: filesystemLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: "", after: preview.after, projected: true } };
+          return { ...base, target: preview.path, lifecycle: builtinLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: "", after: preview.after, projected: true } };
         }
         if (preview.kind === "overwrite") {
-          return { ...base, target: preview.path, lifecycle: filesystemLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: preview.before, after: preview.after, projected: true } };
+          return { ...base, target: preview.path, lifecycle: builtinLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: preview.before, after: preview.after, projected: true } };
         }
         return {
           ...base,
@@ -257,8 +299,8 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
     } : {}),
     describeResult(result, options, context) {
       const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
-      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find")
-        ? { ...desc, lifecycle: filesystemLifecycle(context, "result") }
+      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep")
+        ? { ...desc, lifecycle: builtinLifecycle(context, "result") }
         : desc;
     },
   } as GenericAdapter;

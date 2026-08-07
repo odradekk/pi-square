@@ -172,6 +172,23 @@ function markCompact(section: DisplaySection | undefined): DisplaySection | unde
   return section && section.compact === false ? { ...section, compact: true } : section;
 }
 
+const EMPTY_DOMAIN_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  rg: "No matches",
+  sg: "No matches",
+  pdf_search: "No matches",
+  fd: "No results",
+});
+
+/**
+ * Merge freshly computed metadata on top of base metadata, replacing any
+ * entry whose label the fresh set also produces. Prevents the same arg
+ * fields (pattern, case, word, ...) from appearing twice in the header.
+ */
+function mergeMetadata(base: readonly DisplayMetadataEntry[], fresh: readonly DisplayMetadataEntry[]): DisplayMetadataEntry[] {
+  const freshLabels = new Set(fresh.map((entry) => entry.label));
+  return [...base.filter((entry) => !freshLabels.has(entry.label)), ...fresh].slice(0, 16);
+}
+
 export function createSearchAdapter(
   name: string,
   base: InternalToolDisplayAdapter<any, unknown, unknown>,
@@ -181,7 +198,7 @@ export function createSearchAdapter(
     describeCall(args, context) {
       const description = base.describeCall(args, context);
       return baseDescription(description, {
-        metadata: [...(description.metadata ?? []), ...argMetadata(name, asRecord(args))].slice(0, 16),
+        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, asRecord(args))),
         sections: sections(querySection(name, asRecord(args))),
       });
     },
@@ -215,33 +232,68 @@ export function createSearchAdapter(
       else if (name === "codegraph") domain = options.expanded
         ? codeSection("Results", textOf(result), "markdown", false)
         : undefined;
+      // rg/fd/sg report their count on page.returned; pdf_search reports it
+      // at the top level. Confirming a genuine zero (rather than merely an
+      // empty or malformed domain) keeps ambiguous/unparsed details falling
+      // back to the raw text preview instead of silently claiming "no results".
+      const returnedCount = (name === "rg" || name === "fd" || name === "sg")
+        ? numberOf(page.returned)
+        : numberOf(details.returned);
+      const genuinelyEmpty = returnedCount === 0;
+      // Match/path-based domains that are confirmed empty get an explicit
+      // compact message instead of falling through to a raw text preview,
+      // which would otherwise duplicate the "No results" row.
+      const emptyDomain = !domain && !error && genuinelyEmpty && name in EMPTY_DOMAIN_MESSAGES
+        ? textSection("Result", EMPTY_DOMAIN_MESSAGES[name], "muted", true)
+        : undefined;
+      // When the domain is absent but not confirmed empty (ambiguous or
+      // malformed details), fall back to the raw text output so no
+      // information is silently dropped; codegraph builds its own domain
+      // content directly and never reaches this branch (structuredDomain
+      // excludes it).
+      const output = options.expanded && !domain && !emptyDomain && !error && structuredDomain
+        ? codeSection("Output", textOf(result), "text", false)
+        : undefined;
+      const hasStructuredContent = Boolean(domain) || Boolean(emptyDomain);
 
       const query = name === "pdf_search" || name === "codegraph"
         ? summarySection("Query", argMetadata(name, details))
         : querySection(name, args);
+      // The tool error itself renders once through description.error
+      // (always visible, error-styled, regardless of expansion); this
+      // diagnostics list carries only supplementary process output.
       const diagnostics = sections(
-        textSection("Error", error, "error"),
         stringOf(details.stderr) ? textSection("Diagnostics", stringOf(details.stderr), "warning") : undefined,
         name === "codegraph" && booleanOf(details.outputTruncated) ? textSection("Diagnostics", "CodeGraph output truncated by model-facing budget", "warning") : undefined,
       );
-      const output = options.expanded && !domain && structuredDomain
-        ? codeSection("Output", textOf(result), "text", false)
-        : undefined;
       const structured = sections(
         ...diagnostics,
         query,
         summary,
         markCompact(domain),
         markCompact(output),
+        emptyDomain,
       );
+      // Structured-domain tools with confirmed content (a populated domain
+      // or a confirmed-empty message) render solely through sections; the
+      // raw text preview and generic "No results" row would otherwise
+      // duplicate that content. Errors are suppressed too because
+      // description.error already carries the same text with error styling.
+      // When domain is absent, there is no error, and the result count is
+      // unconfirmed (ambiguous or malformed details), preview and rows
+      // remain so no information is silently dropped.
+      // NOTE: this discards base's summaryRows-derived rows (details.counts /
+      // details.message) whenever suppressed. None of rg/fd/sg/pdf_search
+      // currently populate those fields; a future tool that does would need
+      // to re-surface them through a dedicated section instead of rows.
+      const suppressFallback = structuredDomain && (hasStructuredContent || Boolean(error));
       return baseDescription(description, {
-        metadata: [...(description.metadata ?? []), ...argMetadata(name, args)].slice(0, 16),
+        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, args)),
         sections: options.expanded
           ? structured
-          : description.sections ?? structured.filter((section) => section.compact === true),
-        ...(options.expanded
-          ? { preview: structuredDomain ? undefined : description.preview }
-          : {}),
+          : structured.filter((section) => section.compact === true),
+        preview: suppressFallback ? undefined : description.preview,
+        rows: suppressFallback ? [] : description.rows,
       });
     },
   };
