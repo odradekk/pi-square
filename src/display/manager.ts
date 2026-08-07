@@ -93,7 +93,6 @@ const FIELD_OPTIONS: Readonly<Record<DisplayPolicyField, readonly unknown[] | un
   diffView: ["auto", "split", "unified"],
   diffSplitMinWidth: undefined,
   diffCollapsedLines: undefined,
-  diffIndicators: ["bars", "classic", "none"],
 });
 const PREVIEW_WIDTHS = [40, 80, 120] as const;
 

@@ -1,5 +1,5 @@
 import { generateUnifiedPatch, type Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { padVisible } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./sanitize";
 import { styleDiffLine, styleRule } from "./theme";
@@ -8,24 +8,54 @@ import type { DisplayDiffDescription, DisplayPolicy } from "./types";
 export const DISPLAY_DIFF_INPUT_MAX_CHARS = 1_000_000;
 
 type DiffLine =
-  | { kind: "header"; text: string }
-  | { kind: "context"; text: string }
-  | { kind: "added"; text: string }
-  | { kind: "removed"; text: string };
+  | { kind: "fileHeader"; text: string }
+  | { kind: "hunkHeader"; oldStart: number; newStart: number; text: string }
+  | { kind: "context"; text: string; oldLine: number; newLine: number }
+  | { kind: "added"; text: string; newLine: number }
+  | { kind: "removed"; text: string; oldLine: number };
+
+type DiffContentLine =
+  | { kind: "context"; text: string; oldLine: number; newLine: number }
+  | { kind: "added"; text: string; newLine: number }
+  | { kind: "removed"; text: string; oldLine: number };
 
 interface SplitRow {
-  readonly left?: DiffLine;
-  readonly right?: DiffLine;
+  readonly left?: DiffContentLine;
+  readonly right?: DiffContentLine;
   readonly header?: string;
 }
 
 function classifyPatch(patch: string): DiffLine[] {
-  return patch.split("\n").filter((line) => line.length > 0).map((line): DiffLine => {
-    if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) return { kind: "header", text: line };
-    if (line.startsWith("+")) return { kind: "added", text: line.slice(1) };
-    if (line.startsWith("-")) return { kind: "removed", text: line.slice(1) };
-    return { kind: "context", text: line.startsWith(" ") ? line.slice(1) : line };
-  });
+  const rawLines = patch.split("\n").filter((line) => line.length > 0);
+  let oldLine = 0;
+  let newLine = 0;
+  const result: DiffLine[] = [];
+  for (const line of rawLines) {
+    if (line.startsWith("---") || line.startsWith("+++")) {
+      result.push({ kind: "fileHeader", text: line });
+      continue;
+    }
+    const hunkMatch = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunkMatch) {
+      oldLine = parseInt(hunkMatch[1]!, 10);
+      newLine = parseInt(hunkMatch[2]!, 10);
+      result.push({ kind: "hunkHeader", oldStart: oldLine, newStart: newLine, text: line });
+      continue;
+    }
+    if (line.startsWith("+")) {
+      result.push({ kind: "added", text: line.slice(1), newLine });
+      newLine += 1;
+    } else if (line.startsWith("-")) {
+      result.push({ kind: "removed", text: line.slice(1), oldLine });
+      oldLine += 1;
+    } else {
+      const text = line.startsWith(" ") ? line.slice(1) : line;
+      result.push({ kind: "context", text, oldLine, newLine });
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+  return result;
 }
 
 function parsePatch(description: DisplayDiffDescription): DiffLine[] {
@@ -36,12 +66,6 @@ function parsePatch(description: DisplayDiffDescription): DiffLine[] {
   const path = sanitizeDisplayLine(description.path || "file");
   const patch = generateUnifiedPatch(path, sanitizeDisplayText(description.before), sanitizeDisplayText(description.after), 3);
   return classifyPatch(patch);
-}
-
-function indicator(kind: "added" | "removed" | "context", policy: DisplayPolicy): string {
-  if (policy.diffIndicators === "none") return "";
-  if (policy.diffIndicators === "classic") return kind === "added" ? "+ " : kind === "removed" ? "- " : "  ";
-  return kind === "added" ? "│ " : kind === "removed" ? "│ " : "  ";
 }
 
 function emphasizePair(left: string, right: string, theme: Theme): [string, string] {
@@ -69,7 +93,7 @@ function toSplitRows(lines: readonly DiffLine[]): SplitRow[] {
   const rows: SplitRow[] = [];
   for (let index = 0; index < lines.length;) {
     const line = lines[index]!;
-    if (line.kind === "header") {
+    if (line.kind === "fileHeader" || line.kind === "hunkHeader") {
       rows.push({ header: line.text });
       index += 1;
       continue;
@@ -79,13 +103,14 @@ function toSplitRows(lines: readonly DiffLine[]): SplitRow[] {
       index += 1;
       continue;
     }
-    const removed: DiffLine[] = [];
-    const added: DiffLine[] = [];
-    while (lines[index]?.kind === "removed") removed.push(lines[index++]!);
-    while (lines[index]?.kind === "added") added.push(lines[index++]!);
+    const removed: DiffContentLine[] = [];
+    const added: DiffContentLine[] = [];
+    while (lines[index]?.kind === "removed") removed.push(lines[index++] as DiffContentLine);
+    while (lines[index]?.kind === "added") added.push(lines[index++] as DiffContentLine);
     if (removed.length === 0 && added.length === 0) {
       const current = lines[index++]!;
-      rows.push(current.kind === "added" ? { right: current } : { left: current });
+      if (current.kind === "added") rows.push({ right: current });
+      else if (current.kind === "removed") rows.push({ left: current });
       continue;
     }
     const count = Math.max(removed.length, added.length);
@@ -94,26 +119,85 @@ function toSplitRows(lines: readonly DiffLine[]): SplitRow[] {
   return rows;
 }
 
-function renderUnified(lines: readonly DiffLine[], width: number, policy: DisplayPolicy, theme: Theme): string[] {
+function diffMarker(kind: "added" | "removed" | "context"): string {
+  return (kind === "added" ? "+" : kind === "removed" ? "-" : " ") + " ";
+}
+
+function formatLineNumber(line: number, maxWidth: number): string {
+  return String(line).padStart(maxWidth, " ");
+}
+
+function maxLineWidth(lines: readonly DiffLine[]): number {
+  let max = 0;
+  for (const line of lines) {
+    if (line.kind === "context" || line.kind === "added" || line.kind === "removed") {
+      const num = line.kind === "added" ? line.newLine : line.oldLine;
+      max = Math.max(max, String(num).length);
+    }
+  }
+  return max;
+}
+
+function countChanges(lines: readonly DiffLine[]): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of lines) {
+    if (line.kind === "added") additions += 1;
+    else if (line.kind === "removed") deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function renderUnified(lines: readonly DiffLine[], width: number, theme: Theme): string[] {
   const safe = Math.max(1, width);
   const output: string[] = [];
+  const lineNumberWidth = Math.max(1, maxLineWidth(lines));
+
+  // Change-count header: (+N, -M)
+  const { additions, deletions } = countChanges(lines);
+  if (additions > 0 || deletions > 0) {
+    const changeHeader = theme.fg("muted", `(+${additions}, -${deletions})`);
+    output.push(padVisible(changeHeader, safe));
+  }
+
   for (const line of lines) {
-    if (line.kind === "header") {
+    if (line.kind === "fileHeader") {
+      // Skip file headers in unified view — path metadata is shown separately.
+      continue;
+    }
+    if (line.kind === "hunkHeader") {
+      // Hunk header is dim and right-aligned with the available width.
       output.push(padVisible(styleDiffLine(theme, "header", truncateToWidth(line.text, safe, "...")), safe));
       continue;
     }
-    const prefix = indicator(line.kind, policy);
-    const available = Math.max(1, safe - visibleWidth(prefix));
-    const wrapped = wrapTextWithAnsi(line.text || " ", available);
+
+    // Marker: + for added, - for removed, space for context
+    const marker = line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " ";
+    // Line number (right-aligned dim)
+    const lineNum = line.kind === "added" ? line.newLine : line.oldLine;
+    const lineNumText = theme.fg("muted", formatLineNumber(lineNum, lineNumberWidth));
+    // Prefix: " NNN " (line number, space, marker, space)
+    const prefix = `${lineNumText} ${marker} `;
+    const prefixWidth = lineNumberWidth + 3; // number + space + marker + space
+    const available = Math.max(1, safe - prefixWidth);
+    const text = line.text || " ";
+    const wrapped = wrapTextWithAnsi(text, available);
     wrapped.forEach((part, index) => {
-      const marker = index === 0 ? prefix : " ".repeat(visibleWidth(prefix));
-      output.push(padVisible(styleDiffLine(theme, line.kind, marker + part), safe));
+      if (index === 0) {
+        const styled = styleDiffLine(theme, line.kind, part);
+        output.push(padVisible(`${prefix}${styled}`, safe));
+      } else {
+        // Hanging indent: continuation rows align after the marker
+        const continuation = " ".repeat(prefixWidth);
+        const styled = styleDiffLine(theme, line.kind, part);
+        output.push(padVisible(`${continuation}${styled}`, safe));
+      }
     });
   }
   return output;
 }
 
-function renderSplit(lines: readonly DiffLine[], width: number, policy: DisplayPolicy, theme: Theme): string[] {
+function renderSplit(lines: readonly DiffLine[], width: number, theme: Theme): string[] {
   const safe = Math.max(1, width);
   const divider = styleRule(theme, " │ ");
   const columnWidth = Math.max(1, Math.floor((safe - 3) / 2));
@@ -130,11 +214,11 @@ function renderSplit(lines: readonly DiffLine[], width: number, policy: DisplayP
     if (row.left?.kind === "removed" && row.right?.kind === "added") {
       [leftStyled, rightStyled] = emphasizePair(leftText, rightText, theme);
     } else {
-      leftStyled = row.left ? styleDiffLine(theme, row.left.kind === "added" ? "added" : row.left.kind, leftText) : "";
-      rightStyled = row.right ? styleDiffLine(theme, row.right.kind === "removed" ? "removed" : row.right.kind, rightText) : "";
+      leftStyled = row.left ? styleDiffLine(theme, row.left.kind, leftText) : "";
+      rightStyled = row.right ? styleDiffLine(theme, row.right.kind, rightText) : "";
     }
-    const leftPrefix = row.left && row.left.kind !== "header" ? indicator(row.left.kind, policy) : "";
-    const rightPrefix = row.right && row.right.kind !== "header" ? indicator(row.right.kind, policy) : "";
+    const leftPrefix = row.left ? diffMarker(row.left.kind) : "";
+    const rightPrefix = row.right ? diffMarker(row.right.kind) : "";
     const leftLines = wrapTextWithAnsi(leftPrefix + leftStyled, columnWidth);
     const rightLines = wrapTextWithAnsi(rightPrefix + rightStyled, columnWidth);
     const count = Math.max(leftLines.length, rightLines.length);
@@ -172,8 +256,8 @@ export function renderDisplayDiffLines(
   }
   const split = policy.diffView === "split" || (policy.diffView === "auto" && safe >= policy.diffSplitMinWidth);
   const rendered = split
-    ? renderSplit(lines, safe, policy, theme)
-    : renderUnified(lines, safe, policy, theme);
+    ? renderSplit(lines, safe, theme)
+    : renderUnified(lines, safe, theme);
   const maximum = options.expanded ? policy.expandedMaxLines : policy.diffCollapsedLines;
   const bounded = maximum === 0 ? [] : rendered.slice(0, maximum);
   const omitted = Math.max(0, rendered.length - bounded.length);

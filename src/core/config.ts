@@ -55,11 +55,6 @@ const DisplayOverlaySchema = Type.Object({
     minimum: DISPLAY_DIFF_COLLAPSED_LINES_MIN,
     maximum: DISPLAY_DIFF_COLLAPSED_LINES_MAX,
   })),
-  diffIndicators: Type.Optional(Type.Union([
-    Type.Literal("bars"),
-    Type.Literal("classic"),
-    Type.Literal("none"),
-  ])),
 }, { additionalProperties: false });
 
 const DisplayFamiliesSchema = Type.Object({

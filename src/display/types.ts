@@ -190,14 +190,6 @@ export const DISPLAY_DIFF_VIEWS: readonly DisplayDiffView[] = [
   "unified",
 ];
 
-export type DisplayDiffIndicators = "bars" | "classic" | "none";
-
-export const DISPLAY_DIFF_INDICATORS: readonly DisplayDiffIndicators[] = [
-  "bars",
-  "classic",
-  "none",
-];
-
 // ─── Motion ──────────────────────────────────────────────────────────
 
 export type DisplayMotion = "full" | "reduced" | "off";
@@ -269,7 +261,6 @@ export interface DisplayPolicy {
   readonly diffView: DisplayDiffView;
   readonly diffSplitMinWidth: number;
   readonly diffCollapsedLines: number;
-  readonly diffIndicators: DisplayDiffIndicators;
 }
 
 export const DEFAULT_DISPLAY_POLICY: Readonly<DisplayPolicy> = Object.freeze({
@@ -279,10 +270,9 @@ export const DEFAULT_DISPLAY_POLICY: Readonly<DisplayPolicy> = Object.freeze({
   showMetadata: true,
   showDuration: true,
   wordWrap: true,
-  diffView: "auto",
+  diffView: "unified",
   diffSplitMinWidth: 120,
   diffCollapsedLines: 24,
-  diffIndicators: "bars",
 });
 
 export type DisplayPolicyField = keyof DisplayPolicy;
@@ -297,7 +287,6 @@ export const DISPLAY_POLICY_FIELDS: readonly DisplayPolicyField[] = [
   "diffView",
   "diffSplitMinWidth",
   "diffCollapsedLines",
-  "diffIndicators",
 ];
 
 /** Provenance label for a single effective policy leaf: `"default"` or the config file path that last set it. */
@@ -320,7 +309,6 @@ export interface DisplayPolicyOverlay {
   readonly diffView?: DisplayDiffView;
   readonly diffSplitMinWidth?: number;
   readonly diffCollapsedLines?: number;
-  readonly diffIndicators?: DisplayDiffIndicators;
 }
 
 // ─── Display layer config (the `display` section in a config file) ───

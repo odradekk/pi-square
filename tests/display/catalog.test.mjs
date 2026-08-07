@@ -244,15 +244,14 @@ assert.equal(DEFAULT_DISPLAY_POLICY.expandedMaxLines, 4_000);
 assert.equal(DEFAULT_DISPLAY_POLICY.showMetadata, true);
 assert.equal(DEFAULT_DISPLAY_POLICY.showDuration, true);
 assert.equal(DEFAULT_DISPLAY_POLICY.wordWrap, true);
-assert.equal(DEFAULT_DISPLAY_POLICY.diffView, "auto");
+assert.equal(DEFAULT_DISPLAY_POLICY.diffView, "unified");
 assert.equal(DEFAULT_DISPLAY_POLICY.diffSplitMinWidth, 120);
 assert.equal(DEFAULT_DISPLAY_POLICY.diffCollapsedLines, 24);
-assert.equal(DEFAULT_DISPLAY_POLICY.diffIndicators, "bars");
 assert.equal(DEFAULT_DISPLAY_MOTION, "full");
 
 // ── Policy fields exhaustive ─────────────────────────────────────────
 
-assert.equal(DISPLAY_POLICY_FIELDS.length, 10, "must have exactly 10 policy fields");
+assert.equal(DISPLAY_POLICY_FIELDS.length, 9, "must have exactly 9 policy fields");
 
 // ── Constants match plan ─────────────────────────────────────────────
 

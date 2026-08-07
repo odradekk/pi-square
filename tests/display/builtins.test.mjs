@@ -118,9 +118,10 @@ try {
       firstChangedLine: 1,
     },
   }, { expanded: true, isPartial: false }, theme, context({ args: editArgs })).render(80).join("\n");
-  assert.match(editResult, /-before|│ before/);
-  assert.match(editResult, /\+after|│ after/);
-  assert.doesNotMatch(editResult, /PROJECTED/);
+  assert.match(editResult, /before/, "removed line content visible");
+  assert.match(editResult, /after/, "added line content visible");
+  assert.match(editResult, /\(\+1, -1\)/, "must show change-count header");
+  assert.doesNotMatch(editResult, /PROJECTED/, "edit diff is authoritative, not projected");
 
   runtime.dispose();
   console.log("display built-in definition and renderer tests: OK");

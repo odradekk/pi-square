@@ -311,16 +311,15 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
   "display": {
     "motion": "full",
     "defaults": {
-      "resultMode": "summary",
-      "previewLines": 8,
+      "resultMode": "preview",
+      "previewLines": 9,
       "expandedMaxLines": 4000,
       "showMetadata": true,
       "showDuration": true,
       "wordWrap": true,
-      "diffView": "auto",
+      "diffView": "unified",
       "diffSplitMinWidth": 120,
-      "diffCollapsedLines": 24,
-      "diffIndicators": "bars"
+      "diffCollapsedLines": 24
     },
     "families": {
       "search": {
@@ -370,7 +369,7 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
 
 Replace the sample fingerprint with the target's independently verified OpenSSH SHA-256 fingerprint. Agent authentication uses `auth.socket` when supplied, then `SSH_AUTH_SOCK`, with Pageant as the Windows fallback. Private-key authentication instead uses `{ "method": "privateKey", "privateKeyPath": "~/.ssh/id_ed25519" }`; key content and passphrases do not belong in configuration.
 
-Display policy resolution is deliberately cross-axis: package defaults, agent defaults/family/tool, then project defaults/family/tool. Project scope therefore wins over every agent-level specificity. Families are `filesystem`, `search`, `execution`, `remote`, `workflow`, and `agent`. `motion` accepts `full`, `reduced`, or `off`; `resultMode` accepts `hidden`, `summary`, or `preview`; `diffView` accepts `auto`, `split`, or `unified`; and `diffIndicators` accepts `bars`, `classic`, or `none`. `wordWrap: true` wraps metadata, rows, previews, and errors to the terminal width; `wordWrap: false` preserves explicit logical lines and truncates each overwide line without continuation rows. `previewLines` is 1-80, `expandedMaxLines` is 0-20,000, `diffSplitMinWidth` is 70-240, and `diffCollapsedLines` is 4-240. Boolean and numeric bounds are validated at the layer boundary, tool names use a bounded stable identifier format, and `display.tools` accepts at most 128 entries. Use `/display` to inspect field-level provenance and stage safe writes instead of editing by hand.
+Display policy resolution is deliberately cross-axis: package defaults, agent defaults/family/tool, then project defaults/family/tool. Project scope therefore wins over every agent-level specificity. Families are `filesystem`, `search`, `execution`, `remote`, `workflow`, and `agent`. `motion` accepts `full`, `reduced`, or `off`; `resultMode` accepts `hidden`, `summary`, or `preview`; `diffView` accepts `auto`, `split`, or `unified`. `wordWrap: true` wraps metadata, rows, previews, and errors to the terminal width; `wordWrap: false` preserves explicit logical lines and truncates each overwide line without continuation rows. `previewLines` is 1-80, `expandedMaxLines` is 0-20,000, `diffSplitMinWidth` is 70-240, and `diffCollapsedLines` is 4-240. Boolean and numeric bounds are validated at the layer boundary, tool names use a bounded stable identifier format, and `display.tools` accepts at most 128 entries. Use `/display` to inspect field-level provenance and stage safe writes instead of editing by hand.
 
 `footer.mode` is deprecated, ignored at runtime, and retained only so V2 files can be migrated through the `/display` review. V1 is no longer accepted. Migrate by deleting `footer` and the complete `statusline` object, changing `"version": 1` to `"version": 2`, and configuring the `display` section. The former SSH `confirmCommands` profile field is also no longer accepted; remove it because connected SSH sessions now run commands without per-command confirmation. Unknown fields reject that configuration layer rather than being ignored. Credentials and model definitions remain in Pi-owned `auth.json` and `models.json`.
 

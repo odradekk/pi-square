@@ -26,7 +26,7 @@ for (const width of [39, 40, 63, 64, 80, 99, 100, 119, 120, 121]) {
 
 const unified = renderDisplayDiffLines(
   description,
-  { ...DEFAULT_DISPLAY_POLICY, diffView: "unified", diffIndicators: "classic" },
+  { ...DEFAULT_DISPLAY_POLICY, diffView: "unified" },
   plainTheme,
   120,
   { expanded: true },

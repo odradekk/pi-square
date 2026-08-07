@@ -180,10 +180,10 @@ function writePreviewKey(args: Record<string, unknown>): string {
 }
 
 /**
- * Derive an explicit lifecycle for content-rich tools (Read) so they
+ * Derive an explicit lifecycle for filesystem tools (Read, Edit) so they
  * render through the new operational path rather than the compatibility bridge.
  */
-function contentLifecycle(
+function filesystemLifecycle(
   context: { executionStarted: boolean; argsComplete: boolean; isPartial: boolean; isError: boolean },
   phase: "call" | "result",
 ): OperationalLifecycle {
@@ -200,8 +200,8 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   return {
     describeCall(args, context) {
       const desc = callDescription(name, args as Record<string, unknown>, context.executionStarted);
-      return name === "read"
-        ? { ...desc, lifecycle: contentLifecycle(context, "call") }
+      return (name === "read" || name === "edit")
+        ? { ...desc, lifecycle: filesystemLifecycle(context, "call") }
         : desc;
     },
     ...(name === "write" ? {
@@ -228,8 +228,8 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
     } : {}),
     describeResult(result, options, context) {
       const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
-      return name === "read"
-        ? { ...desc, lifecycle: contentLifecycle(context, "result") }
+      return (name === "read" || name === "edit")
+        ? { ...desc, lifecycle: filesystemLifecycle(context, "result") }
         : desc;
     },
   } as GenericAdapter;
