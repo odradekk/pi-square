@@ -180,7 +180,7 @@ function writePreviewKey(args: Record<string, unknown>): string {
 }
 
 /**
- * Derive an explicit lifecycle for filesystem tools (Read, Edit) so they
+ * Derive an explicit lifecycle for filesystem tools (Read, Edit, Write) so they
  * render through the new operational path rather than the compatibility bridge.
  */
 function filesystemLifecycle(
@@ -200,7 +200,7 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   return {
     describeCall(args, context) {
       const desc = callDescription(name, args as Record<string, unknown>, context.executionStarted);
-      return (name === "read" || name === "edit")
+      return (name === "read" || name === "edit" || name === "write")
         ? { ...desc, lifecycle: filesystemLifecycle(context, "call") }
         : desc;
     },
@@ -208,16 +208,16 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
       callDescriptionKey(args: Record<string, unknown>) {
         return writePreviewKey(args);
       },
-      async describeCallAsync(args: Record<string, unknown>, context: { executionStarted: boolean }) {
+      async describeCallAsync(args: Record<string, unknown>, context: { executionStarted: boolean; argsComplete: boolean }) {
         const path = typeof args.path === "string" ? args.path : "";
         const content = typeof args.content === "string" ? args.content : "";
         const base = callDescription(name, args, context.executionStarted);
         const preview = await inspectWritePreview(cwd, path, content);
         if (preview.kind === "create") {
-          return { ...base, target: preview.path, diff: { path: preview.path, before: "", after: preview.after, projected: true } };
+          return { ...base, target: preview.path, lifecycle: filesystemLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: "", after: preview.after, projected: true } };
         }
         if (preview.kind === "overwrite") {
-          return { ...base, target: preview.path, diff: { path: preview.path, before: preview.before, after: preview.after, projected: true } };
+          return { ...base, target: preview.path, lifecycle: filesystemLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: preview.before, after: preview.after, projected: true } };
         }
         return {
           ...base,
@@ -228,7 +228,7 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
     } : {}),
     describeResult(result, options, context) {
       const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
-      return (name === "read" || name === "edit")
+      return (name === "read" || name === "edit" || name === "write")
         ? { ...desc, lifecycle: filesystemLifecycle(context, "result") }
         : desc;
     },
