@@ -79,7 +79,7 @@ function statusFor(result: AgentToolResult<unknown>, partial: boolean): DisplayS
   const details = record(result.details);
   const value = String(details.status ?? details.phase ?? "").toLowerCase();
   if (value === "error" || value === "failed") return "error";
-  if (value === "aborted" || value === "cancelled" || value === "canceled") return "aborted";
+  if (value === "aborted" || value === "cancelled" || value === "canceled" || value === "declined") return "aborted";
   if (value === "warning" || value === "incomplete") return "warning";
   return "success";
 }

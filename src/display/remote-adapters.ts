@@ -47,10 +47,30 @@ const REMOTE_SUPPRESS: Readonly<Record<string, ReadonlySet<string>>> = Object.fr
   search: new Set(["no_cache"]),
   libs: new Set(["libraryName"]),
   docs: new Set(["libraryId", "max_tokens"]),
+  parse: new Set(["max_tokens"]),
 });
 
 function remoteSuppress(name: string): ReadonlySet<string> {
   return REMOTE_SUPPRESS[name] ?? new Set();
+}
+
+function remoteLifecycle(name: string, isError: boolean, details: UnknownRecord): { lifecycle: import("./types").OperationalLifecycle } | undefined {
+  // Parse sets isError:true even for aborted results (its failure() helper
+  // does this). The base adapter's statusFor checks isError first and
+  // returns "error", overriding "aborted". Set lifecycle explicitly so
+  // resolveOperationalState renders × instead of ✗.
+  if (name === "parse" && isError) {
+    const status = String(details.status ?? "").toLowerCase();
+    if (status === "aborted") return { lifecycle: "aborted" };
+  }
+  return undefined;
+}
+
+function formatBytes(bytes: unknown): string {
+  const n = typeof bytes === "number" && Number.isFinite(bytes) ? bytes : 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function markCompact(section: DisplaySection | undefined): DisplaySection | undefined {
@@ -315,6 +335,11 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     details.remoteTruncated === true ? field("remoteTruncated", "yes", "warning") : undefined,
     details.outputTruncated === true ? field("outputTruncated", "yes", "warning") : undefined,
     booleanOf(details.cacheHit) !== undefined ? field("cacheHit", details.cacheHit) : undefined,
+    // Parse-specific: upload size (privacy-relevant: how much data left
+    // the workspace), source size, and error code for diagnostics.
+    details.uploadBytes !== undefined ? field("uploaded", formatBytes(details.uploadBytes)) : undefined,
+    details.sourceBytes !== undefined ? field("sourceSize", formatBytes(details.sourceBytes)) : undefined,
+    details.errorCode !== undefined && stringOf(details.errorCode) ? field("errorCode", details.errorCode, "muted") : undefined,
   ];
 }
 
@@ -366,11 +391,13 @@ export function createRemoteAdapter(
       // the Result section carries the message), or when collapsed with
       // domain content that the expanded sections cover.
       const suppressPreview = options.expanded || isError || Boolean(errorMessage);
+      const lifecycle = remoteLifecycle(name, isError, details);
       return baseDescription(description, {
         metadata: mergeMetadata(description.metadata ?? [], metadata(requestFields(name, args)), remoteSuppress(name)),
         sections: structured,
         preview: suppressPreview ? undefined : description.preview,
         rows: [],
+        ...(lifecycle ? lifecycle : {}),
       });
     },
   };
