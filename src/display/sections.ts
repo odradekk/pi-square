@@ -52,7 +52,7 @@ function wrap(prefix: string, text: string, tone: DisplayTone | undefined, conte
     truncateToWidth(
       `${index === 0 ? effectivePrefix : " ".repeat(Math.min(context.width, visibleWidth(effectivePrefix)))}${styleTone(context.theme, tone, line)}`,
       context.width,
-      "...",
+      "\u2026",
     ),
     context.width,
   ));
@@ -78,7 +78,7 @@ function renderMarkdown(block: Extract<DisplaySectionBlock, { kind: "markdown" }
     0,
     getMarkdownTheme(),
   );
-  const lines = markdown.render(Math.max(1, context.width - 2)).map((line) => padVisible(truncateToWidth(`  ${line}`, context.width, "..."), context.width));
+  const lines = markdown.render(Math.max(1, context.width - 2)).map((line) => padVisible(truncateToWidth(`  ${line}`, context.width, "\u2026"), context.width));
   markdown.invalidate();
   return boundVisual(lines, MAX_MARKDOWN_VISUAL_LINES, context);
 }
@@ -110,7 +110,7 @@ function renderCode(block: Extract<DisplaySectionBlock, { kind: "code" }>, conte
     const body = highlighted[index] ?? sourceLines[index] ?? "";
     const wrapped = context.policy.wordWrap
       ? wrapTextWithAnsi(body || " ", bodyWidth)
-      : [truncateToWidth(body, bodyWidth, "...")];
+      : [truncateToWidth(body, bodyWidth, "\u2026")];
     wrapped.forEach((line, wrappedIndex) => {
       const continuation = wrappedIndex === 0 ? number : " ".repeat(gutter);
       rendered.push(padVisible(`${bodyIndent}${continuation}${line}`, context.width));

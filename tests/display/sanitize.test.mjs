@@ -43,7 +43,8 @@ assert.equal(safeHttpUrl("https://example.test/a?q=1"), "https://example.test/a?
 assert.equal(safeHttpUrl("https://user:pass@example.test/"), undefined);
 assert.equal(safeHttpUrl("file:///tmp/a"), undefined);
 assert.equal(safeHttpUrl("javascript:alert(1)"), undefined);
-assert.equal(truncateCodePoints("ab😀cd", 4), "a...");
+assert.equal(truncateCodePoints("ab😀cd", 4), "ab😀…");
+assert.equal(truncateCodePoints("ab😀cd", 4, "..."), "a...");
 assert.equal(truncateCodePoints("ab😀cd", 5), "ab😀cd");
 
 console.log("display sanitize tests: OK");

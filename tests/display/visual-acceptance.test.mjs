@@ -7,9 +7,20 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { DISPLAY_CATALOG } = await load("../../src/display/catalog.ts");
+const { DISPLAY_CATALOG, catalogIconFor } = await load("../../src/display/catalog.ts");
 const { OperationalDisplayComponent } = await load("../../src/display/components.ts");
-const { DEFAULT_DISPLAY_POLICY } = await load("../../src/display/types.ts");
+const {
+  DEFAULT_DISPLAY_POLICY,
+  LIFECYCLE_FRAMES,
+  MAX_ICON_CELLS,
+  OPERATIONAL_QUALIFIERS,
+  QUALIFIER_BADGES,
+  COMPLETED_WARNING_FRAME,
+} = await load("../../src/display/types.ts");
+const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
+const { DisplayRuntime } = await load("../../src/display/runtime.ts");
+const { decorateInternalTool } = await load("../../src/display/internal-adapters.ts");
+const { decorateSubagentTool } = await load("../../src/subagents/display-adapter.ts");
 
 const root = join(import.meta.dirname, "..", "..");
 const themeModulePath = pathToFileURL(join(
@@ -271,7 +282,7 @@ for (const secret of secretValues) {
   // Collapsed: non-compact sections are hidden but header info is visible
   const collapsed = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false }).render(80);
   const collapsedPlain = stripVTControlCharacters(collapsed.join("\n"));
-  assert.match(collapsedPlain, /✓ READ/, "collapsed must show marker and title");
+  assert.match(collapsedPlain, /✓ ▪ READ/, "collapsed must show marker, family icon, and title");
   assert.match(collapsedPlain, /summary line/, "collapsed must show rows");
 
   // Expanded: all sections become visible
@@ -445,6 +456,156 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
       }
     }
   }
+}
+
+// ── 15. Every catalog tool resolves a bounded family or override icon ──
+
+{
+  for (const entry of DISPLAY_CATALOG) {
+    const icon = catalogIconFor(entry.name, entry.family);
+    assert.ok(icon.length > 0, `${entry.name} must resolve an icon`);
+    assert.ok(visibleWidth(icon) <= MAX_ICON_CELLS, `${entry.name} icon exceeds ${MAX_ICON_CELLS} cells`);
+
+    const description = {
+      version: 1,
+      tool: entry.name,
+      family: entry.family,
+      lifecycle: "completed",
+      title: entry.name === "bash" || entry.name === "pwsh" || entry.name === "scheme" ? icon : "Sample",
+      target: "src/target.ts",
+    };
+    for (const [themeName, theme] of themes) {
+      const plain = stripVTControlCharacters(
+        new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(120).join("\n"),
+      );
+      assert.ok(plain.includes(icon), `${entry.name}/${themeName} header must show its icon`);
+      // Execution prompts are the title itself and must not be duplicated.
+      const occurrences = plain.split(icon).length - 1;
+      assert.equal(occurrences, 1, `${entry.name}/${themeName} must render its icon exactly once`);
+    }
+  }
+}
+
+// ── 16. Every marker is one cell and every qualifier has a visible badge ──
+
+{
+  for (const frames of Object.values(LIFECYCLE_FRAMES)) {
+    for (const frame of frames) {
+      assert.equal(visibleWidth(frame), 1, `marker '${frame}' must measure one cell`);
+    }
+  }
+  assert.equal(visibleWidth(COMPLETED_WARNING_FRAME), 1, "warning marker must measure one cell");
+
+  for (const qualifier of OPERATIONAL_QUALIFIERS) {
+    const description = {
+      version: 1,
+      tool: "rg",
+      family: "search",
+      lifecycle: qualifier === "warning" ? "completed" : "running",
+      qualifiers: [qualifier],
+      title: "Text search",
+      target: "needle",
+    };
+    for (const [themeName, theme] of themes) {
+      const plain = stripVTControlCharacters(
+        new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(120).join("\n"),
+      );
+      if (qualifier === "warning") {
+        // The completed-with-warning marker already carries this qualifier.
+        assert.match(plain, /!/, `warning qualifier must show the ! marker in ${themeName}`);
+        continue;
+      }
+      assert.ok(
+        plain.includes(`[${QUALIFIER_BADGES[qualifier]}]`),
+        `${qualifier} must render a visible badge in ${themeName}`,
+      );
+    }
+  }
+
+  // Compact layouts keep the highest-priority badge and drop the duration.
+  const compact = stripVTControlCharacters(new OperationalDisplayComponent(
+    {
+      version: 1,
+      tool: "subagent_delegate",
+      family: "agent",
+      lifecycle: "running",
+      qualifiers: ["partial", "cancelling"],
+      title: "Subagent",
+      target: "explorer",
+      durationMs: 4000,
+    },
+    DEFAULT_DISPLAY_POLICY,
+    darkTheme,
+    { expanded: false },
+  ).render(63).join("\n"));
+  assert.match(compact, /\[cancelling\]/, "compact keeps the action-critical badge");
+  assert.doesNotMatch(compact, /\[partial\]/, "compact drops lower-priority badges");
+  assert.doesNotMatch(compact, /4\.0s/, "duration is the first header item dropped");
+}
+
+// ── 17. Production decoration path for every non-built-in catalog tool ──
+
+{
+  // Pi built-ins are decorated by builtins.ts and covered by their own suites.
+  const builtins = new Set(["read", "ls", "edit", "write", "find", "grep", "bash"]);
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: false, test: true },
+  });
+
+  function context(args, overrides = {}) {
+    return {
+      args,
+      toolCallId: "call-1",
+      invalidate() {},
+      lastComponent: undefined,
+      state: {},
+      cwd: root,
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: false,
+      ...overrides,
+    };
+  }
+
+  for (const entry of DISPLAY_CATALOG) {
+    if (builtins.has(entry.name)) continue;
+    const definition = {
+      name: entry.name,
+      description: entry.description,
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+      execute() { return { content: [] }; },
+    };
+    const decorated = entry.name.startsWith("subagent_")
+      ? decorateSubagentTool(definition, () => runtime)
+      : decorateInternalTool(definition, () => runtime);
+    assert.equal(decorated.renderShell, "self", `${entry.name} must own its render shell`);
+
+    const icon = catalogIconFor(entry.name, entry.family);
+    const call = decorated.renderCall({}, darkTheme, context({}));
+    const result = decorated.renderResult(
+      { content: [{ type: "text", text: "done" }], details: {} },
+      { expanded: false, isPartial: false },
+      darkTheme,
+      context({}, { lastComponent: call }),
+    );
+
+    for (const width of widths) {
+      for (const component of [call, result]) {
+        const lines = component.render(width);
+        assert.ok(
+          lines.every((line) => visibleWidth(line) <= width),
+          `${entry.name} exceeded ${width} through the production decoration path`,
+        );
+      }
+      const plain = stripVTControlCharacters(result.render(width).join("\n"));
+      assert.ok(plain.includes(icon), `${entry.name} must show its icon at width ${width}`);
+    }
+  }
+
+  runtime.dispose();
 }
 
 console.log("visual acceptance tests: OK");

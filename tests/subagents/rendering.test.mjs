@@ -18,6 +18,7 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { renderSubagentNotification } = await load(join(packageRoot, "src", "subagents", "render.ts"));
+const { describeSubagentRun } = await load(join(packageRoot, "src", "subagents", "display-adapter.ts"));
 const themeModulePath = pathToFileURL(join(
   packageRoot,
   "node_modules",
@@ -35,6 +36,7 @@ const plainTheme = {
   fg(_color, text) { return String(text); },
   bg(_color, text) { return String(text); },
   bold(text) { return String(text); },
+  inverse(text) { return String(text); },
 };
 
 function plainLines(component, width = 80) {
@@ -90,34 +92,93 @@ const message = {
   content: "background content",
   details: { id: run.id, status: "done", result: run },
 };
+
+// ─── 1. Completion content uses the canonical transcript description ──
+
+{
+  const shared = describeSubagentRun("subagent_delegate", run, { expanded: false, isPartial: false, isError: false }, "background content");
+  assert.equal(shared.tool, "subagent_delegate", "notification reuses the transcript tool identity");
+  assert.equal(shared.family, "agent", "notification reuses the agent family");
+  assert.equal(shared.lifecycle, "completed", "done phase resolves to the completed lifecycle");
+  assert.equal(shared.title, "Subagent");
+  assert.equal(shared.target, "explorer");
+}
+
+// ─── 2. Native shell remains the documented exception ────────────────
+
 const collapsedBackgrounds = [];
 const collapsed = plainLines(renderSubagentNotification(message, { expanded: false }, {
   ...plainTheme,
   bg(color, text) { collapsedBackgrounds.push(color); return String(text); },
 }), 80).join("\n");
-assert.match(collapsed, /explorer \/ background \/ 12345678\s+✓ done/);
-assert.match(collapsed, /Task: Inspect the parser/);
-assert.match(collapsed, /Finding/);
-assert.doesNotMatch(collapsed, /Unique expanded tail|SECRET TOOL OUTPUT|private-artifacts|native-private-id/);
-assert.ok(collapsedBackgrounds.includes("toolSuccessBg"));
+assert.ok(collapsedBackgrounds.includes("toolSuccessBg"), "done result keeps Pi's native success shell");
+
+// ─── 3. Collapsed entry uses the operational grammar ─────────────────
+
+assert.match(collapsed, /✓ ◇ Subagent explorer/, "marker, agent icon, title, and target");
+assert.match(collapsed, /id=12345678/, "bounded short run identity");
+assert.match(collapsed, /mode=bg/, "delivery mode metadata");
+assert.match(collapsed, /phase=done/, "terminal phase metadata");
+assert.match(collapsed, /# Finding/, "bounded result summary");
+assert.doesNotMatch(collapsed, /Unique expanded tail/, "collapsed output stays bounded");
+
+// ─── 4. Privacy: no prompts, artifacts, raw sessions, or payloads ────
 
 const expanded = plainLines(renderSubagentNotification(message, { expanded: true }, plainTheme), 80).join("\n");
-assert.match(expanded, /ID: subagent_12345678/);
-assert.match(expanded, /Unique expanded tail/);
-assert.match(expanded, /Inspect the parser/);
-assert.match(expanded, /rg  \/needle\/ in src/);
-assert.doesNotMatch(expanded, /SECRET TOOL OUTPUT|private-artifacts|native-private-id|private system/);
+for (const text of [collapsed, expanded]) {
+  assert.doesNotMatch(text, /SECRET TOOL OUTPUT/, "tool result payloads never render");
+  assert.doesNotMatch(text, /private-artifacts/, "artifact paths never render");
+  assert.doesNotMatch(text, /native-private-id|parent-private-id/, "raw session identity never renders");
+  assert.doesNotMatch(text, /private system/, "prompt snapshots never render");
+}
+assert.doesNotMatch(collapsed, /subagent_12345678-abcd/, "the full run ID stays out of the collapsed entry");
+
+// ─── 5. Expanded entry reveals task, result, and activity ────────────
+
+assert.match(expanded, /Unique expanded tail/, "expanded reveals the bounded full result");
+assert.match(expanded, /Inspect the parser/, "expanded reveals the delegated task");
+assert.match(expanded, /TASK/, "expanded uses the shared label-led section rule");
+assert.match(expanded, /RESULT/, "result section uses the shared section rule");
+assert.match(expanded, /ACTIVITY/, "activity section uses the shared section rule");
+assert.match(expanded, /needle/, "allowlisted tool-call summary remains visible");
+
+// ─── 6. Error and aborted deliveries ─────────────────────────────────
 
 const failed = details({ phase: "error", finalText: "", error: "failed" });
 const errorBackgrounds = [];
-renderSubagentNotification({
+const errorText = plainLines(renderSubagentNotification({
   content: "failed",
   details: { id: failed.id, status: "error", result: failed },
 }, { expanded: false }, {
   ...plainTheme,
   bg(color, text) { errorBackgrounds.push(color); return String(text); },
-}).render(80);
-assert.ok(errorBackgrounds.includes("toolErrorBg"));
+}), 80).join("\n");
+assert.ok(errorBackgrounds.includes("toolErrorBg"), "error result keeps Pi's native error shell");
+assert.match(errorText, /✗ ◇ Subagent/, "error renders the failed marker");
+
+const abortedDetails = details({ phase: "aborted", finalText: "", error: "cancelled" });
+const abortedBackgrounds = [];
+const abortedText = plainLines(renderSubagentNotification(
+  { content: "aborted", details: { id: abortedDetails.id, status: "aborted", result: abortedDetails } },
+  { expanded: false },
+  { ...plainTheme, bg(color, text) { abortedBackgrounds.push(color); return String(text); } },
+), 80).join("\n");
+assert.match(abortedText, /× ◇ Subagent/, "aborted renders the aborted marker, not the failed marker");
+assert.doesNotMatch(abortedText, /✗ ◇ Subagent/, "aborted does not render the failed marker");
+assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses the error shell");
+
+// ─── 7. Unknown payloads fall back without breaking the shell ────────
+
+{
+  const fallback = renderSubagentNotification(
+    { content: "Background subagent finished", details: undefined },
+    { expanded: false },
+    plainTheme,
+  );
+  assert.match(plainLines(fallback, 80).join("\n"), /Background subagent finished/);
+}
+
+// ─── 8. Bounded in bundled themes at every boundary width ────────────
 
 for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {
   const theme = loadThemeFromPath(join(packageRoot, "themes", `${themeName}.json`));
@@ -131,40 +192,6 @@ for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {
   }
 }
 
-assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u);
+assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u, "no emoji presentation characters");
 
-// ─── Operational interface: agent icon, lifecycle markers, title-case sections ─
-assert.match(collapsed, /◇/, "notification header uses ◇ agent-family icon");
-assert.doesNotMatch(collapsed, /subagent/, "notification header no longer uses 'subagent' text identity");
-assert.match(collapsed, /✓ done/, "done status uses ✓ marker");
-
-const errorNotification = renderSubagentNotification(
-  { content: "failed", details: { id: failed.id, status: "error", result: failed } },
-  { expanded: false },
-  plainTheme,
-);
-const errorText = plainLines(errorNotification, 80).join("\n");
-assert.match(errorText, /✗ error/, "error status uses ✗ marker");
-
-// Section headings use title-case, not all-caps
-const expandedPlain = plainLines(renderSubagentNotification(message, { expanded: true }, plainTheme), 120).join("\n");
-assert.match(expandedPlain, /Task/, "section heading uses title-case Task");
-assert.doesNotMatch(expandedPlain, /TASK/, "section heading is not all-caps TASK");
-assert.match(expandedPlain, /Result/, "section heading uses title-case Result");
-assert.doesNotMatch(expandedPlain, /RESULT/, "section heading is not all-caps RESULT");
-assert.match(expandedPlain, /Activity/, "section heading uses title-case Activity");
-assert.doesNotMatch(expandedPlain, /ACTIVITY/, "section heading is not all-caps ACTIVITY");
-
-// ─── Aborted notification uses muted tone, × marker, and error shell ──
-const abortedDetails = details({ phase: "aborted", finalText: "", error: "cancelled" });
-const abortedBackgrounds = [];
-const abortedComponent = renderSubagentNotification(
-  { content: "aborted", details: { id: abortedDetails.id, status: "aborted", result: abortedDetails } },
-  { expanded: false },
-  { ...plainTheme, bg(color, text) { abortedBackgrounds.push(color); return String(text); } },
-);
-const abortedText = plainLines(abortedComponent, 80).join("\n");
-assert.match(abortedText, /× aborted/, "aborted status uses × marker");
-assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses error shell");
-
-console.log("subagent notification rendering: success/error, privacy, activity, and width contracts passed");
+console.log("subagent notification rendering: shared description, privacy, shells, and width contracts passed");

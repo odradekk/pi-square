@@ -19,8 +19,6 @@ import { compileFreshPrompt } from "./prompt";
 import { resolveSubagentCwd, resumeSubagentTask, runSubagentTask } from "./session";
 import type { SubagentNotificationDetails } from "./types";
 
-export { formatUsage } from "./render";
-
 export interface SubagentRuntimeState {
   registry: SubagentRegistry;
   background: BackgroundState;

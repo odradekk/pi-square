@@ -115,6 +115,57 @@ export const DISPLAY_FAMILIES: readonly DisplayFamily[] = [
   "agent",
 ];
 
+// ─── Fixed icon and badge vocabulary ─────────────────────────────────
+//
+// Icons and badges belong to the core visual grammar. They are part of the
+// closed contract and are deliberately not configurable through `/display`.
+
+/** Default icon for each tool family. Individual tools may override it. */
+export const FAMILY_ICONS: Readonly<Record<DisplayFamily, string>> = Object.freeze({
+  filesystem: "▪",
+  search: "⌕",
+  execution: "λ ❯",
+  remote: "⌬",
+  workflow: "◆",
+  agent: "◇",
+});
+
+/** Icon for an explicitly adapted tool that has no catalog entry. */
+export const UNKNOWN_TOOL_ICON = "○";
+
+/**
+ * Maximum terminal cells that an icon may occupy. Symbol icons use one cell;
+ * the shell and Scheme prompt icons use up to four.
+ */
+export const MAX_ICON_CELLS = 4;
+
+/**
+ * Header badge label for each qualifier. `warning` has no badge because the
+ * completed-with-warning marker already carries that meaning.
+ */
+export const QUALIFIER_BADGES: Readonly<Partial<Record<OperationalQualifier, string>>> =
+  Object.freeze({
+    "needs-input": "needs input",
+    cancelling: "cancelling",
+    retrying: "retrying",
+    projected: "projected",
+    truncated: "truncated",
+    partial: "partial",
+  });
+
+/**
+ * Badge priority. Action-critical qualifiers come first so that a compact
+ * layout keeps the most important one.
+ */
+export const QUALIFIER_BADGE_ORDER: readonly OperationalQualifier[] = Object.freeze([
+  "needs-input",
+  "cancelling",
+  "retrying",
+  "projected",
+  "truncated",
+  "partial",
+]);
+
 // ─── Policy bounds (single source of truth) ──────────────────────────
 
 export const DISPLAY_PREVIEW_LINES_MIN = 1;

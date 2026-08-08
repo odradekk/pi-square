@@ -15,6 +15,8 @@ const TONE_TOKENS: Readonly<Record<DisplayTone, ThemeColor>> = Object.freeze({
 });
 
 // Lifecycle theme tokens — the canonical operational-state color contract.
+// `aborted` uses the muted token because cancellation is a quiet terminal
+// state rather than a failure; Pi exposes no muted-error token.
 const LIFECYCLE_TOKENS: Readonly<Record<OperationalLifecycle, ThemeColor>> =
   Object.freeze({
     queued: "muted",
@@ -22,7 +24,20 @@ const LIFECYCLE_TOKENS: Readonly<Record<OperationalLifecycle, ThemeColor>> =
     running: "accent",
     completed: "success",
     failed: "error",
-    aborted: "warning",
+    aborted: "muted",
+  });
+
+// Qualifier badge tokens. Action-critical qualifiers use the warning token so
+// that required user action stays visible in a collapsed header.
+const QUALIFIER_TOKENS: Readonly<Record<OperationalQualifier, ThemeColor>> =
+  Object.freeze({
+    warning: "warning",
+    partial: "muted",
+    retrying: "warning",
+    cancelling: "warning",
+    truncated: "warning",
+    projected: "warning",
+    "needs-input": "warning",
   });
 
 export function operationalToken(
@@ -44,6 +59,14 @@ export function styleOperational(
 
 export function styleTone(theme: Theme, tone: DisplayTone | undefined, text: string): string {
   return theme.fg(TONE_TOKENS[tone ?? "default"], text);
+}
+
+export function styleBadge(
+  theme: Theme,
+  qualifier: OperationalQualifier,
+  text: string,
+): string {
+  return theme.fg(QUALIFIER_TOKENS[qualifier], text);
 }
 
 export function styleTitle(theme: Theme, text: string): string {

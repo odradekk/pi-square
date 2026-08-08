@@ -162,6 +162,12 @@ function markdownResult(title: string, text: string): DisplaySection | undefined
   return { title, blocks: [{ kind: "markdown", text }], compact: true };
 }
 
+/** Delegated task, revealed only when the entry is expanded. */
+function taskSection(details: Record<string, unknown>): DisplaySection | undefined {
+  const task = typeof details.task === "string" ? details.task.trim() : "";
+  return task ? { title: "Task", blocks: [{ kind: "text", text: task }], compact: false } : undefined;
+}
+
 function activitySection(timeline: SubagentTimelineItem[], expanded: boolean): DisplaySection | undefined {
   const items = expanded ? activityItems(timeline) : activityItems(timeline).slice(-1);
   return items.length > 0 ? { title: "Activity", blocks: [{ kind: "activity", items }], compact: !expanded } : undefined;
@@ -172,6 +178,63 @@ function runTarget(details: Record<string, unknown>, args: Record<string, unknow
   if (typeof agent.name === "string" && agent.name) return agent.name;
   if (typeof args.agent === "string" && args.agent) return args.agent;
   return shortId(details.id ?? args.id);
+}
+
+/**
+ * Build the canonical operational description for one persisted subagent run.
+ *
+ * The transcript entry and the background completion message share this
+ * builder so that both surfaces use one bounded result grammar.
+ */
+export function describeSubagentRun(
+  name: string,
+  run: SubagentRunDetails,
+  options: { expanded: boolean; isPartial: boolean; isError: boolean },
+  fallbackText: string,
+  args: Record<string, unknown> = {},
+): DisplayDescriptionV1 {
+  const details = run as unknown as Record<string, unknown>;
+  const live = String(run.liveText || run.finalText || fallbackText || "").trim();
+  const selected = options.expanded ? { text: live, omitted: 0 } : tailLines(live, 5);
+  const rows = [
+    ...activityRows(run.timeline, options.expanded),
+    ...issueRows(details, options.expanded),
+  ];
+  if (options.isPartial && live) {
+    rows.push({ text: selected.text, tone: "default" });
+  }
+  if (!options.isPartial && !options.expanded && live) {
+    rows.unshift({ text: live.split(/\r?\n/, 1)[0]!, tone: options.isError ? "error" : "default" });
+  }
+  if (run.mode === "bg" && run.phase === "running" && !options.isPartial) {
+    rows.unshift({ text: "Queued in the parent session", tone: "muted" });
+  }
+  const structuredSections = [
+    taskSection(details),
+    markdownResult(options.isPartial ? "Live" : "Result", live),
+    activitySection(run.timeline, options.expanded),
+    issueRecords(details),
+    usageSection(details),
+  ].filter((section): section is DisplaySection => Boolean(section));
+  const lc = subagentLifecycle(details, options.isPartial, options.isError, "result");
+  return {
+    version: 1,
+    tool: name,
+    family: "agent",
+    lifecycle: lc.lifecycle,
+    ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
+    title: name === "subagent_resume" ? "Resume subagent" : "Subagent",
+    target: runTarget(details, args),
+    metadata: metadata(details),
+    rows,
+    sections: options.expanded
+      ? structuredSections
+      : structuredSections.filter((section) => section.compact === true && section.title !== "Live"),
+    durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
+    ...(options.isError || run.phase === "error"
+      ? { error: String(run.error || fallbackText || "Subagent failed") }
+      : {}),
+  } satisfies DisplayDescriptionV1;
 }
 
 function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, unknown, unknown> {
@@ -213,47 +276,13 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         };
       }
 
-      const run = details as unknown as SubagentRunDetails;
-      const live = String(run.liveText || run.finalText || text || "").trim();
-      const selected = options.expanded ? { text: live, omitted: 0 } : tailLines(live, 5);
-      const rows = [
-        ...activityRows(run.timeline, options.expanded),
-        ...issueRows(details, options.expanded),
-      ];
-      if (options.isPartial && live) {
-        rows.push({ text: selected.text, tone: "default" });
-      }
-      if (!options.isPartial && !options.expanded && live) {
-        rows.unshift({ text: live.split(/\r?\n/, 1)[0]!, tone: context.isError ? "error" : "default" });
-      }
-      if (run.mode === "bg" && run.phase === "running" && !options.isPartial) {
-        rows.unshift({ text: "Queued in the parent session", tone: "muted" });
-      }
-      const structuredSections = [
-        markdownResult(options.isPartial ? "Live" : "Result", live),
-        activitySection(run.timeline, options.expanded),
-        issueRecords(details),
-        usageSection(details),
-      ].filter((section): section is DisplaySection => Boolean(section));
-      const lc = subagentLifecycle(details, options.isPartial, context.isError, "result");
-      return {
-        version: 1,
-        tool: name,
-        family: "agent",
-        lifecycle: lc.lifecycle,
-        ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
-        title: name === "subagent_resume" ? "Resume subagent" : "Subagent",
-        target: runTarget(details, args),
-        metadata: metadata(details),
-        rows,
-        sections: options.expanded
-          ? structuredSections
-          : structuredSections.filter((section) => section.compact === true && section.title !== "Live"),
-        durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
-        ...(context.isError || run.phase === "error"
-          ? { error: String(run.error || text || "Subagent failed") }
-          : {}),
-      } satisfies DisplayDescriptionV1;
+      return describeSubagentRun(
+        name,
+        details as unknown as SubagentRunDetails,
+        { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError },
+        text,
+        args,
+      );
     },
   };
 }

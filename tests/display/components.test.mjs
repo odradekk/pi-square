@@ -32,7 +32,7 @@ const description = {
 const summaryPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "summary" };
 const summary = new OperationalDisplayComponent(description, summaryPolicy, plainTheme, { expanded: false });
 const summaryText = summary.render(80).join("\n");
-assert.match(summaryText, /✓ Search src/);
+assert.match(summaryText, /✓ ⌕ Search src/, "header shows marker, family icon, title, and target");
 assert.match(summaryText, /1\.3s/);
 assert.match(summaryText, /files 3\/3/);
 assert.match(summaryText, /matches=3/);

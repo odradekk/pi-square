@@ -112,7 +112,7 @@ function panelWidth(terminalWidth: number): number {
 }
 
 function fit(text: string, width: number): string {
-  return truncateToWidth(text, Math.max(1, width), "...");
+  return truncateToWidth(text, Math.max(1, width), "\u2026");
 }
 
 function pad(text: string, width: number): string {

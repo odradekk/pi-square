@@ -148,10 +148,61 @@ function countChanges(lines: readonly DiffLine[]): { additions: number; deletion
   return { additions, deletions };
 }
 
+/** Change ratio above which word-level emphasis becomes noise, not signal. */
+const WORD_EMPHASIS_MAX_CHANGE_RATIO = 0.4;
+
+/**
+ * Pair adjacent removed and added lines and pre-style the differing segments.
+ * Rewrites that replace most of the line fall back to whole-line styling.
+ */
+function wordEmphasis(lines: readonly DiffLine[], theme: Theme): Map<DiffLine, string> {
+  const styled = new Map<DiffLine, string>();
+  for (let index = 0; index < lines.length;) {
+    if (lines[index]!.kind !== "removed") {
+      index += 1;
+      continue;
+    }
+    const removed: DiffLine[] = [];
+    while (lines[index]?.kind === "removed") removed.push(lines[index++]!);
+    const added: DiffLine[] = [];
+    while (lines[index]?.kind === "added") added.push(lines[index++]!);
+    for (let pair = 0; pair < Math.min(removed.length, added.length); pair += 1) {
+      const before = removed[pair]!.text;
+      const after = added[pair]!.text;
+      const total = before.length + after.length;
+      if (total === 0) continue;
+      const common = commonAffixLength(before, after);
+      const changed = total - common * 2;
+      if (changed / total > WORD_EMPHASIS_MAX_CHANGE_RATIO) continue;
+      const [left, right] = emphasizePair(before, after, theme);
+      styled.set(removed[pair]!, left);
+      styled.set(added[pair]!, right);
+    }
+  }
+  return styled;
+}
+
+/** Shared leading plus trailing code points between two lines. */
+function commonAffixLength(left: string, right: string): number {
+  const leftPoints = Array.from(left);
+  const rightPoints = Array.from(right);
+  let prefix = 0;
+  const maximumPrefix = Math.min(leftPoints.length, rightPoints.length);
+  while (prefix < maximumPrefix && leftPoints[prefix] === rightPoints[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < leftPoints.length - prefix
+    && suffix < rightPoints.length - prefix
+    && leftPoints[leftPoints.length - suffix - 1] === rightPoints[rightPoints.length - suffix - 1]
+  ) suffix += 1;
+  return prefix + suffix;
+}
+
 function renderUnified(lines: readonly DiffLine[], width: number, theme: Theme): string[] {
   const safe = Math.max(1, width);
   const output: string[] = [];
   const lineNumberWidth = Math.max(1, maxLineWidth(lines));
+  const emphasis = wordEmphasis(lines, theme);
 
   // Change-count header: (+N, -M)
   const { additions, deletions } = countChanges(lines);
@@ -167,7 +218,7 @@ function renderUnified(lines: readonly DiffLine[], width: number, theme: Theme):
     }
     if (line.kind === "hunkHeader") {
       // Hunk header is dim and right-aligned with the available width.
-      output.push(padVisible(styleDiffLine(theme, "header", truncateToWidth(line.text, safe, "...")), safe));
+      output.push(padVisible(styleDiffLine(theme, "header", truncateToWidth(line.text, safe, "\u2026")), safe));
       continue;
     }
 
@@ -180,18 +231,15 @@ function renderUnified(lines: readonly DiffLine[], width: number, theme: Theme):
     const prefix = `${lineNumText} ${marker} `;
     const prefixWidth = lineNumberWidth + 3; // number + space + marker + space
     const available = Math.max(1, safe - prefixWidth);
-    const text = line.text || " ";
+    // Pre-styled pairs already carry their word-level emphasis.
+    const emphasized = emphasis.get(line);
+    const text = emphasized ?? (line.text || " ");
     const wrapped = wrapTextWithAnsi(text, available);
     wrapped.forEach((part, index) => {
-      if (index === 0) {
-        const styled = styleDiffLine(theme, line.kind, part);
-        output.push(padVisible(`${prefix}${styled}`, safe));
-      } else {
-        // Hanging indent: continuation rows align after the marker
-        const continuation = " ".repeat(prefixWidth);
-        const styled = styleDiffLine(theme, line.kind, part);
-        output.push(padVisible(`${continuation}${styled}`, safe));
-      }
+      const styled = emphasized ? part : styleDiffLine(theme, line.kind, part);
+      // Hanging indent: continuation rows align after the marker
+      const lead = index === 0 ? prefix : " ".repeat(prefixWidth);
+      output.push(padVisible(`${lead}${styled}`, safe));
     });
   }
   return output;
@@ -204,7 +252,7 @@ function renderSplit(lines: readonly DiffLine[], width: number, theme: Theme): s
   const output: string[] = [];
   for (const row of toSplitRows(lines)) {
     if (row.header !== undefined) {
-      output.push(padVisible(styleDiffLine(theme, "header", truncateToWidth(row.header, safe, "...")), safe));
+      output.push(padVisible(styleDiffLine(theme, "header", truncateToWidth(row.header, safe, "\u2026")), safe));
       continue;
     }
     const leftText = row.left?.text ?? "";

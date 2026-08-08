@@ -143,9 +143,10 @@ export function safeHttpUrl(value: unknown): string | undefined {
   }
 }
 
-export function truncateCodePoints(value: string, maximum: number, suffix = "..."): string {
+export function truncateCodePoints(value: string, maximum: number, suffix = "\u2026"): string {
   const points = Array.from(value);
   if (points.length <= maximum) return value;
-  if (maximum <= suffix.length) return Array.from(suffix).slice(0, Math.max(0, maximum)).join("");
-  return points.slice(0, maximum - Array.from(suffix).length).join("") + suffix;
+  const suffixPoints = Array.from(suffix);
+  if (maximum <= suffixPoints.length) return suffixPoints.slice(0, Math.max(0, maximum)).join("");
+  return points.slice(0, maximum - suffixPoints.length).join("") + suffix;
 }

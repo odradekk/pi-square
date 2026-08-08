@@ -1,13 +1,16 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { catalogIconFor } from "./catalog";
 import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
-import { boundedHeadTailLines, padVisible, rightPriorityRows, wrapHanging } from "./layout";
+import { boundedHeadTailLines, layoutTier, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
-import { styleRule, styleOperational, styleTitle, styleTone } from "./theme";
+import { styleBadge, styleRule, styleOperational, styleTitle, styleTone } from "./theme";
 import {
   COMPLETED_WARNING_FRAME,
   LIFECYCLE_FRAMES,
+  QUALIFIER_BADGES,
+  QUALIFIER_BADGE_ORDER,
   type DisplayDescriptionV1,
   type DisplayPolicy,
   type ResolvedOperationalState,
@@ -28,7 +31,7 @@ function logicalLines(prefix: string, content: string, width: number): string[] 
   return content.split("\n").map((line, index) => truncateToWidth(
     `${index === 0 ? prefix : continuation}${line}`,
     safeWidth,
-    "...",
+    "\u2026",
   ));
 }
 
@@ -139,6 +142,18 @@ function resolveState(description: DisplayDescriptionV1): ResolvedOperationalSta
   };
 }
 
+/**
+ * Header badges for the qualifier axis. A compact layout keeps only the
+ * highest-priority badge so that identity and target stay readable.
+ */
+function qualifierBadges(state: ResolvedOperationalState, width: number, theme: Theme): string {
+  const ordered = QUALIFIER_BADGE_ORDER.filter((qualifier) => state.qualifiers.includes(qualifier));
+  const selected = layoutTier(width) === "compact" ? ordered.slice(0, 1) : ordered;
+  return selected
+    .map((qualifier) => ` ${styleBadge(theme, qualifier, `[${QUALIFIER_BADGES[qualifier]}]`)}`)
+    .join("");
+}
+
 function lifecycleFrame(state: ResolvedOperationalState, frameIndex: number): string {
   if (state.lifecycle === "completed" && state.qualifiers.includes("warning")) {
     return COMPLETED_WARNING_FRAME;
@@ -190,20 +205,29 @@ export class OperationalDisplayComponent implements Component {
       opState.qualifiers,
       lifecycleFrame(opState, this.frameIndex),
     );
-    const title = styleTitle(this.theme, truncateCodePoints(
+    const titleText = truncateCodePoints(
       sanitizeDisplayLine(description.title || description.tool),
       MAX_TITLE_CODE_POINTS,
-    ));
+    );
+    // Execution tools carry their prompt glyph as the title; do not repeat it.
+    const iconText = catalogIconFor(description.tool, description.family);
+    const icon = iconText && iconText !== titleText
+      ? `${this.theme.fg("muted", iconText)} `
+      : "";
+    const title = styleTitle(this.theme, titleText);
     const target = description.target
       ? ` ${this.theme.fg("accent", truncateCodePoints(sanitizeDisplayLine(description.target), MAX_TARGET_CODE_POINTS))}`
       : "";
+    const badges = qualifierBadges(opState, safe, this.theme);
+    // Duration is the first header item dropped when space is scarce.
+    const compact = layoutTier(safe) === "compact";
     const right = [
-      this.policy.showDuration && Number.isFinite(description.durationMs)
+      !compact && this.policy.showDuration && Number.isFinite(description.durationMs)
         ? formatDuration(description.durationMs!)
         : undefined,
       progressText(description),
     ].filter((part): part is string => Boolean(part)).join(" · ");
-    const lines = rightPriorityRows(`${rail} ${title}${target}`, this.theme.fg("muted", right), safe);
+    const lines = rightPriorityRows(`${rail} ${icon}${title}${target}${badges}`, this.theme.fg("muted", right), safe);
 
     // Body content renders at a reduced width to accommodate tree rails.
     // Each body line receives a │ continuation or └─ last-line prefix.
@@ -309,7 +333,7 @@ export class OperationalDisplayComponent implements Component {
     }
     lines.push(...body);
 
-    return lines.map((line) => padVisible(truncateToWidth(line, safe, "..."), safe));
+    return lines.map((line) => padVisible(truncateToWidth(line, safe, "\u2026"), safe));
   }
 
   invalidate(): void {}

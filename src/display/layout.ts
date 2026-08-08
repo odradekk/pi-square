@@ -19,7 +19,7 @@ export function layoutTier(width: number): DisplayLayoutTier {
 
 export function padVisible(line: string, width: number): string {
   const safe = Math.max(1, Math.floor(width));
-  const truncated = truncateToWidth(line, safe, "...");
+  const truncated = truncateToWidth(line, safe, "\u2026");
   return truncated + " ".repeat(Math.max(0, safe - visibleWidth(truncated)));
 }
 
@@ -41,7 +41,7 @@ export function rightPriorityRows(
   stackIndent = 2,
 ): string[] {
   const safe = Math.max(1, Math.floor(width));
-  const rightLine = truncateToWidth(right, safe, "...");
+  const rightLine = truncateToWidth(right, safe, "\u2026");
   if (!rightLine) return wrapTextWithAnsi(left || " ", safe).map((line) => padVisible(line, safe));
   const rightWidth = visibleWidth(rightLine);
   const leftLines = wrapTextWithAnsi(left || " ", safe);
