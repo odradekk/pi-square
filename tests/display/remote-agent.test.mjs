@@ -84,9 +84,9 @@ for (const [name, args, expected] of cases) {
       ? /subagent_12345678/
       : expected;
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
-  // Todo now renders compact ACTION/SUMMARY/PERSISTENCE sections in
-  // collapsed mode instead of the raw JSON preview.
-  if (name !== "todo") {
+  // Todo and Ask now render compact sections in collapsed mode
+  // instead of the raw JSON preview.
+  if (name !== "todo" && name !== "ask") {
     assert.match(collapsedText, /private result body/, `${name} preview shows result content`);
   }
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
@@ -95,7 +95,7 @@ for (const [name, args, expected] of cases) {
   // through records or empty-state indicators rather than the raw text
   // fallback; other tools expose the text via output fallback or a
   // content/markdown section.
-  const hasStructuredDomain = name === "github_tree" || name === "github_commit" || name === "todo";
+  const hasStructuredDomain = name === "github_tree" || name === "github_commit" || name === "todo" || name === "ask";
   if (!hasStructuredDomain) {
     assert.match(expandedText, /private result body/);
   }

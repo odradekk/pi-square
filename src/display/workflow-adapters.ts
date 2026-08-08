@@ -80,9 +80,13 @@ function actionFields(name: string, args: UnknownRecord, details: UnknownRecord)
     ];
   }
   if (name === "ask") {
+    // During the call phase, details IS args (no result yet), so derive
+    // the question count from the args array. During result, totalQuestions
+    // is the canonical count.
+    const questionCount = details.totalQuestions ?? (Array.isArray(args.questions) ? (args.questions as unknown[]).length : undefined);
     return [
       field("phase", details.phase),
-      field("questions", details.totalQuestions),
+      field("questions", questionCount),
       field("answered", details.answeredCount),
       field("skipped", details.skippedCount),
       field("current", details.currentQuestion),
@@ -138,6 +142,29 @@ function todoLifecycle(context: { executionStarted: boolean; argsComplete: boole
   return "queued";
 }
 
+/**
+ * Derive an explicit lifecycle for the Ask tool. The wizard uses
+ * interactive input, so the call shows a needs-input qualifier while
+ * running. Results map phase "cancelled" to aborted even when the tool
+ * sets isError (tool-aborted), and phase "error" to failed.
+ */
+function askLifecycle(
+  context: { executionStarted: boolean; argsComplete: boolean; isPartial?: boolean },
+  phase: "call" | "result",
+  detailPhase?: string,
+): OperationalLifecycle {
+  if (phase === "result") {
+    // Progress updates (wizard still open) show running
+    if (context.isPartial) return "running";
+    if (detailPhase === "error") return "failed";
+    if (detailPhase === "cancelled") return "aborted";
+    return "completed";
+  }
+  if (context.executionStarted) return "running";
+  if (context.argsComplete) return "pending";
+  return "queued";
+}
+
 export function createWorkflowAdapter(
   name: string,
   base: InternalToolDisplayAdapter<any, unknown, unknown>,
@@ -150,6 +177,7 @@ export function createWorkflowAdapter(
       return baseDescription(description, {
         ...(name === "time" ? { lifecycle: timeLifecycle(context, "call") } : {}),
         ...(name === "todo" ? { lifecycle: todoLifecycle(context, "call") } : {}),
+        ...(name === "ask" ? { lifecycle: askLifecycle(context, "call"), ...(context.executionStarted ? { qualifiers: ["needs-input"] } : {}) } : {}),
         metadata: dedupeMetadata(description.metadata ?? [], metadata(actionFields(name, source, source))),
         sections: sections(summarySection(name === "todo" ? "Action" : name === "ask" ? "Request" : "Local", actionFields(name, source, source))),
       });
@@ -170,7 +198,7 @@ export function createWorkflowAdapter(
         )
         : sections(
           textSection("Error", error, "error"),
-          summarySection(name === "todo" ? "Action" : "Request", actionFields(name, asRecord(context.args), details), name === "todo"),
+          summarySection(name === "todo" ? "Action" : "Request", actionFields(name, asRecord(context.args), details), name === "todo" || name === "ask"),
           name === "todo" ? summarySection("Summary", todoSummaryFields(details), true) : undefined,
           name === "todo" ? recordsSection("Tasks", todoItems(details)) : undefined,
           name === "todo" ? summarySection("Persistence", todoPersistenceFields(details), true) : undefined,
@@ -184,6 +212,7 @@ export function createWorkflowAdapter(
       return baseDescription(description, {
         ...(name === "time" ? { lifecycle: timeLifecycle(context, "result") } : {}),
         ...(name === "todo" ? { lifecycle: todoLifecycle({ executionStarted: true, argsComplete: true, isError: Boolean((result as { isError?: boolean }).isError) || details.status === "error" }, "result") } : {}),
+        ...(name === "ask" ? { lifecycle: askLifecycle(context, "result", stringOf(details.phase)) } : {}),
         metadata: dedupeMetadata(description.metadata ?? [], metadata(actionFields(name, asRecord(context.args), details))),
         sections: [...structured, ...sections(output)],
         ...(options.expanded ? { preview: undefined } : {}),
