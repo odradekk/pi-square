@@ -111,8 +111,9 @@ const rendered = renderSummary({
   subturn: 0,
   errors: ["api_key=error-secret\x1b]0;owned\x07"],
 });
-assert.match(rendered, /^✓ PROMPT/);
+assert.match(rendered, /^✓ Prompt Manager/);
+assert.match(rendered, /│/);
 assert.match(rendered, /\[REDACTED\]/);
-assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secret|owned|╭|╰|│/);
+assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secret|owned|╭|╰/);
 
 console.log("prompt manager tests: OK");

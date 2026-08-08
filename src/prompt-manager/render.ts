@@ -67,25 +67,22 @@ function formatShort(n: number): string {
   return (n / 1_000_000_000).toFixed(1) + "B";
 }
 
-const RULE = "─";
-
 // ----------------------------------------------------------------------------
 // Common rendering helpers
 // ----------------------------------------------------------------------------
 
-/** Indent body rows beneath the operational status rail. */
-function sidePrefix(_theme: ThemeWrapper | null, indent: number = 2): string {
-  return " ".repeat(indent);
-}
+/** Continuation tree rail for notification body lines.
+ *
+ * The shared transcript grammar uses `│` for continuation and `└─` for
+ * the final body line, but those glyphs are chosen by the render loop
+ * which knows line count and width. Notification text is a plain
+ * string with no render callback, so `│  ` is used uniformly for
+ * structural consistency within the owned content. */
+const RAIL_CONT = "│  ";
 
 /** Open the unframed operational surface with a one-cell status rail. */
 function openPanel(theme: ThemeWrapper | null, headerText: string): string {
   return paint(theme, "success", "✓") + " " + headerText;
-}
-
-/** Close the surface with a restrained semantic rule. */
-function closePanel(theme: ThemeWrapper | null): string {
-  return paint(theme, "borderMuted", RULE.repeat(24));
 }
 
 function blankInner(_theme: ThemeWrapper | null): string {
@@ -106,7 +103,7 @@ function headerText(theme: ThemeWrapper | null, input: PromptManagerViewInput): 
     : "";
 
   return (
-    paint(theme, "toolTitle", "PROMPT") +
+    paint(theme, "toolTitle", "Prompt Manager") +
     ` ${paint(theme, "dim", "·")} ` +
     paint(theme, "muted", `turn ${input.currentTurn}.${input.subturn}`) +
     ` ${paint(theme, "dim", "·")} ` +
@@ -120,7 +117,7 @@ function errorBody(theme: ThemeWrapper | null, input: PromptManagerViewInput): s
   const lines: string[] = [blankInner(theme)];
   for (const err of input.errors) {
     lines.push(
-      sidePrefix(theme) +
+      RAIL_CONT +
       paint(theme, "error", "! ") +
       paint(theme, "error", clean(err)),
     );
@@ -152,7 +149,7 @@ function renderToolsSection(theme: ThemeWrapper | null, tools: ToolInfoLite[]): 
   const totalSchemaChars = totalToolsSchemaChars(tools);
   const lines: string[] = [];
   lines.push(
-    sidePrefix(theme) +
+    RAIL_CONT +
     paint(theme, "text", "tools[]") +
     "      " +
     paint(theme, "dim", `${tools.length} items · ~${formatShort(totalSchemaChars)} chars schema · side-channel`),
@@ -174,7 +171,7 @@ function renderToolsSection(theme: ThemeWrapper | null, tools: ToolInfoLite[]): 
   if (current) wrapped.push(current);
 
   for (const row of wrapped) {
-    lines.push(sidePrefix(theme, 4) + paint(theme, "toolTitle", row));
+    lines.push(RAIL_CONT + "  " + paint(theme, "toolTitle", row));
   }
   return lines;
 }
@@ -220,7 +217,7 @@ function renderSystemSection(
 
   const lines: string[] = [];
   lines.push(
-    sidePrefix(theme) +
+    RAIL_CONT +
     paint(theme, "text", "systemPrompt") +
     "  " +
     paint(theme, "dim", `${formatNumber(systemPromptChars)} chars · ${order.length} phases`),
@@ -250,7 +247,7 @@ function renderSystemSection(
     }
 
     lines.push(
-      sidePrefix(theme, 4) +
+      RAIL_CONT + "  " +
       idxStr + "  " +
       labelStr + "  " +
       charsStr + "   " +
@@ -283,7 +280,7 @@ function renderMessagesSection(
 ): string[] {
   const lines: string[] = [];
   lines.push(
-    sidePrefix(theme) +
+    RAIL_CONT +
     paint(theme, "text", "messages[]") +
     "   " +
     paint(theme, "dim",
@@ -324,13 +321,13 @@ function renderMessagesSection(
       briefStr = "  " + paint(theme, briefColor, `"${r.brief}"`);
     }
 
-    return sidePrefix(theme, 4) + idxStr + "  " + roleStr + "  " + charsStr + tagsStr + briefStr;
+    return RAIL_CONT + "  " + idxStr + "  " + roleStr + "  " + charsStr + tagsStr + briefStr;
   }
 
   for (let i = 0; i < collapsed.rows.length; i++) {
     if (i === collapsed.hiddenStart && collapsed.hiddenCount > 0) {
       lines.push(
-        sidePrefix(theme, 4) +
+        RAIL_CONT + "  " +
         paint(theme, "dim", `... ${collapsed.hiddenCount} more entries (${formatShort(collapsed.hiddenChars)} chars) ...`),
       );
     }
@@ -415,7 +412,6 @@ export function renderSummary(input: PromptManagerViewInput, theme: ThemeWrapper
     input.totalLlmChars,
     false,
   ));
-  lines.push(closePanel(theme));
   return lines.join("\n");
 }
 
@@ -444,7 +440,6 @@ export function renderVerbose(input: PromptManagerViewInput, theme: ThemeWrapper
     input.totalLlmChars,
     true,
   ));
-  lines.push(closePanel(theme));
   return lines.join("\n");
 }
 
