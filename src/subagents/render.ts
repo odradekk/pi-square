@@ -369,7 +369,7 @@ function addFooter(
 ): void {
   if (expanded) {
     component.addChild(new Text(
-      `\n${theme.fg("dim", "ID  ")}${theme.fg("muted", sanitizeSubagentDisplay(details.id))}`,
+      `\n${theme.fg("dim", "ID: ")}${theme.fg("muted", sanitizeSubagentDisplay(details.id))}`,
       0,
       0,
     ));
@@ -438,9 +438,9 @@ function addExpandedDetails(
     const error = sanitizeSubagentDisplay(details.errorInfo?.message || details.error || fallback || "Subagent failed.").trim();
     if (error) component.addChild(new Text(theme.fg("error", error), 0, 0));
     const cause = sanitizeSubagentDisplay(details.errorInfo?.cause).trim();
-    if (cause && cause !== error) component.addChild(new Text(theme.fg("dim", `Cause  ${cause}`), 0, 0));
+    if (cause && cause !== error) component.addChild(new Text(theme.fg("dim", `Cause: ${cause}`), 0, 0));
     const action = sanitizeSubagentDisplay(details.errorInfo?.suggestedAction).trim();
-    if (action) component.addChild(new Text(theme.fg("warning", `Next   ${action}`), 0, 0));
+    if (action) component.addChild(new Text(theme.fg("warning", `Next: ${action}`), 0, 0));
     if (!finalText && details.rawSessionOutput) {
       component.addChild(new SectionHeading("session excerpt", theme));
       component.addChild(new Text(sanitizeSubagentDisplay(details.rawSessionOutput), 0, 0));
@@ -493,7 +493,7 @@ function renderRunResult(
 
   if (queued) {
     component.addChild(new Text(
-      `${theme.fg("dim", "ID  ")}${theme.fg("muted", sanitizeSubagentDisplay(details.id))}`,
+      `${theme.fg("dim", "ID: ")}${theme.fg("muted", sanitizeSubagentDisplay(details.id))}`,
       0,
       0,
     ));
@@ -522,7 +522,7 @@ function renderRunResult(
 
   if (notification) {
     component.addChild(new OneVisualLine(
-      theme.fg("dim", "Task  ") + theme.fg("text", substantivePreview(details.task)),
+      theme.fg("dim", "Task: ") + theme.fg("text", substantivePreview(details.task)),
     ));
   }
   const preview = substantivePreview(outcomeText(details, fallback));
@@ -530,7 +530,7 @@ function renderRunResult(
   component.addChild(new OneVisualLine(theme.fg(previewColor, preview)));
   if ((details.phase === "error" || details.phase === "aborted") && details.errorInfo?.suggestedAction) {
     component.addChild(new OneVisualLine(
-      theme.fg("warning", `Next  ${sanitizeSubagentDisplay(details.errorInfo.suggestedAction)}`),
+      theme.fg("warning", `Next: ${sanitizeSubagentDisplay(details.errorInfo.suggestedAction)}`),
     ));
   }
   addFooter(component, details, theme, state, false, false);

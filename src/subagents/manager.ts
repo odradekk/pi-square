@@ -528,7 +528,7 @@ export class SubagentManager implements Component, Focusable {
         "The child will transition through cancelling to aborted.",
         "Artifacts and native session history remain available for resume.",
         "",
-        `Task  ${sanitizeSubagentDisplay(job.details.task)}`,
+        `Task: ${sanitizeSubagentDisplay(job.details.task)}`,
       ],
       confirmLabel: "cancel job",
       destructive: true,
@@ -556,9 +556,9 @@ export class SubagentManager implements Component, Focusable {
           eyebrow: `SESSION / ${kind.toUpperCase()} / REVIEW`,
           title: label,
           lines: [
-            `Agent  ${run.agent?.name ?? "generic"}`,
-            `Source ID  ${run.id}`,
-            `Prompt  ${kind === "resume" ? "frozen V2 snapshot" : "current effective definition"}`,
+            `Agent: ${run.agent?.name ?? "generic"}`,
+            `Source ID: ${run.id}`,
+            `Prompt: ${kind === "resume" ? "frozen V2 snapshot" : "current effective definition"}`,
             "",
             "TASK",
             ...task.split("\n"),
@@ -623,7 +623,7 @@ export class SubagentManager implements Component, Focusable {
       return;
     }
     const body = [
-      `Path  ${preview.filePath}`,
+      `Path: ${preview.filePath}`,
       "",
       "LAYER YAML",
       preview.content.trim().slice(0, MAX_REVIEW_CONTENT),
@@ -884,10 +884,10 @@ export class SubagentManager implements Component, Focusable {
       const job = this.data.running[this.selectedIndex()];
       if (!job) return ["Active jobs will appear here as they are queued."];
       return [
-        `ID  ${job.id}`,
-        `TASK  ${sanitizeSubagentDisplay(job.details.task)}`,
-        `ACTIVITY  ${latestToolCallSummary(job.details.timeline)}`,
-        `USAGE  ${job.details.usage.turns} turns · ${formatDuration(Date.now() - job.details.startedAt)}`,
+        `ID: ${job.id}`,
+        `Task: ${sanitizeSubagentDisplay(job.details.task)}`,
+        `Activity: ${latestToolCallSummary(job.details.timeline)}`,
+        `Usage: ${job.details.usage.turns} turns · ${formatDuration(Date.now() - job.details.startedAt)}`,
       ];
     }
     if (this.tab() === "session") {
@@ -898,26 +898,26 @@ export class SubagentManager implements Component, Focusable {
       const originalHash = run.promptSnapshot.manifest.definitionHash;
       const drift = originalHash && currentHash ? (originalHash === currentHash ? "unchanged" : "changed") : "not comparable";
       return [
-        `ID  ${run.id}`,
-        `TASK  ${sanitizeSubagentDisplay(run.task)}`,
-        `MODEL  ${run.model ?? "inherited"}`,
-        `PROMPT  V${run.promptSnapshot.version} · ${drift}`,
-        `HASH  ${(originalHash ?? run.promptSnapshot.manifest.effectiveSystemHash).slice(0, 16)}`,
+        `ID: ${run.id}`,
+        `Task: ${sanitizeSubagentDisplay(run.task)}`,
+        `Model: ${run.model ?? "inherited"}`,
+        `Prompt: V${run.promptSnapshot.version} · ${drift}`,
+        `Hash: ${(originalHash ?? run.promptSnapshot.manifest.effectiveSystemHash).slice(0, 16)}`,
       ];
     }
     const definition = this.selectedDefinition();
     if (!definition) return this.data.errors.slice(0, 4).concat("Create a project or agent definition with N.");
     const rows = [
-      `DESCRIPTION  ${definition.description}`,
-      `MODEL  ${definition.model ?? "inherit"} · EFFORT  ${definition.effort ?? "inherit"}`,
-      `PARENT SYSTEM  ${definition.inheritParentSystem ? "inherit" : "isolated"}`,
-      `TOOLS  ${definition.tools?.join(", ") || "default"}`,
-      `EXTENSIONS  ${definition.extensionTools?.join(", ") || "none"}`,
-      `SKILLS  ${definition.skills?.join(", ") || "all"}`,
-      `LAYERS  ${definition.layers.map((layer) => layer.source).join(" → ")}`,
+      `Description: ${definition.description}`,
+      `Model: ${definition.model ?? "inherit"} · Effort: ${definition.effort ?? "inherit"}`,
+      `Parent system: ${definition.inheritParentSystem ? "inherit" : "isolated"}`,
+      `Tools: ${definition.tools?.join(", ") || "default"}`,
+      `Extensions: ${definition.extensionTools?.join(", ") || "none"}`,
+      `Skills: ${definition.skills?.join(", ") || "all"}`,
+      `Layers: ${definition.layers.map((layer) => layer.source).join(" → ")}`,
     ];
     for (const field of ["policy", "instructions", "output"] as const) {
-      rows.push(`${field.toUpperCase()}  ${definition[field] ? "set" : "empty"} · ${definition.fieldSources[field]?.source ?? "default"}`);
+      rows.push(`${field[0].toUpperCase() + field.slice(1)}: ${definition[field] ? "set" : "empty"} · ${definition.fieldSources[field]?.source ?? "default"}`);
     }
     return rows;
   }
@@ -942,7 +942,7 @@ export class SubagentManager implements Component, Focusable {
   }
 
   private header(width: number, eyebrow?: string, title?: string): string[] {
-    const identity = `${this.theme.fg("accent", "◆")} ${this.theme.fg("toolTitle", this.theme.bold("SUBAGENTS"))}`;
+    const identity = `${this.theme.fg("accent", "◆")} ${this.theme.fg("toolTitle", "Subagents")}`;
     if (eyebrow && title) {
       return [
         fit(`${identity}  ${this.theme.fg("dim", eyebrow)}`, width),
@@ -1002,7 +1002,7 @@ export class SubagentManager implements Component, Focusable {
     const detailBudget = Math.max(0, bodyBudget - list.length - 2);
     const output = [...list];
     if (detailBudget > 0) {
-      output.push("", fit(`${this.theme.fg("muted", "DETAIL")} ${this.theme.fg("borderMuted", "─".repeat(Math.max(0, width - 7)))}`, width));
+      output.push("", fit(`${this.theme.fg("muted", "Detail")} ${this.theme.fg("borderMuted", "─".repeat(Math.max(0, width - 7)))}`, width));
       output.push(...details.slice(0, detailBudget).map((line) => fit(line, width)));
     }
     return output.slice(0, bodyBudget);

@@ -47,6 +47,7 @@ const suites = [
   "display/ask-advanced-states.test.mjs",
   "display/prompt-manager-display.test.mjs",
   "display/subagent-transcript.test.mjs",
+  "display/subagent-manager-display.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",

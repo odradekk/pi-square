@@ -96,13 +96,13 @@ const collapsed = plainLines(renderSubagentNotification(message, { expanded: fal
   bg(color, text) { collapsedBackgrounds.push(color); return String(text); },
 }), 80).join("\n");
 assert.match(collapsed, /explorer \/ background \/ 12345678\s+✓ done/);
-assert.match(collapsed, /Task  Inspect the parser/);
+assert.match(collapsed, /Task: Inspect the parser/);
 assert.match(collapsed, /Finding/);
 assert.doesNotMatch(collapsed, /Unique expanded tail|SECRET TOOL OUTPUT|private-artifacts|native-private-id/);
 assert.ok(collapsedBackgrounds.includes("toolSuccessBg"));
 
 const expanded = plainLines(renderSubagentNotification(message, { expanded: true }, plainTheme), 80).join("\n");
-assert.match(expanded, /ID  subagent_12345678/);
+assert.match(expanded, /ID: subagent_12345678/);
 assert.match(expanded, /Unique expanded tail/);
 assert.match(expanded, /Inspect the parser/);
 assert.match(expanded, /rg  \/needle\/ in src/);

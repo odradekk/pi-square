@@ -149,7 +149,7 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
   const manager = new SubagentManager(data(), tui(), theme, keybindings, () => {});
   const narrow = render(manager, 40);
   const wide = render(manager, 120);
-  assert.match(narrow, /^◆ SUBAGENTS/m);
+  assert.match(narrow, /^◆ Subagents/m);
   assert.match(narrow, /RUNNING.*SESSION.*DEFINITIONS/);
   assert.match(narrow, /ls src\/components/);
   assert.match(wide, /│/);
@@ -168,7 +168,7 @@ test("manager activity uses specialized sg and GitHub summaries", () => {
     running: [{ id: sg.id, status: "running", createdAt: 1, updatedAt: 2, details: sg }],
   }), tui(), theme, keybindings, () => {});
   const rendered = render(manager, 100);
-  assert.match(rendered, /ACTIVITY  sg kind:identifier in src/);
+  assert.match(rendered, /Activity: sg kind:identifier in src/);
   assert.doesNotMatch(rendered, /password|private/);
   manager.dispose();
 
@@ -179,7 +179,7 @@ test("manager activity uses specialized sg and GitHub summaries", () => {
     running: [{ id: github.id, status: "running", createdAt: 1, updatedAt: 2, details: github }],
   }), tui(), theme, keybindings, () => {});
   const githubRendered = render(githubManager, 100);
-  assert.match(githubRendered, /ACTIVITY  github_read owner\/name:README.md @main/);
+  assert.match(githubRendered, /Activity: github_read owner\/name:README.md @main/);
   assert.doesNotMatch(githubRendered, /token|private/);
   githubManager.dispose();
 });
