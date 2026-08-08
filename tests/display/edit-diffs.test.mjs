@@ -262,7 +262,6 @@ const editDesc = {
   version: 1,
   tool: "edit",
   family: "filesystem",
-  status: "success",
   lifecycle: "completed",
   title: "EDIT",
   target: "src/index.ts",

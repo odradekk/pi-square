@@ -19,7 +19,7 @@ const description = {
   version: 1,
   tool: "rg",
   family: "search",
-  status: "success",
+  lifecycle: "completed",
   title: "Search",
   target: "src\x1b]0;owned\x07",
   metadata: [{ label: "matches", value: "3" }, { label: "token", value: "ghp_SECRET" }],
@@ -49,7 +49,7 @@ const hiddenPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "hidden" };
 const hidden = new OperationalDisplayComponent(description, hiddenPolicy, plainTheme, { expanded: false }).render(80).join("\n");
 assert.doesNotMatch(hidden, /3 matches|one/);
 const error = new OperationalDisplayComponent(
-  { ...description, status: "error", rows: [{ text: "security warning" }], error: "Bearer abc-secret" },
+  { ...description, lifecycle: "failed", rows: [{ text: "security warning" }], error: "Bearer abc-secret" },
   hiddenPolicy,
   plainTheme,
   { expanded: false },
@@ -62,7 +62,7 @@ const noWrapDescription = {
   version: 1,
   tool: "rg",
   family: "search",
-  status: "success",
+  lifecycle: "completed",
   title: "Search",
   rows: [{ text: `row ${"long ".repeat(30)}ROW_TAIL` }],
   preview: { text: `preview ${"wide ".repeat(30)}PREVIEW_TAIL` },
@@ -98,7 +98,7 @@ const structuredDescription = {
   version: 1,
   tool: "rg",
   family: "search",
-  status: "success",
+  lifecycle: "completed",
   title: "Search",
   target: "needle",
   sections: [

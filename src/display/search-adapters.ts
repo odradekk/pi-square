@@ -258,14 +258,11 @@ function codegraphIndexMetadata(status: UnknownRecord): DisplayMetadataEntry[] {
  * generic isError boolean. Two overrides are needed:
  *
  * - aborted results are also marked isError=true (matching every other
- *   codegraph error), and the shared runtime forces status to "error"
+ *   codegraph error), and the shared runtime forces lifecycle to "failed"
  *   whenever a result's isError flag is set (a deliberate safety net so a
- *   buggy adapter cannot hide a genuine tool failure). That force happens
- *   before status-based bridging, so overriding `status` alone cannot
- *   distinguish an aborted cancellation from a hard failure. Setting the
- *   internal `lifecycle` field directly bypasses that bridge entirely
- *   (resolveOperationalState consults lifecycle before status), rendering
- *   the aborted × marker instead of the failed ✗ marker.
+ *   buggy adapter cannot hide a genuine tool failure). Setting the
+ *   internal `lifecycle` field directly ensures the
+ *   aborted × marker renders instead of the failed ✗ marker.
  * - recoverable is a non-error, actionable condition (index missing,
  *   reindex required, worktree mismatch, ...) that the model must act on,
  *   matching the design's "completed with warning" state (! marker).

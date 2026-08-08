@@ -15,14 +15,6 @@ const {
 } = await load("../../src/display/catalog.ts");
 const {
   DISPLAY_FAMILIES,
-  DISPLAY_STATUSES,
-  STATUS_FRAMES,
-  PENDING_FRAMES,
-  PARTIAL_FRAMES,
-  SUCCESS_FRAME,
-  WARNING_FRAME,
-  ERROR_FRAME,
-  ABORTED_FRAME,
   DISPLAY_POLICY_FIELDS,
   DEFAULT_DISPLAY_POLICY,
   DEFAULT_DISPLAY_MOTION,
@@ -135,46 +127,6 @@ assert.deepEqual(nonShell.sort(), ["bash", "pwsh"], "only bash and pwsh have pla
 for (const name of allNames) {
   assert.ok(DISPLAY_TOOL_NAME_REGEX.test(name), `catalog name '${name}' must match tool-name pattern`);
 }
-
-// ── Status frames: exhaustive statuses ───────────────────────────────
-
-assert.equal(DISPLAY_STATUSES.length, 6, "must have exactly 6 statuses");
-for (const status of DISPLAY_STATUSES) {
-  assert.ok(STATUS_FRAMES[status], `status '${status}' must have frames`);
-  assert.ok(STATUS_FRAMES[status].length > 0, `status '${status}' must have at least one frame`);
-}
-
-// ── Status frames: non-emoji, single code point, fixed width ────────
-
-const allFrameChars = [
-  ...PENDING_FRAMES,
-  ...PARTIAL_FRAMES,
-  SUCCESS_FRAME,
-  WARNING_FRAME,
-  ERROR_FRAME,
-  ABORTED_FRAME,
-];
-for (const frame of allFrameChars) {
-  const codePoints = Array.from(frame);
-  assert.equal(codePoints.length, 1, `frame '${frame}' must be a single code point`);
-  assert.equal(visibleWidth(frame), 1, `frame '${frame}' must occupy exactly one terminal cell`);
-  // Reject emoji: characters with Emoji property or variation selectors
-  assert.ok(!/^\p{Extended_Pictographic}$/u.test(codePoints[0]), `frame '${frame}' must not be pictographic emoji`);
-}
-
-// Pending/partial frames have equal length and all are Braille
-assert.ok(PENDING_FRAMES.length >= 2, "pending must have multiple frames for animation");
-assert.equal(PENDING_FRAMES.length, PARTIAL_FRAMES.length, "pending and partial must have equal frame counts");
-for (const f of [...PENDING_FRAMES, ...PARTIAL_FRAMES]) {
-  const cp = Array.from(f)[0].codePointAt(0);
-  assert.ok(cp >= 0x2800 && cp <= 0x28ff, `spinner frame '${f}' must be a Braille pattern`);
-}
-
-// Terminal frames are static single glyphs
-assert.equal(SUCCESS_FRAME, "✓");
-assert.equal(WARNING_FRAME, "!");
-assert.equal(ERROR_FRAME, "×");
-assert.equal(ABORTED_FRAME, "–");
 
 // ── Lifecycle frames: exhaustive lifecycles + qualifiers ─────────────
 

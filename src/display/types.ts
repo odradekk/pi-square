@@ -7,59 +7,12 @@
  * resolution, and the display runtime without circular dependencies.
  */
 
-// ─── Status ──────────────────────────────────────────────────────────
-
-export type DisplayStatus =
-  | "pending"
-  | "partial"
-  | "success"
-  | "warning"
-  | "error"
-  | "aborted";
-
-export const DISPLAY_STATUSES: readonly DisplayStatus[] = Object.freeze([
-  "pending",
-  "partial",
-  "success",
-  "warning",
-  "error",
-  "aborted",
-]);
-
-// Status-rail frames are non-emoji, fixed single-cell-width glyphs.
-// These map the flat DisplayStatus (the compatibility contract used by
-// adapters and public Adapter v1) to visual markers. Lifecycle rendering
-// uses LIFECYCLE_FRAMES below; resolveOperationalState bridges the two.
-// Braille sequences animate pending and partial; static glyphs cover terminal states.
-export const PENDING_FRAMES: readonly string[] = Object.freeze([
-  "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-]);
-export const PARTIAL_FRAMES: readonly string[] = Object.freeze([
-  "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠋", "⠙",
-]);
-export const SUCCESS_FRAME = "✓";
-export const WARNING_FRAME = "!";
-export const ERROR_FRAME = "×";
-export const ABORTED_FRAME = "–";
-
-export const STATUS_FRAMES: Readonly<Record<DisplayStatus, readonly string[]>> =
-  Object.freeze({
-    pending: PENDING_FRAMES,
-    partial: PARTIAL_FRAMES,
-    success: [SUCCESS_FRAME],
-    warning: [WARNING_FRAME],
-    error: [ERROR_FRAME],
-    aborted: [ABORTED_FRAME],
-  });
-
 // ─── Operational lifecycle + qualifiers ──────────────────────────────
 //
-// The lifecycle-plus-qualifier model is the internal operational-state
-// expansion. Lifecycle is the primary axis (determines the status marker);
+// The lifecycle-plus-qualifier model is the canonical operational-state
+// contract. Lifecycle is the primary axis (determines the status marker);
 // qualifiers are orthogonal modifiers that coexist without flattening into
-// free text. The flat DisplayStatus remains as the compatibility contract
-// for adapters and public Adapter v1; resolveOperationalState bridges the
-// two so unmigrated surfaces render through the new vocabulary.
+// free text.
 
 export const OPERATIONAL_LIFECYCLES = [
   "queued",
@@ -110,64 +63,6 @@ export const LIFECYCLE_FRAMES: Readonly<
 export interface ResolvedOperationalState {
   readonly lifecycle: OperationalLifecycle;
   readonly qualifiers: readonly OperationalQualifier[];
-}
-
-/** Minimal execution context for compatibility-bridge resolution. */
-export interface OperationalContext {
-  readonly executionStarted: boolean;
-  readonly argsComplete: boolean;
-}
-
-/**
- * Resolve the operational lifecycle and qualifiers for a description.
- *
- * Explicit lifecycle fields take precedence (the new Claude-like path used
- * by migrated tools such as Time). When absent, the compatibility bridge
- * derives lifecycle and qualifiers from the flat DisplayStatus so
- * unmigrated surfaces render through the new marker vocabulary.
- */
-export function resolveOperationalState(
-  status: DisplayStatus,
-  lifecycle: OperationalLifecycle | undefined,
-  qualifiers: readonly OperationalQualifier[] | undefined,
-  phase: "call" | "result",
-  context?: OperationalContext,
-): ResolvedOperationalState {
-  if (lifecycle) return { lifecycle, qualifiers: qualifiers ?? [] };
-  const bridged = bridgeStatus(status, phase, context);
-  // Preserve explicit qualifiers even when lifecycle is bridged from status.
-  if (qualifiers && qualifiers.length > 0) {
-    const merged = [...bridged.qualifiers];
-    for (const q of qualifiers) if (!merged.includes(q)) merged.push(q);
-    return { lifecycle: bridged.lifecycle, qualifiers: merged };
-  }
-  return bridged;
-}
-
-function bridgeStatus(
-  status: DisplayStatus,
-  phase: "call" | "result",
-  context?: OperationalContext,
-): ResolvedOperationalState {
-  switch (status) {
-    case "pending":
-      if (phase === "call" && context) {
-        if (context.executionStarted) return { lifecycle: "running", qualifiers: [] };
-        if (context.argsComplete) return { lifecycle: "pending", qualifiers: [] };
-        return { lifecycle: "queued", qualifiers: [] };
-      }
-      return { lifecycle: "running", qualifiers: [] };
-    case "partial":
-      return { lifecycle: "running", qualifiers: ["partial"] };
-    case "success":
-      return { lifecycle: "completed", qualifiers: [] };
-    case "warning":
-      return { lifecycle: "completed", qualifiers: ["warning"] };
-    case "error":
-      return { lifecycle: "failed", qualifiers: [] };
-    case "aborted":
-      return { lifecycle: "aborted", qualifiers: [] };
-  }
 }
 
 // ─── Result mode ─────────────────────────────────────────────────────
@@ -427,7 +322,7 @@ export interface DisplayDescriptionV1 {
   readonly version: 1;
   readonly tool: string;
   readonly family: DisplayFamily;
-  readonly status: DisplayStatus;
+  readonly lifecycle: OperationalLifecycle;
   readonly phase?: "call" | "result";
   readonly title: string;
   readonly target?: string;
@@ -440,11 +335,5 @@ export interface DisplayDescriptionV1 {
   readonly progress?: DisplayProgressDescription;
   readonly truncated?: boolean;
   readonly error?: string;
-
-  // ─── Operational lifecycle expansion (internal) ─────────────────
-  // When set, these take precedence over `status` for marker resolution.
-  // When absent, resolveOperationalState bridges from `status` so
-  // unmigrated adapters and public Adapter v1 render correctly.
-  readonly lifecycle?: OperationalLifecycle;
   readonly qualifiers?: readonly OperationalQualifier[];
 }

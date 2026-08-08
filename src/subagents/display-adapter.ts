@@ -1,6 +1,6 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "../display/tool-renderer";
-import type { DisplayActivityItem, DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, DisplaySection, DisplayStatus, OperationalLifecycle, OperationalQualifier } from "../display/types";
+import type { DisplayActivityItem, DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, DisplaySection, OperationalLifecycle, OperationalQualifier } from "../display/types";
 import { latestToolCallSummary } from "./tool-display";
 import type { SubagentRunDetails, SubagentTimelineItem } from "./types";
 
@@ -21,17 +21,6 @@ function shortId(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   const suffix = value.startsWith("subagent_") ? value.slice("subagent_".length) : value;
   return suffix.slice(0, 8);
-}
-
-function statusFor(details: Record<string, unknown>, partial: boolean, isError: boolean): DisplayStatus {
-  if (isError) return "error";
-  const phase = String(details.phase ?? "").toLowerCase();
-  if (phase === "error" || phase === "failed") return "error";
-  if (phase === "aborted" || phase === "cancelled" || phase === "canceled") return "aborted";
-  if (phase === "cancelling") return "warning";
-  if (partial) return "partial";
-  if (phase === "running" || phase === "queued") return "pending";
-  return "success";
 }
 
 /** Derive an explicit lifecycle + qualifiers from phase, partial, and isError. */
@@ -198,7 +187,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         version: 1,
         tool: name,
         family: "agent",
-        status: context.executionStarted ? "pending" : "partial",
+        lifecycle: context.executionStarted ? "running" : "queued",
         title: name === "subagent_resume" ? "Resume subagent" : "Subagent",
         target: typeof args.agent === "string" && args.agent ? args.agent : shortId(args.id) ?? "default",
         metadata: metadataEntries,
@@ -215,7 +204,8 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
           version: 1,
           tool: name,
           family: "agent",
-          status: context.isError ? "error" : options.isPartial ? "partial" : "success",
+          lifecycle: context.isError ? "failed" : options.isPartial ? "running" : "completed",
+          ...(options.isPartial ? { qualifiers: ["partial"] } : {}),
           title: name === "subagent_resume" ? "Resume subagent" : "Subagent",
           target: runTarget(details, args),
           rows: text ? [{ text }] : [],
@@ -250,7 +240,6 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         version: 1,
         tool: name,
         family: "agent",
-        status: statusFor(details, options.isPartial, context.isError),
         lifecycle: lc.lifecycle,
         ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
         title: name === "subagent_resume" ? "Resume subagent" : "Subagent",

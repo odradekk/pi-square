@@ -1,6 +1,5 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type {
-  DisplayStatus,
   DisplayTone,
   OperationalLifecycle,
   OperationalQualifier,
@@ -15,18 +14,7 @@ const TONE_TOKENS: Readonly<Record<DisplayTone, ThemeColor>> = Object.freeze({
   error: "error",
 });
 
-// STATUS_TOKENS and styleStatus are the retained compatibility contract
-// for the flat DisplayStatus model. Lifecycle rendering uses
-// operationalToken/styleOperational and LIFECYCLE_TOKENS above.
-const STATUS_TOKENS: Readonly<Record<DisplayStatus, ThemeColor>> = Object.freeze({
-  pending: "accent",
-  partial: "accent",
-  success: "success",
-  warning: "warning",
-  error: "error",
-  aborted: "warning",
-});
-
+// Lifecycle theme tokens — the canonical operational-state color contract.
 const LIFECYCLE_TOKENS: Readonly<Record<OperationalLifecycle, ThemeColor>> =
   Object.freeze({
     queued: "muted",
@@ -56,10 +44,6 @@ export function styleOperational(
 
 export function styleTone(theme: Theme, tone: DisplayTone | undefined, text: string): string {
   return theme.fg(TONE_TOKENS[tone ?? "default"], text);
-}
-
-export function styleStatus(theme: Theme, status: DisplayStatus, text: string): string {
-  return theme.fg(STATUS_TOKENS[status], text);
 }
 
 export function styleTitle(theme: Theme, text: string): string {

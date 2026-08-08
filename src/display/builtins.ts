@@ -91,7 +91,7 @@ function callDescription(name: BuiltinName, args: Record<string, unknown>, execu
     version: 1,
     tool: name,
     family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
-    status: executionStarted ? "pending" : "partial",
+    lifecycle: executionStarted ? "running" : "queued",
     title: builtinTitle(name),
     target: command ?? ((name === "find" || name === "grep") ? pattern : undefined) ?? path,
     metadata,
@@ -215,7 +215,7 @@ function resultDescription(
     version: 1,
     tool: name,
     family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
-    status: partial ? "partial" : "success",
+    lifecycle: isErrorResult ? "failed" : partial ? "running" : "completed",
     title: builtinTitle(name),
     target,
     truncated: truncation?.truncated === true,
@@ -254,9 +254,8 @@ function writePreviewKey(args: Record<string, unknown>): string {
 }
 
 /**
- * Derive an explicit lifecycle for migrated Pi built-ins (Read, Edit, Write,
- * List, Find, Grep, Bash) so they render through the new operational path
- * rather than the compatibility bridge.
+ * Derive an explicit lifecycle for Pi built-ins (Read, Edit, Write,
+ * List, Find, Grep, Bash).
  */
 function builtinLifecycle(
   context: { executionStarted: boolean; argsComplete: boolean; isPartial: boolean; isError: boolean },

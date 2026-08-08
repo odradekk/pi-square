@@ -274,7 +274,7 @@ function previewDescription(identity: { tool: string; family: DisplayFamily }): 
     version: 1,
     tool: identity.tool,
     family: identity.family,
-    status: "success",
+    lifecycle: "completed",
     title: identity.tool.startsWith("preview:") ? "Display preview" : identity.tool,
     target: "src/example.ts",
     durationMs: 1_240,

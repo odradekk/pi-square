@@ -5,7 +5,7 @@ import { createRemoteAdapter } from "./remote-adapters";
 import { createWorkflowAdapter } from "./workflow-adapters";
 import { createSearchAdapter } from "./search-adapters";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
-import type { DisplayFamily, DisplayMetadataEntry, DisplayStatus } from "./types";
+import type { DisplayFamily, DisplayMetadataEntry, OperationalLifecycle, OperationalQualifier } from "./types";
 
 const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   rg: ["pattern", "path", "case", "literal", "word", "offset", "limit"],
@@ -73,18 +73,19 @@ function firstText(result: AgentToolResult<unknown>): string {
     : "";
 }
 
-function statusFor(result: AgentToolResult<unknown>, partial: boolean): DisplayStatus {
-  if (partial) return "partial";
-  if ((result as AgentToolResult<unknown> & { isError?: boolean }).isError) return "error";
+function resolveResultLifecycle(
+  result: AgentToolResult<unknown>,
+  partial: boolean,
+): { lifecycle: OperationalLifecycle; qualifiers: readonly OperationalQualifier[] } {
+  if (partial) return { lifecycle: "running", qualifiers: ["partial"] };
+  if ((result as AgentToolResult<unknown> & { isError?: boolean }).isError) return { lifecycle: "failed", qualifiers: [] };
   const details = record(result.details);
   const value = String(details.status ?? details.phase ?? "").toLowerCase();
-  if (value === "error" || value === "failed") return "error";
-  if (value === "aborted" || value === "cancelled" || value === "canceled" || value === "declined") return "aborted";
-  if (value === "warning" || value === "incomplete") return "warning";
-  // GitHub tools set details.error/errorCode without isError; detect
-  // explicit error state from the presence of an error code.
-  if (details.errorCode !== undefined && details.errorCode !== "") return "error";
-  return "success";
+  if (value === "error" || value === "failed") return { lifecycle: "failed", qualifiers: [] };
+  if (value === "aborted" || value === "cancelled" || value === "canceled" || value === "declined") return { lifecycle: "aborted", qualifiers: [] };
+  if (value === "warning" || value === "incomplete") return { lifecycle: "completed", qualifiers: ["warning"] };
+  if (details.errorCode !== undefined && details.errorCode !== "") return { lifecycle: "failed", qualifiers: [] };
+  return { lifecycle: "completed", qualifiers: [] };
 }
 
 function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
@@ -153,11 +154,16 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
   return {
     describeCall(args, context) {
       const preview = callPreview(name, args);
+      const lifecycle: OperationalLifecycle = context.executionStarted
+        ? "running"
+        : context.argsComplete
+          ? "pending"
+          : "queued";
       return {
         version: 1,
         tool: name,
         family,
-        status: "pending",
+        lifecycle,
         title,
         target: targetFor(name, args) ?? (context.argsComplete ? undefined : "building arguments"),
         metadata: metadataForArgs(name, args),
@@ -167,14 +173,15 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
     describeResult(result, options, context) {
       const text = firstText(result);
       const summary = summaryRows(result.details);
-      const status = statusFor(result, options.isPartial);
+      const lc = resolveResultLifecycle(result, options.isPartial);
       const details = record(result.details);
       const durationMs = typeof details.durationMs === "number" ? details.durationMs : undefined;
       return {
         version: 1,
         tool: name,
         family,
-        status,
+        lifecycle: lc.lifecycle,
+        ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
         title,
         target: targetFor(name, context.args),
         metadata: [...metadataForArgs(name, context.args), ...summary.metadata],

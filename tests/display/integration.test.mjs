@@ -35,6 +35,14 @@ const themes = [
 ];
 const widths = [39, 40, 63, 64, 80, 99, 100, 120];
 const states = ["pending", "partial", "success", "warning", "error", "aborted"];
+const stateMap = {
+  pending: { lifecycle: "running" },
+  partial: { lifecycle: "running", qualifiers: ["partial"] },
+  success: { lifecycle: "completed" },
+  warning: { lifecycle: "completed", qualifiers: ["warning"] },
+  error: { lifecycle: "failed" },
+  aborted: { lifecycle: "aborted" },
+};
 const expectedRails = { pending: "⠋", partial: "⠋", success: "✓", warning: "!", error: "✗", aborted: "×" };
 
 assert.equal(new Set(DISPLAY_CATALOG.map((entry) => entry.name)).size, DISPLAY_CATALOG.length);
@@ -46,7 +54,7 @@ for (const entry of DISPLAY_CATALOG) {
       version: 1,
       tool: entry.name,
       family: entry.family,
-      status,
+      ...stateMap[status],
       title: entry.name.toUpperCase(),
       target: "src/target\x1b]0;owned\x07.ts",
       metadata: [{ label: "count", value: "12" }, { label: "api_key", value: "api_key=secret-value" }],
@@ -83,7 +91,7 @@ for (const threshold of [70, 100, 120, 240]) {
     version: 1,
     tool: "write",
     family: "filesystem",
-    status: "pending",
+    lifecycle: "running",
     title: "WRITE",
     diff: { path: "src/file.ts", before: "old\n", after: "new\n", projected: true },
   };

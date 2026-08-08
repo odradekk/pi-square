@@ -40,7 +40,7 @@ const plainTheme = {
   bold(text) { return String(text); },
   inverse(text) { return String(text); },
 };
-const description = { version: 1, tool: "rg", family: "search", status: "pending", title: "Search" };
+const description = { version: 1, tool: "rg", family: "search", lifecycle: "running", title: "Search" };
 const component = runtime.createComponent(description, plainTheme, { expanded: false });
 let invalidated = 0;
 const stopMotion = runtime.subscribeMotion(component, () => { invalidated += 1; });

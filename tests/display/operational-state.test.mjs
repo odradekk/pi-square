@@ -17,8 +17,6 @@ const {
   COMPLETED_WARNING_FRAME,
   FAILED_FRAME,
   ABORTED_MARKER,
-  resolveOperationalState,
-  DISPLAY_STATUSES,
 } = await load("../../src/display/types.ts");
 const { OperationalDisplayComponent } = await load("../../src/display/components.ts");
 const { DEFAULT_DISPLAY_POLICY } = await load("../../src/display/types.ts");
@@ -80,48 +78,7 @@ for (const lifecycle of OPERATIONAL_LIFECYCLES) {
   assert.ok(LIFECYCLE_FRAMES[lifecycle].length > 0, `lifecycle '${lifecycle}' must have at least one frame`);
 }
 
-// ─── 3. Compatibility bridge: DisplayStatus → lifecycle + qualifiers ──
-
-// Explicit lifecycle takes precedence
-assert.deepEqual(
-  resolveOperationalState("success", "running", ["partial"], "call"),
-  { lifecycle: "running", qualifiers: ["partial"] },
-);
-
-// Call-phase pending resolves via execution context
-assert.deepEqual(
-  resolveOperationalState("pending", undefined, undefined, "call", { executionStarted: false, argsComplete: false }),
-  { lifecycle: "queued", qualifiers: [] },
-);
-assert.deepEqual(
-  resolveOperationalState("pending", undefined, undefined, "call", { executionStarted: false, argsComplete: true }),
-  { lifecycle: "pending", qualifiers: [] },
-);
-assert.deepEqual(
-  resolveOperationalState("pending", undefined, undefined, "call", { executionStarted: true, argsComplete: true }),
-  { lifecycle: "running", qualifiers: [] },
-);
-
-// Call-phase pending without context defaults to running
-assert.deepEqual(
-  resolveOperationalState("pending", undefined, undefined, "call"),
-  { lifecycle: "running", qualifiers: [] },
-);
-
-// Result-phase statuses bridge to terminal lifecycles
-assert.deepEqual(resolveOperationalState("partial", undefined, undefined, "result"), { lifecycle: "running", qualifiers: ["partial"] });
-assert.deepEqual(resolveOperationalState("success", undefined, undefined, "result"), { lifecycle: "completed", qualifiers: [] });
-assert.deepEqual(resolveOperationalState("warning", undefined, undefined, "result"), { lifecycle: "completed", qualifiers: ["warning"] });
-assert.deepEqual(resolveOperationalState("error", undefined, undefined, "result"), { lifecycle: "failed", qualifiers: [] });
-assert.deepEqual(resolveOperationalState("aborted", undefined, undefined, "result"), { lifecycle: "aborted", qualifiers: [] });
-
-// Every DisplayStatus is bridgeable
-for (const status of DISPLAY_STATUSES) {
-  const resolved = resolveOperationalState(status, undefined, undefined, "result");
-  assert.ok(OPERATIONAL_LIFECYCLES.includes(resolved.lifecycle), `status '${status}' must bridge to a valid lifecycle`);
-}
-
-// ─── 4. Component renders lifecycle markers ─────────────────────────
+// ─── 3. Component renders lifecycle markers ─────────────────────────
 
 function renderFirstChar(description) {
   return stripVTControlCharacters(
@@ -129,48 +86,48 @@ function renderFirstChar(description) {
   )[0];
 }
 
-// Explicit lifecycle markers
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "pending", lifecycle: "queued", title: "T" }), "–");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "pending", lifecycle: "pending", title: "T" }), "○");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "pending", lifecycle: "running", title: "T" }), "⠋");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "success", lifecycle: "completed", title: "T" }), "✓");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "error", lifecycle: "failed", title: "T" }), "✗");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "aborted", lifecycle: "aborted", title: "T" }), "×");
+// Lifecycle markers
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "queued", title: "T" }), "–");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "pending", title: "T" }), "○");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "running", title: "T" }), "⠋");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "completed", title: "T" }), "✓");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "failed", title: "T" }), "✗");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "aborted", title: "T" }), "×");
 
 // Completed + warning qualifier → "!" override
 assert.equal(
-  renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "warning", lifecycle: "completed", qualifiers: ["warning"], title: "T" }),
+  renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "completed", qualifiers: ["warning"], title: "T" }),
   "!",
 );
 
-// Bridged markers (no explicit lifecycle)
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "success", title: "T", phase: "result" }), "✓");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "warning", title: "T", phase: "result" }), "!");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "error", title: "T", phase: "result" }), "✗");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", status: "aborted", title: "T", phase: "result" }), "×");
+// ─── 4. Qualifier coexistence (not flattened to free text) ───────────
 
-// ─── 5. Qualifier coexistence (not flattened to free text) ───────────
-
-const qualifierDescription = {
+// Completed + warning qualifier renders the distinct "!" marker,
+// proving the qualifier is preserved as structured data.
+const warningDescription = {
   version: 1,
   tool: "t",
   family: "workflow",
-  status: "success",
   lifecycle: "completed",
-  qualifiers: ["truncated", "projected"],
+  qualifiers: ["warning"],
   title: "T",
 };
-const resolved = resolveOperationalState(
-  qualifierDescription.status,
-  qualifierDescription.lifecycle,
-  qualifierDescription.qualifiers,
-  "result",
-);
-assert.deepEqual(resolved.qualifiers, ["truncated", "projected"], "qualifiers must coexist as structured data");
-assert.equal(resolved.lifecycle, "completed", "qualifiers must not override lifecycle");
+assert.equal(renderFirstChar(warningDescription), "!",
+  "completed+warning must render ! marker — qualifier preserved as structured data");
 
-// ─── 6. Time tool through the production decoration path ─────────────
-// Exercises the full pending-to-settled tracer with explicit lifecycle.
+// Completed without warning renders the normal ✓ marker.
+const cleanDescription = {
+  version: 1,
+  tool: "t",
+  family: "workflow",
+  lifecycle: "completed",
+  title: "T",
+};
+assert.equal(renderFirstChar(cleanDescription), "✓",
+  "completed without warning must render ✓ marker");
+
+// ─── 5. Time tool through the production decoration path ─────────────
+// Exercises the full queued-to-settled tracer with explicit lifecycle.
 
 class FakeClock {
   callbacks = new Map();
@@ -263,13 +220,12 @@ assert.match(expandedText, /UTC/);
 
 runtime.dispose();
 
-// ─── 7. Width checks for all lifecycle markers at boundary widths ───
+// ─── 6. Width checks for all lifecycle markers at boundary widths ───
 
 const lifecycleDescriptions = OPERATIONAL_LIFECYCLES.map((lifecycle) => ({
   version: 1,
   tool: "t",
   family: "workflow",
-  status: "pending",
   lifecycle,
   title: "Test Tool",
   target: "src/path/to/target.ts",

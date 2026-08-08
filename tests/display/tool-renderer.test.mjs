@@ -44,14 +44,15 @@ const clock = new FakeClock();
 const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
 const adapter = {
   describeCall(args) {
-    return { version: 1, tool: "sample", family: "workflow", status: "pending", title: "Sample", target: args.query };
+    return { version: 1, tool: "sample", family: "workflow", lifecycle: "running", title: "Sample", target: args.query };
   },
   describeResult(result, options) {
     return {
       version: 1,
       tool: "sample",
       family: "workflow",
-      status: options.isPartial ? "partial" : "success",
+      lifecycle: options.isPartial ? "running" : "completed",
+      ...(options.isPartial ? { qualifiers: ["partial"] } : {}),
       title: "Sample",
       rows: [{ text: result.content[0].text }],
     };
@@ -165,7 +166,7 @@ let hydrationCalls = 0;
 let asyncInvalidations = 0;
 const asyncDefinition = decorateToolDefinition(definition, asyncRuntime, {
   describeCall(args) {
-    return { version: 1, tool: "sample", family: "workflow", status: "pending", title: "Sample", target: args.query };
+    return { version: 1, tool: "sample", family: "workflow", lifecycle: "running", title: "Sample", target: args.query };
   },
   callDescriptionKey(args) { return args.query; },
   describeCallAsync(args) {
@@ -175,7 +176,7 @@ const asyncDefinition = decorateToolDefinition(definition, asyncRuntime, {
         version: 1,
         tool: "sample",
         family: "workflow",
-        status: "pending",
+        lifecycle: "running",
         title: "Sample",
         target: args.query,
         rows: [{ text: "hydrated preview" }],
@@ -183,7 +184,7 @@ const asyncDefinition = decorateToolDefinition(definition, asyncRuntime, {
     });
   },
   describeResult(result) {
-    return { version: 1, tool: "sample", family: "workflow", status: "success", title: "Sample", rows: [{ text: result.content[0].text }] };
+    return { version: 1, tool: "sample", family: "workflow", lifecycle: "completed", title: "Sample", rows: [{ text: result.content[0].text }] };
   },
 });
 const asyncState = {};

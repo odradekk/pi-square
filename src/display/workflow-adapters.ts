@@ -120,8 +120,7 @@ function todoPersistenceFields(details: UnknownRecord): Array<DisplayMetadataEnt
 }
 
 /**
- * Derive an explicit lifecycle for the Time tool so it renders through the
- * new operational path rather than the compatibility bridge.
+ * Derive the lifecycle for the Time tool.
  */
 function timeLifecycle(
   context: { executionStarted: boolean; argsComplete: boolean; isError: boolean },

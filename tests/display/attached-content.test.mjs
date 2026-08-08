@@ -88,7 +88,6 @@ const description = {
   version: 1,
   tool: "read",
   family: "filesystem",
-  status: "success",
   lifecycle: "completed",
   title: "READ",
   target: "src/index.ts",
@@ -121,7 +120,7 @@ for (let i = 0; i < bodyLines.length; i++) {
 
 // No body content → no tree rails
 const noBody = new OperationalDisplayComponent(
-  { version: 1, tool: "read", family: "filesystem", status: "success", lifecycle: "completed", title: "READ" },
+  { version: 1, tool: "read", family: "filesystem", lifecycle: "completed", title: "READ" },
   DEFAULT_DISPLAY_POLICY,
   plainTheme,
   { expanded: false },
@@ -134,12 +133,20 @@ assert.doesNotMatch(stripVTControlCharacters(noBodyLines[0]), /[│└]/, "heade
 
 const widths = [39, 40, 63, 64, 80, 99, 100, 120];
 const states = ["pending", "partial", "success", "warning", "error", "aborted"];
+const stateMap = {
+  pending: { lifecycle: "running" },
+  partial: { lifecycle: "running", qualifiers: ["partial"] },
+  success: { lifecycle: "completed" },
+  warning: { lifecycle: "completed", qualifiers: ["warning"] },
+  error: { lifecycle: "failed" },
+  aborted: { lifecycle: "aborted" },
+};
 for (const status of states) {
   const desc = {
     version: 1,
     tool: "read",
     family: "filesystem",
-    status,
+    ...stateMap[status],
     title: "READ",
     target: "src/index.ts",
     metadata: [{ label: "offset", value: "1" }, { label: "limit", value: "50" }],
@@ -162,7 +169,6 @@ const errorDesc = {
   version: 1,
   tool: "read",
   family: "filesystem",
-  status: "error",
   lifecycle: "failed",
   title: "READ",
   error: "Permission denied",
@@ -321,7 +327,6 @@ const noWrapDesc = {
   version: 1,
   tool: "read",
   family: "filesystem",
-  status: "success",
   lifecycle: "completed",
   title: "READ",
   preview: { text: wideText },

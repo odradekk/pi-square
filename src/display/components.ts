@@ -8,7 +8,6 @@ import { styleRule, styleOperational, styleTitle, styleTone } from "./theme";
 import {
   COMPLETED_WARNING_FRAME,
   LIFECYCLE_FRAMES,
-  resolveOperationalState,
   type DisplayDescriptionV1,
   type DisplayPolicy,
   type ResolvedOperationalState,
@@ -134,12 +133,10 @@ function progressText(description: DisplayDescriptionV1): string | undefined {
 }
 
 function resolveState(description: DisplayDescriptionV1): ResolvedOperationalState {
-  return resolveOperationalState(
-    description.status,
-    description.lifecycle,
-    description.qualifiers,
-    description.phase ?? "call",
-  );
+  return {
+    lifecycle: description.lifecycle,
+    qualifiers: description.qualifiers ?? [],
+  };
 }
 
 function lifecycleFrame(state: ResolvedOperationalState, frameIndex: number): string {
@@ -232,12 +229,17 @@ export class OperationalDisplayComponent implements Component {
     }
 
     const isCall = description.phase === "call";
+    const state = resolveState(description);
+    const isWarning = state.lifecycle === "completed" && state.qualifiers.includes("warning");
+    const isError = state.lifecycle === "failed";
+    const isAborted = state.lifecycle === "aborted";
+    const isRunning = state.lifecycle === "running" || state.lifecycle === "pending" || state.lifecycle === "queued";
     const hidden = !isCall
       && this.policy.resultMode === "hidden"
       && !this.options.expanded
-      && description.status !== "warning"
-      && description.status !== "error"
-      && description.status !== "aborted";
+      && !isWarning
+      && !isError
+      && !isAborted;
     if (!hidden && description.rows?.length) {
       const selectedRows = description.rows.slice(0, MAX_ROWS);
       for (const row of selectedRows) {
@@ -259,8 +261,7 @@ export class OperationalDisplayComponent implements Component {
     }
 
     const showPreview = isCall
-      || description.status === "pending"
-      || description.status === "partial"
+      || isRunning
       || this.options.expanded
       || this.policy.resultMode === "preview";
     const visibleSections = description.sections ?? [];

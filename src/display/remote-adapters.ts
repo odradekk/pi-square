@@ -86,9 +86,9 @@ function sshOutputText(text: string): string {
 
 function remoteLifecycle(name: string, isError: boolean, details: UnknownRecord): { lifecycle: import("./types").OperationalLifecycle } | undefined {
   // Parse sets isError:true even for aborted results (its failure() helper
-  // does this). The base adapter's statusFor checks isError first and
-  // returns "error", overriding "aborted". Set lifecycle explicitly so
-  // resolveOperationalState renders × instead of ✗.
+  // does this). The base adapter's resolveResultLifecycle checks isError
+  // first and returns "failed", overriding "aborted". Set lifecycle
+  // explicitly so the × marker renders instead of ✗.
   if (name === "parse" && isError) {
     const status = String(details.status ?? "").toLowerCase();
     if (status === "aborted") return { lifecycle: "aborted" };

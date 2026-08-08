@@ -303,7 +303,14 @@ function descriptionFromMappings(
     version: 1,
     tool: toolName,
     family: adapter.family,
-    status: isError ? "error" : phase === "call" ? (context.executionStarted ? "pending" : context.argsComplete ? "pending" : "partial") : options?.isPartial ? "partial" : "success",
+    lifecycle: isError
+      ? "failed"
+      : phase === "call"
+        ? (context.executionStarted ? "running" : context.argsComplete ? "pending" : "queued")
+        : options?.isPartial
+          ? "running"
+          : "completed",
+    ...(phase !== "call" && options?.isPartial ? { qualifiers: ["partial"] } : {}),
     title: adapter.title,
     target,
     metadata,
