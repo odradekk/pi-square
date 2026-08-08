@@ -222,7 +222,7 @@ test("manager blocks active leases but permits inactive stale running sessions",
   assert.match(render(activeManager, 100), /resume unavailable while active/);
   activeManager.handleInput("\r");
   const activeRendered = render(activeManager, 100);
-  assert.match(activeRendered, /is active and cannot b/);
+  assert.match(activeRendered, /is active and cannot/);
   assert.match(activeRendered, /resume unavailable while active/);
   assert.doesNotMatch(activeRendered, /SESSION \/ RESUME/);
   assert.equal(activeFake.calls.some((call) => call[0] === "resume"), false);
@@ -345,6 +345,168 @@ test("no-argument command opens one non-overlay manager for a stable parent sess
   });
   assert.equal(customCalls, 1);
   assert.equal(customOptions, undefined);
+});
+
+test("cancel review flow calls the cancel service and shows the success flash", () => {
+  const job = { id: "subagent_22222222-2222-4222-8222-222222222222", status: "running", createdAt: 1, updatedAt: 2, details: runDetails() };
+  const initial = data({ running: [job], session: [] });
+  const fake = fakeServices(initial);
+  let closed = 0;
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fake.services);
+  manager.focused = true;
+  manager.handleInput("\r");
+  assert.match(render(manager, 80), /RUNNING \/ CANCEL/);
+  assert.match(render(manager, 80), /Cancel/);
+  assert.match(render(manager, 80), /cancel job/);
+  manager.handleInput("\r");
+  assert.deepEqual(fake.calls.find((call) => call[0] === "cancel"), ["cancel", job.id]);
+  assert.match(render(manager, 80), /\u2713/);
+  assert.match(render(manager, 80), /Cancellation requested/);
+  assert.equal(closed, 0);
+  manager.dispose();
+});
+
+test("delete history review flow requires its own confirmation and uses colon label grammar", () => {
+  const finished = runDetails({ id: "subagent_33333333-3333-4333-8333-333333333333", phase: "done", finalText: "done" });
+  const initial = data({ running: [], session: [finished] });
+  const fake = fakeServices(initial);
+  let closed = 0;
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fake.services);
+  manager.focused = true;
+  manager.handleInput("\x1b[C");
+  manager.handleInput("d");
+  assert.match(render(manager, 80), /SESSION \/ DELETE/);
+  assert.match(render(manager, 80), /Delete history/);
+  assert.match(render(manager, 80), /Agent:/);
+  assert.match(render(manager, 80), /Task:/);
+  assert.match(render(manager, 80), /delete history/);
+  manager.handleInput("\r");
+  assert.deepEqual(fake.calls.find((call) => call[0] === "delete-history"), ["delete-history", finished.id]);
+  assert.match(render(manager, 80), /\u2713/);
+  assert.match(render(manager, 80), /Deleted history/);
+  assert.equal(closed, 0);
+  manager.dispose();
+});
+
+test("fresh run review flow from session tab queues a new child", () => {
+  const finished = runDetails({ id: "subagent_44444444-4444-4444-8444-444444444444", phase: "done", finalText: "done" });
+  const initial = data({ running: [], session: [finished] });
+  const fake = fakeServices(initial);
+  let closed = 0;
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fake.services);
+  manager.focused = true;
+  manager.handleInput("\x1b[C");
+  manager.handleInput("f");
+  assert.match(render(manager, 80), /SESSION \/ FRESH/);
+  for (const character of "New task") manager.handleInput(character);
+  manager.handleInput("\r");
+  assert.match(render(manager, 80), /SESSION \/ FRESH \/ REVIEW/);
+  assert.match(render(manager, 80), /New task/);
+  manager.handleInput("\r");
+  assert.deepEqual(fake.calls.find((call) => call[0] === "fresh"), ["fresh", finished.id, "New task"]);
+  assert.match(render(manager, 80), /\u2713/);
+  assert.match(render(manager, 80), /Queued fresh/);
+  assert.equal(closed, 0);
+  manager.dispose();
+});
+
+test("declining a destructive review returns to browse without calling any service", () => {
+  const job = { id: "subagent_55555555-5555-4555-8555-555555555555", status: "running", createdAt: 1, updatedAt: 2, details: runDetails() };
+  const initial = data({ running: [job], session: [] });
+  const fake = fakeServices(initial);
+  let closed = 0;
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fake.services);
+  manager.handleInput("\r");
+  assert.match(render(manager, 80), /RUNNING \/ CANCEL/);
+  manager.handleInput("\x1b");
+  assert.match(render(manager, 80), /RUNNING.*SESSION.*DEFINITIONS/);
+  assert.equal(fake.calls.some((call) => call[0] === "cancel"), false);
+  assert.equal(closed, 0);
+  manager.dispose();
+});
+
+test("declining delete-history review preserves the session entry", () => {
+  const finished = runDetails({ id: "subagent_99999999-9999-4999-8999-999999999999", phase: "done", finalText: "done" });
+  const initial = data({ running: [], session: [finished] });
+  const fake = fakeServices(initial);
+  let closed = 0;
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fake.services);
+  manager.focused = true;
+  manager.handleInput("\x1b[C");
+  manager.handleInput("d");
+  assert.match(render(manager, 80), /SESSION \/ DELETE/);
+  manager.handleInput("\x1b");
+  assert.match(render(manager, 80), /RUNNING.*SESSION.*DEFINITIONS/);
+  assert.equal(fake.calls.some((call) => call[0] === "delete-history"), false);
+  assert.equal(closed, 0);
+  manager.dispose();
+});
+
+test("failed cancel operation shows error flash and preserves browse state on back", () => {
+  const job = { id: "subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", status: "running", createdAt: 1, updatedAt: 2, details: runDetails() };
+  const initial = data({ running: [job], session: [] });
+  const fake = fakeServices(initial, {
+    cancel() { return { ok: false, message: "Job is no longer active." }; },
+  });
+  let closed = 0;
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => { closed += 1; }, fake.services);
+  manager.handleInput("\r");
+  assert.match(render(manager, 80), /RUNNING \/ CANCEL/);
+  manager.handleInput("\r");
+  const text = render(manager, 80);
+  assert.match(text, /\u2717/);
+  assert.match(text, /no longer active/);
+  manager.handleInput("\x1b");
+  assert.match(render(manager, 80), /RUNNING.*SESSION.*DEFINITIONS/);
+  assert.equal(closed, 0);
+  manager.dispose();
+});
+
+test("error flash from a failed operation shows the \u2717 marker", () => {
+  const stale = runDetails({ phase: "running" });
+  const activeData = data({ running: [], session: [stale], activeSessionIds: [stale.id] });
+  const manager = new SubagentManager(activeData, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\r");
+  assert.match(render(manager, 100), /\u2717/);
+  manager.dispose();
+});
+
+test("list rows show operational lifecycle markers", () => {
+  const queued = { id: "subagent_66666666-6666-4666-8666-666666666666", status: "queued", createdAt: 1, updatedAt: 2, details: runDetails() };
+  const running = { id: "subagent_77777777-7777-4777-8777-777777777777", status: "running", createdAt: 1, updatedAt: 2, details: runDetails() };
+  const cancelling = { id: "subagent_88888888-8888-4888-8888-888888888888", status: "cancelling", createdAt: 1, updatedAt: 2, details: runDetails() };
+  const initial = data({ running: [queued, running, cancelling], session: [] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  const text = render(manager, 120);
+  assert.match(text, /\u2013 queued/);
+  assert.match(text, /\u2192 running/);
+  assert.match(text, /\u00d7 cancelling/);
+  manager.dispose();
+});
+
+test("session tab shows operational lifecycle markers for each phase", () => {
+  const done = runDetails({ id: "subagent_aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", phase: "done", finalText: "done" });
+  const errored = runDetails({ id: "subagent_bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", phase: "error", error: "failed" });
+  const aborted = runDetails({ id: "subagent_cccccccc-3333-4333-8333-cccccccccccc", phase: "aborted" });
+  const initial = data({ running: [], session: [done, errored, aborted], activeSessionIds: [] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  const text = render(manager, 120);
+  assert.match(text, /\u2713 done/);
+  assert.match(text, /\u2717 error/);
+  assert.match(text, /\u00d7 aborted/);
+  manager.dispose();
+});
+
+test("inactive stale running session shows marker with inactive suffix", () => {
+  const stale = runDetails({ id: "subagent_dddddddd-4444-4444-8444-dddddddddddd", phase: "running" });
+  const initial = data({ running: [], session: [stale], activeSessionIds: [] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  const text = render(manager, 120);
+  assert.match(text, /\u2192 running \(inactive\)/);
+  manager.dispose();
 });
 
 await run();

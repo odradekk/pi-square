@@ -148,6 +148,33 @@ function fit(line: string, width: number): string {
   return truncateToWidth(line, Math.max(1, width), "…", true);
 }
 
+/** Operational marker + label for a background-job status in the running tab. */
+function jobStatusPresentation(status: string, theme: any): string {
+  switch (status) {
+    case "queued": return theme.fg("muted", "– queued");
+    case "cancelling": return theme.fg("warning", "× cancelling");
+    default: return theme.fg("accent", "→ running");
+  }
+}
+
+/**
+ * Operational marker + label for a session-run phase in the session tab.
+ * Inactive running/cancelling sessions use muted tone because the lease is
+ * dead; the running-tab helper uses warning for an actively-cancelling job.
+ */
+function sessionPhasePresentation(active: boolean, phase: string, theme: any): string {
+  if (active) return theme.fg("warning", "→ active");
+  const suffix = phase === "running" || phase === "cancelling" ? " (inactive)" : "";
+  switch (phase) {
+    case "done": return theme.fg("success", `✓ done`);
+    case "error": return theme.fg("error", `✗ error`);
+    case "aborted": return theme.fg("muted", `× aborted`);
+    case "cancelling": return theme.fg("muted", `× cancelling${suffix}`);
+    case "running": return theme.fg("muted", `→ running${suffix}`);
+    default: return theme.fg("muted", phase);
+  }
+}
+
 function wrap(value: string, width: number): string[] {
   return value.split("\n").flatMap((line) => wrapTextWithAnsi(line || " ", Math.max(1, width)));
 }
@@ -583,8 +610,8 @@ export class SubagentManager implements Component, Focusable {
         "This permanently deletes run.json and the native child session.",
         "This action is separate from cancellation and cannot be undone.",
         "",
-        `Agent  ${run.agent?.name ?? "generic"}`,
-        `Task   ${sanitizeSubagentDisplay(run.task)}`,
+        `Agent: ${run.agent?.name ?? "generic"}`,
+        `Task: ${sanitizeSubagentDisplay(run.task)}`,
       ],
       confirmLabel: "delete history",
       destructive: true,
@@ -856,8 +883,7 @@ export class SubagentManager implements Component, Focusable {
       return this.data.running.map((job, index) => {
         const marker = index === selected ? this.theme.fg("accent", "›") : " ";
         const name = job.details.agent?.name ?? "generic";
-        const statusColor = job.status === "cancelling" ? "warning" : "muted";
-        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(job.id))}  ${this.theme.fg(statusColor, job.status)}`;
+        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(job.id))}  ${jobStatusPresentation(job.status, this.theme)}`;
       });
     }
     if (this.tab() === "session") {
@@ -866,9 +892,7 @@ export class SubagentManager implements Component, Focusable {
         const marker = index === selected ? this.theme.fg("accent", "›") : " ";
         const name = run.agent?.name ?? "generic";
         const active = this.runIsActive(run);
-        const phase = active ? "active" : run.phase === "running" || run.phase === "cancelling" ? `${run.phase} (inactive)` : run.phase;
-        const phaseColor = active ? "warning" : run.phase === "done" ? "success" : run.phase === "error" ? "error" : "muted";
-        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${this.theme.fg(phaseColor, phase)}`;
+        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${sessionPhasePresentation(active, run.phase, this.theme)}`;
       });
     }
     if (this.data.definitions.length === 0) return [this.theme.fg("dim", "No valid V2 definitions")];
@@ -966,7 +990,8 @@ export class SubagentManager implements Component, Focusable {
     const lines: string[] = [];
     if (this.flash) {
       const color = this.flash.kind === "error" ? "error" : "success";
-      lines.push(fit(this.theme.fg(color, this.flash.text), width));
+      const flashMarker = this.flash.kind === "error" ? "✗" : "✓";
+      lines.push(fit(`${this.theme.fg(color, flashMarker)} ${this.theme.fg(color, this.flash.text)}`, width));
     }
     lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
     lines.push(fit(this.theme.fg("dim", this.footerText()), width));

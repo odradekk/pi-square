@@ -264,4 +264,66 @@ function render(manager, width) {
   manager.dispose();
 }
 
+// ─── 9. Running tab list rows show operational lifecycle markers ─
+
+{
+  const baseDetails = {
+    version: 3,
+    id: "subagent_aabbccdd",
+    agent: { name: "worker", effort: "high" },
+    mode: "bg",
+    phase: "running",
+    model: "test/model",
+    durationMs: 5000,
+    retries: 0,
+    task: "Task",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    timeline: [],
+    liveText: "",
+    finalText: "",
+    startedAt: Date.now(),
+  };
+  const queued = { id: "subagent_qqqqqqqq", status: "queued", createdAt: 1, updatedAt: 2, details: { ...baseDetails, id: "subagent_qqqqqqqq" } };
+  const running = { id: "subagent_rrrrrrrr", status: "running", createdAt: 1, updatedAt: 2, details: { ...baseDetails, id: "subagent_rrrrrrrr" } };
+  const cancelling = { id: "subagent_cccccccc", status: "cancelling", createdAt: 1, updatedAt: 2, details: { ...baseDetails, id: "subagent_cccccccc" } };
+  const data = makeData({ running: [queued, running, cancelling] });
+  const manager = new SubagentManager(data, tui(), theme(), keybindings(), () => {});
+  const text = render(manager, 120);
+  assert.match(text, /\u2013 queued/, "queued job shows – marker");
+  assert.match(text, /\u2192 running/, "running job shows → marker");
+  assert.match(text, /\u00d7 cancelling/, "cancelling job shows × marker");
+  manager.dispose();
+}
+
+// ─── 10. Session tab list rows show operational lifecycle markers ─
+
+{
+  const baseDetails = {
+    version: 3,
+    agent: { name: "worker", effort: "high" },
+    mode: "bg",
+    model: "test/model",
+    durationMs: 5000,
+    retries: 0,
+    task: "Task",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    timeline: [],
+    liveText: "",
+    finalText: "",
+    startedAt: Date.now(),
+    promptSnapshot: { version: 2, manifest: { definitionHash: "abc", effectiveSystemHash: "def" } },
+  };
+  const done = { ...baseDetails, id: "subagent_done00000", phase: "done", finalText: "ok" };
+  const errored = { ...baseDetails, id: "subagent_error000", phase: "error", error: "failed" };
+  const aborted = { ...baseDetails, id: "subagent_abort000", phase: "aborted" };
+  const data = makeData({ running: [], session: [done, errored, aborted], activeSessionIds: [] });
+  const manager = new SubagentManager(data, tui(), theme(), keybindings(), () => {});
+  manager["switchTab"](1); // session
+  const text = render(manager, 120);
+  assert.match(text, /\u2713 done/, "done phase shows ✓ marker");
+  assert.match(text, /\u2717 error/, "error phase shows ✗ marker");
+  assert.match(text, /\u00d7 aborted/, "aborted phase shows × marker");
+  manager.dispose();
+}
+
 console.log("Subagent manager display tests: OK");
