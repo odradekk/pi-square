@@ -25,15 +25,19 @@ function safeJson(text: string): unknown {
 }
 
 function todoItems(details: UnknownRecord): DisplayRecordItem[] {
-  return asArray(details.items).map((value) => {
+  const currentId = stringOf(details.currentId);
+  return asArray(details.items).map((value, index) => {
     const item = asRecord(value);
+    const status = stringOf(item.status) ?? "pending";
+    const isCurrent = currentId !== undefined && stringOf(item.id) === currentId;
+    const marker = status === "completed" ? "✓" : isCurrent ? "◆" : "○";
     return {
-      title: stringOf(item.text) ?? "(untitled task)",
-      tone: item.status === "completed" ? "success" : item.status === "in_progress" ? "accent" : "muted",
+      title: `${marker} ${index + 1}. ${stringOf(item.text) ?? "(untitled task)"}`,
+      tone: status === "completed" ? "success" : status === "in_progress" ? "accent" : "muted",
       fields: metadata([
         field("id", item.id),
-        field("status", item.status),
-        field("changed", item.changed),
+        field("status", status),
+        isCurrent ? field("current", "yes", "accent") : undefined,
       ]),
     } satisfies DisplayRecordItem;
   });
@@ -66,16 +70,13 @@ function timeSections(text: string): DisplaySection[] {
 
 function actionFields(name: string, args: UnknownRecord, details: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
   if (name === "todo") {
-    const counts = asRecord(details.counts);
     return [
       field("action", args.action ?? details.action),
       field("changed", details.changed),
-      field("total", counts.total),
-      field("pending", counts.pending),
-      field("inProgress", counts.inProgress),
-      field("completed", counts.completed),
-      field("current", details.currentId),
-      field("stateVersion", details.stateVersion),
+      // Target IDs and advance policy belong in ACTION per the workflow spec
+      args.id !== undefined ? field("id", args.id) : undefined,
+      Array.isArray(args.ids) && args.ids.length > 0 ? field("ids", (args.ids as unknown[]).join(", ")) : undefined,
+      args.advance !== undefined ? field("advance", args.advance) : undefined,
     ];
   }
   if (name === "ask") {
@@ -91,6 +92,26 @@ function actionFields(name: string, args: UnknownRecord, details: UnknownRecord)
   return [];
 }
 
+function todoSummaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
+  const counts = asRecord(details.counts);
+  return [
+    field("total", counts.total),
+    field("pending", counts.pending),
+    field("inProgress", counts.inProgress),
+    field("completed", counts.completed),
+    field("current", details.currentId),
+    details.title ? field("title", details.title) : undefined,
+  ];
+}
+
+function todoPersistenceFields(details: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
+  return [
+    field("stateVersion", details.stateVersion),
+    field("widget", details.widget),
+    details.error !== undefined ? field("error", asRecord(details.error).code, "error") : undefined,
+  ];
+}
+
 /**
  * Derive an explicit lifecycle for the Time tool so it renders through the
  * new operational path rather than the compatibility bridge.
@@ -99,6 +120,18 @@ function timeLifecycle(
   context: { executionStarted: boolean; argsComplete: boolean; isError: boolean },
   phase: "call" | "result",
 ): OperationalLifecycle {
+  if (phase === "result") return context.isError ? "failed" : "completed";
+  if (context.executionStarted) return "running";
+  if (context.argsComplete) return "pending";
+  return "queued";
+}
+
+function dedupeMetadata(base: readonly DisplayMetadataEntry[], fresh: readonly DisplayMetadataEntry[]): DisplayMetadataEntry[] {
+  const freshLabels = new Set(fresh.map((e) => e.label));
+  return [...base.filter((e) => !freshLabels.has(e.label)), ...fresh].slice(0, 16);
+}
+
+function todoLifecycle(context: { executionStarted: boolean; argsComplete: boolean; isError: boolean }, phase: "call" | "result"): OperationalLifecycle {
   if (phase === "result") return context.isError ? "failed" : "completed";
   if (context.executionStarted) return "running";
   if (context.argsComplete) return "pending";
@@ -116,7 +149,8 @@ export function createWorkflowAdapter(
       const source = asRecord(args);
       return baseDescription(description, {
         ...(name === "time" ? { lifecycle: timeLifecycle(context, "call") } : {}),
-        metadata: [...(description.metadata ?? []), ...metadata(actionFields(name, source, source))].slice(0, 16),
+        ...(name === "todo" ? { lifecycle: todoLifecycle(context, "call") } : {}),
+        metadata: dedupeMetadata(description.metadata ?? [], metadata(actionFields(name, source, source))),
         sections: sections(summarySection(name === "todo" ? "Action" : name === "ask" ? "Request" : "Local", actionFields(name, source, source))),
       });
     },
@@ -136,18 +170,21 @@ export function createWorkflowAdapter(
         )
         : sections(
           textSection("Error", error, "error"),
-          summarySection(name === "todo" ? "Action" : "Request", actionFields(name, asRecord(context.args), details)),
+          summarySection(name === "todo" ? "Action" : "Request", actionFields(name, asRecord(context.args), details), name === "todo"),
+          name === "todo" ? summarySection("Summary", todoSummaryFields(details), true) : undefined,
           name === "todo" ? recordsSection("Tasks", todoItems(details)) : undefined,
+          name === "todo" ? summarySection("Persistence", todoPersistenceFields(details), true) : undefined,
           name === "ask" ? recordsSection("Answers", askAnswers(details)) : undefined,
           options.expanded && name === "ask" && askAnswers(details).length === 0 && payload.answers
             ? codeSection("Result", text, "json", false)
             : undefined,
         );
-      const hasDomain = structured.some((section) => section.title === "Tasks" || section.title === "Answers" || section.title === "Result" || section.title === "Local");
+      const hasDomain = structured.some((section) => section.title === "Tasks" || section.title === "Answers" || section.title === "Result" || section.title === "Local" || section.title === "Summary");
       const output = options.expanded && !hasDomain ? codeSection("Result", text, "json", false) : undefined;
       return baseDescription(description, {
         ...(name === "time" ? { lifecycle: timeLifecycle(context, "result") } : {}),
-        metadata: [...(description.metadata ?? []), ...metadata(actionFields(name, asRecord(context.args), details))].slice(0, 16),
+        ...(name === "todo" ? { lifecycle: todoLifecycle({ executionStarted: true, argsComplete: true, isError: Boolean((result as { isError?: boolean }).isError) || details.status === "error" }, "result") } : {}),
+        metadata: dedupeMetadata(description.metadata ?? [], metadata(actionFields(name, asRecord(context.args), details))),
         sections: [...structured, ...sections(output)],
         ...(options.expanded ? { preview: undefined } : {}),
       });

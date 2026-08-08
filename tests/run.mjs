@@ -42,6 +42,7 @@ const suites = [
   "display/github-tree-commit.test.mjs",
   "display/ssh-sessions.test.mjs",
   "display/ssh-confirmation-input.test.mjs",
+  "display/todo-transcript.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",
