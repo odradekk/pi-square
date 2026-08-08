@@ -7,6 +7,7 @@ import { sanitizeDisplayLine } from "../display/sanitize";
 const WIDE_WIDTH = 100;
 const MEDIUM_WIDTH = 64;
 const SUBAGENT_STATUS_KEY = "pi-square.subagents";
+const DISPLAY_STATUS_KEY = "pi-square.display";
 const THINKING_COLORS: Record<string, ThemeColor> = {
   off: "thinkingOff",
   minimal: "thinkingMinimal",
@@ -63,14 +64,14 @@ function projectName(cwd: string): string {
   return basename(cwd) || cwd || "/";
 }
 
-function projectSide(theme: Theme, snapshot: EnhancedFooterSnapshot, wide: boolean): string {
+function locSide(theme: Theme, snapshot: EnhancedFooterSnapshot, wide: boolean): string {
   const path = wide
     ? clean(formatFooterCwd(snapshot.cwd, process.env.HOME || process.env.USERPROFILE))
     : clean(projectName(snapshot.cwd));
-  const parts = [theme.fg("accent", path)];
+  const parts = [theme.fg("muted", "Loc:"), theme.fg("accent", path)];
   if (snapshot.branch) parts.push(theme.fg("muted", clean(snapshot.branch)));
   if (wide && snapshot.sessionName) parts.push(theme.fg("muted", clean(snapshot.sessionName)));
-  return parts.join(dot(theme));
+  return parts.join(" ");
 }
 
 function thinkingText(theme: Theme, snapshot: EnhancedFooterSnapshot, includeLabel: boolean): string {
@@ -82,7 +83,7 @@ function thinkingText(theme: Theme, snapshot: EnhancedFooterSnapshot, includeLab
 
 function modelSide(theme: Theme, snapshot: EnhancedFooterSnapshot, wide: boolean): string {
   const identity = wide && snapshot.showProvider && snapshot.provider
-    ? `${theme.fg("muted", clean(snapshot.provider))}${theme.fg("dim", " / ")}${theme.fg("text", clean(snapshot.modelName))}`
+    ? `${theme.fg("text", clean(snapshot.modelName))}${theme.fg("dim", " / ")}${theme.fg("muted", clean(snapshot.provider))}`
     : theme.fg("text", clean(snapshot.modelName));
   const thinking = thinkingText(theme, snapshot, true);
   return thinking ? `${identity}${dot(theme)}${thinking}` : identity;
@@ -150,18 +151,27 @@ function sanitizeExternalStatus(text: string): string {
   return clean(text);
 }
 
+/** Per-status marker: subagents use ●, display diagnostics use !, others use · */
+function statusMarker(theme: Theme, key: string): string {
+  if (key === SUBAGENT_STATUS_KEY) return theme.fg("accent", "●");
+  if (key === DISPLAY_STATUS_KEY) return theme.fg("warning", "!");
+  return theme.fg("muted", "·");
+}
+
 function statusLine(theme: Theme, snapshot: EnhancedFooterSnapshot, width: number): string | undefined {
   if (snapshot.statuses.length === 0) return undefined;
   const ordered = [...snapshot.statuses].sort((left, right) => {
     if (left.key === SUBAGENT_STATUS_KEY) return -1;
     if (right.key === SUBAGENT_STATUS_KEY) return 1;
+    if (left.key === DISPLAY_STATUS_KEY) return -1;
+    if (right.key === DISPLAY_STATUS_KEY) return 1;
     return left.key.localeCompare(right.key);
   });
   const statuses = ordered
     .map((status) => status.key === SUBAGENT_STATUS_KEY
-      ? status.text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim()
-      : theme.fg("muted", sanitizeExternalStatus(status.text)))
-    .filter(Boolean);
+      ? `${statusMarker(theme, status.key)} ${status.text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim()}`
+      : `${statusMarker(theme, status.key)} ${theme.fg("muted", sanitizeExternalStatus(status.text))}`)
+    .filter((s) => s.trim().length > 1);
   if (statuses.length === 0) return undefined;
   return truncateToWidth(statuses.join(divider(theme)), Math.max(1, width), theme.fg("dim", "..."));
 }
@@ -175,22 +185,23 @@ export function renderEnhancedFooter(
   const wide = safeWidth >= WIDE_WIDTH;
   const medium = safeWidth >= MEDIUM_WIDTH;
 
-  const identity = theme.fg("toolTitle", theme.bold("π²"));
-  const project = projectSide(theme, snapshot, wide);
+  // Row 1: model/provider/thinking ... usage/cache/cost
   const first = alignWithRightPriority(
-    `${identity}${divider(theme)}${project}`,
     modelSide(theme, snapshot, wide),
+    medium ? usageSide(theme, snapshot, wide) : "",
     safeWidth,
   );
 
+  // Row 2: Loc: cwd/branch/session ... context usage/window
   let second: string;
   if (medium) {
     second = alignWithRightPriority(
-      usageSide(theme, snapshot, wide),
+      locSide(theme, snapshot, wide),
       contextUsage(theme, snapshot, wide ? 10 : 8, wide),
       safeWidth,
     );
   } else {
+    // Narrow: context bar with thinking, no Loc
     const context = contextUsage(theme, snapshot, 6, false);
     const thinking = thinkingText(theme, snapshot, false);
     second = truncateToWidth(
@@ -205,6 +216,6 @@ export function renderEnhancedFooter(
     truncateToWidth(second, safeWidth, theme.fg("dim", "...")),
   ];
   const status = statusLine(theme, snapshot, Math.max(1, safeWidth - 2));
-  if (status) lines.push(truncateToWidth(`${theme.fg("warning", "!")} ${status}`, safeWidth, theme.fg("dim", "...")));
+  if (status) lines.push(truncateToWidth(status, safeWidth, theme.fg("dim", "...")));
   return lines;
 }

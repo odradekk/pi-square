@@ -64,9 +64,10 @@ function setup() {
   const component = calls.at(-1)({ requestRender() { renders += 1; } }, plainTheme(), footerData);
   const lines = component.render(80);
   assert.equal(lines.length, 3);
-  assert.match(lines[0], /pi-square/);
+  assert.match(lines[0], /GPT Test/);
   assert.match(lines[1], /Context/);
-  assert.match(lines[2], /^! subagents 1/);
+  assert.match(lines[2], /●/);
+  assert.match(lines[2], /subagents 1/);
   assert.match(lines[2], /ready/);
 
   ctx.model = { id: "gpt-next", name: "GPT Next", provider: "test", reasoning: true, contextWindow: 100_000 };
