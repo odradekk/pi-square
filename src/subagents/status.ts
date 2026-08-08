@@ -1,7 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
-import { PENDING_FRAMES } from "../display/types";
+import { RUNNING_FRAMES } from "../display/types";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
 import { sanitizeSubagentDisplay } from "./display";
 import { latestToolCallSummary } from "./tool-display";
@@ -46,7 +46,7 @@ function activeJobs(jobs: BackgroundJobSnapshot[]): BackgroundJobSnapshot[] {
 function statusText(theme: Theme, status: BackgroundJobSnapshot["status"], frame: number): string {
   if (status === "queued") return theme.fg("muted", "– queued");
   if (status === "cancelling") return theme.fg("warning", "× cancelling");
-  return theme.fg("warning", `${PENDING_FRAMES[frame % PENDING_FRAMES.length]} running`);
+  return theme.fg("accent", `${RUNNING_FRAMES[frame % RUNNING_FRAMES.length]} running`);
 }
 
 function jobText(theme: Theme, job: BackgroundJobSnapshot, frame: number): string {

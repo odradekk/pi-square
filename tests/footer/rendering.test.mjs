@@ -89,7 +89,7 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
     assert.match(plain[1], /68%/, `${file} at ${width}: row 2 has context percent`);
 
     // Row 3: status with per-status markers
-    assert.match(plain[2], /●/, `${file} at ${width}: subagent status has ● marker`);
+    assert.match(plain[2], /◇/, `${file} at ${width}: subagent status has ◇ marker`);
     assert.match(plain[2], /subagents 1/, `${file} at ${width}: subagent text visible`);
     assert.doesNotMatch(plain[2], /\r|\n|\t|\u001b/, `${file} at ${width}: no control chars in status`);
 
@@ -156,7 +156,7 @@ for (const [percent, expected] of [[70, "accent"], [71, "warning"], [91, "error"
 const withoutStatuses = renderEnhancedFooter(trackingTheme(), 80, snapshot({ statuses: [] }));
 assert.equal(withoutStatuses.length, 2);
 
-// ─── Per-status markers: ● for subagents, ! for display diagnostics ─
+// ─── Per-status markers: ◇ for subagents, ! for display diagnostics ─
 {
   const theme = trackingTheme();
   const lines = renderEnhancedFooter(theme, 120, snapshot({
@@ -166,9 +166,44 @@ assert.equal(withoutStatuses.length, 2);
     ],
   }));
   const plain = stripVTControlCharacters(lines[2]);
-  assert.match(plain, /●/, "subagent status uses ● marker");
+  assert.match(plain, /◇/, "subagent status uses ◇ marker");
   assert.match(plain, /!/, "display diagnostic uses ! marker");
   assert.match(plain, /Ownership conflict/, "display diagnostic text visible");
+}
+
+// ─── Subagent status through the production footer path ───────────
+{
+  const darkTheme = loadThemeFromPath(join(packageRoot, "themes", "pi-square-theme-dark.json"));
+  const subagentStatus = {
+    key: "pi-square.subagents",
+    text: "subagents 1 │ explorer aabbccdd ⠋ running · rg pattern in src",
+  };
+  for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
+    const lines = renderEnhancedFooter(darkTheme, width, snapshot({ statuses: [subagentStatus] }));
+    assert.equal(lines.length, 3, `status row at ${width}`);
+    for (const line of lines) assert.ok(visibleWidth(line) <= width, `bounded at ${width}`);
+    const plain = stripVTControlCharacters(lines[2]);
+    assert.match(plain, /◇/, `subagent marker at ${width}`);
+    assert.match(plain, /subagents 1/, `subagent count at ${width}`);
+  }
+}
+
+// ─── Subagent status ordering: subagent before display before generic ─
+{
+  const theme = trackingTheme();
+  const lines = renderEnhancedFooter(theme, 120, snapshot({
+    statuses: [
+      { key: "z-other", text: "generic" },
+      { key: "pi-square.display", text: "diagnostic" },
+      { key: "pi-square.subagents", text: "subagents 1" },
+    ],
+  }));
+  const plain = stripVTControlCharacters(lines[2]);
+  const subagentPos = plain.indexOf("◇");
+  const displayPos = plain.indexOf("!");
+  const genericPos = plain.indexOf("·");
+  assert.ok(subagentPos < displayPos, "subagent status before display diagnostic");
+  assert.ok(displayPos < genericPos, "display diagnostic before generic extension");
 }
 
 console.log("operational footer rendering: dark/light layouts at every display boundary width OK");

@@ -182,6 +182,34 @@ test("controller never touches UI for non-interactive sessions", () => {
   controller.stop();
 });
 
+test("running status uses accent tone and operational braille marker", () => {
+  const calls = [];
+  const trackingTheme = {
+    fg(color, text) { calls.push({ color, text: String(text) }); return String(text); },
+    bg(_c, t) { return String(t); },
+    bold(t) { return String(t); },
+  };
+  const jobs = [
+    job("subagent_accent000-0000-4000-8000-accent00000000", "running", 1, "explorer", toolTimeline("rg data")),
+  ];
+  renderNativeSubagentStatus(trackingTheme, jobs);
+  const runningCall = calls.find((c) => c.text === "⠋ running");
+  assert.ok(runningCall, "braille running marker present");
+  assert.equal(runningCall.color, "accent", "running marker uses accent tone");
+});
+
+test("cancelling status outranks running in the status text", () => {
+  const jobs = [
+    job("subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "running", 1, "explorer", toolTimeline("rg data")),
+    job("subagent_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "cancelling", 2, "oracle", toolTimeline("read file")),
+  ];
+  const rendered = renderNativeSubagentStatus(plainTheme(), jobs);
+  const cancellingPos = rendered.indexOf("oracle");
+  const runningPos = rendered.indexOf("explorer");
+  assert.ok(cancellingPos < runningPos, "cancelling job appears before running job");
+  assert.match(rendered, /× cancelling/);
+});
+
 let failed = 0;
 for (const { name, fn } of tests) {
   try {
