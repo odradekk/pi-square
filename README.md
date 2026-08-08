@@ -31,7 +31,7 @@ Use `-l` to install it for only the current project. The package requires Pi 0.8
 
 ## Themes
 
-The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their near-monochrome palette uses low-contrast surfaces, one cool blue-gray accent for structure, and restrained semantic status colors. Both variants include explicit HTML export colors and the complete Pi 0.80.6 theme token set. The display runtime itself uses only Pi's standard semantic tokens, so any valid third-party Pi theme remains supported.
+The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their palette uses low-contrast surfaces with a warm rust-orange accent for structure, dim gray supporting text, and restrained semantic status colors (green success, red failure, amber warning). Both variants include explicit HTML export colors and the complete Pi 0.80.6 theme token set. The display runtime itself uses only Pi's standard semantic tokens, so any valid third-party Pi theme remains supported; bundled themes tune the standard tokens toward the Claude Code color relationship without imposing fixed RGB values on third-party themes.
 
 ## Skills
 
@@ -75,13 +75,15 @@ Twenty of these skills are derived from [mattpocock/skills](https://github.com/m
 
 ## Operational display
 
-Every parent-session tool, including Pi's `read`, `grep`, `find`, `ls`, `edit`, `write`, and platform shell, uses one high-density operational-console grammar. A one-cell rail identifies pending, partial, success, warning, error, and aborted states; the first row prioritizes tool identity, target, duration, and state; secondary rows carry bounded metadata, progress, previews, or diffs. The pending call transitions into its partial or final presentation in one visual slot instead of leaving a duplicate call entry behind. Expanded results use a closed internal section model: query/request summaries, path and match records, code and Markdown blocks, diffs, activity ledgers, issues, and diagnostics are grouped by tool semantics instead of rendering one undifferentiated text blob. Strong framing is reserved for diffs, confirmations, and managers. Terminal controls, source-authored Markdown links, malformed URLs, and common credential forms are neutralized before display without changing model-facing arguments or results.
+Every parent-session tool, including Pi's `read`, `grep`, `find`, `ls`, `edit`, `write`, and platform shell, uses one high-density Claude-like operational grammar. The canonical state model is lifecycle-plus-qualifier: six lifecycles (`queued`, `pending`, `running`, `completed`, `failed`, `aborted`) determine the marker, and seven orthogonal qualifiers (`warning`, `partial`, `retrying`, `cancelling`, `truncated`, `projected`, `needs-input`) coexist without flattening into free text. A one-cell rail identifies each lifecycle with non-emoji single-cell glyphs (en-dash, white circle, braille animation, check, ballot-X, multiplication sign); the first row prioritizes tool identity, target, duration, and state; secondary rows carry bounded metadata, progress, previews, or diffs. The pending call transitions into its partial or final presentation in one visual slot instead of leaving a duplicate call entry behind. Expanded results use a closed internal section model: query/request summaries, path and match records, code and Markdown blocks, diffs, activity ledgers, issues, and diagnostics are grouped by tool semantics instead of rendering one undifferentiated text blob. Strong framing is reserved for diffs, confirmations, and managers. Terminal controls, source-authored Markdown links, malformed URLs, and common credential forms are neutralized before display without changing model-facing arguments or results.
 
 The same shared layout, sanitization, theme, diff, and motion layers serve pi-square's footer, banner, Prompt Manager, ask wizard, todo widget, subagent manager/status/notifications, and Config Guide. Ordinary Pi user and assistant messages remain native and are not patched. Collapsed output follows each tool's effective `resultMode`; expanded output reveals bounded internal sections under `expandedMaxLines`; errors remain visible even when normal results are hidden. The per-tool expanded contracts are documented under `docs/design/`.
 
 Motion is session-owned and uses one scheduler for all pending surfaces. `full` uses a 34 ms minimum interval (approximately 29.4 FPS), `reduced` uses a 120 ms interval, and `off` is static. Non-TTY, test, CI, and incapable terminal environments downgrade deterministically. Child sessions construct their own tool definitions without a display runtime; only parent-visible child activity summaries use the shared declarative formatter.
 
 Run `/display` to open the non-overlay manager. It provides searchable global, family, and tool nodes; effective value and source labels; current/dark/light previews at 40, 80, and 120 columns; agent/project scope selection; per-node reset; and a CURRENT/STAGED review before save. Saves use a workspace-bounded lock, full-file compare-and-swap fingerprint, symlink and identity checks, mode preservation, complete candidate validation, and atomic rename. A stale external write returns to review instead of overwriting it. Successful policy and motion saves apply immediately; resolving a renderer ownership conflict still requires `/reload`.
+
+When a legacy display configuration is detected (deprecated `diffIndicators` field, `footer.mode`, or `motion: "reduced"` meaning change), the manager auto-opens a migration review showing scope, provenance, every detected change, canonical defaults, and the complete staged canonical display. Approval writes one atomic canonical candidate through the existing safe writer; decline performs no write and returns to browse. The `m` key re-opens the migration review from browse.
 
 ## Operational footer
 
@@ -381,6 +383,8 @@ Run the quality gates from the package root:
 npm test
 npm run typecheck
 npm run smoke
+npm run package:check
+npm run changeset:status
 ```
 
 Run the optional, non-blocking deterministic CodeGraph retrieval comparison separately. It reports one semantic query against a fixed three-file fixture versus an `rg` plus known-file-read baseline; it is not a model-quality benchmark and is not part of `npm test`:
