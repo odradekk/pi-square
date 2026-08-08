@@ -1,6 +1,6 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "../display/tool-renderer";
-import type { DisplayActivityItem, DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, DisplaySection, DisplayStatus } from "../display/types";
+import type { DisplayActivityItem, DisplayDescriptionV1, DisplayMetadataEntry, DisplayRow, DisplaySection, DisplayStatus, OperationalLifecycle, OperationalQualifier } from "../display/types";
 import { latestToolCallSummary } from "./tool-display";
 import type { SubagentRunDetails, SubagentTimelineItem } from "./types";
 
@@ -34,6 +34,54 @@ function statusFor(details: Record<string, unknown>, partial: boolean, isError: 
   return "success";
 }
 
+/** Derive an explicit lifecycle + qualifiers from phase, partial, and isError. */
+function subagentLifecycle(
+  details: Record<string, unknown>,
+  partial: boolean,
+  isError: boolean,
+  phase: "call" | "result",
+): { lifecycle: OperationalLifecycle; qualifiers: OperationalQualifier[] } {
+  if (phase === "call") {
+    // Call lifecycle is handled by the component lifecycle bridge
+    return { lifecycle: "pending", qualifiers: [] };
+  }
+  // Result phase
+  const detailPhase = String(details.phase ?? "").toLowerCase();
+  const qualifiers: OperationalQualifier[] = [];
+
+  // Partial → running with partial qualifier
+  if (partial) {
+    const partialQualifiers: OperationalQualifier[] = ["partial"];
+    // Active retry: retries > 0 during a partial update means the child
+    // is currently in an auto-retry cycle.
+    if (typeof details.retries === "number" && details.retries > 0) {
+      partialQualifiers.push("retrying");
+    }
+    return { lifecycle: "running", qualifiers: partialQualifiers };
+  }
+
+  // Cancelling → running with cancelling qualifier
+  if (detailPhase === "cancelling") return { lifecycle: "running", qualifiers: ["cancelling"] };
+
+  // Aborted/cancelled → aborted (overrides isError for clean cancel/abort)
+  if (detailPhase === "aborted" || detailPhase === "cancelled" || detailPhase === "canceled") {
+    return { lifecycle: "aborted", qualifiers };
+  }
+
+  // Error/failed → failed
+  if (detailPhase === "error" || detailPhase === "failed" || isError) {
+    return { lifecycle: "failed", qualifiers };
+  }
+
+  // Retries on a completed result produce a warning qualifier
+  if (typeof details.retries === "number" && details.retries > 0) {
+    qualifiers.push("warning");
+  }
+
+  // Success → completed
+  return { lifecycle: "completed", qualifiers };
+}
+
 function tailLines(value: string, maximum: number): { text: string; omitted: number } {
   const lines = value.replace(/\r\n?/g, "\n").split("\n");
   const selected = lines.slice(-maximum);
@@ -57,12 +105,12 @@ function metadata(details: Record<string, unknown>): DisplayMetadataEntry[] {
 
 function activityRows(timeline: SubagentTimelineItem[], expanded: boolean): DisplayRow[] {
   if (!Array.isArray(timeline) || timeline.length === 0) return [];
-  if (!expanded) return [{ text: `ACTIVITY  ${latestToolCallSummary(timeline)}`, tone: "muted" }];
+  if (!expanded) return [{ text: latestToolCallSummary(timeline), tone: "muted" }];
   const calls = timeline
     .filter((item) => item?.kind === "tool" && item.phase === "start")
     .slice(-8)
-    .map((item) => ({ text: `ACTIVITY  ${latestToolCallSummary([item])}`, tone: "muted" as const }));
-  return calls.length > 0 ? calls : [{ text: `ACTIVITY  ${latestToolCallSummary(timeline)}`, tone: "muted" }];
+    .map((item) => ({ text: latestToolCallSummary([item]), tone: "muted" as const }));
+  return calls.length > 0 ? calls : [{ text: latestToolCallSummary(timeline), tone: "muted" }];
 }
 
 function issueRows(details: Record<string, unknown>, expanded: boolean): DisplayRow[] {
@@ -70,7 +118,7 @@ function issueRows(details: Record<string, unknown>, expanded: boolean): Display
   return details.toolErrors.slice(-4).flatMap((value) => {
     const issue = record(value);
     const message = typeof issue.message === "string" ? issue.message : typeof issue.error === "string" ? issue.error : undefined;
-    return message ? [{ text: `ISSUE  ${message}`, tone: "error" as const }] : [];
+    return message ? [{ text: message, tone: "error" as const }] : [];
   });
 }
 
@@ -197,11 +245,14 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         issueRecords(details),
         usageSection(details),
       ].filter((section): section is DisplaySection => Boolean(section));
+      const lc = subagentLifecycle(details, options.isPartial, context.isError, "result");
       return {
         version: 1,
         tool: name,
         family: "agent",
         status: statusFor(details, options.isPartial, context.isError),
+        lifecycle: lc.lifecycle,
+        ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
         title: name === "subagent_resume" ? "Resume subagent" : "Subagent",
         target: runTarget(details, args),
         metadata: metadata(details),

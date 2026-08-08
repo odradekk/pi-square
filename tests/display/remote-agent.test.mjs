@@ -133,7 +133,8 @@ const running = subagent.renderResult(
 ).render(80).join("\n");
 assert.match(running, /explorer/);
 assert.match(running, /scanning repository|found 3 matches/);
-assert.match(running, /ACTIVITY.*rg.*needle/i);
+assert.match(running, /ACTIVITY/);
+assert.match(running, /rg.*needle/i);
 const expandedSubagent = subagent.renderResult(
   { content: [{ type: "text", text: subagentDetails.liveText }], details: subagentDetails },
   { expanded: true, isPartial: true },
