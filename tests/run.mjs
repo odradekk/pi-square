@@ -16,6 +16,8 @@ const suites = [
   "display/diff.test.mjs",
   "display/file-preview.test.mjs",
   "display/manager.test.mjs",
+  "display/migration.test.mjs",
+  "display/migration-delivery.test.mjs",
   "display/lifecycle.test.mjs",
   "display/local-execution.test.mjs",
   "display/remote-agent.test.mjs",

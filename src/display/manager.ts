@@ -24,11 +24,13 @@ import {
 } from "../core/config-write";
 import { emitDiagnostics } from "../core/diagnostics";
 import type { DisplayController } from "./index";
+import type { DisplayMigrationChange } from "./migration";
 import { DISPLAY_CATALOG, type DisplayToolCatalogEntry } from "./catalog";
 import { OperationalDisplayComponent } from "./components";
 import { resolveDisplayPolicyForTool } from "./policy";
 import { sanitizeDisplayLine } from "./sanitize";
 import {
+  DEFAULT_DISPLAY_POLICY,
   DISPLAY_DIFF_COLLAPSED_LINES_MAX,
   DISPLAY_DIFF_COLLAPSED_LINES_MIN,
   DISPLAY_DIFF_SPLIT_MIN_WIDTH_MAX,
@@ -39,6 +41,8 @@ import {
   DISPLAY_POLICY_FIELDS,
   DISPLAY_PREVIEW_LINES_MAX,
   DISPLAY_PREVIEW_LINES_MIN,
+  MOTION_FULL_INTERVAL_MS,
+  MOTION_REDUCED_INTERVAL_MS,
   type DisplayDescriptionV1,
   type DisplayFamily,
   type DisplayLayerConfig,
@@ -68,7 +72,8 @@ type ManagerView =
   | { kind: "browse" }
   | { kind: "choice"; title: string; items: readonly { label: string; action: () => void }[]; index: number }
   | { kind: "editor"; title: string; editor: Editor; error?: string; onSubmit: (value: string) => void }
-  | { kind: "review"; lines: readonly string[]; scroll: number; saving: boolean };
+  | { kind: "review"; lines: readonly string[]; scroll: number; saving: boolean }
+  | { kind: "migration"; changes: readonly DisplayMigrationChange[]; scroll: number; saving: boolean };
 
 export interface DisplayManagerServices {
   readonly trustedProject: boolean;
@@ -303,6 +308,12 @@ export class DisplayManager implements Component, Focusable {
     private readonly previewThemes: readonly { name: string; theme: Theme }[],
   ) {
     for (const [scope, snapshot] of snapshots) this.staged.set(scope, cloneLayer(snapshot.display));
+
+    // Auto-open the migration review when the initial scope has legacy changes.
+    const initialSnapshot = this.snapshots.get(this.scope);
+    if (initialSnapshot?.migration?.length) {
+      this.view = { kind: "migration", changes: initialSnapshot.migration, scroll: 0, saving: false };
+    }
   }
 
   private nodes(): DisplayNode[] {
@@ -467,6 +478,74 @@ export class DisplayManager implements Component, Focusable {
     this.push({ kind: "review", lines: this.reviewLines(snapshot), scroll: 0, saving: false });
   }
 
+  private migrationLines(changes: readonly DisplayMigrationChange[]): string[] {
+    const snapshot = this.snapshots.get(this.scope)!;
+    const defaults = DEFAULT_DISPLAY_POLICY;
+    const lines = [
+      `Scope: ${this.scope}`,
+      `Provenance: ${cleanDisplayValue(snapshot.path)}`,
+      "",
+      "MIGRATION CHANGES",
+      ...changes.map((change) => `  ${change.kind}: ${change.description}`),
+      "",
+      "CANONICAL DEFAULTS",
+      `  resultMode=${defaults.resultMode}  previewLines=${defaults.previewLines}  diffView=${defaults.diffView}  motion=full (${MOTION_FULL_INTERVAL_MS} ms, reduced ${MOTION_REDUCED_INTERVAL_MS} ms)`,
+      "",
+      "STAGED CANONICAL DISPLAY",
+      JSON.stringify(this.currentLayer(), null, 2),
+    ];
+    return lines;
+  }
+
+  private openMigration(): void {
+    const snapshot = this.snapshots.get(this.scope)!;
+    if (!snapshot.migration?.length) {
+      this.flash = { kind: "success", text: `No migration needed for ${this.scope} scope` };
+      return this.requestRender();
+    }
+    this.push({ kind: "migration", changes: snapshot.migration, scroll: 0, saving: false });
+  }
+
+  private async saveMigration(): Promise<void> {
+    if (this.view.kind !== "migration" || this.view.saving) return;
+    this.view.saving = true;
+    this.requestRender();
+    const scope = this.scope;
+    const snapshot = this.snapshots.get(scope)!;
+    try {
+      const next = await this.services.save(scope, snapshot, this.currentLayer(), snapshot.footerModePresent);
+      this.snapshots.set(scope, next);
+      this.staged.set(scope, cloneLayer(next.display));
+      this.config = structuredClone(this.services.currentConfig());
+      this.view = { kind: "browse" };
+      this.previousView = undefined;
+      this.flash = { kind: "success", text: `Migrated ${scope} display configuration` };
+    } catch (error) {
+      const stale = error && typeof error === "object" && (error as { code?: unknown }).code === "DISPLAY_STALE_REVIEW";
+      let message = error instanceof Error ? error.message : String(error);
+      if (stale) {
+        try {
+          const latest = await this.services.refresh(scope);
+          this.snapshots.set(scope, latest);
+          this.staged.set(scope, cloneLayer(latest.display));
+          if (latest.migration?.length) {
+            this.view = { kind: "migration", changes: latest.migration, scroll: 0, saving: false };
+            message = "Config changed since review; current file refreshed and staged changes retained for review";
+          } else {
+            this.view = { kind: "browse" };
+            this.previousView = undefined;
+            message = "Config changed since review; migration no longer needed";
+          }
+        } catch (refreshError) {
+          message = `Config changed since review, and refresh failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`;
+        }
+      }
+      this.flash = { kind: "error", text: message };
+      if (this.view.kind === "migration") this.view.saving = false;
+    }
+    this.requestRender();
+  }
+
   private async saveReview(): Promise<void> {
     if (this.view.kind !== "review" || this.view.saving) return;
     this.view.saving = true;
@@ -573,6 +652,16 @@ export class DisplayManager implements Component, Focusable {
       this.view.editor.focused = this.focused;
       body = [this.theme.fg("text", this.theme.bold(this.view.title)), "", ...this.view.editor.render(width)];
       if (this.view.error) body.push(this.theme.fg("error", this.view.error));
+    } else if (this.view.kind === "migration") {
+      const budget = maxRows - 7;
+      const lines = this.migrationLines(this.view.changes).flatMap((line) => wrapTextWithAnsi(line || " ", width));
+      const maximumScroll = Math.max(0, lines.length - budget);
+      this.view.scroll = Math.min(this.view.scroll, maximumScroll);
+      body = [
+        this.theme.fg("text", this.theme.bold(this.view.saving ? "Saving migration" : "Migration review")),
+        "",
+        ...lines.slice(this.view.scroll, this.view.scroll + budget),
+      ];
     } else {
       const budget = maxRows - 7;
       const lines = this.view.lines.flatMap((line) => wrapTextWithAnsi(line || " ", width));
@@ -588,10 +677,12 @@ export class DisplayManager implements Component, Focusable {
     if (this.flash) footer.push(this.theme.fg(this.flash.kind === "error" ? "error" : "success", cleanDisplayValue(this.flash.text)));
     footer.push(this.theme.fg("borderMuted", "─".repeat(width)));
     footer.push(this.theme.fg("dim", this.view.kind === "browse"
-      ? "enter edit · / search · p scope · r reset · w review · t width · v theme · esc close"
+      ? "enter edit · / search · p scope · r reset · w review · m migration · t width · v theme · esc close"
       : this.view.kind === "review"
         ? "enter save · up/down scroll · esc back"
-        : "enter choose/submit · esc back"));
+        : this.view.kind === "migration"
+          ? "enter approve · up/down scroll · esc decline"
+          : "enter choose/submit · esc back"));
     const bodyBudget = Math.max(0, maxRows - header.length - footer.length);
     const rendered = [...header, ...body.slice(0, bodyBudget), ...footer]
       .map((line) => fit(line, width));
@@ -619,6 +710,12 @@ export class DisplayManager implements Component, Focusable {
       else if (this.keybindings.matches(data, "tui.select.confirm")) void this.saveReview();
       return this.requestRender();
     }
+    if (this.view.kind === "migration") {
+      if (this.keybindings.matches(data, "tui.select.up")) this.view.scroll = Math.max(0, this.view.scroll - 1);
+      else if (this.keybindings.matches(data, "tui.select.down")) this.view.scroll += 1;
+      else if (this.keybindings.matches(data, "tui.select.confirm")) void this.saveMigration();
+      return this.requestRender();
+    }
     if (this.keybindings.matches(data, "tui.select.up")) this.selected = Math.max(0, this.selected - 1);
     else if (this.keybindings.matches(data, "tui.select.down")) this.selected = Math.min(this.nodes().length - 1, this.selected + 1);
     else if (this.keybindings.matches(data, "tui.select.confirm")) return this.openFieldChoice();
@@ -628,6 +725,7 @@ export class DisplayManager implements Component, Focusable {
       resetNode(this.currentLayer(), this.node());
       this.flash = { kind: "success", text: `${this.node().label} reset in staged config` };
     } else if (matchesKey(data, "w")) return this.openReview();
+    else if (matchesKey(data, "m")) return this.openMigration();
     else if (matchesKey(data, "t")) this.previewWidthIndex = (this.previewWidthIndex + 1) % PREVIEW_WIDTHS.length;
     else if (matchesKey(data, "v")) this.previewThemeIndex = (this.previewThemeIndex + 1) % this.previewThemes.length;
     this.requestRender();

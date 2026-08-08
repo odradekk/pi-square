@@ -10,6 +10,12 @@ import {
 } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  DisplayMigrationError,
+  migrateDisplayConfig,
+  migrateFooterMode,
+  type DisplayMigrationChange,
+} from "../display/migration";
 import type { DisplayLayerConfig } from "../display/types";
 import { validateConfigLayer } from "./config";
 
@@ -46,6 +52,8 @@ export interface DisplayConfigSnapshot {
   readonly fingerprint: string;
   readonly display: DisplayLayerConfig;
   readonly footerModePresent: boolean;
+  /** Migration changes detected when reading legacy configuration (display fields or footer.mode). Present only when non-empty. */
+  readonly migration?: readonly DisplayMigrationChange[];
 }
 
 export interface DisplayConfigWriterTestHooks {
@@ -210,16 +218,37 @@ export async function readDisplayConfigSnapshot(
       );
     }
   }
-  const validationError = validateConfigLayer(root, scope);
+  // Run the migration reader on the display section. This accepts legacy
+  // fields (e.g. diffIndicators) and produces a canonical DisplayLayerConfig
+  // with explicit change records. For already-canonical input the reader is a
+  // no-op (same display, no changes). Invalid display input is rejected.
+  const rawDisplay = root.display && typeof root.display === "object" && !Array.isArray(root.display)
+    ? root.display
+    : undefined;
+  let migrationResult;
+  try {
+    migrationResult = migrateDisplayConfig(rawDisplay);
+  } catch (error) {
+    if (error instanceof DisplayMigrationError) {
+      throw new DisplayConfigWriteError(
+        `existing display config is invalid: ${error.message}`,
+        "DISPLAY_CANDIDATE_INVALID",
+      );
+    }
+    throw error;
+  }
+
+  // Validate the complete config layer with the canonical display substituted
+  // so that non-display parts (version, footer, banner, ssh) are still checked.
+  const validatedRoot = { ...root, display: migrationResult.display };
+  const validationError = validateConfigLayer(validatedRoot, scope);
   if (validationError) {
     throw new DisplayConfigWriteError(
       `existing config is invalid: ${validationError}`,
       "DISPLAY_CANDIDATE_INVALID",
     );
   }
-  const display = root.display && typeof root.display === "object" && !Array.isArray(root.display)
-    ? structuredClone(root.display as DisplayLayerConfig)
-    : {};
+
   const footer = root.footer;
   const footerModePresent = Boolean(
     footer
@@ -227,11 +256,19 @@ export async function readDisplayConfigSnapshot(
     && !Array.isArray(footer)
     && Object.hasOwn(footer, "mode"),
   );
+
+  // Collect all migration changes: display changes plus footer.mode removal.
+  const footerModeChange = migrateFooterMode(footerModePresent);
+  const allChanges = footerModeChange
+    ? [...migrationResult.changes, footerModeChange]
+    : migrationResult.changes;
+
   return {
     path: paths.configPath,
     fingerprint: fingerprintConfigContent(content),
-    display,
+    display: structuredClone(migrationResult.display),
     footerModePresent,
+    ...(allChanges.length > 0 ? { migration: allChanges } : {}),
   };
 }
 
