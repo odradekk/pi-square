@@ -64,7 +64,7 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
 test("collapsed guide is one native-style summary and expanded guide reveals bounded metadata", () => {
   const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
-  assert.match(collapsed, /✓ SUBAGENT CONFIG/);
+  assert.match(collapsed, /✓ ◆ Config guide/);
   assert.match(collapsed, /6 definitions/);
   assert.match(collapsed, /package/);
   assert.match(collapsed, /expand/);
@@ -104,6 +104,34 @@ test("real themes keep the unframed guide bounded at every display boundary widt
       }
     }
   }
+});
+
+test("guide uses operational interface grammar with workflow icon and title-case label", () => {
+  const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
+  const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
+  // ◆ workflow icon from the design-spec icon vocabulary
+  assert.match(collapsed, /◆/, "guide header uses ◆ workflow icon");
+  // Title-case label, not all-caps
+  assert.match(collapsed, /Config guide/, "guide header uses title-case label");
+  assert.doesNotMatch(collapsed, /SUBAGENT CONFIG/, "guide header is not all-caps");
+  // Uses standard semantic tokens, not customMessage* tokens
+  const tokenTheme = {
+    fg(color, text) { return `[${color}]{${text}}`; },
+    bg(_c, t) { return String(t); },
+    bold(t) { return String(t); },
+  };
+  const tokenCollapsed = renderSubagentConfigGuide(guide, { expanded: false }, tokenTheme).render(80).join("");
+  assert.doesNotMatch(tokenCollapsed, /customMessage/, "guide does not use customMessage tokens");
+});
+
+test("guide expanded view uses width-aware rule instead of fixed-width border", () => {
+  const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
+  const expanded = plain(renderSubagentConfigGuide(guide, { expanded: true }, plainTheme), 100);
+  // The expanded view should show the markdown content with Configuration contract
+  assert.match(expanded, /Configuration contract/);
+  assert.match(expanded, /promptVersion: 2/);
+  // Should NOT use the fixed 24-char borderMuted rule
+  assert.doesNotMatch(expanded, /borderMuted/);
 });
 
 try {

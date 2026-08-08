@@ -3,7 +3,7 @@ import {
   keyHint,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Text, type Component } from "@earendil-works/pi-tui";
+import { Container, Markdown, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { SubagentRegistry } from "./definitions";
 import { sanitizeSubagentDisplay } from "./display";
 
@@ -89,26 +89,25 @@ export function renderSubagentConfigGuide(
     ? details.scopes.filter((scope) => scope === "package" || scope === "agent" || scope === "project").join("/")
     : "";
   const container = new Container();
-  const label = `${theme.fg("success", "✓")} ${theme.fg("customMessageLabel", theme.bold("SUBAGENT CONFIG"))}`;
+  const label = `${theme.fg("success", "✓")} ${theme.fg("accent", "◆")} ${theme.fg("toolTitle", theme.bold("Config guide"))}`;
   if (!options.expanded) {
     const summary = [
       `${count} definition${count === 1 ? "" : "s"}`,
       scopes,
     ].filter(Boolean).join(" · ");
     container.addChild(new Text(
-      `${label}${summary ? theme.fg("customMessageText", `  ${summary}`) : ""}${theme.fg("dim", `  ${keyHint("app.tools.expand", " expand")}`)}`,
+      `${label}${summary ? theme.fg("muted", `  ${summary}`) : ""}${theme.fg("dim", `  ${keyHint("app.tools.expand", " expand")}`)}`,
       0,
       0,
     ));
     return container;
   }
 
-  container.addChild(new Text(`${label}\n${theme.fg("borderMuted", "─".repeat(24))}`, 0, 0));
+  container.addChild(new Text(label, 0, 0));
+  container.addChild(new Text(theme.fg("dim", "─".repeat(Math.max(1, visibleWidth(label) + 1))), 0, 0));
   const content = sanitizeSubagentDisplay(message.content || "Subagent configuration guide unavailable.")
     .replace(/^\[Subagent Config Guide\]\n+/, "");
-  container.addChild(new Markdown(content, 0, 0, getMarkdownTheme(), {
-    color: (text) => theme.fg("customMessageText", text),
-  }));
+  container.addChild(new Markdown(content, 0, 0, getMarkdownTheme()));
   container.addChild(new Text(theme.fg("dim", keyHint("app.tools.expand", " collapse")), 0, 0));
   return container;
 }
