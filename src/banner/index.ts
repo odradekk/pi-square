@@ -1,6 +1,6 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import type { PiSquareConfig } from "../core/config";
-import { padVisible, rightPriorityRows } from "../display/layout";
+import { padVisible } from "../display/layout";
 import { sanitizeDisplayLine, truncateCodePoints } from "../display/sanitize";
 
 let displayDiagnostic: string | undefined;
@@ -14,15 +14,14 @@ export function setBannerDisplayDiagnostic(diagnostic: string | undefined): void
 function buildBannerLines(theme: Theme, width: number): string[] {
   const safe = Math.max(1, width);
   const rail = theme.fg("success", "✓");
-  const identity = theme.fg("toolTitle", theme.bold("π²  PI-SQUARE"));
-  const mode = theme.fg("muted", "OPERATIONAL CONSOLE");
-  const tagline = theme.fg("dim", "unified local extension package for Pi");
-  return [
-    ...rightPriorityRows(`${rail} ${identity}`, mode, safe),
-    padVisible(`  ${tagline}`, safe),
-    ...(displayDiagnostic ? [padVisible(`${theme.fg("warning", "!")} ${theme.fg("warning", displayDiagnostic)}`, safe)] : []),
-    padVisible(theme.fg("borderMuted", "─".repeat(safe)), safe),
+  const identity = theme.fg("toolTitle", "π² pi-square");
+  const lines = [
+    padVisible(`${rail} ${identity}`, safe),
   ];
+  if (displayDiagnostic) {
+    lines.push(padVisible(`${theme.fg("warning", "!")} ${theme.fg("warning", displayDiagnostic)}`, safe));
+  }
+  return lines;
 }
 
 export default function registerBanner(
