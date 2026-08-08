@@ -99,6 +99,13 @@ function remoteLifecycle(name: string, isError: boolean, details: UnknownRecord)
     const status = String(details.status ?? "").toLowerCase();
     if (status === "aborted") return { lifecycle: "aborted" };
   }
+  // SSH declined states (connect declined, secret_input cancelled) have
+  // isError:false but status:declined. statusFor maps declined to
+  // aborted; set lifecycle explicitly for robustness.
+  if (name === "ssh" && !isError) {
+    const status = String(details.status ?? "").toLowerCase();
+    if (status === "declined") return { lifecycle: "aborted" };
+  }
   return undefined;
 }
 
@@ -459,6 +466,8 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     field("sessionState", asRecord(details.session).state),
     field("commandState", asRecord(details.session).commandState),
     field("disconnectReason", asRecord(details.session).disconnectReason),
+    // SSH-specific: code field (HOST_VERIFICATION_FAILED, AUTH_FAILED, etc.)
+    details.operation !== undefined ? field("sshCode", details.code, "muted") : undefined,
     details.exitCode !== undefined ? field("exitCode", details.exitCode, details.exitCode === 0 ? "success" : "error") : undefined,
     // SSH output page cursor metadata
     (() => {
@@ -489,10 +498,14 @@ export function createRemoteAdapter(
       const source = asRecord(args);
       const requestMeta = metadata(requestFields(name, source));
       const target = name === "ssh" ? sshTarget(source) : undefined;
+      // SSH secret_input needs the needs-input qualifier so users can
+      // distinguish "waiting for interactive secret" from normal running.
+      const needsInput = name === "ssh" && source.operation === "secret_input";
       return baseDescription(description, {
         metadata: mergeMetadata(description.metadata ?? [], requestMeta, remoteSuppress(name)),
         sections: sections(requestSection("Request", name, source)),
         ...(target ? { target } : {}),
+        ...(needsInput ? { qualifiers: ["needs-input"] } : {}),
       });
     },
     describeResult(result, options, context) {
