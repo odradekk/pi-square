@@ -1,0 +1,450 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { stripVTControlCharacters } from "node:util";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import jiti from "jiti";
+
+const load = jiti(import.meta.url, { moduleCache: false });
+const { DISPLAY_CATALOG } = await load("../../src/display/catalog.ts");
+const { OperationalDisplayComponent } = await load("../../src/display/components.ts");
+const { DEFAULT_DISPLAY_POLICY } = await load("../../src/display/types.ts");
+
+const root = join(import.meta.dirname, "..", "..");
+const themeModulePath = pathToFileURL(join(
+  root,
+  "node_modules",
+  "@earendil-works",
+  "pi-coding-agent",
+  "dist",
+  "modes",
+  "interactive",
+  "theme",
+  "theme.js",
+)).href;
+const { loadThemeFromPath } = await import(themeModulePath);
+
+// ── Themes: bundled dark, bundled light, and a minimal valid third-party ──
+
+const darkTheme = loadThemeFromPath(join(root, "themes", "pi-square-theme-dark.json"));
+const lightTheme = loadThemeFromPath(join(root, "themes", "pi-square-theme-light.json"));
+
+// A minimal valid third-party theme with a different palette shape.
+const thirdPartyTheme = {
+  fg(token, text) { return `\x1b[31m${text}\x1b[0m`; },
+  bg(_token, text) { return String(text); },
+  bold(text) { return `\x1b[1m${text}\x1b[0m`; },
+  inverse(text) { return `\x1b[7m${text}\x1b[0m`; },
+};
+
+const themes = [
+  ["dark", darkTheme],
+  ["light", lightTheme],
+  ["third-party", thirdPartyTheme],
+];
+
+const widths = [39, 40, 63, 64, 80, 99, 100, 120];
+
+// ── 1. Full state matrix: empty, truncated, expanded for all tools ──
+
+const extraStates = ["empty", "truncated", "expanded-call", "expanded-result"];
+
+const extraStateMap = {
+  empty: { lifecycle: "completed", emptyRows: true },
+  truncated: { lifecycle: "completed", qualifiers: ["truncated"] },
+  "expanded-call": { lifecycle: "running", phase: "call" },
+  "expanded-result": { lifecycle: "completed", expanded: true },
+};
+
+function descriptionFor(entry, state) {
+  const cfg = extraStateMap[state];
+  const isEmpty = state === "empty";
+  return {
+    version: 1,
+    tool: entry.name,
+    family: entry.family,
+    lifecycle: cfg.lifecycle,
+    ...(cfg.qualifiers ? { qualifiers: cfg.qualifiers } : {}),
+    ...(cfg.phase ? { phase: cfg.phase } : {}),
+    title: entry.name.toUpperCase(),
+    target: "src/example\x1b]0;owned\x07.ts",
+    metadata: [{ label: "count", value: "12" }, { label: "secret", value: "token=hidden-value" }],
+    rows: isEmpty ? [] : [{ text: `${entry.name} ${state}` }],
+    ...(isEmpty ? {} : { preview: { text: "line one\nline two\nline three", omittedLines: 2 } }),
+    truncated: state === "truncated",
+    ...(entry.name === "edit" || entry.name === "write"
+      ? { diff: { path: "src/example.ts", before: "old\n", after: "new\n", projected: entry.name === "write" } }
+      : {}),
+  };
+}
+
+for (const entry of DISPLAY_CATALOG) {
+  for (const state of extraStates) {
+    const description = descriptionFor(entry, state);
+    for (const [themeName, theme] of themes) {
+      for (const width of widths) {
+        const expanded = state === "expanded-result" || state === "expanded-call";
+        const policy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview" };
+        const component = new OperationalDisplayComponent(description, policy, theme, { expanded });
+        const lines = component.render(width);
+        assert.ok(lines.length > 0, `${entry.name}/${state}/${themeName}/${width} rendered empty`);
+        assert.ok(
+          lines.every((line) => visibleWidth(line) <= width),
+          `${entry.name}/${state}/${themeName}/${width} exceeded ${width}`,
+        );
+        const plain = stripVTControlCharacters(lines.join("\n"));
+        assert.doesNotMatch(plain, /owned|hidden-value|\x07/);
+      }
+    }
+  }
+}
+
+// ── 2. Empty state produces a visible header even without rows/preview ──
+
+{
+  for (const [themeName, theme] of themes) {
+    const description = {
+      version: 1,
+      tool: "rg",
+      family: "search",
+      lifecycle: "completed",
+      title: "TEXT SEARCH",
+      target: "src/target.ts",
+      rows: [],
+    };
+    const policy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview" };
+    const lines = new OperationalDisplayComponent(description, policy, theme, { expanded: false }).render(80);
+    assert.ok(lines.length > 0, `empty state must render at least the header in ${themeName}`);
+    const plain = stripVTControlCharacters(lines.join("\n"));
+    assert.match(plain, /✓/, "completed marker must appear in empty state");
+  }
+}
+
+// ── 3. Truncated state renders with bounded output ──
+
+{
+  for (const [themeName, theme] of themes) {
+    const description = {
+      version: 1,
+      tool: "rg",
+      family: "search",
+      lifecycle: "completed",
+      qualifiers: ["truncated"],
+      title: "TEXT SEARCH",
+      target: "src/target.ts",
+      rows: [{ text: "truncated result" }],
+      preview: { text: "visible\nhidden\nmore hidden\n", omittedLines: 50 },
+      truncated: true,
+    };
+    const policy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", previewLines: 1 };
+    const lines = new OperationalDisplayComponent(description, policy, theme, { expanded: false }).render(80);
+    const plain = stripVTControlCharacters(lines.join("\n"));
+    assert.match(plain, /✓/, "completed marker for truncated state");
+    assert.ok(lines.every((line) => visibleWidth(line) <= 80), `truncated state bounded at 80 in ${themeName}`);
+  }
+}
+
+// ── 4. All lifecycle + qualifier combinations at all widths ──
+
+const lifecycleCombos = [
+  { lifecycle: "queued" },
+  { lifecycle: "pending" },
+  { lifecycle: "running" },
+  { lifecycle: "running", qualifiers: ["partial"] },
+  { lifecycle: "running", qualifiers: ["retrying"] },
+  { lifecycle: "running", qualifiers: ["cancelling"] },
+  { lifecycle: "completed" },
+  { lifecycle: "completed", qualifiers: ["warning"] },
+  { lifecycle: "completed", qualifiers: ["truncated"] },
+  { lifecycle: "completed", qualifiers: ["projected"] },
+  { lifecycle: "completed", qualifiers: ["needs-input"] },
+  { lifecycle: "failed" },
+  { lifecycle: "aborted" },
+];
+
+for (const combo of lifecycleCombos) {
+  const description = {
+    version: 1,
+    tool: "sample",
+    family: "workflow",
+    lifecycle: combo.lifecycle,
+    ...(combo.qualifiers ? { qualifiers: combo.qualifiers } : {}),
+    title: "Sample",
+    target: "src/target.ts",
+    metadata: [{ label: "count", value: "5" }],
+    rows: [{ text: "result text" }],
+  };
+  for (const [themeName, theme] of themes) {
+    for (const width of widths) {
+      const component = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false });
+      const lines = component.render(width);
+      assert.ok(lines.length > 0, `${combo.lifecycle}/${combo.qualifiers?.join("+") ?? "none"}/${themeName}/${width} rendered empty`);
+      assert.ok(
+        lines.every((line) => visibleWidth(line) <= width),
+        `${combo.lifecycle}/${combo.qualifiers?.join("+") ?? "none"}/${themeName}/${width} exceeded ${width}`,
+      );
+    }
+  }
+}
+
+// ── 5. Sanitization and redaction across all themes ──
+
+const secretValues = [
+  "Bearer ghp_SECRET123",
+  "api_key=hidden-key",
+  "password=do-not-show",
+  "token: abc-token-xyz",
+  "github_pat_ABCDE",
+  "ghp_production_token",
+  "fc-api-key-12345",
+];
+
+for (const secret of secretValues) {
+  for (const [themeName, theme] of themes) {
+    const description = {
+      version: 1,
+      tool: "rg",
+      family: "search",
+      lifecycle: "failed",
+      title: "TEXT SEARCH",
+      target: "src/target.ts",
+      rows: [{ text: secret }],
+      error: secret,
+    };
+    const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(80);
+    const plain = stripVTControlCharacters(lines.join("\n"));
+    for (const sensitive of ["ghp_SECRET123", "hidden-key", "do-not-show", "abc-token-xyz", "github_pat_ABCDE", "ghp_production_token", "fc-api-key-12345"]) {
+      assert.doesNotMatch(plain, new RegExp(sensitive), `secret '${sensitive}' leaked in ${themeName}`);
+    }
+    assert.match(plain, /\[REDACTED\]/, `failed state must show [REDACTED] in ${themeName}`);
+  }
+}
+
+// ── 6. Control-character injection must be sanitized ──
+
+{
+  // Control sequences must be stripped; surrounding text remains.
+  const maliciousInputs = [
+    "safe\x1b]0;title-injection\x07text",
+    "safe\x1b[31mred-text\x1b[0m",
+  ];
+  for (const malicious of maliciousInputs) {
+    const description = {
+      version: 1,
+      tool: "rg",
+      family: "search",
+      lifecycle: "completed",
+      title: "SEARCH",
+      target: malicious,
+      rows: [{ text: malicious }],
+    };
+    const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false }).render(80);
+    const plain = stripVTControlCharacters(lines.join("\n"));
+    // OSC sequences must be fully stripped
+    assert.doesNotMatch(plain, /title-injection/);
+    assert.doesNotMatch(plain, /\x1b|\x07/);
+  }
+}
+
+// ── 7. Expanded vs collapsed information reachability ──
+
+{
+  const description = {
+    version: 1,
+    tool: "read",
+    family: "filesystem",
+    lifecycle: "completed",
+    title: "READ",
+    target: "src/example.ts",
+    metadata: [{ label: "lines", value: "100" }],
+    rows: [{ text: "summary line" }],
+    sections: [
+      {
+        title: "File",
+        blocks: [{ kind: "code", text: "line 1\nline 2\nline 3", language: "typescript", lineNumbers: true }],
+        compact: false,
+      },
+    ],
+  };
+
+  // Collapsed: non-compact sections are hidden but header info is visible
+  const collapsed = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false }).render(80);
+  const collapsedPlain = stripVTControlCharacters(collapsed.join("\n"));
+  assert.match(collapsedPlain, /✓ READ/, "collapsed must show marker and title");
+  assert.match(collapsedPlain, /summary line/, "collapsed must show rows");
+
+  // Expanded: all sections become visible
+  const expanded = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: true }).render(80);
+  const expandedPlain = stripVTControlCharacters(expanded.join("\n"));
+  assert.match(expandedPlain, /line 1/, "expanded must show section content");
+  assert.match(expandedPlain, /line 2/, "expanded must show all section lines");
+  assert.match(expandedPlain, /FILE/, "expanded must show section title");
+}
+
+// ── 8. Motion downgrade: all lifecycles render correctly ──
+
+{
+  for (const lifecycle of ["running", "completed", "failed"]) {
+    const description = {
+      version: 1,
+      tool: "sample",
+      family: "workflow",
+      lifecycle,
+      title: "Sample",
+      target: "src/target.ts",
+      rows: [{ text: "content" }],
+    };
+    for (const [themeName, theme] of themes) {
+      for (const width of widths) {
+        const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(width);
+        assert.ok(lines.length > 0, `motion/${lifecycle}/${themeName}/${width} rendered empty`);
+        assert.ok(lines.every((line) => visibleWidth(line) <= width), `motion/${lifecycle}/${themeName}/${width} exceeded`);
+      }
+    }
+  }
+}
+
+// ── 9. Diff: unified, split, and auto at all widths ──
+
+{
+  for (const diffView of ["unified", "split", "auto"]) {
+    for (const threshold of [70, 100, 120]) {
+      const policy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", diffView, diffSplitMinWidth: threshold };
+      const description = {
+        version: 1,
+        tool: "edit",
+        family: "filesystem",
+        lifecycle: "completed",
+        title: "EDIT",
+        target: "src/example.ts",
+        diff: {
+          path: "src/example.ts",
+          before: "old line\nshared line\nremoved line\n",
+          after: "new line\nshared line\nadded line\n",
+        },
+      };
+      for (const [themeName, theme] of themes) {
+        for (const width of widths) {
+          const lines = new OperationalDisplayComponent(description, policy, theme, { expanded: true }).render(width);
+          assert.ok(lines.length > 0, `diff/${diffView}/${threshold}/${themeName}/${width} rendered empty`);
+          assert.ok(
+            lines.every((line) => visibleWidth(line) <= width),
+            `diff/${diffView}/${threshold}/${themeName}/${width} exceeded ${width}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+// ── 10. Wrap vs no-wrap bounded at all widths ──
+
+{
+  for (const wordWrap of [true, false]) {
+    const policy = { ...DEFAULT_DISPLAY_POLICY, wordWrap };
+    const description = {
+      version: 1,
+      tool: "read",
+      family: "filesystem",
+      lifecycle: "completed",
+      title: "READ",
+      target: "src/example.ts",
+      rows: [{ text: "a".repeat(200) }],
+    };
+    for (const width of widths) {
+      const lines = new OperationalDisplayComponent(description, policy, darkTheme, { expanded: false }).render(width);
+      assert.ok(lines.every((line) => visibleWidth(line) <= width), `wrap=${wordWrap}/${width} exceeded`);
+    }
+  }
+}
+
+// ── 11. Bundled themes use only standard Pi semantic tokens ──
+
+for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
+  const themeData = JSON.parse(readFileSync(join(root, "themes", themeFile), "utf8"));
+  // Every color value must be a var alias (string), not a raw hex
+  for (const [token, value] of Object.entries(themeData.colors)) {
+    assert.equal(typeof value, "string", `${themeFile}/${token} must be a var alias`);
+    assert.ok(themeData.vars[value] !== undefined, `${themeFile}/${token} references unknown var '${value}'`);
+  }
+}
+
+// ── 12. Hidden result mode preserves error visibility ──
+
+{
+  for (const [themeName, theme] of themes) {
+    for (const lifecycle of ["failed", "aborted"]) {
+      const description = {
+        version: 1,
+        tool: "rg",
+        family: "search",
+        lifecycle,
+        title: "SEARCH",
+        target: "src/target.ts",
+        rows: [{ text: "result content" }],
+        ...(lifecycle === "failed" ? { error: "Bearer secret-hidden" } : {}),
+      };
+      const policy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "hidden" };
+      const lines = new OperationalDisplayComponent(description, policy, theme, { expanded: false }).render(80);
+      const plain = stripVTControlCharacters(lines.join("\n"));
+      if (lifecycle === "failed") {
+        assert.match(plain, /✗/, `hidden/failed must show ✗ marker in ${themeName}`);
+        assert.match(plain, /\[REDACTED\]/, `hidden/failed must show [REDACTED] in ${themeName}`);
+      } else {
+        assert.match(plain, /×/, `hidden/aborted must show × marker in ${themeName}`);
+      }
+      // Hidden mode preserves markers for failed/aborted;
+      // row suppression only applies to non-error states.
+      // The error content itself is always redacted.
+    }
+  }
+}
+
+// ── 13. Summary result mode across all catalog tools ──
+// integration.test.mjs covers hidden/summary/preview for the 6 core states;
+// this section adds summary mode for the extra states (empty, truncated, expanded).
+
+{
+  for (const entry of DISPLAY_CATALOG) {
+    for (const state of ["empty", "truncated"]) {
+      const description = descriptionFor(entry, state);
+      for (const [themeName, theme] of themes) {
+        for (const width of widths) {
+          const policy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "summary" };
+          const lines = new OperationalDisplayComponent(description, policy, theme, { expanded: false }).render(width);
+          assert.ok(lines.length > 0, `summary/${entry.name}/${state}/${themeName}/${width} rendered empty`);
+          assert.ok(lines.every((line) => visibleWidth(line) <= width), `summary/${entry.name}/${state}/${themeName}/${width} exceeded`);
+        }
+      }
+    }
+  }
+}
+
+// ── 14. Call-phase rendering across all catalog tools ──
+
+{
+  for (const entry of DISPLAY_CATALOG) {
+    for (const lifecycle of ["queued", "pending", "running"]) {
+      const description = {
+        version: 1,
+        tool: entry.name,
+        family: entry.family,
+        lifecycle,
+        phase: "call",
+        title: entry.name.toUpperCase(),
+        target: "src/target.ts",
+        metadata: [{ label: "arg", value: "test" }],
+      };
+      for (const [themeName, theme] of themes) {
+        for (const width of widths) {
+          const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(width);
+          assert.ok(lines.length > 0, `call/${entry.name}/${lifecycle}/${themeName}/${width} rendered empty`);
+          assert.ok(lines.every((line) => visibleWidth(line) <= width), `call/${entry.name}/${lifecycle}/${themeName}/${width} exceeded`);
+        }
+      }
+    }
+  }
+}
+
+console.log("visual acceptance tests: OK");

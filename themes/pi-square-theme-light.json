@@ -12,13 +12,13 @@
     "textSoft": "#3c4549",
     "muted": "#576166",
     "dim": "#5d676d",
-    "accent": "#37636c",
-    "accentStrong": "#2a525a",
+    "accent": "#9c5828",
+    "accentStrong": "#b8542c",
     "border": "#6a7981",
     "borderMuted": "#73848c",
-    "success": "#32674d",
-    "error": "#95373a",
-    "warning": "#715628"
+    "success": "#2d6b43",
+    "error": "#9c2f33",
+    "warning": "#7a5318"
   },
   "colors": {
     "accent": "accent",
