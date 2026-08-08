@@ -132,4 +132,39 @@ for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {
 }
 
 assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u);
+
+// ─── Operational interface: agent icon, lifecycle markers, title-case sections ─
+assert.match(collapsed, /◇/, "notification header uses ◇ agent-family icon");
+assert.doesNotMatch(collapsed, /subagent/, "notification header no longer uses 'subagent' text identity");
+assert.match(collapsed, /✓ done/, "done status uses ✓ marker");
+
+const errorNotification = renderSubagentNotification(
+  { content: "failed", details: { id: failed.id, status: "error", result: failed } },
+  { expanded: false },
+  plainTheme,
+);
+const errorText = plainLines(errorNotification, 80).join("\n");
+assert.match(errorText, /✗ error/, "error status uses ✗ marker");
+
+// Section headings use title-case, not all-caps
+const expandedPlain = plainLines(renderSubagentNotification(message, { expanded: true }, plainTheme), 120).join("\n");
+assert.match(expandedPlain, /Task/, "section heading uses title-case Task");
+assert.doesNotMatch(expandedPlain, /TASK/, "section heading is not all-caps TASK");
+assert.match(expandedPlain, /Result/, "section heading uses title-case Result");
+assert.doesNotMatch(expandedPlain, /RESULT/, "section heading is not all-caps RESULT");
+assert.match(expandedPlain, /Activity/, "section heading uses title-case Activity");
+assert.doesNotMatch(expandedPlain, /ACTIVITY/, "section heading is not all-caps ACTIVITY");
+
+// ─── Aborted notification uses muted tone, × marker, and error shell ──
+const abortedDetails = details({ phase: "aborted", finalText: "", error: "cancelled" });
+const abortedBackgrounds = [];
+const abortedComponent = renderSubagentNotification(
+  { content: "aborted", details: { id: abortedDetails.id, status: "aborted", result: abortedDetails } },
+  { expanded: false },
+  { ...plainTheme, bg(color, text) { abortedBackgrounds.push(color); return String(text); } },
+);
+const abortedText = plainLines(abortedComponent, 80).join("\n");
+assert.match(abortedText, /× aborted/, "aborted status uses × marker");
+assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses error shell");
+
 console.log("subagent notification rendering: success/error, privacy, activity, and width contracts passed");

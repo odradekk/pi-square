@@ -73,7 +73,8 @@ class SectionHeading implements Component {
 
   render(width: number): string[] {
     const safeWidth = Math.max(1, width);
-    const label = this.theme.fg("muted", this.label.toUpperCase());
+    const titleCase = this.label.charAt(0).toUpperCase() + this.label.slice(1);
+    const label = this.theme.fg("muted", titleCase);
     const prefix = `${label} `;
     const remaining = Math.max(0, safeWidth - visibleWidth(prefix));
     return ["", `${prefix}${this.theme.fg("dim", "─".repeat(remaining))}`];
@@ -202,15 +203,15 @@ function statusPresentation(phase: string, theme: Theme): string {
     case "error":
       return theme.fg("error", "✗ error");
     case "aborted":
-      return theme.fg("warning", "× aborted");
+      return theme.fg("muted", "× aborted");
     case "queued":
-      return theme.fg("muted", "— queued");
+      return theme.fg("muted", "– queued");
     case "cancelling":
       return theme.fg("warning", "× cancelling");
     case "active":
-      return theme.fg("warning", "→ active");
+      return theme.fg("accent", "→ active");
     default:
-      return theme.fg("warning", "→ running");
+      return theme.fg("accent", "→ running");
   }
 }
 
@@ -342,7 +343,7 @@ function addHeader(
 ): void {
   const identityParts = notification
     ? [
-        theme.fg("toolTitle", theme.bold("subagent")),
+        theme.fg("accent", "◇"),
         theme.fg("accent", theme.bold(agentLabel(details))),
         theme.fg("muted", modeLabel(details.mode)),
       ]
@@ -542,7 +543,7 @@ export function renderSubagentNotification(
   theme: Theme,
 ): Component {
   const details = message.details?.result;
-  const error = message.details?.status === "error" || details?.phase === "error";
+  const error = message.details?.status === "error" || details?.phase === "error" || details?.phase === "aborted";
   const shell = new Box(1, 1, (text) => theme.bg(error ? "toolErrorBg" : "toolSuccessBg", text));
   if (!isRunDetails(details)) {
     const fallback = sanitizeSubagentDisplay(message.content || "Background subagent notification");
