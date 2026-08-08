@@ -46,10 +46,13 @@ function todoItems(details: UnknownRecord): DisplayRecordItem[] {
 function askAnswers(details: UnknownRecord): DisplayRecordItem[] {
   return asArray(details.answers).map((value) => {
     const answer = asRecord(value);
+    const selectedLabels = asArray(answer.selected).map((selected) => stringOf(asRecord(selected).label) ?? String(selected)).join(", ");
+    const isCommentOnly = selectedLabels === "" && answer.skipped !== true;
     return {
       title: stringOf(answer.questionText) ?? stringOf(answer.questionId) ?? "Question",
       fields: metadata([
-        field("selected", asArray(answer.selected).map((selected) => stringOf(asRecord(selected).label) ?? String(selected)).join(", ")),
+        field("selected", selectedLabels),
+        isCommentOnly ? field("comment-only", "yes", "muted") : undefined,
         answer.skipped === true ? field("skipped", "yes", "warning") : undefined,
       ]),
       body: stringOf(answer.comment),
@@ -207,7 +210,7 @@ export function createWorkflowAdapter(
             ? codeSection("Result", text, "json", false)
             : undefined,
         );
-      const hasDomain = structured.some((section) => section.title === "Tasks" || section.title === "Answers" || section.title === "Result" || section.title === "Local" || section.title === "Summary");
+      const hasDomain = structured.some((section) => section.title === "Tasks" || section.title === "Answers" || section.title === "Result" || section.title === "Local" || section.title === "Summary" || section.title === "Request");
       const output = options.expanded && !hasDomain ? codeSection("Result", text, "json", false) : undefined;
       return baseDescription(description, {
         ...(name === "time" ? { lifecycle: timeLifecycle(context, "result") } : {}),

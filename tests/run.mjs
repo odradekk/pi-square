@@ -44,6 +44,7 @@ const suites = [
   "display/ssh-confirmation-input.test.mjs",
   "display/todo-transcript.test.mjs",
   "display/ask-workflow.test.mjs",
+  "display/ask-advanced-states.test.mjs",
   "config.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",
