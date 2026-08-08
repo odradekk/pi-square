@@ -10,6 +10,9 @@ build/
 coverage/
 *.tsbuildinfo
 
+# Packed-consumer fixture created by tests/release/installed-display-export.test.mjs
+.pi-square-packed-consumer-*/
+
 # Logs
 *.log
 npm-debug.log*
