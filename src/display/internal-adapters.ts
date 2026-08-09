@@ -1,5 +1,5 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { formatDisplayPath } from "./adapter-utils";
+import { composeInternalSummary, formatDisplayPath, stringOf } from "./adapter-utils";
 import { getCatalogEntry } from "./catalog";
 import { createExecutionAdapter } from "./execution-adapters";
 import { createRemoteAdapter } from "./remote-adapters";
@@ -177,7 +177,9 @@ function summaryRows(detailsValue: unknown): { rows: { text: string }[]; metadat
     const returned = page.returned ?? details.returned;
     const phase = String(details.phase ?? details.status ?? "").toLowerCase();
     const terminal = ["success", "done", "completed", "ready"].includes(phase);
-    if (returned === 0) rows.push({ text: "No results" });
+    const aborted = ["aborted", "cancelled", "canceled"].includes(phase);
+    if (aborted) rows.push({ text: "Aborted" });
+    else if (returned === 0) rows.push({ text: "No results" });
     else if (terminal || (!phase && returned !== undefined)) rows.push({ text: "Completed" });
   }
   return { rows, metadata };
@@ -208,11 +210,18 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
     },
     describeResult(result, options, context) {
       const text = firstText(result);
-      const summary = summaryRows(result.details);
+      const outcome = summaryRows(result.details);
       const lc = resolveResultLifecycle(result, options.isPartial);
       const details = record(result.details);
       const durationMs = typeof details.durationMs === "number" ? details.durationMs : undefined;
       const target = targetFor(name, context.args, context.cwd);
+      const failed = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
+      // C6: the error row states one human sentence; the raw platform text
+      // moves to errorRaw and renders exactly once as an expanded ERROR section.
+      const sentence = failed
+        ? stringOf(details.error) ?? stringOf(details.message) ?? stringOf(text.split("\n", 1)[0]) ?? "Tool failed"
+        : undefined;
+      const outcomeSummary = failed ? undefined : composeInternalSummary(name, result.details, context.args, text);
       return {
         version: 1,
         tool: name,
@@ -222,13 +231,12 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         title,
         target: target.value,
         ...(target.isPath ? { targetKind: "path" as const } : {}),
-        metadata: [...metadataForArgs(name, context.args), ...summary.metadata],
-        rows: summary.rows,
+        metadata: [...metadataForArgs(name, context.args), ...outcome.metadata],
+        rows: outcome.rows,
         durationMs,
         ...(text ? { preview: { text } } : {}),
-        ...((result as AgentToolResult<unknown> & { isError?: boolean }).isError
-          ? { error: text || textValue(details.error ?? details.message ?? "Tool failed", 2_000) }
-          : {}),
+        ...(sentence ? { error: textValue(sentence, 2_000), ...(text && text !== sentence ? { errorRaw: text } : {}) } : {}),
+        ...(outcomeSummary ? { summary: outcomeSummary } : {}),
         truncated: isBoundedResult(details),
       };
     },

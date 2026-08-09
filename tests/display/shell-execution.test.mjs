@@ -162,22 +162,22 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(stripVTControlCharacters(ok.render(80).join("\n")), /^✓/, "exit 0 renders completed marker");
 
   // Failure (non-zero exit)
-  const fail = renderResult(decorated, args, { exitCode: 1, flavor: "pwsh", version: "7.4.0", durationMs: 30 }, "Error: term not found", { isError: true });
+  const fail = renderResult(decorated, args, { exitCode: 1, flavor: "pwsh", version: "7.4.0", durationMs: 30 }, "Error: term not found", { isError: true, expanded: true });
   const failText = stripVTControlCharacters(fail.render(80).join("\n"));
   assert.match(failText, /^×/, "non-zero exit renders the failed marker, distinct from completed");
-  assert.match(failText, /exit=1/, "non-zero exit code is visible in metadata");
+  assert.match(failText, /exit=1/, "non-zero exit code is visible in expanded metadata");
 
   // Timeout
   const timeout = renderResult(decorated, args, { exitCode: null, timedOut: true, flavor: "pwsh", version: "7.4.0", durationMs: 30000 }, "partial\nCommand timed out", { isError: true, expanded: true });
   const timeoutText = stripVTControlCharacters(timeout.render(80).join("\n"));
   assert.match(timeoutText, /^×/, "timeout renders the failed marker");
-  assert.match(timeoutText, /timeout=yes/, "timeout status field is visible when expanded");
+  assert.match(timeoutText, /timed out/i, "timeout state is visible via the error message when expanded");
 
   // Abort
   const abort = renderResult(decorated, args, { exitCode: null, aborted: true, flavor: "pwsh", version: "7.4.0", durationMs: 10 }, "Command aborted", { isError: true, expanded: true });
   const abortText = stripVTControlCharacters(abort.render(80).join("\n"));
   assert.match(abortText, /^·/, "aborted renders the distinct aborted marker, not the failed marker");
-  assert.match(abortText, /aborted=yes/, "aborted status field is visible when expanded");
+  assert.match(abortText, /aborted/i, "aborted state is visible via the error message when expanded");
 
   runtime.dispose();
 }
@@ -190,7 +190,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Get-Content huge.log" };
   const result = renderResult(decorated, args, { exitCode: 0, truncated: true, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "last few lines of output", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /output=truncated/, "truncated output is distinctly marked in the Status section");
+  assert.match(text, /\[truncated\]/, "truncated output is distinctly marked via the badge");
 
   runtime.dispose();
 }
@@ -204,7 +204,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, { unavailable: true, reason: "pwsh not found on PATH" }, "pwsh unavailable: pwsh not found on PATH", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^×/, "unavailable pwsh renders the failed marker");
-  assert.match(text, /unavailable=yes/, "unavailable status is distinctly marked");
+  assert.match(text, /pwsh not found on PATH/, "unavailable status is distinctly marked via diagnostics");
   assert.match(text, /pwsh not found on PATH/, "unavailable reason is visible");
 
   runtime.dispose();
@@ -233,7 +233,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makePwshDef(), () => runtime);
   const args = { command: "Get-Process", timeoutMs: 5000 };
-  const result = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "output");
+  const result = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "output", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   // exit should appear exactly once in the header metadata, not twice
   const headerLine = text.split("\n")[1] ?? "";
@@ -261,7 +261,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
   const expanded = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "process list output", { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));
-  assert.match(expandedText, /STATUS/, "expanded shows the Status section (reachable when expanded)");
+  assert.match(expandedText, /exit=0/, "expanded shows exit code in metadata (Status section pruned by C8)");
 
   runtime.dispose();
 }

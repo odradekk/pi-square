@@ -98,18 +98,18 @@ function renderResult(decorated, args, details, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 2. REQUEST section shows phase, counts, and question count ────
+// ─── 2. Metadata shows phase and counts (REQUEST pruned by C8) ───
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_2Q, DONE_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /REQUEST/, "REQUEST section present");
-  assert.match(text, /phase=done/, "REQUEST shows phase");
-  assert.match(text, /questions=2/, "REQUEST shows question count");
-  assert.match(text, /answered=2/, "REQUEST shows answered count");
-  assert.match(text, /skipped=0/, "REQUEST shows skipped count");
+  assert.ok(!text.includes("REQUEST"), "REQUEST restating section is pruned (C8)");
+  assert.match(text, /phase=done/, "metadata shows phase");
+  assert.match(text, /questions=2/, "metadata shows question count");
+  assert.match(text, /answered=2/, "metadata shows answered count");
+  assert.match(text, /skipped=0/, "metadata shows skipped count");
 
   runtime.dispose();
 }
@@ -119,7 +119,7 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
-  const call = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /questions=2/, "call shows question count from args");
   // Question text must NOT be in call display (privacy)
@@ -134,7 +134,7 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
-  const result = renderResult(decorated, ARGS_2Q, CANCELLED_USER);
+  const result = renderResult(decorated, ARGS_2Q, CANCELLED_USER, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "user-cancel renders · (aborted)");
   assert.match(text, /phase=cancelled/, "phase visible");
@@ -149,7 +149,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   // Tool-aborted has isError:true — explicit lifecycle must override to aborted
-  const result = renderResult(decorated, ARGS_2Q, CANCELLED_ABORTED, { isError: true });
+  const result = renderResult(decorated, ARGS_2Q, CANCELLED_ABORTED, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "tool-aborted renders · (aborted, not · failed)");
   assert.match(text, /reason=aborted/, "abort reason visible");
@@ -165,7 +165,6 @@ function renderResult(decorated, args, details, opts = {}) {
   const result = renderResult(decorated, ARGS_2Q, ERROR_DETAILS, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "error renders × (failed)");
-  assert.match(text, /ERROR/, "ERROR section present");
   assert.match(text, /Duplicate question IDs/, "error message visible");
 
   runtime.dispose();
@@ -179,7 +178,7 @@ function renderResult(decorated, args, details, opts = {}) {
   // Test through a theme that renders accent + extra qualifier hint
   // Since needs-input doesn't change the theme token during running,
   // verify the lifecycle is running (wizard active) and question count visible
-  const running = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true }));
+  const running = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const runningText = stripVTControlCharacters(running.render(80).join("\n"));
   assert.match(runningText, /^●/, "wizard active renders running braille");
   assert.match(runningText, /questions=2/, "question count visible during wizard");
@@ -198,12 +197,8 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_2Q, DONE_DETAILS, { expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  // Collapsed should show phase and counts (compact Request section)
-  assert.match(text, /phase=done/, "collapsed shows phase");
-  assert.match(text, /questions=2/, "collapsed shows question count");
-  // Should NOT show raw JSON payload
+  // Collapsed non-payload shows only the summary row; no raw JSON or answer records
   assert.doesNotMatch(text, /"version":\s*1/, "collapsed does not show raw JSON");
-  // Answer records should not be in collapsed (non-compact Answers section)
   assert.doesNotMatch(text, /Pick a color/, "answer records not in collapsed view");
 
   runtime.dispose();
@@ -267,7 +262,7 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
-  const call = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.doesNotMatch(text, /Red|Blue|React|Vue/, "option labels not in call metadata");
   assert.match(text, /questions=2/, "only count is visible");
@@ -311,9 +306,9 @@ function renderResult(decorated, args, details, opts = {}) {
   const call = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true }));
   const result = decorated.renderResult(
     { content: [{ type: "text", text: JSON.stringify(progressDetails) }], details: progressDetails },
-    { expanded: false, isPartial: true },
+    { expanded: true, isPartial: true },
     plainTheme,
-    makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isPartial: true }),
+    makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isPartial: true, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /●|●|●|●|●|●|●|●|●|●/, "progress update shows running braille");

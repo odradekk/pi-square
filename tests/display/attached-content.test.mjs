@@ -91,6 +91,7 @@ const description = {
   lifecycle: "completed",
   title: "READ",
   target: "src/index.ts",
+  summary: "3 lines",
   preview: { text: "line one\nline two\nline three" },
 };
 const component = new OperationalDisplayComponent(
@@ -261,8 +262,15 @@ const settledText = stripVTControlCharacters(settled.render(80).join("\n"));
 assert.match(settledText, /^●/, "completed must render bullet");
 assert.equal(clock.callbacks.size, 0, "completed unsubscribes motion");
 
-// Content visible in default preview mode
-assert.match(settledText, /file content here/, "read content must be visible in preview mode");
+// Content reachable in expanded mode (collapsed shows a summary row per C4)
+const settledExpanded = decorated.renderResult(
+  { content: [{ type: "text", text: "file content here\nsecond line\nthird line" }], details: {} },
+  { expanded: true, isPartial: false },
+  plainTheme,
+  ctx({ argsComplete: true, executionStarted: true, lastComponent: callForResult, isError: false, expanded: true }),
+);
+const settledExpandedText = stripVTControlCharacters(settledExpanded.render(80).join("\n"));
+assert.match(settledExpandedText, /file content here/, "read content must be visible in expanded mode");
 
 // Partial result keeps running lifecycle (not completed)
 const partial = decorated.renderResult(
@@ -331,7 +339,7 @@ const noWrapDesc = {
   title: "READ",
   preview: { text: wideText },
 };
-const noWrapLines = new OperationalDisplayComponent(noWrapDesc, noWrapPolicy, plainTheme, { expanded: false }).render(40);
+const noWrapLines = new OperationalDisplayComponent(noWrapDesc, noWrapPolicy, plainTheme, { expanded: true }).render(40);
 const noWrapPlain = noWrapLines.map((l) => stripVTControlCharacters(l));
 assert.ok(
   noWrapPlain.slice(1).some((l) => l.includes("\u2026")),

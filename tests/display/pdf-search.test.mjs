@@ -133,7 +133,8 @@ function renderResult(decorated, args, details, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makePdfSearchDef(), () => runtime);
   const args = { path: "reports/q3.pdf", query: "revenue", limit: 5 };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  // C7: the key=value metadata row renders only when expanded.
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /PDF search/, "call shows the PDF search title");
   assert.match(text, /revenue/, "call target shows the query");
@@ -152,7 +153,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const args = { path: "reports/q3.pdf", query: "revenue" };
   const result = renderResult(decorated, args, baseDetails(), { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /MATCHES/, "result shows a Matches section");
+  assert.ok(!text.includes("MATCHES"), "a lone Matches section draws no title rule (C9)");
   assert.match(text, /reports\/q3\.pdf:3/, "exact match shows page 3 as the ranked page number");
   assert.match(text, /exact · score 1 · edits 0/, "exact match is labeled exact with score and edit distance");
   assert.match(text, /Total revenue increased by 12% year over year\./, "exact match shows bounded context");
@@ -192,11 +193,9 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = baseDetails({ limit: 1, returned: 1, totalMatches: 5, hasMore: true, cacheHit: true, matches: [baseDetails().matches[0]] });
   const result = renderResult(decorated, args, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /pages=12/, "document page budget (total page count) is visible");
-  assert.match(text, /totalMatches=5/, "total match count is visible");
-  assert.match(text, /returned=1/, "returned count is visible, distinct from total");
-  assert.match(text, /hasMore=true/, "the result budget signals more matches exist beyond the returned/limit set");
-  assert.match(text, /cacheHit=true/, "the cache budget/hit state is visible");
+  assert.match(text, /5 matches on 1 of 12 pages/, "the summary row states total matches and the page budget");
+  assert.match(text, /\[truncated\]/, "hasMore raises the truncated badge");
+  assert.match(text, /returned=1/, "returned count is visible in expanded metadata");
 
   runtime.dispose();
 }
@@ -208,7 +207,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateInternalTool(makePdfSearchDef(), () => runtime);
   const args = { path: "reports/q3.pdf", query: "unicorn" };
   const details = baseDetails({ query: "unicorn", totalMatches: 0, returned: 0, hasMore: false, matches: [] });
-  const result = renderResult(decorated, args, details);
+  const result = renderResult(decorated, args, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^✓/, "empty matches still render completed, not failed");
   assert.match(text, /No matches/, "empty matches show an explicit empty message");
@@ -316,13 +315,12 @@ function renderResult(decorated, args, details, opts = {}) {
   assert.match(okText, /^✓/, "collapsed success keeps the lifecycle marker visible");
   assert.match(okText, /PDF search/, "collapsed success keeps the identity/title visible");
   assert.match(okText, /revenue/, "collapsed success keeps the target/query visible");
-  assert.match(okText, /MATCHES/, "collapsed success still shows the compact Matches section");
+  assert.match(okText, /2 matches on 2 of 12 pages/, "collapsed success shows the summary row with match counts");
 
   const errDetails = baseDetails({ phase: "done", status: "error", errorCode: "PDF_TOO_LARGE", error: "PDF exceeds the 50 MB safety limit", matches: [], returned: undefined, totalMatches: undefined });
   const errCollapsed = renderResult(decorated, args, errDetails, { text: "Error: PDF exceeds the 50 MB safety limit", isError: true, expanded: false });
   const errText = stripVTControlCharacters(errCollapsed.render(100).join("\n"));
   assert.match(errText, /^×/, "collapsed error keeps the failed marker visible");
-  assert.match(errText, /code=PDF_TOO_LARGE/, "collapsed error keeps the error code visible in header metadata");
   assert.match(errText, /PDF exceeds the 50 MB safety limit/, "collapsed error keeps the error message visible");
 
   // Expanded-only content (Query section) must not leak into collapsed view.
@@ -341,20 +339,13 @@ function renderResult(decorated, args, details, opts = {}) {
 
   const expanded = renderResult(decorated, args, details, { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));
-  assert.match(expandedText, /hasMore=true/, "hasMore is reachable when expanded");
+  assert.match(expandedText, /\[truncated\]/, "hasMore raises the truncated badge when expanded");
+  assert.match(expandedText, /5 matches on 1 of 12 pages/, "match and page counts reach the summary row when expanded");
 
   const collapsed = renderResult(decorated, args, details, { expanded: false });
   const collapsedText = stripVTControlCharacters(collapsed.render(100).join("\n"));
-  assert.doesNotMatch(collapsedText, /hasMore=true/, "hasMore is not shown collapsed (the Summary section is non-compact)");
-
-  // The remaining budget fields (document page count, total match count,
-  // cache hit) follow the same Summary-section compact=false rule: they
-  // are reachable when expanded and absent when collapsed, not silently
-  // dropped either way.
-  assert.match(expandedText, /pages=12/, "pages is reachable when expanded");
-  assert.match(expandedText, /totalMatches=5/, "totalMatches is reachable when expanded");
-  assert.doesNotMatch(collapsedText, /pages=12/, "pages is not shown collapsed");
-  assert.doesNotMatch(collapsedText, /totalMatches=5/, "totalMatches is not shown collapsed");
+  assert.match(collapsedText, /\[truncated\]/, "the truncated badge is also visible collapsed");
+  assert.match(collapsedText, /5 matches on 1 of 12 pages/, "the summary row states the counts collapsed");
 
   runtime.dispose();
 }

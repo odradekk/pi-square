@@ -61,7 +61,7 @@ for (const [name, args, expected] of [
   ["bash", { command: "printf 'hello'", timeout: 10 }, /printf 'hello'/],
   ["pwsh", { command: "Get-ChildItem", timeoutMs: 1000 }, /Get-ChildItem/],
   ["scheme", { code: "(display \"ok\")", access: "readonly", timeoutMs: 1000 }, /display/],
-  ["ssh", { operation: "secret_input", session: "session-1", prompt: "credential", data: "never-show" }, /secure input requested/],
+  ["ssh", { operation: "secret_input", session: "session-1", prompt: "credential", data: "never-show" }, /\[needs input\]/],
 ]) {
   const original = definition(name);
   const decorated = decorateInternalTool(original, () => runtime);
@@ -78,21 +78,26 @@ for (const [name, args, expected] of [
 
   const result = { content: [{ type: "text", text: "model output\nsecond line" }], details: { status: "success", returned: 2 } };
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
-  assert.match(collapsed.render(80).join("\n"), /model output/, `${name} preview shows content`);
+  const collapsedText = collapsed.render(80).join("\n");
+  // Payload tools keep their output in the collapsed body; non-payload tools
+  // collapse to a summary row (C4).
+  if (name === "bash" || name === "pwsh" || name === "scheme" || name === "ssh") {
+    assert.match(collapsedText, /model output/, `${name} collapsed shows content`);
+  } else {
+    assert.match(collapsedText, /2 (matches|files|results)/, `${name} collapsed shows a summary row`);
+  }
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
   assert.match(expandedText, /model output/);
   if (name === "rg" || name === "fd" || name === "sg" || name === "pdf_search" || name === "codegraph") {
-    assert.match(expandedText, /QUERY|SUMMARY/);
-    assert.match(expandedText, /OUTPUT|RESULTS|MATCHES/);
+    // QUERY and SUMMARY are pruned restating sections (C8); content renders directly.
   }
   if (name === "bash" || name === "pwsh" || name === "scheme") {
     assert.match(expandedText, /COMMAND|CODE/);
     assert.match(expandedText, /OUTPUT/);
   }
   if (name === "ssh") {
-    assert.match(expandedText, /REQUEST/);
-    assert.match(expandedText, /OUTPUT/);
+    assert.match(expandedText, /model output/);
   }
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assert.ok(expanded.render(width).every((line) => visibleWidth(line) <= width));

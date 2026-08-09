@@ -1,5 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { stripVTControlCharacters } from "node:util";
+import { COLLAPSED_PAYLOAD_TOOLS } from "./adapter-utils";
 import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
 import { boundedHeadTailLines, fitHeaderRow, padVisible, rightPriorityRows, wrapHanging } from "./layout";
@@ -13,6 +15,7 @@ import {
   QUALIFIER_BADGE_ORDER,
   type DisplayDescriptionV1,
   type DisplayPolicy,
+  type DisplaySection,
   type ResolvedOperationalState,
 } from "./types";
 
@@ -242,7 +245,27 @@ export class OperationalDisplayComponent implements Component {
     const bodyWidth = Math.max(1, safe - TREE_RAIL_WIDTH);
     const body: string[] = [];
 
-    if (this.policy.showMetadata && description.metadata?.length) {
+    const isCall = description.phase === "call";
+    const state = resolveState(description);
+    const isWarning = state.lifecycle === "completed" && state.qualifiers.includes("warning");
+    const isError = state.lifecycle === "failed";
+    const isAborted = state.lifecycle === "aborted";
+    const isRunning = state.lifecycle === "running" || state.lifecycle === "pending" || state.lifecycle === "queued";
+    const terminal = !isCall && !isRunning;
+    const collapsed = !this.options.expanded;
+    const hidden = !isCall
+      && this.policy.resultMode === "hidden"
+      && !this.options.expanded
+      && !isWarning
+      && !isError
+      && !isAborted;
+    // C4 payload exceptions keep a bounded collapsed body; every other tool
+    // collapses to exactly one summary row.
+    const payloadTool = COLLAPSED_PAYLOAD_TOOLS.has(description.tool);
+
+    // The key=value metadata row only renders expanded. The collapsed body
+    // states the same outcome in one summary row (C4).
+    if (this.policy.showMetadata && this.options.expanded && description.metadata?.length) {
       const selectedFields = description.metadata.slice(0, MAX_METADATA_FIELDS);
       const fields = selectedFields.map((field) => {
         const label = truncateCodePoints(sanitizeDisplayLine(field.label), 64);
@@ -259,19 +282,9 @@ export class OperationalDisplayComponent implements Component {
       ));
     }
 
-    const isCall = description.phase === "call";
-    const state = resolveState(description);
-    const isWarning = state.lifecycle === "completed" && state.qualifiers.includes("warning");
-    const isError = state.lifecycle === "failed";
-    const isAborted = state.lifecycle === "aborted";
-    const isRunning = state.lifecycle === "running" || state.lifecycle === "pending" || state.lifecycle === "queued";
-    const hidden = !isCall
-      && this.policy.resultMode === "hidden"
-      && !this.options.expanded
-      && !isWarning
-      && !isError
-      && !isAborted;
-    if (!hidden && description.rows?.length) {
+    // Flat rows carry call and running state. A terminal result states its
+    // outcome through the summary row or the failure sentence instead.
+    if (!terminal && !hidden && description.rows?.length) {
       const selectedRows = description.rows.slice(0, MAX_ROWS);
       for (const row of selectedRows) {
         const indent = " ".repeat(Math.min(8, Math.max(0, Math.floor(row.indent ?? 2))));
@@ -291,34 +304,41 @@ export class OperationalDisplayComponent implements Component {
       }
     }
 
-    const showPreview = isCall
-      || isRunning
-      || this.options.expanded
-      || this.policy.resultMode === "preview";
-    const visibleSections = description.sections ?? [];
-    const showStructuredSections = showPreview || (visibleSections.length > 0 && this.policy.resultMode === "summary");
-    // Render structured sections; fall back to flat preview when sections
-    // produce no visible output (e.g. non-compact sections in collapsed mode).
-    const sectionLines = showStructuredSections && visibleSections.length > 0
-      ? renderDisplaySections(visibleSections, this.policy, this.theme, bodyWidth, this.options.expanded)
-      : [];
-    if (sectionLines.length > 0) {
-      body.push(...sectionLines);
-    } else if (showPreview && description.preview) {
-      const maximum = this.options.expanded ? this.policy.expandedMaxLines : this.policy.previewLines;
-      const boundedPreviewText = truncateCodePoints(description.preview.text, MAX_PREVIEW_CODE_POINTS);
-      const inputTruncated = boundedPreviewText !== description.preview.text;
-      const preview = new BoundedPreview(
-        boundedPreviewText,
-        maximum,
-        this.theme,
-        (description.preview.omittedLines ?? 0) + (inputTruncated ? 1 : 0),
-        this.policy.wordWrap,
-      );
-      body.push(...preview.render(bodyWidth));
-    }
-    if (showPreview && description.diff) {
-      body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
+    if (terminal && collapsed && !hidden) {
+      body.push(...this.collapsedTerminalBody(description, isError, payloadTool, bodyWidth));
+    } else {
+      const showPreview = isCall
+        || isRunning
+        || this.options.expanded
+        || this.policy.resultMode === "preview";
+      // C6: an expanded failure carries the raw platform text exactly once,
+      // as an ERROR section that joins the section flow (so C9 counts it).
+      const errorSection: DisplaySection[] = this.options.expanded
+        && isError
+        && description.errorRaw
+        && description.errorRaw !== description.error
+        && !(description.sections ?? []).some((section) => section.title.trim().toLowerCase() === "error")
+        ? [{ title: "Error", blocks: [{ kind: "text", text: description.errorRaw }] }]
+        : [];
+      const visibleSections = [...(description.sections ?? []), ...errorSection];
+      const showStructuredSections = showPreview || (visibleSections.length > 0 && this.policy.resultMode === "summary");
+      // Render structured sections; fall back to flat preview when sections
+      // produce no visible output (e.g. non-compact sections in collapsed mode).
+      const sectionLines = showStructuredSections && visibleSections.length > 0
+        ? renderDisplaySections(visibleSections, this.policy, this.theme, bodyWidth, this.options.expanded)
+        : [];
+      if (sectionLines.length > 0) {
+        body.push(...sectionLines);
+      } else if (showPreview && description.preview) {
+        body.push(...this.previewBodyLines(description, this.options.expanded ? this.policy.expandedMaxLines : this.policy.previewLines, bodyWidth));
+      }
+      if (showPreview && description.diff) {
+        body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
+      }
+      // C4: the expanded body of a terminal success closes with the summary row.
+      if (terminal && this.options.expanded && !isError) {
+        body.push(...this.summaryBodyRow(description, true));
+      }
     }
 
     if (description.error) {
@@ -330,6 +350,9 @@ export class OperationalDisplayComponent implements Component {
       ));
     }
 
+    // The body never ends with an empty row.
+    while (body.length > 0 && stripVTControlCharacters(body.at(-1)!).trim() === "") body.pop();
+
     // Apply tree rails: │ for continuation, └─ for the final body line.
     for (let i = 0; i < body.length; i++) {
       const isLast = i === body.length - 1;
@@ -338,6 +361,65 @@ export class OperationalDisplayComponent implements Component {
     lines.push(...body);
 
     return lines.map((line) => padVisible(truncateToWidth(line, safe, "\u2026"), safe));
+  }
+
+  /** Bounded preview body for the given line budget. */
+  private previewBodyLines(description: DisplayDescriptionV1, maximum: number, bodyWidth: number): string[] {
+    if (!description.preview) return [];
+    const boundedPreviewText = truncateCodePoints(description.preview.text, MAX_PREVIEW_CODE_POINTS);
+    const inputTruncated = boundedPreviewText !== description.preview.text;
+    const preview = new BoundedPreview(
+      boundedPreviewText,
+      maximum,
+      this.theme,
+      (description.preview.omittedLines ?? 0) + (inputTruncated ? 1 : 0),
+      this.policy.wordWrap,
+    );
+    return preview.render(bodyWidth);
+  }
+
+  /** C4 one-row outcome sentence; falls back to the first flat row. */
+  private summaryBodyRow(description: DisplayDescriptionV1, terminal: boolean): string[] {
+    const text = description.summary ?? (terminal ? description.rows?.[0]?.text : undefined);
+    return text
+      ? [`  ${this.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(text), MAX_ROW_CODE_POINTS))}`]
+      : [];
+  }
+
+  /**
+   * C4/C6 collapsed terminal body: a failure renders only the sentence row
+   * (rendered by the caller); a success renders one summary row, and a
+   * payload tool keeps its bounded body above it.
+   */
+  private collapsedTerminalBody(
+    description: DisplayDescriptionV1,
+    isError: boolean,
+    payloadTool: boolean,
+    bodyWidth: number,
+  ): string[] {
+    if (isError) return [];
+    const body: string[] = [];
+    if (payloadTool && this.policy.resultMode === "preview") {
+      const collapsedSections = renderDisplaySections(description.sections ?? [], this.policy, this.theme, bodyWidth, false);
+      if (collapsedSections.length > 0) {
+        const cap = Math.max(1, Math.floor(this.policy.previewLines));
+        body.push(...(
+          collapsedSections.length > cap
+            ? [
+              ...collapsedSections.slice(0, cap),
+              `  ${this.theme.fg("muted", `\u2026 ${collapsedSections.length - cap} rows hidden`)}`,
+            ]
+            : collapsedSections
+        ));
+      } else {
+        body.push(...this.previewBodyLines(description, this.policy.previewLines, bodyWidth));
+      }
+      if (description.diff) {
+        body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
+      }
+    }
+    body.push(...this.summaryBodyRow(description, true));
+    return body;
   }
 
   invalidate(): void {}

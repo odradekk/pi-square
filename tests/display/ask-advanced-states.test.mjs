@@ -167,7 +167,6 @@ function renderResult(decorated, args, details, opts = {}) {
   const result = renderResult(decorated, ARGS_3Q, details, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "invalid input renders × failed");
-  assert.match(text, /ERROR/, "ERROR section present");
   assert.match(text, /Question IDs must be unique/, "validation error message visible");
   assert.match(text, /phase=error/, "error phase visible");
 
@@ -218,7 +217,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const cancelAsking = {
     version: 1, phase: "cancelled", totalQuestions: 3, answeredCount: 0, skippedCount: 0, reason: "user",
   };
-  const r1 = renderResult(decorated, ARGS_3Q, cancelAsking);
+  const r1 = renderResult(decorated, ARGS_3Q, cancelAsking, { expanded: true });
   const t1 = stripVTControlCharacters(r1.render(80).join("\n"));
   assert.match(t1, /^●/, "cancel during asking renders · aborted");
   assert.match(t1, /reason=user/, "cancel reason visible");
@@ -227,13 +226,13 @@ function renderResult(decorated, args, details, opts = {}) {
   const cancelReview = {
     version: 1, phase: "cancelled", totalQuestions: 3, answeredCount: 2, skippedCount: 0, reason: "user",
   };
-  const r2 = renderResult(decorated, ARGS_3Q, cancelReview);
+  const r2 = renderResult(decorated, ARGS_3Q, cancelReview, { expanded: true });
   const t2 = stripVTControlCharacters(r2.render(80).join("\n"));
   assert.match(t2, /^●/, "cancel during reviewing renders · aborted");
   assert.match(t2, /reason=user/, "cancel reason visible");
 
   // Discard confirmation → same user cancel result
-  const r3 = renderResult(decorated, ARGS_3Q, cancelReview);
+  const r3 = renderResult(decorated, ARGS_3Q, cancelReview, { expanded: true });
   const t3 = stripVTControlCharacters(r3.render(80).join("\n"));
   assert.match(t3, /^●/, "discard confirmation renders · aborted");
 
@@ -249,7 +248,7 @@ function renderResult(decorated, args, details, opts = {}) {
     version: 1, phase: "cancelled", totalQuestions: 3, answeredCount: 1, skippedCount: 0, reason: "aborted",
   };
   // Tool-aborted: isError=true, but lifecycle overrides to aborted
-  const result = renderResult(decorated, ARGS_3Q, abortDetails, { isError: true });
+  const result = renderResult(decorated, ARGS_3Q, abortDetails, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "external abort renders · aborted (not ·)");
   assert.match(text, /reason=aborted/, "abort reason visible");
@@ -315,18 +314,18 @@ function renderResult(decorated, args, details, opts = {}) {
 
   // Collapsed cancel
   const cancelDetails = { version: 1, phase: "cancelled", totalQuestions: 2, answeredCount: 0, skippedCount: 0, reason: "user" };
-  const r1 = renderResult(decorated, ARGS_3Q, cancelDetails, { expanded: false });
+  const r1 = renderResult(decorated, ARGS_3Q, cancelDetails, { expanded: true });
   const t1 = stripVTControlCharacters(r1.render(80).join("\n"));
   assert.match(t1, /^●/, "collapsed cancel shows ×");
-  assert.match(t1, /phase=cancelled/, "collapsed cancel shows phase");
-  assert.match(t1, /reason=user/, "collapsed cancel shows reason");
+  assert.match(t1, /phase=cancelled/, "cancel shows phase");
+  assert.match(t1, /reason=user/, "cancel shows reason");
 
   // Collapsed error
   const errorDetails = { version: 1, phase: "error", totalQuestions: 0, answeredCount: 0, skippedCount: 0, error: { code: "ASK_INVALID_INPUT", message: "bad" } };
-  const r2 = renderResult(decorated, ARGS_3Q, errorDetails, { isError: true, expanded: false });
+  const r2 = renderResult(decorated, ARGS_3Q, errorDetails, { isError: true, expanded: true });
   const t2 = stripVTControlCharacters(r2.render(80).join("\n"));
-  assert.match(t2, /^●/, "collapsed error shows ×");
-  assert.match(t2, /phase=error/, "collapsed error shows phase");
+  assert.match(t2, /^●/, "error shows ×");
+  assert.match(t2, /phase=error/, "error shows phase");
 
   runtime.dispose();
 }
@@ -337,11 +336,11 @@ function renderResult(decorated, args, details, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const progressDetails = { version: 1, phase: "asking", totalQuestions: 3, currentQuestion: 1, answeredCount: 0, skippedCount: 0 };
-  const result = renderResult(decorated, ARGS_3Q, progressDetails, { isPartial: true, expanded: false });
+  const result = renderResult(decorated, ARGS_3Q, progressDetails, { isPartial: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^●/, "collapsed progress shows running braille");
-  assert.match(text, /phase=asking/, "collapsed progress shows phase");
-  assert.doesNotMatch(text, /"version":\s*1/, "collapsed progress does not leak raw JSON");
+  assert.match(text, /^●/, "progress shows running braille");
+  assert.match(text, /phase=asking/, "progress shows phase");
+  assert.doesNotMatch(text, /"version":\s*1/, "progress does not leak raw JSON in expanded");
 
   runtime.dispose();
 }

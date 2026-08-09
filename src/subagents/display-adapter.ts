@@ -271,7 +271,8 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
           ...(options.isPartial ? { qualifiers: ["partial"] } : {}),
           title: name === "subagent_resume" ? "Resume subagent" : "Subagent",
           target: runTarget(details, args),
-          rows: text ? [{ text }] : [],
+          // C6: a failure is stated once by the error row, not repeated as a row.
+          rows: context.isError ? [] : (text ? [{ text }] : []),
           ...(context.isError && text ? { error: text } : {}),
         };
       }

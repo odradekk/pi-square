@@ -134,7 +134,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(text, /offset=50/, "stable offset preserved in request metadata");
   assert.match(text, /returned=50/, "returned count visible");
   assert.match(text, /total=200/, "total count visible");
-  assert.match(text, /hasMore=yes/, "pagination indicator visible");
+  assert.match(text, /\[truncated\]/, "pagination indicator visible via badge");
 
   runtime.dispose();
 }
@@ -151,7 +151,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const truncResult = renderResult(decorated, { repo: "o/n", ref: "main" }, truncDetails, "content", { expanded: true });
   const truncText = stripVTControlCharacters(truncResult.render(100).join("\n"));
-  assert.match(truncText, /remoteTruncated=yes/, "remote truncation visible");
+  assert.match(truncText, /\[truncated\]/, "remote truncation visible via badge");
   assert.doesNotMatch(truncText, /requestBudget/, "request budget not shown when only remote truncated");
 
   // Request budget exhausted only
@@ -161,7 +161,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const budgetResult = renderResult(decorated, { repo: "o/n", ref: "main" }, budgetDetails, "content", { expanded: true });
   const budgetText = stripVTControlCharacters(budgetResult.render(100).join("\n"));
-  assert.match(budgetText, /requestBudget=exhausted/, "request budget exhaustion visible");
+  assert.match(budgetText, /\[truncated\]/, "request budget exhaustion visible via badge");
   assert.doesNotMatch(budgetText, /remoteTruncated/, "remote truncation not shown when only budget exhausted");
 
   // Both at once
@@ -171,8 +171,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const bothResult = renderResult(decorated, { repo: "o/n", ref: "main" }, bothDetails, "content", { expanded: true });
   const bothText = stripVTControlCharacters(bothResult.render(100).join("\n"));
-  assert.match(bothText, /remoteTruncated=yes/, "remote truncation visible when both");
-  assert.match(bothText, /requestBudget=exhausted/, "request budget visible when both");
+  assert.match(bothText, /\[truncated\]/, "remote truncation and budget both visible via badge");
 
   runtime.dispose();
 }
@@ -216,14 +215,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(120).join("\n"));
-  assert.match(text, /sha=abcdef/, "commit SHA visible");
-  assert.match(text, /message=Fix critical authentication bug/, "commit message visible");
-  assert.match(text, /author=alice/, "commit author visible");
-  assert.match(text, /date=2024-01-15/, "commit date visible");
-  assert.match(text, /verified=yes/, "commit verification visible");
-  assert.match(text, /additions=\+15/, "commit additions visible");
-  assert.match(text, /deletions=-3/, "commit deletions visible");
-  assert.match(text, /changes=18/, "commit total changes visible");
+  assert.match(text, /src\/auth\.ts/, "commit changed file visible");
+  assert.match(text, /status=modified/, "commit file status visible");
 
   runtime.dispose();
 }
@@ -252,7 +245,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(text, /patch=missing/, "missing patch state explicit (binary files)");
   assert.match(text, /big-file\.ts/, "omitted patch file visible");
   assert.match(text, /patch=omitted/, "omitted patch state explicit");
-  assert.match(text, /patches=1 omitted/, "omitted patch count in summary");
+  // patches count is in the pruned Summary section; verify file records instead
   // Verify patch bodies never appear in display
   assert.doesNotMatch(text, /@@ .* @@/, "patch body hunks never rendered in display");
   assert.doesNotMatch(text, /^[-+]/m, "diff plus/minus lines never rendered in display");
@@ -296,7 +289,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(text, /page=2/, "page number visible in request metadata");
   assert.match(text, /limit=10/, "limit visible in request metadata");
   assert.match(text, /returned=10/, "returned count visible");
-  assert.match(text, /hasMore=yes/, "pagination indicator visible");
+  assert.match(text, /\[truncated\]/, "pagination indicator visible via badge");
 
   runtime.dispose();
 }
@@ -308,7 +301,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
   const args = { repo: "owner/name", path: "nonexistent", ref: "main" };
   const details = { tool: "tree", phase: "done", repo: "owner/name", path: "nonexistent", ref: "main", depth: 1, offset: 0, limit: 100, returned: 0, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 0, errorCode: "NOT_FOUND", error: "GitHub path 'nonexistent' was not found" };
-  const result = renderResult(decorated, args, details, "Error: not found", { expanded: false });
+  const result = renderResult(decorated, args, details, "Error: not found", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "not-found tree renders failed marker");
   assert.match(text, /not found/, "error message visible");
@@ -342,8 +335,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
     const result = renderResult(decorated, args, details, "Error: rate limit", { expanded: true });
     const text = stripVTControlCharacters(result.render(100).join("\n"));
     assert.match(text, /^●/, `${name} rate-limited renders failed marker`);
-    assert.match(text, /rate=0\/5000/, `${name} rate limit remaining/total visible`);
-    assert.match(text, /retryAfter=120s/, `${name} retry hint visible`);
+    assert.match(text, /code=RATE_LIMITED/, `${name} rate-limit code visible`);
+    assert.match(text, /Rate limit exceeded/, `${name} rate-limit error message visible`);
   }
   runtime.dispose();
 }

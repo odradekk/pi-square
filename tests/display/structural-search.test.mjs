@@ -103,7 +103,8 @@ function sgMatch(overrides = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeSgDef(), () => runtime);
   const args = { pattern: "$FUNC($$$ARGS)", selector: "call_expression", strictness: "ast", language: "ts", path: "src" };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  // C7: the key=value metadata row renders only when expanded.
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /\$FUNC\(\$\$\$ARGS\)/, "call target shows the pattern");
   assert.match(text, /pattern=\$FUNC\(\$\$\$ARGS\)/, "pattern metadata shown");
@@ -124,7 +125,7 @@ function sgMatch(overrides = {}) {
   // tool's own promptGuidelines) must not surface them: they apply only
   // to pattern mode, so kind mode presents a distinct, uncluttered summary.
   const args = { kind: "call_expression", selector: "ignored", strictness: "ast", language: "ts", path: "src" };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /call_expression/, "call target shows the kind");
   assert.match(text, /kind=call_expression/, "kind metadata shown");
@@ -140,9 +141,8 @@ function sgMatch(overrides = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const resultText = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(resultText, /QUERY/, "kind-mode expanded result shows QUERY section");
-  assert.match(resultText, /kind=call_expression/, "kind-mode expanded QUERY section shows kind");
-  assert.match(resultText, /language=ts/, "kind-mode expanded QUERY section shows language");
+  assert.match(resultText, /kind=call_expression/, "kind-mode expanded metadata shows kind");
+  assert.match(resultText, /language=ts/, "kind-mode expanded metadata shows language");
   assert.doesNotMatch(resultText, /selector=/, "expanded result also suppresses selector in kind mode");
   assert.doesNotMatch(resultText, /strictness=/, "expanded result also suppresses strictness in kind mode");
 
@@ -163,7 +163,7 @@ function sgMatch(overrides = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
   );
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /MATCHES/, "result shows MATCHES section");
+  assert.ok(!text.includes("MATCHES"), "a lone Matches section draws no title rule (C9)");
   assert.match(text, /src\/a\.ts:5:2/, "result shows path:line:column");
   assert.match(text, /foo\(bar, baz\)/, "result shows excerpt");
   assert.match(text, /typescript/, "result shows match language");
@@ -287,9 +287,9 @@ function sgMatch(overrides = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /contentBudget=reached/, "content budget truncation is visible when expanded");
-  assert.match(text, /hasMore=true/, "pagination hasMore reachable when expanded");
-  assert.match(text, /total=50/, "pagination total reachable when expanded");
+  assert.match(text, /\[truncated\]/, "content budget and pagination raise the truncated badge");
+  assert.match(text, /total=50/, "pagination total reachable in expanded metadata");
+  assert.match(text, /1 of 50 matches · continue at offset 1/, "the summary row states pagination and continuation");
 
   runtime.dispose();
 }
@@ -356,8 +356,8 @@ function sgMatch(overrides = {}) {
   );
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
   assert.doesNotMatch(collapsedText, /QUERY/, "collapsed omits QUERY summary");
-  assert.doesNotMatch(collapsedText, /hasMore=true/, "collapsed omits hasMore secondary metadata");
-  assert.doesNotMatch(collapsedText, /next=1/, "collapsed omits next offset");
+  assert.match(collapsedText, /\[truncated\]/, "collapsed shows the truncated badge for pagination");
+  assert.match(collapsedText, /1 of 5 matches · continue at offset 1/, "collapsed summary row states pagination and continuation");
 
   const expanded = decorated.renderResult(
     {
@@ -369,9 +369,8 @@ function sgMatch(overrides = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
-  assert.match(expandedText, /QUERY/, "expanded shows QUERY summary");
-  assert.match(expandedText, /hasMore=true/, "expanded reveals hasMore secondary metadata");
-  assert.match(expandedText, /next=1/, "expanded reveals next offset");
+  assert.match(expandedText, /total=5/, "expanded metadata reveals the pagination total");
+  assert.match(expandedText, /1 of 5 matches · continue at offset 1/, "expanded summary row states pagination and continuation");
 
   runtime.dispose();
 }

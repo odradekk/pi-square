@@ -10,6 +10,7 @@ const suites = [
   "display/sanitize.test.mjs",
   "display/layout.test.mjs",
   "display/header-grammar.test.mjs",
+  "display/body-grammar.test.mjs",
   "display/components.test.mjs",
   "display/motion.test.mjs",
   "display/runtime.test.mjs",

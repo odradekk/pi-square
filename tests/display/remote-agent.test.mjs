@@ -56,7 +56,7 @@ const cases = [
   ["github_read", { repo: "owner/name", path: "README.md", ref: "main" }, /README\.md/],
   ["github_tree", { repo: "owner/name", path: "src", ref: "main" }, /src/],
   ["github_commit", { repo: "owner/name", ref: "abcdef" }, /abcdef/],
-  ["ask", { questions: [{ id: "secret-question", text: "private question", options: [] }] }, /questions=1/],
+  ["ask", { questions: [{ id: "secret-question", text: "private question", options: [] }] }, /Questions/],
   ["todo", { action: "set", todos: [{ text: "private task" }] }, /set/],
   ["subagent_delegate", { agent: "explorer", mode: "fg", task: "inspect runtime" }, /inspect runtime/],
   ["subagent_resume", { id: "subagent_12345678", task: "continue review" }, /continue review/],
@@ -84,10 +84,11 @@ for (const [name, args, expected] of cases) {
       ? /subagent_12345678/
       : expected;
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
-  // Todo and Ask now render compact sections in collapsed mode
-  // instead of the raw JSON preview.
-  if (name !== "todo" && name !== "ask") {
-    assert.match(collapsedText, /private result body/, `${name} preview shows result content`);
+  // Payload tools keep content in the collapsed body; non-payload tools
+  // collapse to a summary row (C4).
+  const isPayload = name === "subagent_delegate" || name === "subagent_resume";
+  if (isPayload) {
+    assert.match(collapsedText, /private result body/, `${name} collapsed shows result content`);
   }
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
@@ -99,11 +100,7 @@ for (const [name, args, expected] of cases) {
   if (!hasStructuredDomain) {
     assert.match(expandedText, /private result body/);
   }
-  if (name === "search" || name === "fetch" || name === "libs" || name === "docs" || name === "parse" || name === "github_search" || name === "github_read" || name === "github_tree" || name === "github_commit") {
-    assert.match(expandedText, /REQUEST|SUMMARY/);
-  }
-  if (name === "ask") assert.match(expandedText, /REQUEST|RESULT/);
-  if (name === "todo") assert.match(expandedText, /ACTION|RESULT/);
+  // REQUEST, SUMMARY, ACTION, and RESULT sections are pruned restating titles (C8).
 }
 
 const subagentArgs = { agent: "explorer", mode: "fg", task: "inspect runtime" };
@@ -159,10 +156,8 @@ const webExpanded = webSearch.renderResult({
     results: [{ title: "earendil-works/pi", url: "https://github.com/earendil-works/pi", description: "Pi agent toolkit", provenance: "[q1#1]" }],
   },
 }, { expanded: true, isPartial: false }, theme, context({ queries: ["Pi coding agent GitHub repository"], limit: 5 }, { expanded: true })).render(100);
-const requestLine = webExpanded.find((line) => line.includes("REQUEST"));
 const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works/pi"));
 assert.ok(webExpanded[0]?.startsWith("● Web search"), "tool header remains flush-left");
-assert.ok(requestLine?.startsWith("│") && requestLine?.includes("REQUEST"), "section heading is indented under a tree rail");
 assert.ok(resultTitleLine?.startsWith("│") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under a tree rail");
 
 for (const child of createChildTools([

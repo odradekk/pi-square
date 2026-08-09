@@ -92,7 +92,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
   const args = { kind: "code", query: "repo:owner/name fn main", page: 1, limit: 10 };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /GitHub search/, "call shows GitHub search title");
   assert.match(text, /kind=code/, "metadata shows search kind");
@@ -119,17 +119,15 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /RESULTS/, "expanded shows a Results section");
   assert.match(text, /owner\/name:src\/main\.rs/, "expanded preserves repo:path identity");
   assert.match(text, /url=https:\/\/github\.com/, "expanded preserves source URL");
   assert.match(text, /sha=abc123/, "expanded preserves commit SHA");
   assert.match(text, /fn main\(\)/, "expanded preserves text-match snippet content");
   // Ranking order
   assert.ok(text.indexOf("owner/name") < text.indexOf("other/repo"), "expanded preserves ranking order");
-  // Rate limit visible
-  assert.match(text, /rate=25\/30/, "expanded shows rate limit remaining/total");
-  assert.match(text, /incomplete=yes/, "expanded shows incomplete results indicator");
-  assert.match(text, /hasMore=yes/, "expanded shows pagination hasMore");
+  // Rate limit and incomplete indicators were in the Summary section (C8-pruned);
+  // pagination hasMore now raises the [truncated] badge.
+  assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
 
   runtime.dispose();
 }
@@ -144,7 +142,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "No results found.");
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "empty results renders completed");
-  assert.match(text, /No results found/, "empty state message visible in preview");
+  assert.match(text, /No results/, "empty state shows explicit message in summary row");
 
   runtime.dispose();
 }
@@ -157,7 +155,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
   const args = { kind: "repositories", query: "test" };
   const details = { tool: "search", phase: "done", kind: "repositories", query: "test", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false, errorCode: "MISSING_GITHUB_TOKEN", error: "Missing GITHUB_TOKEN." };
-  const result = renderResult(decorated, args, details, "Error: Missing GITHUB_TOKEN.");
+  const result = renderResult(decorated, args, details, "Error: Missing GITHUB_TOKEN.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "missing-token error renders failed marker without isError");
   assert.match(text, /Missing GITHUB_TOKEN/, "error message visible");
@@ -175,8 +173,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "Error: rate limit exceeded.", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "rate-limited renders failed marker");
-  assert.match(text, /rate=0\/30/, "rate limit remaining/total visible in summary");
-  assert.match(text, /retryAfter=60s/, "retry hint visible");
+  assert.match(text, /code=RATE_LIMITED/, "rate-limit error code visible in metadata");
+  assert.match(text, /rate limit exceeded/i, "rate-limit error message visible");
 
   runtime.dispose();
 }
@@ -192,10 +190,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /GitHub read src\/index\.ts/, "title preserves path");
   assert.match(text, /repo=owner\/name/, "metadata shows repo identity");
-  assert.match(text, /sha=abcdef1234567890/, "summary preserves commit SHA");
-  assert.match(text, /lines=50\/150/, "summary shows returned/total lines");
-  assert.match(text, /hasMore=yes/, "summary shows pagination indicator");
-  assert.match(text, /rate=4999\/5000/, "summary shows rate limit");
+  assert.match(text, /50 lines · continue at line 51/, "summary row states returned lines and continuation");
+  assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
 
   runtime.dispose();
 }
@@ -209,8 +205,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "read", phase: "done", repo: "owner/name", path: "logo.png", ref: "main", resolvedPath: "logo.png", sha: "abcdef", size: 51200, binary: true, line: 1, limit: 200, returnedLines: 0, hasMore: false, errorCode: "UNSUPPORTED_CONTENT_TYPE", error: "Binary file · content omitted" };
   const result = renderResult(decorated, args, details, "Binary file · 51200 bytes · content omitted", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /binary=yes/, "binary indicator visible in summary");
   assert.match(text, /Binary file/, "binary message visible");
+  assert.match(text, /content omitted/, "binary content-omitted notice visible");
 
   runtime.dispose();
 }
@@ -247,13 +243,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /RESULTS/, "expanded shows a Results section");
   assert.match(text, /src\/index\.ts/, "expanded preserves entry path");
   assert.match(text, /type=file/, "expanded preserves entry type");
   assert.match(text, /type=directory/, "expanded distinguishes directory entries");
-  assert.match(text, /requests=20/, "summary shows requests used");
-  assert.match(text, /requestBudget=exhausted/, "summary shows request budget exhaustion");
-  assert.match(text, /hasMore=yes/, "summary shows pagination");
+  assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
 
   runtime.dispose();
 }
@@ -267,9 +260,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "tree", phase: "done", repo: "owner/name", ref: "main", depth: 1, offset: 0, limit: 100, returned: 100, hasMore: true, remoteTruncated: true, requestBudgetExhausted: false, requestsUsed: 1, entries: [], rate: { limit: 5000, remaining: 4999 } };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /remoteTruncated=yes/, "expanded shows GitHub directory limit truncation");
-  const remoteCount = (text.match(/remoteTruncated=yes/g) ?? []).length;
-  assert.equal(remoteCount, 1, "remoteTruncated appears exactly once (no duplication)");
+  assert.match(text, /\[truncated\]/, "expanded shows the truncated badge for directory-limit and pagination");
 
   runtime.dispose();
 }
@@ -293,16 +284,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /RESULTS/, "expanded shows a Results section");
   assert.match(text, /src\/index\.ts/, "expanded preserves changed filename");
   assert.match(text, /status=modified/, "expanded preserves file status");
   assert.match(text, /patch=included/, "expanded preserves patch availability");
   assert.match(text, /patch=missing/, "expanded distinguishes missing patches");
-  assert.match(text, /author=alice/, "summary preserves commit author");
-  assert.match(text, /verified=yes/, "summary preserves verification status");
-  assert.match(text, /additions=\+15/, "summary preserves additions count");
-  assert.match(text, /deletions=-3/, "summary preserves deletions count");
-  assert.match(text, /patches=1 omitted/, "summary preserves omitted patches");
 
   runtime.dispose();
 }

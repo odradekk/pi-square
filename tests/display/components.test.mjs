@@ -35,9 +35,12 @@ const summaryText = summary.render(80).join("\n");
 assert.match(summaryText, /✓ Search src/, "header shows marker, title, and target");
 assert.match(summaryText, /1\.3s/);
 assert.match(summaryText, /files 3\/3/);
-assert.match(summaryText, /matches=3/);
 assert.doesNotMatch(summaryText, /SECRET|owned|one/);
 assert.match(summaryText, /3 matches/);
+// C7: metadata renders only when expanded.
+const summaryExpanded = new OperationalDisplayComponent(description, summaryPolicy, plainTheme, { expanded: true }).render(80).join("\n");
+assert.match(summaryExpanded, /matches=3/, "expanded metadata shows the matches field");
+assert.doesNotMatch(summaryExpanded, /SECRET/, "expanded metadata redacts secret-shaped values");
 
 const previewPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", previewLines: 2 };
 const preview = new OperationalDisplayComponent(description, previewPolicy, plainTheme, { expanded: false });
@@ -49,14 +52,21 @@ const hiddenPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "hidden" };
 const hidden = new OperationalDisplayComponent(description, hiddenPolicy, plainTheme, { expanded: false }).render(80).join("\n");
 assert.doesNotMatch(hidden, /3 matches|one/);
 const error = new OperationalDisplayComponent(
-  { ...description, lifecycle: "failed", rows: [{ text: "security warning" }], error: "Bearer abc-secret" },
+  { ...description, lifecycle: "failed", rows: [], error: "security warning", errorRaw: "Bearer abc-secret" },
   hiddenPolicy,
   plainTheme,
   { expanded: false },
 ).render(80).join("\n");
 assert.match(error, /security warning/);
-assert.match(error, /\[REDACTED\]/);
 assert.doesNotMatch(error, /abc-secret/);
+const errorExpanded = new OperationalDisplayComponent(
+  { ...description, lifecycle: "failed", rows: [], error: "security warning", errorRaw: "Bearer abc-secret" },
+  hiddenPolicy,
+  plainTheme,
+  { expanded: true },
+).render(80).join("\n");
+assert.match(errorExpanded, /\[REDACTED\]/);
+assert.doesNotMatch(errorExpanded, /abc-secret/);
 
 const noWrapDescription = {
   version: 1,
@@ -103,7 +113,7 @@ const structuredDescription = {
   target: "needle",
   sections: [
     {
-      title: "Summary",
+      title: "Details",
       blocks: [{ kind: "list", items: [{ label: "returned", value: "2" }, { label: "status", value: "ok", tone: "success" }] }],
       compact: true,
     },
@@ -124,10 +134,10 @@ const structuredCollapsedDescription = {
   sections: structuredDescription.sections.filter((section) => section.compact === true),
 };
 const structuredCollapsed = new OperationalDisplayComponent(structuredCollapsedDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(80).join("\n");
-assert.match(structuredCollapsed, /SUMMARY/);
+assert.match(structuredCollapsed, /returned=2/);
 assert.doesNotMatch(structuredCollapsed, /MATCHES|console\.log/);
 const structuredExpanded = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(80).join("\n");
-assert.match(structuredExpanded, /SUMMARY/);
+assert.match(structuredExpanded, /DETAILS/);
 assert.match(structuredExpanded, /MATCHES/);
 assert.match(structuredExpanded, /src\/a\.ts:12:4/);
 assert.match(structuredExpanded, /OUTPUT/);

@@ -1,6 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, highlightCode } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import { RESTATING_SECTION_TITLES } from "./adapter-utils";
 import { padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, sanitizeMarkdownForDisplay, truncateCodePoints } from "./sanitize";
 import { styleRule, styleTone } from "./theme";
@@ -239,10 +241,12 @@ function renderBlock(block: DisplaySectionBlock, context: RenderContext, expande
   }
 }
 
-function renderSection(section: DisplaySection, context: RenderContext, expanded: boolean): string[] {
+function renderSection(section: DisplaySection, context: RenderContext, expanded: boolean, showTitle: boolean): string[] {
   const blocks = section.blocks.filter((block) => expanded || block.kind !== "markdown");
   if (blocks.length === 0) return [];
-  const lines = [titleLine(section.title, context)];
+  // C9: the label-led rule separates two or more sections. A lone section
+  // attaches its content directly under the header rail.
+  const lines = showTitle ? [titleLine(section.title, context)] : [];
   for (const [index, block] of blocks.entries()) {
     if (index > 0) lines.push(padVisible("", context.width));
     lines.push(...renderBlock(block, context, expanded));
@@ -258,11 +262,19 @@ export function renderDisplaySections(
   expanded: boolean,
 ): string[] {
   const context: RenderContext = { theme, width: Math.max(1, Math.floor(width)), policy };
-  const selected = sections.filter((section) => expanded || section.compact === true);
+  const selected = sections
+    .filter((section) => expanded || section.compact === true)
+    // C8: an expanded section that only restates the header is not rendered.
+    .filter((section) => !RESTATING_SECTION_TITLES.has(section.title.trim().toLowerCase()))
+    // A conditional section counts only when it is present in this mode.
+    .filter((section) => section.blocks.some((block) => expanded || block.kind !== "markdown"));
+  const showTitles = selected.length >= 2;
   const lines: string[] = [];
   for (const [index, section] of selected.entries()) {
     if (index > 0) lines.push(padVisible("", context.width));
-    lines.push(...renderSection(section, context, expanded));
+    lines.push(...renderSection(section, context, expanded, showTitles));
   }
+  // The body never ends with an empty row.
+  while (lines.length > 0 && stripVTControlCharacters(lines.at(-1)!).trim() === "") lines.pop();
   return lines;
 }

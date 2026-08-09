@@ -6,6 +6,7 @@ import {
   booleanOf,
   codeSection,
   field,
+  formatBytes,
   markdownSection,
   metadata,
   recordsSection,
@@ -109,11 +110,9 @@ function remoteLifecycle(name: string, isError: boolean, details: UnknownRecord)
   return undefined;
 }
 
-function formatBytes(bytes: unknown): string {
-  const n = typeof bytes === "number" && Number.isFinite(bytes) ? bytes : 0;
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+function bytesField(label: string, value: unknown): DisplayMetadataEntry | undefined {
+  const bytes = typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return bytes === undefined ? undefined : field(label, formatBytes(bytes));
 }
 
 function markCompact(section: DisplaySection | undefined): DisplaySection | undefined {
@@ -343,7 +342,7 @@ function docsSections(details: UnknownRecord): DisplaySection[] {
   return output;
 }
 
-function domainSection(name: string, details: UnknownRecord, text: string, expanded: boolean): DisplaySection[] {
+function domainSection(name: string, details: UnknownRecord, text: string, expanded: boolean, isError = false): DisplaySection[] {
   if (!expanded) return [];
   if (name === "search" || name === "fetch" || name === "libs") {
     return sections(recordsSection("Results", webRecords(name, details)));
@@ -371,8 +370,13 @@ function domainSection(name: string, details: UnknownRecord, text: string, expan
       const { profileSection, sessionSection } = sshRecords(details);
       return sections(profileSection, sessionSection);
     }
+    // C6: on failure the terminal output is the failure text; the expanded
+    // ERROR section is its sole carrier.
+    if (isError) return [];
     return sections(codeSection("Output", sshOutputText(text), "text", false));
   }
+  // C6: a failure never renders its raw text both here and in the ERROR section.
+  if (isError) return [];
   return sections(codeSection("Output", text, "text", false));
 }
 
@@ -441,8 +445,8 @@ function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | und
     booleanOf(details.cacheHit) !== undefined ? field("cacheHit", details.cacheHit) : undefined,
     // Parse-specific: upload size (privacy-relevant: how much data left
     // the workspace), source size, and error code for diagnostics.
-    details.uploadBytes !== undefined ? field("uploaded", formatBytes(details.uploadBytes)) : undefined,
-    details.sourceBytes !== undefined ? field("sourceSize", formatBytes(details.sourceBytes)) : undefined,
+    bytesField("uploaded", details.uploadBytes),
+    bytesField("sourceSize", details.sourceBytes),
     details.errorCode !== undefined && stringOf(details.errorCode) ? field("errorCode", details.errorCode, "muted") : undefined,
     // GitHub-specific fields
     field("kind", details.kind),
@@ -517,7 +521,7 @@ export function createRemoteAdapter(
       const errorText = stringOf(details.error)
         ?? stringOf(details.errorCode)
         ?? (isError ? text : undefined);
-      const domain = domainSection(name, details, text, options.expanded);
+      const domain = domainSection(name, details, text, options.expanded, isError);
       const request = requestSection("Request", name, args);
       const summary = summarySection("Summary", summaryFields(details));
       const output = options.expanded && domain.length === 0 && !isError && !errorText

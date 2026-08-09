@@ -147,8 +147,8 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const details = { version: 1, operation: "status", phase: "done", projectPath: "/tmp", status: statusValue({ pendingChanges: { added: 2, modified: 1, removed: 0 } }) };
   const result = renderResult(decorated, args, JSON.stringify({ version: 1, status: "done", operation: "status", projectPath: "/tmp", index: details.status }), details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /INDEX/, "status result shows an Index section");
-  assert.match(text, /files=120/, "index section shows file count");
+  assert.ok(!text.includes("INDEX"), "a lone Index section draws no title rule (C9)");
+  assert.match(text, /files=120/, "index content shows file count");
   assert.match(text, /nodes=5000/, "index section shows node count");
   assert.match(text, /edges=9000/, "index section shows edge count");
   assert.match(text, /size=2\.0 MB/, "index section shows human-readable size");
@@ -183,18 +183,16 @@ function renderResult(decorated, args, content, details, opts = {}) {
 
   const statusArgs = { operation: "status", projectPath: "." };
   const statusDetails = { version: 1, operation: "status", phase: "done", projectPath: "/tmp", status: statusValue({ pendingChanges: { added: 2, modified: 1, removed: 0 } }) };
-  const statusCollapsed = renderResult(decorated, statusArgs, "{}", statusDetails, { expanded: false });
+  const statusCollapsed = renderResult(decorated, statusArgs, "{}", statusDetails, { expanded: true });
   const statusCollapsedText = stripVTControlCharacters(statusCollapsed.render(100).join("\n"));
-  assert.match(statusCollapsedText, /INDEX/, "collapsed status result still shows the compact Index section");
-  assert.match(statusCollapsedText, /files=120/, "collapsed Index section shows file count");
-  assert.doesNotMatch(statusCollapsedText, /QUERY/, "collapsed status result omits the non-compact Query section");
+  assert.match(statusCollapsedText, /files=120/, "status result shows the index health content");
+  assert.doesNotMatch(statusCollapsedText, /QUERY/, "status result omits the restating Query section");
 
   const recoverableArgs = { operation: "explore", query: "how does auth work" };
   const recoverableDetails = { version: 1, operation: "explore", phase: "recoverable", projectPath: "/tmp", code: "NOT_INDEXED", message: "No CodeGraph index exists here; request operation=init once" };
   const recoverableCollapsed = renderResult(decorated, recoverableArgs, "{}", recoverableDetails, { expanded: false });
   const recoverableCollapsedText = stripVTControlCharacters(recoverableCollapsed.render(100).join("\n"));
-  assert.match(recoverableCollapsedText, /RESULT/, "collapsed recoverable result still shows the compact Result section");
-  assert.match(recoverableCollapsedText, /No CodeGraph index exists here/, "collapsed recoverable message stays visible without expanding");
+  assert.match(recoverableCollapsedText, /No CodeGraph index exists here/, "collapsed recoverable message stays visible as the summary row");
 
   runtime.dispose();
 }
@@ -209,10 +207,10 @@ function renderResult(decorated, args, content, details, opts = {}) {
 
   const withResults = renderResult(decorated, args, "Auth flows through middleware.js and validates JWTs.", details, { expanded: true });
   const withResultsText = stripVTControlCharacters(withResults.render(100).join("\n"));
-  assert.match(withResultsText, /RESULTS/, "non-empty explore shows a Results section");
   assert.match(withResultsText, /Auth flows through middleware\.js/, "explore prose is visible");
+  assert.ok(!withResultsText.includes("RESULTS"), "a lone Results section draws no title rule (C9)");
 
-  const empty = renderResult(decorated, args, "CodeGraph returned no relevant source for this query.", details);
+  const empty = renderResult(decorated, args, "CodeGraph returned no relevant source for this query.", details, { expanded: true });
   const emptyText = stripVTControlCharacters(empty.render(100).join("\n"));
   assert.match(emptyText, /^✓/, "empty explore still renders completed (not failed)");
   assert.match(emptyText, /No relevant source found/, "empty explore shows an explicit empty message");

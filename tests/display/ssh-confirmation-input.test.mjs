@@ -70,7 +70,7 @@ const SESSION = {
   // Secret prompt text never rendered
   const callText = stripVTControlCharacters(call.render(100).join("\n"));
   assert.doesNotMatch(callText, /deployment password/, "secret prompt text never rendered");
-  assert.match(callText, /secure input requested/, "masked prompt indicator shown");
+  assert.match(callText, /\[needs input\]/, "masked prompt indicator shown as needs-input badge");
   runtime.dispose();
 }
 
@@ -106,7 +106,7 @@ const SESSION = {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "declined connect renders · (aborted marker)");
   assert.match(text, /declined/i, "declined message visible");
-  assert.match(text, /sshCode=DECLINED/, "ssh code visible in summary");
+  assert.match(text, /code=DECLINED/, "decline code visible in metadata");
   assert.doesNotMatch(text, /password|token|credential/i, "no credentials in declined display");
 
   runtime.dispose();
@@ -123,7 +123,7 @@ const SESSION = {
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "confirmation unavailable renders × (failed marker)");
   assert.match(text, /confirmation/i, "error message visible");
-  assert.match(text, /sshCode=CONFIRMATION_UNAVAILABLE/, "ssh code visible");
+  assert.match(text, /code=CONFIRMATION_UNAVAILABLE/, "ssh code visible");
 
   runtime.dispose();
 }
@@ -139,7 +139,7 @@ const SESSION = {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "host verification failure renders ×");
   assert.match(text, /host key verification failed/i, "host verification message visible");
-  assert.match(text, /sshCode=HOST_VERIFICATION_FAILED/, "host verification code visible");
+  assert.match(text, /code=HOST_VERIFICATION_FAILED/, "host verification code visible");
   assert.doesNotMatch(text, /sha256:|BEGIN.*KEY|ssh-rsa|ssh-ed25519/i, "no fingerprint hash or key material in display");
 
   runtime.dispose();
@@ -234,7 +234,7 @@ const SESSION = {
   const result = renderResult(decorated, args, details, "Welcome to Ubuntu\n$", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "connect success renders ✓");
-  assert.match(text, /endpoint=deploy@10\.0\.0\.1:22/, "endpoint visible");
+  assert.match(text, /deploy@10\.0\.0\.1:22/, "endpoint visible in summary row");
   assert.doesNotMatch(text, /password|passphrase|private.key|BEGIN.*KEY/i, "no credentials in connect success");
   assert.doesNotMatch(text, /ghp_|github_pat_|Bearer\s/i, "no tokens in connect success");
 
@@ -285,7 +285,7 @@ const SESSION = {
   const result = renderResult(decorated, args, details, "partial output", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "disconnected command renders × (not ×)");
-  assert.match(text, /disconnectReason=Connection reset by peer/, "disconnect reason visible");
+  assert.match(text, /SSH session disconnected/, "disconnect reason visible via error message");
 
   runtime.dispose();
 }

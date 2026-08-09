@@ -373,5 +373,17 @@ export interface DisplayDescriptionV1 {
   readonly progress?: DisplayProgressDescription;
   readonly truncated?: boolean;
   readonly error?: string;
+  /**
+   * C6 raw failure text. When it differs from `error` (the one-sentence
+   * statement), the expanded body renders it exactly once as an `ERROR`
+   * section; the collapsed body never shows it.
+   */
+  readonly errorRaw?: string;
+  /**
+   * C4 one-row outcome sentence (`60 lines · 2.1 KB`). The collapsed body
+   * of a non-payload tool is exactly this row; payload tools append it
+   * after their bounded body, and the expanded body closes with it.
+   */
+  readonly summary?: string;
   readonly qualifiers?: readonly OperationalQualifier[];
 }

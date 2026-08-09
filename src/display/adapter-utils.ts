@@ -45,6 +45,159 @@ export function asRecord(value: unknown): UnknownRecord {
     : {};
 }
 
+/**
+ * C4 payload exceptions: tools whose output *is* the result. Their collapsed
+ * body keeps a bounded payload plus the summary row; every other tool shows
+ * exactly the summary row.
+ */
+export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
+  "edit",
+  "write",
+  "bash",
+  "pwsh",
+  "scheme",
+  "ssh",
+  "grep",
+  "rg",
+  "sg",
+  "subagent_delegate",
+  "subagent_resume",
+]);
+
+/**
+ * C8 expanded sections that only restate the header (identity, target, and
+ * status fields). Matched case-insensitively against the section title.
+ */
+export const RESTATING_SECTION_TITLES: ReadonlySet<string> = new Set([
+  "file",
+  "target",
+  "directory",
+  "query",
+  "request",
+  "summary",
+  "action",
+  "persistence",
+  "status",
+]);
+
+/** Human byte size in the design-doc shape: `640 B`, `6.4 KB`, `2.1 MB`. */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${Math.floor(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = bytes / 1024;
+  let unitIndex = 0;
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  return `${scaled >= 100 ? Math.round(scaled) : scaled.toFixed(1)} ${units[unitIndex]}`;
+}
+
+/** C4 count nouns for the tools whose paging details compose a sentence. */
+const SUMMARY_NOUNS: Readonly<Record<string, string>> = Object.freeze({
+  rg: "matches",
+  sg: "matches",
+  fd: "files",
+  github_search: "results",
+});
+
+function summaryNoun(name: string): string {
+  return SUMMARY_NOUNS[name] ?? "results";
+}
+
+/**
+ * C4 collapsed summary sentence for the extension tools, composed from the
+ * structured details every tool already returns. Returns undefined when no
+ * counts are known; the caller then falls back to the first flat row.
+ */
+export function composeInternalSummary(
+  name: string,
+  detailsValue: unknown,
+  argsValue: unknown,
+  text: string,
+): string | undefined {
+  const details = asRecord(detailsValue);
+  const args = asRecord(argsValue);
+  const counts = asRecord(details.counts);
+  const page = asRecord(details.page);
+
+  if (name === "todo" && numberOf(counts.total) !== undefined) {
+    const parts = [`${counts.total} tasks`];
+    if (numberOf(counts.completed)) parts.push(`${counts.completed} completed`);
+    if (numberOf(counts.inProgress)) parts.push(`${counts.inProgress} in progress`);
+    if (numberOf(counts.pending)) parts.push(`${counts.pending} pending`);
+    return parts.join(" · ");
+  }
+
+  if (name === "pdf_search") {
+    const file = stringOf(args.path)?.split(/[\\/]/).pop();
+    const matches = numberOf(details.totalMatches) ?? numberOf(details.returned);
+    if (matches === undefined) return undefined;
+    const pages = numberOf(details.returned);
+    const pageCount = numberOf(details.pageCount);
+    const head = `${matches} matches on ${pages ?? 0}${pageCount !== undefined ? ` of ${pageCount}` : ""} pages`;
+    return file ? `${head} in ${file}` : head;
+  }
+
+  if (name === "pwsh" || name === "scheme") {
+    const outputLines = text ? text.split("\n").length : 0;
+    return outputLines === 0 ? "No output" : `${outputLines} lines`;
+  }
+
+  if (name === "fetch") {
+    const succeeded = numberOf(details.succeeded);
+    if (succeeded !== undefined) {
+      const head = `${succeeded} ${succeeded === 1 ? "page" : "pages"} fetched`;
+      const failed = numberOf(details.failed) ?? 0;
+      return failed > 0 ? `${head} · ${failed} failed` : head;
+    }
+  }
+
+  if (name === "time") {
+    return stringOf(text.split("\n", 1)[0]);
+  }
+
+  // Read-like tools (github_read) report returned lines instead of a page.
+  const returnedLines = numberOf(details.returnedLines);
+  if (returnedLines !== undefined) {
+    if (returnedLines === 0) return "Empty file";
+    const head = `${returnedLines} lines`;
+    if (details.hasMore === true) {
+      const next = (numberOf(args.line) ?? 1) + returnedLines;
+      return `${head} · continue at line ${next}`;
+    }
+    return head;
+  }
+
+  const returned = numberOf(page.returned) ?? numberOf(details.returned);
+  const total = numberOf(page.total) ?? numberOf(details.total) ?? numberOf(details.totalMatches);
+  if (returned !== undefined) {
+    const noun = summaryNoun(name);
+    if (returned === 0) {
+      // fd.md: the empty summary states the search root.
+      return name === "fd" ? `No files found in ${stringOf(args.path) ?? "."}` : `No ${noun}`;
+    }
+    const head = total !== undefined && total > returned
+      ? `${returned} of ${total} ${noun}`
+      : `${total ?? returned} ${noun}`;
+    // fd.md: the summary states the returned count, the total, the root,
+    // and the way to continue.
+    const root = name === "fd" ? ` in ${stringOf(args.path) ?? "."}` : "";
+    if (page.hasMore === true || details.hasMore === true) {
+      const offset = numberOf(page.nextOffset) ?? ((numberOf(page.offset) ?? 0) + returned);
+      return `${head}${root} · continue at offset ${offset}`;
+    }
+    return `${head}${root}`;
+  }
+
+  const countEntries = Object.entries(counts).slice(0, 8);
+  if (countEntries.length > 0) {
+    return countEntries.map(([key, value]) => `${key} ${String(value)}`).join(" · ");
+  }
+  return stringOf(details.message);
+}
+
 export function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }

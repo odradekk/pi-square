@@ -272,7 +272,7 @@ for (const secret of secretValues) {
     rows: [{ text: "summary line" }],
     sections: [
       {
-        title: "File",
+        title: "Content",
         blocks: [{ kind: "code", text: "line 1\nline 2\nline 3", language: "typescript", lineNumbers: true }],
         compact: false,
       },
@@ -290,7 +290,8 @@ for (const secret of secretValues) {
   const expandedPlain = stripVTControlCharacters(expanded.join("\n"));
   assert.match(expandedPlain, /line 1/, "expanded must show section content");
   assert.match(expandedPlain, /line 2/, "expanded must show all section lines");
-  assert.match(expandedPlain, /FILE/, "expanded must show section title");
+  // A lone Content section attaches its content directly without a title rule (C9).
+  assert.ok(!expandedPlain.includes("FILE"), "the restating File section title is never rendered");
 }
 
 // ── 8. Motion downgrade: all lifecycles render correctly ──

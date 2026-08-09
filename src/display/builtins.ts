@@ -19,7 +19,7 @@ import { setBannerDisplayDiagnostic } from "../banner";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
-import { codeSection, field, formatDisplayPath, matchesSection, pathsSection, sections, summarySection, textSection } from "./adapter-utils";
+import { codeSection, field, formatBytes, formatDisplayPath, matchesSection, pathsSection, sections, summarySection, textSection } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
 import type { DisplayDescriptionV1, DisplayMatchItem, DisplayMetadataEntry, DisplayPathItem, DisplayRow, OperationalLifecycle } from "./types";
 
@@ -173,10 +173,13 @@ function resultSections(
   isError = false,
 ): ReturnType<typeof sections> {
   const target = stringValue(args.path);
+  // C6: a failure body is the sentence row plus the ERROR section; the
+  // payload sections do not render for a failed result.
+  if (isError) return [];
   // ls and find produce path-list sections so collapsed results show
   // path-kind markers, counts, and empty-result messages. Errors are
   // surfaced through description.error, not parsed as path entries.
-  if (!isError && (name === "ls" || name === "find")) {
+  if (name === "ls" || name === "find") {
     const sectionTitle = name === "ls" ? "Entries" : "Results";
     const emptyMessage = name === "ls" ? "No entries" : "No results";
     const summary = name === "ls"
@@ -190,7 +193,7 @@ function resultSections(
         : textSection("Result", emptyMessage, "muted", true),
     );
   }
-  if (!isError && name === "grep") {
+  if (name === "grep") {
     const items = grepMatchItems(text);
     return sections(
       expanded
@@ -223,6 +226,77 @@ function resultSections(
   return [];
 }
 
+function countTextLines(text: string): number {
+  return text ? text.split("\n").length : 0;
+}
+
+function plural(count: number, singular: string, pluralForm?: string): string {
+  return `${count} ${count === 1 ? singular : (pluralForm ?? `${singular}s`)}`;
+}
+
+/**
+ * C4 collapsed summary sentence for the Pi built-ins, composed from the
+ * result details, the arguments, and the result text.
+ */
+function builtinSummary(
+  name: BuiltinName,
+  args: Record<string, unknown>,
+  details: Record<string, unknown> | undefined,
+  text: string,
+): string | undefined {
+  const target = stringValue(args.path);
+  if (name === "read") {
+    const returned = typeof details?.returnedLines === "number" ? details.returnedLines : countTextLines(text);
+    if (returned === 0) return "Empty file";
+    const head = `${plural(returned, "line")} · ${formatBytes(Buffer.byteLength(text))}`;
+    // The continuation is the 1-indexed start line plus the lines read.
+    if (details?.hasMore === true) {
+      const start = typeof args.offset === "number" && Number.isFinite(args.offset) ? args.offset : 1;
+      return `${head} · continue at offset ${start + returned}`;
+    }
+    return head;
+  }
+  if (name === "ls") {
+    const count = pathItemsFromText(text).length;
+    const directory = target ?? ".";
+    return count === 0 ? `No entries in ${directory}` : `${plural(count, "entry", "entries")} in ${directory}`;
+  }
+  if (name === "find") {
+    const count = pathItemsFromText(text).length;
+    const directory = target ?? ".";
+    return count === 0 ? `No files found in ${directory}` : `${plural(count, "file")} in ${directory}`;
+  }
+  if (name === "grep") {
+    const items = grepMatchItems(text);
+    if (items.length === 0) return "No matches";
+    const files = new Set(items.map((item) => item.path)).size;
+    return `${plural(items.length, "match", "matches")} in ${plural(files, "file")}`;
+  }
+  if (name === "bash") {
+    const lines = countTextLines(text.trimEnd());
+    return lines === 0 ? "No output" : plural(lines, "line");
+  }
+  if (name === "write") {
+    const content = typeof args.content === "string" ? args.content : text;
+    const lines = countTextLines(content);
+    return `${plural(lines, "line")} · ${formatBytes(Buffer.byteLength(content))}`;
+  }
+  if (name === "edit") {
+    const edits = Array.isArray(args.edits) ? args.edits.length : undefined;
+    const patch = typeof details?.patch === "string" ? details.patch : typeof details?.diff === "string" ? details.diff : "";
+    let added = 0;
+    let removed = 0;
+    for (const line of patch.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
+      else if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
+    }
+    const head = edits !== undefined ? plural(edits, "replacement") : undefined;
+    const counts = added + removed > 0 ? `+${added} −${removed}` : undefined;
+    return [head, counts].filter((part) => part !== undefined).join(" · ") || undefined;
+  }
+  return undefined;
+}
+
 function resultDescription(
   name: BuiltinName,
   args: Record<string, unknown>,
@@ -238,6 +312,12 @@ function resultDescription(
     ? details.truncation as Record<string, unknown>
     : undefined;
   const isErrorResult = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
+  // C6: the error row states one human sentence; the raw platform text
+  // moves to errorRaw and renders exactly once as an expanded ERROR section.
+  const sentence = isErrorResult
+    ? stringValue(details?.error) ?? stringValue(details?.message) ?? stringValue(text.split("\n", 1)[0]) ?? "Tool failed"
+    : undefined;
+  const summarySentence = isErrorResult ? undefined : builtinSummary(name, args, details, text);
   const description: DisplayDescriptionV1 = {
     version: 1,
     tool: name,
@@ -247,7 +327,8 @@ function resultDescription(
     ...builtinTarget(name, args, cwd),
     truncated: truncation?.truncated === true,
     sections: resultSections(name, args, text, details, !partial, isErrorResult),
-    ...(isErrorResult && text ? { error: text } : {}),
+    ...(sentence ? { error: sentence, ...(text && text !== sentence ? { errorRaw: text } : {}) } : {}),
+    ...(summarySentence ? { summary: summarySentence } : {}),
   };
   if (name === "edit" && (typeof details?.patch === "string" || typeof details?.diff === "string")) {
     return {

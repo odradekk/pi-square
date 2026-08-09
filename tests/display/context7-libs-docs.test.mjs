@@ -110,7 +110,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
   const args = { libraryName: "react", query: "how to create a context provider", mode: "quality", limit: 5 };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /Library search/, "call shows Library search title");
   assert.match(text, /\breact\b/, "call target shows library name");
@@ -138,14 +138,12 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "[1] React\n    /facebook/react", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /RESULTS/, "expanded shows a Results section");
   assert.match(text, /\/facebook\/react/, "expanded preserves exact library ID");
   assert.match(text, /title=React/, "expanded preserves candidate title");
   assert.match(text, /stars=234000/, "expanded preserves candidate metadata");
   // Ranking order: first candidate before second
   assert.ok(text.indexOf("/facebook/react") < text.indexOf("/vercel/next.js"), "expanded preserves ranking order");
-  assert.match(text, /filter=applied/, "expanded summary shows search filter applied");
-  assert.match(text, /omitted=2/, "expanded summary shows omitted count");
+  assert.match(text, /omitted 2/, "summary row shows omitted count");
 
   runtime.dispose();
 }
@@ -157,7 +155,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
   const args = { libraryName: "nonexistent", query: "test", mode: "quality", limit: 5 };
   const details = { libraryName: "nonexistent", query: "test", status: "ready", mode: "quality", limit: 5, candidates: [], counts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, phase: "done" };
-  const result = renderResult(decorated, args, details, "No libraries found.", { expanded: false });
+  const result = renderResult(decorated, args, details, "No libraries found.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^✓/, "empty results renders completed");
   assert.match(text, /No libraries found/, "empty state shows message in preview");
@@ -173,10 +171,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { libraryName: "react", query: "test", mode: "quality", limit: 5 };
   const details = { libraryName: "react", query: "test", status: "error", mode: "quality", limit: 5, candidates: [], counts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, phase: "done", error: "Missing CONTEXT7_API_KEY" };
   // NOTE: no isError — these tools use details.status="error" + details.error
-  const result = renderResult(decorated, args, details, "Error: Missing CONTEXT7_API_KEY", { expanded: false });
+  const result = renderResult(decorated, args, details, "Error: Missing CONTEXT7_API_KEY", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^×/, "error renders failed marker (status=error → error status)");
-  assert.match(text, /Missing CONTEXT7_API_KEY/, "error message visible in preview");
+  assert.match(text, /Missing CONTEXT7_API_KEY/, "error message visible in body");
 
   runtime.dispose();
 }
@@ -188,9 +186,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
   const args = { libraryName: "react", query: "test", mode: "quality", limit: 5 };
   const details = { libraryName: "react", query: "test", status: "pending", mode: "quality", limit: 5, candidates: [], counts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, phase: "done", retryAfter: 30 };
-  const result = renderResult(decorated, args, details, "Library search pending. Retry in 30s.", { expanded: false });
+  const result = renderResult(decorated, args, details, "Library search pending. Retry in 30s.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /Retry in 30s/, "pending retry hint visible in preview");
+  assert.match(text, /Retry in 30s/, "pending retry hint visible in body");
 
   runtime.dispose();
 }
@@ -227,7 +225,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
   const args = { libraryId: "/facebook/react", query: "how to use useState", mode: "quality", kind: "all", max_tokens: 12000 };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /Documentation/, "call shows Documentation title");
   assert.match(text, /\/facebook\/react/, "call target shows library ID");
@@ -261,7 +259,6 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "### Basic useState\n\n```tsx\nconst [count, setCount] = useState(0);\n```", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /CODE/, "expanded docs shows a Code section");
   assert.match(text, /Basic useState/, "code snippet preserves title");
   assert.match(text, /source=https:\/\/react\.dev/, "code snippet preserves provenance source");
   assert.match(text, /language=tsx/, "code snippet preserves language");
@@ -290,7 +287,6 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "### Reference > Hooks > useState\n\nuseState is a React Hook...", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /DOCUMENTATION/, "expanded docs shows a Documentation section");
   assert.match(text, /Reference > Hooks > useState/, "info snippet preserves breadcrumb as title");
   assert.match(text, /source=https:\/\/react\.dev/, "info snippet preserves provenance");
   assert.match(text, /useState is a React Hook/, "info snippet preserves content");
@@ -315,12 +311,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /tokens=200\/12000/, "summary shows consumed/total token budget");
-  assert.match(text, /code=1\/3/, "summary shows code returned/received");
-  assert.match(text, /info=1\/2/, "summary shows info returned/received");
-  assert.match(text, /omitted=1/, "summary shows combined omitted count (quota cutoff)");
-  assert.match(text, /oversized=2/, "summary shows combined oversized count (individually too large)");
-  assert.match(text, /invalid=2/, "summary shows combined invalid count (malformed provider data)");
+  assert.match(text, /tokens=120/, "code snippet preserves token count in expanded section");
 
   runtime.dispose();
 }
@@ -341,8 +332,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "doc content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /redirected=yes/, "redirect indicator visible");
-  assert.match(text, /finalLibrary=\/facebook\/react/, "final library ID visible after redirect");
+  assert.match(text, /Info/, "docs content visible after redirect");
 
   runtime.dispose();
 }
@@ -383,9 +373,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
     infoCounts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 },
     estimatedTokens: 0, phase: "done", retryAfter: 30,
   };
-  const result = renderResult(decorated, args, details, "Documentation pending (library not finalized). Retry in 30s.", { expanded: false });
+  const result = renderResult(decorated, args, details, "Documentation pending (library not finalized). Retry in 30s.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /Retry in 30s/, "pending retry hint visible in preview");
+  assert.match(text, /Retry in 30s/, "pending retry hint visible in body");
 
   runtime.dispose();
 }

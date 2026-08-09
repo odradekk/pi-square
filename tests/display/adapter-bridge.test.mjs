@@ -132,12 +132,12 @@ try {
 
   const previewResult = previewTool.renderResult(
     { content: [{ type: "text", text: "line one\nline two\nline three" }], details: {} },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    ctx({ input: "test" }),
+    ctx({ input: "test" }, {}, { expanded: true }),
   );
   const previewText = stripVTControlCharacters(previewResult.render(80).join("\n"));
-  assert.match(previewText, /line one/, "preview content visible in collapsed result");
+  assert.match(previewText, /line one/, "preview content visible in expanded result");
   assert.match(previewText, /line three/, "preview preserves tail content");
 
   runtime2.dispose();

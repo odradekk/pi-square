@@ -146,10 +146,10 @@ function renderResult(decorated, args, details, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const details = { ...RUN_DETAILS, retries: 2 };
-  const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: false });
+  const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "completed with retries renders ! (warning qualifier)");
-  assert.match(text, /retries=2/, "retry count visible in metadata");
+  assert.match(text, /retries=2/, "retry count visible in expanded metadata");
   runtime.dispose();
 }
 
@@ -159,7 +159,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const details = { ...RUN_DETAILS, phase: "running", retries: 1 };
-  const result = renderResult(decorated, ARGS_DELEGATE, details, { isPartial: true });
+  const result = renderResult(decorated, ARGS_DELEGATE, details, { isPartial: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "active retry shows running braille");
   assert.match(text, /retries=1/, "retry count visible during active retry");

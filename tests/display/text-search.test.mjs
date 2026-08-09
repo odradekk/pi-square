@@ -123,7 +123,7 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "const" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /MATCHES/, "result shows MATCHES section");
+  assert.ok(!text.includes("MATCHES"), "a lone Matches section draws no title rule (C9)");
   assert.match(text, /a\.ts:1/, "result shows path:line for first match");
   assert.match(text, /a\.ts:2/, "result shows path:line for second match");
   assert.match(text, /const x = 1;/, "result shows excerpt for first match");
@@ -139,12 +139,13 @@ function makeFdRgDef(name) {
   const decorated = decorateBuiltinDefinition(createGrepToolDefinition(TMP), TMP, () => runtime);
   const args = { pattern: "TODO", glob: "*.ts", ignoreCase: true, literal: true, context: 2 };
 
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  // C7: the key=value metadata row renders only when expanded.
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const callText = stripVTControlCharacters(call.render(100).join("\n"));
-  assert.match(callText, /glob=\*\.ts/, "call badges show glob");
-  assert.match(callText, /case=insensitive/, "call badges show case sensitivity");
-  assert.match(callText, /literal=true/, "call badges show literal/regex mode");
-  assert.match(callText, /context=2/, "call badges show context lines");
+  assert.match(callText, /glob=\*\.ts/, "expanded call metadata shows glob");
+  assert.match(callText, /case=insensitive/, "expanded call metadata shows case sensitivity");
+  assert.match(callText, /literal=true/, "expanded call metadata shows literal/regex mode");
+  assert.match(callText, /context=2/, "expanded call metadata shows context lines");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "a.ts:1:const x = 1;" }], details: {} },
@@ -153,10 +154,7 @@ function makeFdRgDef(name) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const resultText = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(resultText, /glob=\*\.ts/, "expanded Query shows glob");
-  assert.match(resultText, /case=insensitive/, "expanded Query shows case sensitivity");
-  assert.match(resultText, /literal=true/, "expanded Query shows literal/regex mode");
-  assert.match(resultText, /context=2/, "expanded Query shows context lines");
+  assert.match(resultText, /a\.ts:1/, "expanded result shows the match content");
 
   runtime.dispose();
 }
@@ -175,7 +173,8 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "const", path: "." }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: false }),
   );
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
-  assert.match(collapsedText, /MATCHES/, "collapsed shows MATCHES");
+  assert.ok(!collapsedText.includes("MATCHES"), "collapsed shows match content without a section title (C9)");
+  assert.match(collapsedText, /a\.ts:1/, "collapsed shows match content");
   assert.doesNotMatch(collapsedText, /QUERY/, "collapsed omits QUERY summary");
 
   const expanded = decorated.renderResult(
@@ -185,9 +184,9 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "const", path: "." }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
-  assert.match(expandedText, /QUERY/, "expanded shows QUERY summary");
-  assert.match(expandedText, /pattern=const/, "expanded QUERY shows pattern field");
-  assert.match(expandedText, /MATCHES/, "expanded also shows MATCHES");
+  assert.ok(!expandedText.includes("QUERY"), "expanded prunes the restating QUERY section (C8)");
+  assert.match(expandedText, /a\.ts:1/, "expanded shows match content");
+  assert.ok(!expandedText.includes("MATCHES"), "a lone Matches section draws no title rule (C9)");
 
   runtime.dispose();
 }
@@ -329,7 +328,7 @@ function makeFdRgDef(name) {
   const call = decorated.renderCall(
     { pattern: "foo", case: "insensitive", word: true },
     plainTheme,
-    makeCtx({ pattern: "foo", case: "insensitive", word: true }, {}, { argsComplete: true, executionStarted: true }),
+    makeCtx({ pattern: "foo", case: "insensitive", word: true }, {}, { argsComplete: true, executionStarted: true, expanded: true }),
   );
   const text = stripVTControlCharacters(call.render(80).join("\n"));
   const patternOccurrences = text.match(/pattern=foo/g) ?? [];
@@ -359,7 +358,7 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /MATCHES/, "rg result shows MATCHES section");
+  assert.ok(!text.includes("MATCHES"), "a lone Matches section draws no title rule (C9)");
   assert.match(text, /src\/a\.ts:10:3/, "rg result shows path:line:column");
   assert.match(text, /foo bar/, "rg result shows excerpt");
 
@@ -448,9 +447,9 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /hasMore=true/, "pagination hasMore is reachable when expanded");
-  assert.match(text, /next=1/, "pagination next offset is reachable when expanded");
-  assert.match(text, /total=5/, "pagination total is reachable when expanded");
+  assert.match(text, /\[truncated\]/, "pagination raises the truncated badge when expanded");
+  assert.match(text, /total=5/, "pagination total is reachable in expanded metadata");
+  assert.match(text, /1 of 5 matches · continue at offset 1/, "expanded summary row states pagination and continuation");
 
   const collapsed = decorated.renderResult(
     {
@@ -467,7 +466,7 @@ function makeFdRgDef(name) {
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
   assert.doesNotMatch(collapsedText, /hasMore=true/, "collapsed omits hasMore; secondary paging metadata moves into expanded form");
   assert.doesNotMatch(collapsedText, /next=1/, "collapsed omits next offset");
-  assert.match(collapsedText, /total=5/, "collapsed still shows total via header metadata (higher priority)");
+  assert.match(collapsedText, /1 of 5 matches · continue at offset 1/, "collapsed summary row states pagination and continuation");
 
   runtime.dispose();
 }
@@ -537,7 +536,7 @@ function makeFdRgDef(name) {
   // fd: metadata not duplicated, genuine empty shows explicit message
   {
     const decorated = decorateInternalTool(makeFdRgDef("fd"), () => runtime);
-    const call = decorated.renderCall({ pattern: "*.ts" }, plainTheme, makeCtx({ pattern: "*.ts" }, {}, { argsComplete: true, executionStarted: true }));
+    const call = decorated.renderCall({ pattern: "*.ts" }, plainTheme, makeCtx({ pattern: "*.ts" }, {}, { argsComplete: true, executionStarted: true, expanded: true }));
     const callText = stripVTControlCharacters(call.render(80).join("\n"));
     assert.equal((callText.match(/pattern=\*\.ts/g) ?? []).length, 1, "fd pattern metadata appears exactly once");
 
@@ -548,13 +547,13 @@ function makeFdRgDef(name) {
       makeCtx({ pattern: "*.ts" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
     );
     const emptyText = stripVTControlCharacters(empty.render(80).join("\n"));
-    assert.match(emptyText, /No results/, "fd genuine empty shows explicit message");
+    assert.match(emptyText, /No files found/, "fd genuine empty shows explicit message");
   }
 
   // sg: metadata not duplicated, genuine empty shows explicit message
   {
     const decorated = decorateInternalTool(makeFdRgDef("sg"), () => runtime);
-    const call = decorated.renderCall({ pattern: "foo" }, plainTheme, makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true }));
+    const call = decorated.renderCall({ pattern: "foo" }, plainTheme, makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true, expanded: true }));
     const callText = stripVTControlCharacters(call.render(80).join("\n"));
     assert.equal((callText.match(/pattern=foo/g) ?? []).length, 1, "sg pattern metadata appears exactly once");
 
@@ -574,9 +573,9 @@ function makeFdRgDef(name) {
     const call = decorated.renderCall({ query: "retention", path: "manual.pdf" }, plainTheme, makeCtx({ query: "retention", path: "manual.pdf" }, {}, { argsComplete: true, executionStarted: true }));
     const empty = decorated.renderResult(
       { content: [{ type: "text", text: "pdf_search returned=0" }], details: { returned: 0 } },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       plainTheme,
-      makeCtx({ query: "retention", path: "manual.pdf" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+      makeCtx({ query: "retention", path: "manual.pdf" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
     );
     const emptyText = stripVTControlCharacters(empty.render(80).join("\n"));
     assert.match(emptyText, /No matches/, "pdf_search genuine empty shows explicit message");
@@ -588,9 +587,9 @@ function makeFdRgDef(name) {
     const call = decorated.renderCall({ operation: "explore", query: "runtime" }, plainTheme, makeCtx({ operation: "explore", query: "runtime" }, {}, { argsComplete: true, executionStarted: true }));
     const result = decorated.renderResult(
       { content: [{ type: "text", text: "codegraph explore output" }], details: { status: "success" } },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       plainTheme,
-      makeCtx({ operation: "explore", query: "runtime" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+      makeCtx({ operation: "explore", query: "runtime" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
     );
     const text = stripVTControlCharacters(result.render(80).join("\n"));
     assert.match(text, /codegraph explore output/, "codegraph raw text still renders through its own domain/preview path");

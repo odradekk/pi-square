@@ -120,9 +120,9 @@ function newRuntime() {
   const call = decorated.renderCall({ path: "." }, plainTheme, makeCtx({ path: "." }, { argsComplete: true, executionStarted: true }));
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "README.md\npackage.json\nsrc/\ntests/" }], details: {} },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
 
@@ -131,7 +131,6 @@ function newRuntime() {
   assert.match(text, /f package\.json/, "file shows f marker");
   assert.match(text, /d src\//, "directory shows d marker");
   assert.match(text, /d tests\//, "directory shows d marker");
-  assert.match(text, /ENTRIES/, "ls result shows ENTRIES section");
 
   runtime.dispose();
 }
@@ -149,9 +148,9 @@ function newRuntime() {
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "src/index.ts\nsrc/utils.ts" }], details: {} },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ pattern: "*.ts", path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ pattern: "*.ts", path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
 
@@ -159,7 +158,6 @@ function newRuntime() {
   assert.match(text, /\*\.ts/, "find result shows pattern as target");
   assert.match(text, /f src\/index\.ts/, "find result shows file path with f marker");
   assert.match(text, /f src\/utils\.ts/, "find result shows file path with f marker");
-  assert.match(text, /RESULTS/, "find result shows RESULTS section");
 
   runtime.dispose();
 }
@@ -194,7 +192,7 @@ function newRuntime() {
   );
   const findText = stripVTControlCharacters(findResult.render(80).join("\n"));
   assert.match(findText, /^✓/, "empty find result renders completed marker");
-  assert.match(findText, /No results/, "empty find result shows 'No results'");
+  assert.match(findText, /No files found/, "empty find result shows 'No files found'");
 
   runtime.dispose();
 }
@@ -238,7 +236,8 @@ function newRuntime() {
     makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: false }),
   );
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
-  assert.match(collapsedText, /ENTRIES/, "collapsed shows ENTRIES");
+  assert.match(collapsedText, /2 entries in \./, "collapsed shows the summary row");
+  assert.ok(!collapsedText.includes("ENTRIES"), "collapsed path content lives in the summary row, not a section title");
   assert.doesNotMatch(collapsedText, /DIRECTORY/, "collapsed does not show DIRECTORY summary");
 
   // Expanded
@@ -249,9 +248,10 @@ function newRuntime() {
     makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
-  assert.match(expandedText, /ENTRIES/, "expanded shows ENTRIES");
-  assert.match(expandedText, /DIRECTORY/, "expanded shows DIRECTORY summary");
-  assert.match(expandedText, /path=\./, "expanded shows path metadata");
+  assert.match(expandedText, /f README\.md/, "expanded shows path content");
+  assert.ok(!expandedText.includes("ENTRIES"), "a lone Entries section draws no title rule (C9)");
+  assert.ok(!expandedText.includes("DIRECTORY"), "expanded prunes the restating DIRECTORY section (C8)");
+  assert.match(expandedText, /^✓ List \./, "expanded header target shows the directory");
 
   runtime.dispose();
 }
@@ -269,9 +269,9 @@ function newRuntime() {
   const call = decorated.renderCall({ path: "." }, plainTheme, makeCtx({ path: "." }, { argsComplete: true, executionStarted: true }));
   const result = decorated.renderResult(
     { content: [{ type: "text", text: manyEntries }], details: {} },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
 
   // MAX_SECTION_ITEMS is 64, so at least 36 paths should be omitted
@@ -366,9 +366,9 @@ function newRuntime() {
         ],
       },
     },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ pattern: ".", types: ["directory"] }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ pattern: ".", types: ["directory"] }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /d src\//, "fd directory-type result shows d marker");
@@ -405,9 +405,9 @@ function newRuntime() {
         ],
       },
     },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /f src\/index\.ts/, "fd default result shows f marker");
@@ -439,9 +439,9 @@ function newRuntime() {
         ],
       },
     },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /s bad\?\?path/, "fd byte-path result shows s marker");

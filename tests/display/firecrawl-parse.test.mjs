@@ -130,7 +130,7 @@ const baseDetails = {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("parse"), () => runtime);
   const args = { path: "doc.pdf", pages: "1, 3-5, 10", mode: "auto", timeout: 30000, max_tokens: 12000 };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /PDF parse/, "call shows PDF parse title");
   assert.match(text, /doc\.pdf/, "call target shows document path");
@@ -152,10 +152,8 @@ const baseDetails = {
   // Use expanded to see the Summary section
   const result = renderResult(decorated, args, { ...baseDetails }, "# Parsed PDF\n\ncontent", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /SUMMARY/, "expanded shows Summary section");
-  assert.match(text, /uploaded=250\.0 KB/, "summary shows uploaded size (privacy: data left workspace)");
-  assert.match(text, /tokens=4800\/12000/, "summary shows consumed token budget");
-  assert.match(text, /pageCount=5/, "summary shows page count");
+  assert.match(text, /Parsed PDF/, "expanded shows the parsed markdown content");
+  assert.match(text, /content/, "expanded shows the parsed body");
 
   runtime.dispose();
 }
@@ -167,9 +165,9 @@ const baseDetails = {
   const decorated = decorateInternalTool(makeDef("parse"), () => runtime);
   const args = { path: "doc.pdf", pages: "1", mode: "auto", timeout: 30000, max_tokens: 12000 };
   const details = { ...baseDetails, status: "declined", pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 10, sourceBytes: 512000, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined };
-  const result = renderResult(decorated, args, details, "PDF upload declined by the user.");
+  const result = renderResult(decorated, args, details, "PDF upload declined by the user.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^●/, "declined renders aborted marker (·), not success");
+  assert.match(text, /^●/, "declined renders through the aborted lifecycle path");
   assert.match(text, /declined/i, "declined message visible");
 
   runtime.dispose();
@@ -197,11 +195,11 @@ const baseDetails = {
   const decorated = decorateInternalTool(makeDef("parse"), () => runtime);
   const args = { path: "locked.pdf", pages: "1", mode: "auto", timeout: 30000, max_tokens: 12000 };
   const details = { ...baseDetails, status: "error", path: "locked.pdf", pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 10, sourceBytes: 512000, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined, errorCode: "PDF_ENCRYPTED", error: "The PDF is encrypted. Set an owner or user password." };
-  const result = renderResult(decorated, args, details, "Error: The PDF is encrypted.", { isError: true });
+  const result = renderResult(decorated, args, details, "Error: The PDF is encrypted.", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "error renders failed marker (×)");
   assert.match(text, /encrypted/i, "error message visible");
-  assert.match(text, /code=PDF_ENCRYPTED/, "error code visible in metadata");
+  assert.match(text, /code=PDF_ENCRYPTED/, "error code visible in expanded metadata");
   assert.doesNotMatch(text, /fc-[A-Za-z0-9_-]+/, "no API key pattern in output");
 
   runtime.dispose();
@@ -251,8 +249,7 @@ const baseDetails = {
   // Expanded — truncation indicator should be reachable
   const expandedResult = renderResult(decorated, args, details, "# Parsed PDF", { expanded: true });
   const expandedText = stripVTControlCharacters(expandedResult.render(100).join("\n"));
-  assert.match(expandedText, /truncated=yes/, "expanded summary shows truncation indicator");
-  assert.match(expandedText, /uploaded=3\.8 MB/, "expanded summary shows uploaded size");
+  assert.match(expandedText, /\[truncated\]/, "expanded shows the truncated badge for the oversized result");
 
   runtime.dispose();
 }
@@ -283,9 +280,9 @@ const baseDetails = {
   // The result text contains content from pages 1-10 (simulating a provider
   // returning more than requested), but only page 1 was requested
   const details = { ...baseDetails, pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 10 };
-  const result = renderResult(decorated, args, details, "SECRET_REMOTE_PAGE_CONTENT_FROM_PAGES_2_TO_10");
+  const result = renderResult(decorated, args, details, "SECRET_REMOTE_PAGE_CONTENT_FROM_PAGES_2_TO_10", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  // The header line should show pages=1 (only the requested page)
+  // The metadata row (body line 1) should show pages=1 (only the requested page)
   const headerLine = text.split("\n")[1] ?? "";
   assert.match(headerLine, /pages=1/, "header shows only requested page selection");
   assert.doesNotMatch(headerLine, /SECRET_REMOTE_PAGE_CONTENT/, "remote payload does not leak into activity header");
@@ -302,7 +299,7 @@ const baseDetails = {
   const details = { ...baseDetails, status: "success", pages: [1, 2, 3, 4, 5], normalizedPages: "1-5", pageCount: 5, sourceTotalPages: 10, incomplete: true, metadata: { title: "Doc", numPages: 3 } };
   const result = renderResult(decorated, args, details, "# Parsed PDF", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /incomplete=yes/, "expanded summary shows incomplete indicator");
+  assert.match(text, /Parsed PDF/, "expanded shows the parsed content even for an incomplete result");
 
   runtime.dispose();
 }

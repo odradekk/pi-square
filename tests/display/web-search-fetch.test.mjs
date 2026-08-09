@@ -110,7 +110,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("search"), () => runtime);
   const args = { queries: ["typescript generics", "rust traits"], limit: 5, sites: ["stackoverflow.com"], language: "en", country: "US", no_cache: true };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /Web search/, "call shows Web search title");
   assert.match(text, /typescript generics.*rust traits/, "call target shows the queries");
@@ -140,7 +140,6 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "[1] Rust Traits Guide\n    https://doc.rust-lang.org/traits", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /RESULTS/, "expanded result shows a Results section");
   assert.match(text, /Rust Traits Guide/, "result preserves source title");
   assert.match(text, /doc\.rust-lang\.org\/traits/, "result preserves source URL");
   assert.match(text, /Complete guide to traits/, "result preserves readable content");
@@ -167,8 +166,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "[1] Good Result\n    https://example.com/good", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^✓/, "partial-failure search renders completed (some results succeeded)");
-  assert.match(text, /RESULTS/, "partial-failure shows the successful results");
-  assert.match(text, /Good Result/, "partial-failure preserves the successful result");
+  assert.match(text, /Good Result/, "partial-failure shows the successful results");
   // The failed query error should be visible somewhere when expanded
   // (currently carried in the summary or model-facing text)
 
@@ -182,10 +180,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const decorated = decorateInternalTool(makeDef("search"), () => runtime);
   const args = { queries: ["nonexistent topic"] };
   const details = { queries: ["nonexistent topic"], failedQueries: [], count: 5, phase: "done", totalBeforeDedup: 0, totalAfterDedup: 0, results: [] };
-  const result = renderResult(decorated, args, details, "No results found.", { expanded: false });
+  const result = renderResult(decorated, args, details, "No results found.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^✓/, "empty results renders completed, not failed");
-  assert.match(text, /No results found/, "empty state shows a message in preview");
+  assert.match(text, /No results found/, "empty state shows a message in the body");
 
   runtime.dispose();
 }
@@ -201,9 +199,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { queries: ["fail query"] };
   const details = { queries: ["fail query"], failedQueries: [{ query: "fail query", error: "Connection refused" }], count: 3, phase: "done", error: "fail query: Connection refused" };
   // NOTE: no isError:true — this is the actual tool behavior
-  const result = renderResult(decorated, args, details, "Search error: fail query: Connection refused", { expanded: false });
+  const result = renderResult(decorated, args, details, "Search error: fail query: Connection refused", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /Connection refused/, "error message is visible even without isError (compact Result section)");
+  assert.match(text, /Connection refused/, "error message is visible even without isError (Result section)");
   assert.doesNotMatch(text, /OUTPUT ───/, "no Output section when error text is present");
 
   // Also verify isError:true still works (if Pi ever sets it)
@@ -224,7 +222,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("search"), () => runtime);
   const args = { queries: ["test query"], limit: 3, no_cache: true };
-  const result = renderResult(decorated, args, { queries: ["test query"], phase: "done", count: 3 }, "output text", { expanded: false });
+  const result = renderResult(decorated, args, { queries: ["test query"], phase: "done", count: 3 }, "output text", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   const headerLine = text.split("\n")[1] ?? "";
   // queries should appear exactly once in the header metadata
@@ -249,13 +247,12 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(collapsedText, /^✓/, "collapsed keeps lifecycle marker");
   assert.match(collapsedText, /Web search/, "collapsed keeps identity/title");
   assert.match(collapsedText, /test/, "collapsed keeps query target");
-  assert.match(collapsedText, /\[1\] R/, "collapsed shows content in preview");
 
   const expanded = renderResult(decorated, args, details, "[1] R", { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));
-  assert.match(expandedText, /REQUEST/, "expanded shows Request section");
-  assert.match(expandedText, /SUMMARY/, "expanded shows Summary section");
-  assert.match(expandedText, /RESULTS/, "expanded shows Results section");
+  assert.ok(!expandedText.includes("REQUEST"), "expanded prunes the restating Request section (C8)");
+  assert.ok(!expandedText.includes("SUMMARY"), "expanded prunes the restating Summary section (C8)");
+  assert.match(expandedText, /1\. R/, "expanded shows the results content directly");
 
   runtime.dispose();
 }
@@ -268,7 +265,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
   const args = { urls: ["https://example.com/page1", "https://example.com/page2"], mode: "readable", max_tokens: 5000, include_links: true, describe_images: true, no_cache: true };
-  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
+  const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /Web fetch/, "call shows Web fetch title");
   assert.match(text, /example\.com\/page1/, "call target shows safe normalized URLs");
@@ -307,7 +304,6 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "## Page One\nURL: https://example.com/page1\n\nContent...\n\n---\n\n## Page Two\nURL: https://example.com/page2", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /RESULTS/, "expanded fetch shows a Results section");
   assert.match(text, /Page One/, "result preserves page title");
   assert.match(text, /Page Two/, "result preserves second page title");
   assert.match(text, /url=https:\/\/example\.com\/page1/, "result preserves page URL");
@@ -337,8 +333,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "## Good Page\n\nContent\n\n---\n\n## bad.example.com\n\n[Failed: Jina 503]", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^✓/, "partial-URL-failure fetch renders completed (some pages succeeded)");
-  assert.match(text, /succeeded=1/, "summary shows succeeded count");
-  assert.match(text, /failed=1/, "summary shows failed count");
+  assert.match(text, /1 page fetched · 1 failed/, "summary row states succeeded and failed counts");
   assert.match(text, /error=Jina 503/, "failed page shows the per-URL error distinctly");
 
   runtime.dispose();
@@ -353,7 +348,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { urls: ["not-a-url"], succeeded: 0, failed: 1, phase: "done",
     results: [], failedUrls: [{ url: "not-a-url", error: "Invalid HTTP(S) URL", retried: false }],
     error: "Invalid HTTP(S) URL: not-a-url" };
-  const result = renderResult(decorated, args, details, "Error: Invalid HTTP(S) URL: not-a-url", { expanded: false });
+  const result = renderResult(decorated, args, details, "Error: Invalid HTTP(S) URL: not-a-url", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /Invalid HTTP\(S\) URL/, "malformed URL error is visible without isError");
   assert.doesNotMatch(text, /OUTPUT ───/, "no Output section when error is present");
@@ -367,7 +362,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("fetch"), () => runtime);
   const args = { urls: ["https://example.com/page1"], mode: "readable", max_tokens: 5000, no_cache: true };
-  const result = renderResult(decorated, args, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "content", { expanded: false });
+  const result = renderResult(decorated, args, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   const headerLine = text.split("\n")[1] ?? "";
   // mode should appear exactly once
@@ -391,8 +386,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     pages: [{ url: "https://example.com/huge-page", title: "Huge Page", lines: 500, retried: false, tokens: 50000, usage: "50000 tokens", start: 0, end: 10000 }] };
   const result = renderResult(decorated, args, details, "## Huge Page\n\n[content truncated]...", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /remoteTruncated=yes/, "remote truncation indicator visible when expanded");
-  assert.match(text, /outputTruncated=yes/, "output truncation indicator visible when expanded");
+  assert.match(text, /\[truncated\]/, "remote and output truncation raise the truncated badge when expanded");
 
   runtime.dispose();
 }

@@ -157,8 +157,12 @@ export function createExecutionAdapter(
         : undefined;
       const structured = sections(
         markCompact(codeSection(commandSectionTitle(name), name === "scheme" ? schemeCode(args) : shellCommand(args), commandLanguage(name), false)),
-        markCompact(codeSection("Output", output.stdout, "text", false)),
-        markCompact(codeSection("Stderr", output.stderr, "text", false)),
+        // C6: on failure the output is the failure text; description.error
+        // (and the expanded ERROR section) is its sole carrier.
+        ...(isError ? [] : [
+          markCompact(codeSection("Output", output.stdout, "text", false)),
+          markCompact(codeSection("Stderr", output.stderr, "text", false)),
+        ]),
         statusSection,
         diagnostics,
       );

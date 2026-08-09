@@ -84,55 +84,42 @@ const DETAILS = {
   runtime.dispose();
 }
 
-// ─── 2. SUMMARY section is distinct from ACTION ────────────────────
+// ─── 2. Metadata and summary carry action and counts (C8 prunes restating sections) ──
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "set", todos: [{ text: "A" }] }, DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /ACTION/, "ACTION section present");
-  assert.match(text, /SUMMARY/, "SUMMARY section present (distinct from ACTION)");
-  // ACTION has action and changed but NOT total/pending
-  const actionIdx = text.indexOf("ACTION");
-  const summaryIdx = text.indexOf("SUMMARY");
-  assert.ok(actionIdx < summaryIdx, "ACTION before SUMMARY");
-  const actionBlock = text.slice(actionIdx, summaryIdx);
-  assert.match(actionBlock, /action=set/, "ACTION shows action");
-  assert.match(actionBlock, /changed=true/, "ACTION shows changed state");
-  // SUMMARY has counts
-  const summaryBlock = text.slice(summaryIdx);
-  assert.match(summaryBlock, /total=3/, "SUMMARY shows total");
-  assert.match(summaryBlock, /pending=1/, "SUMMARY shows pending");
-  assert.match(summaryBlock, /inProgress=1/, "SUMMARY shows inProgress");
-  assert.match(summaryBlock, /completed=1/, "SUMMARY shows completed");
-  assert.match(summaryBlock, /current=todo-2/, "SUMMARY shows current task ID");
-  assert.match(summaryBlock, /title=Sprint 42/, "SUMMARY shows list title");
+  assert.ok(!text.includes("ACTION"), "ACTION restating section is pruned (C8)");
+  assert.ok(!text.includes("SUMMARY"), "SUMMARY restating section is pruned (C8)");
+  // Action fields live in the expanded metadata row
+  assert.match(text, /action=set/, "metadata shows action");
+  assert.match(text, /changed=true/, "metadata shows changed state");
+  // Counts live in the summary row
+  assert.match(text, /3 tasks/, "summary row shows total");
+  assert.match(text, /1 completed/, "summary row shows completed");
+  assert.match(text, /1 in progress/, "summary row shows in progress");
+  assert.match(text, /1 pending/, "summary row shows pending");
 
   runtime.dispose();
 }
 
-// ─── 3. PERSISTENCE section shows stateVersion and widget state ────
+// ─── 3. Task records and summary visible (PERSISTENCE pruned by C8) ──
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "list" }, DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /PERSISTENCE/, "PERSISTENCE section present");
-  assert.match(text, /stateVersion=2/, "PERSISTENCE shows stateVersion");
-  assert.match(text, /widget=shown/, "PERSISTENCE shows widget state");
-
-  // Widget cleared when all complete
-  const clearedDetails = { ...DETAILS, counts: { total: 3, pending: 0, inProgress: 0, completed: 3 }, currentId: undefined, widget: "cleared", items: ITEMS.map((i) => ({ ...i, status: "completed" })) };
-  const clearedResult = renderResult(decorated, { action: "check", id: "todo-3" }, clearedDetails, { expanded: true });
-  const clearedText = stripVTControlCharacters(clearedResult.render(100).join("\n"));
-  assert.match(clearedText, /widget=cleared/, "PERSISTENCE shows widget=cleared when all complete");
+  assert.ok(!text.includes("PERSISTENCE"), "PERSISTENCE restating section is pruned (C8)");
+  assert.match(text, /✓ 1\.\s*Explore codebase/, "task records still render");
+  assert.match(text, /3 tasks/, "summary row shows counts");
 
   runtime.dispose();
 }
 
-// ─── 4. ACTION section shows target IDs and advance policy ─────────
+// ─── 4. Target IDs and advance policy in metadata (ACTION pruned by C8) ──
 
 {
   const runtime = newRuntime();
@@ -140,12 +127,9 @@ const DETAILS = {
   const args = { action: "check", id: "todo-2", ids: ["todo-2"], advance: true };
   const result = renderResult(decorated, args, { ...DETAILS, action: "check" }, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  const actionIdx = text.indexOf("ACTION");
-  const summaryIdx = text.indexOf("SUMMARY");
-  const actionBlock = text.slice(actionIdx, summaryIdx);
-  assert.match(actionBlock, /id=todo-2/, "ACTION shows target id");
-  assert.match(actionBlock, /advance=true/, "ACTION shows advance policy");
-  assert.match(actionBlock, /action=check/, "ACTION shows action");
+  assert.match(text, /action=check/, "metadata shows action");
+  assert.match(text, /id=todo-2/, "metadata shows target id");
+  assert.match(text, /advance=true/, "metadata shows advance policy");
 
   runtime.dispose();
 }
@@ -184,7 +168,6 @@ const DETAILS = {
   assert.match(text, /^●/, "error state renders × marker");
   assert.match(text, /ERROR/, "ERROR section present");
   assert.match(text, /Unknown todo item ID/, "error message visible");
-  assert.match(text, /error=TODO_UNKNOWN_ID/, "error code visible in PERSISTENCE");
   // changed=false should be visible
   assert.match(text, /changed=false/, "idempotent/no-change state visible");
 
@@ -201,8 +184,7 @@ const DETAILS = {
   const result = renderResult(decorated, args, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "clear success renders ✓");
-  assert.match(text, /total=0/, "empty list shows total=0");
-  assert.match(text, /widget=cleared/, "empty list shows widget=cleared");
+  assert.match(text, /0 tasks/, "empty list shows 0 tasks in summary");
   // No Tasks section when empty (recordsSection returns undefined for empty)
   assert.doesNotMatch(text, /TASKS/, "no Tasks section when empty");
 

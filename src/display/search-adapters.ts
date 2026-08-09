@@ -7,6 +7,7 @@ import {
   booleanOf,
   codeSection,
   field,
+  formatBytes,
   matchesSection,
   metadata,
   numberOf,
@@ -221,29 +222,17 @@ function codegraphTarget(args: UnknownRecord): string | undefined {
     : stringOf(args.projectPath) ?? ".";
 }
 
-function humanBytes(value: number | undefined): string | undefined {
-  if (value === undefined || !Number.isFinite(value) || value < 0) return undefined;
-  if (value < 1024) return `${Math.round(value)} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let scaled = value / 1024;
-  let unitIndex = 0;
-  while (scaled >= 1024 && unitIndex < units.length - 1) {
-    scaled /= 1024;
-    unitIndex += 1;
-  }
-  return `${scaled.toFixed(1)} ${units[unitIndex]}`;
-}
-
 /** Structured index-health fields extracted from CodeGraphStatus. */
 function codegraphIndexMetadata(status: UnknownRecord): DisplayMetadataEntry[] {
   const pending = asRecord(status.pendingChanges);
   const pendingTotal = (numberOf(pending.added) ?? 0) + (numberOf(pending.modified) ?? 0) + (numberOf(pending.removed) ?? 0);
   const index = asRecord(status.index);
+  const dbSizeBytes = numberOf(status.dbSizeBytes);
   return metadata([
     field("files", numberOf(status.fileCount)),
     field("nodes", numberOf(status.nodeCount)),
     field("edges", numberOf(status.edgeCount)),
-    field("size", humanBytes(numberOf(status.dbSizeBytes))),
+    field("size", dbSizeBytes === undefined ? undefined : formatBytes(dbSizeBytes)),
     field("lastIndexed", stringOf(status.lastIndexed)),
     pendingTotal > 0
       ? field("pending", `${pendingTotal} (+${numberOf(pending.added) ?? 0} ~${numberOf(pending.modified) ?? 0} -${numberOf(pending.removed) ?? 0})`, "warning")
