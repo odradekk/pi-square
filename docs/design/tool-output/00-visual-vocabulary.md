@@ -1,9 +1,10 @@
 # Shared visual vocabulary
 
-**Status:** Proposed. Not implemented. This document replaces the marker and
+**Status:** Accepted. Not implemented. This document replaces the marker and
 icon vocabulary that `docs/design/claude-like-operational-interface.md`
-specifies, and it overrides the icon rules currently written in `AGENTS.md`
-and `README.md`. Every per-tool document in this directory assumes this
+specifies. `AGENTS.md` records it as the target grammar that supersedes the
+shipped family icons, and `README.md` states that the shipped version still
+uses the icon grammar. Every per-tool document in this directory assumes this
 vocabulary.
 
 ## Decision
