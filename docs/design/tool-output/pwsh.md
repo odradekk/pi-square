@@ -138,7 +138,8 @@ it.
 
 One `COMMAND` section, but only when the header truncated the command, then
 one `OUTPUT` section with the full stream bounded by the policy, then the same
-summary row. The `STATUS` section is removed.
+summary row. The `STATUS` section is removed. When the `COMMAND` section is
+absent, convention C9 suppresses the remaining `OUTPUT` rule.
 
 ### Unavailable host
 

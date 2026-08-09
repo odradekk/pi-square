@@ -63,9 +63,9 @@ form a user copies into code:
 └─   2026-08-09 14:42:36 · Asia/Shanghai (UTC+08:00)
 ```
 
-No section, no rule, and no key-value pair is used. The tool returns four
-values and three of them fit in these two rows; the fourth, the IANA zone
-name, is already inside the zone token.
+No section rule and no key-value pair is used, in line with convention C9. The
+tool returns four values and three of them fit in these two rows; the fourth,
+the IANA zone name, is already inside the zone token.
 
 ### Failure
 

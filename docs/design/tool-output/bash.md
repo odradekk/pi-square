@@ -130,7 +130,9 @@ prints `Command exited with code 0`.
 
 One `COMMAND` section with the complete command, then one `OUTPUT` section
 with the full output bounded by the policy, then the same summary row. The
-`COMMAND` section exists only when the header truncated the command.
+`COMMAND` section exists only when the header truncated the command. When it
+is absent, only one section remains, so convention C9 applies and the `OUTPUT`
+rule is not drawn: the output attaches directly under the header.
 
 ```
 ● Bash find . -type f -name '*.ts' -not -path './node_modules/*' | head…      0ms

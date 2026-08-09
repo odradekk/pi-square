@@ -93,7 +93,6 @@ real remote line numbers. The tool's own header rows are removed before the
 section is built.
 
 ```
-│    CONTENT ───────────────────────────────────────────────────────────────
 │      1  ripgrep (rg)
 │      2  ============
 │      3  ripgrep is a line-oriented search tool …

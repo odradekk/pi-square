@@ -107,10 +107,8 @@ row with the `note:` label.
 └─   2 answered
 ```
 
-This is a deliberate exception to the label-led section rule of the shared
-grammar. `ask` has exactly one kind of expanded content, so a rule would
-separate nothing from nothing, and each question text already leads its own
-group. `time` uses the same rule-free form for the same reason.
+This follows convention C9: the expanded body holds one kind of content, so no
+section rule is drawn. Each question text already leads its own group.
 
 A skipped question shows the muted word `skipped` instead of the label list.
 The `REQUEST` section is removed; its four counters are already in the outcome

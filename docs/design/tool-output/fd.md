@@ -120,7 +120,6 @@ the section, and only when the model set them:
 ```
 ● File search *.ts                                                         1ms
 │    hidden · no-ignore · max-depth 3
-│    RESULTS ───────────────────────────────────────────────────────────────
 │    src/display/adapter-utils.ts
 │    …
 └─   24 files in src/display

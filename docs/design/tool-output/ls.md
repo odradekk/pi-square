@@ -95,7 +95,6 @@ sorted alphabetically. A directory keeps its trailing `/` and there is no
 
 ```
 ● List .                                                                   1ms
-│    ENTRIES ───────────────────────────────────────────────────────────────
 │    empty/
 │    src/
 │    .gitignore

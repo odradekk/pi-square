@@ -86,6 +86,20 @@ A truncation notice is never rendered as a numbered content line.
 A field already shown in the header is not repeated in an expanded summary
 section. The expanded body adds information; it does not restate the header.
 
+### C9 — Section rules only separate
+
+A label-led section rule is a boundary between two kinds of content. It is
+drawn only when the expanded body holds **two or more** sections.
+
+With exactly one section, the rule would separate nothing from nothing. The
+content then attaches directly under the header rail and the label row is not
+drawn. The internal `DisplaySection` model does not change; only its label row
+is suppressed.
+
+A conditional section counts only when it is present. A body that shows one
+section normally and a second one on failure draws rules in the failing state
+only.
+
 ## Cross-cutting defects
 
 These patterns appear in most tools. Fixing them once in the shared layers

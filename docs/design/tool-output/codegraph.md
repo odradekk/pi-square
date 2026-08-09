@@ -115,7 +115,6 @@ The expanded body adds one `BLAST RADIUS` section: one row per symbol, with
 the symbol name, its declaration site, the caller count, and the test state.
 
 ```
-│    BLAST RADIUS ──────────────────────────────────────────────────────────
 │    ResolvedDisplay          src/display/policy.ts:27    3 callers · no tests
 │    ResolvedOperationalState src/display/types.ts:63     4 callers · no tests
 │    ToolEventDisplay         src/subagents/tool-display.ts:4  4 callers · no tests

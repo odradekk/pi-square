@@ -135,7 +135,6 @@ One `CONTENT` section with right-aligned dim line numbers, exactly like
 
 ```
 ● Write src/big.ts                                                         0ms
-│    CONTENT ───────────────────────────────────────────────────────────────
 │      1  export const value0 = 0;
 │      2  export const value1 = 1;
 │      …

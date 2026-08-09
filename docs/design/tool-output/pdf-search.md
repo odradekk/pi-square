@@ -112,7 +112,6 @@ One `MATCHES` section with the full context of each match, bounded by the
 policy, then one muted document row and the same summary row:
 
 ```
-│    MATCHES ───────────────────────────────────────────────────────────────
 │    page 1  operational interface design the renderer owns every tool entry.
 │            lifecycle markers use one glyph.
 │    page 3  motion policy a static marker removes the fast repaint loop. the

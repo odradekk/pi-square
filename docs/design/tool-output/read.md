@@ -122,7 +122,6 @@ the range, and the truncation state are already in the header.
 
 ```
 ● Read src/parser.ts:21-25                                    [truncated]  1ms
-│    CONTENT ───────────────────────────────────────────────────────────────
 │     21  }
 │     22  export function step8(input: string): string {
 │     23    return tokenize(input)[8] ?? "";

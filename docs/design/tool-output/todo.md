@@ -107,7 +107,6 @@ removed, because the glyph already states them.
 
 ```
 ● Tasks set                                                                2ms
-│    TASKS ─────────────────────────────────────────────────────────────────
 │    ✓  1  Render current output for every tool
 │    ●  2  Write the per-tool design document
 │    ○  3  Update the shared conventions

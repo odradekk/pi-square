@@ -86,7 +86,6 @@ directory result keeps a trailing `/`, exactly as in `ls`.
 
 ```
 ● Find **/*.ts                                                             1ms
-│    RESULTS ───────────────────────────────────────────────────────────────
 │    src/display/components.ts
 │    src/display/diff.ts
 │    src/display/layout.ts

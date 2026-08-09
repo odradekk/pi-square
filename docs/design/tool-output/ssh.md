@@ -161,7 +161,6 @@ carries the `needs-input` badge while the prompt is open.
 With sessions, one `SESSIONS` section is added above the profile rows:
 
 ```
-│    SESSIONS ──────────────────────────────────────────────────────────────
 │    design-evidence  profile-a/primary  connected  idle 42s
 └─   4 profiles · 1 session
 ```

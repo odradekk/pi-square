@@ -72,7 +72,6 @@ trailing `/`, and no `d` or `f` prefix. A file states its size in the muted
 tone; a directory states no size.
 
 ```
-│    ENTRIES ───────────────────────────────────────────────────────────────
 │    .cargo/
 │    .github/
 │    crates/
