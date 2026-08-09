@@ -1,10 +1,7 @@
 # Shared visual vocabulary
 
-**Status:** Accepted. Not implemented. This document replaces the marker and
-icon vocabulary that `docs/design/claude-like-operational-interface.md`
-specifies. `AGENTS.md` records it as the target grammar that supersedes the
-shipped family icons, and `README.md` states that the shipped version still
-uses the icon grammar. Every per-tool document in this directory assumes this
+**Status:** Implemented. This document describes the shipped marker and icon
+vocabulary. Every per-tool document in this directory assumes this
 vocabulary.
 
 ## Decision
@@ -91,13 +88,6 @@ entry is the elapsed duration, which the shared convention always shows.
 | `reduced` | every 1 s |
 | `off` | no live update; the final duration is shown with the result |
 
-**Open decision.** The current contract fixes the session scheduler at 34 ms
-(`full`) and 120 ms (`reduced`). A static marker makes 34 ms unnecessary,
-because no glyph changes and a duration counter is unreadable at that rate.
-The proposed intervals reduce repaints from about 29 per second to about 8.
-This change must be confirmed before implementation, because `AGENTS.md`
-states the current intervals.
-
 ## Why family icons are removed
 
 1. **Portability.** Two of the six family icons cannot render. Measured with
@@ -121,22 +111,24 @@ states the current intervals.
 The evidence is machine-local. It shows that the glyphs are unsafe on this
 machine's fonts; it does not measure the terminal of every user.
 
-## Consequences for the current implementation
+## Consequences for the previous implementation
 
-The following code, tests, and documentation are made obsolete by this
-document and must be removed or rewritten in the single atomic change:
+The following code, tests, and documentation were removed or rewritten when
+this vocabulary was adopted:
 
 - `src/display/types.ts`: `FAMILY_ICONS`, `UNKNOWN_TOOL_ICON`, `MAX_ICON_CELLS`,
-  and the braille `LIFECYCLE_FRAMES` for `running`.
+  and the braille `LIFECYCLE_FRAMES` for `running` — removed.
 - `src/display/catalog.ts`: `TOOL_ICONS`, `catalogIconFor`, and the icon width
-  validation.
-- `src/display/components.ts`: icon rendering in the header.
+  validation — removed.
+- `src/display/components.ts`: icon rendering in the header — removed; marker
+  resolution now uses the single-bullet vocabulary.
 - `tests/display/visual-acceptance.test.mjs`: the icon resolution and icon
-  single-occurrence assertions.
-- `AGENTS.md`: the fixed visual grammar rule that requires one family icon per
-  catalog tool.
-- `README.md`: the family icon paragraph.
-- `.changeset/51-operational-interface-completion.md`: the family icon claim.
+  single-occurrence assertions — replaced by bullet and fallback assertions.
+- `AGENTS.md`: the fixed visual grammar rule now describes the single-bullet
+  vocabulary.
+- `README.md`: the family icon paragraph — replaced by the bullet description.
+- `.changeset/51-operational-interface-completion.md`: the family icon claim
+  — superseded by this change.
 
 The `family` field stays in the catalog. It still selects the owning adapter
 and the metadata vocabulary; it no longer selects a glyph.

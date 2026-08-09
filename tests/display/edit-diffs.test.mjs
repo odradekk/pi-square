@@ -199,7 +199,7 @@ const queued = decorated.renderCall(
   plainTheme,
   ctx({ argsComplete: false, executionStarted: false }),
 );
-assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 assert.equal(clock.callbacks.size, 0, "queued no motion");
 
 const pending = decorated.renderCall(
@@ -207,14 +207,14 @@ const pending = decorated.renderCall(
   plainTheme,
   ctx({ argsComplete: true, executionStarted: false, lastComponent: queued }),
 );
-assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
 const running = decorated.renderCall(
   { path: "src/index.ts", edits: [{ oldText: "foo", newText: "bar" }] },
   plainTheme,
   ctx({ argsComplete: true, executionStarted: true, lastComponent: pending }),
 );
-assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille");
+assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille");
 assert.equal(clock.callbacks.size, 1, "running subscribes motion");
 
 // Completed with authoritative diff
@@ -231,7 +231,7 @@ const editResult = decorated.renderResult(
   ctx({ argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
 );
 const editResultText = stripVTControlCharacters(editResult.render(80).join("\n"));
-assert.match(editResultText, /^✓/, "completed renders check mark");
+assert.match(editResultText, /^●/, "completed renders bullet");
 assert.equal(clock.callbacks.size, 0, "completed unsubscribes motion");
 assert.match(editResultText, /\(\+1, -1\)/, "change-count header visible");
 assert.match(editResultText, /foo/, "removed content visible");
@@ -252,7 +252,7 @@ const errorResult = decorated.renderResult(
   plainTheme,
   ctx({ argsComplete: true, executionStarted: true, lastComponent: editResult, isError: true }),
 );
-assert.match(stripVTControlCharacters(errorResult.render(80).join("\n")), /^✗/, "error renders ballot X");
+assert.match(stripVTControlCharacters(errorResult.render(80).join("\n")), /^●/, "error renders bullet");
 
 runtime.dispose();
 

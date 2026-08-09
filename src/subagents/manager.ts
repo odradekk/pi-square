@@ -966,7 +966,7 @@ export class SubagentManager implements Component, Focusable {
   }
 
   private header(width: number, eyebrow?: string, title?: string): string[] {
-    const identity = `${this.theme.fg("accent", "◆")} ${this.theme.fg("toolTitle", "Subagents")}`;
+    const identity = `${this.theme.fg("accent", "●")} ${this.theme.fg("toolTitle", "Subagents")}`;
     if (eyebrow && title) {
       return [
         fit(`${identity}  ${this.theme.fg("dim", eyebrow)}`, width),

@@ -85,13 +85,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { queries: ["typescript generics"] };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "[1] Result" }], details: { queries: ["typescript generics"], phase: "done", count: 1 } },
@@ -99,7 +99,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders bullet");
 
   runtime.dispose();
 }
@@ -209,7 +209,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   // Also verify isError:true still works (if Pi ever sets it)
   const isErrorResult = renderResult(decorated, args, details, "Search error: fail query: Connection refused", { isError: true, expanded: true });
   const isErrorText = stripVTControlCharacters(isErrorResult.render(100).join("\n"));
-  assert.match(isErrorText, /^✗/, "isError result renders failed marker");
+  assert.match(isErrorText, /^×/, "isError result renders failed marker");
   assert.match(isErrorText, /Connection refused/, "isError error message is visible through description.error");
   assert.doesNotMatch(isErrorText, /ERROR ───/, "no separate ERROR section even with isError");
   const errorCount = (isErrorText.match(/Connection refused/g) ?? []).length;

@@ -66,7 +66,7 @@ test("native status prioritizes active jobs and exposes no tool results", () => 
 
   const rendered = renderNativeSubagentStatus(plainTheme(), jobs);
   assert.match(rendered, /^subagents 3 │ oracle 33333333 × cancelling · /);
-  assert.match(rendered, /explorer 22222222 ⠋ running · rg token in src/);
+  assert.match(rendered, /explorer 22222222 ● running · rg token in src/);
   assert.match(rendered, /│ \+1$/);
   assert.doesNotMatch(rendered, /crawler|generalist|SECRET TOOL RESULT|exposed-token/);
   assert.match(rendered, /Authorization: \[REDACTED\]/);
@@ -126,7 +126,7 @@ test("controller follows background changes and clears the native status", () =>
   );
   state.jobs.set(running.id, running);
   for (const listener of state.listeners) listener();
-  assert.match(calls.at(-1).value, /generalist cccccccc ⠋ running · edit src\/index\.ts/);
+  assert.match(calls.at(-1).value, /generalist cccccccc ● running · edit src\/index\.ts/);
 
   running.status = "done";
   for (const listener of state.listeners) listener();
@@ -136,23 +136,14 @@ test("controller follows background changes and clears the native status", () =>
   assert.deepEqual(calls.at(-1), { key: SUBAGENT_STATUS_KEY, value: undefined });
 });
 
-test("controller uses shared motion only while jobs are active", () => {
+test("controller does not subscribe to motion (static markers)", () => {
   const state = createBackgroundState();
-  let motionCallback;
-  let unsubscribed = 0;
-  const runtime = {
-    subscribe(callback) {
-      motionCallback = callback;
-      return () => { unsubscribed += 1; motionCallback = undefined; };
-    },
-  };
   const calls = [];
-  const controller = createNativeSubagentStatusController(state, runtime);
+  const controller = createNativeSubagentStatusController(state);
   controller.start({
     hasUI: true,
     ui: { theme: plainTheme(), setStatus(_key, value) { calls.push(value); } },
   });
-  assert.equal(motionCallback, undefined, "idle status does not animate");
   const running = job(
     "subagent_ffffffff-ffff-4fff-8fff-ffffffffffff",
     "running",
@@ -162,14 +153,10 @@ test("controller uses shared motion only while jobs are active", () => {
   );
   state.jobs.set(running.id, running);
   for (const listener of state.listeners) listener();
-  assert.equal(typeof motionCallback, "function");
-  assert.match(calls.at(-1), /⠋ running/);
-  motionCallback();
-  assert.match(calls.at(-1), /⠙ running/);
+  assert.match(calls.at(-1), /● running/);
   running.status = "done";
   for (const listener of state.listeners) listener();
-  assert.equal(unsubscribed, 1);
-  assert.equal(motionCallback, undefined);
+  assert.deepEqual(calls.at(-1), undefined);
   controller.stop();
 });
 
@@ -182,7 +169,7 @@ test("controller never touches UI for non-interactive sessions", () => {
   controller.stop();
 });
 
-test("running status uses accent tone and operational braille marker", () => {
+test("running status uses accent tone and operational bullet marker", () => {
   const calls = [];
   const trackingTheme = {
     fg(color, text) { calls.push({ color, text: String(text) }); return String(text); },
@@ -193,8 +180,8 @@ test("running status uses accent tone and operational braille marker", () => {
     job("subagent_accent000-0000-4000-8000-accent00000000", "running", 1, "explorer", toolTimeline("rg data")),
   ];
   renderNativeSubagentStatus(trackingTheme, jobs);
-  const runningCall = calls.find((c) => c.text === "⠋ running");
-  assert.ok(runningCall, "braille running marker present");
+  const runningCall = calls.find((c) => c.text === "● running");
+  assert.ok(runningCall, "bullet running marker present");
   assert.equal(runningCall.color, "accent", "running marker uses accent tone");
 });
 

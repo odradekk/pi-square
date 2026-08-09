@@ -76,7 +76,7 @@ const waitAsync = () => new Promise((resolve) => setTimeout(resolve, 100));
     ctx({ path: "new.txt", content: "hello" }, state, { argsComplete: false, executionStarted: false }),
   );
   const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
-  assert.match(queuedText, /^–/, "queued must render en-dash");
+  assert.match(queuedText, /^●/, "queued must render en-dash");
   assert.equal(clock.callbacks.size, 0, "queued must not subscribe to motion");
 
   // Pending: arguments complete but execution not started
@@ -86,7 +86,7 @@ const waitAsync = () => new Promise((resolve) => setTimeout(resolve, 100));
     ctx({ path: "new.txt", content: "hello" }, state, { argsComplete: true, executionStarted: false, lastComponent: queued }),
   );
   const pendingText = stripVTControlCharacters(pending.render(80).join("\n"));
-  assert.match(pendingText, /^○/, "pending must render circle");
+  assert.match(pendingText, /^●/, "pending must render circle");
 
   // Running: execution started — braille spinner + motion subscription
   const running = decorated.renderCall(
@@ -95,7 +95,7 @@ const waitAsync = () => new Promise((resolve) => setTimeout(resolve, 100));
     ctx({ path: "new.txt", content: "hello" }, state, { argsComplete: true, executionStarted: true, lastComponent: pending }),
   );
   const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-  assert.match(runningText, /^⠋/, "running must render braille spinner");
+  assert.match(runningText, /^●/, "running must render braille spinner");
   assert.equal(clock.callbacks.size, 1, "running subscribes to shared motion scheduler");
 
   // Completed: successful result — check mark + unsubscribe
@@ -106,7 +106,7 @@ const waitAsync = () => new Promise((resolve) => setTimeout(resolve, 100));
     ctx({ path: "new.txt", content: "hello" }, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
   const resultText = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(resultText, /^✓/, "completed must render check mark");
+  assert.match(resultText, /^●/, "completed must render bullet");
   assert.equal(clock.callbacks.size, 0, "completed unsubscribes from motion");
 
   // Result replaces pending entry
@@ -302,7 +302,7 @@ const waitAsync = () => new Promise((resolve) => setTimeout(resolve, 100));
     ctx({ path: "error_test.txt", content: "content" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: true }),
   );
   const errorText = stripVTControlCharacters(errored.render(80).join("\n"));
-  assert.match(errorText, /^✗/, "error result renders failed marker");
+  assert.match(errorText, /^×/, "error result renders failed marker");
 
   runtime.dispose();
 }

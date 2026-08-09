@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { OperationalDisplayComponent, type OperationalDisplayOptions } from "./components";
 import { activateQueuedDisplayAdapters } from "./public";
-import { effectiveMotion, MotionScheduler, processMotionEnvironment, type MotionClock, type MotionEnvironment } from "./motion";
+import { effectiveMotion, MotionScheduler, processMotionEnvironment, colorAvailable, type MotionClock, type MotionEnvironment } from "./motion";
 import { resolveDisplayPolicies, resolveDisplayPolicyForTool, type ResolvedDisplay } from "./policy";
 import type { PiSquareConfig } from "../core/config";
 import type { DisplayDescriptionV1, DisplayFamily, EffectiveDisplayPolicy } from "./types";
@@ -27,6 +27,7 @@ export class DisplayRuntime {
   private resolved: ResolvedDisplay;
   private config: PiSquareConfig;
   private readonly scheduler: MotionScheduler;
+  private readonly colorAvailable: boolean;
   private readonly invalidators = new Set<() => void>();
   private readonly cleanupCallbacks = new Set<() => void>();
   private disposed = false;
@@ -39,6 +40,7 @@ export class DisplayRuntime {
     this.resolved = resolveDisplayPolicies(this.config);
     const environment = options.environment ?? processMotionEnvironment();
     this.scheduler = new MotionScheduler(effectiveMotion(this.resolved.motion, environment), options.clock);
+    this.colorAvailable = colorAvailable(environment);
   }
 
   get motion(): MotionScheduler["mode"] {
@@ -60,7 +62,10 @@ export class DisplayRuntime {
     options: OperationalDisplayOptions,
   ): OperationalDisplayComponent {
     const effective = this.policyFor(description.tool, description.family);
-    return new OperationalDisplayComponent(description, effective.policy, theme, options);
+    return new OperationalDisplayComponent(description, effective.policy, theme, {
+      ...options,
+      colorAvailable: this.colorAvailable,
+    });
   }
 
   updateComponent(
@@ -69,7 +74,10 @@ export class DisplayRuntime {
     theme: Theme,
     options: OperationalDisplayOptions,
   ): void {
-    component.update(description, this.policyFor(description.tool, description.family).policy, theme, options);
+    component.update(description, this.policyFor(description.tool, description.family).policy, theme, {
+      ...options,
+      colorAvailable: this.colorAvailable,
+    });
   }
 
   subscribe(invalidate: () => void): () => void {
@@ -77,12 +85,9 @@ export class DisplayRuntime {
     return this.scheduler.subscribe(invalidate);
   }
 
-  subscribeMotion(component: OperationalDisplayComponent, invalidate: () => void): () => void {
+  subscribeMotion(invalidate: () => void): () => void {
     if (this.disposed) return () => {};
-    return this.scheduler.subscribe(() => {
-      component.advanceFrame();
-      invalidate();
-    });
+    return this.scheduler.subscribe(invalidate);
   }
 
   registerInvalidator(invalidate: () => void): () => void {

@@ -105,13 +105,13 @@ const baseDetails = {
   const args = { path: "doc.pdf", pages: "1", mode: "auto", timeout: 30000, max_tokens: 12000 };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "content" }], details: { ...baseDetails } },
@@ -119,7 +119,7 @@ const baseDetails = {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders check mark");
 
   runtime.dispose();
 }
@@ -160,7 +160,7 @@ const baseDetails = {
   runtime.dispose();
 }
 
-// ─── 4. Declined renders aborted marker (×), not success (✓) ────────
+// ─── 4. Declined renders aborted marker (·), not success (✓) ────────
 
 {
   const runtime = newRuntime();
@@ -169,13 +169,13 @@ const baseDetails = {
   const details = { ...baseDetails, status: "declined", pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 10, sourceBytes: 512000, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined };
   const result = renderResult(decorated, args, details, "PDF upload declined by the user.");
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "declined renders aborted marker (×), not success");
+  assert.match(text, /^●/, "declined renders aborted marker (·), not success");
   assert.match(text, /declined/i, "declined message visible");
 
   runtime.dispose();
 }
 
-// ─── 5. Aborted (with isError) renders aborted marker (×), not failed ─
+// ─── 5. Aborted (with isError) renders aborted marker (·), not failed ─
 
 {
   const runtime = newRuntime();
@@ -185,7 +185,7 @@ const baseDetails = {
   // isError:true is what the tool actually returns for aborted via failure()
   const result = renderResult(decorated, args, details, "Error: PDF parse was cancelled", { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "aborted renders aborted marker (×) despite isError:true");
+  assert.match(text, /^●/, "aborted renders aborted marker (·) despite isError:true");
 
   runtime.dispose();
 }
@@ -199,7 +199,7 @@ const baseDetails = {
   const details = { ...baseDetails, status: "error", path: "locked.pdf", pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 10, sourceBytes: 512000, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined, errorCode: "PDF_ENCRYPTED", error: "The PDF is encrypted. Set an owner or user password." };
   const result = renderResult(decorated, args, details, "Error: The PDF is encrypted.", { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "error renders failed marker (✗)");
+  assert.match(text, /^●/, "error renders failed marker (×)");
   assert.match(text, /encrypted/i, "error message visible");
   assert.match(text, /code=PDF_ENCRYPTED/, "error code visible in metadata");
   assert.doesNotMatch(text, /fc-[A-Za-z0-9_-]+/, "no API key pattern in output");
@@ -216,7 +216,7 @@ const baseDetails = {
   const details = { ...baseDetails, status: "error", path: "huge.pdf", pages: Array.from({ length: 100 }, (_, i) => i + 1), normalizedPages: "1-100", pageCount: 100, sourceTotalPages: 100, mode: "auto", timeoutMs: 30000, maxTokens: 12000, sourceBytes: 60000000, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined, errorCode: "PDF_OVERSIZE", error: "PDF exceeds 50 MB limit (57.2 MB)" };
   const result = renderResult(decorated, args, details, "Error: PDF exceeds 50 MB limit", { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "oversized renders failed marker");
+  assert.match(text, /^●/, "oversized renders failed marker");
   assert.match(text, /PDF exceeds 50 MB limit/, "oversized error message visible");
 
   runtime.dispose();
@@ -231,7 +231,7 @@ const baseDetails = {
   const details = { ...baseDetails, status: "error", path: "../../../etc/passwd", pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 1, sourceBytes: undefined, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined, errorCode: "PATH_OUTSIDE_WORKSPACE", error: "Path resolves outside the workspace" };
   const result = renderResult(decorated, args, details, "Error: Path resolves outside the workspace", { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "out-of-workspace renders failed marker");
+  assert.match(text, /^●/, "out-of-workspace renders failed marker");
   assert.match(text, /outside the workspace/, "out-of-workspace error visible");
 
   runtime.dispose();
@@ -247,7 +247,7 @@ const baseDetails = {
   // Collapsed
   const collapsedResult = renderResult(decorated, args, details, "# Parsed PDF\n\n[truncated]");
   const collapsedText = stripVTControlCharacters(collapsedResult.render(100).join("\n"));
-  assert.match(collapsedText, /^✓/, "truncated result renders completed (operation succeeded)");
+  assert.match(collapsedText, /^●/, "truncated result renders completed (operation succeeded)");
   // Expanded — truncation indicator should be reachable
   const expandedResult = renderResult(decorated, args, details, "# Parsed PDF", { expanded: true });
   const expandedText = stripVTControlCharacters(expandedResult.render(100).join("\n"));

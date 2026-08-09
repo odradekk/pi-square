@@ -141,7 +141,7 @@ function ensureMotion(
 ): void {
   if (active && state.displayMotionComponent !== component) {
     state.displayMotionUnsubscribe?.();
-    state.displayMotionUnsubscribe = runtime.subscribeMotion(component, context.invalidate);
+    state.displayMotionUnsubscribe = runtime.subscribeMotion(context.invalidate);
     state.displayMotionComponent = component;
   } else if (!active && state.displayMotionUnsubscribe) {
     state.displayMotionUnsubscribe();

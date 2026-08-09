@@ -21,6 +21,7 @@ export interface MotionEnvironment {
   readonly term?: string;
   readonly ci?: boolean;
   readonly test?: boolean;
+  readonly noColor?: boolean;
 }
 
 export function effectiveMotion(
@@ -30,6 +31,17 @@ export function effectiveMotion(
   if (configured === "off") return "off";
   if (environment.test || environment.ci || environment.isTTY === false || environment.term === "dumb") return "off";
   return configured;
+}
+
+/**
+ * Determine whether color output is available. Color is unavailable in
+ * `NO_COLOR`, non-TTY, test, CI, and dumb-terminal environments.
+ */
+export function colorAvailable(environment: MotionEnvironment = {}): boolean {
+  if (environment.noColor) return false;
+  if (environment.test || environment.ci) return false;
+  if (environment.isTTY === false || environment.term === "dumb") return false;
+  return true;
 }
 
 export class MotionScheduler {
@@ -115,5 +127,6 @@ export function processMotionEnvironment(env: NodeJS.ProcessEnv = process.env): 
     term: env.TERM,
     ci: env.CI === "true" || env.CI === "1",
     test: env.NODE_ENV === "test" || env.PI_SQUARE_TEST === "1",
+    noColor: env.NO_COLOR !== undefined && env.NO_COLOR !== "",
   };
 }

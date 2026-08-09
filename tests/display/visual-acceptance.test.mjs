@@ -7,15 +7,15 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { DISPLAY_CATALOG, catalogIconFor } = await load("../../src/display/catalog.ts");
+const { DISPLAY_CATALOG } = await load("../../src/display/catalog.ts");
 const { OperationalDisplayComponent } = await load("../../src/display/components.ts");
 const {
   DEFAULT_DISPLAY_POLICY,
-  LIFECYCLE_FRAMES,
-  MAX_ICON_CELLS,
+  BULLET_MARKER,
+  FALLBACK_MARKERS,
+  FALLBACK_WARNING_MARKER,
   OPERATIONAL_QUALIFIERS,
   QUALIFIER_BADGES,
-  COMPLETED_WARNING_FRAME,
 } = await load("../../src/display/types.ts");
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
@@ -282,7 +282,7 @@ for (const secret of secretValues) {
   // Collapsed: non-compact sections are hidden but header info is visible
   const collapsed = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false }).render(80);
   const collapsedPlain = stripVTControlCharacters(collapsed.join("\n"));
-  assert.match(collapsedPlain, /✓ ▪ READ/, "collapsed must show marker, family icon, and title");
+  assert.match(collapsedPlain, /✓ READ/, "collapsed must show marker and title");
   assert.match(collapsedPlain, /summary line/, "collapsed must show rows");
 
   // Expanded: all sections become visible
@@ -400,10 +400,10 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
       const lines = new OperationalDisplayComponent(description, policy, theme, { expanded: false }).render(80);
       const plain = stripVTControlCharacters(lines.join("\n"));
       if (lifecycle === "failed") {
-        assert.match(plain, /✗/, `hidden/failed must show ✗ marker in ${themeName}`);
+        assert.match(plain, /×/, `hidden/failed must show × marker in ${themeName}`);
         assert.match(plain, /\[REDACTED\]/, `hidden/failed must show [REDACTED] in ${themeName}`);
       } else {
-        assert.match(plain, /×/, `hidden/aborted must show × marker in ${themeName}`);
+        assert.match(plain, /·/, `hidden/aborted must show · marker in ${themeName}`);
       }
       // Hidden mode preserves markers for failed/aborted;
       // row suppression only applies to non-error states.
@@ -458,30 +458,36 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 }
 
-// ── 15. Every catalog tool resolves a bounded family or override icon ──
+// ── 15. Every catalog tool renders the bullet without family icons ──
 
 {
+  const familyIconGlyphs = ["▪", "⌕", "⌬", "◆", "◇", "❯", "λ"];
   for (const entry of DISPLAY_CATALOG) {
-    const icon = catalogIconFor(entry.name, entry.family);
-    assert.ok(icon.length > 0, `${entry.name} must resolve an icon`);
-    assert.ok(visibleWidth(icon) <= MAX_ICON_CELLS, `${entry.name} icon exceeds ${MAX_ICON_CELLS} cells`);
-
     const description = {
       version: 1,
       tool: entry.name,
       family: entry.family,
       lifecycle: "completed",
-      title: entry.name === "bash" || entry.name === "pwsh" || entry.name === "scheme" ? icon : "Sample",
+      title: entry.name.toUpperCase(),
       target: "src/target.ts",
     };
-    for (const [themeName, theme] of themes) {
-      const plain = stripVTControlCharacters(
-        new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(120).join("\n"),
-      );
-      assert.ok(plain.includes(icon), `${entry.name}/${themeName} header must show its icon`);
-      // Execution prompts are the title itself and must not be duplicated.
-      const occurrences = plain.split(icon).length - 1;
-      assert.equal(occurrences, 1, `${entry.name}/${themeName} must render its icon exactly once`);
+
+    // Color-capable: every state renders ●
+    const colorHeader = stripVTControlCharacters(
+      new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false, colorAvailable: true }).render(120).join("\n"),
+    );
+    assert.equal(colorHeader[0], BULLET_MARKER, `${entry.name} must render ● when color is available`);
+
+    // No color (default): fallback marker for the lifecycle
+    const fallbackHeader = stripVTControlCharacters(
+      new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false }).render(120).join("\n"),
+    );
+    assert.equal(fallbackHeader[0], FALLBACK_MARKERS.completed, `${entry.name} must render fallback marker when color is unavailable`);
+
+    // No family icon glyph appears anywhere in the header
+    for (const glyph of familyIconGlyphs) {
+      assert.ok(!colorHeader.includes(glyph), `${entry.name} color header must not contain family icon '${glyph}'`);
+      assert.ok(!fallbackHeader.includes(glyph), `${entry.name} fallback header must not contain family icon '${glyph}'`);
     }
   }
 }
@@ -489,12 +495,11 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
 // ── 16. Every marker is one cell and every qualifier has a visible badge ──
 
 {
-  for (const frames of Object.values(LIFECYCLE_FRAMES)) {
-    for (const frame of frames) {
-      assert.equal(visibleWidth(frame), 1, `marker '${frame}' must measure one cell`);
-    }
+  assert.equal(visibleWidth(BULLET_MARKER), 1, "BULLET_MARKER must measure one cell");
+  for (const marker of Object.values(FALLBACK_MARKERS)) {
+    assert.equal(visibleWidth(marker), 1, `fallback marker '${marker}' must measure one cell`);
   }
-  assert.equal(visibleWidth(COMPLETED_WARNING_FRAME), 1, "warning marker must measure one cell");
+  assert.equal(visibleWidth(FALLBACK_WARNING_MARKER), 1, "warning marker must measure one cell");
 
   for (const qualifier of OPERATIONAL_QUALIFIERS) {
     const description = {
@@ -583,7 +588,6 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
       : decorateInternalTool(definition, () => runtime);
     assert.equal(decorated.renderShell, "self", `${entry.name} must own its render shell`);
 
-    const icon = catalogIconFor(entry.name, entry.family);
     const call = decorated.renderCall({}, darkTheme, context({}));
     const result = decorated.renderResult(
       { content: [{ type: "text", text: "done" }], details: {} },
@@ -599,9 +603,15 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
           lines.every((line) => visibleWidth(line) <= width),
           `${entry.name} exceeded ${width} through the production decoration path`,
         );
+        const plain = stripVTControlCharacters(lines.join("\n"));
+        assert.ok(!/[▪▣⌕⌬◆◇]/.test(plain), `${entry.name} must not show family icons at width ${width}`);
+        // The runtime is created with { isTTY: false, test: true }, so colorAvailable
+        // is false and every marker is a fallback glyph. Verify the first character
+        // is a valid fallback marker, not a family icon.
+        const firstChar = plain[0];
+        const validFallbacks = [...Object.values(FALLBACK_MARKERS), FALLBACK_WARNING_MARKER];
+        assert.ok(validFallbacks.includes(firstChar), `${entry.name} must render a fallback marker at width ${width}, got '${firstChar}'`);
       }
-      const plain = stripVTControlCharacters(result.render(width).join("\n"));
-      assert.ok(plain.includes(icon), `${entry.name} must show its icon at width ${width}`);
     }
   }
 

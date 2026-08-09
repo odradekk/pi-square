@@ -49,7 +49,7 @@ export default function registerSubagents(pi: ExtensionAPI, runtime?: DisplayRun
     state.registry = discoverSubagents(cwd);
   };
   state.refresh = refresh;
-  const nativeStatus = createNativeSubagentStatusController(state.background, runtime);
+  const nativeStatus = createNativeSubagentStatusController(state.background);
 
   registerSubagentTool(pi, state, runtime
     ? (definition) => decorateSubagentTool(definition, runtime)

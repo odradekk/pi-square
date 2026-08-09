@@ -75,14 +75,14 @@ function makeFdRgDef(name) {
 
   const state = {};
   const queued = decorated.renderCall({ pattern: "const" }, plainTheme, makeCtx({ pattern: "const" }, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
   assert.equal(clock.callbacks.size, 0, "queued does not subscribe to motion");
 
   const pending = decorated.renderCall({ pattern: "const" }, plainTheme, makeCtx({ pattern: "const" }, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall({ pattern: "const" }, plainTheme, makeCtx({ pattern: "const" }, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
   assert.equal(clock.callbacks.size, 1, "running subscribes to motion");
 
   const result = decorated.renderResult(
@@ -91,7 +91,7 @@ function makeFdRgDef(name) {
     plainTheme,
     makeCtx({ pattern: "const" }, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders bullet");
   assert.equal(clock.callbacks.size, 0, "completed unsubscribes from motion");
   assert.deepEqual(running.render(80), [], "call slot empties when result arrives");
 
@@ -224,7 +224,7 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "[invalid" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: true }),
   );
   const text = stripVTControlCharacters(errored.render(80).join("\n"));
-  assert.match(text, /^✗/, "error renders failed marker");
+  assert.match(text, /^×/, "error renders failed marker");
   assert.match(text, /invalid regex/, "error text visible");
   assert.doesNotMatch(text, /MATCHES|No matches/, "error result does not render match sections");
 
@@ -301,13 +301,13 @@ function makeFdRgDef(name) {
 
   const state = {};
   const queued = decorated.renderCall({ pattern: "foo" }, plainTheme, makeCtx({ pattern: "foo" }, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "rg queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "rg queued renders en-dash");
 
   const pending = decorated.renderCall({ pattern: "foo" }, plainTheme, makeCtx({ pattern: "foo" }, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "rg pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "rg pending renders circle");
 
   const running = decorated.renderCall({ pattern: "foo" }, plainTheme, makeCtx({ pattern: "foo" }, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "rg running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "rg running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "rg returned=1" }], details: { page: { offset: 0, returned: 1, total: 1 }, files: [{ path: "a.ts", lines: [{ kind: "match", line: 5, text: "foo bar" }] }] } },
@@ -315,7 +315,7 @@ function makeFdRgDef(name) {
     plainTheme,
     makeCtx({ pattern: "foo" }, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "rg completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "rg completed renders bullet");
   assert.deepEqual(running.render(80), [], "rg call slot empties when result arrives");
 
   runtime.dispose();
@@ -420,7 +420,7 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "[invalid" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: true }),
   );
   const text = stripVTControlCharacters(errored.render(80).join("\n"));
-  assert.match(text, /^✗/, "rg error renders failed marker");
+  assert.match(text, /^×/, "rg error renders failed marker");
   assert.match(text, /invalid regex/, "rg error text visible");
   assert.doesNotMatch(text, /No matches/, "rg error result does not show empty message");
   const errorLines = (text.match(/invalid regex/g) ?? []).length;
@@ -484,7 +484,7 @@ function makeFdRgDef(name) {
   );
   for (const width of [39, 40]) {
     const line = stripVTControlCharacters(call.render(width)[0]);
-    assert.match(line, /^⠋/, `marker visible at width ${width}`);
+    assert.match(line, /^●/, `marker visible at width ${width}`);
     assert.match(line, /Text search/, `identity visible at width ${width}`);
   }
 

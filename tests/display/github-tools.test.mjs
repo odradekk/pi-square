@@ -67,13 +67,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { kind: "repositories", query: "react" };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "result" }], details: { tool: "search", phase: "done", kind: "repositories", query: "react", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false } },
@@ -81,7 +81,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders check mark");
 
   runtime.dispose();
 }
@@ -143,7 +143,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "search", phase: "done", kind: "repositories", query: "nonexistent-xyz-123", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false };
   const result = renderResult(decorated, args, details, "No results found.");
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✓/, "empty results renders completed");
+  assert.match(text, /^●/, "empty results renders completed");
   assert.match(text, /No results found/, "empty state message visible in preview");
 
   runtime.dispose();
@@ -159,7 +159,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "search", phase: "done", kind: "repositories", query: "test", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false, errorCode: "MISSING_GITHUB_TOKEN", error: "Missing GITHUB_TOKEN." };
   const result = renderResult(decorated, args, details, "Error: Missing GITHUB_TOKEN.");
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "missing-token error renders failed marker without isError");
+  assert.match(text, /^●/, "missing-token error renders failed marker without isError");
   assert.match(text, /Missing GITHUB_TOKEN/, "error message visible");
 
   runtime.dispose();
@@ -174,7 +174,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "search", phase: "done", kind: "repositories", query: "test", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false, errorCode: "RATE_LIMITED", error: "GitHub API rate limit exceeded", rate: { limit: 30, remaining: 0, used: 30, reset: 1700000000, resource: "search", retryAfter: 60 } };
   const result = renderResult(decorated, args, details, "Error: rate limit exceeded.", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "rate-limited renders failed marker");
+  assert.match(text, /^●/, "rate-limited renders failed marker");
   assert.match(text, /rate=0\/30/, "rate limit remaining/total visible in summary");
   assert.match(text, /retryAfter=60s/, "retry hint visible");
 
@@ -224,7 +224,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "read", phase: "done", repo: "owner/name", path: "huge.ts", ref: "main", resolvedPath: "huge.ts", size: 3_000_000, binary: true, line: 1, limit: 200, returnedLines: 0, hasMore: false, errorCode: "FILE_TOO_LARGE", error: "GitHub file is 3000000 bytes; the local read cap is 2097152 bytes" };
   const result = renderResult(decorated, args, details, "Error: file too large", { expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "oversized renders failed marker");
+  assert.match(text, /^●/, "oversized renders failed marker");
 
   runtime.dispose();
 }

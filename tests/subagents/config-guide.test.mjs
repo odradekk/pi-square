@@ -64,7 +64,7 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
 test("collapsed guide is one native-style summary and expanded guide reveals bounded metadata", () => {
   const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
-  assert.match(collapsed, /✓ ◆ Config guide/);
+  assert.match(collapsed, /✓ ● Config guide/);
   assert.match(collapsed, /6 definitions/);
   assert.match(collapsed, /package/);
   assert.match(collapsed, /expand/);
@@ -109,8 +109,8 @@ test("real themes keep the unframed guide bounded at every display boundary widt
 test("guide uses operational interface grammar with workflow icon and title-case label", () => {
   const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
-  // ◆ workflow icon from the design-spec icon vocabulary
-  assert.match(collapsed, /◆/, "guide header uses ◆ workflow icon");
+  // ● bullet from the design-spec icon vocabulary
+  assert.match(collapsed, /●/, "guide header uses ● bullet");
   // Title-case label, not all-caps
   assert.match(collapsed, /Config guide/, "guide header uses title-case label");
   assert.doesNotMatch(collapsed, /SUBAGENT CONFIG/, "guide header is not all-caps");

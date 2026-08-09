@@ -77,13 +77,13 @@ function sgMatch(overrides = {}) {
 
   const state = {};
   const queued = decorated.renderCall({ pattern: "$X" }, plainTheme, makeCtx({ pattern: "$X" }, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall({ pattern: "$X" }, plainTheme, makeCtx({ pattern: "$X" }, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall({ pattern: "$X" }, plainTheme, makeCtx({ pattern: "$X" }, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "sg returned=1" }], details: { page: { offset: 0, returned: 1, total: 1 }, matches: [sgMatch()] } },
@@ -91,7 +91,7 @@ function sgMatch(overrides = {}) {
     plainTheme,
     makeCtx({ pattern: "$X" }, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders bullet");
   assert.deepEqual(running.render(80), [], "call slot empties when result arrives");
 
   runtime.dispose();
@@ -217,7 +217,7 @@ function sgMatch(overrides = {}) {
       makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: true }),
     );
     const text = stripVTControlCharacters(errored.render(90).join("\n"));
-    assert.match(text, /^✗/, `error state '${errorText}' renders failed marker`);
+    assert.match(text, /^×/, `error state '${errorText}' renders failed marker`);
     assert.match(text, expectedPattern, `error state '${errorText}' shows its distinct safe message`);
     assert.doesNotMatch(text, /No matches/, `error state '${errorText}' is distinct from empty`);
     seenTexts.push(text);
@@ -329,7 +329,7 @@ function sgMatch(overrides = {}) {
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   for (const width of [39, 40]) {
     const line = stripVTControlCharacters(call.render(width)[0]);
-    assert.match(line, /^⠋/, `marker visible at width ${width}`);
+    assert.match(line, /^●/, `marker visible at width ${width}`);
     assert.match(line, /Structure search/, `search identity visible at width ${width}`);
     assert.ok(visibleWidth(call.render(width)[0]) <= width, `call line bounded at width ${width}`);
   }

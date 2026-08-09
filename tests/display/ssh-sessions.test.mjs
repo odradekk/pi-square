@@ -75,7 +75,7 @@ function page(overrides = {}) {
   const details = { version: 1, operation: "connect", status: "success", code: "CONNECTED", message: `Connected ${SESSION.id} to deploy@10.0.0.1:22`, session: SESSION, output: page() };
   const result = renderResult(decorated, args, details, "Welcome to Ubuntu 22.04\n$", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "connect success renders completed marker");
+  assert.match(text, /^●/, "connect success renders completed marker");
   assert.match(text, /endpoint=deploy@10\.0\.0\.1:22/, "connect summary shows endpoint");
   assert.match(text, /sessionState=connected/, "connect summary shows session state");
   assert.match(text, /Welcome to Ubuntu/, "connect output visible in expanded");
@@ -116,14 +116,14 @@ function page(overrides = {}) {
   const okResult = renderResult(decorated, args, okDetails, "hello\n$", { expanded: true });
   const okText = stripVTControlCharacters(okResult.render(100).join("\n"));
   assert.match(okText, /exitCode=0/, "exit code 0 visible in summary");
-  assert.match(okText, /^✓/, "exit 0 renders completed marker");
+  assert.match(okText, /^●/, "exit 0 renders completed marker");
 
   // Exit 1 → error tone
   const errDetails = { version: 1, operation: "command", status: "success", code: "COMMAND_COMPLETED", message: "Remote command exited with code 1", session: SESSION, exitCode: 1, output: page() };
   const errResult = renderResult(decorated, args, errDetails, "error\n$", { expanded: true });
   const errText = stripVTControlCharacters(errResult.render(100).join("\n"));
   assert.match(errText, /exitCode=1/, "exit code 1 visible in summary");
-  assert.match(errText, /^✓/, "non-zero exit still renders completed (status=success)");
+  assert.match(errText, /^●/, "non-zero exit still renders completed (status=success)");
 
   runtime.dispose();
 }
@@ -156,7 +156,7 @@ function page(overrides = {}) {
   };
   const result = renderResult(decorated, args, details, "", { expanded: true, isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "disconnected read renders failed marker");
+  assert.match(text, /^●/, "disconnected read renders failed marker");
   assert.match(text, /expired/, "cursor expiry visible (cursor field shows expired)");
   assert.match(text, /150 dropped/, "dropped chars count visible");
   assert.match(text, /disconnectReason=Connection reset by peer/, "disconnect reason visible");
@@ -164,7 +164,7 @@ function page(overrides = {}) {
   runtime.dispose();
 }
 
-// ─── 6. Command aborted renders × (not ✗) ──────────────────────────
+// ─── 6. Command aborted renders · (not ·) ──────────────────────────
 
 {
   const runtime = newRuntime();
@@ -173,7 +173,7 @@ function page(overrides = {}) {
   const details = { version: 1, operation: "command", status: "aborted", code: "ABORTED", message: "Remote command wait was cancelled and an interrupt was sent", session: { ...SESSION, commandState: "idle" }, output: page({ cursor: 10, nextCursor: 10 }) };
   const result = renderResult(decorated, args, details, "^C", { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "aborted renders × marker, not ✗");
+  assert.match(text, /^●/, "aborted renders · marker, not ·");
 
   runtime.dispose();
 }
@@ -187,7 +187,7 @@ function page(overrides = {}) {
   const details = { version: 1, operation: "command", status: "error", code: "SESSION_DISCONNECTED", message: "SSH session disconnected before the command completed", session: { ...SESSION, state: "disconnected", disconnectReason: "Connection reset by peer" }, output: page({ cursor: 100 }) };
   const result = renderResult(decorated, args, details, "partial output", { expanded: true, isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "disconnected command renders failed marker");
+  assert.match(text, /^●/, "disconnected command renders failed marker");
   assert.match(text, /sessionState=disconnected/, "disconnected state visible in summary");
 
   runtime.dispose();
@@ -256,21 +256,21 @@ function page(overrides = {}) {
   const inputResult = renderResult(decorated, inputArgs, inputDetails, "", { expanded: true });
   const inputText = stripVTControlCharacters(inputResult.render(100).join("\n"));
   assert.match(inputText, /ssh-a1b2c3d4/, "input target shows session ID");
-  assert.match(inputText, /^✓/, "input success renders completed marker");
+  assert.match(inputText, /^●/, "input success renders completed marker");
 
   // Interrupt
   const interruptArgs = { operation: "interrupt", session: "ssh-a1b2c3d4" };
   const interruptDetails = { version: 1, operation: "interrupt", status: "success", code: "INTERRUPT_SENT", message: "Interrupt sent to the running remote command", session: SESSION };
   const interruptResult = renderResult(decorated, interruptArgs, interruptDetails, "", { expanded: true });
   const interruptText = stripVTControlCharacters(interruptResult.render(100).join("\n"));
-  assert.match(interruptText, /^✓/, "interrupt success renders completed marker");
+  assert.match(interruptText, /^●/, "interrupt success renders completed marker");
 
   // Close
   const closeArgs = { operation: "close", session: "ssh-a1b2c3d4" };
   const closeDetails = { version: 1, operation: "close", status: "success", code: "CLOSED", message: "Closed SSH session ssh-a1b2c3d4", session: { ...SESSION, state: "closed" } };
   const closeResult = renderResult(decorated, closeArgs, closeDetails, "", { expanded: true });
   const closeText = stripVTControlCharacters(closeResult.render(100).join("\n"));
-  assert.match(closeText, /^✓/, "close success renders completed marker");
+  assert.match(closeText, /^●/, "close success renders completed marker");
   assert.match(closeText, /sessionState=closed/, "close shows closed session state");
 
   runtime.dispose();
@@ -304,7 +304,7 @@ function page(overrides = {}) {
   const details = { version: 1, operation: "connect", status: "declined", code: "DECLINED", message: "SSH connection was declined" };
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "declined connect renders aborted marker");
+  assert.match(text, /^●/, "declined connect renders aborted marker");
   assert.match(text, /declined/i, "declined message visible");
 
   runtime.dispose();
@@ -325,7 +325,7 @@ function page(overrides = {}) {
   const details = { version: 1, operation: "secret_input", status: "success", code: "SECRET_SENT", message: "Secret input was sent once and was not included in tool content", session: { ...SESSION, commandState: "running" } };
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "secret_input success renders completed marker");
+  assert.match(text, /^●/, "secret_input success renders completed marker");
   assert.doesNotMatch(text, /password/i, "secret value never appears in result display");
 
   runtime.dispose();

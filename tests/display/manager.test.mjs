@@ -122,7 +122,7 @@ assert.throws(() => __testables.parseFieldValue("diffView", "sideways"), /expect
   assert.ok(manager.render(40).length <= 4, "manager must respect very short terminal heights");
   tui.terminal.rows = previousRows;
   const wide = render(manager, 120);
-  assert.match(narrow, /^◆ DISPLAY/m);
+  assert.match(narrow, /^● DISPLAY/m);
   assert.match(narrow, /Global defaults/);
   assert.match(wide, /previewLines=10/);
   assert.match(wide, /\/agent\/config\/pi-square\.json/);

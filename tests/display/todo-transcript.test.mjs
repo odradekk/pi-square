@@ -181,7 +181,7 @@ const DETAILS = {
   const details = { ...DETAILS, status: "error", action: "start", changed: false, error: { code: "TODO_UNKNOWN_ID", message: "Unknown todo item ID: nonexistent" } };
   const result = renderResult(decorated, args, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "error state renders ✗ marker");
+  assert.match(text, /^●/, "error state renders × marker");
   assert.match(text, /ERROR/, "ERROR section present");
   assert.match(text, /Unknown todo item ID/, "error message visible");
   assert.match(text, /error=TODO_UNKNOWN_ID/, "error code visible in PERSISTENCE");
@@ -200,7 +200,7 @@ const DETAILS = {
   const details = { version: 1, status: "ok", action: "clear", changed: true, stateVersion: 2, title: "", counts: { total: 0, pending: 0, inProgress: 0, completed: 0 }, widget: "cleared", items: [] };
   const result = renderResult(decorated, args, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "clear success renders ✓");
+  assert.match(text, /^●/, "clear success renders ✓");
   assert.match(text, /total=0/, "empty list shows total=0");
   assert.match(text, /widget=cleared/, "empty list shows widget=cleared");
   // No Tasks section when empty (recordsSection returns undefined for empty)
@@ -223,13 +223,13 @@ const DETAILS = {
   const state = {};
   // Queued
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
   // Pending
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
   // Running
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille");
   // Completed
   const result = decorated.renderResult(
     { content: [{ type: "text", text: JSON.stringify(DETAILS) }], details: DETAILS },
@@ -237,7 +237,7 @@ const DETAILS = {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders check mark");
 
   runtime.dispose();
 }
@@ -292,7 +292,7 @@ const DETAILS = {
     const details = { ...DETAILS, action: args.action };
     const result = renderResult(decorated, args, details, { expanded: true });
     const text = stripVTControlCharacters(result.render(80).join("\n"));
-    assert.match(text, /^✓/, `${opName} renders ✓ marker`);
+    assert.match(text, /^●/, `${opName} renders ✓ marker`);
     assert.match(text, new RegExp(`action=${args.action}`), `${opName} shows action in ACTION section`);
   }
   runtime.dispose();

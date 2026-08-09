@@ -104,7 +104,7 @@ const SESSION = {
   const details = { version: 1, operation: "connect", status: "declined", code: "DECLINED", message: "SSH connection was declined" };
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^×/, "declined connect renders × (aborted marker)");
+  assert.match(text, /^●/, "declined connect renders · (aborted marker)");
   assert.match(text, /declined/i, "declined message visible");
   assert.match(text, /sshCode=DECLINED/, "ssh code visible in summary");
   assert.doesNotMatch(text, /password|token|credential/i, "no credentials in declined display");
@@ -121,7 +121,7 @@ const SESSION = {
   const details = { version: 1, operation: "connect", status: "error", code: "CONFIRMATION_UNAVAILABLE", message: "Non-default SSH targets require interactive confirmation" };
   const result = renderResult(decorated, args, details, "Error: confirmation unavailable", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "confirmation unavailable renders ✗ (failed marker)");
+  assert.match(text, /^●/, "confirmation unavailable renders × (failed marker)");
   assert.match(text, /confirmation/i, "error message visible");
   assert.match(text, /sshCode=CONFIRMATION_UNAVAILABLE/, "ssh code visible");
 
@@ -137,7 +137,7 @@ const SESSION = {
   const details = { version: 1, operation: "connect", status: "error", code: "HOST_VERIFICATION_FAILED", message: "SSH host key verification failed: no matching fingerprint found" };
   const result = renderResult(decorated, args, details, "Error: host key verification failed", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "host verification failure renders ✗");
+  assert.match(text, /^●/, "host verification failure renders ×");
   assert.match(text, /host key verification failed/i, "host verification message visible");
   assert.match(text, /sshCode=HOST_VERIFICATION_FAILED/, "host verification code visible");
   assert.doesNotMatch(text, /sha256:|BEGIN.*KEY|ssh-rsa|ssh-ed25519/i, "no fingerprint hash or key material in display");
@@ -154,7 +154,7 @@ const SESSION = {
   const details = { version: 1, operation: "connect", status: "error", code: "AUTH_FAILED", message: "All authentication methods failed (publickey)" };
   const result = renderResult(decorated, args, details, "Error: auth failed", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "auth failure renders ✗");
+  assert.match(text, /^●/, "auth failure renders ×");
   assert.match(text, /authentication methods failed/i, "auth failure message visible");
   assert.doesNotMatch(text, /PRIVATE KEY|BEGIN.*KEY|ssh-rsa/i, "no private key material in display");
 
@@ -170,7 +170,7 @@ const SESSION = {
   const details = { version: 1, operation: "secret_input", status: "success", code: "SECRET_SENT", message: "Secret input was sent once and was not included in tool content", session: SESSION };
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "secret input success renders ✓");
+  assert.match(text, /^●/, "secret input success renders ✓");
   assert.match(text, /sent once/, "send-once message visible");
   assert.doesNotMatch(text, /Enter password|my.?password|the.?secret|actual.?passphrase/i, "no secret value or prompt echoed in result display");
   // The prompt text from the call metadata should also not appear in the result
@@ -188,7 +188,7 @@ const SESSION = {
   const details = { version: 1, operation: "secret_input", status: "declined", code: "DECLINED", message: "Secret input was cancelled" };
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "secret input declined renders × (aborted marker)");
+  assert.match(text, /^●/, "secret input declined renders · (aborted marker)");
   assert.match(text, /cancelled/i, "cancelled message visible");
 
   runtime.dispose();
@@ -203,7 +203,7 @@ const SESSION = {
   const details = { version: 1, operation: "secret_input", status: "error", code: "SECRET_INPUT_UNAVAILABLE", message: "Secret SSH input requires the interactive TUI" };
   const result = renderResult(decorated, args, details, "Error: TUI required", { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "secret input unavailable renders ✗");
+  assert.match(text, /^●/, "secret input unavailable renders ×");
   assert.match(text, /TUI/i, "TUI requirement message visible");
 
   runtime.dispose();
@@ -218,7 +218,7 @@ const SESSION = {
   const details = { version: 1, operation: "secret_input", status: "error", code: "NO_ACTIVE_COMMAND", message: "Secret SSH input requires a running foreground command" };
   const result = renderResult(decorated, args, details, "Error: no active command", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "no active command renders ✗");
+  assert.match(text, /^●/, "no active command renders ×");
   assert.match(text, /running foreground command/i, "error message visible");
 
   runtime.dispose();
@@ -233,7 +233,7 @@ const SESSION = {
   const details = { version: 1, operation: "connect", status: "success", code: "CONNECTED", message: `Connected ssh-a1b2c3d4 to deploy@10.0.0.1:22`, session: { ...SESSION, commandState: "idle" } };
   const result = renderResult(decorated, args, details, "Welcome to Ubuntu\n$", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "connect success renders ✓");
+  assert.match(text, /^●/, "connect success renders ✓");
   assert.match(text, /endpoint=deploy@10\.0\.0\.1:22/, "endpoint visible");
   assert.doesNotMatch(text, /password|passphrase|private.key|BEGIN.*KEY/i, "no credentials in connect success");
   assert.doesNotMatch(text, /ghp_|github_pat_|Bearer\s/i, "no tokens in connect success");
@@ -254,13 +254,13 @@ const SESSION = {
   const details = { version: 1, operation: "input", status: "success", code: "INPUT_SENT", message: "Non-secret input sent to the running remote command", session: SESSION };
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✓/, "input success renders ✓");
+  assert.match(text, /^●/, "input success renders ✓");
   assert.match(text, /sent.*running/, "input sent message visible");
 
   runtime.dispose();
 }
 
-// ─── 13. Command aborted (interrupt sent) renders × ────────────────
+// ─── 13. Command aborted (interrupt sent) renders · ────────────────
 
 {
   const runtime = newRuntime();
@@ -269,13 +269,13 @@ const SESSION = {
   const details = { version: 1, operation: "command", status: "aborted", code: "ABORTED", message: "Remote command wait was cancelled and an interrupt was sent", session: { ...SESSION, commandState: "idle" } };
   const result = renderResult(decorated, args, details, "^C", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "aborted command renders × (not ✗)");
+  assert.match(text, /^●/, "aborted command renders · (not ·)");
   assert.match(text, /interrupt was sent/i, "abort message visible");
 
   runtime.dispose();
 }
 
-// ─── 14. Command disconnected renders ✗ ───────────────────────────
+// ─── 14. Command disconnected renders × ───────────────────────────
 
 {
   const runtime = newRuntime();
@@ -284,7 +284,7 @@ const SESSION = {
   const details = { version: 1, operation: "command", status: "error", code: "SESSION_DISCONNECTED", message: "SSH session disconnected before the command completed", session: { ...SESSION, state: "disconnected", disconnectReason: "Connection reset by peer" } };
   const result = renderResult(decorated, args, details, "partial output", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "disconnected command renders ✗ (not ×)");
+  assert.match(text, /^●/, "disconnected command renders × (not ×)");
   assert.match(text, /disconnectReason=Connection reset by peer/, "disconnect reason visible");
 
   runtime.dispose();

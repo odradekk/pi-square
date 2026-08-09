@@ -43,7 +43,7 @@ const plainTheme = {
 const description = { version: 1, tool: "rg", family: "search", lifecycle: "running", title: "Search" };
 const component = runtime.createComponent(description, plainTheme, { expanded: false });
 let invalidated = 0;
-const stopMotion = runtime.subscribeMotion(component, () => { invalidated += 1; });
+const stopMotion = runtime.subscribeMotion(() => { invalidated += 1; });
 clock.tick();
 assert.equal(invalidated, 1);
 assert.notEqual(component.render(40)[0], "");

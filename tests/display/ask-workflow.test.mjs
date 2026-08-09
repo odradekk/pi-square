@@ -88,7 +88,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_2Q, DONE_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "submitted result renders ✓");
+  assert.match(text, /^●/, "submitted result renders ✓");
   assert.match(text, /Pick a color/, "first question text visible in Answers");
   assert.match(text, /Red/, "first answer visible");
   assert.match(text, /Pick frameworks/, "second question text visible");
@@ -129,21 +129,21 @@ function renderResult(decorated, args, details, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 4. User-cancelled shows aborted marker (×) ────────────────────
+// ─── 4. User-cancelled shows aborted marker (·) ────────────────────
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_2Q, CANCELLED_USER);
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "user-cancel renders × (aborted)");
+  assert.match(text, /^●/, "user-cancel renders · (aborted)");
   assert.match(text, /phase=cancelled/, "phase visible");
   assert.match(text, /reason=user/, "cancel reason visible");
 
   runtime.dispose();
 }
 
-// ─── 5. Tool-aborted shows aborted marker (×), not failed (✗) ──────
+// ─── 5. Tool-aborted shows aborted marker (·), not failed (·) ──────
 
 {
   const runtime = newRuntime();
@@ -151,20 +151,20 @@ function renderResult(decorated, args, details, opts = {}) {
   // Tool-aborted has isError:true — explicit lifecycle must override to aborted
   const result = renderResult(decorated, ARGS_2Q, CANCELLED_ABORTED, { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "tool-aborted renders × (aborted, not ✗ failed)");
+  assert.match(text, /^●/, "tool-aborted renders · (aborted, not · failed)");
   assert.match(text, /reason=aborted/, "abort reason visible");
 
   runtime.dispose();
 }
 
-// ─── 6. Error state shows failed marker (✗) and error section ──────
+// ─── 6. Error state shows failed marker (×) and error section ──────
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_2Q, ERROR_DETAILS, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "error renders ✗ (failed)");
+  assert.match(text, /^●/, "error renders × (failed)");
   assert.match(text, /ERROR/, "ERROR section present");
   assert.match(text, /Duplicate question IDs/, "error message visible");
 
@@ -181,12 +181,12 @@ function renderResult(decorated, args, details, opts = {}) {
   // verify the lifecycle is running (wizard active) and question count visible
   const running = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true }));
   const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-  assert.match(runningText, /^⠋/, "wizard active renders running braille");
+  assert.match(runningText, /^●/, "wizard active renders running braille");
   assert.match(runningText, /questions=2/, "question count visible during wizard");
   // Before execution: different marker
   const queued = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: false, executionStarted: false }));
   const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
-  assert.match(queuedText, /^–/, "before wizard renders queued en-dash");
+  assert.match(queuedText, /^●/, "before wizard renders queued en-dash");
 
   runtime.dispose();
 }
@@ -243,13 +243,13 @@ function renderResult(decorated, args, details, opts = {}) {
   const state = {};
   // Queued
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
   // Pending
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
   // Running
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille");
   // Completed
   const result = decorated.renderResult(
     { content: [{ type: "text", text: JSON.stringify(DONE_DETAILS) }], details: DONE_DETAILS },
@@ -257,7 +257,7 @@ function renderResult(decorated, args, details, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders check mark");
 
   runtime.dispose();
 }
@@ -316,7 +316,7 @@ function renderResult(decorated, args, details, opts = {}) {
     makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isPartial: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/, "progress update shows running braille");
+  assert.match(text, /●|●|●|●|●|●|●|●|●|●/, "progress update shows running braille");
   assert.match(text, /phase=asking/, "progress shows asking phase");
   assert.match(text, /current=1/, "progress shows current question");
 

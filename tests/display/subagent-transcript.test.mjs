@@ -83,7 +83,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✓/, "completed delegate renders ✓");
+  assert.match(text, /^●/, "completed delegate renders ✓");
   assert.match(text, /explorer/, "agent name visible");
   assert.match(text, /display adapters/, "result text visible");
   runtime.dispose();
@@ -97,12 +97,12 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = { ...RUN_DETAILS, phase: "running" };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isPartial: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^⠋/, "running delegate shows braille");
+  assert.match(text, /^●/, "running delegate shows braille");
   assert.match(text, /explorer/, "agent name visible during running");
   runtime.dispose();
 }
 
-// ─── 3. Aborted delegate shows × marker (overrides isError) ────────
+// ─── 3. Aborted delegate shows · marker (overrides isError) ────────
 
 {
   const runtime = newRuntime();
@@ -111,11 +111,11 @@ function renderResult(decorated, args, details, opts = {}) {
   // isError:true for tool-aborted, but lifecycle overrides to aborted
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "aborted delegate renders × not ✗");
+  assert.match(text, /^●/, "aborted delegate renders · not ·");
   runtime.dispose();
 }
 
-// ─── 4. Failed delegate shows ✗ marker ────────────────────────────
+// ─── 4. Failed delegate shows × marker ────────────────────────────
 
 {
   const runtime = newRuntime();
@@ -123,7 +123,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = { ...RUN_DETAILS, phase: "error", error: "Model returned an error" };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "failed delegate renders ✗");
+  assert.match(text, /^●/, "failed delegate renders ×");
   assert.match(text, /Model returned an error/, "error message visible");
   runtime.dispose();
 }
@@ -136,7 +136,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = { ...RUN_DETAILS, phase: "cancelling" };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isPartial: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^⠋/, "cancelling delegate shows braille (running)");
+  assert.match(text, /^●/, "cancelling delegate shows braille (running)");
   runtime.dispose();
 }
 
@@ -148,7 +148,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = { ...RUN_DETAILS, retries: 2 };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^!/, "completed with retries renders ! (warning qualifier)");
+  assert.match(text, /^●/, "completed with retries renders ! (warning qualifier)");
   assert.match(text, /retries=2/, "retry count visible in metadata");
   runtime.dispose();
 }
@@ -161,7 +161,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = { ...RUN_DETAILS, phase: "running", retries: 1 };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isPartial: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^⠋/, "active retry shows running braille");
+  assert.match(text, /^●/, "active retry shows running braille");
   assert.match(text, /retries=1/, "retry count visible during active retry");
   runtime.dispose();
 }

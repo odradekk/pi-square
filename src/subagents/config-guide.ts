@@ -89,7 +89,7 @@ export function renderSubagentConfigGuide(
     ? details.scopes.filter((scope) => scope === "package" || scope === "agent" || scope === "project").join("/")
     : "";
   const container = new Container();
-  const label = `${theme.fg("success", "✓")} ${theme.fg("accent", "◆")} ${theme.fg("toolTitle", theme.bold("Config guide"))}`;
+  const label = `${theme.fg("success", "✓")} ${theme.fg("accent", "●")} ${theme.fg("toolTitle", theme.bold("Config guide"))}`;
   if (!options.expanded) {
     const summary = [
       `${count} definition${count === 1 ? "" : "s"}`,

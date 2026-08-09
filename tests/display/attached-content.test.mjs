@@ -176,7 +176,7 @@ const errorDesc = {
 const hiddenRender = new OperationalDisplayComponent(errorDesc, hiddenPolicy, plainTheme, { expanded: false }).render(80);
 const hiddenPlain = stripVTControlCharacters(hiddenRender.join("\n"));
 assert.match(hiddenPlain, /Permission denied/, "errors must remain visible under hidden policy");
-assert.match(hiddenPlain, /^✗/, "failed lifecycle must show ✗ marker");
+assert.match(hiddenPlain, /^×/, "failed lifecycle must show × marker");
 
 // ─── 7. Read tool through the production decoration path ─────────────
 
@@ -229,14 +229,14 @@ function ctx(overrides = {}) {
 // Queued: arguments incomplete
 const queued = decorated.renderCall({ path: "src/index.ts" }, plainTheme, ctx({ argsComplete: false, executionStarted: false }));
 const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
-assert.match(queuedText, /^–/, "queued must render en-dash");
+assert.match(queuedText, /^●/, "queued must render en-dash");
 assert.equal(clock.callbacks.size, 0, "queued must not subscribe to motion");
 
 // Pending: arguments complete
 const pending = decorated.renderCall({ path: "src/index.ts" }, plainTheme, ctx({ argsComplete: true, executionStarted: false, lastComponent: queued }));
 assert.match(
   stripVTControlCharacters(pending.render(80).join("\n")),
-  /^○/,
+  /^●/,
   "pending must render circle",
 );
 
@@ -244,7 +244,7 @@ assert.match(
 const running = decorated.renderCall({ path: "src/index.ts" }, plainTheme, ctx({ argsComplete: true, executionStarted: true, lastComponent: pending }));
 assert.match(
   stripVTControlCharacters(running.render(80).join("\n")),
-  /^⠋/,
+  /^●/,
   "running must render braille",
 );
 assert.equal(clock.callbacks.size, 1, "running subscribes motion");
@@ -258,7 +258,7 @@ const settled = decorated.renderResult(
   ctx({ argsComplete: true, executionStarted: true, lastComponent: callForResult, isError: false }),
 );
 const settledText = stripVTControlCharacters(settled.render(80).join("\n"));
-assert.match(settledText, /^✓/, "completed must render check mark");
+assert.match(settledText, /^●/, "completed must render bullet");
 assert.equal(clock.callbacks.size, 0, "completed unsubscribes motion");
 
 // Content visible in default preview mode
@@ -272,7 +272,7 @@ const partial = decorated.renderResult(
   ctx({ argsComplete: true, executionStarted: true, lastComponent: settled, isPartial: true }),
 );
 const partialText = stripVTControlCharacters(partial.render(80).join("\n"));
-assert.match(partialText, /^⠋/, "partial result must render running braille, not completed checkmark");
+assert.match(partialText, /^●/, "partial result must render running braille, not completed checkmark");
 assert.equal(clock.callbacks.size, 1, "partial result must keep motion subscription");
 
 // Result replaces pending entry
@@ -299,7 +299,7 @@ const errored = decorated.renderResult(
   ctx({ argsComplete: true, executionStarted: true, lastComponent: expanded, isError: true }),
 );
 const errorText = stripVTControlCharacters(errored.render(80).join("\n"));
-assert.match(errorText, /^✗/, "error must render ✗");
+assert.match(errorText, /^●/, "error must render bullet");
 
 runtime.dispose();
 
@@ -314,7 +314,7 @@ const imageResult = decoratedImage.renderResult(
   ctx({ argsComplete: true, executionStarted: true, isError: false }),
 );
 const imageText = stripVTControlCharacters(imageResult.render(80).join("\n"));
-assert.match(imageText, /^✓/, "image read must still render completed marker");
+assert.match(imageText, /^●/, "image read must still render completed marker");
 // No text content to preview — header only
 assert.ok(!imageText.includes("base64data"), "must not leak image data as text");
 imageRuntime.dispose();

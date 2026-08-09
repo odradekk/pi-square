@@ -107,13 +107,13 @@ function renderResult(decorated, args, details, opts = {}) {
   const args = { path: "reports/q3.pdf", query: "revenue" };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: JSON.stringify(baseDetails()) }], details: baseDetails() },
@@ -121,7 +121,7 @@ function renderResult(decorated, args, details, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders bullet");
   assert.deepEqual(running.render(80), [], "call slot empties when result arrives");
 
   runtime.dispose();
@@ -237,7 +237,7 @@ function renderResult(decorated, args, details, opts = {}) {
     const details = baseDetails({ phase: "done", status: "error", errorCode, error: message, matches: [], returned: undefined, totalMatches: undefined });
     const result = renderResult(decorated, args, details, { text: `Error: ${message}`, isError: true, expanded: true });
     const text = stripVTControlCharacters(result.render(100).join("\n"));
-    assert.match(text, /^✗/, `${errorCode} renders the failed marker`);
+    assert.match(text, /^×/, `${errorCode} renders the failed marker`);
     assert.match(text, new RegExp(`code=${errorCode}`), `${errorCode} is visible in header metadata even before expanding`);
     assert.match(text, new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${errorCode} shows its own distinct message`);
     renderedTexts.push(text);
@@ -259,7 +259,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = baseDetails({ phase: "done", status: "aborted", errorCode: "ABORTED", error: "PDF search was cancelled", matches: [], returned: undefined, totalMatches: undefined });
   const result = renderResult(decorated, args, details, { text: "Error: PDF search was cancelled", isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^×/, "aborted renders the × marker, not the ✗ failed marker");
+  assert.match(text, /^·/, "aborted renders the · marker, not the × failed marker");
   assert.match(text, /PDF search was cancelled/, "aborted shows the cancellation message");
   assert.equal((text.match(/PDF search was cancelled/g) ?? []).length, 1, "the cancellation message is not duplicated");
 
@@ -321,7 +321,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const errDetails = baseDetails({ phase: "done", status: "error", errorCode: "PDF_TOO_LARGE", error: "PDF exceeds the 50 MB safety limit", matches: [], returned: undefined, totalMatches: undefined });
   const errCollapsed = renderResult(decorated, args, errDetails, { text: "Error: PDF exceeds the 50 MB safety limit", isError: true, expanded: false });
   const errText = stripVTControlCharacters(errCollapsed.render(100).join("\n"));
-  assert.match(errText, /^✗/, "collapsed error keeps the failed marker visible");
+  assert.match(errText, /^×/, "collapsed error keeps the failed marker visible");
   assert.match(errText, /code=PDF_TOO_LARGE/, "collapsed error keeps the error code visible in header metadata");
   assert.match(errText, /PDF exceeds the 50 MB safety limit/, "collapsed error keeps the error message visible");
 
@@ -371,8 +371,8 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = baseDetails({ phase: "done", status: "error", errorCode: "INVALID_PDF", error: "File does not contain a PDF header", matches: [], returned: undefined, totalMatches: undefined });
   const result = renderResult(decorated, args, details, { text: "Error: File does not contain a PDF header", isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "a non-aborted error status renders the failed marker, confirming pdfSearchLifecycle did not override it to aborted");
-  assert.doesNotMatch(text, /^×/, "a non-aborted error status never renders the aborted marker");
+  assert.match(text, /^×/, "a non-aborted error status renders the failed marker, confirming pdfSearchLifecycle did not override it to aborted");
+  assert.doesNotMatch(text, /^·/, "a non-aborted error status never renders the aborted marker");
 
   runtime.dispose();
 }
@@ -401,7 +401,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   for (const width of [39, 40]) {
     const line = stripVTControlCharacters(call.render(width)[0]);
-    assert.match(line, /^⠋/, `marker visible at width ${width}`);
+    assert.match(line, /^●/, `marker visible at width ${width}`);
     assert.match(line, /PDF search|revenue/, `identity or target visible at width ${width}`);
   }
 

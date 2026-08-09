@@ -96,13 +96,13 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const args = { operation: "explore", query: "how does auth work" };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "some source explanation" }], details: { version: 1, operation: "explore", phase: "done", projectPath: "/tmp" } },
@@ -110,7 +110,7 @@ function renderResult(decorated, args, content, details, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders bullet");
   assert.deepEqual(running.render(80), [], "call slot empties when result arrives");
 
   runtime.dispose();
@@ -283,7 +283,7 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const details = { version: 1, operation: "reindex", phase: "aborted", projectPath: "/tmp", code: "ABORTED", message: raw.message };
   const result = renderResult(decorated, args, JSON.stringify(raw), details, { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^×/, "aborted renders the × marker, not the ✗ failed marker");
+  assert.match(text, /^·/, "aborted renders the · marker, not the · failed marker");
   assert.match(text, /CodeGraph reindex was cancelled/, "aborted shows the cancellation message once");
   assert.equal((text.match(/CodeGraph reindex was cancelled/g) ?? []).length, 1, "the cancellation message is not duplicated");
 
@@ -300,7 +300,7 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const details = { version: 1, operation: "status", phase: "error", projectPath: "/tmp", code: "BINARY_UNAVAILABLE", message: raw.message };
   const result = renderResult(decorated, args, JSON.stringify(raw), details, { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "hard error renders the failed marker");
+  assert.match(text, /^×/, "hard error renders the failed marker");
   assert.match(text, /Cannot resolve CodeGraph binary/, "hard error shows the safe message");
   assert.equal((text.match(/Cannot resolve CodeGraph binary/g) ?? []).length, 1, "the error message is not duplicated across preview and error field");
 
@@ -368,7 +368,7 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   for (const width of [39, 40]) {
     const line = stripVTControlCharacters(call.render(width)[0]);
-    assert.match(line, /^⠋/, `marker visible at width ${width}`);
+    assert.match(line, /^●/, `marker visible at width ${width}`);
     assert.match(line, /CodeGraph/, `identity visible at width ${width}`);
   }
 

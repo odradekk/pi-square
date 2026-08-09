@@ -637,7 +637,7 @@ export class DisplayManager implements Component, Focusable {
     const maxRows = Math.max(1, Math.min(30, Math.floor(this.tui.terminal.rows)));
     const diagnostic = this.services.diagnostics?.()[0];
     const header = [
-      fit(`${this.theme.fg("accent", "◆")} ${this.theme.fg("toolTitle", this.theme.bold("DISPLAY"))}  ${this.theme.fg("dim", `${this.scope.toUpperCase()} · ${this.query ? `filter=${this.query}` : "all nodes"}`)}`, width),
+      fit(`${this.theme.fg("accent", "●")} ${this.theme.fg("toolTitle", this.theme.bold("DISPLAY"))}  ${this.theme.fg("dim", `${this.scope.toUpperCase()} · ${this.query ? `filter=${this.query}` : "all nodes"}`)}`, width),
       ...(diagnostic ? [fit(`${this.theme.fg("warning", "!")} ${this.theme.fg("warning", cleanDisplayValue(diagnostic))}`, width)] : []),
       this.theme.fg("borderMuted", "─".repeat(width)),
     ];

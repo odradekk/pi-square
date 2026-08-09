@@ -310,7 +310,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "tree", phase: "done", repo: "owner/name", path: "nonexistent", ref: "main", depth: 1, offset: 0, limit: 100, returned: 0, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 0, errorCode: "NOT_FOUND", error: "GitHub path 'nonexistent' was not found" };
   const result = renderResult(decorated, args, details, "Error: not found", { expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "not-found tree renders failed marker");
+  assert.match(text, /^●/, "not-found tree renders failed marker");
   assert.match(text, /not found/, "error message visible");
 
   runtime.dispose();
@@ -323,7 +323,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "commit", phase: "done", repo: "owner/name", ref: "", page: 1, limit: 20, returned: 0, hasMore: false, omittedPatches: 0, errorCode: "INVALID_INPUT", error: "ref is invalid" };
   const result = renderResult(decorated, args, details, "Error: ref is invalid", { expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^✗/, "invalid ref renders failed marker");
+  assert.match(text, /^●/, "invalid ref renders failed marker");
 
   runtime.dispose();
 }
@@ -341,7 +341,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     const decorated = decorateInternalTool(makeDef(name), () => runtime);
     const result = renderResult(decorated, args, details, "Error: rate limit", { expanded: true });
     const text = stripVTControlCharacters(result.render(100).join("\n"));
-    assert.match(text, /^✗/, `${name} rate-limited renders failed marker`);
+    assert.match(text, /^●/, `${name} rate-limited renders failed marker`);
     assert.match(text, /rate=0\/5000/, `${name} rate limit remaining/total visible`);
     assert.match(text, /retryAfter=120s/, `${name} retry hint visible`);
   }

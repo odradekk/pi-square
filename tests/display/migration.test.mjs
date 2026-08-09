@@ -28,12 +28,12 @@ test("null input produces empty canonical config with no changes", () => {
 
 // ─── 2. Canonical defaults are correct ─────────────────────────────
 
-test("canonical defaults are preview, nine rows, unified diff, full motion at 34 ms", () => {
+test("canonical defaults are preview, nine rows, unified diff, full motion at 120 ms", () => {
   assert.equal(DEFAULT_DISPLAY_POLICY.resultMode, "preview");
   assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 9);
   assert.equal(DEFAULT_DISPLAY_POLICY.diffView, "unified");
-  assert.equal(MOTION_FULL_INTERVAL_MS, 34);
-  assert.equal(MOTION_REDUCED_INTERVAL_MS, 120);
+  assert.equal(MOTION_FULL_INTERVAL_MS, 120);
+  assert.equal(MOTION_REDUCED_INTERVAL_MS, 1_000);
 });
 
 // ─── 3. Valid legacy input migrates completely ─────────────────────

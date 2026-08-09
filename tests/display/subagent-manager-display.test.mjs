@@ -65,7 +65,7 @@ function render(manager, width) {
 {
   const manager = new SubagentManager(makeData(), tui(), theme(), keybindings(), () => {});
   const text = render(manager, 80);
-  assert.match(text, /^◆ Subagents/m, "header uses ◆ Subagents");
+  assert.match(text, /^● Subagents/m, "header uses ● Subagents");
   assert.doesNotMatch(text, /SUBAGENTS/, "no all-caps SUBAGENTS");
   manager.dispose();
 }
@@ -321,8 +321,8 @@ function render(manager, width) {
   manager["switchTab"](1); // session
   const text = render(manager, 120);
   assert.match(text, /\u2713 done/, "done phase shows ✓ marker");
-  assert.match(text, /\u2717 error/, "error phase shows ✗ marker");
-  assert.match(text, /\u00d7 aborted/, "aborted phase shows × marker");
+  assert.match(text, /\u2717 error/, "error phase shows × marker");
+  assert.match(text, /\u00d7 aborted/, "aborted phase shows · marker");
   manager.dispose();
 }
 

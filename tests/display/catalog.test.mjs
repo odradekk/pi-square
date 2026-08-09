@@ -34,14 +34,9 @@ const {
   MOTION_REDUCED_INTERVAL_MS,
   OPERATIONAL_LIFECYCLES,
   OPERATIONAL_QUALIFIERS,
-  LIFECYCLE_FRAMES,
-  QUEUED_FRAME,
-  PENDING_MARKER,
-  RUNNING_FRAMES,
-  COMPLETED_FRAME,
-  COMPLETED_WARNING_FRAME,
-  FAILED_FRAME,
-  ABORTED_MARKER,
+  BULLET_MARKER,
+  FALLBACK_MARKERS,
+  FALLBACK_WARNING_MARKER,
 } = await load("../../src/display/types.ts");
 
 // ── Catalog validation ───────────────────────────────────────────────
@@ -128,41 +123,40 @@ for (const name of allNames) {
   assert.ok(DISPLAY_TOOL_NAME_REGEX.test(name), `catalog name '${name}' must match tool-name pattern`);
 }
 
-// ── Lifecycle frames: exhaustive lifecycles + qualifiers ─────────────
+// ── Single-bullet visual vocabulary ─────────────────────────────────
 
 assert.equal(OPERATIONAL_LIFECYCLES.length, 6, "must have exactly 6 lifecycles");
 assert.equal(OPERATIONAL_QUALIFIERS.length, 7, "must have exactly 7 qualifiers");
+
+// Bullet marker is one cell, non-pictographic
+assert.equal(BULLET_MARKER, "●");
+assert.equal(visibleWidth(BULLET_MARKER), 1, "BULLET_MARKER must occupy exactly one terminal cell");
+assert.ok(!/^\p{Extended_Pictographic}$/u.test(Array.from(BULLET_MARKER)[0]), "BULLET_MARKER must not be pictographic emoji");
+
+// Every fallback marker is one cell and non-pictographic
+for (const [lifecycle, marker] of Object.entries(FALLBACK_MARKERS)) {
+  const codePoints = Array.from(marker);
+  assert.equal(codePoints.length, 1, `fallback marker '${marker}' for '${lifecycle}' must be a single code point`);
+  assert.equal(visibleWidth(marker), 1, `fallback marker '${marker}' for '${lifecycle}' must occupy exactly one terminal cell`);
+  assert.ok(!/^\p{Extended_Pictographic}$/u.test(codePoints[0]), `fallback marker '${marker}' for '${lifecycle}' must not be pictographic emoji`);
+}
+
+// Fallback warning marker
+assert.equal(FALLBACK_WARNING_MARKER, "!");
+assert.equal(visibleWidth(FALLBACK_WARNING_MARKER), 1, "FALLBACK_WARNING_MARKER must occupy exactly one terminal cell");
+assert.ok(!/^\p{Extended_Pictographic}$/u.test(Array.from(FALLBACK_WARNING_MARKER)[0]), "FALLBACK_WARNING_MARKER must not be pictographic emoji");
+
+// Approved fallback marker vocabulary
+assert.equal(FALLBACK_MARKERS.queued, "–");
+assert.equal(FALLBACK_MARKERS.pending, "○");
+assert.equal(FALLBACK_MARKERS.running, "●");
+assert.equal(FALLBACK_MARKERS.completed, "✓");
+assert.equal(FALLBACK_MARKERS.failed, "×");
+assert.equal(FALLBACK_MARKERS.aborted, "·");
+
+// Every lifecycle has a fallback marker
 for (const lifecycle of OPERATIONAL_LIFECYCLES) {
-  assert.ok(LIFECYCLE_FRAMES[lifecycle], `lifecycle '${lifecycle}' must have frames`);
-  assert.ok(LIFECYCLE_FRAMES[lifecycle].length > 0, `lifecycle '${lifecycle}' must have at least one frame`);
-}
-
-// Lifecycle markers: non-emoji, single code point, fixed width
-const allLifecycleChars = [
-  QUEUED_FRAME, PENDING_MARKER, COMPLETED_FRAME,
-  COMPLETED_WARNING_FRAME, FAILED_FRAME, ABORTED_MARKER,
-  ...RUNNING_FRAMES,
-];
-for (const frame of allLifecycleChars) {
-  const codePoints = Array.from(frame);
-  assert.equal(codePoints.length, 1, `lifecycle frame '${frame}' must be a single code point`);
-  assert.equal(visibleWidth(frame), 1, `lifecycle frame '${frame}' must occupy exactly one terminal cell`);
-  assert.ok(!/^\p{Extended_Pictographic}$/u.test(codePoints[0]), `lifecycle frame '${frame}' must not be pictographic emoji`);
-}
-
-// Approved marker vocabulary
-assert.equal(QUEUED_FRAME, "–");
-assert.equal(PENDING_MARKER, "○");
-assert.equal(COMPLETED_FRAME, "✓");
-assert.equal(COMPLETED_WARNING_FRAME, "!");
-assert.equal(FAILED_FRAME, "✗");
-assert.equal(ABORTED_MARKER, "×");
-
-// Running frames are animated braille
-assert.ok(RUNNING_FRAMES.length >= 2, "running must have multiple frames for animation");
-for (const f of RUNNING_FRAMES) {
-  const cp = Array.from(f)[0].codePointAt(0);
-  assert.ok(cp >= 0x2800 && cp <= 0x28ff, `running frame '${f}' must be a Braille pattern`);
+  assert.ok(FALLBACK_MARKERS[lifecycle], `lifecycle '${lifecycle}' must have a fallback marker`);
 }
 
 // ── Default policy within bounds ─────────────────────────────────────
@@ -218,8 +212,8 @@ assert.equal(DISPLAY_DIFF_COLLAPSED_LINES_MIN, 4);
 assert.equal(DISPLAY_DIFF_COLLAPSED_LINES_MAX, 240);
 assert.equal(LAYOUT_COMPACT_MAX_COLUMNS, 63);
 assert.equal(LAYOUT_REGULAR_MAX_COLUMNS, 99);
-assert.equal(MOTION_FULL_INTERVAL_MS, 34);
-assert.equal(MOTION_REDUCED_INTERVAL_MS, 120);
+assert.equal(MOTION_FULL_INTERVAL_MS, 120);
+assert.equal(MOTION_REDUCED_INTERVAL_MS, 1_000);
 
 // ── Six families ─────────────────────────────────────────────────────
 

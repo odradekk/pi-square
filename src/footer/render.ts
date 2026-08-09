@@ -153,13 +153,13 @@ function sanitizeExternalStatus(text: string): string {
 
 /**
  * Per-status marker. Subagent status carries per-job lifecycle markers inside
- * its text; the row-level ◇ is the agent-family type identifier from the
- * design-spec icon vocabulary. Display diagnostics use the warning marker (!).
- * Generic extension statuses use a neutral non-vocabulary dot (·) because they
- * are not operational states and must not borrow a lifecycle marker+tone pair.
+ * its text; the row-level bullet identifies the status row. Display diagnostics
+ * use the warning marker (!). Generic extension statuses use a neutral
+ * non-vocabulary dot (·) because they are not operational states and must not
+ * borrow a lifecycle marker+tone pair.
  */
 function statusMarker(theme: Theme, key: string): string {
-  if (key === SUBAGENT_STATUS_KEY) return theme.fg("accent", "◇");
+  if (key === SUBAGENT_STATUS_KEY) return theme.fg("accent", "●");
   if (key === DISPLAY_STATUS_KEY) return theme.fg("warning", "!");
   return theme.fg("muted", "·");
 }

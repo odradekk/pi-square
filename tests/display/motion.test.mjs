@@ -33,14 +33,14 @@ let second = 0;
 const stopFirst = scheduler.subscribe(() => { first += 1; });
 const stopSecond = scheduler.subscribe(() => { second += 1; });
 assert.equal(clock.handles.size, 1, "all subscribers share one timer");
-assert.deepEqual(clock.intervals, [34], "full motion uses 34 ms interval");
+assert.deepEqual(clock.intervals, [120], "full motion uses 120 ms interval");
 clock.tick();
 assert.equal(first, 1);
 assert.equal(second, 1);
 
 scheduler.setMode("reduced");
 assert.equal(clock.handles.size, 1);
-assert.equal(clock.intervals.at(-1), 120, "reduced motion uses 120 ms interval");
+assert.equal(clock.intervals.at(-1), 1000, "reduced motion uses 1000 ms interval");
 clock.tick();
 assert.equal(first, 2);
 

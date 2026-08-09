@@ -9,14 +9,9 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const {
   OPERATIONAL_LIFECYCLES,
   OPERATIONAL_QUALIFIERS,
-  LIFECYCLE_FRAMES,
-  QUEUED_FRAME,
-  PENDING_MARKER,
-  RUNNING_FRAMES,
-  COMPLETED_FRAME,
-  COMPLETED_WARNING_FRAME,
-  FAILED_FRAME,
-  ABORTED_MARKER,
+  BULLET_MARKER,
+  FALLBACK_MARKERS,
+  FALLBACK_WARNING_MARKER,
 } = await load("../../src/display/types.ts");
 const { OperationalDisplayComponent } = await load("../../src/display/components.ts");
 const { DEFAULT_DISPLAY_POLICY } = await load("../../src/display/types.ts");
@@ -44,38 +39,37 @@ assert.deepEqual([...OPERATIONAL_QUALIFIERS], [
 ]);
 assert.equal(OPERATIONAL_QUALIFIERS.length, 7);
 
-// ─── 2. Lifecycle frames: single-cell, non-emoji ────────────────────
+// ─── 2. Single-bullet visual vocabulary: single-cell, non-emoji ────
 
-const allLifecycleChars = [
-  QUEUED_FRAME, PENDING_MARKER, COMPLETED_FRAME,
-  COMPLETED_WARNING_FRAME, FAILED_FRAME, ABORTED_MARKER,
-  ...RUNNING_FRAMES,
-];
-for (const frame of allLifecycleChars) {
-  const codePoints = Array.from(frame);
-  assert.equal(codePoints.length, 1, `lifecycle frame '${frame}' must be a single code point`);
-  assert.equal(visibleWidth(frame), 1, `lifecycle frame '${frame}' must occupy exactly one terminal cell`);
-  assert.ok(!/^\p{Extended_Pictographic}$/u.test(codePoints[0]), `lifecycle frame '${frame}' must not be pictographic emoji`);
+// Bullet marker
+assert.equal(BULLET_MARKER, "●");
+assert.equal(visibleWidth(BULLET_MARKER), 1, "BULLET_MARKER must occupy exactly one terminal cell");
+assert.ok(!/^\p{Extended_Pictographic}$/u.test(Array.from(BULLET_MARKER)[0]), "BULLET_MARKER must not be pictographic emoji");
+
+// Every fallback marker is one cell and non-pictographic
+for (const [lifecycle, marker] of Object.entries(FALLBACK_MARKERS)) {
+  const codePoints = Array.from(marker);
+  assert.equal(codePoints.length, 1, `fallback marker '${marker}' for '${lifecycle}' must be a single code point`);
+  assert.equal(visibleWidth(marker), 1, `fallback marker '${marker}' for '${lifecycle}' must occupy exactly one terminal cell`);
+  assert.ok(!/^\p{Extended_Pictographic}$/u.test(codePoints[0]), `fallback marker '${marker}' for '${lifecycle}' must not be pictographic emoji`);
 }
 
-assert.ok(RUNNING_FRAMES.length >= 2, "running must have multiple frames for animation");
-for (const f of RUNNING_FRAMES) {
-  const cp = Array.from(f)[0].codePointAt(0);
-  assert.ok(cp >= 0x2800 && cp <= 0x28ff, `running frame '${f}' must be a Braille pattern`);
-}
+// Fallback warning marker
+assert.equal(FALLBACK_WARNING_MARKER, "!");
+assert.equal(visibleWidth(FALLBACK_WARNING_MARKER), 1, "FALLBACK_WARNING_MARKER must occupy exactly one terminal cell");
+assert.ok(!/^\p{Extended_Pictographic}$/u.test(Array.from(FALLBACK_WARNING_MARKER)[0]), "FALLBACK_WARNING_MARKER must not be pictographic emoji");
 
-// Approved marker vocabulary
-assert.equal(QUEUED_FRAME, "–");
-assert.equal(PENDING_MARKER, "○");
-assert.equal(COMPLETED_FRAME, "✓");
-assert.equal(COMPLETED_WARNING_FRAME, "!");
-assert.equal(FAILED_FRAME, "✗");
-assert.equal(ABORTED_MARKER, "×");
+// Approved fallback marker vocabulary
+assert.equal(FALLBACK_MARKERS.queued, "–");
+assert.equal(FALLBACK_MARKERS.pending, "○");
+assert.equal(FALLBACK_MARKERS.running, "●");
+assert.equal(FALLBACK_MARKERS.completed, "✓");
+assert.equal(FALLBACK_MARKERS.failed, "×");
+assert.equal(FALLBACK_MARKERS.aborted, "·");
 
-// Every lifecycle has frames
+// Every lifecycle has a fallback marker
 for (const lifecycle of OPERATIONAL_LIFECYCLES) {
-  assert.ok(LIFECYCLE_FRAMES[lifecycle], `lifecycle '${lifecycle}' must have frames`);
-  assert.ok(LIFECYCLE_FRAMES[lifecycle].length > 0, `lifecycle '${lifecycle}' must have at least one frame`);
+  assert.ok(FALLBACK_MARKERS[lifecycle], `lifecycle '${lifecycle}' must have a fallback marker`);
 }
 
 // ─── 3. Component renders lifecycle markers ─────────────────────────
@@ -89,10 +83,10 @@ function renderFirstChar(description) {
 // Lifecycle markers
 assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "queued", title: "T" }), "–");
 assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "pending", title: "T" }), "○");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "running", title: "T" }), "⠋");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "running", title: "T" }), "●");
 assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "completed", title: "T" }), "✓");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "failed", title: "T" }), "✗");
-assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "aborted", title: "T" }), "×");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "failed", title: "T" }), "×");
+assert.equal(renderFirstChar({ version: 1, tool: "t", family: "workflow", lifecycle: "aborted", title: "T" }), "·");
 
 // Completed + warning qualifier → "!" override
 assert.equal(
@@ -173,20 +167,20 @@ function ctx(overrides = {}) {
 // Queued: arguments incomplete
 const queued = decorated.renderCall({}, plainTheme, ctx({ argsComplete: false, executionStarted: false }));
 const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
-assert.match(queuedText, /^–/, "queued lifecycle must render en-dash");
+assert.match(queuedText, /^●/, "queued lifecycle must render bullet");
 assert.match(queuedText, /Local time/, "title must be visible");
 assert.equal(clock.callbacks.size, 0, "queued must not subscribe to motion");
 
 // Pending: arguments complete, not yet executing
 const pending = decorated.renderCall({}, plainTheme, ctx({ argsComplete: true, executionStarted: false, lastComponent: queued }));
 const pendingText = stripVTControlCharacters(pending.render(80).join("\n"));
-assert.match(pendingText, /^○/, "pending lifecycle must render white circle");
+assert.match(pendingText, /^●/, "pending lifecycle must render bullet");
 assert.equal(clock.callbacks.size, 0, "pending must not subscribe to motion");
 
 // Running: execution started
 const running = decorated.renderCall({}, plainTheme, ctx({ argsComplete: true, executionStarted: true, lastComponent: pending }));
 const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-assert.match(runningText, /^⠋/, "running lifecycle must render braille");
+assert.match(runningText, /^●/, "running lifecycle must render bullet");
 assert.equal(clock.callbacks.size, 1, "running must subscribe to motion");
 
 // Completed: result settled — replaces the pending entry, not appended
@@ -198,7 +192,7 @@ const settled = decorated.renderResult(
   ctx({ argsComplete: true, executionStarted: true, lastComponent: result, isError: false }),
 );
 const settledText = stripVTControlCharacters(settled.render(80).join("\n"));
-assert.match(settledText, /^✓/, "completed lifecycle must render check mark");
+assert.match(settledText, /^●/, "completed lifecycle must render bullet");
 assert.equal(clock.callbacks.size, 0, "completed must unsubscribe motion");
 
 // One operational entry, not a duplicate

@@ -66,7 +66,7 @@ function setup() {
   assert.equal(lines.length, 3);
   assert.match(lines[0], /GPT Test/);
   assert.match(lines[1], /Context/);
-  assert.match(lines[2], /◇/);
+  assert.match(lines[2], /●/);
   assert.match(lines[2], /subagents 1/);
   assert.match(lines[2], /ready/);
 

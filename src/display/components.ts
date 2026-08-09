@@ -1,14 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { catalogIconFor } from "./catalog";
 import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
 import { boundedHeadTailLines, layoutTier, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
 import { styleBadge, styleRule, styleOperational, styleTitle, styleTone } from "./theme";
 import {
-  COMPLETED_WARNING_FRAME,
-  LIFECYCLE_FRAMES,
+  BULLET_MARKER,
+  FALLBACK_MARKERS,
+  FALLBACK_WARNING_MARKER,
   QUALIFIER_BADGES,
   QUALIFIER_BADGE_ORDER,
   type DisplayDescriptionV1,
@@ -154,23 +154,24 @@ function qualifierBadges(state: ResolvedOperationalState, width: number, theme: 
     .join("");
 }
 
-function lifecycleFrame(state: ResolvedOperationalState, frameIndex: number): string {
+function lifecycleMarker(state: ResolvedOperationalState, colorAvailable: boolean): string {
+  if (colorAvailable) return BULLET_MARKER;
   if (state.lifecycle === "completed" && state.qualifiers.includes("warning")) {
-    return COMPLETED_WARNING_FRAME;
+    return FALLBACK_WARNING_MARKER;
   }
-  const frames = LIFECYCLE_FRAMES[state.lifecycle];
-  return frames[frameIndex % frames.length]!;
+  return FALLBACK_MARKERS[state.lifecycle];
 }
 
 export interface OperationalDisplayOptions {
   readonly expanded: boolean;
+  /** Whether the terminal can display color. Defaults to `false`. */
+  readonly colorAvailable?: boolean;
 }
 
 export const OPERATIONAL_DISPLAY_COMPONENT_SYMBOL = Symbol.for("@odradekk/pi-square.display.component.v1");
 
 export class OperationalDisplayComponent implements Component {
   readonly [OPERATIONAL_DISPLAY_COMPONENT_SYMBOL] = true;
-  private frameIndex = 0;
 
   constructor(
     private description: DisplayDescriptionV1,
@@ -191,29 +192,21 @@ export class OperationalDisplayComponent implements Component {
     this.options = options;
   }
 
-  advanceFrame(): void {
-    this.frameIndex += 1;
-  }
-
   render(width: number): string[] {
     const safe = Math.max(1, Math.floor(width));
     const description = this.description;
     const opState = resolveState(description);
+    const colorAvailable = this.options.colorAvailable ?? false;
     const rail = styleOperational(
       this.theme,
       opState.lifecycle,
       opState.qualifiers,
-      lifecycleFrame(opState, this.frameIndex),
+      lifecycleMarker(opState, colorAvailable),
     );
     const titleText = truncateCodePoints(
       sanitizeDisplayLine(description.title || description.tool),
       MAX_TITLE_CODE_POINTS,
     );
-    // Execution tools carry their prompt glyph as the title; do not repeat it.
-    const iconText = catalogIconFor(description.tool, description.family);
-    const icon = iconText && iconText !== titleText
-      ? `${this.theme.fg("muted", iconText)} `
-      : "";
     const title = styleTitle(this.theme, titleText);
     const target = description.target
       ? ` ${this.theme.fg("accent", truncateCodePoints(sanitizeDisplayLine(description.target), MAX_TARGET_CODE_POINTS))}`
@@ -227,7 +220,7 @@ export class OperationalDisplayComponent implements Component {
         : undefined,
       progressText(description),
     ].filter((part): part is string => Boolean(part)).join(" · ");
-    const lines = rightPriorityRows(`${rail} ${icon}${title}${target}${badges}`, this.theme.fg("muted", right), safe);
+    const lines = rightPriorityRows(`${rail} ${title}${target}${badges}`, this.theme.fg("muted", right), safe);
 
     // Body content renders at a reduced width to accommodate tree rails.
     // Each body line receives a │ continuation or └─ last-line prefix.

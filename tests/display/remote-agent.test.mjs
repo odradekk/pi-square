@@ -161,7 +161,7 @@ const webExpanded = webSearch.renderResult({
 }, { expanded: true, isPartial: false }, theme, context({ queries: ["Pi coding agent GitHub repository"], limit: 5 }, { expanded: true })).render(100);
 const requestLine = webExpanded.find((line) => line.includes("REQUEST"));
 const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works/pi"));
-assert.ok(webExpanded[0]?.startsWith("✓ ⌬ Web search"), "tool header remains flush-left with the remote icon");
+assert.ok(webExpanded[0]?.startsWith("● Web search"), "tool header remains flush-left");
 assert.ok(requestLine?.startsWith("│") && requestLine?.includes("REQUEST"), "section heading is indented under a tree rail");
 assert.ok(resultTitleLine?.startsWith("│") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under a tree rail");
 

@@ -8,9 +8,10 @@ This closes the gaps found when the implemented interface was audited against th
 
 **Header grammar**
 
-- Every catalog tool now renders its fixed family icon (`▪` filesystem read, `▣` filesystem write, `⌕` search, `⌬` remote, `◆` workflow, `◇` agent) or its explicit execution prompt (`$ ❯`, `PS ❯`, `λ ❯`). Execution tools carry the prompt as their title, so the icon is never duplicated.
+- Every catalog tool now renders one static `●` marker in every state. Color carries the state through existing semantic tokens, and a distinguishable fallback glyph set replaces color when the terminal reports no color. The title carries the tool identity; no family icon is rendered.
 - Active qualifiers render as bounded header badges (`[needs input]`, `[cancelling]`, `[retrying]`, `[projected]`, `[truncated]`, `[partial]`). Required action and retry state are no longer invisible in a collapsed entry.
 - Duration is the first header item dropped at compact widths, and a compact layout keeps only the highest-priority badge.
+- The marker never animates; the scheduler drives only the elapsed duration at 120 ms for `full`, 1 s for `reduced`, and not at all for `off`.
 
 **Corrections**
 
@@ -21,4 +22,4 @@ This closes the gaps found when the implemented interface was audited against th
 
 **Verification**
 
-- Visual acceptance now asserts icon resolution, icon single-occurrence, one-cell markers, per-qualifier badges, compact badge and duration priority, and bounded rendering through the production decoration path for every non-built-in catalog tool.
+- Visual acceptance now asserts the bullet marker set, the fallback glyph set, one-cell marker widths, per-qualifier badges, compact badge and duration priority, the absence of family icons, and bounded rendering through the production decoration path for every non-built-in catalog tool.

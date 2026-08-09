@@ -80,18 +80,18 @@ function newRuntime() {
   // Queued
   const queued = decorated.renderCall({ path: "." }, plainTheme, makeCtx({ path: "." }, state, { argsComplete: false, executionStarted: false }));
   const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
-  assert.match(queuedText, /^–/, "queued renders en-dash");
+  assert.match(queuedText, /^●/, "queued renders en-dash");
   assert.equal(clock.callbacks.size, 0, "queued does not subscribe to motion");
 
   // Pending
   const pending = decorated.renderCall({ path: "." }, plainTheme, makeCtx({ path: "." }, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
   const pendingText = stripVTControlCharacters(pending.render(80).join("\n"));
-  assert.match(pendingText, /^○/, "pending renders circle");
+  assert.match(pendingText, /^●/, "pending renders circle");
 
   // Running
   const running = decorated.renderCall({ path: "." }, plainTheme, makeCtx({ path: "." }, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
   const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-  assert.match(runningText, /^⠋/, "running renders braille spinner");
+  assert.match(runningText, /^●/, "running renders braille spinner");
   assert.equal(clock.callbacks.size, 1, "running subscribes to motion");
 
   // Completed
@@ -102,7 +102,7 @@ function newRuntime() {
     makeCtx({ path: "." }, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
   const resultText = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(resultText, /^✓/, "completed renders check mark");
+  assert.match(resultText, /^●/, "completed renders bullet");
   assert.equal(clock.callbacks.size, 0, "completed unsubscribes from motion");
 
   // Result replaces pending entry
@@ -126,7 +126,7 @@ function newRuntime() {
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
 
-  assert.match(text, /^✓ ▪ LS/, "ls result shows the filesystem icon and LS title");
+  assert.match(text, /^✓ LS/, "ls result shows the LS title");
   assert.match(text, /f README\.md/, "file shows f marker");
   assert.match(text, /f package\.json/, "file shows f marker");
   assert.match(text, /d src\//, "directory shows d marker");
@@ -155,7 +155,7 @@ function newRuntime() {
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
 
-  assert.match(text, /^✓ ▪ FIND/, "find result shows the filesystem icon and FIND title");
+  assert.match(text, /^✓ FIND/, "find result shows the FIND title");
   assert.match(text, /\*\.ts/, "find result shows pattern as target");
   assert.match(text, /f src\/index\.ts/, "find result shows file path with f marker");
   assert.match(text, /f src\/utils\.ts/, "find result shows file path with f marker");
@@ -213,7 +213,7 @@ function newRuntime() {
     makeCtx({ path: "/nonexistent" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: true }),
   );
   const text = stripVTControlCharacters(errored.render(80).join("\n"));
-  assert.match(text, /^✗/, "error result renders failed marker");
+  assert.match(text, /^×/, "error result renders failed marker");
   assert.doesNotMatch(text, /No entries/, "error result does not show empty message");
   assert.match(text, /permission denied/, "error text visible in error styling");
   assert.doesNotMatch(text, /ENTRIES|RESULTS/, "error result does not render path-list sections");
@@ -320,7 +320,7 @@ function newRuntime() {
   );
   // ls renders without error through the filesystem family path
   const lsText = stripVTControlCharacters(lsResult.render(80).join("\n"));
-  assert.match(lsText, /✓ ▪ LS/, "ls renders as filesystem family");
+  assert.match(lsText, /✓ LS/, "ls renders through filesystem family");
 
   const findCall = findDecorated.renderCall({ pattern: "*.ts", path: "." }, plainTheme, makeCtx({ pattern: "*.ts", path: "." }, { argsComplete: true, executionStarted: true }));
   const findResult = findDecorated.renderResult(
@@ -330,7 +330,7 @@ function newRuntime() {
     makeCtx({ pattern: "*.ts", path: "." }, { argsComplete: true, executionStarted: true, lastComponent: findCall, isError: false }),
   );
   const findText = stripVTControlCharacters(findResult.render(80).join("\n"));
-  assert.match(findText, /✓ ▪ FIND/, "find renders as filesystem family (not search)");
+  assert.match(findText, /✓ FIND/, "find renders through filesystem family (not search)");
 
   runtime.dispose();
 }

@@ -92,13 +92,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Get-Process" };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const streaming = decorated.renderResult(
     { content: [{ type: "text", text: "partial output" }], details: { phase: "running", flavor: "pwsh", version: "7.4.0" } },
@@ -106,7 +106,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running, isPartial: true }),
   );
-  assert.match(stripVTControlCharacters(streaming.render(80).join("\n")), /^⠋/, "streaming partial renders running spinner");
+  assert.match(stripVTControlCharacters(streaming.render(80).join("\n")), /^●/, "streaming partial renders running spinner");
   assert.match(stripVTControlCharacters(streaming.render(80).join("\n")), /partial output/, "streaming output is visible");
 
   const completed = decorated.renderResult(
@@ -115,7 +115,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: streaming, isError: false }),
   );
-  assert.match(stripVTControlCharacters(completed.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(completed.render(80).join("\n")), /^●/, "completed renders bullet");
 
   runtime.dispose();
 }
@@ -164,19 +164,19 @@ function renderResult(decorated, args, details, text, opts = {}) {
   // Failure (non-zero exit)
   const fail = renderResult(decorated, args, { exitCode: 1, flavor: "pwsh", version: "7.4.0", durationMs: 30 }, "Error: term not found", { isError: true });
   const failText = stripVTControlCharacters(fail.render(80).join("\n"));
-  assert.match(failText, /^✗/, "non-zero exit renders the failed marker, distinct from completed");
+  assert.match(failText, /^×/, "non-zero exit renders the failed marker, distinct from completed");
   assert.match(failText, /exit=1/, "non-zero exit code is visible in metadata");
 
   // Timeout
   const timeout = renderResult(decorated, args, { exitCode: null, timedOut: true, flavor: "pwsh", version: "7.4.0", durationMs: 30000 }, "partial\nCommand timed out", { isError: true, expanded: true });
   const timeoutText = stripVTControlCharacters(timeout.render(80).join("\n"));
-  assert.match(timeoutText, /^✗/, "timeout renders the failed marker");
+  assert.match(timeoutText, /^×/, "timeout renders the failed marker");
   assert.match(timeoutText, /timeout=yes/, "timeout status field is visible when expanded");
 
   // Abort
   const abort = renderResult(decorated, args, { exitCode: null, aborted: true, flavor: "pwsh", version: "7.4.0", durationMs: 10 }, "Command aborted", { isError: true, expanded: true });
   const abortText = stripVTControlCharacters(abort.render(80).join("\n"));
-  assert.match(abortText, /^×/, "aborted renders the distinct aborted marker, not the failed marker");
+  assert.match(abortText, /^·/, "aborted renders the distinct aborted marker, not the failed marker");
   assert.match(abortText, /aborted=yes/, "aborted status field is visible when expanded");
 
   runtime.dispose();
@@ -203,7 +203,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Get-Process" };
   const result = renderResult(decorated, args, { unavailable: true, reason: "pwsh not found on PATH" }, "pwsh unavailable: pwsh not found on PATH", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "unavailable pwsh renders the failed marker");
+  assert.match(text, /^×/, "unavailable pwsh renders the failed marker");
   assert.match(text, /unavailable=yes/, "unavailable status is distinctly marked");
   assert.match(text, /pwsh not found on PATH/, "unavailable reason is visible");
 
@@ -281,7 +281,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   for (const width of [39, 40]) {
     const line = stripVTControlCharacters(call.render(width)[0]);
-    assert.match(line, /^⠋/, `marker visible at width ${width}`);
+    assert.match(line, /^●/, `marker visible at width ${width}`);
     assert.match(line, /PS ❯|Get-Process/, `identity or target visible at width ${width}`);
   }
 
@@ -325,10 +325,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
   // Explicit lifecycle: queued → pending → running → completed
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "bash queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "bash queued renders en-dash");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "bash running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "bash running renders braille spinner");
 
   // Result with output
   const result = decorated.renderResult(
@@ -337,7 +337,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "bash completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "bash completed renders bullet");
   assert.match(stripVTControlCharacters(result.render(80).join("\n")), /hello/, "bash output is visible");
 
   // Error result
@@ -347,7 +347,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: result, isError: true }),
   );
-  assert.match(stripVTControlCharacters(errResult.render(80).join("\n")), /^✗/, "bash error renders failed marker");
+  assert.match(stripVTControlCharacters(errResult.render(80).join("\n")), /^●/, "bash error renders bullet");
 
   runtime.dispose();
 }
@@ -388,7 +388,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: result, isError: true }),
   );
   const errText = stripVTControlCharacters(errResult.render(80).join("\n"));
-  assert.match(errText, /^✗/, "bash error renders the failed marker");
+  assert.match(errText, /^×/, "bash error renders the failed marker");
   assert.match(errText, /Command exited with code 1/, "bash exit status is visible in the output text");
 
   runtime.dispose();

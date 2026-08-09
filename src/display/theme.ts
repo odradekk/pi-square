@@ -20,7 +20,7 @@ const TONE_TOKENS: Readonly<Record<DisplayTone, ThemeColor>> = Object.freeze({
 const LIFECYCLE_TOKENS: Readonly<Record<OperationalLifecycle, ThemeColor>> =
   Object.freeze({
     queued: "muted",
-    pending: "accent",
+    pending: "muted",
     running: "accent",
     completed: "success",
     failed: "error",

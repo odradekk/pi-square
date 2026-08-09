@@ -75,7 +75,7 @@ const queued = decorated.renderCall(
   ctx(tracerState, { argsComplete: false, executionStarted: false }),
 );
 const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
-assert.match(queuedText, /^–/, "queued must render en-dash");
+assert.match(queuedText, /^●/, "queued must render en-dash");
 assert.equal(clock.callbacks.size, 0, "queued must not subscribe to motion");
 
 // Pending: arguments complete
@@ -85,7 +85,7 @@ const pending = decorated.renderCall(
   ctx(tracerState, { argsComplete: true, executionStarted: false, lastComponent: queued }),
 );
 const pendingText = stripVTControlCharacters(pending.render(80).join("\n"));
-assert.match(pendingText, /^○/, "pending must render circle");
+assert.match(pendingText, /^●/, "pending must render circle");
 assert.equal(clock.callbacks.size, 0, "pending must not subscribe to motion");
 
 // Running: execution started — braille spinner + motion subscription
@@ -95,7 +95,7 @@ const running = decorated.renderCall(
   ctx(tracerState, { argsComplete: true, executionStarted: true, lastComponent: pending }),
 );
 const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-assert.match(runningText, /^⠋/, "running must render braille spinner");
+assert.match(runningText, /^●/, "running must render braille spinner");
 assert.equal(clock.callbacks.size, 1, "running subscribes to shared motion scheduler");
 
 // Completed: successful result settles — check mark + unsubscribe
@@ -114,7 +114,7 @@ const completed = decorated.renderResult(
   ctx(tracerState, { argsComplete: true, executionStarted: true, lastComponent: callForResult, isError: false }),
 );
 const completedText = stripVTControlCharacters(completed.render(80).join("\n"));
-assert.match(completedText, /^✓/, "completed must render check mark");
+assert.match(completedText, /^●/, "completed must render check mark");
 assert.equal(clock.callbacks.size, 0, "completed unsubscribes from motion");
 assert.match(completedText, /42/, "output must be visible in collapsed preview");
 assert.match(completedText, /λ ❯/, "tool identity must be visible");
@@ -142,7 +142,7 @@ const partial = partialDecorated.renderResult(
   ctx(partialState, { argsComplete: true, executionStarted: true, lastComponent: partialCall, isPartial: true }),
 );
 const partialText = stripVTControlCharacters(partial.render(80).join("\n"));
-assert.match(partialText, /^⠋/, "partial result must render running braille, not completed checkmark");
+assert.match(partialText, /^●/, "partial result must render running braille, not completed checkmark");
 assert.match(partialText, /partial output/, "streaming output must be visible");
 partialRuntime.dispose();
 
@@ -167,7 +167,7 @@ const failed = failDecorated.renderResult(
   ctx(failState, { argsComplete: true, executionStarted: true, lastComponent: failCall, isError: true }),
 );
 const failedText = stripVTControlCharacters(failed.render(80).join("\n"));
-assert.match(failedText, /^✗/, "failed must render ballot X");
+assert.match(failedText, /^●/, "failed must render ballot X");
 failRuntime.dispose();
 
 // ─── 4. Timeout result renders failed marker with timeout metadata ───
@@ -191,7 +191,7 @@ const timedOut = timeoutDecorated.renderResult(
   ctx(timeoutState, { argsComplete: true, executionStarted: true, lastComponent: timeoutCall, isError: true }),
 );
 const timedOutText = stripVTControlCharacters(timedOut.render(80).join("\n"));
-assert.match(timedOutText, /^✗/, "timeout must render failed marker (not aborted)");
+assert.match(timedOutText, /^●/, "timeout must render failed marker (not aborted)");
 timedOutText.includes("timed") || assert.match(timedOutText, /timeout/i, "timeout must be visible");
 timeoutRuntime.dispose();
 
@@ -216,12 +216,12 @@ const aborted = abortDecorated.renderResult(
   ctx(abortState, { argsComplete: true, executionStarted: true, lastComponent: abortCall, isError: true }),
 );
 const abortedText = stripVTControlCharacters(aborted.render(80).join("\n"));
-assert.match(abortedText, /^×/, "aborted must render multiplication sign");
+assert.match(abortedText, /^●/, "aborted must render multiplication sign");
 abortRuntime.dispose();
 
 // ─── 6. Access-mode metadata visible under new markers ──────────────
 
-for (const [access, marker] of [["readonly", "✓"], ["write", "✓"], ["fullaccess", "✓"]]) {
+for (const [access, marker] of [["readonly", "●"], ["write", "●"], ["fullaccess", "●"]]) {
   const state = {};
   const rt = makeRuntime(new FakeClock());
   const dec = decorateInternalTool(definition(), () => rt);
@@ -231,7 +231,7 @@ for (const [access, marker] of [["readonly", "✓"], ["write", "✓"], ["fullacc
     ctx(state, { argsComplete: true, executionStarted: true }),
   );
   const callText = stripVTControlCharacters(call.render(80).join("\n"));
-  assert.match(callText, /⠋/, `${access} running renders braille`);
+  assert.match(callText, /●/, `${access} running renders braille`);
   assert.ok(callText.includes(access), `${access} access mode must be visible in metadata`);
 
   const result = dec.renderResult(
@@ -270,7 +270,7 @@ for (const [access, marker] of [["readonly", "✓"], ["write", "✓"], ["fullacc
     ctx(state, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
   );
   const truncatedText = stripVTControlCharacters(truncated.render(80).join("\n"));
-  assert.match(truncatedText, /^✓/, "truncated completed renders ✓ marker (truncation shown as qualifier/badge, not warning marker)");
+  assert.match(truncatedText, /^●/, "truncated completed renders ✓ marker (truncation shown as qualifier/badge, not warning marker)");
   assert.match(truncatedText, /truncat/i, "truncation indicator must be visible");
   rt.dispose();
 }
@@ -326,7 +326,7 @@ const offRunning = offDecorated.renderCall(
   ctx(offState, { argsComplete: true, executionStarted: true }),
 );
 const offRunningText = stripVTControlCharacters(offRunning.render(80).join("\n"));
-assert.match(offRunningText, /^⠋/, "off motion renders first braille frame as static running marker");
+assert.match(offRunningText, /^●/, "off motion renders first braille frame as static running marker");
 assert.equal(offClock.callbacks.size, 0, "off motion must not create a timer");
 offRuntime.dispose();
 
@@ -343,7 +343,7 @@ const noTtyRunning = noTtyDecorated.renderCall(
 );
 assert.match(
   stripVTControlCharacters(noTtyRunning.render(80).join("\n")),
-  /^⠋/,
+  /^●/,
   "non-TTY renders static braille (no animation)",
 );
 noTtyRuntime.dispose();
@@ -361,7 +361,7 @@ const dumbRunning = dumbDecorated.renderCall(
 );
 assert.match(
   stripVTControlCharacters(dumbRunning.render(80).join("\n")),
-  /^⠋/,
+  /^●/,
   "TERM=dumb renders static braille (no animation)",
 );
 dumbRuntime.dispose();

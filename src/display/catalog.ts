@@ -9,9 +9,6 @@
 import {
   DISPLAY_FAMILIES,
   DISPLAY_TOOL_NAME_REGEX,
-  FAMILY_ICONS,
-  MAX_ICON_CELLS,
-  UNKNOWN_TOOL_ICON,
   type DisplayFamily,
 } from "./types";
 
@@ -253,31 +250,6 @@ export function catalogFamilyFor(name: string): DisplayFamily | undefined {
   return CATALOG_BY_NAME.get(name)?.family;
 }
 
-/**
- * Per-tool icon overrides. A tool without an override uses the icon of its
- * family. Filesystem mutation and the three execution prompts are the only
- * operations whose icon differs from the family default.
- */
-const TOOL_ICONS: Readonly<Record<string, string>> = Object.freeze({
-  edit: "▣",
-  write: "▣",
-  bash: "$ ❯",
-  pwsh: "PS ❯",
-  scheme: "λ ❯",
-});
-
-/**
- * Resolve the fixed icon for a tool. Catalog tools resolve through their
- * override or family; an explicitly adapted tool with no catalog entry falls
- * back to its declared family, and finally to the generic unknown-tool icon.
- */
-export function catalogIconFor(name: string, family?: DisplayFamily): string {
-  const override = TOOL_ICONS[name];
-  if (override) return override;
-  const resolved = CATALOG_BY_NAME.get(name)?.family ?? family;
-  return resolved ? FAMILY_ICONS[resolved] : UNKNOWN_TOOL_ICON;
-}
-
 export function catalogToolNames(): readonly string[] {
   return DISPLAY_CATALOG.map((entry) => entry.name);
 }
@@ -322,13 +294,6 @@ export function validateCatalog(): string[] {
     }
     if (!DISPLAY_TOOL_NAME_REGEX.test(entry.name)) {
       errors.push(`catalog tool name '${entry.name}' does not match the required pattern`);
-    }
-
-    const icon = catalogIconFor(entry.name);
-    if (icon.length === 0) {
-      errors.push(`tool '${entry.name}' resolves to an empty icon`);
-    } else if (Array.from(icon).length > MAX_ICON_CELLS) {
-      errors.push(`tool '${entry.name}' resolves to an icon wider than ${MAX_ICON_CELLS} cells`);
     }
   }
 

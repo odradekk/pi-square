@@ -35,30 +35,32 @@ export const OPERATIONAL_QUALIFIERS = [
 ] as const;
 export type OperationalQualifier = (typeof OPERATIONAL_QUALIFIERS)[number];
 
-// Lifecycle state markers — the approved single-cell vocabulary.
-// queued: en-dash, pending: white circle, running: animated braille,
-// completed: check mark, failed: ballot X, aborted: multiplication sign.
-// The completed-with-warning override renders as "!".
-export const QUEUED_FRAME = "–";
-export const PENDING_MARKER = "○";
-export const RUNNING_FRAMES: readonly string[] = Object.freeze([
-  "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-]);
-export const COMPLETED_FRAME = "✓";
-export const COMPLETED_WARNING_FRAME = "!";
-export const FAILED_FRAME = "✗";
-export const ABORTED_MARKER = "×";
+// ─── Single-bullet visual vocabulary ─────────────────────────────
+//
+// One glyph, `●`, marks every tool entry in every state on a color-capable
+// terminal. The state is encoded by color only. When color is unavailable,
+// the renderer falls back to distinguishable glyphs so no information is lost.
+// The fallback is automatic and is not configurable.
 
-export const LIFECYCLE_FRAMES: Readonly<
-  Record<OperationalLifecycle, readonly string[]>
-> = Object.freeze({
-  queued: [QUEUED_FRAME],
-  pending: [PENDING_MARKER],
-  running: RUNNING_FRAMES,
-  completed: [COMPLETED_FRAME],
-  failed: [FAILED_FRAME],
-  aborted: [ABORTED_MARKER],
-});
+/** The single bullet marker rendered on a color-capable terminal. */
+export const BULLET_MARKER = "●";
+
+/**
+ * Fallback marker for each lifecycle when color is unavailable.
+ * Every glyph measures exactly one terminal cell.
+ */
+export const FALLBACK_MARKERS: Readonly<Record<OperationalLifecycle, string>> =
+  Object.freeze({
+    queued: "–",
+    pending: "○",
+    running: "●",
+    completed: "✓",
+    failed: "×",
+    aborted: "·",
+  });
+
+/** Fallback marker for completed-with-warning when color is unavailable. */
+export const FALLBACK_WARNING_MARKER = "!";
 
 export interface ResolvedOperationalState {
   readonly lifecycle: OperationalLifecycle;
@@ -91,10 +93,10 @@ export type DisplayMotion = "full" | "reduced" | "off";
 
 export const DISPLAY_MOTIONS: readonly DisplayMotion[] = ["full", "reduced", "off"];
 
-/** Minimum interval between full-motion frames in milliseconds (~29.4 FPS). */
-export const MOTION_FULL_INTERVAL_MS = 34;
-/** Fixed interval between reduced-motion frames in milliseconds (~8.3 FPS). */
-export const MOTION_REDUCED_INTERVAL_MS = 120;
+/** Fixed interval between full-motion duration updates in milliseconds (~8.3 FPS). */
+export const MOTION_FULL_INTERVAL_MS = 120;
+/** Fixed interval between reduced-motion duration updates in milliseconds (1 FPS). */
+export const MOTION_REDUCED_INTERVAL_MS = 1_000;
 
 // ─── Family ──────────────────────────────────────────────────────────
 
@@ -115,33 +117,12 @@ export const DISPLAY_FAMILIES: readonly DisplayFamily[] = [
   "agent",
 ];
 
-// ─── Fixed icon and badge vocabulary ─────────────────────────────────
-//
-// Icons and badges belong to the core visual grammar. They are part of the
-// closed contract and are deliberately not configurable through `/display`.
-
-/** Default icon for each tool family. Individual tools may override it. */
-export const FAMILY_ICONS: Readonly<Record<DisplayFamily, string>> = Object.freeze({
-  filesystem: "▪",
-  search: "⌕",
-  execution: "λ ❯",
-  remote: "⌬",
-  workflow: "◆",
-  agent: "◇",
-});
-
-/** Icon for an explicitly adapted tool that has no catalog entry. */
-export const UNKNOWN_TOOL_ICON = "○";
-
-/**
- * Maximum terminal cells that an icon may occupy. Symbol icons use one cell;
- * the shell and Scheme prompt icons use up to four.
- */
-export const MAX_ICON_CELLS = 4;
-
 /**
  * Header badge label for each qualifier. `warning` has no badge because the
- * completed-with-warning marker already carries that meaning.
+ * warning color or fallback marker already carries that meaning.
+ *
+ * Badges belong to the core visual grammar and are deliberately not
+ * configurable through `/display`.
  */
 export const QUALIFIER_BADGES: Readonly<Partial<Record<OperationalQualifier, string>>> =
   Object.freeze({

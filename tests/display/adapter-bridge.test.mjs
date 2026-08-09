@@ -79,7 +79,7 @@ try {
   // Running: execution started, no result yet
   const running = lifecycleTool.renderCall({}, plainTheme, ctx({}, {}, { executionStarted: true }));
   const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-  assert.match(runningText, /^⠋/, "call phase renders running braille (bridged from pending)");
+  assert.match(runningText, /^●/, "call phase renders running braille (bridged from pending)");
 
   // Completed: successful result
   const completed = lifecycleTool.renderResult(
@@ -99,7 +99,7 @@ try {
     ctx({}, {}, { isError: true }),
   );
   const failedText = stripVTControlCharacters(failed.render(80).join("\n"));
-  assert.match(failedText, /^✗/, "error result renders failed ballot X");
+  assert.match(failedText, /^×/, "error result renders failed ballot X");
   assert.match(failedText, /broke/, "error text visible in result body");
 
   // Partial: streaming result keeps running marker
@@ -110,7 +110,7 @@ try {
     ctx({}, {}, { isPartial: true }),
   );
   const partialText = stripVTControlCharacters(partial.render(80).join("\n"));
-  assert.match(partialText, /^⠋/, "partial result renders running braille (not completed)");
+  assert.match(partialText, /^●/, "partial result renders running braille (not completed)");
 
   runtime.dispose();
 
@@ -241,7 +241,7 @@ try {
     ctx({}, {}, { isError: true }),
   );
   const errorText = stripVTControlCharacters(errorResult.render(80).join("\n"));
-  assert.match(errorText, /^✗/, "error renders failed marker");
+  assert.match(errorText, /^×/, "error renders failed marker");
   assert.match(errorText, /Critical failure/, "error text remains visible under hidden-equivalent policy");
   assert.match(errorText, /timeout exceeded/, "full error message visible");
 
@@ -292,7 +292,7 @@ try {
     ctx({ input: "test input" }, {}, { executionStarted: true }),
   );
   const unknownText = stripVTControlCharacters(unknownCall.render(80).join("\n"));
-  assert.match(unknownText, /⠋/, "unknown tool renders lifecycle marker");
+  assert.match(unknownText, /●/, "unknown tool renders lifecycle marker");
   assert.match(unknownText, /Unknown Tool/, "unknown tool renders title");
   assert.match(unknownText, /test input/, "unknown tool body content visible");
 

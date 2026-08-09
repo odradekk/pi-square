@@ -115,7 +115,7 @@ assert.ok(collapsedBackgrounds.includes("toolSuccessBg"), "done result keeps Pi'
 
 // ─── 3. Collapsed entry uses the operational grammar ─────────────────
 
-assert.match(collapsed, /✓ ◇ Subagent explorer/, "marker, agent icon, title, and target");
+assert.match(collapsed, /✓ Subagent explorer/, "marker, title, and target");
 assert.match(collapsed, /id=12345678/, "bounded short run identity");
 assert.match(collapsed, /mode=bg/, "delivery mode metadata");
 assert.match(collapsed, /phase=done/, "terminal phase metadata");
@@ -154,7 +154,7 @@ const errorText = plainLines(renderSubagentNotification({
   bg(color, text) { errorBackgrounds.push(color); return String(text); },
 }), 80).join("\n");
 assert.ok(errorBackgrounds.includes("toolErrorBg"), "error result keeps Pi's native error shell");
-assert.match(errorText, /✗ ◇ Subagent/, "error renders the failed marker");
+assert.match(errorText, /× Subagent/, "error renders the failed marker");
 
 const abortedDetails = details({ phase: "aborted", finalText: "", error: "cancelled" });
 const abortedBackgrounds = [];
@@ -163,8 +163,8 @@ const abortedText = plainLines(renderSubagentNotification(
   { expanded: false },
   { ...plainTheme, bg(color, text) { abortedBackgrounds.push(color); return String(text); } },
 ), 80).join("\n");
-assert.match(abortedText, /× ◇ Subagent/, "aborted renders the aborted marker, not the failed marker");
-assert.doesNotMatch(abortedText, /✗ ◇ Subagent/, "aborted does not render the failed marker");
+assert.match(abortedText, /· Subagent/, "aborted renders the aborted marker, not the failed marker");
+assert.doesNotMatch(abortedText, /× Subagent/, "aborted does not render the failed marker");
 assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses the error shell");
 
 // ─── 7. Unknown payloads fall back without breaking the shell ────────

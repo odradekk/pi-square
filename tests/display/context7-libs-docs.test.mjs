@@ -85,13 +85,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { libraryName: "react", query: "context provider" };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders circle");
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "[1] React" }], details: { libraryName: "react", query: "context provider", status: "ready", mode: "quality", limit: 5, candidates: [], counts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, phase: "done" } },
@@ -99,7 +99,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running, isError: false }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders bullet");
 
   runtime.dispose();
 }
@@ -175,7 +175,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   // NOTE: no isError — these tools use details.status="error" + details.error
   const result = renderResult(decorated, args, details, "Error: Missing CONTEXT7_API_KEY", { expanded: false });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "error renders failed marker (status=error → error status)");
+  assert.match(text, /^×/, "error renders failed marker (status=error → error status)");
   assert.match(text, /Missing CONTEXT7_API_KEY/, "error message visible in preview");
 
   runtime.dispose();
@@ -213,10 +213,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { libraryId: "/facebook/react", query: "useState", mode: "quality", kind: "all", max_tokens: 12000 };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders en-dash");
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
 
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^⠋/, "running renders braille spinner");
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille spinner");
 
   runtime.dispose();
 }
@@ -363,7 +363,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "Error: Invalid libraryId", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "invalid libraryId renders failed marker");
+  assert.match(text, /^×/, "invalid libraryId renders failed marker");
   assert.match(text, /Invalid libraryId/, "error message visible");
 
   runtime.dispose();

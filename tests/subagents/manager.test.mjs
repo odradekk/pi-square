@@ -149,7 +149,7 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
   const manager = new SubagentManager(data(), tui(), theme, keybindings, () => {});
   const narrow = render(manager, 40);
   const wide = render(manager, 120);
-  assert.match(narrow, /^◆ Subagents/m);
+  assert.match(narrow, /^● Subagents/m);
   assert.match(narrow, /RUNNING.*SESSION.*DEFINITIONS/);
   assert.match(narrow, /ls src\/components/);
   assert.match(wide, /│/);

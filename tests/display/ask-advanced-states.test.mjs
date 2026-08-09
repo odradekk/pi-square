@@ -106,7 +106,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const result = renderResult(decorated, ARGS_3Q, progressDetails, { isPartial: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   // Should show running braille (isPartial)
-  assert.match(text, /^⠋/, "reviewing progress shows running braille");
+  assert.match(text, /^●/, "reviewing progress shows running braille");
   // Should show reviewing phase
   assert.match(text, /phase=reviewing/, "reviewing phase visible");
   // Should NOT leak raw JSON (hasDomain fix)
@@ -126,7 +126,7 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const result = renderResult(decorated, ARGS_3Q, progressDetails, { isPartial: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^⠋/, "asking progress shows running braille");
+  assert.match(text, /^●/, "asking progress shows running braille");
   assert.match(text, /phase=asking/, "asking phase visible");
   assert.match(text, /current=2/, "current question visible");
   assert.doesNotMatch(text, /"version":\s*1/, "asking progress does not leak raw JSON in expanded");
@@ -148,7 +148,7 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const result = renderResult(decorated, ARGS_3Q, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "zero-change review renders ✓");
+  assert.match(text, /^●/, "zero-change review renders ✓");
   assert.match(text, /answered=2/, "answered count correct");
   assert.match(text, /skipped=0/, "no skipped in zero-change review");
 
@@ -166,7 +166,7 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const result = renderResult(decorated, ARGS_3Q, details, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "invalid input renders ✗ failed");
+  assert.match(text, /^●/, "invalid input renders × failed");
   assert.match(text, /ERROR/, "ERROR section present");
   assert.match(text, /Question IDs must be unique/, "validation error message visible");
   assert.match(text, /phase=error/, "error phase visible");
@@ -185,7 +185,7 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const result = renderResult(decorated, ARGS_3Q, details, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "UI unavailable renders ✗ failed");
+  assert.match(text, /^●/, "UI unavailable renders × failed");
   assert.match(text, /Interactive UI is not available/, "UI unavailable message visible");
 
   runtime.dispose();
@@ -202,7 +202,7 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const result = renderResult(decorated, ARGS_3Q, details, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✗/, "UI failure renders ✗ failed");
+  assert.match(text, /^●/, "UI failure renders × failed");
   assert.match(text, /Unknown ask UI failure/, "sanitized failure message visible");
 
   runtime.dispose();
@@ -220,7 +220,7 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const r1 = renderResult(decorated, ARGS_3Q, cancelAsking);
   const t1 = stripVTControlCharacters(r1.render(80).join("\n"));
-  assert.match(t1, /^×/, "cancel during asking renders × aborted");
+  assert.match(t1, /^●/, "cancel during asking renders · aborted");
   assert.match(t1, /reason=user/, "cancel reason visible");
 
   // Cancel during reviewing (some answers)
@@ -229,13 +229,13 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const r2 = renderResult(decorated, ARGS_3Q, cancelReview);
   const t2 = stripVTControlCharacters(r2.render(80).join("\n"));
-  assert.match(t2, /^×/, "cancel during reviewing renders × aborted");
+  assert.match(t2, /^●/, "cancel during reviewing renders · aborted");
   assert.match(t2, /reason=user/, "cancel reason visible");
 
   // Discard confirmation → same user cancel result
   const r3 = renderResult(decorated, ARGS_3Q, cancelReview);
   const t3 = stripVTControlCharacters(r3.render(80).join("\n"));
-  assert.match(t3, /^×/, "discard confirmation renders × aborted");
+  assert.match(t3, /^●/, "discard confirmation renders · aborted");
 
   runtime.dispose();
 }
@@ -251,9 +251,9 @@ function renderResult(decorated, args, details, opts = {}) {
   // Tool-aborted: isError=true, but lifecycle overrides to aborted
   const result = renderResult(decorated, ARGS_3Q, abortDetails, { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^×/, "external abort renders × aborted (not ✗)");
+  assert.match(text, /^●/, "external abort renders · aborted (not ·)");
   assert.match(text, /reason=aborted/, "abort reason visible");
-  assert.doesNotMatch(text, /^✗/, "external abort does NOT render ✗ failed");
+  assert.doesNotMatch(text, /^×/, "external abort does NOT render × failed");
 
   runtime.dispose();
 }
@@ -272,7 +272,7 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const result = renderResult(decorated, ARGS_3Q, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "all-skipped submission renders ✓");
+  assert.match(text, /^●/, "all-skipped submission renders ✓");
   assert.match(text, /answered=0/, "answered count is 0");
   assert.match(text, /skipped=2/, "skipped count is 2");
   // Each answer should show skipped=yes
@@ -317,7 +317,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const cancelDetails = { version: 1, phase: "cancelled", totalQuestions: 2, answeredCount: 0, skippedCount: 0, reason: "user" };
   const r1 = renderResult(decorated, ARGS_3Q, cancelDetails, { expanded: false });
   const t1 = stripVTControlCharacters(r1.render(80).join("\n"));
-  assert.match(t1, /^×/, "collapsed cancel shows ×");
+  assert.match(t1, /^●/, "collapsed cancel shows ×");
   assert.match(t1, /phase=cancelled/, "collapsed cancel shows phase");
   assert.match(t1, /reason=user/, "collapsed cancel shows reason");
 
@@ -325,7 +325,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const errorDetails = { version: 1, phase: "error", totalQuestions: 0, answeredCount: 0, skippedCount: 0, error: { code: "ASK_INVALID_INPUT", message: "bad" } };
   const r2 = renderResult(decorated, ARGS_3Q, errorDetails, { isError: true, expanded: false });
   const t2 = stripVTControlCharacters(r2.render(80).join("\n"));
-  assert.match(t2, /^✗/, "collapsed error shows ✗");
+  assert.match(t2, /^●/, "collapsed error shows ×");
   assert.match(t2, /phase=error/, "collapsed error shows phase");
 
   runtime.dispose();
@@ -339,7 +339,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const progressDetails = { version: 1, phase: "asking", totalQuestions: 3, currentQuestion: 1, answeredCount: 0, skippedCount: 0 };
   const result = renderResult(decorated, ARGS_3Q, progressDetails, { isPartial: true, expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^⠋/, "collapsed progress shows running braille");
+  assert.match(text, /^●/, "collapsed progress shows running braille");
   assert.match(text, /phase=asking/, "collapsed progress shows phase");
   assert.doesNotMatch(text, /"version":\s*1/, "collapsed progress does not leak raw JSON");
 
