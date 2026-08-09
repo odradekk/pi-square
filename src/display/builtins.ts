@@ -19,7 +19,7 @@ import { setBannerDisplayDiagnostic } from "../banner";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
-import { codeSection, field, matchesSection, pathsSection, sections, summarySection, textSection } from "./adapter-utils";
+import { codeSection, field, formatDisplayPath, matchesSection, pathsSection, sections, summarySection, textSection } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
 import type { DisplayDescriptionV1, DisplayMatchItem, DisplayMetadataEntry, DisplayPathItem, DisplayRow, OperationalLifecycle } from "./types";
 
@@ -69,13 +69,42 @@ function grepSearchMetadata(args: Record<string, unknown>): DisplayMetadataEntry
   ].filter((entry): entry is DisplayMetadataEntry => Boolean(entry));
 }
 
+/** C1 sentence-case titles; unique within each family (`ls` is `List`, `find` is `Find`). */
+const BUILTIN_TITLES: Readonly<Record<BuiltinName, string>> = Object.freeze({
+  read: "Read",
+  ls: "List",
+  edit: "Edit",
+  write: "Write",
+  find: "Find",
+  grep: "Grep",
+  bash: "Bash",
+});
+
 function builtinTitle(name: BuiltinName): string {
-  return name === "bash" ? "$ ❯" : name.toUpperCase();
+  return BUILTIN_TITLES[name];
 }
 
-function callDescription(name: BuiltinName, args: Record<string, unknown>, executionStarted: boolean): DisplayDescriptionV1 {
-  const path = stringValue(args.path);
+/**
+ * Header target for a built-in: the command for bash, the pattern for find
+ * and grep, then the path. Path targets follow C2 (workspace-relative, `~`
+ * for home) and are elided in the middle by the header.
+ */
+function builtinTarget(
+  name: BuiltinName,
+  args: Record<string, unknown>,
+  cwd: string,
+): Pick<DisplayDescriptionV1, "target" | "targetKind"> {
   const command = stringValue(args.command);
+  if (command) return { target: command };
+  if (name === "find" || name === "grep") {
+    const pattern = stringValue(args.pattern);
+    if (pattern) return { target: pattern };
+  }
+  const path = stringValue(args.path);
+  return path ? { target: formatDisplayPath(path, cwd), targetKind: "path" as const } : {};
+}
+
+function callDescription(name: BuiltinName, args: Record<string, unknown>, cwd: string, executionStarted: boolean): DisplayDescriptionV1 {
   const pattern = stringValue(args.pattern);
   const metadata = [
     numberMetadata("offset", args.offset),
@@ -93,7 +122,7 @@ function callDescription(name: BuiltinName, args: Record<string, unknown>, execu
     family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
     lifecycle: executionStarted ? "running" : "queued",
     title: builtinTitle(name),
-    target: command ?? ((name === "find" || name === "grep") ? pattern : undefined) ?? path,
+    ...builtinTarget(name, args, cwd),
     metadata,
     rows,
   };
@@ -199,6 +228,7 @@ function resultDescription(
   args: Record<string, unknown>,
   result: AgentToolResult<unknown>,
   partial: boolean,
+  cwd: string,
 ): DisplayDescriptionV1 {
   const text = textContent(result);
   const details = result.details && typeof result.details === "object"
@@ -207,9 +237,6 @@ function resultDescription(
   const truncation = details?.truncation && typeof details.truncation === "object"
     ? details.truncation as Record<string, unknown>
     : undefined;
-  const target = stringValue(args.command)
-    ?? ((name === "find" || name === "grep") ? stringValue(args.pattern) : undefined)
-    ?? stringValue(args.path);
   const isErrorResult = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
   const description: DisplayDescriptionV1 = {
     version: 1,
@@ -217,7 +244,7 @@ function resultDescription(
     family: name === "bash" ? "execution" : name === "grep" ? "search" : "filesystem",
     lifecycle: isErrorResult ? "failed" : partial ? "running" : "completed",
     title: builtinTitle(name),
-    target,
+    ...builtinTarget(name, args, cwd),
     truncated: truncation?.truncated === true,
     sections: resultSections(name, args, text, details, !partial, isErrorResult),
     ...(isErrorResult && text ? { error: text } : {}),
@@ -273,7 +300,7 @@ function builtinLifecycle(
 function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   return {
     describeCall(args, context) {
-      const desc = callDescription(name, args as Record<string, unknown>, context.executionStarted);
+      const desc = callDescription(name, args as Record<string, unknown>, cwd, context.executionStarted);
       return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep" || name === "bash")
         ? { ...desc, lifecycle: builtinLifecycle(context, "call") }
         : desc;
@@ -285,23 +312,23 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
       async describeCallAsync(args: Record<string, unknown>, context: { executionStarted: boolean; argsComplete: boolean }) {
         const path = typeof args.path === "string" ? args.path : "";
         const content = typeof args.content === "string" ? args.content : "";
-        const base = callDescription(name, args, context.executionStarted);
+        const base = callDescription(name, args, cwd, context.executionStarted);
         const preview = await inspectWritePreview(cwd, path, content);
         if (preview.kind === "create") {
-          return { ...base, target: preview.path, lifecycle: builtinLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: "", after: preview.after, projected: true } };
+          return { ...base, target: formatDisplayPath(preview.path, cwd), targetKind: "path" as const, lifecycle: builtinLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: "", after: preview.after, projected: true } };
         }
         if (preview.kind === "overwrite") {
-          return { ...base, target: preview.path, lifecycle: builtinLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: preview.before, after: preview.after, projected: true } };
+          return { ...base, target: formatDisplayPath(preview.path, cwd), targetKind: "path" as const, lifecycle: builtinLifecycle({ ...context, isPartial: false, isError: false }, "call"), qualifiers: ["projected"], diff: { path: preview.path, before: preview.before, after: preview.after, projected: true } };
         }
         return {
           ...base,
-          target: preview.path || base.target,
+          ...(preview.path ? { target: formatDisplayPath(preview.path, cwd), targetKind: "path" as const } : {}),
           rows: [...(base.rows ?? []), { text: `projected preview unavailable: ${preview.reason}`, tone: "muted" }],
         };
       },
     } : {}),
     describeResult(result, options, context) {
-      const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial);
+      const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial, cwd);
       return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep" || name === "bash")
         ? { ...desc, lifecycle: builtinLifecycle(context, "result") }
         : desc;

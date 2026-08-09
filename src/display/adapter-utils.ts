@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type {
   DisplayDescriptionV1,
@@ -9,6 +11,33 @@ import type {
 } from "./types";
 
 export type UnknownRecord = Record<string, unknown>;
+
+/** True when a path.relative() result escapes its base directory. */
+function escapesBase(path: string): boolean {
+  return path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path);
+}
+
+/**
+ * C2 path presentation: a path inside the working directory is relative to
+ * it, a path under the home directory uses the `~` prefix, and anything else
+ * stays absolute. Middle elision is width-aware and lives in layout.ts.
+ */
+export function formatDisplayPath(value: string, cwd: string): string {
+  if (!value) return value;
+  const home = homedir();
+  const absolute = value === "~" || value.startsWith("~/") || value.startsWith(`~${sep}`)
+    ? join(home, value.slice(1))
+    : isAbsolute(value)
+      ? value
+      : resolve(cwd, value);
+  const workspace = relative(cwd, absolute);
+  if (workspace === "") return ".";
+  if (!escapesBase(workspace)) return workspace;
+  const homeRelative = relative(home, absolute);
+  if (homeRelative === "") return "~";
+  if (!escapesBase(homeRelative)) return `~${sep}${homeRelative}`;
+  return absolute;
+}
 
 export function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === "object" && !Array.isArray(value)

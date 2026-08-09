@@ -9,6 +9,7 @@ const suites = [
   "display/policy.test.mjs",
   "display/sanitize.test.mjs",
   "display/layout.test.mjs",
+  "display/header-grammar.test.mjs",
   "display/components.test.mjs",
   "display/motion.test.mjs",
   "display/runtime.test.mjs",

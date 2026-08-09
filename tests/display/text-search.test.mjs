@@ -105,7 +105,7 @@ function makeFdRgDef(name) {
   const decorated = decorateBuiltinDefinition(createGrepToolDefinition(TMP), TMP, () => runtime);
   const call = decorated.renderCall({ pattern: "TODO", path: "." }, plainTheme, makeCtx({ pattern: "TODO", path: "." }, {}, { argsComplete: true, executionStarted: true }));
   const text = stripVTControlCharacters(call.render(80).join("\n"));
-  assert.match(text, /GREP TODO/, "call target shows the pattern");
+  assert.match(text, /Grep TODO/, "call target shows the pattern");
 
   runtime.dispose();
 }

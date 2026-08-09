@@ -278,7 +278,7 @@ assert.equal(clock.callbacks.size, 1, "partial result must keep motion subscript
 // Result replaces pending entry
 assert.deepEqual(running.render(80), [], "call slot empties when result arrives");
 const composed = [...running.render(80), ...settled.render(80)].join("\n");
-assert.equal((composed.match(/READ/g) ?? []).length, 1, "must have exactly one operational entry");
+assert.equal((composed.match(/Read/g) ?? []).length, 1, "must have exactly one operational entry");
 
 // Expanded result shows structured sections
 const expanded = decorated.renderResult(

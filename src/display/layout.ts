@@ -56,6 +56,142 @@ export function rightPriorityRows(
   ];
 }
 
+// ─── Header row (C5) ────────────────────────────────────────────────
+
+/** Minimum cells kept for a target before lower-priority header items drop. */
+const MIN_TARGET_CELLS = 8;
+/** Minimum gap between the last header item and the right-aligned duration. */
+const HEADER_GAP_CELLS = 3;
+
+/**
+ * End-truncate plain (ANSI-free) text to a cell budget with `…`.
+ * truncateToWidth wraps the ellipsis in reset codes, which would break the
+ * theme styling the header applies after fitting.
+ */
+function truncatePlain(text: string, width: number): string {
+  const safe = Math.max(1, Math.floor(width));
+  if (visibleWidth(text) <= safe) return text;
+  if (safe === 1) return "\u2026";
+  let result = "";
+  let used = 0;
+  for (const char of text) {
+    const charWidth = visibleWidth(char);
+    if (used + charWidth > safe - 1) break;
+    result += char;
+    used += charWidth;
+  }
+  return `${result}\u2026`;
+}
+
+export interface HeaderRowSpec {
+  /** State marker; one terminal cell by the visual vocabulary contract. */
+  readonly marker: string;
+  readonly title: string;
+  readonly target?: string;
+  /** Path targets are elided in the middle; text targets are end-truncated. */
+  readonly targetKind?: "text" | "path";
+  /** Badge labels in priority order, highest first. */
+  readonly badges?: readonly string[];
+  /** Right-aligned element, usually the duration. */
+  readonly right?: string;
+}
+
+export interface FittedHeaderRow {
+  readonly title: string;
+  readonly target?: string;
+  readonly badges: readonly string[];
+  readonly right?: string;
+}
+
+/**
+ * C2 middle elision for display paths: keep the first segment and the file
+ * name (`src/…/components.ts`); the file name is never elided while any
+ * elision happens. Degenerate widths fall back to `…/name`, the bare file
+ * name, and finally a bounded end-truncation.
+ */
+export function elidePathMiddle(path: string, width: number): string {
+  const safe = Math.max(1, Math.floor(width));
+  if (visibleWidth(path) <= safe) return path;
+  const separator = path.includes("/") ? "/" : path.includes("\\") ? "\\" : "/";
+  const segments = path.split(/[\/\\]+/);
+  const last = segments.at(-1) ?? path;
+  const first = segments[0] ?? "";
+  if (segments.length >= 3) {
+    const withFirst = `${first}${separator}…${separator}${last}`;
+    if (visibleWidth(withFirst) <= safe) return withFirst;
+  }
+  const withoutFirst = `…${separator}${last}`;
+  if (visibleWidth(withoutFirst) <= safe) return withoutFirst;
+  if (visibleWidth(last) <= safe) return last;
+  return truncatePlain(last, safe);
+}
+
+/**
+ * Fit one header row into the given width without wrapping (C5). The drop
+ * order is fixed: compact tiers drop the right element and keep only the
+ * highest-priority badge; deeper scarcity drops the right element first,
+ * then all but the highest-priority badge, then truncates the target below
+ * its minimum, and truncates the title only as a final resort. The returned
+ * badges are always a prefix of the input badges.
+ */
+export function fitHeaderRow(spec: HeaderRowSpec, width: number): FittedHeaderRow {
+  const safe = Math.max(1, Math.floor(width));
+  const allBadges = spec.badges ?? [];
+  const compact = layoutTier(safe) === "compact";
+  const markerWidth = visibleWidth(spec.marker) + 1;
+  const titleWidth = visibleWidth(spec.title);
+  const badgesWidth = (badges: readonly string[]) =>
+    badges.reduce((sum, badge) => sum + 1 + visibleWidth(badge), 0);
+  const rightWidth = (right: string | undefined) =>
+    right ? HEADER_GAP_CELLS + visibleWidth(right) : 0;
+  const truncateTarget = (budget: number): string =>
+    spec.targetKind === "path"
+      ? elidePathMiddle(spec.target!, budget)
+      : truncatePlain(spec.target!, budget);
+
+  interface Candidate {
+    readonly right?: string;
+    readonly badges: readonly string[];
+  }
+  const candidates: readonly Candidate[] = compact
+    ? [{ badges: allBadges.slice(0, 1) }, { badges: [] }]
+    : [
+      { right: spec.right, badges: allBadges },
+      { badges: allBadges },
+      { badges: allBadges.slice(0, 1) },
+      { badges: [] },
+    ];
+
+  for (const candidate of candidates) {
+    const used = markerWidth + titleWidth + badgesWidth(candidate.badges) + rightWidth(candidate.right);
+    if (!spec.target) {
+      if (used <= safe) return { title: spec.title, badges: candidate.badges, right: candidate.right };
+      continue;
+    }
+    const budget = safe - used - 1;
+    if (budget >= MIN_TARGET_CELLS || budget >= visibleWidth(spec.target)) {
+      return {
+        title: spec.title,
+        target: truncateTarget(budget),
+        badges: candidate.badges,
+        right: candidate.right,
+      };
+    }
+  }
+
+  // Degenerate widths: keep the identity and a minimal target, then the
+  // title alone. The final render pass hard-truncates anything remaining.
+  const minimalBudget = safe - markerWidth - titleWidth - (spec.target ? 1 : 0);
+  if (spec.target && minimalBudget >= 1) {
+    return { title: spec.title, target: truncateTarget(minimalBudget), badges: [], right: undefined };
+  }
+  return {
+    title: truncatePlain(spec.title, Math.max(1, safe - markerWidth)),
+    badges: [],
+    right: undefined,
+  };
+}
+
 export interface BoundedLines {
   readonly lines: readonly string[];
   readonly omitted: number;

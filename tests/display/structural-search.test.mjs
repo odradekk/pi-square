@@ -330,7 +330,7 @@ function sgMatch(overrides = {}) {
   for (const width of [39, 40]) {
     const line = stripVTControlCharacters(call.render(width)[0]);
     assert.match(line, /^●/, `marker visible at width ${width}`);
-    assert.match(line, /Structure search/, `search identity visible at width ${width}`);
+    assert.match(line, /Structural search/, `search identity visible at width ${width}`);
     assert.ok(visibleWidth(call.render(width)[0]) <= width, `call line bounded at width ${width}`);
   }
 

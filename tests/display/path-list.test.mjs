@@ -126,7 +126,7 @@ function newRuntime() {
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
 
-  assert.match(text, /^✓ LS/, "ls result shows the LS title");
+  assert.match(text, /^✓ List/, "ls result shows the List title");
   assert.match(text, /f README\.md/, "file shows f marker");
   assert.match(text, /f package\.json/, "file shows f marker");
   assert.match(text, /d src\//, "directory shows d marker");
@@ -144,7 +144,7 @@ function newRuntime() {
 
   const call = decorated.renderCall({ pattern: "*.ts", path: "." }, plainTheme, makeCtx({ pattern: "*.ts", path: "." }, { argsComplete: true, executionStarted: true }));
   const callText = stripVTControlCharacters(call.render(80).join("\n"));
-  assert.match(callText, /FIND/, "find call shows FIND title");
+  assert.match(callText, /Find/, "find call shows the Find title");
   assert.match(callText, /\*\.ts/, "find call shows pattern as target");
 
   const result = decorated.renderResult(
@@ -155,7 +155,7 @@ function newRuntime() {
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
 
-  assert.match(text, /^✓ FIND/, "find result shows the FIND title");
+  assert.match(text, /^✓ Find/, "find result shows the Find title");
   assert.match(text, /\*\.ts/, "find result shows pattern as target");
   assert.match(text, /f src\/index\.ts/, "find result shows file path with f marker");
   assert.match(text, /f src\/utils\.ts/, "find result shows file path with f marker");
@@ -320,7 +320,7 @@ function newRuntime() {
   );
   // ls renders without error through the filesystem family path
   const lsText = stripVTControlCharacters(lsResult.render(80).join("\n"));
-  assert.match(lsText, /✓ LS/, "ls renders through filesystem family");
+  assert.match(lsText, /✓ List/, "ls renders through filesystem family");
 
   const findCall = findDecorated.renderCall({ pattern: "*.ts", path: "." }, plainTheme, makeCtx({ pattern: "*.ts", path: "." }, { argsComplete: true, executionStarted: true }));
   const findResult = findDecorated.renderResult(
@@ -330,7 +330,7 @@ function newRuntime() {
     makeCtx({ pattern: "*.ts", path: "." }, { argsComplete: true, executionStarted: true, lastComponent: findCall, isError: false }),
   );
   const findText = stripVTControlCharacters(findResult.render(80).join("\n"));
-  assert.match(findText, /✓ FIND/, "find renders through filesystem family (not search)");
+  assert.match(findText, /✓ Find/, "find renders through filesystem family (not search)");
 
   runtime.dispose();
 }

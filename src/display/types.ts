@@ -358,6 +358,12 @@ export interface DisplayDescriptionV1 {
   readonly phase?: "call" | "result";
   readonly title: string;
   readonly target?: string;
+  /**
+   * C2/C5 target shape: `path` targets are relativized by the owning adapter
+   * and elided in the middle by the header (the file name is never elided);
+   * `text` targets are end-truncated. Defaults to `text`.
+   */
+  readonly targetKind?: "text" | "path";
   readonly metadata?: readonly DisplayMetadataEntry[];
   readonly durationMs?: number;
   readonly rows?: readonly DisplayRow[];

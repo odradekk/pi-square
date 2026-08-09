@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
-import { boundedHeadTailLines, layoutTier, padVisible, rightPriorityRows, wrapHanging } from "./layout";
+import { boundedHeadTailLines, fitHeaderRow, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
 import { styleBadge, styleRule, styleOperational, styleTitle, styleTone } from "./theme";
 import {
@@ -136,22 +136,17 @@ function progressText(description: DisplayDescriptionV1): string | undefined {
 }
 
 function resolveState(description: DisplayDescriptionV1): ResolvedOperationalState {
+  // C7: a bounded, truncated, or partial result carries the matching header
+  // badge. Adapters report result boundedness through the `truncated` flag;
+  // the header turns it into the qualifier badge exactly once.
+  const qualifiers = [...(description.qualifiers ?? [])];
+  if (description.truncated === true && !qualifiers.includes("truncated")) {
+    qualifiers.push("truncated");
+  }
   return {
     lifecycle: description.lifecycle,
-    qualifiers: description.qualifiers ?? [],
+    qualifiers,
   };
-}
-
-/**
- * Header badges for the qualifier axis. A compact layout keeps only the
- * highest-priority badge so that identity and target stay readable.
- */
-function qualifierBadges(state: ResolvedOperationalState, width: number, theme: Theme): string {
-  const ordered = QUALIFIER_BADGE_ORDER.filter((qualifier) => state.qualifiers.includes(qualifier));
-  const selected = layoutTier(width) === "compact" ? ordered.slice(0, 1) : ordered;
-  return selected
-    .map((qualifier) => ` ${styleBadge(theme, qualifier, `[${QUALIFIER_BADGES[qualifier]}]`)}`)
-    .join("");
 }
 
 function lifecycleMarker(state: ResolvedOperationalState, colorAvailable: boolean): string {
@@ -197,30 +192,49 @@ export class OperationalDisplayComponent implements Component {
     const description = this.description;
     const opState = resolveState(description);
     const colorAvailable = this.options.colorAvailable ?? false;
+    const markerText = lifecycleMarker(opState, colorAvailable);
     const rail = styleOperational(
       this.theme,
       opState.lifecycle,
       opState.qualifiers,
-      lifecycleMarker(opState, colorAvailable),
+      markerText,
     );
     const titleText = truncateCodePoints(
       sanitizeDisplayLine(description.title || description.tool),
       MAX_TITLE_CODE_POINTS,
     );
-    const title = styleTitle(this.theme, titleText);
-    const target = description.target
-      ? ` ${this.theme.fg("accent", truncateCodePoints(sanitizeDisplayLine(description.target), MAX_TARGET_CODE_POINTS))}`
-      : "";
-    const badges = qualifierBadges(opState, safe, this.theme);
-    // Duration is the first header item dropped when space is scarce.
-    const compact = layoutTier(safe) === "compact";
-    const right = [
-      !compact && this.policy.showDuration && Number.isFinite(description.durationMs)
+    const targetText = description.target
+      ? truncateCodePoints(sanitizeDisplayLine(description.target), MAX_TARGET_CODE_POINTS)
+      : undefined;
+    const orderedBadges = QUALIFIER_BADGE_ORDER
+      .filter((qualifier) => opState.qualifiers.includes(qualifier))
+      .map((qualifier) => ({ qualifier, label: `[${QUALIFIER_BADGES[qualifier]!}]` }));
+    const rightText = [
+      this.policy.showDuration && Number.isFinite(description.durationMs)
         ? formatDuration(description.durationMs!)
         : undefined,
       progressText(description),
-    ].filter((part): part is string => Boolean(part)).join(" · ");
-    const lines = rightPriorityRows(`${rail} ${title}${target}${badges}`, this.theme.fg("muted", right), safe);
+    ].filter((part): part is string => Boolean(part)).join(" · ") || undefined;
+    // C5: the header is always exactly one row. The target is truncated (a
+    // path target is elided in the middle), the right element drops first at
+    // compact widths, then all but the highest-priority badge. Nothing wraps.
+    const fitted = fitHeaderRow({
+      marker: markerText,
+      title: titleText,
+      ...(targetText ? { target: targetText, targetKind: description.targetKind ?? "text" } : {}),
+      badges: orderedBadges.map((badge) => badge.label),
+      ...(rightText ? { right: rightText } : {}),
+    }, safe);
+    const title = styleTitle(this.theme, fitted.title);
+    const target = fitted.target ? ` ${this.theme.fg("accent", fitted.target)}` : "";
+    const badges = fitted.badges
+      .map((label, index) => ` ${styleBadge(this.theme, orderedBadges[index]!.qualifier, label)}`)
+      .join("");
+    const left = `${rail} ${title}${target}${badges}`;
+    const header = fitted.right
+      ? `${left}${" ".repeat(Math.max(1, safe - visibleWidth(left) - visibleWidth(fitted.right)))}${this.theme.fg("muted", fitted.right)}`
+      : left;
+    const lines = [header];
 
     // Body content renders at a reduced width to accommodate tree rails.
     // Each body line receives a │ continuation or └─ last-line prefix.
@@ -314,9 +328,6 @@ export class OperationalDisplayComponent implements Component {
           ? wrapHanging("  ", this.theme.fg("error", message), bodyWidth)
           : logicalLines("  ", this.theme.fg("error", message), bodyWidth)
       ));
-    }
-    if (description.truncated) {
-      body.push(padVisible(this.theme.fg("warning", "output truncated by display budget"), bodyWidth));
     }
 
     // Apply tree rails: │ for continuation, └─ for the final body line.

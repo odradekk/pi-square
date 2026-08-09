@@ -1,4 +1,5 @@
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { formatDisplayPath } from "./adapter-utils";
 import { getCatalogEntry } from "./catalog";
 import { createExecutionAdapter } from "./execution-adapters";
 import { createRemoteAdapter } from "./remote-adapters";
@@ -42,13 +43,19 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   subagent_delegate: ["agent"], subagent_resume: ["id"],
 });
 
+/** C1 sentence-case titles; unique within each family (`rg` is `Text search`). */
 const TITLES: Readonly<Record<string, string>> = Object.freeze({
-  rg: "Text search", fd: "File search", sg: "Structure search", pdf_search: "PDF search",
-  codegraph: "CodeGraph", time: "Local time", bash: "$ ❯", pwsh: "PS ❯",
-  scheme: "λ ❯", ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
+  rg: "Text search", fd: "File search", sg: "Structural search", pdf_search: "PDF search",
+  codegraph: "CodeGraph", time: "Local time", bash: "Bash", pwsh: "PowerShell",
+  scheme: "Scheme", ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", github_search: "GitHub search", github_read: "GitHub read",
   github_tree: "GitHub tree", github_commit: "GitHub commit", ask: "Questions", todo: "Tasks",
   subagent_delegate: "Subagent", subagent_resume: "Resume subagent",
+});
+
+/** Target fields that hold a local filesystem path and follow C2. */
+const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  parse: ["path"],
 });
 
 function record(value: unknown): Record<string, unknown> {
@@ -103,12 +110,19 @@ function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
   });
 }
 
-function targetFor(name: string, args: unknown): string | undefined {
+function targetFor(name: string, args: unknown, cwd: string): { value?: string; isPath: boolean } {
   const source = record(args);
   for (const key of TARGET_FIELDS[name] ?? []) {
-    if (source[key] !== undefined) return textValue(source[key], 160) || undefined;
+    const raw = source[key];
+    if (raw === undefined) continue;
+    if ((PATH_TARGET_FIELDS[name] ?? []).includes(key) && typeof raw === "string" && raw) {
+      // C2: a local path target is workspace-relative and elides in the middle.
+      return { value: textValue(formatDisplayPath(raw, cwd), 160) || undefined, isPath: true };
+    }
+    const text = textValue(raw, 160);
+    if (text) return { value: text, isPath: false };
   }
-  return undefined;
+  return { isPath: false };
 }
 
 function callPreview(name: string, args: unknown): string | undefined {
@@ -117,6 +131,26 @@ function callPreview(name: string, args: unknown): string | undefined {
   if (name === "scheme" && typeof source.code === "string") return source.code;
   if ((name === "subagent_delegate" || name === "subagent_resume") && typeof source.task === "string") return source.task;
   return undefined;
+}
+
+/**
+ * C7 boundedness signals shared by the extension tools: an explicit
+ * `truncated` flag, a truncation detail object (rg/fd/sg content budgets),
+ * the codegraph model-facing output budget, a truncated stderr stream, a
+ * paged result with more entries available, and over-long lines truncated
+ * by GitHub reads. Any of them raises the `truncated` header badge.
+ */
+function isBoundedResult(details: Record<string, unknown>): boolean {
+  const truncation = record(details.truncation);
+  const page = record(details.page);
+  return details.truncated === true
+    || truncation.truncated === true
+    || truncation.contentBudgetReached === true
+    || details.outputTruncated === true
+    || details.stderrTruncated === true
+    || details.hasMore === true
+    || page.hasMore === true
+    || (typeof details.truncatedLines === "number" && details.truncatedLines > 0);
 }
 
 function summaryRows(detailsValue: unknown): { rows: { text: string }[]; metadata: DisplayMetadataEntry[] } {
@@ -154,6 +188,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
   return {
     describeCall(args, context) {
       const preview = callPreview(name, args);
+      const target = targetFor(name, args, context.cwd);
       const lifecycle: OperationalLifecycle = context.executionStarted
         ? "running"
         : context.argsComplete
@@ -165,7 +200,8 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         family,
         lifecycle,
         title,
-        target: targetFor(name, args) ?? (context.argsComplete ? undefined : "building arguments"),
+        target: target.value ?? (context.argsComplete ? undefined : "building arguments"),
+        ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: metadataForArgs(name, args),
         ...(preview ? { preview: { text: preview } } : {}),
       };
@@ -176,6 +212,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
       const lc = resolveResultLifecycle(result, options.isPartial);
       const details = record(result.details);
       const durationMs = typeof details.durationMs === "number" ? details.durationMs : undefined;
+      const target = targetFor(name, context.args, context.cwd);
       return {
         version: 1,
         tool: name,
@@ -183,7 +220,8 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         lifecycle: lc.lifecycle,
         ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
         title,
-        target: targetFor(name, context.args),
+        target: target.value,
+        ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: [...metadataForArgs(name, context.args), ...summary.metadata],
         rows: summary.rows,
         durationMs,
@@ -191,7 +229,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         ...((result as AgentToolResult<unknown> & { isError?: boolean }).isError
           ? { error: text || textValue(details.error ?? details.message ?? "Tool failed", 2_000) }
           : {}),
-        truncated: Boolean(details.truncated || record(details.truncation).truncated),
+        truncated: isBoundedResult(details),
       };
     },
   };

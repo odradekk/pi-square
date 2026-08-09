@@ -120,7 +120,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 2. Platform-specific titles: PS ❯ and $ ❯ ─────────────────────
+// ─── 2. Platform-specific titles: PowerShell and Bash ──────────────
 
 {
   const runtime = newRuntime();
@@ -128,7 +128,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Get-ChildItem" };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   const text = stripVTControlCharacters(call.render(80).join("\n"));
-  assert.match(text, /PS ❯/, "pwsh call uses PS ❯ title, not 'PowerShell'");
+  assert.match(text, /PowerShell/, "pwsh call uses the sentence-case PowerShell title");
   assert.match(text, /Get-ChildItem/, "pwsh call retains the full command as target");
 
   runtime.dispose();
@@ -253,7 +253,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const collapsed = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "process list output", { expanded: false });
   const collapsedText = stripVTControlCharacters(collapsed.render(100).join("\n"));
   assert.match(collapsedText, /^✓/, "collapsed keeps lifecycle marker visible");
-  assert.match(collapsedText, /PS ❯/, "collapsed keeps identity/title visible");
+  assert.match(collapsedText, /PowerShell/, "collapsed keeps identity/title visible");
   assert.match(collapsedText, /Get-Process/, "collapsed keeps command target visible");
   assert.match(collapsedText, /COMMAND/, "collapsed shows compact Command section");
   assert.match(collapsedText, /OUTPUT/, "collapsed shows compact Output section");
@@ -282,7 +282,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   for (const width of [39, 40]) {
     const line = stripVTControlCharacters(call.render(width)[0]);
     assert.match(line, /^●/, `marker visible at width ${width}`);
-    assert.match(line, /PS ❯|Get-Process/, `identity or target visible at width ${width}`);
+    assert.match(line, /PowerShell|Get-Process/, `identity or target visible at width ${width}`);
   }
 
   runtime.dispose();
@@ -302,7 +302,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 // ═══════════════════════ Bash (decorateBuiltinDefinition) ═══════════
 
-// ─── 12. Bash uses $ ❯ title and explicit lifecycle ────────────────
+// ─── 12. Bash uses the Bash title and explicit lifecycle ───────────
 
 {
   const clock = {
@@ -320,7 +320,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "echo hello" };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   const callText = stripVTControlCharacters(call.render(80).join("\n"));
-  assert.match(callText, /\$ ❯/, "bash call uses $ ❯ title, not 'BASH' or 'Shell'");
+  assert.match(callText, / Bash/, "bash call uses the sentence-case Bash title");
   assert.match(callText, /echo hello/, "bash call retains the full command as target");
 
   // Explicit lifecycle: queued → pending → running → completed
@@ -372,7 +372,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^✓/, "bash success renders completed marker");
-  assert.match(text, /\$ ❯/, "bash result keeps $ ❯ identity");
+  assert.match(text, / Bash/, "bash result keeps the Bash title");
   assert.match(text, /echo hello/, "bash result keeps the command visible");
   assert.match(text, /hello/, "bash output is visible in preview");
   // Pi's bash tool embeds exit/timeout/abort status as appended text

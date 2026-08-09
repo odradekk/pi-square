@@ -117,7 +117,7 @@ const completedText = stripVTControlCharacters(completed.render(80).join("\n"));
 assert.match(completedText, /^●/, "completed must render check mark");
 assert.equal(clock.callbacks.size, 0, "completed unsubscribes from motion");
 assert.match(completedText, /42/, "output must be visible in collapsed preview");
-assert.match(completedText, /λ ❯/, "tool identity must be visible");
+assert.match(completedText, /Scheme/, "tool identity must be visible");
 
 // Result replaces the pending call entry
 assert.deepEqual(running.render(80), [], "call slot empties when result arrives");
