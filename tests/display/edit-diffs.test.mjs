@@ -47,8 +47,8 @@ const unified = renderDisplayDiffLines(
 );
 const unifiedText = unified.join("\n");
 
-// Change-count header
-assert.match(unifiedText, /\(\+2, -1\)/, "must show (+N, -M) change-count header");
+// No change-count header in the diff body (moved to the summary row)
+assert.doesNotMatch(unifiedText, /\(\+2, -1\)/, "no (+N, -M) change-count header in diff body");
 
 // Right-aligned dim line numbers (1-digit)
 assert.match(unifiedText, /^\s*1/gm, "line numbers present");
@@ -78,14 +78,14 @@ const longPatch = [
 
 const collapsed = renderDisplayDiffLines(
   { path: "big.ts", patch: longPatch },
-  { ...DEFAULT_DISPLAY_POLICY, diffCollapsedLines: 5 },
+  { ...DEFAULT_DISPLAY_POLICY, previewLines: 5 },
   plainTheme,
   80,
   { expanded: false },
 );
 const collapsedText = collapsed.join("\n");
-assert.match(collapsedText, /omitted/, "collapsed must report omitted diff lines");
-assert.ok(collapsed.length <= 6, "collapsed bounded by diffCollapsedLines + omission marker");
+assert.match(collapsedText, /\u2026 \+\d+ diff lines/, "collapsed must report omitted diff lines");
+assert.ok(collapsed.length <= 6, "collapsed bounded by previewLines + omission marker");
 
 // Expanded shows everything
 const expandedDiff = renderDisplayDiffLines(
@@ -233,7 +233,8 @@ const editResult = decorated.renderResult(
 const editResultText = stripVTControlCharacters(editResult.render(80).join("\n"));
 assert.match(editResultText, /^●/, "completed renders bullet");
 assert.equal(clock.callbacks.size, 0, "completed unsubscribes motion");
-assert.match(editResultText, /\(\+1, -1\)/, "change-count header visible");
+assert.match(editResultText, /\+1 −1/, "change counts in summary row");
+assert.doesNotMatch(editResultText, /@@/, "no @@ hunk header");
 assert.match(editResultText, /foo/, "removed content visible");
 assert.match(editResultText, /bar/, "added content visible");
 assert.doesNotMatch(editResultText, /PROJECTED/, "edit diff is authoritative, not projected");

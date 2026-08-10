@@ -127,10 +127,17 @@ function newRuntime() {
   const text = stripVTControlCharacters(result.render(80).join("\n"));
 
   assert.match(text, /^✓ List/, "ls result shows the List title");
-  assert.match(text, /f README\.md/, "file shows f marker");
-  assert.match(text, /f package\.json/, "file shows f marker");
-  assert.match(text, /d src\//, "directory shows d marker");
-  assert.match(text, /d tests\//, "directory shows d marker");
+  assert.match(text, /README\.md/, "file entry visible");
+  assert.match(text, /package\.json/, "file entry visible");
+  assert.match(text, /src\//, "directory entry visible with trailing slash");
+  assert.match(text, /tests\//, "directory entry visible with trailing slash");
+  assert.doesNotMatch(text, /f README/, "no f prefix on file entries");
+  assert.doesNotMatch(text, /d src\//, "no d prefix on directory entries");
+  // Directories sorted before files
+  const srcIdx = text.indexOf("src/");
+  const readmeIdx = text.indexOf("README.md");
+  assert.ok(srcIdx < readmeIdx, "directories precede files");
+  assert.match(text, /2 directories · 2 files/, "summary shows directory and file counts");
 
   runtime.dispose();
 }
@@ -156,8 +163,9 @@ function newRuntime() {
 
   assert.match(text, /^✓ Find/, "find result shows the Find title");
   assert.match(text, /\*\.ts/, "find result shows pattern as target");
-  assert.match(text, /f src\/index\.ts/, "find result shows file path with f marker");
-  assert.match(text, /f src\/utils\.ts/, "find result shows file path with f marker");
+  assert.match(text, /src\/index\.ts/, "find result shows file path");
+  assert.doesNotMatch(text, /f src\/index/, "no f prefix on find results");
+  assert.doesNotMatch(text, /f src\/utils\.ts/, "no f prefix on find results");
 
   runtime.dispose();
 }
@@ -178,8 +186,8 @@ function newRuntime() {
   );
   const lsText = stripVTControlCharacters(lsResult.render(80).join("\n"));
   assert.match(lsText, /^✓/, "empty ls result renders completed marker");
-  assert.match(lsText, /No entries/, "empty ls result shows 'No entries'");
-  assert.doesNotMatch(lsText, /f |d /, "empty ls result has no path markers");
+  assert.match(lsText, /Empty directory/, "empty ls result shows 'Empty directory'");
+  assert.doesNotMatch(lsText, /ENTRIES/, "empty ls result has no entries section");
 
   // FIND empty
   const findDecorated = decorateBuiltinDefinition(createFindToolDefinition(TMP), TMP, () => runtime);
@@ -213,7 +221,7 @@ function newRuntime() {
   const text = stripVTControlCharacters(errored.render(80).join("\n"));
   assert.match(text, /^×/, "error result renders failed marker");
   assert.doesNotMatch(text, /No entries/, "error result does not show empty message");
-  assert.match(text, /permission denied/, "error text visible in error styling");
+  assert.match(text, /Permission denied/i, "human error sentence visible");
   assert.doesNotMatch(text, /ENTRIES|RESULTS/, "error result does not render path-list sections");
 
   runtime.dispose();
@@ -236,7 +244,7 @@ function newRuntime() {
     makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: false }),
   );
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
-  assert.match(collapsedText, /2 entries in \./, "collapsed shows the summary row");
+  assert.match(collapsedText, /1 directory · 1 file/, "collapsed shows the summary row");
   assert.ok(!collapsedText.includes("ENTRIES"), "collapsed path content lives in the summary row, not a section title");
   assert.doesNotMatch(collapsedText, /DIRECTORY/, "collapsed does not show DIRECTORY summary");
 
@@ -248,7 +256,8 @@ function newRuntime() {
     makeCtx({ path: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
-  assert.match(expandedText, /f README\.md/, "expanded shows path content");
+  assert.match(expandedText, /README\.md/, "expanded shows path content");
+  assert.match(expandedText, /src\//, "expanded shows directory with trailing slash");
   assert.ok(!expandedText.includes("ENTRIES"), "a lone Entries section draws no title rule (C9)");
   assert.ok(!expandedText.includes("DIRECTORY"), "expanded prunes the restating DIRECTORY section (C8)");
   assert.match(expandedText, /^✓ List \./, "expanded header target shows the directory");
@@ -371,8 +380,8 @@ function newRuntime() {
     makeCtx({ pattern: ".", types: ["directory"] }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /d src\//, "fd directory-type result shows d marker");
-  assert.match(text, /d tests\//, "fd directory-type result shows d marker");
+  assert.match(text, /src\//, "fd directory-type result shows path");
+  assert.match(text, /tests\//, "fd directory-type result shows path");
 
   runtime.dispose();
 }
@@ -410,7 +419,8 @@ function newRuntime() {
     makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /f src\/index\.ts/, "fd default result shows f marker");
+  assert.match(text, /src\/index\.ts/, "fd default result shows path");
+  assert.doesNotMatch(text, /f src\/index/, "fd default result has no f prefix");
 
   runtime.dispose();
 }
@@ -444,7 +454,7 @@ function newRuntime() {
     makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /s bad\?\?path/, "fd byte-path result shows s marker");
+  assert.match(text, /bad\?\?path/, "fd byte-path result shows path");
   assert.match(text, /byte path/, "fd byte-path result shows byte path meta");
 
   runtime.dispose();

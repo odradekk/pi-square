@@ -172,7 +172,7 @@ function assertNoTrailingEmptyRow(lines, label) {
   const component = ls.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ path: "." }));
   const body = bodyLines(component);
   assert.equal(body.length, 1, "collapsed ls renders exactly one summary row");
-  assert.match(body[0], /3 entries in \./, "the ls summary states the count and the directory");
+  assert.match(body[0], /3 files/, "the ls summary states the file count");
   runtime.dispose();
 
   const find = decorateBuiltinDefinition(createFindToolDefinition(TMP), TMP, runtime);
@@ -193,7 +193,7 @@ function assertNoTrailingEmptyRow(lines, label) {
   );
   const emptyBody = bodyLines(emptyFind);
   assert.equal(emptyBody.length, 1, "an empty find still renders one summary row");
-  assert.match(emptyBody[0], /No files found in src/, "the empty summary states the root");
+  assert.match(emptyBody[0], /No files found/, "the empty summary states no match");
 }
 
 {

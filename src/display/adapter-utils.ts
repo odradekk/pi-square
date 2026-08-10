@@ -276,8 +276,9 @@ export function codeSection(
   text: string | undefined,
   language?: string,
   lineNumbers = true,
+  startLine?: number,
 ): DisplaySection | undefined {
-  return text ? { title, blocks: [{ kind: "code", text, ...(language ? { language } : {}), lineNumbers }], compact: false } : undefined;
+  return text ? { title, blocks: [{ kind: "code", text, ...(language ? { language } : {}), lineNumbers, ...(startLine !== undefined ? { startLine } : {}) }], compact: false } : undefined;
 }
 
 export function sections(...values: Array<DisplaySection | undefined>): DisplaySection[] {

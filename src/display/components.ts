@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { COLLAPSED_PAYLOAD_TOOLS } from "./adapter-utils";
 import { renderDisplayDiffLines } from "./diff";
@@ -93,19 +93,38 @@ export class BoundedPreview implements Component {
     private theme: Theme,
     private omittedLines = 0,
     private wordWrap = true,
+    private firstOnly = false,
   ) {}
 
-  update(text: string, maximumLines: number, theme: Theme, omittedLines = 0, wordWrap = true): void {
+  update(text: string, maximumLines: number, theme: Theme, omittedLines = 0, wordWrap = true, firstOnly = false): void {
     this.text = text;
     this.maximumLines = maximumLines;
     this.theme = theme;
     this.omittedLines = omittedLines;
     this.wordWrap = wordWrap;
+    this.firstOnly = firstOnly;
   }
 
   render(width: number): string[] {
     const safeWidth = Math.max(1, Math.floor(width));
     const sanitized = sanitizeDisplayText(this.text);
+    if (this.firstOnly) {
+      const sourceLines = sanitized.replace(/\r\n?/g, "\n").split("\n");
+      const allVisual: string[] = [];
+      for (const source of sourceLines) {
+        allVisual.push(...(this.wordWrap
+          ? wrapTextWithAnsi(source || " ", safeWidth)
+          : [truncateToWidth(source || " ", safeWidth, "\u2026")]));
+      }
+      const cap = Math.max(0, this.maximumLines);
+      const visible = allVisual.slice(0, cap);
+      const totalOmitted = Math.max(0, allVisual.length - visible.length) + Math.max(0, this.omittedLines);
+      const lines = visible.map((line) => padVisible(styleTone(this.theme, "default", line), safeWidth));
+      if (totalOmitted > 0) {
+        lines.push(padVisible(this.theme.fg("muted", `\u2026 +${totalOmitted} lines`), safeWidth));
+      }
+      return lines;
+    }
     const result = boundedHeadTailLines(sanitized, safeWidth, this.maximumLines, this.wordWrap);
     const lines = result.headLines.map((line) => styleTone(this.theme, "default", line));
     const totalOmitted = result.hiddenSourceLines + Math.max(0, this.omittedLines);
@@ -368,12 +387,14 @@ export class OperationalDisplayComponent implements Component {
     if (!description.preview) return [];
     const boundedPreviewText = truncateCodePoints(description.preview.text, MAX_PREVIEW_CODE_POINTS);
     const inputTruncated = boundedPreviewText !== description.preview.text;
+    const firstOnly = description.tool === "write";
     const preview = new BoundedPreview(
       boundedPreviewText,
       maximum,
       this.theme,
       (description.preview.omittedLines ?? 0) + (inputTruncated ? 1 : 0),
       this.policy.wordWrap,
+      firstOnly,
     );
     return preview.render(bodyWidth);
   }

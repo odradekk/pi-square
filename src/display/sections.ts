@@ -8,7 +8,6 @@ import { sanitizeDisplayLine, sanitizeDisplayText, sanitizeMarkdownForDisplay, t
 import { styleRule, styleTone } from "./theme";
 import type {
   DisplayMatchItem,
-  DisplayPathItem,
   DisplayPolicy,
   DisplayRecordItem,
   DisplaySection,
@@ -93,6 +92,7 @@ function renderCode(block: Extract<DisplaySectionBlock, { kind: "code" }>, conte
   const source = truncateCodePoints(sanitizeDisplayText(block.text), MAX_SECTION_CODE_POINTS);
   const language = languageFor(block);
   const sourceLines = source.split("\n");
+  const startLine = block.startLine ?? 1;
   const highlighted = (() => {
     try {
       return highlightCode(source, language);
@@ -100,7 +100,8 @@ function renderCode(block: Extract<DisplaySectionBlock, { kind: "code" }>, conte
       return sourceLines;
     }
   })();
-  const gutter = block.lineNumbers === false ? 0 : String(sourceLines.length).length + 2;
+  const lastLine = startLine + sourceLines.length - 1;
+  const gutter = block.lineNumbers === false ? 0 : String(lastLine).length + 2;
   const bodyIndent = "  ";
   const bodyWidth = Math.max(1, context.width - gutter - visibleWidth(bodyIndent));
   const rendered: string[] = [];
@@ -108,7 +109,7 @@ function renderCode(block: Extract<DisplaySectionBlock, { kind: "code" }>, conte
   for (let index = 0; index < count; index += 1) {
     const number = block.lineNumbers === false
       ? ""
-      : `${context.theme.fg("muted", String(index + 1).padStart(String(sourceLines.length).length))}  `;
+      : `${context.theme.fg("muted", String(startLine + index).padStart(String(lastLine).length))}  `;
     const body = highlighted[index] ?? sourceLines[index] ?? "";
     const wrapped = context.policy.wordWrap
       ? wrapTextWithAnsi(body || " ", bodyWidth)
@@ -171,17 +172,10 @@ function renderRecords(block: Extract<DisplaySectionBlock, { kind: "records" }>,
   return lines;
 }
 
-function pathMarker(kind: DisplayPathItem["kind"]): string {
-  if (kind === "directory") return "d";
-  if (kind === "symlink") return "l";
-  if (kind === "special") return "s";
-  return "f";
-}
-
 function renderPaths(block: Extract<DisplaySectionBlock, { kind: "paths" }>, context: RenderContext): string[] {
   const items = block.items.slice(0, MAX_SECTION_ITEMS);
   const lines = items.flatMap((item) => rightPriorityRows(
-    `  ${context.theme.fg("muted", pathMarker(item.kind))} ${styleTone(context.theme, item.tone, truncateCodePoints(sanitizeDisplayLine(item.path), 2_048))}`,
+    `  ${styleTone(context.theme, item.tone, truncateCodePoints(sanitizeDisplayLine(item.path), 2_048))}`,
     item.meta ? context.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(item.meta), 256)) : "",
     context.width,
   ));

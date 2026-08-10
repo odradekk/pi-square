@@ -131,8 +131,8 @@ const waitAsync = () => new Promise((resolve) => setTimeout(resolve, 100));
 
   assert.match(callText, /PROJECTED PREVIEW/, "create call must show PROJECTED PREVIEW label");
   assert.match(callText, /new file content/, "create projected content visible");
-  assert.match(callText, /\(\+2, -0\)/, "create shows (+N, -M) change-count header");
-  assert.match(callText, /bytes projected/, "create shows bytes metadata");
+  assert.doesNotMatch(callText, /\(\+2, -0\)/, "no (+N, -M) change-count header");
+  assert.doesNotMatch(callText, /bytes projected/, "no bytes projected row");
 
   rmSync(join(TMP, "create_new.txt"), { force: true });
   runtime.dispose();
@@ -156,7 +156,7 @@ const waitAsync = () => new Promise((resolve) => setTimeout(resolve, 100));
   assert.match(callText, /PROJECTED PREVIEW/, "overwrite call must show PROJECTED PREVIEW label");
   assert.match(callText, /old content/, "overwrite projected diff shows removed content");
   assert.match(callText, /new content/, "overwrite projected diff shows added content");
-  assert.match(callText, /\(\+1, -1\)/, "overwrite shows (+1, -1) change-count header");
+  assert.doesNotMatch(callText, /\(\+1, -1\)/, "no (+1, -1) change-count header");
 
   rmSync(join(TMP, "existing.txt"), { force: true });
   runtime.dispose();

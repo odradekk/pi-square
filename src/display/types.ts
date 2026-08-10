@@ -336,7 +336,7 @@ export interface DisplayActivityItem {
 export type DisplaySectionBlock =
   | { readonly kind: "text"; readonly text: string; readonly tone?: DisplayTone }
   | { readonly kind: "markdown"; readonly text: string }
-  | { readonly kind: "code"; readonly text: string; readonly language?: string; readonly lineNumbers?: boolean }
+  | { readonly kind: "code"; readonly text: string; readonly language?: string; readonly lineNumbers?: boolean; readonly startLine?: number }
   | { readonly kind: "list"; readonly items: readonly DisplayListItem[] }
   | { readonly kind: "records"; readonly items: readonly DisplayRecordItem[] }
   | { readonly kind: "paths"; readonly items: readonly DisplayPathItem[] }

@@ -120,7 +120,9 @@ try {
   }, { expanded: true, isPartial: false }, theme, context({ args: editArgs })).render(80).join("\n");
   assert.match(editResult, /before/, "removed line content visible");
   assert.match(editResult, /after/, "added line content visible");
-  assert.match(editResult, /\(\+1, -1\)/, "must show change-count header");
+  assert.doesNotMatch(editResult, /\(\+1, -1\)/, "change-count header removed from diff");
+  assert.match(editResult, /\+1 −1/, "change counts in summary row");
+  assert.doesNotMatch(editResult, /@@/, "no @@ hunk header");
   assert.doesNotMatch(editResult, /PROJECTED/, "edit diff is authoritative, not projected");
 
   runtime.dispose();

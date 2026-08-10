@@ -168,7 +168,7 @@ try {
   const authDiffText = stripVTControlCharacters(authDiff.render(80).join("\n"));
   assert.match(authDiffText, /old text/, "authoritative diff shows removed content");
   assert.match(authDiffText, /new text/, "authoritative diff shows added content");
-  assert.match(authDiffText, /\(\+1, -1\)/, "authoritative diff shows change-count header");
+  assert.doesNotMatch(authDiffText, /\(\+1, -1\)/, "no change-count header in diff body");
   assert.doesNotMatch(authDiffText, /PROJECTED/, "authoritative diff not labelled projected");
 
   // Projected diff (projected: true)

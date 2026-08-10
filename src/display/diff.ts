@@ -12,12 +12,12 @@ type DiffLine =
   | { kind: "hunkHeader"; oldStart: number; newStart: number; text: string }
   | { kind: "context"; text: string; oldLine: number; newLine: number }
   | { kind: "added"; text: string; newLine: number }
-  | { kind: "removed"; text: string; oldLine: number };
+  | { kind: "removed"; text: string; oldLine: number; newLine: number };
 
 type DiffContentLine =
   | { kind: "context"; text: string; oldLine: number; newLine: number }
   | { kind: "added"; text: string; newLine: number }
-  | { kind: "removed"; text: string; oldLine: number };
+  | { kind: "removed"; text: string; oldLine: number; newLine: number };
 
 interface SplitRow {
   readonly left?: DiffContentLine;
@@ -46,7 +46,9 @@ function classifyPatch(patch: string): DiffLine[] {
       result.push({ kind: "added", text: line.slice(1), newLine });
       newLine += 1;
     } else if (line.startsWith("-")) {
-      result.push({ kind: "removed", text: line.slice(1), oldLine });
+      // Capture the current newLine so removed rows carry the new-file
+      // line number where the change occurs, not the old-file number.
+      result.push({ kind: "removed", text: line.slice(1), oldLine, newLine });
       oldLine += 1;
     } else {
       const text = line.startsWith(" ") ? line.slice(1) : line;
@@ -131,21 +133,10 @@ function maxLineWidth(lines: readonly DiffLine[]): number {
   let max = 0;
   for (const line of lines) {
     if (line.kind === "context" || line.kind === "added" || line.kind === "removed") {
-      const num = line.kind === "added" ? line.newLine : line.oldLine;
-      max = Math.max(max, String(num).length);
+      max = Math.max(max, String(line.newLine).length);
     }
   }
   return max;
-}
-
-function countChanges(lines: readonly DiffLine[]): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of lines) {
-    if (line.kind === "added") additions += 1;
-    else if (line.kind === "removed") deletions += 1;
-  }
-  return { additions, deletions };
 }
 
 /** Change ratio above which word-level emphasis becomes noise, not signal. */
@@ -204,29 +195,23 @@ function renderUnified(lines: readonly DiffLine[], width: number, theme: Theme):
   const lineNumberWidth = Math.max(1, maxLineWidth(lines));
   const emphasis = wordEmphasis(lines, theme);
 
-  // Change-count header: (+N, -M)
-  const { additions, deletions } = countChanges(lines);
-  if (additions > 0 || deletions > 0) {
-    const changeHeader = theme.fg("muted", `(+${additions}, -${deletions})`);
-    output.push(padVisible(changeHeader, safe));
-  }
-
+  let firstHunk = true;
   for (const line of lines) {
     if (line.kind === "fileHeader") {
       // Skip file headers in unified view — path metadata is shown separately.
       continue;
     }
     if (line.kind === "hunkHeader") {
-      // Hunk header is dim and right-aligned with the available width.
-      output.push(padVisible(styleDiffLine(theme, "header", truncateToWidth(line.text, safe, "\u2026")), safe));
+      // No @@ header. A muted ⋯ row separates non-adjacent kept hunks.
+      if (!firstHunk) output.push(padVisible(theme.fg("muted", "\u22ef"), safe));
+      firstHunk = false;
       continue;
     }
 
     // Marker: + for added, - for removed, space for context
     const marker = line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " ";
-    // Line number (right-aligned dim)
-    const lineNum = line.kind === "added" ? line.newLine : line.oldLine;
-    const lineNumText = theme.fg("muted", formatLineNumber(lineNum, lineNumberWidth));
+    // Line number: every row carries the new-file line number.
+    const lineNumText = theme.fg("muted", formatLineNumber(line.newLine, lineNumberWidth));
     // Prefix: " NNN " (line number, space, marker, space)
     const prefix = `${lineNumText} ${marker} `;
     const prefixWidth = lineNumberWidth + 3; // number + space + marker + space
@@ -306,13 +291,13 @@ export function renderDisplayDiffLines(
   const rendered = split
     ? renderSplit(lines, safe, theme)
     : renderUnified(lines, safe, theme);
-  const maximum = options.expanded ? policy.expandedMaxLines : policy.diffCollapsedLines;
+  const maximum = options.expanded ? policy.expandedMaxLines : policy.previewLines;
   const bounded = maximum === 0 ? [] : rendered.slice(0, maximum);
   const omitted = Math.max(0, rendered.length - bounded.length);
   const output = description.projected
     ? [padVisible(theme.fg("warning", "PROJECTED PREVIEW"), safe), ...bounded]
     : bounded;
-  if (omitted > 0) output.push(padVisible(theme.fg("muted", `... ${omitted} diff lines omitted`), safe));
+  if (omitted > 0) output.push(padVisible(theme.fg("muted", `\u2026 +${omitted} diff lines`), safe));
   return output;
 }
 
