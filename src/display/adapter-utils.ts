@@ -62,6 +62,11 @@ export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
   "sg",
   "pdf_search",
   "codegraph",
+  "search",
+  "fetch",
+  "libs",
+  "docs",
+  "parse",
   "subagent_delegate",
   "subagent_resume",
 ]);

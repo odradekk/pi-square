@@ -150,7 +150,7 @@ function renderRecord(record: DisplayRecordItem, context: RenderContext): string
   }
   if (record.body) {
     const bodyLines = boundVisual(
-      wrap("    ", record.body, "default", context),
+      wrap("    ", record.body, record.bodyTone ?? "default", context),
       MAX_BODY_VISUAL_LINES,
       context,
       "body lines omitted",
@@ -165,10 +165,7 @@ function renderRecord(record: DisplayRecordItem, context: RenderContext): string
 
 function renderRecords(block: Extract<DisplaySectionBlock, { kind: "records" }>, context: RenderContext): string[] {
   const items = block.items.slice(0, MAX_SECTION_ITEMS);
-  const lines = items.flatMap((item, index) => [
-    ...renderRecord(item, context),
-    ...(index < items.length - 1 ? [padVisible("", context.width)] : []),
-  ]);
+  const lines = items.flatMap((item) => renderRecord(item, context));
   if (block.items.length > items.length) lines.push(padVisible(context.theme.fg("muted", `${block.items.length - items.length} records omitted`), context.width));
   return lines;
 }

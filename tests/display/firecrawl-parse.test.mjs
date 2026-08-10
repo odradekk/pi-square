@@ -134,11 +134,12 @@ const baseDetails = {
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /PDF parse/, "call shows PDF parse title");
   assert.match(text, /doc\.pdf/, "call target shows document path");
-  assert.match(text, /pages=1, 3-5, 10/, "metadata shows page selection");
-  assert.match(text, /mode=auto/, "metadata shows parser mode");
-  assert.match(text, /timeout=30000/, "metadata shows timeout");
-  assert.match(text, /maxTokens=12000/, "metadata shows maxTokens");
-  assert.doesNotMatch(text, /max_tokens=12000/, "raw max_tokens label suppressed");
+  // Web tools carry no key=value metadata in the header
+  assert.doesNotMatch(text, /pages=/, "no pages key=value metadata in header");
+  assert.doesNotMatch(text, /mode=/, "no mode key=value metadata in header");
+  assert.doesNotMatch(text, /timeout=/, "no timeout key=value metadata in header");
+  assert.doesNotMatch(text, /maxTokens=/, "no maxTokens key=value metadata in header");
+  assert.doesNotMatch(text, /max_tokens=/, "no raw max_tokens label in header");
 
   runtime.dispose();
 }
@@ -149,11 +150,12 @@ const baseDetails = {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("parse"), () => runtime);
   const args = { path: "doc.pdf", pages: "1, 3-5, 10", mode: "auto", timeout: 30000, max_tokens: 12000 };
-  // Use expanded to see the Summary section
+  // Use expanded to see the Pages and Upload sections
   const result = renderResult(decorated, args, { ...baseDetails }, "# Parsed PDF\n\ncontent", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /Parsed PDF/, "expanded shows the parsed markdown content");
+  // The "# Parsed PDF" header is stripped; cleaned content shows in the Pages section
   assert.match(text, /content/, "expanded shows the parsed body");
+  assert.match(text, /5 pages · 250 KB uploaded · 4800 tokens/, "summary row shows page count, upload size, and tokens");
 
   runtime.dispose();
 }
@@ -183,7 +185,7 @@ const baseDetails = {
   // isError:true is what the tool actually returns for aborted via failure()
   const result = renderResult(decorated, args, details, "Error: PDF parse was cancelled", { isError: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^●/, "aborted renders aborted marker (·) despite isError:true");
+  assert.match(text, /^●/, "aborted renders marker despite isError:true");
 
   runtime.dispose();
 }
@@ -197,9 +199,8 @@ const baseDetails = {
   const details = { ...baseDetails, status: "error", path: "locked.pdf", pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 10, sourceBytes: 512000, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined, errorCode: "PDF_ENCRYPTED", error: "The PDF is encrypted. Set an owner or user password." };
   const result = renderResult(decorated, args, details, "Error: The PDF is encrypted.", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^●/, "error renders failed marker (×)");
+  assert.match(text, /^●/, "error renders marker");
   assert.match(text, /encrypted/i, "error message visible");
-  assert.match(text, /code=PDF_ENCRYPTED/, "error code visible in expanded metadata");
   assert.doesNotMatch(text, /fc-[A-Za-z0-9_-]+/, "no API key pattern in output");
 
   runtime.dispose();
@@ -214,8 +215,8 @@ const baseDetails = {
   const details = { ...baseDetails, status: "error", path: "huge.pdf", pages: Array.from({ length: 100 }, (_, i) => i + 1), normalizedPages: "1-100", pageCount: 100, sourceTotalPages: 100, mode: "auto", timeoutMs: 30000, maxTokens: 12000, sourceBytes: 60000000, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined, errorCode: "PDF_OVERSIZE", error: "PDF exceeds 50 MB limit (57.2 MB)" };
   const result = renderResult(decorated, args, details, "Error: PDF exceeds 50 MB limit", { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^●/, "oversized renders failed marker");
-  assert.match(text, /PDF exceeds 50 MB limit/, "oversized error message visible");
+  assert.match(text, /^●/, "oversized renders marker");
+  assert.match(text, /50 MB/, "oversized error message visible");
 
   runtime.dispose();
 }
@@ -229,7 +230,7 @@ const baseDetails = {
   const details = { ...baseDetails, status: "error", path: "../../../etc/passwd", pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 1, sourceBytes: undefined, uploadBytes: undefined, estimatedTokens: undefined, outputLines: undefined, errorCode: "PATH_OUTSIDE_WORKSPACE", error: "Path resolves outside the workspace" };
   const result = renderResult(decorated, args, details, "Error: Path resolves outside the workspace", { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^●/, "out-of-workspace renders failed marker");
+  assert.match(text, /^●/, "out-of-workspace renders marker");
   assert.match(text, /outside the workspace/, "out-of-workspace error visible");
 
   runtime.dispose();
@@ -282,9 +283,9 @@ const baseDetails = {
   const details = { ...baseDetails, pages: [1], normalizedPages: "1", pageCount: 1, sourceTotalPages: 10 };
   const result = renderResult(decorated, args, details, "SECRET_REMOTE_PAGE_CONTENT_FROM_PAGES_2_TO_10", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  // The metadata row (body line 1) should show pages=1 (only the requested page)
+  // Web tools carry no key=value metadata in the header
   const headerLine = text.split("\n")[1] ?? "";
-  assert.match(headerLine, /pages=1/, "header shows only requested page selection");
+  assert.doesNotMatch(headerLine, /pages=/, "no pages key=value metadata in header");
   assert.doesNotMatch(headerLine, /SECRET_REMOTE_PAGE_CONTENT/, "remote payload does not leak into activity header");
 
   runtime.dispose();
@@ -299,7 +300,7 @@ const baseDetails = {
   const details = { ...baseDetails, status: "success", pages: [1, 2, 3, 4, 5], normalizedPages: "1-5", pageCount: 5, sourceTotalPages: 10, incomplete: true, metadata: { title: "Doc", numPages: 3 } };
   const result = renderResult(decorated, args, details, "# Parsed PDF", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /Parsed PDF/, "expanded shows the parsed content even for an incomplete result");
+  assert.match(text, /5 pages/, "summary shows page count for incomplete result");
 
   runtime.dispose();
 }

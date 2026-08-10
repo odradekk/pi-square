@@ -315,6 +315,7 @@ export interface DisplayRecordItem {
   readonly tone?: DisplayTone;
   readonly fields?: readonly DisplayFieldValue[];
   readonly body?: string;
+  readonly bodyTone?: DisplayTone;
 }
 
 export interface DisplayPathItem {

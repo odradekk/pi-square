@@ -85,7 +85,8 @@ for (const [name, args, expected] of cases) {
       : expected;
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
   // Payload tools keep content in the collapsed body; non-payload tools
-  // collapse to a summary row (C4).
+  // collapse to a summary row (C4). Web tools (search, fetch, libs, docs,
+  // parse) no longer dump raw text in collapsed mode.
   const isPayload = name === "subagent_delegate" || name === "subagent_resume";
   if (isPayload) {
     assert.match(collapsedText, /private result body/, `${name} collapsed shows result content`);
@@ -97,7 +98,8 @@ for (const [name, args, expected] of cases) {
   // fallback; other tools expose the text via output fallback or a
   // content/markdown section.
   const hasStructuredDomain = name === "github_tree" || name === "github_commit" || name === "todo" || name === "ask";
-  if (!hasStructuredDomain) {
+  const isWebTool = ["search", "fetch", "libs", "docs", "parse"].includes(name);
+  if (!hasStructuredDomain && !isWebTool) {
     assert.match(expandedText, /private result body/);
   }
   // REQUEST, SUMMARY, ACTION, and RESULT sections are pruned restating titles (C8).

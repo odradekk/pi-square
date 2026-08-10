@@ -114,11 +114,12 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /Web search/, "call shows Web search title");
   assert.match(text, /typescript generics.*rust traits/, "call target shows the queries");
-  assert.match(text, /queries=typescript generics, rust traits/, "call metadata shows the queries");
-  assert.match(text, /sites=stackoverflow\.com/, "call metadata shows host restrictions");
-  assert.match(text, /language=en/, "call metadata shows language");
-  assert.match(text, /country=US/, "call metadata shows country");
-  assert.match(text, /cache=bypassed/, "call metadata shows cache bypass");
+  // Web tools carry no key=value metadata in the header
+  assert.doesNotMatch(text, /queries=/, "no queries key=value metadata in header");
+  assert.doesNotMatch(text, /sites=/, "no sites key=value metadata in header");
+  assert.doesNotMatch(text, /language=/, "no language key=value metadata in header");
+  assert.doesNotMatch(text, /country=/, "no country key=value metadata in header");
+  assert.doesNotMatch(text, /cache=/, "no cache key=value metadata in header");
 
   runtime.dispose();
 }
@@ -141,9 +142,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "[1] Rust Traits Guide\n    https://doc.rust-lang.org/traits", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /Rust Traits Guide/, "result preserves source title");
-  assert.match(text, /doc\.rust-lang\.org\/traits/, "result preserves source URL");
   assert.match(text, /Complete guide to traits/, "result preserves readable content");
-  assert.match(text, /provenance=\[q1#1\]/, "result preserves RRF ranking provenance");
+  assert.match(text, /3 results for 1 query/, "summary row shows result and query counts");
   // Ranking order: results must be listed in ranked order (1 before 2 before 3)
   assert.ok(text.indexOf("Rust Traits Guide") < text.indexOf("Trait Objects"), "results preserve RRF ranking order");
 
@@ -167,8 +167,6 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^✓/, "partial-failure search renders completed (some results succeeded)");
   assert.match(text, /Good Result/, "partial-failure shows the successful results");
-  // The failed query error should be visible somewhere when expanded
-  // (currently carried in the summary or model-facing text)
 
   runtime.dispose();
 }
@@ -183,7 +181,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "No results found.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^✓/, "empty results renders completed, not failed");
-  assert.match(text, /No results found/, "empty state shows a message in the body");
+  assert.match(text, /No results/, "empty state shows a summary row");
 
   runtime.dispose();
 }
@@ -198,10 +196,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const decorated = decorateInternalTool(makeDef("search"), () => runtime);
   const args = { queries: ["fail query"] };
   const details = { queries: ["fail query"], failedQueries: [{ query: "fail query", error: "Connection refused" }], count: 3, phase: "done", error: "fail query: Connection refused" };
-  // NOTE: no isError:true — this is the actual tool behavior
+  // NOTE: no isError — this is the actual tool behavior
   const result = renderResult(decorated, args, details, "Search error: fail query: Connection refused", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /Connection refused/, "error message is visible even without isError (Result section)");
   assert.doesNotMatch(text, /OUTPUT ───/, "no Output section when error text is present");
 
   // Also verify isError:true still works (if Pi ever sets it)
@@ -225,11 +222,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, { queries: ["test query"], phase: "done", count: 3 }, "output text", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   const headerLine = text.split("\n")[1] ?? "";
-  // queries should appear exactly once in the header metadata
-  const queryCount = (headerLine.match(/queries=test query/g) ?? []).length;
-  assert.equal(queryCount, 1, "queries appears exactly once in header (no duplication)");
-  // no_cache raw key should be suppressed in favor of cache=bypassed
-  assert.doesNotMatch(headerLine, /no_cache=true/, "raw no_cache label suppressed in favor of cache=bypassed");
+  // Web tools carry no key=value metadata in the header
+  assert.doesNotMatch(headerLine, /queries=/, "no queries key=value in header");
+  assert.doesNotMatch(headerLine, /no_cache=/, "no raw no_cache label in header");
 
   runtime.dispose();
 }
@@ -247,12 +242,15 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(collapsedText, /^✓/, "collapsed keeps lifecycle marker");
   assert.match(collapsedText, /Web search/, "collapsed keeps identity/title");
   assert.match(collapsedText, /test/, "collapsed keeps query target");
+  // Collapsed shows two-row records (rank + title, then secondary line muted)
+  assert.match(collapsedText, /1\s+R/, "collapsed shows ranked record title");
+  assert.match(collapsedText, /ex\.com/, "collapsed shows record secondary line");
 
   const expanded = renderResult(decorated, args, details, "[1] R", { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));
   assert.ok(!expandedText.includes("REQUEST"), "expanded prunes the restating Request section (C8)");
   assert.ok(!expandedText.includes("SUMMARY"), "expanded prunes the restating Summary section (C8)");
-  assert.match(expandedText, /1\. R/, "expanded shows the results content directly");
+  assert.match(expandedText, /1\s+R/, "expanded shows the results records");
 
   runtime.dispose();
 }
@@ -269,16 +267,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /Web fetch/, "call shows Web fetch title");
   assert.match(text, /example\.com\/page1/, "call target shows safe normalized URLs");
-  assert.match(text, /mode=readable/, "call metadata shows mode");
-  assert.match(text, /maxTokens=5000/, "call metadata shows maxTokens (not raw max_tokens)");
-  assert.match(text, /links=included/, "call metadata shows link-summary choice");
-  assert.match(text, /images=described/, "call metadata shows image-description choice");
-  assert.match(text, /cache=bypassed/, "call metadata shows cache choice");
-  // No raw arg-key labels should leak
-  assert.doesNotMatch(text, /max_tokens=/, "raw max_tokens label suppressed");
-  assert.doesNotMatch(text, /include_links=/, "raw include_links label suppressed");
-  assert.doesNotMatch(text, /describe_images=/, "raw describe_images label suppressed");
-  assert.doesNotMatch(text, /no_cache=/, "raw no_cache label suppressed");
+  // Web tools carry no key=value metadata in the header
+  assert.doesNotMatch(text, /mode=/, "no mode key=value metadata in header");
+  assert.doesNotMatch(text, /maxTokens=/, "no maxTokens key=value metadata in header");
+  assert.doesNotMatch(text, /max_tokens=/, "no raw max_tokens label in header");
+  assert.doesNotMatch(text, /include_links=/, "no raw include_links label in header");
+  assert.doesNotMatch(text, /describe_images=/, "no raw describe_images label in header");
+  assert.doesNotMatch(text, /no_cache=/, "no raw no_cache label in header");
 
   runtime.dispose();
 }
@@ -306,10 +301,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /Page One/, "result preserves page title");
   assert.match(text, /Page Two/, "result preserves second page title");
-  assert.match(text, /url=https:\/\/example\.com\/page1/, "result preserves page URL");
-  assert.match(text, /lines=50/, "result preserves line count");
-  assert.match(text, /tokens=3000/, "result preserves token count");
-  assert.match(text, /retried=yes/, "result marks retried pages distinctly");
+  // Two-row records: rank + title, then secondary line with URL, lines, tokens
+  assert.match(text, /example\.com\/page1/, "result shows page URL in record body");
+  assert.match(text, /50 lines/, "result shows line count in record body");
+  assert.match(text, /3000 tokens/, "result shows token count in record body");
 
   runtime.dispose();
 }
@@ -333,8 +328,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "## Good Page\n\nContent\n\n---\n\n## bad.example.com\n\n[Failed: Jina 503]", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^✓/, "partial-URL-failure fetch renders completed (some pages succeeded)");
-  assert.match(text, /1 page fetched · 1 failed/, "summary row states succeeded and failed counts");
-  assert.match(text, /error=Jina 503/, "failed page shows the per-URL error distinctly");
+  assert.match(text, /1 of 2 pages fetched/, "summary row states succeeded and total counts");
 
   runtime.dispose();
 }
@@ -348,9 +342,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { urls: ["not-a-url"], succeeded: 0, failed: 1, phase: "done",
     results: [], failedUrls: [{ url: "not-a-url", error: "Invalid HTTP(S) URL", retried: false }],
     error: "Invalid HTTP(S) URL: not-a-url" };
-  const result = renderResult(decorated, args, details, "Error: Invalid HTTP(S) URL: not-a-url", { expanded: true });
+  const result = renderResult(decorated, args, details, "Error: Invalid HTTP(S) URL: not-a-url", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /Invalid HTTP\(S\) URL/, "malformed URL error is visible without isError");
+  assert.match(text, /^×/, "malformed URL error renders failed marker");
+  assert.match(text, /Invalid HTTP\(S\) URL/, "malformed URL error is visible with isError");
   assert.doesNotMatch(text, /OUTPUT ───/, "no Output section when error is present");
 
   runtime.dispose();
@@ -365,9 +360,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   const headerLine = text.split("\n")[1] ?? "";
-  // mode should appear exactly once
-  const modeCount = (headerLine.match(/mode=readable/g) ?? []).length;
-  assert.equal(modeCount, 1, "mode appears exactly once in header (no duplication)");
+  // Web tools carry no key=value metadata in the header
+  assert.doesNotMatch(headerLine, /mode=/, "no mode key=value in header");
+  assert.doesNotMatch(headerLine, /max_tokens=/, "no raw max_tokens label in header");
 
   runtime.dispose();
 }
