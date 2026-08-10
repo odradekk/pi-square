@@ -94,15 +94,17 @@ export class BoundedPreview implements Component {
     private omittedLines = 0,
     private wordWrap = true,
     private firstOnly = false,
+    private tailOnly = false,
   ) {}
 
-  update(text: string, maximumLines: number, theme: Theme, omittedLines = 0, wordWrap = true, firstOnly = false): void {
+  update(text: string, maximumLines: number, theme: Theme, omittedLines = 0, wordWrap = true, firstOnly = false, tailOnly = false): void {
     this.text = text;
     this.maximumLines = maximumLines;
     this.theme = theme;
     this.omittedLines = omittedLines;
     this.wordWrap = wordWrap;
     this.firstOnly = firstOnly;
+    this.tailOnly = tailOnly;
   }
 
   render(width: number): string[] {
@@ -124,6 +126,28 @@ export class BoundedPreview implements Component {
         lines.push(padVisible(this.theme.fg("muted", `\u2026 +${totalOmitted} lines`), safeWidth));
       }
       return lines;
+    }
+    // Tail-only mode: keep the last rows and prepend a muted notice.
+    // Used by execution tools whose output states its conclusion at the end.
+    if (this.tailOnly) {
+      const sourceLines = sanitized.replace(/\r\n?/g, "\n").split("\n");
+      const allVisual: string[] = [];
+      for (const source of sourceLines) {
+        allVisual.push(...(this.wordWrap
+          ? wrapTextWithAnsi(source || " ", safeWidth)
+          : [truncateToWidth(source || " ", safeWidth, "\u2026")]));
+      }
+      const cap = Math.max(0, this.maximumLines);
+      if (allVisual.length <= cap) {
+        return allVisual.map((line) => padVisible(styleTone(this.theme, "default", line), safeWidth));
+      }
+      // Reserve one line for the `… N earlier lines` notice.
+      const visible = allVisual.slice(-(cap - 1));
+      const earlier = allVisual.length - visible.length;
+      return [
+        padVisible(this.theme.fg("muted", `\u2026 ${earlier} earlier lines`), safeWidth),
+        ...visible.map((line) => padVisible(styleTone(this.theme, "default", line), safeWidth)),
+      ];
     }
     const result = boundedHeadTailLines(sanitized, safeWidth, this.maximumLines, this.wordWrap);
     const lines = result.headLines.map((line) => styleTone(this.theme, "default", line));
@@ -354,8 +378,9 @@ export class OperationalDisplayComponent implements Component {
       if (showPreview && description.diff) {
         body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
       }
-      // C4: the expanded body of a terminal success closes with the summary row.
-      if (terminal && this.options.expanded && !isError) {
+      // C4: the expanded body closes with the summary row.
+      // Execution tools are a C4 exception — their summary always renders.
+      if (terminal && this.options.expanded && (!isError || description.family === "execution")) {
         body.push(...this.summaryBodyRow(description, true));
       }
     }
@@ -398,6 +423,7 @@ export class OperationalDisplayComponent implements Component {
       (description.preview.omittedLines ?? 0) + (inputTruncated ? 1 : 0),
       this.policy.wordWrap,
       firstOnly,
+      description.preview.tailOnly ?? false,
     );
     return preview.render(bodyWidth);
   }
@@ -418,7 +444,9 @@ export class OperationalDisplayComponent implements Component {
   /**
    * C4/C6 collapsed terminal body: a failure renders only the sentence row
    * (rendered by the caller); a success renders one summary row, and a
-   * payload tool keeps its bounded body above it.
+   * payload tool keeps its bounded body above it. Execution tools are a
+   * C4 exception — their output is the result, so it stays in the body
+   * even on failure.
    */
   private collapsedTerminalBody(
     description: DisplayDescriptionV1,
@@ -426,10 +454,24 @@ export class OperationalDisplayComponent implements Component {
     payloadTool: boolean,
     bodyWidth: number,
   ): string[] {
-    if (isError) return [];
+    if (isError && description.family !== "execution") return [];
     const body: string[] = [];
     let notShown = 0;
-    if (payloadTool && this.policy.resultMode === "preview") {
+    // Execution tools with rows (e.g. scheme with stderr tone) render
+    // those rows in the collapsed body with tail-bounding.
+    if (payloadTool && description.rows?.length && description.family === "execution") {
+      const cap = Math.max(1, Math.floor(this.policy.previewLines));
+      const allRows = description.rows.slice(0, MAX_ROWS);
+      const tailRows = allRows.length > cap ? allRows.slice(-(cap - 1)) : allRows;
+      if (allRows.length > tailRows.length) {
+        body.push(padVisible(this.theme.fg("muted", `\u2026 ${allRows.length - tailRows.length} earlier lines`), bodyWidth));
+      }
+      for (const row of tailRows) {
+        const text = styleTone(this.theme, row.tone ?? "default",
+          truncateToWidth(sanitizeDisplayText(row.text), bodyWidth, "\u2026"));
+        body.push(padVisible(text, bodyWidth));
+      }
+    } else if (payloadTool && this.policy.resultMode === "preview") {
       const collapsedSections = renderDisplaySections(description.sections ?? [], this.policy, this.theme, bodyWidth, false);
       if (collapsedSections.length > 0) {
         const cap = Math.max(1, Math.floor(this.policy.previewLines));

@@ -232,7 +232,8 @@ for (const [access, marker] of [["readonly", "●"], ["write", "●"], ["fullacc
   );
   const callText = stripVTControlCharacters(call.render(80).join("\n"));
   assert.match(callText, /●/, `${access} running renders braille`);
-  assert.ok(callText.includes(access), `${access} access mode must be visible in metadata`);
+  assert.ok(callText.includes("Scheme"), `${access} call shows the Scheme title`);
+  assert.ok(callText.includes("(display 1)"), `${access} call shows the code as target`);
 
   const result = dec.renderResult(
     {

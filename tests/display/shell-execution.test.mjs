@@ -142,10 +142,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Write-Output 'hello world'" };
   const result = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 50 }, "hello world", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /Command/, "expanded result shows a Command section");
-  assert.match(text, /Write-Output 'hello world'/, "the full command is retained in the expanded Command section");
-  assert.match(text, /Output/, "expanded result shows an Output section");
+  // Short commands do not get a Command section (defect 45); only the
+  // output is visible in the expanded body.
   assert.match(text, /hello world/, "output content is visible");
+  assert.match(text, /pwsh 7\.4\.0/, "summary states the host token");
 
   runtime.dispose();
 }
@@ -165,19 +165,19 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const fail = renderResult(decorated, args, { exitCode: 1, flavor: "pwsh", version: "7.4.0", durationMs: 30 }, "Error: term not found", { isError: true, expanded: true });
   const failText = stripVTControlCharacters(fail.render(80).join("\n"));
   assert.match(failText, /^×/, "non-zero exit renders the failed marker, distinct from completed");
-  assert.match(failText, /exit=1/, "non-zero exit code is visible in expanded metadata");
+  assert.match(failText, /Exited with code 1/, "non-zero exit code is visible in the summary row");
 
   // Timeout
-  const timeout = renderResult(decorated, args, { exitCode: null, timedOut: true, flavor: "pwsh", version: "7.4.0", durationMs: 30000 }, "partial\nCommand timed out", { isError: true, expanded: true });
+  const timeout = renderResult(decorated, args, { exitCode: null, timedOut: true, flavor: "pwsh", version: "7.4.0", durationMs: 30000 }, "partial\nCommand timed out after 30.0 seconds", { isError: true, expanded: true });
   const timeoutText = stripVTControlCharacters(timeout.render(80).join("\n"));
   assert.match(timeoutText, /^×/, "timeout renders the failed marker");
-  assert.match(timeoutText, /timed out/i, "timeout state is visible via the error message when expanded");
+  assert.match(timeoutText, /Timed out/i, "timeout state is visible via the summary row");
 
   // Abort
   const abort = renderResult(decorated, args, { exitCode: null, aborted: true, flavor: "pwsh", version: "7.4.0", durationMs: 10 }, "Command aborted", { isError: true, expanded: true });
   const abortText = stripVTControlCharacters(abort.render(80).join("\n"));
   assert.match(abortText, /^·/, "aborted renders the distinct aborted marker, not the failed marker");
-  assert.match(abortText, /aborted/i, "aborted state is visible via the error message when expanded");
+  assert.match(abortText, /Cancelled/i, "aborted state is visible via the summary row");
 
   runtime.dispose();
 }
@@ -218,16 +218,15 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "throw 'error'" };
   const result = renderResult(decorated, args, { exitCode: 1, flavor: "pwsh", version: "7.4.0", durationMs: 20 }, "Error: error", { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  // The error text must appear at most twice (Output section + description.error),
-  // never three times (no separate ERROR section on top of those).
+  // The error text must appear exactly once: in the output body.
+  // No separate error sentence or ERROR section duplicates it.
   const errorCount = (text.match(/Error: error/g) ?? []).length;
-  assert.ok(errorCount <= 2, `error text appears ${errorCount} times (expected at most 2, no ERROR section duplication)`);
-  assert.doesNotMatch(text, /ERROR ───/, "no separate ERROR section header (description.error is the sole styled carrier)");
+  assert.equal(errorCount, 1, `error text appears ${errorCount} times (expected exactly 1, no duplication)`);
 
   runtime.dispose();
 }
 
-// ─── 8. No metadata duplication in header ───────────────────────────
+// ─── 8. No metadata in header ──────────────────────────────────────
 
 {
   const runtime = newRuntime();
@@ -235,10 +234,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Get-Process", timeoutMs: 5000 };
   const result = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "output", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  // exit should appear exactly once in the header metadata, not twice
-  const headerLine = text.split("\n")[1] ?? "";
-  const exitCount = (headerLine.match(/exit=0/g) ?? []).length;
-  assert.equal(exitCount, 1, "exit code appears exactly once in header metadata (no duplication)");
+  // Execution tools carry no key=value metadata at all.
+  assert.doesNotMatch(text, /exit=|durationMs=|flavor=|version=/, "no key=value metadata renders for execution tools");
+  assert.match(text, /pwsh 7\.4\.0/, "the host token appears in the summary row");
 
   runtime.dispose();
 }
@@ -255,13 +253,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(collapsedText, /^✓/, "collapsed keeps lifecycle marker visible");
   assert.match(collapsedText, /PowerShell/, "collapsed keeps identity/title visible");
   assert.match(collapsedText, /Get-Process/, "collapsed keeps command target visible");
-  assert.match(collapsedText, /Command/, "collapsed shows compact Command section");
-  assert.match(collapsedText, /Output/, "collapsed shows compact Output section");
-  assert.doesNotMatch(collapsedText, /STATUS ───/, "collapsed omits the non-compact Status section");
+  assert.match(collapsedText, /process list output/, "collapsed shows the output content");
+  assert.match(collapsedText, /pwsh 7\.4\.0/, "collapsed shows the host token in the summary row");
+  assert.doesNotMatch(collapsedText, /Status/, "collapsed has no Status section");
 
   const expanded = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "process list output", { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));
-  assert.match(expandedText, /exit=0/, "expanded shows exit code in metadata (Status section pruned by C8)");
+  assert.doesNotMatch(expandedText, /exit=0/, "expanded shows no exit key=value metadata");
 
   runtime.dispose();
 }
@@ -347,7 +345,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     plainTheme,
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: result, isError: true }),
   );
-  assert.match(stripVTControlCharacters(errResult.render(80).join("\n")), /^●/, "bash error renders bullet");
+  assert.match(stripVTControlCharacters(errResult.render(80).join("\n")), /^●/, "bash error renders bullet in color-available mode");
 
   runtime.dispose();
 }
@@ -389,7 +387,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   );
   const errText = stripVTControlCharacters(errResult.render(80).join("\n"));
   assert.match(errText, /^×/, "bash error renders the failed marker");
-  assert.match(errText, /Command exited with code 1/, "bash exit status is visible in the output text");
+  assert.match(errText, /Exited with code 1/, "bash exit status is visible in the summary row");
+  assert.doesNotMatch(errText, /Command exited with code 1/, "the exit statement is stripped from the output text");
 
   runtime.dispose();
 }

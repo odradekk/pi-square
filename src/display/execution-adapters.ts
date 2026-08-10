@@ -3,81 +3,130 @@ import {
   asRecord,
   baseDescription,
   codeSection,
-  field,
-  metadata,
   numberOf,
+  plural,
   sections,
   stringOf,
-  summarySection,
   textOf,
-  textSection,
   type UnknownRecord,
 } from "./adapter-utils";
-import type { DisplayMetadataEntry, DisplaySection, OperationalLifecycle, OperationalQualifier } from "./types";
+import { DEFAULT_DISPLAY_POLICY } from "./types";
+import type { DisplayRow, DisplaySection, OperationalLifecycle, OperationalQualifier } from "./types";
 
-function shellCommand(args: UnknownRecord): string | undefined {
-  return stringOf(args.command);
-}
-
-function schemeCode(args: UnknownRecord): string | undefined {
-  return stringOf(args.code);
-}
-
-function identityMetadata(name: string, args: UnknownRecord, details: UnknownRecord): DisplayMetadataEntry[] {
-  if (name === "scheme") {
-    return metadata([
-      field("access", args.access ?? details.access),
-      field("timeoutMs", args.timeoutMs),
-      field("exit", details.exitCode),
-      field("durationMs", details.durationMs),
-    ]);
-  }
-  return metadata([
-    field("timeout", args.timeout),
-    field("timeoutMs", args.timeoutMs),
-    field("cwd", args.cwd),
-    field("exit", details.exitCode),
-    field("durationMs", details.durationMs),
-    field("flavor", details.flavor),
-    field("version", details.version),
-  ]);
-}
+// ── Text cleaning ──────────────────────────────────────────────────
 
 /**
- * Status fields that carry actionable or diagnostic meaning: timeout,
- * abort, truncation, and PowerShell unavailability. Exit code, flavor, and
- * version already appear in the header identity metadata, so the Status
- * section surfaces only what the header does not.
+ * Strip the exit/timeout/abort status line that pwsh and bash append to
+ * their own text output. The summary row already states the exit code.
  */
-function statusFields(name: string, details: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
-  return [
-    numberOf(details.exitCode) !== undefined ? field("exit", details.exitCode, details.exitCode !== 0 ? "error" : undefined) : undefined,
-    numberOf(details.durationMs) !== undefined ? field("duration", `${details.durationMs}ms`) : undefined,
-    details.timedOut === true ? field("timeout", "yes", "warning") : undefined,
-    details.aborted === true ? field("aborted", "yes", "warning") : undefined,
-    details.truncated === true ? field("output", "truncated", "warning") : undefined,
-    name === "pwsh" && details.unavailable === true ? field("unavailable", "yes", "error") : undefined,
-  ];
-}
-
-function splitSchemeOutput(text: string): { stdout: string; stderr?: string } {
-  const marker = "\n[stderr]\n";
-  const index = text.indexOf(marker);
-  if (index < 0) return { stdout: text };
-  return { stdout: text.slice(0, index), stderr: text.slice(index + marker.length) };
+function stripStatusLine(text: string): string {
+  return text
+    .replace(/\n+Command exited with code \d+\s*$/, "")
+    .replace(/\n+Command timed out after [\d.]+ seconds\s*$/, "")
+    .replace(/\n+Command aborted\s*$/, "")
+    .replace(/\n+Execution aborted\s*$/, "")
+    .replace(/\n+Execution timed out after [\d.]+(?:ms|s)\s*$/, "")
+    .replace(/\n+pwsh execution failed: .+$/s, "")
+    .trimEnd();
 }
 
 /**
- * Derive an explicit lifecycle for the execution-family tools that share
- * this adapter (pwsh, scheme). Bash goes through a separate adapter path
- * (builtins.ts) with its own lifecycle; see builtinLifecycle there.
+ * Strip the scheme model-facing trailer
+ * (`-- scheme access=… exit=… duration=…`). It belongs to the model
+ * result, not to the displayed output.
+ */
+function stripSchemeTrailer(text: string): string {
+  return text.replace(/\n?-- scheme .+$/, "").trimEnd();
+}
+
+// ── Summary builders ───────────────────────────────────────────────
+
+/** Build the host token: `pwsh 7.6.4` or `powershell 5.1`. */
+function hostToken(details: UnknownRecord): string | undefined {
+  const flavor = stringOf(details.flavor);
+  if (!flavor) return undefined;
+  const display = flavor === "windows-powershell" ? "powershell" : flavor;
+  const version = stringOf(details.version);
+  return version ? `${display} ${version}` : display;
+}
+
+function formatTimeout(timeoutMs: number): string {
+  const seconds = timeoutMs / 1000;
+  return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
+}
+
+function countLines(text: string): number {
+  const trimmed = text.trimEnd();
+  return trimmed ? trimmed.split("\n").length : 0;
+}
+
+/**
+ * Split scheme output at the `[stderr]` marker into stdout and stderr
+ * parts, then build DisplayRow items with the warning tone for stderr
+ * lines and the default tone for stdout lines. Returns the joined display
+ * text and the rows.
+ */
+function schemeRows(text: string): { displayText: string; rows: DisplayRow[] } {
+  const marker = "\n\n[stderr]\n";
+  const index = text.indexOf(marker);
+  if (index < 0) return { displayText: text, rows: [] };
+  const stdout = text.slice(0, index).trimEnd();
+  const stderr = text.slice(index + marker.length).trimEnd();
+  const rows: DisplayRow[] = [];
+  for (const line of stdout.split("\n")) {
+    rows.push({ text: line, tone: "default" });
+  }
+  for (const line of stderr.split("\n")) {
+    rows.push({ text: line, tone: "warning" });
+  }
+  return { displayText: stdout ? (stderr ? `${stdout}\n${stderr}` : stdout) : stderr, rows };
+}
+
+/**
+ * Build the C4 summary row for the execution tools. The suffix is the
+ * host token for pwsh and the access level for scheme.
+ */
+function executionSummary(
+  name: string,
+  args: UnknownRecord,
+  details: UnknownRecord,
+  outputText: string,
+  isError: boolean,
+  isAborted: boolean,
+  isTimedOut: boolean,
+  exitCode: number | undefined,
+  unavailable: boolean,
+): string {
+  if (unavailable) return "PowerShell is not installed";
+  if (isAborted) return "Cancelled";
+  if (isTimedOut) {
+    const timeoutMs = numberOf(args.timeoutMs) ?? numberOf(details.timeoutMs) ?? 30_000;
+    return `Timed out after ${formatTimeout(timeoutMs)}`;
+  }
+  const suffix = name === "scheme"
+    ? (stringOf(details.access) ?? stringOf(args.access) ?? "readonly")
+    : hostToken(details);
+  if (isError && exitCode !== undefined && exitCode !== 0) {
+    return suffix ? `Exited with code ${exitCode} · ${suffix}` : `Exited with code ${exitCode}`;
+  }
+  const lines = countLines(outputText);
+  if (lines === 0) return suffix ? `No output · ${suffix}` : "No output";
+  return suffix ? `${plural(lines, "line")} · ${suffix}` : plural(lines, "line");
+}
+
+// ── Lifecycle ──────────────────────────────────────────────────────
+
+/**
+ * Derive an explicit lifecycle for pwsh and scheme. Bash goes through a
+ * separate adapter path (builtins.ts).
  *
- * Pwsh and scheme mark aborted results as isError (matching a genuine
- * failure), so the explicit aborted check must precede the isError check
- * to render the distinct × marker — the same override pattern already
- * used by pdf_search and CodeGraph.
+ * Aborted results take precedence over isError to render the distinct
+ * aborted marker. Scheme adds a structural warning: exit code 0 with
+ * non-empty stderr becomes `completed` + `warning` — this does NOT match
+ * on message text.
  */
 function executionLifecycle(
+  name: string,
   context: { executionStarted: boolean; argsComplete: boolean },
   isPartial: boolean,
   isError: boolean,
@@ -88,6 +137,12 @@ function executionLifecycle(
     if (isPartial) return { lifecycle: "running" };
     if (details.aborted === true) return { lifecycle: "aborted" };
     if (isError) return { lifecycle: "failed" };
+    if (name === "scheme"
+      && numberOf(details.exitCode) === 0
+      && typeof details.stderr === "string"
+      && details.stderr.length > 0) {
+      return { lifecycle: "completed", qualifiers: ["warning"] };
+    }
     return { lifecycle: "completed", ...(details.truncated === true ? { qualifiers: ["truncated"] } : {}) };
   }
   if (context.executionStarted) return { lifecycle: "running" };
@@ -95,7 +150,9 @@ function executionLifecycle(
   return { lifecycle: "queued" };
 }
 
-function commandLanguage(name: string): string | undefined {
+// ── Section helpers ────────────────────────────────────────────────
+
+function commandLanguage(name: string): string {
   if (name === "scheme") return "scheme";
   if (name === "pwsh") return "powershell";
   return "bash";
@@ -106,21 +163,18 @@ function commandSectionTitle(name: string): string {
 }
 
 /**
- * Merge identity metadata on top of the base adapter's generic metadata,
- * replacing any duplicate labels. Prevents the same fields (exit,
- * durationMs, flavor, version) from appearing twice in the header.
+ * Whether the Command/Code section should appear in the expanded body.
+ * Scheme always shows its source; pwsh shows the Command section only
+ * when the command is long enough that the header likely truncated it.
  */
-function mergeIdentity(
-  base: readonly DisplayMetadataEntry[],
-  fresh: readonly DisplayMetadataEntry[],
-): DisplayMetadataEntry[] {
-  const freshLabels = new Set(fresh.map((entry) => entry.label));
-  return [...base.filter((entry) => !freshLabels.has(entry.label)), ...fresh].slice(0, 16);
+function shouldShowCommandSection(name: string, args: UnknownRecord): boolean {
+  if (name === "scheme") return Boolean(stringOf(args.code));
+  const command = stringOf(args.command);
+  if (!command) return false;
+  return command.length > 60 || command.includes("\n");
 }
 
-function markCompact(section: DisplaySection | undefined): DisplaySection | undefined {
-  return section && section.compact === false ? { ...section, compact: true } : section;
-}
+// ── Adapter ────────────────────────────────────────────────────────
 
 export function createExecutionAdapter(
   name: string,
@@ -130,15 +184,10 @@ export function createExecutionAdapter(
     ...base,
     describeCall(args, context) {
       const description = base.describeCall(args, context);
-      const source = asRecord(args);
-      const command = name === "scheme" ? schemeCode(source) : shellCommand(source);
-      const identMeta = identityMetadata(name, source, {});
       return baseDescription(description, {
-        ...executionLifecycle(context, false, false, {}, "call"),
-        metadata: mergeIdentity(description.metadata ?? [], identMeta),
-        sections: sections(
-          codeSection(commandSectionTitle(name), command, commandLanguage(name), false),
-        ).map((section) => ({ ...section, compact: true })),
+        ...executionLifecycle(name, context, false, false, {}, "call"),
+        metadata: [],
+        sections: [],
       });
     },
     describeResult(result, options, context) {
@@ -146,42 +195,89 @@ export function createExecutionAdapter(
       const args = asRecord(context.args);
       const details = asRecord(result.details);
       const isError = Boolean((result as { isError?: boolean }).isError);
-      const text = textOf(result);
-      const output = name === "scheme" ? splitSchemeOutput(text) : { stdout: text, stderr: stringOf(details.stderr) };
-      const identMeta = identityMetadata(name, args, details);
-      const reason = stringOf(details.reason) ?? stringOf(details.error);
+      const isAborted = details.aborted === true;
+      const isTimedOut = details.timedOut === true;
+      const unavailable = name === "pwsh" && details.unavailable === true;
+      const exitCode = numberOf(details.exitCode);
+      const durationMs = numberOf(details.durationMs);
+      const rawText = textOf(result);
 
-      const statusSection = summarySection("Status", statusFields(name, details));
-      const diagnostics = reason && reason !== text
-        ? textSection("Diagnostics", reason, "warning")
-        : undefined;
-      const structured = sections(
-        markCompact(codeSection(commandSectionTitle(name), name === "scheme" ? schemeCode(args) : shellCommand(args), commandLanguage(name), false)),
-        // C6: on failure the output is the failure text; description.error
-        // (and the expanded ERROR section) is its sole carrier.
-        ...(isError ? [] : [
-          markCompact(codeSection("Output", output.stdout, "text", false)),
-          markCompact(codeSection("Stderr", output.stderr, "text", false)),
-        ]),
-        statusSection,
-        diagnostics,
+      // ── Clean the display text ───────────────────────────────────
+      let displayText = name === "scheme" ? stripSchemeTrailer(rawText) : rawText;
+      displayText = stripStatusLine(displayText);
+      // Remove the "(no output)" placeholder that scheme inserts.
+      displayText = displayText.replace(/^\(no output\)\n?/, "").trimEnd();
+
+      // For scheme, split at the [stderr] marker to build rows with the
+      // warning tone on stderr lines. The marker itself is removed.
+      const { displayText: schemeText, rows: schemeStderrRows } =
+        name === "scheme" ? schemeRows(displayText) : { displayText, rows: [] as DisplayRow[] };
+      displayText = schemeText;
+
+      const outputLines = countLines(displayText);
+      const isTruncated = details.truncated === true
+        || outputLines > DEFAULT_DISPLAY_POLICY.previewLines;
+
+      // ── Summary row ──────────────────────────────────────────────
+      const summary = executionSummary(
+        name, args, details, displayText,
+        isError, isAborted, isTimedOut, exitCode, unavailable,
       );
-      const hasOutput = Boolean(output.stdout) || Boolean(output.stderr);
+
+      // ── Lifecycle ────────────────────────────────────────────────
+      const lc = executionLifecycle(name, context, options.isPartial, isError, details, "result");
+
+      // ── Unavailable host ─────────────────────────────────────────
+      if (unavailable) {
+        const reason = stringOf(details.reason) ?? rawText;
+        return baseDescription(description, {
+          ...lc,
+          metadata: [],
+          error: "PowerShell is not installed",
+          ...(reason && reason !== "PowerShell is not installed" ? { errorRaw: reason } : {}),
+          summary: undefined,
+          preview: undefined,
+          sections: [],
+          rows: [],
+        });
+      }
+
+      // ── Collapsed body: tail-bounded preview ─────────────────────
+      // ── Expanded body: Command/Code + Output sections ─────────────
+      let expandedSections: DisplaySection[] = [];
+      if (options.expanded) {
+        const showCommand = shouldShowCommandSection(name, args);
+        const cmd = showCommand
+          ? codeSection(
+            commandSectionTitle(name),
+            name === "scheme" ? stringOf(args.code) : stringOf(args.command),
+            commandLanguage(name),
+            false,
+          )
+          : undefined;
+        const outputSection = displayText
+          ? codeSection("Output", displayText, "text", false)
+          : undefined;
+        expandedSections = sections(cmd, outputSection);
+      }
 
       return baseDescription(description, {
-        ...executionLifecycle(context, options.isPartial, isError, details, "result"),
-        metadata: mergeIdentity(description.metadata ?? [], identMeta),
-        sections: options.expanded
-          ? structured
-          : structured.filter((section) => section.compact === true),
-        // Structured sections (Command, Output, Stderr) carry the content;
-        // the raw text preview would only duplicate them. When there's no
-        // structured output (e.g. unavailable probe), the preview remains.
-        preview: hasOutput || structured.some((s) => s.compact === true) ? undefined : description.preview,
-        rows: [],
-        // description.error (already set by the base adapter for isError
-        // results) is the sole error carrier; a separate ERROR section
-        // would only duplicate it.
+        ...lc,
+        metadata: [],
+        durationMs,
+        truncated: (isTruncated && !isAborted) || undefined,
+        ...(options.expanded
+          ? { sections: expandedSections, rows: [], preview: undefined }
+          : schemeStderrRows.length > 0
+            ? { rows: schemeStderrRows, preview: undefined }
+            : displayText ? { preview: { text: displayText, tailOnly: true }, rows: [] } : { rows: [] }
+        ),
+        summary,
+        // Clear error/errorRaw from the base adapter: the output IS
+        // the result, the summary row states the exit code, and no
+        // separate error sentence renders.
+        error: undefined,
+        errorRaw: undefined,
       });
     },
   };

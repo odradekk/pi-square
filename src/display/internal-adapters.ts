@@ -36,7 +36,7 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   rg: ["pattern"], fd: ["pattern"], sg: ["pattern", "kind"], pdf_search: ["query"],
-  codegraph: ["operation"], bash: ["command"], pwsh: ["command"], scheme: ["access"],
+  codegraph: ["operation"], bash: ["command"], pwsh: ["command"], scheme: ["code"],
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
   docs: ["libraryId"], parse: ["path"], github_search: ["query"], github_read: ["path"],
   github_tree: ["path"], github_commit: ["ref"], ask: [], todo: ["action"],

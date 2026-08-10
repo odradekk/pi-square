@@ -273,6 +273,12 @@ export interface DisplayPreviewDescription {
   readonly text: string;
   readonly language?: string;
   readonly omittedLines?: number;
+  /**
+   * Tail-only mode for execution output: keep the last visual lines and
+   * prepend a muted `… N earlier lines` notice. Used by bash, pwsh, and
+   * scheme whose output states its conclusion at the end.
+   */
+  readonly tailOnly?: boolean;
 }
 
 export interface DisplayProgressDescription {

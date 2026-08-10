@@ -115,9 +115,9 @@ function builtinTarget(
 }
 
 function callDescription(name: BuiltinName, args: Record<string, unknown>, cwd: string, executionStarted: boolean): DisplayDescriptionV1 {
-  // grep carries no key=value metadata in the call body; the header target
-  // already shows the pattern (grep.md). Other builtins keep offset/limit.
-  const metadata = name === "grep" ? [] : [
+  // grep and bash carry no key=value metadata; the header target already
+  // shows the pattern or command. Other builtins keep offset/limit.
+  const metadata = (name === "grep" || name === "bash") ? [] : [
     numberMetadata("offset", args.offset),
     numberMetadata("limit", args.limit),
     numberMetadata("timeout", args.timeout),
@@ -335,6 +335,78 @@ function plural(count: number, singular: string, pluralForm?: string): string {
 }
 
 /**
+ * Parse and strip the exit status that Pi's bash tool appends to its text.
+ * Returns the cleaned display text and the parsed exit code, if any.
+ */
+function parseBashStatus(text: string): { cleanText: string; exitCode?: number; timedOut?: boolean } {
+  const exitMatch = text.match(/\n*Command exited with code (\d+)\s*$/);
+  if (exitMatch?.index !== undefined) {
+    return { cleanText: text.slice(0, exitMatch.index).trimEnd(), exitCode: Number(exitMatch[1]) };
+  }
+  const timeoutMatch = text.match(/\n*Command timed out.*$/);
+  if (timeoutMatch?.index !== undefined) {
+    return { cleanText: text.slice(0, timeoutMatch.index).trimEnd(), timedOut: true };
+  }
+  const abortedMatch = text.match(/\n*Command aborted\s*$/);
+  if (abortedMatch?.index !== undefined) {
+    return { cleanText: text.slice(0, abortedMatch.index).trimEnd() };
+  }
+  return { cleanText: text.trimEnd() };
+}
+
+/**
+ * Bash-specific result description: strips exit statements, keeps the
+ * tail-bounded output, and states the exit code only when non-zero.
+ */
+function bashResultDescription(
+  args: Record<string, unknown>,
+  result: AgentToolResult<unknown>,
+  partial: boolean,
+  expanded: boolean,
+  cwd: string,
+): DisplayDescriptionV1 {
+  const rawText = textContent(result);
+  const isErrorResult = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
+  const { cleanText, exitCode, timedOut } = parseBashStatus(rawText);
+  const outputLines = countTextLines(cleanText);
+
+  // Summary row: exit code on failure, line count on success.
+  let summary: string;
+  if (timedOut) {
+    const timeoutMs = typeof args.timeout === "number" && Number.isFinite(args.timeout) ? args.timeout : 30_000;
+    summary = `Timed out after ${(timeoutMs / 1000).toFixed(1)}s`;
+  } else if (isErrorResult && exitCode !== undefined) {
+    summary = `Exited with code ${exitCode}`;
+  } else if (isErrorResult) {
+    summary = cleanText || "Command failed";
+  } else {
+    summary = outputLines === 0 ? "No output" : plural(outputLines, "line");
+  }
+
+  const isTruncated = outputLines > DEFAULT_DISPLAY_POLICY.previewLines;
+  const command = stringValue(args.command);
+  const showCommand = expanded && command && (command.length > 60 || command.includes("\n"));
+
+  return {
+    version: 1,
+    tool: "bash",
+    family: "execution",
+    lifecycle: isErrorResult ? "failed" : partial ? "running" : "completed",
+    title: "Bash",
+    ...builtinTarget("bash", args, cwd),
+    truncated: (!isErrorResult && isTruncated) || undefined,
+    sections: expanded
+      ? sections(
+        showCommand ? codeSection("Command", command, "bash", false) : undefined,
+        cleanText ? codeSection("Output", cleanText, "text", false) : undefined,
+      )
+      : [],
+    ...(cleanText ? { preview: { text: cleanText, tailOnly: true } } : {}),
+    summary,
+  };
+}
+
+/**
  * C4 collapsed summary sentence for the Pi built-ins, composed from the
  * result details, the arguments, and the result text.
  */
@@ -545,9 +617,21 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
       },
     } : {}),
     describeResult(result, options, context) {
+      // Bash has a dedicated result description that strips exit
+      // statements, keeps the tail-bounded output, and states the
+      // exit code only when non-zero.
+      if (name === "bash") {
+        return bashResultDescription(
+          context.args as Record<string, unknown>,
+          result,
+          options.isPartial,
+          options.expanded,
+          cwd,
+        );
+      }
       const writeKind = name === "write" ? (context.state as Record<string, unknown>)?.writePreviewKind as "create" | "overwrite" | undefined : undefined;
       const desc = resultDescription(name, context.args as Record<string, unknown>, result, options.isPartial, cwd, writeKind);
-      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep" || name === "bash")
+      return (name === "read" || name === "edit" || name === "write" || name === "ls" || name === "find" || name === "grep")
         ? { ...desc, lifecycle: builtinLifecycle(context, "result") }
         : desc;
     },

@@ -317,7 +317,9 @@ function assertNoTrailingEmptyRow(lines, label) {
   const lines = renderLines(expanded);
   assert.equal(countOccurrences(lines, "Write-Error: boom"), 1, "the pwsh failure body renders the raw text exactly once");
   const collapsed = pwsh.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ command: "boom" }, {}, { isError: true }));
-  assert.equal(bodyLines(collapsed).length, 1, "the collapsed pwsh failure is one sentence row");
+  const collapsedLines = renderLines(collapsed);
+  assert.equal(countOccurrences(collapsedLines, "Write-Error: boom"), 1, "the collapsed pwsh failure renders the output exactly once");
+  assert.ok(collapsedLines.some((l) => l.includes("Exited with code 1")), "the collapsed pwsh failure summary states the exit code");
   runtime.dispose();
 }
 

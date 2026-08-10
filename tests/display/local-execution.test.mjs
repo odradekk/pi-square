@@ -97,8 +97,11 @@ for (const [name, args, expected] of [
     assert.match(expandedText, /model output/);
   }
   if (name === "bash" || name === "pwsh" || name === "scheme") {
-    assert.match(expandedText, /Command|Code/);
-    assert.match(expandedText, /Output/);
+    // Execution tools show the output content in expanded mode. Short
+    // commands do not get a Command section (C8/defect 45); scheme always
+    // shows its Code section because the header truncates multi-line source.
+    assert.match(expandedText, /model output/);
+    if (name === "scheme") assert.match(expandedText, /Code/);
   }
   if (name === "ssh") {
     assert.match(expandedText, /model output/);
