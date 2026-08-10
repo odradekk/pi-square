@@ -106,7 +106,6 @@ const SESSION = {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "declined connect renders · (aborted marker)");
   assert.match(text, /declined/i, "declined message visible");
-  assert.match(text, /code=DECLINED/, "decline code visible in metadata");
   assert.doesNotMatch(text, /password|token|credential/i, "no credentials in declined display");
 
   runtime.dispose();
@@ -123,7 +122,6 @@ const SESSION = {
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "confirmation unavailable renders × (failed marker)");
   assert.match(text, /confirmation/i, "error message visible");
-  assert.match(text, /code=CONFIRMATION_UNAVAILABLE/, "ssh code visible");
 
   runtime.dispose();
 }
@@ -139,7 +137,6 @@ const SESSION = {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "host verification failure renders ×");
   assert.match(text, /host key verification failed/i, "host verification message visible");
-  assert.match(text, /code=HOST_VERIFICATION_FAILED/, "host verification code visible");
   assert.doesNotMatch(text, /sha256:|BEGIN.*KEY|ssh-rsa|ssh-ed25519/i, "no fingerprint hash or key material in display");
 
   runtime.dispose();
@@ -171,7 +168,7 @@ const SESSION = {
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "secret input success renders ✓");
-  assert.match(text, /sent once/, "send-once message visible");
+  assert.match(text, /Secret input sent/, "send-once message visible");
   assert.doesNotMatch(text, /Enter password|my.?password|the.?secret|actual.?passphrase/i, "no secret value or prompt echoed in result display");
   // The prompt text from the call metadata should also not appear in the result
   assert.doesNotMatch(text, /Enter password/, "prompt text not echoed in result");
@@ -255,7 +252,7 @@ const SESSION = {
   const result = renderResult(decorated, args, details, "", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "input success renders ✓");
-  assert.match(text, /sent.*running/, "input sent message visible");
+  assert.match(text, /Input sent/, "input sent message visible");
 
   runtime.dispose();
 }

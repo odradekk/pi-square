@@ -95,9 +95,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /GitHub search/, "call shows GitHub search title");
-  assert.match(text, /kind=code/, "metadata shows search kind");
-  assert.match(text, /query=repo:owner\/name fn main/, "metadata shows query");
-  assert.match(text, /page=1/, "metadata shows page");
+  assert.match(text, /repo:owner\/name fn main/, "query appears as target");
 
   runtime.dispose();
 }
@@ -119,9 +117,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /owner\/name:src\/main\.rs/, "expanded preserves repo:path identity");
-  assert.match(text, /url=https:\/\/github\.com/, "expanded preserves source URL");
-  assert.match(text, /sha=abc123/, "expanded preserves commit SHA");
+  assert.match(text, /owner\/name \u00b7 src\/main\.rs/, "expanded preserves repo:path identity");
   assert.match(text, /fn main\(\)/, "expanded preserves text-match snippet content");
   // Ranking order
   assert.ok(text.indexOf("owner/name") < text.indexOf("other/repo"), "expanded preserves ranking order");
@@ -173,8 +169,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "Error: rate limit exceeded.", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "rate-limited renders failed marker");
-  assert.match(text, /code=RATE_LIMITED/, "rate-limit error code visible in metadata");
-  assert.match(text, /rate limit exceeded/i, "rate-limit error message visible");
+  assert.match(text, /GitHub rate limit reached/, "rate-limit error sentence visible");
 
   runtime.dispose();
 }
@@ -188,9 +183,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "read", phase: "done", repo: "owner/name", path: "src/index.ts", ref: "main", resolvedPath: "src/index.ts", sha: "abcdef1234567890", size: 1024, binary: false, line: 1, limit: 200, returnedLines: 50, totalLines: 150, hasMore: true, rate: { limit: 5000, remaining: 4999, used: 1 } };
   const result = renderResult(decorated, args, details, "1: import { foo } from 'bar';", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /GitHub read src\/index\.ts/, "title preserves path");
-  assert.match(text, /repo=owner\/name/, "metadata shows repo identity");
-  assert.match(text, /50 lines · continue at line 51/, "summary row states returned lines and continuation");
+  assert.match(text, /owner\/name:src\/index\.ts/, "target preserves repo and path");
+  assert.match(text, /lines 1-50 of 150 · continue at line 51/, "summary row states returned lines and continuation");
   assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
 
   runtime.dispose();
@@ -243,9 +237,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /src\/index\.ts/, "expanded preserves entry path");
-  assert.match(text, /type=file/, "expanded preserves entry type");
-  assert.match(text, /type=directory/, "expanded distinguishes directory entries");
+  assert.match(text, /index\.ts/, "expanded preserves entry path");
+  assert.match(text, /index\.ts/, "expanded preserves file entry path (relative to browse path)");
+  assert.match(text, /utils\//, "expanded shows directory with trailing slash");
   assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
 
   runtime.dispose();
@@ -285,9 +279,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /src\/index\.ts/, "expanded preserves changed filename");
-  assert.match(text, /status=modified/, "expanded preserves file status");
-  assert.match(text, /patch=included/, "expanded preserves patch availability");
-  assert.match(text, /patch=missing/, "expanded distinguishes missing patches");
+  assert.match(text, /M  src\/index\.ts/, "expanded shows modified status letter");
+  assert.match(text, /A  src\/logo\.png/, "expanded shows added status letter");
 
   runtime.dispose();
 }

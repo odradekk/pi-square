@@ -97,7 +97,7 @@ for (const [name, args, expected] of cases) {
   // through records or empty-state indicators rather than the raw text
   // fallback; other tools expose the text via output fallback or a
   // content/markdown section.
-  const hasStructuredDomain = name === "github_tree" || name === "github_commit" || name === "todo" || name === "ask";
+  const hasStructuredDomain = name === "github_tree" || name === "github_commit" || name === "github_search" || name === "github_read" || name === "todo" || name === "ask";
   const isWebTool = ["search", "fetch", "libs", "docs", "parse"].includes(name);
   if (!hasStructuredDomain && !isWebTool) {
     assert.match(expandedText, /private result body/);

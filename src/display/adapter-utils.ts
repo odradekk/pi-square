@@ -67,6 +67,10 @@ export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
   "libs",
   "docs",
   "parse",
+  "github_search",
+  "github_read",
+  "github_tree",
+  "github_commit",
   "subagent_delegate",
   "subagent_resume",
 ]);

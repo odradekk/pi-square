@@ -3,75 +3,14 @@ import {
   asArray,
   asRecord,
   baseDescription,
-  booleanOf,
-  codeSection,
-  field,
   formatBytes,
   formatRelativeAge,
-  markdownSection,
-  metadata,
   plural,
-  recordsSection,
-  sections,
   stringOf,
-  summarySection,
   textOf,
-  textSection,
   type UnknownRecord,
 } from "./adapter-utils";
-import type { DisplayMetadataEntry, DisplayRecordItem, DisplaySection, DisplayTone } from "./types";
-
-/**
- * Merge freshly computed request metadata on top of the base adapter's
- * generic metadata, replacing any entry whose label the fresh set also
- * produces. Prevents the same request fields (queries, urls, mode, ...)
- * from appearing twice in the header.
- * `suppress` unconditionally drops base labels that fresh intentionally
- * renames (e.g. fetch's `max_tokens` → `maxTokens`), so the raw arg-key
- * badge doesn't appear alongside its human-readable counterpart.
- */
-function mergeMetadata(
-  base: readonly DisplayMetadataEntry[],
-  fresh: readonly DisplayMetadataEntry[],
-  suppress: ReadonlySet<string> = new Set(),
-): DisplayMetadataEntry[] {
-  const freshLabels = new Set(fresh.map((entry) => entry.label));
-  return [...base.filter((entry) => !freshLabels.has(entry.label) && !suppress.has(entry.label)), ...fresh].slice(0, 16);
-}
-
-/**
- * Base adapter's generic ARG_FIELDS uses raw arg-key labels (max_tokens,
- * include_links, describe_images, no_cache) that requestFields renames to
- * human-readable equivalents. Suppress the raw-key labels so only the
- * readable versions survive in the header.
- */
-const REMOTE_SUPPRESS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
-  fetch: new Set(["max_tokens", "include_links", "describe_images", "no_cache"]),
-  search: new Set(["no_cache"]),
-  libs: new Set(["libraryName"]),
-  docs: new Set(["libraryId", "max_tokens"]),
-  parse: new Set(["max_tokens"]),
-});
-
-function remoteSuppress(name: string): ReadonlySet<string> {
-  return REMOTE_SUPPRESS[name] ?? new Set();
-}
-
-/**
- * SSH operation-specific target identity. The base adapter shows the
- * operation name; override with the profile/target (connect) or session
- * ID (command/read/input/interrupt/close) for actionable identity.
- */
-function sshTarget(source: UnknownRecord): string | undefined {
-  const op = stringOf(source.operation);
-  if (op === "connect") {
-    const profile = stringOf(source.profile);
-    const target = stringOf(source.target);
-    return target ? `${profile ?? "?"}/${target}` : profile;
-  }
-  if (op === "list") return undefined;
-  return stringOf(source.session);
-}
+import type { DisplayPathItem, DisplayRecordItem, DisplaySection, DisplayTone } from "./types";
 
 /**
  * The SSH tool serializes its result as a JSON body where `body.output`
@@ -87,43 +26,11 @@ function sshOutputText(text: string): string {
   }
 }
 
-function remoteLifecycle(name: string, isError: boolean, details: UnknownRecord): { lifecycle: import("./types").OperationalLifecycle } | undefined {
-  // Parse sets isError:true even for aborted results (its failure() helper
-  // does this). The base adapter's resolveResultLifecycle checks isError
-  // first and returns "failed", overriding "aborted". Set lifecycle
-  // explicitly so the × marker renders instead of ✗.
-  if (name === "parse" && isError) {
-    const status = String(details.status ?? "").toLowerCase();
-    if (status === "aborted") return { lifecycle: "aborted" };
-  }
-  // SSH command/read operations also set isError:true for aborted
-  // results. Same fix: set lifecycle explicitly.
-  if (name === "ssh" && isError) {
-    const status = String(details.status ?? "").toLowerCase();
-    if (status === "aborted") return { lifecycle: "aborted" };
-  }
-  // SSH declined states (connect declined, secret_input cancelled) have
-  // isError:false but status:declined. statusFor maps declined to
-  // aborted; set lifecycle explicitly for robustness.
-  if (name === "ssh" && !isError) {
-    const status = String(details.status ?? "").toLowerCase();
-    if (status === "declined") return { lifecycle: "aborted" };
-  }
-  return undefined;
-}
-
-function bytesField(label: string, value: unknown): DisplayMetadataEntry | undefined {
-  const bytes = typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  return bytes === undefined ? undefined : field(label, formatBytes(bytes));
-}
-
-function markCompact(section: DisplaySection | undefined): DisplaySection | undefined {
-  return section && section.compact === false ? { ...section, compact: true } : section;
-}
-
 // ── Web tool helpers ──────────────────────────────────────────────
 
 const WEB_TOOLS = new Set(["search", "fetch", "libs", "docs", "parse"]);
+
+const GITHUB_TOOLS = new Set(["github_search", "github_read", "github_tree", "github_commit"]);
 
 /**
  * Strip the scheme (`https://`, `http://`) from a URL and elide the middle
@@ -438,378 +345,6 @@ function webErrorSentence(name: string, text: string, details: UnknownRecord): s
   return text.split("\n", 1)[0]?.trim() || "Request failed";
 }
 
-function requestFields(name: string, source: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
-  switch (name) {
-    case "search":
-      return [
-        field("queries", asArray(source.queries).join(", ")),
-        field("sites", asArray(source.sites).join(", ")),
-        field("language", source.language),
-        field("country", source.country),
-        field("limit", source.limit),
-        source.no_cache === true ? field("cache", "bypassed") : undefined,
-      ];
-    case "fetch":
-      return [
-        field("urls", asArray(source.urls).join(", ")),
-        field("mode", source.mode),
-        field("maxTokens", source.max_tokens),
-        source.no_cache === true ? field("cache", "bypassed") : undefined,
-        source.include_links === true ? field("links", "included") : undefined,
-        source.describe_images === true ? field("images", "described") : undefined,
-      ];
-    case "libs":
-      return [field("library", source.libraryName), field("query", source.query), field("mode", source.mode), field("limit", source.limit)];
-    case "docs":
-      return [field("library", source.libraryId), field("query", source.query), field("mode", source.mode), field("kind", source.kind), field("maxTokens", source.max_tokens)];
-    case "parse":
-      return [field("path", source.path), field("pages", source.pages), field("mode", source.mode), field("timeout", source.timeout), field("maxTokens", source.max_tokens)];
-    case "github_search":
-      return [field("kind", source.kind), field("query", source.query), field("page", source.page), field("limit", source.limit)];
-    case "github_read":
-      return [field("repo", source.repo), field("path", source.path ?? "README"), field("ref", source.ref), field("line", source.line), field("limit", source.limit)];
-    case "github_tree":
-      return [field("repo", source.repo), field("path", source.path ?? "/"), field("ref", source.ref), field("depth", source.depth), field("offset", source.offset), field("limit", source.limit)];
-    case "github_commit":
-      return [field("repo", source.repo), field("ref", source.ref), field("page", source.page), field("limit", source.limit)];
-    case "ssh":
-      return [
-        field("operation", source.operation),
-        field("profile", source.profile),
-        field("target", source.target),
-        field("label", source.label),
-        field("session", source.session),
-        field("waitMs", source.waitMs),
-        source.prompt !== undefined ? field("prompt", "secure input requested", "warning") : undefined,
-      ];
-    default:
-      return [];
-  }
-}
-
-function requestSection(title: string, name: string, source: UnknownRecord): DisplaySection | undefined {
-  return summarySection(title, requestFields(name, source));
-}
-
-function webRecords(name: string, details: UnknownRecord): DisplayRecordItem[] {
-  if (name === "search") {
-    return asArray(details.results).map((value, index) => {
-      const item = asRecord(value);
-      return {
-        title: `${index + 1}. ${stringOf(item.title) ?? stringOf(item.url) ?? "Untitled"}`,
-        fields: metadata([
-          field("url", item.url),
-          field("provenance", item.provenance, "muted"),
-        ]),
-        body: stringOf(item.description),
-      } satisfies DisplayRecordItem;
-    });
-  }
-  if (name === "fetch") {
-    return asArray(details.pages).map((value, index) => {
-      const page = asRecord(value);
-      return {
-        title: `${index + 1}. ${stringOf(page.title) ?? stringOf(page.url) ?? "Untitled"}`,
-        fields: metadata([
-          field("url", page.url),
-          field("final", page.finalUrl),
-          field("lines", page.lines),
-          field("tokens", page.tokens),
-          field("usage", page.usage),
-          page.retried === true ? field("retried", "yes", "warning") : undefined,
-          field("error", page.error, "error"),
-        ]),
-      } satisfies DisplayRecordItem;
-    });
-  }
-  if (name === "libs") {
-    return asArray(details.candidates).map((value) => {
-      const candidate = asRecord(value);
-      return {
-        title: stringOf(candidate.id) ?? "(missing id)",
-        fields: metadata([
-          field("title", candidate.title),
-          field("source", candidate.source),
-          field("stars", candidate.stars),
-          field("snippets", candidate.totalSnippets),
-          field("tokens", candidate.totalTokens),
-          field("trust", candidate.trustScore),
-          field("benchmark", candidate.benchmarkScore),
-          field("updated", candidate.lastUpdateDate),
-        ]),
-        body: stringOf(candidate.description),
-      } satisfies DisplayRecordItem;
-    });
-  }
-  return [];
-}
-
-function githubRecords(name: string, details: UnknownRecord): DisplayRecordItem[] {
-  if (name === "github_search") {
-    return asArray(details.items).map((value) => {
-      const item = asRecord(value);
-      return {
-        title: [stringOf(item.repo), stringOf(item.path) ?? stringOf(item.name)].filter(Boolean).join(":"),
-        fields: metadata([
-          field("url", item.url),
-          field("language", item.language),
-          field("stars", item.stars),
-          field("sha", item.sha),
-        ]),
-        body: stringOf(item.description) ?? asArray(item.fragments).map(String).join("\n"),
-      } satisfies DisplayRecordItem;
-    });
-  }
-  if (name === "github_tree") {
-    return asArray(details.entries).map((value) => {
-      const entry = asRecord(value);
-      return {
-        title: stringOf(entry.path) ?? "(unknown)",
-        fields: metadata([
-          field("type", entry.type),
-          field("size", entry.size),
-          field("sha", entry.sha),
-          field("url", entry.url),
-        ]),
-      } satisfies DisplayRecordItem;
-    });
-  }
-  if (name === "github_commit") {
-    return asArray(details.files).map((value) => {
-      const file = asRecord(value);
-      return {
-        title: stringOf(file.filename) ?? "(unknown)",
-        fields: metadata([
-          field("status", file.status),
-          field("additions", file.additions, "success"),
-          field("deletions", file.deletions, "error"),
-          field("changes", file.changes),
-          field("patch", file.patchState, file.patchState === "included" ? "success" : "warning"),
-        ]),
-      } satisfies DisplayRecordItem;
-    });
-  }
-  return [];
-}
-
-function sshRecords(details: UnknownRecord): { profileSection: DisplaySection | undefined; sessionSection: DisplaySection | undefined } {
-  const profiles = asArray(details.profiles).map((value) => {
-    const profile = asRecord(value);
-    const targets = asArray(profile.targets).map((tv) => {
-      const t = asRecord(tv);
-      return `${stringOf(t.name) ?? "?"}: ${stringOf(t.endpoint) ?? "?"}`;
-    }).join(", ");
-    return {
-      title: stringOf(profile.name) ?? "(unknown)",
-      fields: metadata([
-        field("defaultTarget", profile.defaultTarget),
-        targets ? field("targets", targets) : undefined,
-        field("maxSessions", profile.maxSessions),
-      ]),
-    } satisfies DisplayRecordItem;
-  });
-  const sessions = asArray(details.sessions).map((value) => {
-    const session = asRecord(value);
-    const state = stringOf(session.state);
-    const cmdState = stringOf(session.commandState);
-    return {
-      title: stringOf(session.id) ?? "(unknown)",
-      fields: metadata([
-        field("endpoint", session.endpoint),
-        field("label", session.label),
-        field("profile", session.profile),
-        field("target", session.target),
-        field("state", state, state === "connected" ? "success" : "error"),
-        field("command", cmdState, cmdState === "running" ? "accent" : "muted"),
-        field("disconnectReason", session.disconnectReason),
-      ]),
-    } satisfies DisplayRecordItem;
-  });
-  return {
-    profileSection: profiles.length > 0 ? recordsSection("Profiles", profiles) : undefined,
-    sessionSection: sessions.length > 0 ? recordsSection("Sessions", sessions) : undefined,
-  };
-}
-
-function docsSections(details: UnknownRecord): DisplaySection[] {
-  const output: DisplaySection[] = [];
-  const rules = details.rules && typeof details.rules === "object"
-    ? JSON.stringify(details.rules, null, 2)
-    : undefined;
-  output.push(...sections(codeSection("Rules", rules, "json", false)));
-  output.push(...sections(recordsSection("Code", asArray(details.codeSnippets).map((value) => {
-    const snippet = asRecord(value);
-    return {
-      title: stringOf(snippet.title) ?? "Code snippet",
-      fields: metadata([
-        field("source", snippet.source),
-        field("page", snippet.pageTitle),
-        field("language", snippet.language),
-        field("tokens", snippet.tokens),
-      ]),
-      body: asArray(snippet.codeList).map((item) => stringOf(asRecord(item).code)).filter(Boolean).join("\n\n"),
-    } satisfies DisplayRecordItem;
-  }))));
-  output.push(...sections(recordsSection("Documentation", asArray(details.infoSnippets).map((value) => {
-    const snippet = asRecord(value);
-    return {
-      title: stringOf(snippet.breadcrumb) ?? stringOf(snippet.source) ?? "Documentation",
-      fields: metadata([field("source", snippet.source), field("tokens", snippet.tokens)]),
-      body: stringOf(snippet.content),
-    } satisfies DisplayRecordItem;
-  }))));
-  return output;
-}
-
-function domainSection(name: string, details: UnknownRecord, text: string, expanded: boolean, isError = false): DisplaySection[] {
-  if (!expanded) return [];
-  if (name === "search" || name === "fetch" || name === "libs") {
-    return sections(recordsSection("Results", webRecords(name, details)));
-  }
-  if (name === "docs") return docsSections(details);
-  if (name === "parse") return sections(markdownSection("Markdown", text));
-  if (name === "github_search" || name === "github_tree" || name === "github_commit") {
-    const records = githubRecords(name, details);
-    if (records.length > 0) return sections(recordsSection("Results", records));
-    // Empty tree directory or commit with no changed files
-    if (name === "github_tree") {
-      // When total is known and > 0, returned=0 means the offset is past
-      // the end, not an empty directory.
-      const total = typeof details.total === "number" ? details.total : undefined;
-      return sections(textSection("Results", total !== undefined && total > 0 ? `(no entries at offset ${details.offset ?? 0})` : "(empty directory)", "muted", true));
-    }
-    if (name === "github_commit") return sections(textSection("Results", "(no changed files)", "muted", true));
-    return sections(recordsSection("Results", githubRecords(name, details)));
-  }
-  if (name === "github_read") return sections(codeSection("Content", text, "text", true));
-  if (name === "ssh") {
-    // List operations render profiles and sessions as structured records.
-    // All other operations show terminal output (projected single-line).
-    if (asRecord(details).operation === "list") {
-      const { profileSection, sessionSection } = sshRecords(details);
-      return sections(profileSection, sessionSection);
-    }
-    // C6: on failure the terminal output is the failure text; the expanded
-    // ERROR section is its sole carrier.
-    if (isError) return [];
-    return sections(codeSection("Output", sshOutputText(text), "text", false));
-  }
-  // C6: a failure never renders its raw text both here and in the ERROR section.
-  if (isError) return [];
-  return sections(codeSection("Output", text, "text", false));
-}
-
-function summaryFields(details: UnknownRecord): Array<DisplayMetadataEntry | undefined> {
-  const counts = asRecord(details.counts);
-  const codeCounts = asRecord(details.codeCounts);
-  const infoCounts = asRecord(details.infoCounts);
-  // Docs splits counts into codeCounts/infoCounts; surface returned and
-  // omitted from each, plus the consumed token budget.
-  const num = (v: unknown): number => typeof v === "number" && Number.isFinite(v) ? v : 0;
-  const codeReturned = codeCounts.returned;
-  const codeReceived = codeCounts.received;
-  const infoReturned = infoCounts.returned;
-  const infoReceived = infoCounts.received;
-  const docsOmitted = num(codeCounts.omitted) + num(infoCounts.omitted);
-  const docsOversized = num(codeCounts.oversized) + num(infoCounts.oversized);
-  const docsInvalid = num(codeCounts.invalid) + num(infoCounts.invalid);
-  const rateObj = asRecord(details.rate);
-  const estimatedTokens = details.estimatedTokens;
-  const maxTokens = details.maxTokens;
-  return [
-    field("status", details.status),
-    field("phase", details.phase),
-    field("returned", details.returned),
-    field("count", details.count),
-    field("succeeded", details.succeeded),
-    field("failed", details.failed),
-    field("omitted", details.omitted ?? counts.omitted),
-    field("total", details.total ?? details.totalAfterDedup),
-    field("pageCount", details.pageCount),
-    field("outputLines", details.outputLines),
-    field("requests", details.requestsUsed),
-    // GitHub rate limit: show remaining/limit format when available
-    rateObj.remaining !== undefined
-      ? field("rate", `${rateObj.remaining}/${rateObj.limit ?? "?"}`, rateObj.remaining === 0 ? "error" : undefined)
-      : undefined,
-    rateObj.retryAfter !== undefined ? field("retryAfter", `${rateObj.retryAfter}s`) : undefined,
-    // Docs-specific budget and count fields
-    codeReturned !== undefined && num(codeReceived) > 0
-      ? field("code", `${codeReturned}/${codeReceived ?? codeReturned}`)
-      : undefined,
-    infoReturned !== undefined && num(infoReceived) > 0
-      ? field("info", `${infoReturned}/${infoReceived ?? infoReturned}`)
-      : undefined,
-    docsOmitted > 0 ? field("omitted", docsOmitted) : undefined,
-    docsOversized > 0 ? field("oversized", docsOversized, "warning") : undefined,
-    docsInvalid > 0 ? field("invalid", docsInvalid) : undefined,
-    // Libs also surfaces invalid/oversized separately for provider-data quality
-    counts.invalid !== undefined && num(counts.invalid) > 0 ? field("invalid", counts.invalid) : undefined,
-    counts.oversized !== undefined && num(counts.oversized) > 0 ? field("oversized", counts.oversized, "warning") : undefined,
-    estimatedTokens !== undefined
-      ? field("tokens", `${estimatedTokens}/${maxTokens ?? "?"}`)
-      : undefined,
-    // Libs/docs redirect, pending, and filter indicators
-    details.redirected === true ? field("redirected", "yes", "warning") : undefined,
-    details.finalLibraryId !== undefined && details.finalLibraryId !== "" && details.finalLibraryId !== details.libraryId
-      ? field("finalLibrary", details.finalLibraryId, "muted")
-      : undefined,
-    details.retryAfter !== undefined ? field("retryAfter", `${details.retryAfter}s`) : undefined,
-    details.searchFilterApplied === true ? field("filter", "applied") : undefined,
-    details.rulesOmitted === true ? field("rules", "omitted", "warning") : undefined,
-    // Truncation and cache indicators
-    details.truncated === true ? field("truncated", "yes", "warning") : undefined,
-    details.incomplete === true ? field("incomplete", "yes", "warning") : undefined,
-    details.outputTruncated === true ? field("outputTruncated", "yes", "warning") : undefined,
-    booleanOf(details.cacheHit) !== undefined ? field("cacheHit", details.cacheHit) : undefined,
-    // Parse-specific: upload size (privacy-relevant: how much data left
-    // the workspace), source size, and error code for diagnostics.
-    bytesField("uploaded", details.uploadBytes),
-    bytesField("sourceSize", details.sourceBytes),
-    details.errorCode !== undefined && stringOf(details.errorCode) ? field("errorCode", details.errorCode, "muted") : undefined,
-    // GitHub-specific fields
-    field("kind", details.kind),
-    field("sha", details.sha),
-    details.binary === true ? field("binary", "yes", "warning") : undefined,
-    details.returnedLines !== undefined ? field("lines", `${details.returnedLines}/${details.totalLines ?? "?"}`) : undefined,
-    details.truncatedLines !== undefined && num(details.truncatedLines) > 0 ? field("truncatedLines", details.truncatedLines) : undefined,
-    field("author", details.author),
-    field("date", details.authoredAt),
-    field("message", details.message),
-    details.verified === true ? field("verified", "yes") : details.verified === false ? field("verified", "no", "warning") : undefined,
-    details.additions !== undefined ? field("additions", `+${details.additions}`, "success") : undefined,
-    details.deletions !== undefined ? field("deletions", `-${details.deletions}`, "error") : undefined,
-    details.changes !== undefined ? field("changes", details.changes) : undefined,
-    details.omittedPatches !== undefined && num(details.omittedPatches) > 0 ? field("patches", `${details.omittedPatches} omitted`, "warning") : undefined,
-    details.remoteTruncated === true ? field("remoteTruncated", "yes", "warning") : undefined,
-    details.requestBudgetExhausted === true ? field("requestBudget", "exhausted", "warning") : undefined,
-    details.hasMore === true ? field("hasMore", "yes") : undefined,
-    // SSH-specific fields: session identity, state, and cursor metadata
-    field("endpoint", asRecord(details.session).endpoint),
-    field("sessionState", asRecord(details.session).state),
-    field("commandState", asRecord(details.session).commandState),
-    field("disconnectReason", asRecord(details.session).disconnectReason),
-    // SSH-specific: code field (HOST_VERIFICATION_FAILED, AUTH_FAILED, etc.)
-    details.operation !== undefined ? field("sshCode", details.code, "muted") : undefined,
-    details.exitCode !== undefined ? field("exitCode", details.exitCode, details.exitCode === 0 ? "success" : "error") : undefined,
-    // SSH output page cursor metadata
-    (() => {
-      const page = asRecord(details.output);
-      const expired = page.cursorExpired === true;
-      const dropped = typeof page.droppedChars === "number" ? page.droppedChars : 0;
-      const hasMore = page.hasMore === true;
-      if (expired || dropped > 0 || hasMore) {
-        const parts: string[] = [];
-        if (expired) parts.push("expired");
-        if (dropped > 0) parts.push(`${dropped} dropped`);
-        if (hasMore) parts.push("more");
-        return field("cursor", parts.join(", "), "warning");
-      }
-      return undefined;
-    })(),
-  ];
-}
-
 /**
  * Web tool result description: two-row records, no metadata, no REQUEST
  * or SUMMARY section, summary row with counts.
@@ -1014,6 +549,705 @@ function webDescribeResult(
   });
 }
 
+// ── GitHub tool helpers ───────────────────────────────────────────
+
+/** Rate limit summary: `rate 29 of 30 left`. */
+function githubRateSummary(rate: UnknownRecord): string | undefined {
+  const remaining = typeof rate.remaining === "number" && Number.isFinite(rate.remaining) ? rate.remaining : undefined;
+  if (remaining === undefined) return undefined;
+  const limit = typeof rate.limit === "number" && Number.isFinite(rate.limit) ? rate.limit : "?";
+  return `rate ${remaining} of ${limit} left`;
+}
+
+/** Relative future time for rate reset: `12m`, `3h`, `45s`. */
+function githubResetIn(reset: unknown, now: number = Date.now()): string | undefined {
+  const epoch = typeof reset === "number" && Number.isFinite(reset) ? reset : undefined;
+  if (epoch === undefined) return undefined;
+  const seconds = Math.round((epoch * 1000 - now) / 1000);
+  if (seconds <= 0) return undefined;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+/** Short SHA: first 7 characters. */
+function githubShortSha(sha: unknown): string | undefined {
+  const s = stringOf(sha);
+  return s ? s.slice(0, 7) : undefined;
+}
+
+/** Status letter: A=added, M=modified, R=renamed, D=removed. */
+function githubStatusLetter(status: string): string {
+  switch (status) {
+    case "added": return "A";
+    case "modified": return "M";
+    case "renamed": return "R";
+    case "removed":
+    case "deleted": return "D";
+    default: return "M";
+  }
+}
+
+/** Error sentence for GitHub tools. */
+function githubErrorSentence(text: string, details: UnknownRecord): string {
+  const code = stringOf(details.errorCode) ?? "";
+  const error = stringOf(details.error) ?? text;
+  if (code === "MISSING_GITHUB_TOKEN") return "No GitHub token is configured";
+  if (/401/.test(code) || /401|unauthor/i.test(error)) return "GitHub rejected the token";
+  if (/429|rate.?limit/i.test(code) || /429|rate.?limit/i.test(error)) {
+    const rate = asRecord(details.rate);
+    const reset = githubResetIn(rate.reset);
+    return reset ? `GitHub rate limit reached \u00b7 resets in ${reset}` : "GitHub rate limit reached";
+  }
+  if (/timeout|timed.?out/i.test(error)) return "GitHub did not answer in time";
+  return "GitHub rejected the query";
+}
+
+/** Parse `N: text` lines from github_read model text. */
+function parseReadLines(text: string): Array<{ text: string; line: number }> {
+  const result: Array<{ text: string; line: number }> = [];
+  for (const rawLine of text.split("\n")) {
+    const match = rawLine.match(/^(\d+): (.*)$/);
+    if (match) result.push({ text: match[2], line: parseInt(match[1], 10) });
+  }
+  return result;
+}
+
+/**
+ * GitHub tool result description: no metadata, no REQUEST or SUMMARY
+ * sections, two-row records for search, code section for read, paths
+ * for tree, and file records for commit.
+ */
+function githubDescribeResult(
+  name: string,
+  description: ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]>,
+  _result: unknown,
+  options: { expanded: boolean; isPartial: boolean },
+  _context: { args: unknown; cwd: string },
+  args: UnknownRecord,
+  details: UnknownRecord,
+  text: string,
+  isError: boolean,
+): ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]> {
+  const expanded = options.expanded;
+  const rate = asRecord(details.rate);
+
+  // ── Target ─────────────────────────────────────────────────────
+  let target: string | undefined;
+  if (name === "github_search") {
+    target = stringOf(args.query);
+  } else if (name === "github_read") {
+    const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
+    const resolvedPath = stringOf(details.resolvedPath) ?? stringOf(args.path) ?? "README";
+    target = `${repo}:${resolvedPath}`;
+  } else if (name === "github_tree") {
+    const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
+    const path = stringOf(details.path) ?? stringOf(args.path);
+    target = path ? `${repo}:${path}` : repo;
+  } else if (name === "github_commit") {
+    const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
+    const sha = githubShortSha(details.sha) ?? stringOf(args.ref) ?? "?";
+    target = `${repo}@${sha}`;
+  }
+
+  // ── Error (isError) ────────────────────────────────────────────
+  if (isError) {
+    const sentence = githubErrorSentence(text, details);
+    const errorRaw = text && text !== sentence ? text : undefined;
+    return baseDescription(description, {
+      metadata: [], sections: [], preview: undefined, rows: [],
+      error: sentence,
+      ...(errorRaw ? { errorRaw } : {}),
+      ...(target ? { target } : {}),
+      summary: undefined, truncated: undefined,
+    });
+  }
+
+  // ── Non-isError errors (binary, unsupported content) ───────────
+  const errorText = stringOf(details.error);
+  if (errorText) {
+    const sentence = githubErrorSentence(errorText, details);
+    const errorRaw = errorText !== sentence ? errorText : undefined;
+    return baseDescription(description, {
+      metadata: [], sections: [], preview: undefined, rows: [],
+      error: sentence,
+      ...(errorRaw ? { errorRaw } : {}),
+      ...(target ? { target } : {}),
+      summary: sentence, truncated: undefined,
+    });
+  }
+
+  // ── Rate text helpers ──────────────────────────────────────────
+  const rateSummary = githubRateSummary(rate);
+  const resetIn = githubResetIn(rate.reset);
+
+  // ══ github_search ═══════════════════════════════════════════════
+  if (name === "github_search") {
+    const kind = stringOf(details.kind) ?? "repositories";
+    const items = asArray(details.items);
+    const returned = typeof details.returned === "number" ? details.returned : items.length;
+    const total = typeof details.total === "number" ? details.total : 0;
+    const hasMore = details.hasMore === true;
+    const page = typeof details.page === "number" ? details.page : 1;
+
+    // Records
+    const records: DisplayRecordItem[] = items.map((value, index) => {
+      const item = asRecord(value);
+      const rank = index + 1;
+      const repo = stringOf(item.repo) ?? "?";
+      if (kind === "code") {
+        const path = stringOf(item.path) ?? stringOf(item.name) ?? "";
+        const title = path ? `${rank}  ${repo} \u00b7 ${path}` : `${rank}  ${repo}`;
+        const fragments = asArray(item.fragments).map(String).filter(Boolean);
+        const body = fragments.length > 0 ? fragments[0] : undefined;
+        return { title, ...(body ? { body, bodyTone: "muted" as DisplayTone } : {}) };
+      }
+      // Repository search
+      const parts: string[] = [];
+      const language = stringOf(item.language);
+      const stars = shortCount(item.stars);
+      if (language) parts.push(language);
+      if (stars) parts.push(`${stars} stars`);
+      const body = parts.join(" \u00b7 ");
+      return { title: `${rank}  ${repo}`, ...(body ? { body, bodyTone: "muted" as DisplayTone } : {}) };
+    });
+
+    const resultsSection: DisplaySection | undefined = records.length > 0
+      ? { title: "Results", blocks: [{ kind: "records", items: records }], compact: true }
+      : undefined;
+
+    // Summary
+    const summaryParts: string[] = [];
+    if (returned === 0) {
+      summaryParts.push("No results");
+    } else if (kind === "code") {
+      const repos = new Set(items.map((v) => stringOf(asRecord(v).repo)).filter(Boolean));
+      if (hasMore && total > 0) {
+        summaryParts.push(`${returned} of ${total} files in ${plural(repos.size, "repository", "repositories")}`);
+        summaryParts.push(`continue at page ${page + 1}`);
+      } else {
+        summaryParts.push(`${plural(returned, "file")} in ${plural(repos.size, "repository", "repositories")}`);
+      }
+    } else {
+      if (hasMore && total > 0) {
+        summaryParts.push(`${returned} of ${total} repositories`);
+        summaryParts.push(`continue at page ${page + 1}`);
+      } else {
+        summaryParts.push(plural(returned, "repository", "repositories"));
+      }
+    }
+    if (rateSummary) summaryParts.push(rateSummary);
+    const summary = summaryParts.join(" \u00b7 ");
+
+    // Expanded extras: rate reset
+    const expandedExtras: DisplaySection[] = [];
+    if (expanded && resetIn) {
+      expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
+    }
+
+    // Qualifiers
+    const qualifiers: import("./types").OperationalQualifier[] = [];
+    if (details.incomplete === true) qualifiers.push("warning");
+    if (hasMore) qualifiers.push("truncated");
+
+    return baseDescription(description, {
+      metadata: [],
+      sections: [...expandedExtras, ...(resultsSection ? [resultsSection] : [])],
+      preview: undefined, rows: [],
+      ...(target ? { target } : {}),
+      summary,
+      ...(qualifiers.length > 0 ? { qualifiers } : {}),
+      ...(hasMore ? { truncated: true } : {}),
+      error: undefined, errorRaw: undefined,
+    });
+  }
+
+  // ══ github_read ════════════════════════════════════════════════
+  if (name === "github_read") {
+    // Binary file
+    if (details.binary === true) {
+      const size = typeof details.size === "number" ? formatBytes(details.size) : undefined;
+      return baseDescription(description, {
+        metadata: [], sections: [], preview: undefined, rows: [],
+        ...(target ? { target } : {}),
+        summary: size ? `Binary file \u00b7 ${size}` : "Binary file",
+        truncated: undefined,
+      });
+    }
+
+    const parsed = parseReadLines(text);
+    const startLine = parsed.length > 0 ? parsed[0].line : (typeof args.line === "number" ? args.line : typeof details.line === "number" ? details.line : 1);
+    const content = parsed.map((p) => p.text).join("\n");
+    const codeSec = content ? { title: "Content", blocks: [{ kind: "code" as const, text: content, language: "text", lineNumbers: true, startLine }], compact: false } : undefined;
+
+    // Summary
+    const returnedLines = typeof details.returnedLines === "number" ? details.returnedLines : parsed.length;
+    const totalLines = typeof details.totalLines === "number" ? details.totalLines : undefined;
+    const hasMore = details.hasMore === true;
+    const resolvedPath = stringOf(details.resolvedPath) ?? stringOf(args.path) ?? "README";
+    let summary: string;
+    if (returnedLines === 0) {
+      summary = "Empty file";
+    } else if (hasMore && totalLines !== undefined) {
+      const endLine = startLine + returnedLines - 1;
+      summary = `lines ${startLine}-${endLine} of ${totalLines} \u00b7 continue at line ${startLine + returnedLines}`;
+    } else if (totalLines !== undefined) {
+      summary = `${totalLines} lines \u00b7 ${resolvedPath}`;
+    } else {
+      summary = `${returnedLines} lines \u00b7 ${resolvedPath}`;
+    }
+
+    // Expanded extras: ref and short SHA
+    const expandedExtras: DisplaySection[] = [];
+    if (expanded) {
+      const ref = stringOf(args.ref) ?? "default";
+      const sha = githubShortSha(details.sha);
+      const metaParts: string[] = [ref];
+      if (sha) metaParts.push(sha);
+      expandedExtras.push({ title: "Commit", blocks: [{ kind: "text", text: metaParts.join(" \u00b7 "), tone: "muted" }] });
+      if (resetIn) {
+        expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
+      }
+    }
+
+    const qualifiers: import("./types").OperationalQualifier[] = [];
+    if (hasMore) qualifiers.push("truncated");
+
+    return baseDescription(description, {
+      metadata: [],
+      sections: [...expandedExtras, ...(codeSec ? [codeSec] : [])],
+      preview: undefined, rows: [],
+      ...(target ? { target } : {}),
+      summary,
+      ...(qualifiers.length > 0 ? { qualifiers } : {}),
+      ...(hasMore ? { truncated: true } : {}),
+      error: undefined, errorRaw: undefined,
+    });
+  }
+
+  // ══ github_tree ════════════════════════════════════════════════
+  if (name === "github_tree") {
+    const entries = asArray(details.entries).map((v) => asRecord(v));
+    const browsePath = stringOf(details.path) ?? "";
+    const returned = typeof details.returned === "number" ? details.returned : entries.length;
+    const total = typeof details.total === "number" ? details.total : undefined;
+    const hasMore = details.hasMore === true;
+    const offset = typeof details.offset === "number" ? details.offset : 0;
+    const remoteTruncated = details.remoteTruncated === true;
+    const budgetExhausted = details.requestBudgetExhausted === true;
+
+    // Sort: directories first
+    const sorted = [...entries].sort((a, b) => {
+      const aDir = stringOf(a.type) === "directory";
+      const bDir = stringOf(b.type) === "directory";
+      if (aDir !== bDir) return aDir ? -1 : 1;
+      return (stringOf(a.path) ?? "").localeCompare(stringOf(b.path) ?? "");
+    });
+
+    // Paths following ls rules
+    const pathItems: DisplayPathItem[] = sorted.map((entry) => {
+      const type = stringOf(entry.type) ?? "file";
+      const rawPath = stringOf(entry.path) ?? "?";
+      const relPath = browsePath && rawPath.startsWith(browsePath + "/")
+        ? rawPath.slice(browsePath.length + 1)
+        : rawPath;
+      if (type === "directory") {
+        return { path: `${relPath}/`, kind: "directory" as const };
+      }
+      if (type === "symlink") {
+        return { path: relPath, kind: "symlink" as const };
+      }
+      if (type === "submodule") {
+        return { path: relPath, kind: "special" as const };
+      }
+      const size = typeof entry.size === "number" ? formatBytes(entry.size) : undefined;
+      return { path: relPath, kind: "file" as const, ...(size ? { meta: size, tone: "muted" as DisplayTone } : {}) };
+    });
+
+    const entriesSection: DisplaySection | undefined = pathItems.length > 0
+      ? { title: "Entries", blocks: [{ kind: "paths", items: pathItems }], compact: true }
+      : undefined;
+
+    // Summary
+    const dirs = entries.filter((e) => stringOf(e.type) === "directory").length;
+    const files = entries.length - dirs;
+    const summaryParts: string[] = [];
+    if (entries.length === 0) {
+      summaryParts.push(total !== undefined && total > 0 ? `(no entries at offset ${offset})` : "Empty directory");
+    } else if (hasMore && total !== undefined && total > returned) {
+      summaryParts.push(`${returned} of ${total} entries`);
+      summaryParts.push(`continue at offset ${offset + returned}`);
+    } else {
+      if (dirs > 0) summaryParts.push(plural(dirs, "directory"));
+      if (files > 0) summaryParts.push(plural(files, "file"));
+      if (summaryParts.length === 0) summaryParts.push(plural(entries.length, "entry"));
+    }
+    if (remoteTruncated) summaryParts.push("GitHub truncated this tree");
+    if (rateSummary) summaryParts.push(rateSummary);
+    const summary = summaryParts.join(" \u00b7 ");
+
+    // Expanded extras
+    const expandedExtras: DisplaySection[] = [];
+    if (expanded) {
+      if (resetIn) {
+        expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
+      }
+    }
+
+    const qualifiers: import("./types").OperationalQualifier[] = [];
+    if (remoteTruncated || budgetExhausted || hasMore) qualifiers.push("truncated");
+
+    return baseDescription(description, {
+      metadata: [],
+      sections: [...expandedExtras, ...(entriesSection ? [entriesSection] : [])],
+      preview: undefined, rows: [],
+      ...(target ? { target } : {}),
+      summary,
+      ...(qualifiers.length > 0 ? { qualifiers } : {}),
+      ...(qualifiers.includes("truncated") ? { truncated: true } : {}),
+      error: undefined, errorRaw: undefined,
+    });
+  }
+
+  // ══ github_commit ═══════════════════════════════════════════════
+  if (name === "github_commit") {
+    const subject = stringOf(details.message) ?? "(no commit message)";
+    const author = stringOf(details.author) ?? "unknown";
+    const authoredAt = formatRelativeAge(details.authoredAt);
+    const verified = details.verified === true ? "verified" : details.verified === false ? "unverified" : undefined;
+    const metaParts = [author, authoredAt !== "unknown" ? authoredAt : undefined, verified].filter(Boolean);
+    const additions = typeof details.additions === "number" ? details.additions : 0;
+    const deletions = typeof details.deletions === "number" ? details.deletions : 0;
+    const returned = typeof details.returned === "number" ? details.returned : 0;
+    const hasMore = details.hasMore === true;
+    const page = typeof details.page === "number" ? details.page : 1;
+    const omittedPatches = typeof details.omittedPatches === "number" ? details.omittedPatches : 0;
+
+    // File records
+    const fileRecords: DisplayRecordItem[] = asArray(details.files).map((value) => {
+      const file = asRecord(value);
+      const status = stringOf(file.status) ?? "modified";
+      const letter = githubStatusLetter(status);
+      const filename = stringOf(file.filename) ?? "?";
+      const fileAdd = typeof file.additions === "number" ? file.additions : 0;
+      const fileDel = typeof file.deletions === "number" ? file.deletions : 0;
+      return {
+        title: `${letter}  ${filename}`,
+        body: `+${fileAdd} \u2212${fileDel}`,
+        bodyTone: "muted" as DisplayTone,
+      } satisfies DisplayRecordItem;
+    });
+
+    const fileSection: DisplaySection | undefined = fileRecords.length > 0
+      ? { title: "Files", blocks: [{ kind: "records", items: fileRecords }], compact: true }
+      : undefined;
+
+    // Subject and author as a section (rows don't render in terminal state)
+    const metaSection: DisplaySection = {
+      title: "Commit",
+      blocks: [
+        { kind: "text", text: subject },
+        ...(metaParts.length > 0 ? [{ kind: "text" as const, text: metaParts.join(" \u00b7 "), tone: "muted" as DisplayTone }] : []),
+      ],
+      compact: true,
+    };
+
+    // Summary
+    const summaryParts: string[] = [plural(returned, "file"), `+${additions} \u2212${deletions}`];
+    if (hasMore) summaryParts.push(`continue at page ${page + 1}`);
+    if (rateSummary) summaryParts.push(rateSummary);
+    const summary = summaryParts.join(" \u00b7 ");
+
+    // Expanded extras: ref and short SHA
+    const expandedExtras: DisplaySection[] = [];
+    if (expanded) {
+      const ref = stringOf(args.ref) ?? "default";
+      const sha = githubShortSha(details.sha);
+      const metaParts2: string[] = [ref];
+      if (sha) metaParts2.push(sha);
+      expandedExtras.push({ title: "Commit", blocks: [{ kind: "text", text: metaParts2.join(" \u00b7 "), tone: "muted" }] });
+      if (omittedPatches > 0) {
+        expandedExtras.push({ title: "Diagnostics", blocks: [{ kind: "text", text: `${omittedPatches} ${plural(omittedPatches, "patch")} omitted`, tone: "warning" }] });
+      }
+      if (resetIn) {
+        expandedExtras.push({ title: "Rate", blocks: [{ kind: "text", text: `resets in ${resetIn}`, tone: "muted" }] });
+      }
+    }
+
+    const qualifiers: import("./types").OperationalQualifier[] = [];
+    if (hasMore || omittedPatches > 0) qualifiers.push("truncated");
+
+    return baseDescription(description, {
+      metadata: [],
+      sections: [...expandedExtras, metaSection, ...(fileSection ? [fileSection] : [])],
+      preview: undefined, rows: [],
+      ...(target ? { target } : {}),
+      summary,
+      ...(qualifiers.length > 0 ? { qualifiers } : {}),
+      ...(qualifiers.includes("truncated") ? { truncated: true } : {}),
+      error: undefined, errorRaw: undefined,
+    });
+  }
+
+  return baseDescription(description, { metadata: [], sections: [], ...(target ? { target } : {}) });
+}
+
+// ── SSH tool helpers ──────────────────────────────────────────────
+
+/** SSH describeCall target: operation-specific, never the session ID. */
+function sshCallTarget(source: UnknownRecord): string | undefined {
+  const op = stringOf(source.operation);
+  if (!op || op === "list") return undefined;
+  if (op === "connect") {
+    const profile = stringOf(source.profile);
+    const target = stringOf(source.target);
+    return target ? `${profile ?? "?"}/${target}` : (profile ?? undefined);
+  }
+  if (op === "command") return stringOf(source.command);
+  return undefined;
+}
+
+/** SSH describeResult target: uses session details for profile label. */
+function sshResultTarget(args: UnknownRecord, details: UnknownRecord): string | undefined {
+  const op = stringOf(args.operation) ?? stringOf(details.operation);
+  const session = asRecord(details.session);
+  const label = stringOf(session.label) ?? stringOf(session.profile);
+  if (op === "connect") {
+    const profile = stringOf(args.profile);
+    const target = stringOf(args.target);
+    return target ? `${profile ?? "?"}/${target}` : (profile ?? undefined);
+  }
+  if (op === "command") {
+    const cmd = stringOf(args.command);
+    return label ? (cmd ? `${label}  ${cmd}` : label) : cmd;
+  }
+  if (op === "read" || op === "input" || op === "interrupt" || op === "secret_input") {
+    return label ? `${label} ${op.replace("_", " ")}` : undefined;
+  }
+  if (op === "close") {
+    return label ? `close ${label}` : undefined;
+  }
+  return undefined;
+}
+
+/** Strip bare exit statements from SSH terminal output. */
+function sshCleanOutput(text: string): string {
+  return text
+    .replace(/^\s*exit\s*\d*\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** SSH profile record items for list operation. */
+function sshProfileRecords(details: UnknownRecord): DisplayRecordItem[] {
+  return asArray(details.profiles).map((value) => {
+    const profile = asRecord(value);
+    const name = stringOf(profile.name) ?? "?";
+    const defaultTarget = stringOf(profile.defaultTarget) ?? "?";
+    const targets = asArray(profile.targets).map((tv) => {
+      const t = asRecord(tv);
+      return `${stringOf(t.name) ?? "?"}: ${stringOf(t.endpoint) ?? "?"}`;
+    }).join(", ");
+    return {
+      title: name,
+      body: `${defaultTarget}${targets ? ` \u00b7 ${targets}` : ""}`,
+      bodyTone: "muted" as DisplayTone,
+    };
+  });
+}
+
+/** SSH session record items for list operation. */
+function sshSessionRecords(details: UnknownRecord): DisplayRecordItem[] {
+  return asArray(details.sessions).map((value) => {
+    const session = asRecord(value);
+    const label = stringOf(session.label) ?? stringOf(session.id) ?? "?";
+    const profileTarget = `${stringOf(session.profile) ?? "?"}/${stringOf(session.target) ?? "?"}`;
+    const state = stringOf(session.state) ?? "?";
+    const lastActivity = typeof session.lastActivityAt === "number"
+      ? formatRelativeAge(new Date(session.lastActivityAt).toISOString())
+      : undefined;
+    const parts = [profileTarget, state];
+    if (lastActivity && lastActivity !== "unknown") parts.push(`idle ${lastActivity}`);
+    return {
+      title: label,
+      body: parts.join(" \u00b7 "),
+      bodyTone: "muted" as DisplayTone,
+    };
+  });
+}
+
+/**
+ * SSH tool result description: never renders raw JSON. Parses the JSON
+ * body, extracts terminal output, and renders operation-specific content.
+ */
+function sshDescribeResult(
+  _name: string,
+  description: ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]>,
+  _result: unknown,
+  options: { expanded: boolean; isPartial: boolean },
+  _context: { args: unknown; cwd: string },
+  args: UnknownRecord,
+  details: UnknownRecord,
+  text: string,
+  isError: boolean,
+): ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]> {
+  const expanded = options.expanded;
+  const op = stringOf(args.operation) ?? stringOf(details.operation) ?? "list";
+  const status = stringOf(details.status)?.toLowerCase();
+  const target = sshResultTarget(args, details);
+
+  // ── Declined ───────────────────────────────────────────────────
+  if (status === "declined") {
+    const message = stringOf(details.message) ?? "Operation declined";
+    return baseDescription(description, {
+      metadata: [], sections: [], preview: undefined, rows: [],
+      lifecycle: "aborted",
+      summary: message,
+      ...(target ? { target } : {}),
+      error: undefined, errorRaw: undefined, truncated: undefined,
+    });
+  }
+
+  // ── Aborted ────────────────────────────────────────────────────
+  if (status === "aborted" || (isError && status === "aborted")) {
+    const message = stringOf(details.message) ?? "Operation was cancelled";
+    return baseDescription(description, {
+      metadata: [], sections: [], preview: undefined, rows: [],
+      lifecycle: "aborted",
+      error: message,
+      ...(target ? { target } : {}),
+      summary: undefined, truncated: undefined,
+    });
+  }
+
+  // ── Error ──────────────────────────────────────────────────────
+  if (isError || status === "error") {
+    const message = stringOf(details.message) ?? "SSH operation failed";
+    const errorRaw = text && text !== message ? text : undefined;
+    return baseDescription(description, {
+      metadata: [], sections: [], preview: undefined, rows: [],
+      error: message,
+      ...(errorRaw ? { errorRaw } : {}),
+      ...(target ? { target } : {}),
+      summary: undefined, truncated: undefined,
+    });
+  }
+
+  // ══ list ═══════════════════════════════════════════════════════
+  if (op === "list") {
+    const profiles = sshProfileRecords(details);
+    const sessions = sshSessionRecords(details);
+    const profileCount = asArray(details.profiles).length;
+    const sessionCount = asArray(details.sessions).length;
+    const profileSection = profiles.length > 0
+      ? { title: "Profiles", blocks: [{ kind: "records" as const, items: profiles }], compact: true }
+      : undefined;
+    const sessionSection = sessions.length > 0
+      ? { title: "Sessions", blocks: [{ kind: "records" as const, items: sessions }], compact: true }
+      : undefined;
+    const summary = `${plural(profileCount, "profile")} \u00b7 ${plural(sessionCount, "session")}`;
+    return baseDescription(description, {
+      metadata: [],
+      sections: [...(profileSection ? [profileSection] : []), ...(sessionSection ? [sessionSection] : [])],
+      preview: undefined, rows: [],
+      summary,
+      error: undefined, errorRaw: undefined, truncated: undefined,
+    });
+  }
+
+  // ══ command ════════════════════════════════════════════════════
+  if (op === "command") {
+    const outputText = sshCleanOutput(sshOutputText(text));
+    const exitCode = typeof details.exitCode === "number" ? details.exitCode : undefined;
+    const isRunning = status === "running";
+    const outputLines = outputText ? outputText.split("\n").length : 0;
+
+    const summaryParts: string[] = [];
+    if (isRunning) {
+      summaryParts.push("running");
+    } else if (exitCode !== undefined) {
+      summaryParts.push(`exit ${exitCode}`);
+    }
+    summaryParts.push(plural(outputLines, "line"));
+    const summary = summaryParts.join(" \u00b7 ");
+
+    const outputSection = outputText
+      ? { title: "Output", blocks: [{ kind: "code" as const, text: outputText, lineNumbers: false }], compact: false }
+      : undefined;
+
+    return baseDescription(description, {
+      metadata: [],
+      ...(expanded
+        ? { sections: outputSection ? [outputSection] : [], rows: [], preview: undefined }
+        : outputText
+          ? { sections: [], rows: [], preview: { text: outputText, tailOnly: true } }
+          : { sections: [], rows: [] }
+      ),
+      ...(target ? { target } : {}),
+      summary,
+      error: undefined, errorRaw: undefined, truncated: undefined,
+    });
+  }
+
+  // ══ connect ════════════════════════════════════════════════════
+  if (op === "connect") {
+    const session = asRecord(details.session);
+    const endpoint = stringOf(session.endpoint);
+    const label = stringOf(session.label);
+    const parts: string[] = [];
+    if (endpoint) parts.push(`Connected as ${endpoint}`);
+    if (label) parts.push(`label ${label}`);
+    const summary = parts.length > 0 ? parts.join(" \u00b7 ") : "Connected";
+    return baseDescription(description, {
+      metadata: [], sections: [], preview: undefined, rows: [],
+      ...(target ? { target } : {}),
+      summary,
+      error: undefined, errorRaw: undefined, truncated: undefined,
+    });
+  }
+
+  // ══ read ═══════════════════════════════════════════════════════
+  if (op === "read") {
+    const outputText = sshCleanOutput(sshOutputText(text));
+    const outputLines = outputText ? outputText.split("\n").length : 0;
+    const summary = outputLines === 0 ? "No new output" : plural(outputLines, "line");
+    const outputSection = outputText
+      ? { title: "Output", blocks: [{ kind: "code" as const, text: outputText, lineNumbers: false }], compact: false }
+      : undefined;
+    return baseDescription(description, {
+      metadata: [],
+      ...(expanded
+        ? { sections: outputSection ? [outputSection] : [], rows: [], preview: undefined }
+        : outputText
+          ? { sections: [], rows: [], preview: { text: outputText, tailOnly: true } }
+          : { sections: [], rows: [] }
+      ),
+      ...(target ? { target } : {}),
+      summary,
+      error: undefined, errorRaw: undefined, truncated: undefined,
+    });
+  }
+
+  // ══ input / secret_input / interrupt / close ═══════════════════
+  let summary: string;
+  switch (op) {
+    case "input": summary = "Input sent"; break;
+    case "secret_input": summary = "Secret input sent"; break;
+    case "interrupt": summary = "Interrupt sent"; break;
+    case "close": summary = "Session closed"; break;
+    default: summary = stringOf(details.message) ?? "Done"; break;
+  }
+  return baseDescription(description, {
+    metadata: [], sections: [], preview: undefined, rows: [],
+    ...(target ? { target } : {}),
+    summary,
+    error: undefined, errorRaw: undefined, truncated: undefined,
+  });
+}
+
 export function createRemoteAdapter(
   name: string,
   base: InternalToolDisplayAdapter<any, unknown, unknown>,
@@ -1023,25 +1257,33 @@ export function createRemoteAdapter(
     describeCall(args, context) {
       const description = base.describeCall(args, context);
       const source = asRecord(args);
-      const target = name === "ssh" ? sshTarget(source) : undefined;
-      // SSH secret_input needs the needs-input qualifier.
       const needsInput = name === "ssh" && source.operation === "secret_input";
-      // Parse needs the needs-input qualifier while confirmation is open.
       const parseConfirming = name === "parse" && stringOf(source.phase)?.toLowerCase() === "confirming";
-      // Web tools carry no key=value metadata.
-      if (WEB_TOOLS.has(name)) {
+      const inputQualifier = (needsInput || parseConfirming) ? { qualifiers: ["needs-input"] as const } : {};
+
+      // Web and GitHub tools carry no key=value metadata.
+      if (WEB_TOOLS.has(name) || GITHUB_TOOLS.has(name)) {
         return baseDescription(description, {
           metadata: [],
           sections: [],
-          ...((needsInput || parseConfirming) ? { qualifiers: ["needs-input"] } : {}),
+          ...inputQualifier,
         });
       }
-      const requestMeta = metadata(requestFields(name, source));
+
+      // SSH tool: no metadata, operation-specific target.
+      if (name === "ssh") {
+        const sshTgt = sshCallTarget(source);
+        return baseDescription(description, {
+          metadata: [],
+          sections: [],
+          ...(sshTgt ? { target: sshTgt } : {}),
+          ...(needsInput ? { qualifiers: ["needs-input"] as const } : {}),
+        });
+      }
+
       return baseDescription(description, {
-        metadata: mergeMetadata(description.metadata ?? [], requestMeta, remoteSuppress(name)),
-        sections: sections(requestSection("Request", name, source)),
-        ...(target ? { target } : {}),
-        ...((needsInput || parseConfirming) ? { qualifiers: ["needs-input"] } : {}),
+        metadata: [],
+        sections: [],
       });
     },
     describeResult(result, options, context) {
@@ -1051,52 +1293,22 @@ export function createRemoteAdapter(
       const text = textOf(result);
       const isError = Boolean((result as { isError?: boolean }).isError);
 
-      // ── Web tools: new two-row record layout ──────────────────
+      // ── Web tools: two-row record layout ──────────────────────
       if (WEB_TOOLS.has(name)) {
         return webDescribeResult(name, description, result, options, context, args, details, text, isError);
       }
 
-      const errorText = stringOf(details.error)
-        ?? stringOf(details.errorCode)
-        ?? (isError ? text : undefined);
-      const domain = domainSection(name, details, text, options.expanded, isError);
-      const request = requestSection("Request", name, args);
-      const summary = summarySection("Summary", summaryFields(details));
-      const output = options.expanded && domain.length === 0 && !isError && !errorText
-        ? codeSection("Output", text, "text", false)
-        : undefined;
-      const diagnostics = stringOf(details.warning)
-        ? textSection("Diagnostics", stringOf(details.warning), "warning")
-        : undefined;
-      // When isError is true, description.error (set by the base adapter)
-      // is the sole styled carrier — no separate section needed. When
-      // isError is false but details.error exists (the actual search/fetch
-      // tool behavior for cancellation, timeout, and provider failures),
-      // description.error is NOT set by the base adapter, so a compact
-      // Result section carries the message visibly.
-      const errorMessage = !isError && errorText
-        ? textSection("Result", errorText, "warning", true)
-        : undefined;
-      const structured = sections(request, summary, errorMessage, ...domain, markCompact(output), diagnostics);
-      // Suppress the raw text preview when expanded (structured sections
-      // carry the content), when there's an error (description.error or
-      // the Result section carries the message), or when collapsed with
-      // domain content that the expanded sections cover.
-      const suppressPreview = options.expanded || isError || Boolean(errorMessage);
-      // For SSH, extract terminal output from JSON body for the collapsed preview.
-      const sshPreview = name === "ssh" && !suppressPreview && text
-        ? { text: sshOutputText(text) }
-        : description.preview;
-      const lifecycle = remoteLifecycle(name, isError, details);
-      const target = name === "ssh" ? sshTarget(args) : undefined;
-      return baseDescription(description, {
-        metadata: mergeMetadata(description.metadata ?? [], metadata(requestFields(name, args)), remoteSuppress(name)),
-        sections: structured,
-        preview: suppressPreview ? undefined : sshPreview,
-        rows: [],
-        ...(target ? { target } : {}),
-        ...(lifecycle ? lifecycle : {}),
-      });
+      // ── GitHub tools: two-row records, code, paths ────────────
+      if (GITHUB_TOOLS.has(name)) {
+        return githubDescribeResult(name, description, result, options, context, args, details, text, isError);
+      }
+
+      // ── SSH tool: JSON-parsed terminal output ─────────────────
+      if (name === "ssh") {
+        return sshDescribeResult(name, description, result, options, context, args, details, text, isError);
+      }
+
+      return description;
     },
   };
 }

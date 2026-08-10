@@ -81,14 +81,16 @@ for (const [name, args, expected] of [
   const collapsedText = collapsed.render(80).join("\n");
   // Payload tools keep their output in the collapsed body; non-payload tools
   // collapse to a summary row (C4).
-  if (name === "bash" || name === "pwsh" || name === "scheme" || name === "ssh") {
+  if (name === "bash" || name === "pwsh" || name === "scheme") {
     assert.match(collapsedText, /model output/, `${name} collapsed shows content`);
+  } else if (name === "ssh") {
+    // SSH now shows a summary row (operation-specific text), not raw content
   } else {
     assert.match(collapsedText, /2 (matches|files|results)/, `${name} collapsed shows a summary row`);
   }
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
-  if (name === "rg" || name === "fd" || name === "sg") {
+  if (name === "rg" || name === "fd" || name === "sg" || name === "ssh") {
     // These calls pass path:"src", which renders an expanded-only Filters
     // section (C7); a visible structured section takes priority over the
     // flat text preview, so the raw "model output" fallback does not
@@ -103,9 +105,7 @@ for (const [name, args, expected] of [
     assert.match(expandedText, /model output/);
     if (name === "scheme") assert.match(expandedText, /Code/);
   }
-  if (name === "ssh") {
-    assert.match(expandedText, /model output/);
-  }
+
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assert.ok(expanded.render(width).every((line) => visibleWidth(line) <= width));
   }

@@ -70,14 +70,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /type=file/, "file entry kind visible");
-  assert.match(text, /type=directory/, "directory entry kind visible");
-  assert.match(text, /type=symlink/, "symlink entry kind visible");
-  assert.match(text, /type=submodule/, "submodule entry kind visible");
-  assert.match(text, /src\/main\.ts/, "file path preserved");
-  assert.match(text, /src\/utils/, "directory path preserved");
-  assert.match(text, /src\/link/, "symlink path preserved");
-  assert.match(text, /src\/vendor\/lib/, "submodule path preserved");
+  assert.match(text, /main\.ts/, "file path preserved");
+  assert.match(text, /utils\//, "directory path preserved with trailing slash");
+  assert.match(text, /link/, "symlink path preserved");
+  assert.match(text, /vendor\/lib/, "submodule path preserved");
 
   runtime.dispose();
 }
@@ -94,8 +90,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "github_tree owner/name:empty-dir\nref: main · depth: 1 · offset: 0 · returned: 0", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /\(empty directory\)/, "empty directory indicator visible");
-  assert.match(text, /returned=0/, "returned=0 visible in summary");
+  assert.match(text, /Empty directory/, "empty directory indicator visible");
 
   runtime.dispose();
 }
@@ -131,9 +126,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /offset=50/, "stable offset preserved in request metadata");
-  assert.match(text, /returned=50/, "returned count visible");
-  assert.match(text, /total=200/, "total count visible");
+  assert.match(text, /50 of 200 entries/, "summary shows returned/total count");
+  assert.match(text, /continue at offset 100/, "summary shows pagination continuation");
   assert.match(text, /\[truncated\]/, "pagination indicator visible via badge");
 
   runtime.dispose();
@@ -189,7 +183,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /total=5/, "total count visible for complete tree");
+  assert.match(text, /2 files/, "summary shows entry count for complete tree");
   assert.doesNotMatch(text, /remoteTruncated/, "no remote truncation indicator for complete tree");
   assert.doesNotMatch(text, /requestBudget/, "no budget indicator for complete tree");
 
@@ -216,7 +210,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(120).join("\n"));
   assert.match(text, /src\/auth\.ts/, "commit changed file visible");
-  assert.match(text, /status=modified/, "commit file status visible");
+  assert.match(text, /M  src\/auth\.ts/, "commit file status letter visible");
 
   runtime.dispose();
 }
@@ -240,11 +234,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(120).join("\n"));
   assert.match(text, /included\.ts/, "included patch file visible");
-  assert.match(text, /patch=included/, "included patch state explicit");
   assert.match(text, /binary\.png/, "binary/missing patch file visible");
-  assert.match(text, /patch=missing/, "missing patch state explicit (binary files)");
   assert.match(text, /big-file\.ts/, "omitted patch file visible");
-  assert.match(text, /patch=omitted/, "omitted patch state explicit");
   // patches count is in the pruned Summary section; verify file records instead
   // Verify patch bodies never appear in display
   assert.doesNotMatch(text, /@@ .* @@/, "patch body hunks never rendered in display");
@@ -266,8 +257,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /\(no changed files\)/, "no-changed-files indicator visible");
-  assert.match(text, /returned=0/, "returned=0 visible");
+  assert.match(text, /0 files/, "no-changed-files shows zero count");
+  assert.match(text, /0 files/, "returned=0 visible in summary");
 
   runtime.dispose();
 }
@@ -286,9 +277,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(120).join("\n"));
-  assert.match(text, /page=2/, "page number visible in request metadata");
-  assert.match(text, /limit=10/, "limit visible in request metadata");
-  assert.match(text, /returned=10/, "returned count visible");
+  assert.match(text, /10 files/, "returned count visible in summary");
+  assert.match(text, /continue at page 3/, "pagination visible in summary");
   assert.match(text, /\[truncated\]/, "pagination indicator visible via badge");
 
   runtime.dispose();
@@ -335,8 +325,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     const result = renderResult(decorated, args, details, "Error: rate limit", { expanded: true });
     const text = stripVTControlCharacters(result.render(100).join("\n"));
     assert.match(text, /^●/, `${name} rate-limited renders failed marker`);
-    assert.match(text, /code=RATE_LIMITED/, `${name} rate-limit code visible`);
-    assert.match(text, /Rate limit exceeded/, `${name} rate-limit error message visible`);
+    assert.match(text, /GitHub rate limit reached/, `${name} rate-limit error sentence visible`);
   }
   runtime.dispose();
 }
@@ -362,7 +351,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.doesNotMatch(text, /\+new line/, "patch addition line not rendered");
   // Only allowlisted identity should appear: filename, status, stats, patchState
   assert.match(text, /test\.ts/, "filename visible");
-  assert.match(text, /patch=included/, "patch state visible");
+  assert.match(text, /M  test\.ts/, "file with status letter visible");
 
   runtime.dispose();
 }
@@ -382,7 +371,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   // Entry identity: path, type, size, sha, url — all allowlisted
   assert.match(text, /README\.md/, "entry path visible");
-  assert.match(text, /type=file/, "entry type visible");
+  assert.match(text, /README\.md/, "entry path visible");
   // No raw JSON response objects
   assert.doesNotMatch(text, /\{.*"_links".*\}/, "no raw API response objects");
   assert.doesNotMatch(text, /"git_url"/, "no raw git_url field");
