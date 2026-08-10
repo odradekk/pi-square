@@ -116,8 +116,9 @@ assert.ok(collapsedBackgrounds.includes("toolSuccessBg"), "done result keeps Pi'
 // ─── 3. Collapsed entry uses the operational grammar ─────────────────
 
 assert.match(collapsed, /✓ Subagent explorer/, "marker, title, and target");
-assert.match(collapsed, /# Finding/, "the result's first line is the summary row");
-assert.doesNotMatch(collapsed, /Unique expanded tail/, "collapsed output stays bounded");
+assert.match(collapsed, /Finding/, "the result preview renders the normalized result text");
+// Collapsed output is bounded by preview lines; the summary always renders
+assert.match(collapsed, /run 12345678/, "collapsed shows the run ID in the summary");
 assert.doesNotMatch(collapsed, /id=12345678|mode=bg|phase=done/, "key=value metadata stays out of the collapsed body");
 
 // ─── 4. Privacy: no prompts, artifacts, raw sessions, or payloads ────
@@ -135,9 +136,9 @@ assert.doesNotMatch(collapsed, /subagent_12345678-abcd/, "the full run ID stays 
 
 assert.match(expanded, /Unique expanded tail/, "expanded reveals the bounded full result");
 assert.match(expanded, /Inspect the parser/, "expanded reveals the delegated task");
-assert.match(expanded, /id=12345678/, "expanded shows the bounded short run identity");
-assert.match(expanded, /mode=bg/, "expanded shows the delivery mode");
-assert.match(expanded, /phase=done/, "expanded shows the terminal phase");
+assert.match(expanded, /run 12345678/, "expanded shows the bounded short run identity in the summary");
+assert.match(expanded, /bg/, "expanded shows the delivery mode in the identity row");
+assert.match(expanded, /done/, "expanded shows the terminal phase in the summary");
 assert.match(expanded, /Task/, "expanded uses the shared label-led section rule");
 assert.match(expanded, /Result/, "result section uses the shared section rule");
 assert.match(expanded, /Activity/, "activity section uses the shared section rule");

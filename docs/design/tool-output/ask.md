@@ -3,7 +3,7 @@
 **Family:** workflow · **Scope:** parent only · **Owner:**
 `src/ask-user/index.ts`, rendered by `src/display/workflow-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 The interactive wizard itself is **not** part of this document. It is a
 separate full-screen workflow surface with its own accepted design. This

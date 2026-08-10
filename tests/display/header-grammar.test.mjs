@@ -123,7 +123,7 @@ const EXPECTED_TITLES = {
   ask: "Questions",
   time: "Local time",
   subagent_delegate: "Subagent",
-  subagent_resume: "Resume subagent",
+  subagent_resume: "Resume",
 };
 
 // ─── C1: every catalog tool renders a sentence-case title ───────────

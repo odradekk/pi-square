@@ -4,7 +4,7 @@
 `src/display/builtins.ts` (Pi built-in, decorated by `decorateBuiltinDefinition`;
 projected call preview in `src/display/file-preview.ts`)
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Current output
 

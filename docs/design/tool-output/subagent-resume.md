@@ -3,7 +3,7 @@
 **Family:** agent · **Scope:** parent only · **Owner:**
 `src/subagents/tool.ts`, rendered by `src/subagents/display-adapter.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 Uses the grammar of [subagent-delegate.md](subagent-delegate.md). This
 document records only what differs.

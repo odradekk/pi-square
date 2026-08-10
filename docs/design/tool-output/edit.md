@@ -4,7 +4,7 @@
 `src/display/builtins.ts` (Pi built-in, decorated by `decorateBuiltinDefinition`;
 diff rendering in `src/display/diff.ts`)
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Current output
 

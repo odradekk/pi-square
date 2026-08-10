@@ -288,16 +288,12 @@ function renderMatches(block: Extract<DisplaySectionBlock, { kind: "matches" }>,
 
 function renderActivity(block: Extract<DisplaySectionBlock, { kind: "activity" }>, context: RenderContext): string[] {
   const items = block.items.slice(0, MAX_SECTION_ITEMS);
-  const statusText = (status?: "running" | "done" | "error") => status === "error"
-    ? context.theme.fg("error", "× error")
-    : status === "done"
-      ? context.theme.fg("success", "✓ done")
-      : context.theme.fg("accent", "→ running");
-  const lines = items.flatMap((item) => rightPriorityRows(
-    `  ${context.theme.fg("toolTitle", truncateCodePoints(sanitizeDisplayLine(item.tool), 80))}  ${truncateCodePoints(sanitizeDisplayLine(item.summary), 1_024)}`,
-    statusText(item.status),
-    context.width,
-  ));
+  const glyph = (status?: "running" | "done" | "error") => status === "error" ? "×" : status === "done" ? "✓" : "●";
+  const lines = items.map((item) => {
+    const prefix = styleTone(context.theme, item.status === "error" ? "error" : item.status === "done" ? "success" : "accent", glyph(item.status));
+    const rest = `${truncateCodePoints(sanitizeDisplayLine(item.tool), 80)}  ${truncateCodePoints(sanitizeDisplayLine(item.summary), 1_024)}`.trimEnd();
+    return padVisible(truncateToWidth(`  ${prefix}  ${rest}`, context.width, "…"), context.width);
+  });
   if (block.items.length > items.length) lines.push(padVisible(context.theme.fg("muted", `${block.items.length - items.length} activities omitted`), context.width));
   return lines;
 }

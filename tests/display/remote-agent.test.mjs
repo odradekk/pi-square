@@ -132,8 +132,8 @@ const running = subagent.renderResult(
 ).render(80).join("\n");
 assert.match(running, /explorer/);
 assert.match(running, /scanning repository|found 3 matches/);
-assert.match(running, /Activity/);
-assert.match(running, /rg.*needle/i);
+// Activity rows never appear in the collapsed body
+assert.doesNotMatch(running, /Activity/);
 const expandedSubagent = subagent.renderResult(
   { content: [{ type: "text", text: subagentDetails.liveText }], details: subagentDetails },
   { expanded: true, isPartial: true },

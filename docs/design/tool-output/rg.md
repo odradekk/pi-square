@@ -3,7 +3,7 @@
 **Family:** search · **Scope:** parent and child · **Owner:**
 `src/search/tools/rg.ts`, rendered by `src/display/search-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `rg` uses the text-search grammar defined in [grep.md](grep.md). This document
 records only what differs: paging, context lines, filters, and the failure

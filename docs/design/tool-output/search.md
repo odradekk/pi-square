@@ -3,7 +3,7 @@
 **Family:** remote · **Scope:** parent and child · **Owner:**
 `src/web/tools/search.ts`, rendered by `src/display/remote-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `search`, `fetch`, `libs`, and `docs` share one remote-record grammar. This
 document is the reference for the group; the other three record only their

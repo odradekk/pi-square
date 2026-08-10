@@ -3,7 +3,7 @@
 **Family:** execution · **Scope:** parent and child · **Owner:**
 `src/scheme/tools/scheme.ts`, rendered by `src/display/execution-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `scheme` uses the execution grammar defined in [bash.md](bash.md). This
 document records only what differs: the code target, the access level, and the

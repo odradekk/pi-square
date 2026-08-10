@@ -3,7 +3,7 @@
 **Family:** filesystem · **Scope:** parent and child · **Owner:**
 `src/display/builtins.ts` (Pi built-in, decorated by `decorateBuiltinDefinition`)
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Current output
 

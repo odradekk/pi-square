@@ -4,7 +4,7 @@
 opt-in · **Owner:** `src/pdf-search/tool.ts`, rendered by
 `src/display/search-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Current output
 

@@ -3,7 +3,7 @@
 **Family:** search · **Scope:** parent and child · **Owner:**
 `src/display/builtins.ts` (Pi built-in, decorated by `decorateBuiltinDefinition`)
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `grep` and `rg` share one text-search grammar. This document is the reference
 for both; [rg.md](rg.md) records only the differences.

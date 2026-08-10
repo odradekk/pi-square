@@ -4,7 +4,7 @@
 trusted roles · **Owner:** `src/github/tools.ts`, rendered by
 `src/display/remote-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 Uses the `github_*` grammar of [github-search.md](github-search.md).
 

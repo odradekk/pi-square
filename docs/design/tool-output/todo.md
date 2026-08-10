@@ -3,7 +3,7 @@
 **Family:** workflow · **Scope:** parent only · **Owner:**
 `src/todo/index.ts`, rendered by `src/display/workflow-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Current output
 

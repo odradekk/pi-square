@@ -4,7 +4,7 @@
 (`explore` and `status` only) · **Owner:** `src/codegraph/tool.ts`, rendered by
 `src/display/search-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Current output
 

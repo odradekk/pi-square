@@ -3,7 +3,7 @@
 **Family:** remote · **Scope:** parent only, never exposed to child sessions ·
 **Owner:** `src/ssh/tool.ts`, rendered by `src/display/remote-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Evidence level
 

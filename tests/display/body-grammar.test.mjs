@@ -214,8 +214,7 @@ function assertNoTrailingEmptyRow(lines, label) {
   const component = todo.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ action: "set" }));
   const body = bodyLines(component);
   assert.equal(body.length, 1, "collapsed todo renders exactly one summary row");
-  assert.match(body[0], /4 tasks/, "the todo summary states the total");
-  assert.match(body[0], /1 completed/, "the todo summary states the completed count");
+  assert.match(body[0], /1 of 4 done/, "the todo summary states the total and completed count");
   assert.ok(!body[0].includes("action=set"), "no key=value metadata noise in the summary row");
   runtime.dispose();
 }

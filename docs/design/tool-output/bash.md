@@ -4,7 +4,7 @@
 **Owner:** `src/display/builtins.ts` (Pi built-in, decorated by
 `decorateBuiltinDefinition`)
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `bash`, `pwsh`, and `scheme` share one execution grammar. This document is the
 reference for all three; [pwsh.md](pwsh.md) and [scheme.md](scheme.md) record

@@ -3,7 +3,7 @@
 **Family:** filesystem · **Scope:** parent and child · **Owner:**
 `src/search/tools/fd.ts`, rendered by `src/display/internal-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `fd` uses the path-list grammar defined in [find.md](find.md). This document
 records only what differs: paging, filters, and the failure form.

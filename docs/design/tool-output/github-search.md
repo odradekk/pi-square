@@ -4,7 +4,7 @@
 trusted roles (of the bundled roles, only Librarian) · **Owner:**
 `src/github/tools.ts`, rendered by `src/display/remote-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 The four `github_*` tools share one grammar on top of the remote-record
 grammar of [search.md](search.md). This document is the group reference;

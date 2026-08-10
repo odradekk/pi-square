@@ -4,7 +4,7 @@
 only · **Owner:** `src/shell/tools/pwsh.ts`, rendered by
 `src/display/execution-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 ## Evidence level
 

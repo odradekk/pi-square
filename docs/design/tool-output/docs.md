@@ -3,7 +3,7 @@
 **Family:** remote · **Scope:** parent and child · **Owner:**
 `src/web/tools/docs.ts`, rendered by `src/display/remote-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `docs` uses the remote-record grammar of [search.md](search.md). This document
 records only what differs.

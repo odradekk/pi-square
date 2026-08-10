@@ -3,7 +3,7 @@
 **Family:** remote · **Scope:** parent only · **Owner:**
 `src/web/tools/parse.ts`, rendered by `src/display/remote-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `parse` uses the remote-record grammar of [search.md](search.md). This
 document records only what differs: the upload confirmation, the page

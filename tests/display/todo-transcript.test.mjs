@@ -25,8 +25,8 @@ function makeCtx(args, state = {}, overrides = {}) {
   };
 }
 
-function newRuntime() {
-  return new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true } });
+function newRuntime(environment = { isTTY: true }) {
+  return new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment });
 }
 
 function makeDef() {
@@ -65,61 +65,57 @@ const DETAILS = {
 
 // ═══════════════════════════════════════════════════════════════════
 
-// ─── 1. Three-state markers (✓/◆/○) in task records ───────────────
+// ─── 1. Three-state glyphs (✓/●/○) in task records, no raw fields ──
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "list" }, DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  // Completed → ✓
-  assert.match(text, /✓ 1\.\s*Explore codebase/, "completed task shows ✓ marker");
-  // In-progress → ◆ (current)
-  assert.match(text, /◆ 2\.\s*Write tests/, "in-progress task shows ◆ marker");
-  // Pending → ○
-  assert.match(text, /○ 3\.\s*Review PR/, "pending task shows ○ marker");
-  // Current marker
-  assert.match(text, /current=yes/, "in-progress task shows current=yes");
+  // Completed → ✓, in-progress/current → ●, pending → ○
+  assert.match(text, /✓\s+1\s+Explore codebase/, "completed task shows ✓ glyph");
+  assert.match(text, /●\s+2\s+Write tests/, "in-progress/current task shows ● glyph");
+  assert.match(text, /○\s+3\s+Review PR/, "pending task shows ○ glyph");
+  // The rewrite drops the raw id=/status=/current= fields entirely.
+  assert.doesNotMatch(text, /\bid=/, "no raw id= field");
+  assert.doesNotMatch(text, /\bstatus=/, "no raw status= field");
+  assert.doesNotMatch(text, /\bcurrent=/, "no raw current= field");
 
   runtime.dispose();
 }
 
-// ─── 2. Metadata and summary carry action and counts (C8 prunes restating sections) ──
+// ─── 2. No ACTION/SUMMARY sections; one summary row states the counts ──
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "set", todos: [{ text: "A" }] }, DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.ok(!text.includes("ACTION"), "ACTION restating section is pruned (C8)");
-  assert.ok(!text.includes("SUMMARY"), "SUMMARY restating section is pruned (C8)");
-  // Action fields live in the expanded metadata row
-  assert.match(text, /action=set/, "metadata shows action");
-  assert.match(text, /changed=true/, "metadata shows changed state");
-  // Counts live in the summary row
-  assert.match(text, /3 tasks/, "summary row shows total");
-  assert.match(text, /1 completed/, "summary row shows completed");
-  assert.match(text, /1 in progress/, "summary row shows in progress");
-  assert.match(text, /1 pending/, "summary row shows pending");
+  assert.ok(!text.includes("ACTION"), "no ACTION section");
+  assert.ok(!text.includes("SUMMARY"), "no SUMMARY section");
+  assert.doesNotMatch(text, /\baction=/, "no action= metadata row");
+  assert.doesNotMatch(text, /\bchanged=/, "no changed= metadata row");
+  assert.match(text, /1 of 3 done/, "summary row states progress counts");
+  assert.match(text, /Sprint 42/, "summary row states the list title");
 
   runtime.dispose();
 }
 
-// ─── 3. Task records and summary visible (PERSISTENCE pruned by C8) ──
+// ─── 3. Task records and summary visible; no PERSISTENCE section ───
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "list" }, DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.ok(!text.includes("PERSISTENCE"), "PERSISTENCE restating section is pruned (C8)");
-  assert.match(text, /✓ 1\.\s*Explore codebase/, "task records still render");
-  assert.match(text, /3 tasks/, "summary row shows counts");
+  assert.ok(!text.includes("PERSISTENCE"), "no PERSISTENCE section");
+  assert.match(text, /✓\s+1\s+Explore codebase/, "task records still render");
+  assert.match(text, /1 of 3 done/, "summary row shows counts");
 
   runtime.dispose();
 }
 
-// ─── 4. Target IDs and advance policy in metadata (ACTION pruned by C8) ──
+// ─── 4. No metadata row at all, even with id/ids/advance args ──────
 
 {
   const runtime = newRuntime();
@@ -127,9 +123,11 @@ const DETAILS = {
   const args = { action: "check", id: "todo-2", ids: ["todo-2"], advance: true };
   const result = renderResult(decorated, args, { ...DETAILS, action: "check" }, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /action=check/, "metadata shows action");
-  assert.match(text, /id=todo-2/, "metadata shows target id");
-  assert.match(text, /advance=true/, "metadata shows advance policy");
+  assert.doesNotMatch(text, /\baction=/, "no action= metadata");
+  assert.doesNotMatch(text, /\bid=/, "no id= metadata");
+  assert.doesNotMatch(text, /\badvance=/, "no advance= metadata");
+  // The action word is still visible as the header target instead.
+  assert.match(text.split("\n")[0], /Tasks check/, "header target states the action");
 
   runtime.dispose();
 }
@@ -147,46 +145,69 @@ const DETAILS = {
   const details = { ...DETAILS, items, counts: { total: 3, pending: 3, inProgress: 0, completed: 0 }, currentId: undefined };
   const result = renderResult(decorated, { action: "set", todos: items }, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  // Order should be preserved: Charlie 1, Alpha 2, Bravo 3
   assert.ok(text.indexOf("Charlie") < text.indexOf("Alpha"), "item order preserved");
   assert.ok(text.indexOf("Alpha") < text.indexOf("Bravo"), "item order preserved");
-  assert.match(text, /1\.\s*Charlie/, "first item numbered 1");
-  assert.match(text, /3\.\s*Bravo/, "last item numbered 3");
+  assert.match(text, /○\s+1\s+Charlie/, "first item numbered 1");
+  assert.match(text, /○\s+3\s+Bravo/, "last item numbered 3");
+  // Non-default ids show as a muted body line under the record.
+  assert.match(text, /\bc\b/, "custom id visible in the record body");
 
   runtime.dispose();
 }
 
-// ─── 6. Error state renders failed marker and error section ────────
+// ─── 6. Error renders a human sentence, no raw JSON in collapsed ───
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const args = { action: "start", id: "nonexistent" };
-  const details = { ...DETAILS, status: "error", action: "start", changed: false, error: { code: "TODO_UNKNOWN_ID", message: "Unknown todo item ID: nonexistent" } };
-  const result = renderResult(decorated, args, details, { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^●/, "error state renders × marker");
-  assert.match(text, /Error/, "ERROR section present");
-  assert.match(text, /Unknown todo item ID/, "error message visible");
-  // changed=false should be visible
-  assert.match(text, /changed=false/, "idempotent/no-change state visible");
+  const details = {
+    ...DETAILS, status: "error", action: "start", changed: false,
+    error: { code: "TODO_UNKNOWN_ID", message: "Unknown todo item ID: nonexistent" },
+  };
+  const collapsed = renderResult(decorated, args, details, { isError: true, expanded: false });
+  const collapsedText = stripVTControlCharacters(collapsed.render(100).join("\n"));
+  assert.match(collapsedText, /Unknown task id nonexistent/, "collapsed error states the human sentence");
+  assert.doesNotMatch(collapsedText, /"code":"TODO_UNKNOWN_ID"/, "collapsed error carries no raw JSON");
+
+  const expanded = renderResult(decorated, args, details, { isError: true, expanded: true });
+  const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));
+  assert.match(expandedText, /Unknown task id nonexistent/, "expanded error states the human sentence");
+
+  // Fallback marker for a failed result is ×.
+  const failRuntime = newRuntime({ isTTY: false });
+  const failDecorated = decorateInternalTool(makeDef(), () => failRuntime);
+  const failResult = renderResult(failDecorated, args, details, { isError: true, expanded: false });
+  assert.match(stripVTControlCharacters(failResult.render(80).join("\n")), /^×/, "failed todo renders × fallback marker");
 
   runtime.dispose();
+  failRuntime.dispose();
 }
 
-// ─── 7. Empty list after clear shows no tasks ──────────────────────
+// ─── 7. Empty list states "No tasks" / "List cleared" ──────────────
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
-  const args = { action: "clear" };
-  const details = { version: 1, status: "ok", action: "clear", changed: true, stateVersion: 2, title: "", counts: { total: 0, pending: 0, inProgress: 0, completed: 0 }, widget: "cleared", items: [] };
-  const result = renderResult(decorated, args, details, { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^●/, "clear success renders ✓");
-  assert.match(text, /0 tasks/, "empty list shows 0 tasks in summary");
-  // No Tasks section when empty (recordsSection returns undefined for empty)
-  assert.doesNotMatch(text, /TASKS/, "no Tasks section when empty");
+
+  const clearArgs = { action: "clear" };
+  const clearDetails = {
+    version: 1, status: "ok", action: "clear", changed: true, stateVersion: 2,
+    title: "", counts: { total: 0, pending: 0, inProgress: 0, completed: 0 }, widget: "cleared", items: [],
+  };
+  const clearResult = renderResult(decorated, clearArgs, clearDetails, { expanded: true });
+  const clearText = stripVTControlCharacters(clearResult.render(100).join("\n"));
+  assert.match(clearText, /List cleared/, "clear action states the list was cleared");
+  assert.doesNotMatch(clearText, /[✓●○]\s+1\s+/, "no task record glyphs when the list is empty");
+
+  const listArgs = { action: "list" };
+  const listDetails = {
+    version: 1, status: "ok", action: "list", changed: false, stateVersion: 1,
+    title: "", counts: { total: 0, pending: 0, inProgress: 0, completed: 0 }, widget: "shown", items: [],
+  };
+  const listResult = renderResult(decorated, listArgs, listDetails, { expanded: true });
+  const listText = stripVTControlCharacters(listResult.render(100).join("\n"));
+  assert.match(listText, /No tasks/, "listing an empty list states no tasks");
 
   runtime.dispose();
 }
@@ -199,32 +220,28 @@ const DETAILS = {
     setInterval(cb) { const id = this.next++; this.callbacks.set(id, cb); return id; },
     clearInterval(id) { this.callbacks.delete(id); }, unref() {},
   };
-  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: false }, clock });
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const args = { action: "set", todos: [{ text: "A" }] };
   const state = {};
-  // Queued
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
-  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
-  // Pending
+  assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^–/, "queued renders the en-dash fallback");
   const pending = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: false, lastComponent: queued }));
-  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^●/, "pending renders circle");
-  // Running
+  assert.match(stripVTControlCharacters(pending.render(80).join("\n")), /^○/, "pending renders the circle fallback");
   const running = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: pending }));
-  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders braille");
-  // Completed
+  assert.match(stripVTControlCharacters(running.render(80).join("\n")), /^●/, "running renders the bullet fallback");
   const result = decorated.renderResult(
     { content: [{ type: "text", text: JSON.stringify(DETAILS) }], details: DETAILS },
     { expanded: false, isPartial: false },
     plainTheme,
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running }),
   );
-  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^●/, "completed renders check mark");
+  assert.match(stripVTControlCharacters(result.render(80).join("\n")), /^✓/, "completed renders the check-mark fallback");
 
   runtime.dispose();
 }
 
-// ─── 9. Metadata deduplication (no duplicate action/ids) ───────────
+// ─── 9. No metadata row anywhere (zero action= occurrences) ────────
 
 {
   const runtime = newRuntime();
@@ -232,16 +249,13 @@ const DETAILS = {
   const args = { action: "check", id: "todo-2", advance: true };
   const result = renderResult(decorated, args, { ...DETAILS, action: "check" }, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  // Count action= occurrences in metadata line (first non-rail line)
-  const lines = text.split("\n");
-  const metaLine = lines.find((l) => l.includes("action=") && !l.includes("ACTION")) ?? "";
-  const actionCount = (metaLine.match(/action=/g) ?? []).length;
-  assert.equal(actionCount, 1, "action appears exactly once in header metadata");
+  const actionCount = (text.match(/\baction=/g) ?? []).length;
+  assert.equal(actionCount, 0, "no action= metadata anywhere in the transcript");
 
   runtime.dispose();
 }
 
-// ─── 10. No private task text in header ────────────────────────────
+// ─── 10. No private task text in the call header ───────────────────
 
 {
   const runtime = newRuntime();
@@ -249,12 +263,12 @@ const DETAILS = {
   const args = { action: "set", todos: [{ text: "private task data" }] };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   const callText = stripVTControlCharacters(call.render(100).join("\n"));
-  assert.doesNotMatch(callText, /private task data/, "private task text never in call display");
+  assert.doesNotMatch(callText, /private task data/, "private task text never appears in the call display");
 
   runtime.dispose();
 }
 
-// ─── 11. All operations produce valid display ──────────────────────
+// ─── 11. All operations produce a valid display ─────────────────────
 
 {
   const runtime = newRuntime();
@@ -274,13 +288,13 @@ const DETAILS = {
     const details = { ...DETAILS, action: args.action };
     const result = renderResult(decorated, args, details, { expanded: true });
     const text = stripVTControlCharacters(result.render(80).join("\n"));
-    assert.match(text, /^●/, `${opName} renders ✓ marker`);
-    assert.match(text, new RegExp(`action=${args.action}`), `${opName} shows action in ACTION section`);
+    assert.match(text, /^●/, `${opName} renders the bullet marker`);
+    assert.match(text.split("\n")[0], new RegExp(`Tasks ${args.action}`), `${opName} shows the action as the header target`);
   }
   runtime.dispose();
 }
 
-// ─── 12. Collapsed/expanded bounds at all widths ───────────────────
+// ─── 12. Collapsed/expanded bounds at all widths ────────────────────
 
 {
   const runtime = newRuntime();
@@ -294,7 +308,7 @@ const DETAILS = {
   runtime.dispose();
 }
 
-// ─── 13. Execution unchanged ───────────────────────────────────────
+// ─── 13. Execution unchanged ────────────────────────────────────────
 
 {
   const runtime = newRuntime();

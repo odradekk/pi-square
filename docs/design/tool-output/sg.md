@@ -3,7 +3,7 @@
 **Family:** search · **Scope:** parent and child · **Owner:**
 `src/search/tools/sg.ts`, rendered by `src/display/search-adapters.ts`
 
-**Status:** Proposed. Not implemented.
+**Status:** Implemented.
 
 `sg` uses the text-search grammar defined in [grep.md](grep.md) and the paging
 sentence defined in [rg.md](rg.md). This document records only what differs:
