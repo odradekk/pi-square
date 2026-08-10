@@ -60,6 +60,8 @@ export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
   "grep",
   "rg",
   "sg",
+  "pdf_search",
+  "codegraph",
   "subagent_delegate",
   "subagent_resume",
 ]);
@@ -134,6 +136,7 @@ export function composeInternalSummary(
     const file = stringOf(args.path)?.split(/[\\/]/).pop();
     const matches = numberOf(details.totalMatches) ?? numberOf(details.returned);
     if (matches === undefined) return undefined;
+    if (matches === 0) return file ? `No matches in ${file}` : "No matches";
     const pages = numberOf(details.returned);
     const pageCount = numberOf(details.pageCount);
     const head = `${matches} matches on ${pages ?? 0}${pageCount !== undefined ? ` of ${pageCount}` : ""} pages`;
@@ -178,9 +181,16 @@ export function composeInternalSummary(
       // fd.md: the empty summary states the search root.
       return name === "fd" ? `No files found in ${stringOf(args.path) ?? "."}` : `No ${noun}`;
     }
+    // File count: rg counts files in details.files, sg counts unique
+    // match paths, fd has no separate file concept (items are files).
+    // Only include the file count when the structured data is present.
+    const filesArray = name === "rg" ? asArray(details.files) : undefined;
+    const sgPaths = name === "sg" ? new Set(asArray(details.matches).map((m) => stringOf(asRecord(m).path)).filter((v): v is string => Boolean(v))) : undefined;
+    const fileCount = filesArray ? filesArray.length : sgPaths ? sgPaths.size : undefined;
+    const fileSuffix = fileCount !== undefined && fileCount > 0 ? ` in ${fileCount} ${fileCount === 1 ? "file" : "files"}` : "";
     const head = total !== undefined && total > returned
-      ? `${returned} of ${total} ${noun}`
-      : `${total ?? returned} ${noun}`;
+      ? `${returned} of ${total} ${noun}${fileSuffix}`
+      : `${total ?? returned} ${noun}${fileSuffix}`;
     // fd.md: the summary states the returned count, the total, the root,
     // and the way to continue.
     const root = name === "fd" ? ` in ${stringOf(args.path) ?? "."}` : "";
@@ -290,4 +300,31 @@ export function baseDescription(
   additions: Partial<DisplayDescriptionV1>,
 ): DisplayDescriptionV1 {
   return { ...current, ...additions };
+}
+
+/** Pluralize a count noun: `3 files`, `1 file`. */
+export function plural(count: number, singular: string, pluralForm?: string): string {
+  return `${count} ${count === 1 ? singular : (pluralForm ?? `${singular}s`)}`;
+}
+
+/**
+ * Convert an ISO timestamp to a relative age string: `22h ago`, `9d ago`,
+ * `just now`. Returns `unknown` when the timestamp is missing or invalid.
+ */
+export function formatRelativeAge(timestamp: unknown, now: number = Date.now()): string {
+  const iso = stringOf(timestamp);
+  if (!iso) return "unknown";
+  const parsed = Date.parse(iso);
+  if (!Number.isFinite(parsed)) return "unknown";
+  const seconds = Math.max(0, Math.round((now - parsed) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
 }

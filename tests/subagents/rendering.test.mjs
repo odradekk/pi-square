@@ -138,9 +138,9 @@ assert.match(expanded, /Inspect the parser/, "expanded reveals the delegated tas
 assert.match(expanded, /id=12345678/, "expanded shows the bounded short run identity");
 assert.match(expanded, /mode=bg/, "expanded shows the delivery mode");
 assert.match(expanded, /phase=done/, "expanded shows the terminal phase");
-assert.match(expanded, /TASK/, "expanded uses the shared label-led section rule");
-assert.match(expanded, /RESULT/, "result section uses the shared section rule");
-assert.match(expanded, /ACTIVITY/, "activity section uses the shared section rule");
+assert.match(expanded, /Task/, "expanded uses the shared label-led section rule");
+assert.match(expanded, /Result/, "result section uses the shared section rule");
+assert.match(expanded, /Activity/, "activity section uses the shared section rule");
 assert.match(expanded, /needle/, "allowlisted tool-call summary remains visible");
 
 // ─── 6. Error and aborted deliveries ─────────────────────────────────

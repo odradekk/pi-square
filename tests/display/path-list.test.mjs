@@ -187,7 +187,7 @@ function newRuntime() {
   const lsText = stripVTControlCharacters(lsResult.render(80).join("\n"));
   assert.match(lsText, /^✓/, "empty ls result renders completed marker");
   assert.match(lsText, /Empty directory/, "empty ls result shows 'Empty directory'");
-  assert.doesNotMatch(lsText, /ENTRIES/, "empty ls result has no entries section");
+  assert.doesNotMatch(lsText, /Entries/, "empty ls result has no entries section");
 
   // FIND empty
   const findDecorated = decorateBuiltinDefinition(createFindToolDefinition(TMP), TMP, () => runtime);
@@ -245,7 +245,7 @@ function newRuntime() {
   );
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
   assert.match(collapsedText, /1 directory · 1 file/, "collapsed shows the summary row");
-  assert.ok(!collapsedText.includes("ENTRIES"), "collapsed path content lives in the summary row, not a section title");
+  assert.ok(!collapsedText.includes("Entries"), "collapsed path content lives in the summary row, not a section title");
   assert.doesNotMatch(collapsedText, /DIRECTORY/, "collapsed does not show DIRECTORY summary");
 
   // Expanded
@@ -258,7 +258,7 @@ function newRuntime() {
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
   assert.match(expandedText, /README\.md/, "expanded shows path content");
   assert.match(expandedText, /src\//, "expanded shows directory with trailing slash");
-  assert.ok(!expandedText.includes("ENTRIES"), "a lone Entries section draws no title rule (C9)");
+  assert.ok(!expandedText.includes("Entries"), "a lone Entries section draws no title rule (C9)");
   assert.ok(!expandedText.includes("DIRECTORY"), "expanded prunes the restating DIRECTORY section (C8)");
   assert.match(expandedText, /^✓ List \./, "expanded header target shows the directory");
 

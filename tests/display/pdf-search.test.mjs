@@ -133,14 +133,15 @@ function renderResult(decorated, args, details, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makePdfSearchDef(), () => runtime);
   const args = { path: "reports/q3.pdf", query: "revenue", limit: 5 };
-  // C7: the key=value metadata row renders only when expanded.
+  // No key=value metadata in the call body; the header target carries
+  // the search identity.
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /PDF search/, "call shows the PDF search title");
   assert.match(text, /revenue/, "call target shows the query");
-  assert.match(text, /path=reports\/q3\.pdf/, "call metadata shows the workspace-relative path");
-  assert.match(text, /query=revenue/, "call metadata shows the query");
-  assert.match(text, /limit=5/, "call metadata shows the limit");
+  assert.doesNotMatch(text, /path=reports/, "no key=value path metadata");
+  assert.doesNotMatch(text, /query=revenue/, "no key=value query metadata");
+  assert.doesNotMatch(text, /limit=5/, "no key=value limit metadata");
 
   runtime.dispose();
 }
@@ -153,15 +154,14 @@ function renderResult(decorated, args, details, opts = {}) {
   const args = { path: "reports/q3.pdf", query: "revenue" };
   const result = renderResult(decorated, args, baseDetails(), { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.ok(!text.includes("MATCHES"), "a lone Matches section draws no title rule (C9)");
-  assert.match(text, /reports\/q3\.pdf:3/, "exact match shows page 3 as the ranked page number");
-  assert.match(text, /exact · score 1 · edits 0/, "exact match is labeled exact with score and edit distance");
-  assert.match(text, /Total revenue increased by 12% year over year\./, "exact match shows bounded context");
-  assert.match(text, /reports\/q3\.pdf:9/, "fuzzy match shows page 9 as the ranked page number");
-  assert.match(text, /fuzzy · score 0\.82 · edits 1/, "fuzzy match is labeled fuzzy with score and edit distance, distinct from exact");
-  assert.match(text, /Net revenues for the quarter were strong\./, "fuzzy match shows bounded context");
+  assert.ok(!text.includes("Matches"), "a lone Matches section draws no title rule (C9)");
+  assert.match(text, /page 3 {2}Total revenue increased by 12% year over year\./, "exact match shows the page number and bounded context, no document path repeat");
+  assert.doesNotMatch(text, /exact · score|score 1 · edits 0/, "exact match shows no score/edits/type label");
+  assert.match(text, /page 9 {2}Net revenues for the quarter were strong\./, "fuzzy match shows the page number and bounded context");
+  assert.match(text, /fuzzy/, "fuzzy match carries the fuzzy label");
+  assert.doesNotMatch(text, /score 0\.82 · edits 1/, "fuzzy match shows no score/edits label");
   // Ranking: exact-type matches must be listed before fuzzy-type matches.
-  assert.ok(text.indexOf("reports/q3.pdf:3") < text.indexOf("reports/q3.pdf:9"), "exact match is ranked ahead of fuzzy match");
+  assert.ok(text.indexOf("page 3") < text.indexOf("page 9"), "exact match is ranked ahead of fuzzy match");
 
   // Same-type ranking: matcher.ts pre-sorts same-type matches (exact
   // before exact, by page); the display must preserve that source order
@@ -177,7 +177,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const sameTypeResult = renderResult(decorated, args, sameTypeDetails, { expanded: true });
   const sameTypeText = stripVTControlCharacters(sameTypeResult.render(100).join("\n"));
   assert.ok(
-    sameTypeText.indexOf("reports/q3.pdf:2") < sameTypeText.indexOf("reports/q3.pdf:6"),
+    sameTypeText.indexOf("page 2") < sameTypeText.indexOf("page 6"),
     "same-type matches preserve the source-ranked page order (page 2 before page 6)",
   );
 
@@ -195,7 +195,6 @@ function renderResult(decorated, args, details, opts = {}) {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /5 matches on 1 of 12 pages/, "the summary row states total matches and the page budget");
   assert.match(text, /\[truncated\]/, "hasMore raises the truncated badge");
-  assert.match(text, /returned=1/, "returned count is visible in expanded metadata");
 
   runtime.dispose();
 }
@@ -211,7 +210,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^✓/, "empty matches still render completed, not failed");
   assert.match(text, /No matches/, "empty matches show an explicit empty message");
-  assert.doesNotMatch(text, /MATCHES/, "no Matches section header renders for a confirmed-empty result");
+  assert.doesNotMatch(text, /Matches/, "no Matches section header renders for a confirmed-empty result");
 
   runtime.dispose();
 }
@@ -237,7 +236,6 @@ function renderResult(decorated, args, details, opts = {}) {
     const result = renderResult(decorated, args, details, { text: `Error: ${message}`, isError: true, expanded: true });
     const text = stripVTControlCharacters(result.render(100).join("\n"));
     assert.match(text, /^×/, `${errorCode} renders the failed marker`);
-    assert.match(text, new RegExp(`code=${errorCode}`), `${errorCode} is visible in header metadata even before expanding`);
     assert.match(text, new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${errorCode} shows its own distinct message`);
     renderedTexts.push(text);
   }
@@ -277,13 +275,13 @@ function renderResult(decorated, args, details, opts = {}) {
   const timeoutDetails = baseDetails({ phase: "done", status: "error", errorCode: "PDF_SEARCH_TIMEOUT", error: "PDF search exceeded the 30000-ms time limit", matches: [], returned: undefined, totalMatches: undefined });
   const timeoutResult = renderResult(decorated, args, timeoutDetails, { text: "Error: PDF search exceeded the 30000-ms time limit", isError: true, expanded: true });
   const timeoutText = stripVTControlCharacters(timeoutResult.render(100).join("\n"));
-  assert.doesNotMatch(timeoutText, /MATCHES/, "timeout does not render a Matches section");
+  assert.doesNotMatch(timeoutText, /Matches/, "timeout does not render a Matches section");
   assert.doesNotMatch(timeoutText, /Total revenue/, "timeout shows no partial match content");
 
   const resourceDetails = baseDetails({ phase: "done", status: "error", errorCode: "PDFJS_ASSETS_UNAVAILABLE", error: "Required PDF.js asset directory is unavailable", matches: [], returned: undefined, totalMatches: undefined });
   const resourceResult = renderResult(decorated, args, resourceDetails, { text: "Error: Required PDF.js asset directory is unavailable", isError: true, expanded: true });
   const resourceText = stripVTControlCharacters(resourceResult.render(100).join("\n"));
-  assert.doesNotMatch(resourceText, /MATCHES/, "resource failure does not render a Matches section");
+  assert.doesNotMatch(resourceText, /Matches/, "resource failure does not render a Matches section");
 
   runtime.dispose();
 }

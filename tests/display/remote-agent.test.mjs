@@ -130,7 +130,7 @@ const running = subagent.renderResult(
 ).render(80).join("\n");
 assert.match(running, /explorer/);
 assert.match(running, /scanning repository|found 3 matches/);
-assert.match(running, /ACTIVITY/);
+assert.match(running, /Activity/);
 assert.match(running, /rg.*needle/i);
 const expandedSubagent = subagent.renderResult(
   { content: [{ type: "text", text: subagentDetails.liveText }], details: subagentDetails },
@@ -138,9 +138,9 @@ const expandedSubagent = subagent.renderResult(
   theme,
   context(subagentArgs, { isPartial: true, expanded: true }),
 ).render(80).join("\n");
-assert.match(expandedSubagent, /LIVE/);
-assert.match(expandedSubagent, /ACTIVITY/);
-assert.match(expandedSubagent, /USAGE/);
+assert.match(expandedSubagent, /Live/);
+assert.match(expandedSubagent, /Activity/);
+assert.match(expandedSubagent, /Usage/);
 assert.doesNotMatch(running, /Completed/);
 
 const webSearch = decorateInternalTool(fake("search"), runtime);

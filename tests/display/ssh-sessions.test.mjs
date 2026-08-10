@@ -209,12 +209,12 @@ function page(overrides = {}) {
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(120).join("\n"));
-  assert.match(text, /PROFILES/, "list shows Profiles section");
+  assert.match(text, /Profiles/, "list shows Profiles section");
   assert.match(text, /prod/, "list shows profile name");
   assert.match(text, /defaultTarget=web1/, "list shows profile default target");
   assert.match(text, /web1: deploy@10\.0\.0\.1:22/, "list shows profile targets");
   assert.match(text, /maxSessions=3/, "list shows profile max sessions");
-  assert.match(text, /SESSIONS/, "list shows Sessions section");
+  assert.match(text, /Sessions/, "list shows Sessions section");
   assert.match(text, /ssh-a1b2c3d4/, "list shows session ID");
   assert.match(text, /state=connected/, "list shows session state");
   assert.match(text, /command=idle/, "list shows session command state");

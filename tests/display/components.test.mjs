@@ -135,16 +135,17 @@ const structuredCollapsedDescription = {
 };
 const structuredCollapsed = new OperationalDisplayComponent(structuredCollapsedDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(80).join("\n");
 assert.match(structuredCollapsed, /returned=2/);
-assert.doesNotMatch(structuredCollapsed, /MATCHES|console\.log/);
+assert.doesNotMatch(structuredCollapsed, /Matches|console\.log/);
 const structuredExpanded = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(80).join("\n");
-assert.match(structuredExpanded, /DETAILS/);
-assert.match(structuredExpanded, /MATCHES/);
-assert.match(structuredExpanded, /src\/a\.ts:12:4/);
-assert.match(structuredExpanded, /OUTPUT/);
+assert.match(structuredExpanded, /Details/);
+assert.match(structuredExpanded, /Matches/);
+assert.match(structuredExpanded, /src\/a\.ts/);
+assert.match(structuredExpanded, /12 {2}const needle = true;/);
+assert.match(structuredExpanded, /Output/);
 assert.match(structuredExpanded, /1\s+const needle/);
 const structuredLines = structuredExpanded.split("\n");
-assert.ok(structuredLines.find((line) => line.includes("MATCHES"))?.match(/^[│└]/));
-assert.ok(structuredLines.find((line) => line.includes("src/a.ts:12:4"))?.match(/^[│└]/));
+assert.ok(structuredLines.find((line) => line.includes("Matches"))?.match(/^[│└├]/));
+assert.ok(structuredLines.find((line) => line.includes("src/a.ts"))?.match(/^[│└]/));
 for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
   const lines = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(width);
   assert.ok(lines.every((line) => visibleWidth(line) <= width));

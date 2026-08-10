@@ -5,7 +5,7 @@ import { stripVTControlCharacters } from "node:util";
 import { RESTATING_SECTION_TITLES } from "./adapter-utils";
 import { padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, sanitizeMarkdownForDisplay, truncateCodePoints } from "./sanitize";
-import { styleRule, styleTone } from "./theme";
+import { styleTone } from "./theme";
 import type {
   DisplayMatchItem,
   DisplayPolicy,
@@ -33,14 +33,15 @@ interface RenderContext {
   readonly policy: DisplayPolicy;
 }
 
+/**
+ * Tree-style section title: `├─ TitleName` in muted tone, original case.
+ * The branch prefix replaces the tree rail that components.ts applies to
+ * other body lines, so the caller must skip rail application for lines
+ * whose stripped content starts with `├─`.
+ */
 function titleLine(title: string, context: RenderContext): string {
-  const label = context.theme.fg("muted", truncateCodePoints(
-    sanitizeDisplayLine(title).toUpperCase(),
-    MAX_SECTION_TITLE_CODE_POINTS,
-  ));
-  const prefix = `  ${label} `;
-  const remainder = Math.max(0, context.width - visibleWidth(prefix));
-  return padVisible(`${prefix}${styleRule(context.theme, "─".repeat(remainder))}`, context.width);
+  const label = truncateCodePoints(sanitizeDisplayLine(title), MAX_SECTION_TITLE_CODE_POINTS);
+  return context.theme.fg("muted", `\u251c\u2500 ${label}`);
 }
 
 function wrap(prefix: string, text: string, tone: DisplayTone | undefined, context: RenderContext): string[] {
@@ -183,25 +184,108 @@ function renderPaths(block: Extract<DisplaySectionBlock, { kind: "paths" }>, con
   return lines;
 }
 
-function matchLocation(item: DisplayMatchItem): string {
-  const location = item.line !== undefined
-    ? `:${item.line}${item.column !== undefined ? `:${item.column}` : ""}`
-    : "";
-  return `${item.path}${location}`;
+/**
+ * Build an excerpt string with highlighted ranges emphasized in the accent
+ * tone. Non-highlighted text uses the item tone (default or muted). The
+ * sanitized text and highlight offsets are assumed to match (valid for
+ * normal source text without embedded control characters).
+ */
+function excerptWithHighlights(
+  item: DisplayMatchItem,
+  context: RenderContext,
+): string {
+  if (!item.excerpt) return "";
+  const sanitized = truncateCodePoints(sanitizeDisplayText(item.excerpt), MAX_SECTION_TEXT_CODE_POINTS);
+  const baseTone = item.tone ?? "default";
+  const highlights = item.highlights;
+  if (!highlights || highlights.length === 0) {
+    return styleTone(context.theme, baseTone, sanitized);
+  }
+  const sorted = [...highlights].sort((a, b) => a.start - b.start);
+  let result = "";
+  let pos = 0;
+  for (const range of sorted) {
+    const start = Math.max(pos, Math.min(range.start, sanitized.length));
+    const end = Math.max(start, Math.min(range.end, sanitized.length));
+    if (start > pos) {
+      result += styleTone(context.theme, baseTone, sanitized.slice(pos, start));
+    }
+    result += styleTone(context.theme, "accent", sanitized.slice(start, end));
+    pos = end;
+  }
+  if (pos < sanitized.length) {
+    result += styleTone(context.theme, baseTone, sanitized.slice(pos));
+  }
+  return result;
 }
 
+/**
+ * Grouped match rendering: a file row, then one row per match with a
+ * right-aligned dim line number and the matched text emphasized. Long
+ * lines are truncated with `…` and never wrapped. No column number and no
+ * match/context label. A muted-tone item (context line) renders without
+ * emphasis. The optional `meta` suffix (e.g. `+N lines`) is right-aligned
+ * at the end of the row.
+ */
 function renderMatches(block: Extract<DisplaySectionBlock, { kind: "matches" }>, context: RenderContext): string[] {
   const items = block.items.slice(0, MAX_SECTION_ITEMS);
-  const lines: string[] = [];
-  for (const item of items) {
-    lines.push(...rightPriorityRows(
-      `  ${styleTone(context.theme, item.tone ?? "accent", truncateCodePoints(sanitizeDisplayLine(matchLocation(item)), 2_048))}`,
-      item.meta ? context.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(item.meta), 256)) : "",
-      context.width,
-    ));
-    if (item.excerpt) lines.push(...wrap("  ", item.excerpt, "default", context));
+  if (items.length === 0) return [];
+
+  // Flat mode: items without line numbers (pdf_search page matches) render
+  // as one row per item: `page N  context…`, with optional right-aligned meta.
+  const flatMode = items.every((item) => item.line === undefined);
+  if (flatMode) {
+    const lines: string[] = [];
+    for (const item of items) {
+      const pathText = context.theme.fg("dim", truncateCodePoints(sanitizeDisplayLine(item.path), 256));
+      const excerpt = excerptWithHighlights(item, context);
+      const meta = item.meta ? context.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(item.meta), 256)) : "";
+      const left = `  ${pathText}  ${excerpt}`;
+      const row = meta
+        ? rightPriorityRows(left, meta, context.width, 2, 4)[0] ?? ""
+        : truncateToWidth(left, context.width, "\u2026");
+      lines.push(padVisible(row, context.width));
+    }
+    if (block.items.length > items.length) {
+      lines.push(padVisible(context.theme.fg("muted", `${block.items.length - items.length} matches omitted`), context.width));
+    }
+    return lines;
   }
-  if (block.items.length > items.length) lines.push(padVisible(context.theme.fg("muted", `${block.items.length - items.length} matches omitted`), context.width));
+
+  const lines: string[] = [];
+  let currentPath: string | null = null;
+
+  // Compute the line-number field width across all visible items so every
+  // match row aligns within the section.
+  const maxLine = items.reduce((max, item) => Math.max(max, item.line ?? 0), 0);
+  const lineFieldWidth = Math.max(1, String(maxLine).length);
+
+  for (const item of items) {
+    // Emit a file-header row when the path changes.
+    if (item.path !== currentPath) {
+      currentPath = item.path;
+      lines.push(padVisible(
+        `  ${context.theme.fg("dim", truncateCodePoints(sanitizeDisplayLine(item.path), 2_048))}`,
+        context.width,
+      ));
+    }
+
+    // Build the match row: indent + right-aligned line number + excerpt.
+    const lineNumber = item.line !== undefined
+      ? context.theme.fg("dim", String(item.line).padStart(lineFieldWidth))
+      : " ".repeat(lineFieldWidth);
+    const prefix = `    ${lineNumber}  `;
+    const excerpt = excerptWithHighlights(item, context);
+    const meta = item.meta ? context.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(item.meta), 256)) : "";
+    const row = meta
+      ? rightPriorityRows(`${prefix}${excerpt}`, meta, context.width, 2, 4)[0] ?? ""
+      : truncateToWidth(`${prefix}${excerpt}`, context.width, "\u2026");
+    lines.push(padVisible(row, context.width));
+  }
+
+  if (block.items.length > items.length) {
+    lines.push(padVisible(context.theme.fg("muted", `${block.items.length - items.length} matches omitted`), context.width));
+  }
   return lines;
 }
 

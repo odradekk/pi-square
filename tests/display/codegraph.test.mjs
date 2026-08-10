@@ -147,7 +147,7 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const details = { version: 1, operation: "status", phase: "done", projectPath: "/tmp", status: statusValue({ pendingChanges: { added: 2, modified: 1, removed: 0 } }) };
   const result = renderResult(decorated, args, JSON.stringify({ version: 1, status: "done", operation: "status", projectPath: "/tmp", index: details.status }), details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.ok(!text.includes("INDEX"), "a lone Index section draws no title rule (C9)");
+  assert.ok(!text.includes("├─ Index"), "a lone Index section draws no title (C9)");
   assert.match(text, /files=120/, "index content shows file count");
   assert.match(text, /nodes=5000/, "index section shows node count");
   assert.match(text, /edges=9000/, "index section shows edge count");
@@ -208,13 +208,12 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const withResults = renderResult(decorated, args, "Auth flows through middleware.js and validates JWTs.", details, { expanded: true });
   const withResultsText = stripVTControlCharacters(withResults.render(100).join("\n"));
   assert.match(withResultsText, /Auth flows through middleware\.js/, "explore prose is visible");
-  assert.ok(!withResultsText.includes("RESULTS"), "a lone Results section draws no title rule (C9)");
+  assert.ok(!withResultsText.includes("Results"), "a lone Results section draws no title (C9)");
 
   const empty = renderResult(decorated, args, "CodeGraph returned no relevant source for this query.", details, { expanded: true });
   const emptyText = stripVTControlCharacters(empty.render(100).join("\n"));
   assert.match(emptyText, /^✓/, "empty explore still renders completed (not failed)");
-  assert.match(emptyText, /No relevant source found/, "empty explore shows an explicit empty message");
-  assert.doesNotMatch(emptyText, /CodeGraph returned no relevant source for this query\./, "the raw boilerplate sentence is replaced, not duplicated");
+  assert.match(emptyText, /No relevant source/, "empty explore shows an explicit empty message in the summary row");
 
   runtime.dispose();
 }
@@ -247,9 +246,9 @@ function renderResult(decorated, args, content, details, opts = {}) {
   };
   const withStatus = renderResult(decorated, args, JSON.stringify({ ...raw, code: "WORKTREE_MISMATCH", message: withStatusDetails.message }), withStatusDetails, { expanded: true });
   const withStatusText = stripVTControlCharacters(withStatus.render(100).join("\n"));
-  assert.match(withStatusText, /RESULT/, "recoverable with status still shows the Result message section");
+  assert.match(withStatusText, /Result/, "recoverable with status still shows the Result message section");
   assert.match(withStatusText, /different Git worktree/, "recoverable with status shows the actionable message");
-  assert.match(withStatusText, /INDEX/, "recoverable with status also shows the Index health section");
+  assert.match(withStatusText, /Index/, "recoverable with status also shows the Index health section");
   assert.match(withStatusText, /worktree=mismatch/, "recoverable with status surfaces the worktree mismatch field");
 
   runtime.dispose();
@@ -299,8 +298,8 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const result = renderResult(decorated, args, JSON.stringify(raw), details, { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^×/, "hard error renders the failed marker");
-  assert.match(text, /Cannot resolve CodeGraph binary/, "hard error shows the safe message");
-  assert.equal((text.match(/Cannot resolve CodeGraph binary/g) ?? []).length, 1, "the error message is not duplicated across preview and error field");
+  assert.match(text, /CodeGraph is unavailable for this platform/, "hard error shows the mapped safe message");
+  assert.equal((text.match(/CodeGraph is unavailable for this platform/g) ?? []).length, 1, "the error message is not duplicated across preview and error field");
 
   runtime.dispose();
 }

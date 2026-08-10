@@ -97,42 +97,40 @@ function sgMatch(overrides = {}) {
   runtime.dispose();
 }
 
-// ─── 2. Pattern mode: distinct target, selector/strictness shown ────
+// ─── 2. Pattern mode: target shown, no key=value metadata ────────
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeSgDef(), () => runtime);
   const args = { pattern: "$FUNC($$$ARGS)", selector: "call_expression", strictness: "ast", language: "ts", path: "src" };
-  // C7: the key=value metadata row renders only when expanded.
+  // No key=value metadata row renders in the call body (design: only the
+  // header target carries the search identity).
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /\$FUNC\(\$\$\$ARGS\)/, "call target shows the pattern");
-  assert.match(text, /pattern=\$FUNC\(\$\$\$ARGS\)/, "pattern metadata shown");
-  assert.match(text, /selector=call_expression/, "selector shown in pattern mode");
-  assert.match(text, /strictness=ast/, "strictness shown in pattern mode");
-  assert.match(text, /language=ts/, "language shown in pattern mode");
-  assert.match(text, /path=src/, "path shown in pattern mode");
+  assert.doesNotMatch(text, /pattern=/, "no key=value pattern metadata");
+  assert.doesNotMatch(text, /selector=/, "no key=value selector metadata");
+  assert.doesNotMatch(text, /strictness=/, "no key=value strictness metadata");
+  assert.doesNotMatch(text, /language=ts/, "no key=value language metadata");
+  assert.doesNotMatch(text, /path=src/, "no key=value path metadata");
 
   runtime.dispose();
 }
 
-// ─── 3. Kind mode: distinct target, selector/strictness suppressed ──
+// ─── 3. Kind mode: target shown, no key=value metadata ─────────────
 
 {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeSgDef(), () => runtime);
-  // A model providing selector/strictness alongside kind (against the
-  // tool's own promptGuidelines) must not surface them: they apply only
-  // to pattern mode, so kind mode presents a distinct, uncluttered summary.
   const args = { kind: "call_expression", selector: "ignored", strictness: "ast", language: "ts", path: "src" };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /call_expression/, "call target shows the kind");
-  assert.match(text, /kind=call_expression/, "kind metadata shown");
-  assert.match(text, /language=ts/, "language still shown in kind mode");
-  assert.match(text, /path=src/, "path still shown in kind mode");
-  assert.doesNotMatch(text, /selector=/, "selector suppressed in kind mode");
-  assert.doesNotMatch(text, /strictness=/, "strictness suppressed in kind mode");
+  assert.doesNotMatch(text, /kind=/, "no key=value kind metadata");
+  assert.doesNotMatch(text, /language=ts/, "no key=value language metadata");
+  assert.doesNotMatch(text, /path=src/, "no key=value path metadata");
+  assert.doesNotMatch(text, /selector=/, "no key=value selector metadata");
+  assert.doesNotMatch(text, /strictness=/, "no key=value strictness metadata");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "sg returned=1" }], details: { page: { offset: 0, returned: 1, total: 1 }, matches: [sgMatch({ metaVariables: [] })] } },
@@ -141,15 +139,14 @@ function sgMatch(overrides = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const resultText = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(resultText, /kind=call_expression/, "kind-mode expanded metadata shows kind");
-  assert.match(resultText, /language=ts/, "kind-mode expanded metadata shows language");
+  assert.doesNotMatch(resultText, /kind=|language=/, "expanded result carries no key=value metadata row (C8)");
   assert.doesNotMatch(resultText, /selector=/, "expanded result also suppresses selector in kind mode");
   assert.doesNotMatch(resultText, /strictness=/, "expanded result also suppresses strictness in kind mode");
 
   runtime.dispose();
 }
 
-// ─── 4. Matches preserve path, line, column, excerpt, and captures ──
+// ─── 4. Matches preserve path, line, and excerpt (no column, no language, no captures) ──
 
 {
   const runtime = newRuntime();
@@ -163,12 +160,12 @@ function sgMatch(overrides = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
   );
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.ok(!text.includes("MATCHES"), "a lone Matches section draws no title rule (C9)");
-  assert.match(text, /src\/a\.ts:5:2/, "result shows path:line:column");
-  assert.match(text, /foo\(bar, baz\)/, "result shows excerpt");
-  assert.match(text, /typescript/, "result shows match language");
-  assert.match(text, /FUNC=foo/, "result shows metavariable capture FUNC");
-  assert.match(text, /ARGS=bar, baz/, "result shows metavariable capture ARGS");
+  assert.ok(!text.includes("Matches"), "a lone Matches section draws no title rule (C9)");
+  assert.match(text, /src\/a\.ts/, "result shows the file header (no column)");
+  assert.match(text, /5 {2}foo\(bar, baz\)/, "result shows the line number and excerpt");
+  assert.doesNotMatch(text, /typescript/, "result no longer shows the match language");
+  assert.doesNotMatch(text, /FUNC=foo/, "result no longer shows metavariable capture FUNC");
+  assert.doesNotMatch(text, /ARGS=bar, baz/, "result no longer shows metavariable capture ARGS");
 
   runtime.dispose();
 }
@@ -288,8 +285,7 @@ function sgMatch(overrides = {}) {
   );
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /\[truncated\]/, "content budget and pagination raise the truncated badge");
-  assert.match(text, /total=50/, "pagination total reachable in expanded metadata");
-  assert.match(text, /1 of 50 matches · continue at offset 1/, "the summary row states pagination and continuation");
+  assert.match(text, /1 of 50 matches in 1 file · continue at offset 1/, "the summary row states pagination and continuation");
 
   runtime.dispose();
 }
@@ -357,7 +353,7 @@ function sgMatch(overrides = {}) {
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
   assert.doesNotMatch(collapsedText, /QUERY/, "collapsed omits QUERY summary");
   assert.match(collapsedText, /\[truncated\]/, "collapsed shows the truncated badge for pagination");
-  assert.match(collapsedText, /1 of 5 matches · continue at offset 1/, "collapsed summary row states pagination and continuation");
+  assert.match(collapsedText, /1 of 5 matches in 1 file · continue at offset 1/, "collapsed summary row states pagination and continuation");
 
   const expanded = decorated.renderResult(
     {
@@ -369,8 +365,8 @@ function sgMatch(overrides = {}) {
     makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
-  assert.match(expandedText, /total=5/, "expanded metadata reveals the pagination total");
-  assert.match(expandedText, /1 of 5 matches · continue at offset 1/, "expanded summary row states pagination and continuation");
+  assert.doesNotMatch(expandedText, /total=/, "expanded result carries no key=value metadata row (C8)");
+  assert.match(expandedText, /1 of 5 matches in 1 file · continue at offset 1/, "expanded summary row states pagination and continuation");
 
   runtime.dispose();
 }

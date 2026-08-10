@@ -197,12 +197,12 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /ACTIVITY/, "ACTIVITY section title present");
+  assert.match(text, /Activity/, "ACTIVITY section title present");
   assert.match(text, /rg/, "rg tool summary visible");
   assert.match(text, /read/, "read tool summary visible");
   // No ACTIVITY label prefix in rows (old grammar removed)
   const lines = text.split("\n");
-  const activityLines = lines.filter((l) => l.includes("rg") && !l.includes("ACTIVITY"));
+  const activityLines = lines.filter((l) => l.includes("rg") && !l.includes("Activity"));
   assert.ok(activityLines.some((l) => !l.startsWith("ACTIVITY")), "no ACTIVITY label prefix in rows");
   runtime.dispose();
 }
@@ -245,7 +245,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /USAGE/, "USAGE section visible when expanded");
+  assert.match(text, /Usage/, "USAGE section visible when expanded");
   assert.match(text, /turns/, "turns in usage");
   assert.match(text, /input/, "input in usage");
   assert.match(text, /output/, "output in usage");

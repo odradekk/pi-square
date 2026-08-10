@@ -114,8 +114,8 @@ function assertNoTrailingEmptyRow(lines, label) {
     80,
     true,
   ).map((line) => stripVTControlCharacters(line));
-  assert.ok(twoSections.some((line) => line.includes("ALPHA")), "two sections draw the first rule");
-  assert.ok(twoSections.some((line) => line.includes("BETA")), "two sections draw the second rule");
+  assert.ok(twoSections.some((line) => line.includes("Alpha")), "two sections draw the first title");
+  assert.ok(twoSections.some((line) => line.includes("Beta")), "two sections draw the second title");
 
   const oneSection = renderDisplaySections(
     [{ title: "Alpha", blocks: [{ kind: "text", text: "one" }] }],
@@ -124,7 +124,7 @@ function assertNoTrailingEmptyRow(lines, label) {
     80,
     true,
   ).map((line) => stripVTControlCharacters(line));
-  assert.ok(!oneSection.some((line) => line.includes("ALPHA")), "a single section draws no rule");
+  assert.ok(!oneSection.some((line) => line.includes("Alpha")), "a single section draws no title");
   assert.ok(oneSection.some((line) => line.includes("one")), "the single section content still renders");
 }
 
@@ -139,7 +139,7 @@ function assertNoTrailingEmptyRow(lines, label) {
   };
   const component = read.renderResult(result, { expanded: true, isPartial: false }, plainTheme, makeCtx({ path: "notes.txt" }));
   const body = bodyLines(component);
-  assert.ok(!body.some((line) => line.includes("CONTENT")), "one expanded section draws no CONTENT rule");
+  assert.ok(!body.some((line) => line.includes("Content")), "one expanded section draws no CONTENT rule");
   assert.ok(body.some((line) => line.includes("line 1")), "the content itself still renders");
   runtime.dispose();
 }

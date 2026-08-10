@@ -142,9 +142,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Write-Output 'hello world'" };
   const result = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 50 }, "hello world", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /COMMAND/, "expanded result shows a Command section");
+  assert.match(text, /Command/, "expanded result shows a Command section");
   assert.match(text, /Write-Output 'hello world'/, "the full command is retained in the expanded Command section");
-  assert.match(text, /OUTPUT/, "expanded result shows an Output section");
+  assert.match(text, /Output/, "expanded result shows an Output section");
   assert.match(text, /hello world/, "output content is visible");
 
   runtime.dispose();
@@ -255,8 +255,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(collapsedText, /^✓/, "collapsed keeps lifecycle marker visible");
   assert.match(collapsedText, /PowerShell/, "collapsed keeps identity/title visible");
   assert.match(collapsedText, /Get-Process/, "collapsed keeps command target visible");
-  assert.match(collapsedText, /COMMAND/, "collapsed shows compact Command section");
-  assert.match(collapsedText, /OUTPUT/, "collapsed shows compact Output section");
+  assert.match(collapsedText, /Command/, "collapsed shows compact Command section");
+  assert.match(collapsedText, /Output/, "collapsed shows compact Output section");
   assert.doesNotMatch(collapsedText, /STATUS ───/, "collapsed omits the non-compact Status section");
 
   const expanded = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "process list output", { expanded: true });

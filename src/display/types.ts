@@ -318,13 +318,20 @@ export interface DisplayPathItem {
   readonly tone?: DisplayTone;
 }
 
+/** Character offsets for emphasized text within the excerpt (0-indexed). */
+export interface DisplayHighlightRange {
+  readonly start: number;
+  readonly end: number;
+}
+
 export interface DisplayMatchItem {
   readonly path: string;
   readonly line?: number;
-  readonly column?: number;
   readonly excerpt?: string;
   readonly meta?: string;
   readonly tone?: DisplayTone;
+  /** Emphasized ranges within `excerpt`, used for matched-text highlighting. */
+  readonly highlights?: readonly DisplayHighlightRange[];
 }
 
 export interface DisplayActivityItem {

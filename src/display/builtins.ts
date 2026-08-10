@@ -19,7 +19,7 @@ import { setBannerDisplayDiagnostic } from "../banner";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
-import { codeSection, field, formatBytes, formatDisplayPath, matchesSection, pathsSection, sections, textSection } from "./adapter-utils";
+import { codeSection, formatBytes, formatDisplayPath, matchesSection, pathsSection, sections } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
 import type { DisplayDescriptionV1, DisplayMatchItem, DisplayMetadataEntry, DisplayPathItem, DisplayRow, OperationalLifecycle } from "./types";
 import { DEFAULT_DISPLAY_POLICY } from "./types";
@@ -56,19 +56,6 @@ function numberMetadata(label: string, value: unknown): DisplayMetadataEntry | u
     : undefined;
 }
 
-/**
- * grep-specific search metadata: case sensitivity, regex vs. literal, glob
- * scope, and context lines. Surfaced in both call metadata (badges) and the
- * expanded Query summary so search identity remains visible at every width.
- */
-function grepSearchMetadata(args: Record<string, unknown>): DisplayMetadataEntry[] {
-  return [
-    field("glob", args.glob),
-    args.ignoreCase === true ? field("case", "insensitive") : undefined,
-    args.literal === true ? field("literal", "true") : undefined,
-    numberMetadata("context", args.context),
-  ].filter((entry): entry is DisplayMetadataEntry => Boolean(entry));
-}
 
 /** C1 sentence-case titles; unique within each family (`ls` is `List`, `find` is `Find`). */
 const BUILTIN_TITLES: Readonly<Record<BuiltinName, string>> = Object.freeze({
@@ -128,11 +115,12 @@ function builtinTarget(
 }
 
 function callDescription(name: BuiltinName, args: Record<string, unknown>, cwd: string, executionStarted: boolean): DisplayDescriptionV1 {
-  const metadata = [
+  // grep carries no key=value metadata in the call body; the header target
+  // already shows the pattern (grep.md). Other builtins keep offset/limit.
+  const metadata = name === "grep" ? [] : [
     numberMetadata("offset", args.offset),
     numberMetadata("limit", args.limit),
     numberMetadata("timeout", args.timeout),
-    ...(name === "grep" ? grepSearchMetadata(args) : []),
   ].filter((entry): entry is DisplayMetadataEntry => Boolean(entry));
   const rows: DisplayRow[] = [];
   if (name === "edit" && Array.isArray(args.edits)) rows.push({ text: `${args.edits.length} replacement${args.edits.length === 1 ? "" : "s"}` });
@@ -164,22 +152,30 @@ function pathItemsFromText(text: string): DisplayPathItem[] {
 
 /**
  * Parse standard grep output lines (`path:line:text`) into structured match items.
+ * Highlights the first occurrence of the search pattern within each excerpt.
  */
-function grepMatchItems(text: string): DisplayMatchItem[] {
+function grepMatchItems(text: string, pattern: string | undefined): DisplayMatchItem[] {
   return text.split("\n").filter(Boolean).flatMap((line) => {
     const firstColon = line.indexOf(":");
-    if (firstColon === -1) return [{ path: line, tone: "accent" as const }];
+    if (firstColon === -1) return [{ path: line }];
     const path = line.slice(0, firstColon);
     const rest = line.slice(firstColon + 1);
     const secondColon = rest.indexOf(":");
-    if (secondColon === -1) return [{ path, excerpt: rest, tone: "accent" as const }];
+    if (secondColon === -1) return [{ path, excerpt: rest }];
     const lineNum = Number(rest.slice(0, secondColon));
     const excerpt = rest.slice(secondColon + 1);
+    // Emphasis: find the first occurrence of the pattern in the excerpt.
+    const highlights = pattern && excerpt
+      ? (() => {
+        const idx = excerpt.indexOf(pattern);
+        return idx >= 0 ? [{ start: idx, end: idx + pattern.length }] : undefined;
+      })()
+      : undefined;
     return [{
       path,
       ...(Number.isFinite(lineNum) ? { line: lineNum } : {}),
       excerpt,
-      tone: "accent" as const,
+      ...(highlights && highlights.length > 0 ? { highlights } : {}),
     }];
   });
 }
@@ -309,11 +305,11 @@ function resultSections(
     return sections(pathsSection("Results", items, false));
   }
   if (name === "grep") {
-    const items = grepMatchItems(text);
+    const items = grepMatchItems(text, stringValue(args.pattern));
     return sections(
       items.length > 0
         ? matchesSection("Matches", items, true)
-        : textSection("Result", "No matches", "muted", true),
+        : undefined,
     );
   }
   if (!expanded) return [];
@@ -384,7 +380,7 @@ function builtinSummary(
     return `${plural(count, "file")}${rootLabel}${overflow}`;
   }
   if (name === "grep") {
-    const items = grepMatchItems(text);
+    const items = grepMatchItems(text, stringValue(args.pattern));
     if (items.length === 0) return "No matches";
     const files = new Set(items.map((item) => item.path)).size;
     return `${plural(items.length, "match", "matches")} in ${plural(files, "file")}`;
@@ -449,6 +445,7 @@ function resultDescription(
     || readContinuation !== undefined
     || (name === "ls" && (details?.entryLimitReached !== undefined || truncation?.truncated === true))
     || (name === "find" && (details?.resultLimitReached !== undefined || truncation?.truncated === true))
+    || (name === "grep" && grepMatchItems(text, stringValue(args.pattern)).length + new Set(grepMatchItems(text, stringValue(args.pattern)).map((i) => i.path)).size > DEFAULT_DISPLAY_POLICY.previewLines)
     || (name === "write" && typeof args.content === "string" && args.content.replace(/\r\n?/g, "\n").split("\n").length > DEFAULT_DISPLAY_POLICY.previewLines);
   const description: DisplayDescriptionV1 = {
     version: 1,

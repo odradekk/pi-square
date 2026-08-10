@@ -179,7 +179,7 @@ function strip(lines) {
   );
   const rendered = strip(result.render(80));
   assert.match(rendered, /Empty directory/, "empty shows 'Empty directory'");
-  assert.doesNotMatch(rendered, /ENTRIES/, "no ENTRIES section");
+  assert.doesNotMatch(rendered, /Entries/, "no ENTRIES section");
   runtime.dispose();
 }
 
@@ -317,7 +317,7 @@ function strip(lines) {
   );
   const emptyRendered = strip(emptyResult.render(80));
   assert.match(emptyRendered, /No files found/, "empty shows 'No files found'");
-  assert.doesNotMatch(emptyRendered, /RESULTS/, "no RESULTS section for empty");
+  assert.doesNotMatch(emptyRendered, /Results/, "no RESULTS section for empty");
   runtime.dispose();
 }
 

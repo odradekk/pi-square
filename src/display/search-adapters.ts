@@ -8,75 +8,21 @@ import {
   codeSection,
   field,
   formatBytes,
+  formatRelativeAge,
   matchesSection,
   metadata,
   numberOf,
-  pageMetadata,
+  plural,
   pathsSection,
+  recordsSection,
   sections,
   stringOf,
-  summarySection,
   textOf,
   textSection,
   type UnknownRecord,
 } from "./adapter-utils";
-import type { DisplayMatchItem, DisplayMetadataEntry, DisplayPathItem, DisplaySection, OperationalLifecycle, OperationalQualifier } from "./types";
-
-function argMetadata(name: string, args: UnknownRecord): DisplayMetadataEntry[] {
-  const common: Array<DisplayMetadataEntry | undefined> = [
-    field("path", args.path),
-    field("offset", args.offset),
-    field("limit", args.limit),
-  ];
-  if (name === "rg") {
-    return metadata([
-      field("pattern", args.pattern),
-      field("case", args.case),
-      args.literal === true ? field("literal", "true") : undefined,
-      args.word === true ? field("word", "true") : undefined,
-      ...common,
-    ]);
-  }
-  if (name === "fd") {
-    return metadata([
-      field("pattern", args.pattern ?? "."),
-      field("matchMode", args.matchMode),
-      field("maxDepth", args.maxDepth),
-      ...common,
-    ]);
-  }
-  if (name === "sg") {
-    // selector and strictness apply only to pattern mode (per the tool's
-    // own promptGuidelines); omit them entirely when kind mode is active
-    // so the two modes present distinct, uncluttered summaries.
-    const patternMode = stringOf(args.pattern) !== undefined;
-    return metadata([
-      field("pattern", args.pattern),
-      field("kind", args.kind),
-      field("language", args.language),
-      patternMode ? field("selector", args.selector) : undefined,
-      patternMode ? field("strictness", args.strictness) : undefined,
-      ...common,
-    ]);
-  }
-  if (name === "pdf_search") {
-    return metadata([
-      field("query", args.query),
-      field("path", args.path),
-      field("limit", args.limit),
-    ]);
-  }
-  return metadata([
-    field("operation", args.operation),
-    field("projectPath", args.projectPath),
-    field("query", args.query),
-    field("maxFiles", args.maxFiles),
-  ]);
-}
-
-function querySection(name: string, args: UnknownRecord): DisplaySection | undefined {
-  return summarySection("Query", argMetadata(name, args));
-}
+import type { DisplayMatchItem, DisplayMetadataEntry, DisplayPathItem, DisplayRecordItem, DisplaySection, OperationalLifecycle, OperationalQualifier } from "./types";
+import { DEFAULT_DISPLAY_POLICY } from "./types";
 
 function rgMatches(details: UnknownRecord): DisplayMatchItem[] {
   const matches: DisplayMatchItem[] = [];
@@ -86,21 +32,26 @@ function rgMatches(details: UnknownRecord): DisplayMatchItem[] {
     for (const lineValue of asArray(file.lines)) {
       const line = asRecord(lineValue);
       const display = asRecord(line.display);
+      const excerpt = stringOf(display.text) ?? stringOf(line.text);
+      const isContext = stringOf(line.kind) === "context";
+      // Emphasis ranges from rg's precomputed display.highlights (character
+      // offsets into the display text). Context lines carry no highlights.
+      const highlights = !isContext && Array.isArray(display.highlights)
+        ? (display.highlights as unknown[])
+          .map((h) => {
+            const r = asRecord(h);
+            const start = numberOf(r.start);
+            const end = numberOf(r.end);
+            return start !== undefined && end !== undefined ? { start, end } : undefined;
+          })
+          .filter((h): h is { start: number; end: number } => Boolean(h))
+        : undefined;
       matches.push({
         path,
         ...(numberOf(line.line) !== undefined ? { line: numberOf(line.line) } : {}),
-        ...(numberOf(line.column) !== undefined ? { column: numberOf(line.column) } : {}),
-        ...(stringOf(display.text) ?? stringOf(line.text) ? { excerpt: stringOf(display.text) ?? stringOf(line.text) } : {}),
-        meta: stringOf(line.kind),
-        tone: line.kind === "context" ? "muted" : "accent",
-      });
-    }
-    const continuation = asRecord(file.continuation);
-    if (numberOf(continuation.omitted) !== undefined) {
-      matches.push({
-        path,
-        meta: `${continuation.omitted} omitted${continuation.nextOffset !== null && continuation.nextOffset !== undefined ? ` · next ${continuation.nextOffset}` : ""}`,
-        tone: "muted",
+        ...(excerpt ? { excerpt } : {}),
+        ...(isContext ? { tone: "muted" as const } : {}),
+        ...(highlights && highlights.length > 0 ? { highlights } : {}),
       });
     }
   }
@@ -112,43 +63,72 @@ function sgMatches(details: UnknownRecord): DisplayMatchItem[] {
     const match = asRecord(value);
     const range = asRecord(match.range);
     const start = asRecord(range.start);
-    const captures = asArray(match.metaVariables)
-      .map((captureValue) => {
-        const capture = asRecord(captureValue);
-        const name = stringOf(capture.name);
-        const text = stringOf(capture.text);
-        return name && text ? `${name}=${text}` : undefined;
-      })
-      .filter((capture): capture is string => Boolean(capture))
-      .join(" · ");
-    const excerpt = stringOf(match.displayText) ?? stringOf(match.text);
+    const end = asRecord(range.end);
+    const fullText = stringOf(match.displayText) ?? stringOf(match.text) ?? "";
+    const firstLine = fullText.split("\n", 1)[0] ?? "";
+    const startLine = numberOf(start.line);
+    const endLine = numberOf(end.line);
+    const extraLines = startLine !== undefined && endLine !== undefined
+      ? Math.max(0, endLine - startLine)
+      : 0;
     return stringOf(match.path)
       ? [{
         path: stringOf(match.path)!,
-        ...(numberOf(start.line) !== undefined ? { line: numberOf(start.line) } : {}),
-        ...(numberOf(start.column) !== undefined ? { column: numberOf(start.column) } : {}),
-        ...(excerpt ? { excerpt } : {}),
-        meta: [stringOf(match.language), captures].filter(Boolean).join(" · "),
+        ...(startLine !== undefined ? { line: startLine } : {}),
+        ...(firstLine ? { excerpt: firstLine } : {}),
+        ...(extraLines > 0 ? { meta: `+${extraLines} lines` } : {}),
       }]
       : [];
   });
+}
+
+/**
+ * Build expanded sections showing the full node body for each sg match.
+ * Non-compact: only rendered in expanded view.
+ */
+function sgNodeBodySections(details: UnknownRecord): DisplaySection[] {
+  const matches = asArray(details.matches).map((m) => asRecord(m));
+  if (matches.length === 0) return [];
+  const records: DisplayRecordItem[] = matches.flatMap((match) => {
+    const path = stringOf(match.path);
+    if (!path) return [];
+    const range = asRecord(match.range);
+    const start = asRecord(range.start);
+    const startLine = numberOf(start.line) ?? 1;
+    const fullText = stringOf(match.displayText) ?? stringOf(match.text) ?? "";
+    return [{
+      title: fullText.split("\n", 1)[0] ?? fullText,
+      tone: "accent" as const,
+      fields: [{ label: "at", value: `${path}:${startLine}` }],
+      ...(fullText.includes("\n") ? { body: fullText.split("\n").slice(1).join("\n") } : {}),
+    }];
+  });
+  const section = recordsSection("Node bodies", records, false);
+  return section ? [section] : [];
 }
 
 function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
   return asArray(details.matches).flatMap((value) => {
     const match = asRecord(value);
     const type = stringOf(match.type);
-    const score = numberOf(match.score);
-    const edits = numberOf(match.edits);
-    return stringOf(match.context) || numberOf(match.page) !== undefined
-      ? [{
-        path: stringOf(details.path) ?? "PDF",
-        ...(numberOf(match.page) !== undefined ? { line: numberOf(match.page) } : {}),
-        ...(stringOf(match.context) ? { excerpt: stringOf(match.context) } : {}),
-        meta: [type, score !== undefined ? `score ${score}` : undefined, edits !== undefined ? `edits ${edits}` : undefined].filter(Boolean).join(" · "),
-        tone: type === "exact" ? "success" : "accent",
-      }]
-      : [];
+    const page = numberOf(match.page);
+    const context = stringOf(match.context);
+    const matchedText = stringOf(match.matchedText);
+    if (page === undefined && !context) return [];
+    // Emphasis: find the matched text span within the context.
+    const highlights = context && matchedText
+      ? (() => {
+        const idx = context.indexOf(matchedText);
+        return idx >= 0 ? [{ start: idx, end: idx + matchedText.length }] : undefined;
+      })()
+      : undefined;
+    return [{
+      path: page !== undefined ? `page ${page}` : "PDF",
+      ...(context ? { excerpt: context } : {}),
+      // Only fuzzy matches carry a label; exact matches show nothing.
+      ...(type === "fuzzy" ? { meta: "fuzzy" } : {}),
+      ...(highlights && highlights.length > 0 ? { highlights } : {}),
+    }];
   });
 }
 
@@ -165,6 +145,116 @@ function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
  */
 function pdfSearchLifecycle(details: UnknownRecord): { lifecycle: OperationalLifecycle; qualifiers: OperationalQualifier[] } | undefined {
   return stringOf(details.status) === "aborted" ? { lifecycle: "aborted", qualifiers: [] } : undefined;
+}
+
+// ─── Error sentences ─────────────────────────────────────────────────
+
+function rgErrorSentence(details: UnknownRecord, rawText: string): string | undefined {
+  const stderr = stringOf(details.stderr);
+  if (!stderr) return rawText.split("\n", 1)[0]?.trim() || undefined;
+  if (/regex parse error|unclosed/i.test(stderr)) return "Invalid pattern";
+  if (/no such file|not found/i.test(stderr)) return "Search root does not exist";
+  if (/permission denied/i.test(stderr)) return "Permission denied";
+  return stderr.split("\n", 1)[0]?.trim() || undefined;
+}
+
+function sgErrorSentence(details: UnknownRecord, args: UnknownRecord, rawText: string): string | undefined {
+  const stderr = stringOf(details.stderr);
+  if (!stderr) return rawText.split("\n", 1)[0]?.trim() || undefined;
+  const language = stringOf(args.language) ?? "unknown";
+  if (/parse error|unexpected|invalid/i.test(stderr)) return `Invalid pattern for ${language}`;
+  if (/unknown language|unsupported language/i.test(stderr)) return `Unknown language ${language}`;
+  if (/not found|no such file/i.test(stderr)) return "Search root does not exist";
+  if (/not available|unavailable|binary/i.test(stderr)) return "ast-grep is unavailable for this platform";
+  return stderr.split("\n", 1)[0]?.trim() || undefined;
+}
+
+function fdErrorSentence(details: UnknownRecord, rawText: string): string | undefined {
+  const stderr = stringOf(details.stderr);
+  if (!stderr) return rawText.split("\n", 1)[0]?.trim() || undefined;
+  if (/regex parse error|repetition operator/i.test(stderr)) {
+    if (/--glob|--fixed-strings/i.test(stderr)) return "Invalid regex pattern · use matchMode=glob for a glob";
+    return "Invalid regex pattern";
+  }
+  if (/no such file|not found|not a directory/i.test(stderr)) return "Search root does not exist";
+  if (/permission denied/i.test(stderr)) return "Permission denied";
+  if (/not available|unavailable|binary/i.test(stderr)) return "fd binary is unavailable for this platform";
+  return stderr.split("\n", 1)[0]?.trim() || undefined;
+}
+
+function pdfErrorSentence(details: UnknownRecord): string | undefined {
+  const code = stringOf(details.errorCode) ?? stringOf(details.code);
+  const message = stringOf(details.error) ?? stringOf(details.message);
+  switch (code) {
+    case "INVALID_PDF_PATH": case "ENOENT": return "PDF does not exist";
+    case "OUTSIDE_WORKSPACE": return "PDF is outside the workspace";
+    case "ENCRYPTED_PDF": return "PDF is encrypted";
+    case "NO_TEXT": return "PDF has no extractable text";
+    case "OVERSIZE": return "PDF is larger than 50 MB";
+    case "TOO_MANY_PAGES": return "PDF has more than 1,000 pages";
+    default: break;
+  }
+  if (/timeout|did not finish/i.test(message ?? "")) return "Search did not finish in 30s";
+  return message?.split("\n", 1)[0]?.trim() || undefined;
+}
+
+// ─── Filter rows ─────────────────────────────────────────────────────
+
+/**
+ * Compose a single bounded muted filter-row string from active arguments
+ * that the header does not show. Returns undefined when no filters are set.
+ */
+function rgFilterRow(args: UnknownRecord): string | undefined {
+  const parts: string[] = [];
+  const path = stringOf(args.path);
+  if (path && path !== ".") parts.push(`in ${path}`);
+  const includes = asArray(args.includeGlobs).map((g) => stringOf(g)).filter(Boolean);
+  if (includes.length > 0) parts.push(includes.join(" · "));
+  const excludes = asArray(args.excludeGlobs).map((g) => stringOf(g)).filter(Boolean);
+  if (excludes.length > 0) parts.push(excludes.map((e) => `!${e}`).join(" · "));
+  const types = asArray(args.types).map((t) => stringOf(t)).filter(Boolean);
+  if (types.length > 0) parts.push(types.join(","));
+  const caseMode = stringOf(args.case);
+  if (caseMode && caseMode !== "smart") parts.push(caseMode === "sensitive" ? "case-sensitive" : caseMode === "insensitive" ? "case-insensitive" : caseMode);
+  if (args.word === true) parts.push("whole-word");
+  if (args.literal === true) parts.push("literal");
+  if (args.hidden === true) parts.push("hidden");
+  if (args.noIgnore === true) parts.push("no-ignore");
+  const maxDepth = numberOf(args.maxDepth);
+  if (maxDepth !== undefined) parts.push(`max-depth ${maxDepth}`);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function sgFilterRow(args: UnknownRecord): string | undefined {
+  const parts: string[] = [];
+  const language = stringOf(args.language);
+  if (language) parts.push(language);
+  const path = stringOf(args.path);
+  if (path && path !== ".") parts.push(`in ${path}`);
+  const limit = numberOf(args.limit);
+  if (limit !== undefined) parts.push(`limit ${limit}`);
+  const strictness = stringOf(args.strictness);
+  if (strictness && stringOf(args.pattern) !== undefined) parts.push(strictness);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function fdFilterRow(args: UnknownRecord): string | undefined {
+  const parts: string[] = [];
+  const types = asArray(args.types).map((t) => stringOf(t)).filter(Boolean);
+  if (types.length > 0) parts.push(types.join(","));
+  if (args.hidden === true) parts.push("hidden");
+  if (args.noIgnore === true) parts.push("no-ignore");
+  const maxDepth = numberOf(args.maxDepth);
+  if (maxDepth !== undefined) parts.push(`max-depth ${maxDepth}`);
+  const minDepth = numberOf(args.minDepth);
+  if (minDepth !== undefined) parts.push(`min-depth ${minDepth}`);
+  const excludes = asArray(args.excludeGlobs).map((g) => stringOf(g)).filter(Boolean);
+  if (excludes.length > 0) parts.push(excludes.map((e) => `!${e}`).join(" · "));
+  const matchMode = stringOf(args.matchMode);
+  if (matchMode && matchMode !== "regex") parts.push(matchMode);
+  const caseMode = stringOf(args.case);
+  if (caseMode && caseMode !== "smart") parts.push(caseMode === "sensitive" ? "case-sensitive" : caseMode === "insensitive" ? "case-insensitive" : caseMode);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 function fdPaths(details: UnknownRecord, args: UnknownRecord): DisplayPathItem[] {
@@ -269,74 +359,180 @@ function codegraphLifecycle(details: UnknownRecord): { lifecycle: OperationalLif
 // explicit compact empty state instead of a duplicated raw-text preview.
 const CODEGRAPH_EXPLORE_EMPTY_TEXT = "CodeGraph returned no relevant source for this query.";
 
+// Emoji presentation characters and variation selectors removed by the
+// sanitization step (AGENTS.md no-emoji rule).
+const EMOJI_PATTERN = /[\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D\u2705\u26A0\u274C]/g;
+
+interface CodeGraphSymbol {
+  name: string;
+  path: string;
+  line: number;
+  callers: number;
+  hasTests: boolean;
+}
+
+interface CodeGraphExploreData {
+  symbols: CodeGraphSymbol[];
+  totalSymbols: number;
+  totalFiles: number;
+}
+
+/**
+ * Strip source code fences, block-quote model instructions, and emoji from
+ * the raw CodeGraph explore text. The model-facing text is unchanged.
+ */
+function sanitizeCodeGraphText(text: string): string {
+  return text
+    // Remove fenced code blocks (```...```)
+    .replace(/```[\s\S]*?```/g, "")
+    // Remove block-quote lines (model instructions)
+    .split("\n")
+    .filter((line) => !line.trim().startsWith(">"))
+    .join("\n")
+    // Remove emoji presentation characters
+    .replace(EMOJI_PATTERN, "")
+    // Collapse whitespace runs left by removals
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Parse the CodeGraph explore output to extract symbol and file data for
+ * display. Falls back gracefully: if the upstream format does not match,
+ * returns an empty symbol list so the caller can fall back to sanitized text.
+ */
+function parseCodeGraphExplore(text: string): CodeGraphExploreData {
+  const symbols: CodeGraphSymbol[] = [];
+  // Match lines like: - `SymbolName` (src/path.ts:27) — 3 callers in ...; no covering tests found
+  const symbolPattern = /^[-*]\s+`([^`]+)`\s*\(([^:)]+):(\d+)\)\s*[—––-]\s*(.*?)(?:;|$)/gm;
+  let match: RegExpExecArray | null;
+  while ((match = symbolPattern.exec(text)) !== null) {
+    const tail = match[4] ?? "";
+    const callerMatch = tail.match(/(\d+)\s+callers?/);
+    symbols.push({
+      name: match[1]!,
+      path: match[2]!,
+      line: Number(match[3]),
+      callers: callerMatch ? Number(callerMatch[1]) : 0,
+      hasTests: !/no covering tests|no tests/i.test(tail),
+    });
+  }
+  const summaryMatch = text.match(/Found\s+(\d+)\s+symbols?\s+across\s+(\d+)\s+files?/i);
+  return {
+    symbols,
+    totalSymbols: summaryMatch ? Number(summaryMatch[1]) : symbols.length,
+    totalFiles: summaryMatch ? Number(summaryMatch[2]) : new Set(symbols.map((s) => s.path)).size,
+  };
+}
+
+/** Compose the codegraph explore summary sentence. */
+function codegraphExploreSummary(data: CodeGraphExploreData): string {
+  if (data.symbols.length === 0 && data.totalSymbols === 0) return "No relevant source";
+  const count = data.totalSymbols || data.symbols.length;
+  const files = data.totalFiles || new Set(data.symbols.map((s) => s.path)).size;
+  return `${plural(count, "symbol", "symbols")} in ${plural(files, "file")}`;
+}
+
+/** Compose the codegraph status summary sentence with relative age. */
+function codegraphStatusSummary(status: UnknownRecord): string {
+  const initialized = booleanOf(status.initialized);
+  const fileCount = numberOf(status.fileCount);
+  const index = asRecord(status.index);
+  const reindexRecommended = booleanOf(index.reindexRecommended) === true;
+  const worktreeMismatch = booleanOf(status.worktreeMismatch) === true;
+  const age = formatRelativeAge(status.lastIndexed);
+
+  if (initialized === false || fileCount === undefined) return "No index · run init";
+
+  const parts: string[] = [`${fileCount} files`];
+  const nodeCount = numberOf(status.nodeCount);
+  if (nodeCount !== undefined) {
+    const edgeCount = numberOf(status.edgeCount);
+    parts.push(`${nodeCount.toLocaleString()} nodes`);
+    if (edgeCount !== undefined) parts.push(`${edgeCount.toLocaleString()} edges`);
+  }
+  const sizeBytes = numberOf(status.dbSizeBytes);
+  if (sizeBytes !== undefined) parts.push(formatBytes(sizeBytes));
+  parts.push(`indexed ${age}`);
+
+  const pending = asRecord(status.pendingChanges);
+  const pendingTotal = (numberOf(pending.added) ?? 0) + (numberOf(pending.modified) ?? 0) + (numberOf(pending.removed) ?? 0);
+
+  // worktreeMismatch or reindexRecommended → index is corrupt/incomplete → run reindex
+  if (worktreeMismatch || reindexRecommended) {
+    return `${fileCount} files · indexed ${age} · run reindex`;
+  }
+  // pendingChanges with no reindex signal → stale but usable → run sync
+  if (pendingTotal > 0) {
+    return `${fileCount} files · indexed ${age} · run sync`;
+  }
+  return parts.join(" · ");
+}
+
 function codegraphSections(
   details: UnknownRecord,
   resultValue: AgentToolResult<unknown>,
-): DisplaySection[] {
+): { sections: DisplaySection[]; summary: string | undefined } {
   const phase = stringOf(details.phase);
   const operation = stringOf(details.operation);
   const status = asRecord(details.status);
   const hasStatus = Object.keys(status).length > 0;
   const message = stringOf(details.message);
   const out: Array<DisplaySection | undefined> = [];
+  let summary: string | undefined;
 
   if (phase === "done" && operation === "explore") {
     const text = textOf(resultValue).trim();
     if (!text || text === CODEGRAPH_EXPLORE_EMPTY_TEXT) {
-      out.push(textSection("Result", "No relevant source found for this query", "muted", true));
+      summary = "No relevant source";
     } else {
-      out.push(markCompact(codeSection("Results", text, "markdown", false)));
+      const parsed = parseCodeGraphExplore(text);
+      if (parsed.symbols.length > 0) {
+        summary = codegraphExploreSummary(parsed);
+        // Collapsed: file list with symbol counts.
+        const fileCounts = new Map<string, number>();
+        for (const sym of parsed.symbols) {
+          fileCounts.set(sym.path, (fileCounts.get(sym.path) ?? 0) + 1);
+        }
+        const fileItems: DisplayPathItem[] = [...fileCounts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([path, count]) => ({ path, meta: `${count} symbols` }));
+        out.push(pathsSection("Results", fileItems, true));
+        // Expanded: blast radius table.
+        const blastItems: DisplayRecordItem[] = parsed.symbols.map((sym) => ({
+          title: sym.name,
+          fields: [
+            { label: "at", value: `${sym.path}:${sym.line}` },
+            { label: "callers", value: String(sym.callers) },
+            ...(sym.hasTests ? [] : [{ label: "tests", value: "none" }]),
+          ],
+        }));
+        if (blastItems.length > 0) {
+          out.push(recordsSection("Blast radius", blastItems, false));
+        }
+      } else {
+        // Fallback: sanitized text when the upstream format is unrecognized.
+        const cleaned = sanitizeCodeGraphText(text);
+        summary = cleaned ? undefined : "No relevant source";
+        out.push(markCompact(codeSection("Results", cleaned, "markdown", false)));
+      }
     }
   } else if (phase === "done" && hasStatus) {
-    out.push({ title: "Index", blocks: [{ kind: "list", items: codegraphIndexMetadata(status) }], compact: true });
+    summary = codegraphStatusSummary(status);
+    // INDEX section only for expanded view.
+    out.push({ title: "Index", blocks: [{ kind: "list", items: codegraphIndexMetadata(status) }] });
   } else if (phase === "recoverable" || phase === "declined") {
-    // error/aborted phases are always isError in this tool, so their
-    // message already renders once through description.error; showing it
-    // again here would duplicate the same text with a second style.
     if (message) {
       out.push(textSection("Result", message, phase === "recoverable" ? "warning" : "muted", true));
     }
-    if (hasStatus) out.push({ title: "Index", blocks: [{ kind: "list", items: codegraphIndexMetadata(status) }], compact: true });
+    if (hasStatus) {
+      summary = codegraphStatusSummary(status);
+      out.push({ title: "Index", blocks: [{ kind: "list", items: codegraphIndexMetadata(status) }] });
+    }
   } else if ((phase === "error" || phase === "aborted") && hasStatus) {
-    out.push({ title: "Index", blocks: [{ kind: "list", items: codegraphIndexMetadata(status) }], compact: true });
+    out.push({ title: "Index", blocks: [{ kind: "list", items: codegraphIndexMetadata(status) }] });
   }
-  // Collapsed-mode compact filtering is applied uniformly to the full
-  // `structured` array by the caller; this only strips undefined entries.
-  return out.filter((s): s is DisplaySection => Boolean(s));
-}
-
-const EMPTY_DOMAIN_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
-  rg: "No matches",
-  sg: "No matches",
-  pdf_search: "No matches",
-  fd: "No results",
-});
-
-/**
- * Merge freshly computed metadata on top of base metadata, replacing any
- * entry whose label the fresh set also produces. Prevents the same arg
- * fields (pattern, case, word, ...) from appearing twice in the header.
- * `suppress` unconditionally drops base labels that fresh intentionally
- * omits (rather than replaces) — needed because base's own generic
- * ARG_FIELDS metadata includes a field whenever it is present in args,
- * regardless of whether the tool considers it applicable in the current
- * mode (for example sg's selector/strictness apply only to pattern mode).
- */
-function mergeMetadata(
-  base: readonly DisplayMetadataEntry[],
-  fresh: readonly DisplayMetadataEntry[],
-  suppress: ReadonlySet<string> = new Set(),
-): DisplayMetadataEntry[] {
-  const freshLabels = new Set(fresh.map((entry) => entry.label));
-  return [...base.filter((entry) => !freshLabels.has(entry.label) && !suppress.has(entry.label)), ...fresh].slice(0, 16);
-}
-
-/**
- * Metadata labels sg's own promptGuidelines mark as inapplicable outside
- * pattern mode: selector and strictness apply only when pattern is set.
- */
-function sgKindModeSuppression(args: UnknownRecord): ReadonlySet<string> {
-  return stringOf(args.pattern) === undefined ? new Set(["selector", "strictness"]) : new Set();
+  return { sections: out.filter((s): s is DisplaySection => Boolean(s)), summary };
 }
 
 function describeCodeGraphCall(
@@ -346,9 +542,17 @@ function describeCodeGraphCall(
   return baseDescription(description, {
     title: codegraphTitle(args.operation) ?? description.title,
     target: codegraphTarget(args),
-    metadata: mergeMetadata(description.metadata ?? [], argMetadata("codegraph", args), new Set(["status"])),
-    sections: sections(summarySection("Query", argMetadata("codegraph", args))),
+    metadata: [],
   });
+}
+
+function codegraphErrorSentence(details: UnknownRecord): string | undefined {
+  const message = stringOf(details.message) ?? stringOf(details.error);  if (!message) return undefined;
+  if (/outside the workspace|outside.*cwd/i.test(message)) return "Project path is outside the workspace";
+  if (/no index|not initialized/i.test(message)) return "No index · run init";
+  if (/unavailable|binary|not found|cannot resolve/i.test(message)) return "CodeGraph is unavailable for this platform";
+  if (/timeout|did not answer/i.test(message)) return "CodeGraph did not answer in time";
+  return message.split("\n", 1)[0]?.trim() || undefined;
 }
 
 function describeCodeGraphResult(
@@ -366,47 +570,29 @@ function describeCodeGraphResult(
     stringOf(details.stderr) ? textSection("Diagnostics", stringOf(details.stderr), "warning") : undefined,
     booleanOf(details.outputTruncated) ? textSection("Diagnostics", "CodeGraph output truncated by model-facing budget", "warning") : undefined,
   );
-  // Real CodeGraphDetails echoes operation/projectPath but never query or
-  // maxFiles (those are call-only args); build the Query section from args
-  // like the header metadata does, so both stay consistent and complete.
-  const query = summarySection("Query", argMetadata("codegraph", args));
   const domain = codegraphSections(details, result);
-  // A recognized terminal phase (done/recoverable/declined/error/aborted)
-  // always produces at least one domain section above. running is also
-  // recognized but intentionally produces none — its progress label
-  // already renders in the header, and the streaming update's raw JSON
-  // envelope carries no additional information worth surfacing. Only a
-  // genuinely malformed or unexpected phase falls back to raw result text,
-  // so no information is silently dropped, matching the same ambiguous-
-  // domain fallback used for rg/fd/sg/pdf_search.
   const phase = stringOf(details.phase);
-  const fallbackOutput = domain.length === 0 && !isError && phase !== "running"
+  const fallbackOutput = domain.sections.length === 0 && !isError && phase !== "running"
     ? codeSection("Output", textOf(result), "text", false)
     : undefined;
-  const structured = sections(...diagnostics, query, ...domain, markCompact(fallbackOutput));
+  const structured = sections(...diagnostics, ...domain.sections, markCompact(fallbackOutput));
 
   const progress = options.isPartial && message ? { label: message } : undefined;
   const lifecycleOverride = codegraphLifecycle(details);
+  const errorSentence = isError ? (codegraphErrorSentence(details) ?? message ?? description.error) : undefined;
+  const rawText = isError && textOf(result) !== errorSentence ? textOf(result) : undefined;
 
   return baseDescription(description, {
     title: codegraphTitle(details.operation ?? args.operation) ?? description.title,
     target: codegraphTarget(args),
-    metadata: mergeMetadata(description.metadata ?? [], argMetadata("codegraph", args), new Set(["status"])),
+    metadata: [],
     sections: options.expanded ? structured : structured.filter((section) => section.compact === true),
     ...(progress ? { progress } : {}),
     ...(lifecycleOverride ? lifecycleOverride : {}),
-    // codegraph's recognized phases build complete structured content
-    // above, so the raw JSON-serialized preview would only duplicate it;
-    // the fallbackOutput section covers the one case (unrecognized phase)
-    // where preview text would otherwise carry unique information.
     preview: undefined,
     rows: [],
-    // Base's own error field prioritizes the AgentToolResult content text
-    // (codegraph's raw JSON envelope) over details.message; override it
-    // unconditionally so the sanitized human message is the sole error
-    // carrier instead of a duplicated JSON dump underneath the RESULT
-    // section built above.
-    ...(isError ? { error: message ?? description.error } : {}),
+    ...(domain.summary ? { summary: domain.summary } : {}),
+    ...(errorSentence ? { error: errorSentence, ...(rawText ? { errorRaw: rawText } : {}) } : {}),
   });
 }
 
@@ -420,10 +606,10 @@ export function createSearchAdapter(
       const description = base.describeCall(args, context);
       const record = asRecord(args);
       if (name === "codegraph") return describeCodeGraphCall(record, description);
-      const suppress = name === "sg" ? sgKindModeSuppression(record) : undefined;
+      // No key=value metadata row and no Query section in the call body;
+      // the header target already carries the search identity.
       return baseDescription(description, {
-        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, record), suppress),
-        sections: sections(querySection(name, record)),
+        metadata: [],
       });
     },
     describeResult(result, options, context) {
@@ -432,95 +618,91 @@ export function createSearchAdapter(
       const args = asRecord(context.args);
       const details = asRecord(result.details);
       const page = asRecord(details.page);
-      const truncation = asRecord(details.truncation);
-      const error = stringOf(details.error) ?? ((result as { isError?: boolean }).isError ? textOf(result) : undefined);
+      const isError = Boolean((result as { isError?: boolean }).isError);
       const structuredDomain = name === "rg" || name === "sg" || name === "fd" || name === "pdf_search";
-      const summary = summarySection("Summary", [
-        ...(name === "rg" || name === "fd" || name === "sg" ? pageMetadata(page) : []),
-        field("status", details.status),
-        field("phase", details.phase),
-        field("returned", details.returned),
-        field("totalMatches", details.totalMatches),
-        // pdf_search's document/page budget: the total page count of the
-        // resolved PDF, independent of how many pages carried a match.
-        name === "pdf_search" ? field("pages", details.pageCount) : undefined,
-        field("cacheHit", details.cacheHit),
-        // pdf_search's result budget: more matching pages exist beyond the
-        // returned/limit-bounded set, mirroring rg/fd/sg's page.hasMore.
-        name === "pdf_search" && details.hasMore === true ? field("hasMore", "true", "warning") : undefined,
-        truncation.contentBudgetReached === true ? field("contentBudget", "reached", "warning") : undefined,
-        details.stderrTruncated === true ? field("stderr", "truncated", "warning") : undefined,
-        details.autoSynced === true ? field("autoSynced", "true", "success") : undefined,
-        field("code", details.code),
-        field("errorCode", details.errorCode, "error"),
-      ]);
 
+      // Build the domain section: compact matches for rg/sg/pdf_search
+      // (payload tools that keep a bounded body); non-compact paths for fd
+      // (expanded only — fd collapses to just the summary row).
       let domain: DisplaySection | undefined;
-      if (name === "rg") domain = matchesSection("Matches", rgMatches(details));
-      else if (name === "sg") domain = matchesSection("Matches", sgMatches(details));
-      else if (name === "fd") domain = pathsSection("Results", fdPaths(details, args));
-      else if (name === "pdf_search") domain = matchesSection("Matches", pdfMatches(details));
-      // rg/fd/sg report their count on page.returned; pdf_search reports it
-      // at the top level. Confirming a genuine zero (rather than merely an
-      // empty or malformed domain) keeps ambiguous/unparsed details falling
-      // back to the raw text preview instead of silently claiming "no results".
+      if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);
+      else if (name === "sg") domain = matchesSection("Matches", sgMatches(details), true);
+      else if (name === "pdf_search") domain = matchesSection("Matches", pdfMatches(details), true);
+      else if (name === "fd") domain = pathsSection("Results", fdPaths(details, args), false);
+
+      // sg expanded: full node bodies as a non-compact records section.
+      const sgExpanded = name === "sg" && options.expanded && !isError
+        ? sgNodeBodySections(details)
+        : undefined;
+
+      // Confirm genuine empty (returned count is zero, not merely absent
+      // or malformed details).
       const returnedCount = (name === "rg" || name === "fd" || name === "sg")
         ? numberOf(page.returned)
         : numberOf(details.returned);
       const genuinelyEmpty = returnedCount === 0;
-      // Match/path-based domains that are confirmed empty get an explicit
-      // compact message instead of falling through to a raw text preview,
-      // which would otherwise duplicate the "No results" row.
-      const emptyDomain = !domain && !error && genuinelyEmpty && name in EMPTY_DOMAIN_MESSAGES
-        ? textSection("Result", EMPTY_DOMAIN_MESSAGES[name], "muted", true)
-        : undefined;
-      // When the domain is absent but not confirmed empty (ambiguous or
-      // malformed details), fall back to the raw text output so no
-      // information is silently dropped.
-      const output = options.expanded && !domain && !emptyDomain && !error && structuredDomain
-        ? codeSection("Output", textOf(result), "text", false)
-        : undefined;
-      const hasStructuredContent = Boolean(domain) || Boolean(emptyDomain);
 
-      const query = name === "pdf_search"
-        ? summarySection("Query", argMetadata(name, details))
-        : querySection(name, args);
-      // The tool error itself renders once through description.error
-      // (always visible, error-styled, regardless of expansion); this
-      // diagnostics list carries only supplementary process output.
+      // Filter row: expanded only, shown above the domain section.
+      const filterText = name === "rg" ? rgFilterRow(args)
+        : name === "sg" ? sgFilterRow(args)
+        : name === "fd" ? fdFilterRow(args)
+        : undefined;
+      const filterSection = options.expanded && filterText
+        ? textSection("Filters", filterText, "muted", false)
+        : undefined;
+
+      // Diagnostics (stderr) for expanded view.
       const diagnostics = sections(
         stringOf(details.stderr) ? textSection("Diagnostics", stringOf(details.stderr), "warning") : undefined,
       );
+
       const structured = sections(
         ...diagnostics,
-        query,
-        summary,
-        markCompact(domain),
-        markCompact(output),
-        emptyDomain,
+        filterSection,
+        domain,
+        ...(sgExpanded ?? []),
       );
-      // Structured-domain tools with confirmed content (a populated domain
-      // or a confirmed-empty message) render solely through sections; the
-      // raw text preview and generic "No results" row would otherwise
-      // duplicate that content. Errors are suppressed too because
-      // description.error already carries the same text with error styling.
-      // When domain is absent, there is no error, and the result count is
-      // unconfirmed (ambiguous or malformed details), preview and rows
-      // remain so no information is silently dropped.
-      // NOTE: this discards base's summaryRows-derived rows (details.counts /
-      // details.message) whenever suppressed. None of rg/fd/sg/pdf_search
-      // currently populate those fields; a future tool that does would need
-      // to re-surface them through a dedicated section instead of rows.
-      const suppressFallback = structuredDomain && (hasStructuredContent || Boolean(error));
+
+      // Suppress raw text preview/rows whenever the structured domain is
+      // confirmed (populated, genuinely empty, or error).
+      const suppressFallback = structuredDomain && (Boolean(domain) || genuinelyEmpty || isError);
       const lifecycleOverride = name === "pdf_search" ? pdfSearchLifecycle(details) : undefined;
+
+      // Error sentence: one human-readable sentence, with raw text in errorRaw.
+      const rawText = textOf(result);
+      const errorSentence = isError
+        ? (name === "rg" ? rgErrorSentence(details, rawText)
+          : name === "sg" ? sgErrorSentence(details, args, rawText)
+          : name === "fd" ? fdErrorSentence(details, rawText)
+          : name === "pdf_search" ? pdfErrorSentence(details)
+          : stringOf(details.error) ?? rawText.split("\n", 1)[0])
+        : undefined;
+      const errorRaw = isError && rawText && rawText !== errorSentence ? rawText : undefined;
+
+      // Detect display-level truncation: the collapsed body would drop
+      // rows when the compact section items exceed the default previewLines
+      // budget. This is a heuristic estimate; the actual budget depends on
+      // the effective policy, but the default is the common case.
+      const collapsedSections = structured.filter((s) => s.compact === true);
+      const estimatedCollapsedLines = collapsedSections.reduce((sum, s) => {
+        for (const block of s.blocks) {
+          if (block.kind === "matches") return sum + block.items.length;
+          if (block.kind === "paths") return sum + block.items.length;
+        }
+        return sum + 1;
+      }, 0);
+      const previewTruncated = !options.expanded && estimatedCollapsedLines > DEFAULT_DISPLAY_POLICY.previewLines;
+
       return baseDescription(description, {
-        metadata: mergeMetadata(description.metadata ?? [], argMetadata(name, args), name === "sg" ? sgKindModeSuppression(args) : undefined),
+        metadata: [],
         sections: options.expanded
           ? structured
           : structured.filter((section) => section.compact === true),
         preview: suppressFallback ? undefined : description.preview,
         rows: suppressFallback ? [] : description.rows,
         ...(lifecycleOverride ? lifecycleOverride : {}),
+        ...(previewTruncated ? { truncated: true } : {}),
+        ...(errorSentence ? { error: errorSentence, ...(errorRaw ? { errorRaw } : {}) } : {}),
       });
     },
   };

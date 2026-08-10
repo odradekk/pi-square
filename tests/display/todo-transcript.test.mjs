@@ -166,7 +166,7 @@ const DETAILS = {
   const result = renderResult(decorated, args, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^●/, "error state renders × marker");
-  assert.match(text, /ERROR/, "ERROR section present");
+  assert.match(text, /Error/, "ERROR section present");
   assert.match(text, /Unknown todo item ID/, "error message visible");
   // changed=false should be visible
   assert.match(text, /changed=false/, "idempotent/no-change state visible");

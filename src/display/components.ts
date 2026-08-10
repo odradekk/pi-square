@@ -373,9 +373,12 @@ export class OperationalDisplayComponent implements Component {
     while (body.length > 0 && stripVTControlCharacters(body.at(-1)!).trim() === "") body.pop();
 
     // Apply tree rails: │ for continuation, └─ for the final body line.
+    // Section title lines already carry their ├─ branch prefix from
+    // renderDisplaySections, so they are not re-railed.
     for (let i = 0; i < body.length; i++) {
       const isLast = i === body.length - 1;
-      body[i] = (isLast ? "\u2514\u2500 " : "\u2502  ") + body[i];
+      if (stripVTControlCharacters(body[i]!).startsWith("\u251c\u2500")) continue;
+      body[i] = (isLast ? "\u2514\u2500 " : "\u2502  ") + body[i]!;
     }
     lines.push(...body);
 
@@ -400,8 +403,13 @@ export class OperationalDisplayComponent implements Component {
   }
 
   /** C4 one-row outcome sentence; falls back to the first flat row. */
-  private summaryBodyRow(description: DisplayDescriptionV1, terminal: boolean): string[] {
-    const text = description.summary ?? (terminal ? description.rows?.[0]?.text : undefined);
+  private summaryBodyRow(description: DisplayDescriptionV1, terminal: boolean, notShown = 0): string[] {
+    let text = description.summary ?? (terminal ? description.rows?.[0]?.text : undefined);
+    if (text && notShown > 0) {
+      text = `${text} · ${notShown} not shown`;
+    } else if (!text && notShown > 0) {
+      text = `${notShown} not shown`;
+    }
     return text
       ? [`  ${this.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(text), MAX_ROW_CODE_POINTS))}`]
       : [];
@@ -420,18 +428,13 @@ export class OperationalDisplayComponent implements Component {
   ): string[] {
     if (isError) return [];
     const body: string[] = [];
+    let notShown = 0;
     if (payloadTool && this.policy.resultMode === "preview") {
       const collapsedSections = renderDisplaySections(description.sections ?? [], this.policy, this.theme, bodyWidth, false);
       if (collapsedSections.length > 0) {
         const cap = Math.max(1, Math.floor(this.policy.previewLines));
-        body.push(...(
-          collapsedSections.length > cap
-            ? [
-              ...collapsedSections.slice(0, cap),
-              `  ${this.theme.fg("muted", `\u2026 ${collapsedSections.length - cap} rows hidden`)}`,
-            ]
-            : collapsedSections
-        ));
+        notShown = Math.max(0, collapsedSections.length - cap);
+        body.push(...collapsedSections.slice(0, Math.min(cap, collapsedSections.length)));
       } else {
         body.push(...this.previewBodyLines(description, this.policy.previewLines, bodyWidth));
       }
@@ -439,7 +442,7 @@ export class OperationalDisplayComponent implements Component {
         body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
       }
     }
-    body.push(...this.summaryBodyRow(description, true));
+    body.push(...this.summaryBodyRow(description, true, notShown));
     return body;
   }
 

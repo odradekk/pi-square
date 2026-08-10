@@ -88,13 +88,17 @@ for (const [name, args, expected] of [
   }
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
-  assert.match(expandedText, /model output/);
-  if (name === "rg" || name === "fd" || name === "sg" || name === "pdf_search" || name === "codegraph") {
-    // QUERY and SUMMARY are pruned restating sections (C8); content renders directly.
+  if (name === "rg" || name === "fd" || name === "sg") {
+    // These calls pass path:"src", which renders an expanded-only Filters
+    // section (C7); a visible structured section takes priority over the
+    // flat text preview, so the raw "model output" fallback does not
+    // render here. QUERY and SUMMARY remain pruned restating sections (C8).
+  } else {
+    assert.match(expandedText, /model output/);
   }
   if (name === "bash" || name === "pwsh" || name === "scheme") {
-    assert.match(expandedText, /COMMAND|CODE/);
-    assert.match(expandedText, /OUTPUT/);
+    assert.match(expandedText, /Command|Code/);
+    assert.match(expandedText, /Output/);
   }
   if (name === "ssh") {
     assert.match(expandedText, /model output/);
