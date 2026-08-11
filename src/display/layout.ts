@@ -17,8 +17,16 @@ export function layoutTier(width: number): DisplayLayoutTier {
   return "wide";
 }
 
+/**
+ * Pad one finished line to the given width, truncating with `…` only when it
+ * does not fit. The pi-tui truncation returns the input unchanged for a line
+ * that fits, so the fast path is byte-identical while it avoids the grapheme
+ * segmentation that an ANSI-styled line would otherwise take on every render.
+ */
 export function padVisible(line: string, width: number): string {
   const safe = Math.max(1, Math.floor(width));
+  const lineWidth = visibleWidth(line);
+  if (lineWidth <= safe) return line + " ".repeat(safe - lineWidth);
   const truncated = truncateToWidth(line, safe, "\u2026");
   return truncated + " ".repeat(Math.max(0, safe - visibleWidth(truncated)));
 }

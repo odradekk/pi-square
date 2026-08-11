@@ -407,7 +407,9 @@ export class OperationalDisplayComponent implements Component {
     }
     lines.push(...body);
 
-    return lines.map((line) => padVisible(truncateToWidth(line, safe, "\u2026"), safe));
+    // One bound for each finished line: padVisible truncates the over-width
+    // lines itself, so a second truncation here would only repeat the work.
+    return lines.map((line) => padVisible(line, safe));
   }
 
   /** Bounded preview body for the given line budget. */
