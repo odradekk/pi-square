@@ -230,4 +230,32 @@ for (const theme of themes) {
   }
 }
 
+// Cache contract: a repeated render with unchanged inputs and the same
+// width returns the cached lines (reference identity). A width change, an
+// update() call, and an invalidate() call each produce newly calculated
+// lines. Proven deterministically without a clock.
+const cacheComponent = new OperationalDisplayComponent(description, previewPolicy, plainTheme, { expanded: false });
+const first = cacheComponent.render(80);
+const second = cacheComponent.render(80);
+assert.equal(second, first, "repeated render with unchanged inputs returns the cached lines");
+
+// A width change recomputes the lines.
+const atWidth60 = cacheComponent.render(60);
+assert.notEqual(atWidth60, first, "a width change recomputes the lines");
+assert.ok(atWidth60.every((line) => visibleWidth(line) <= 60), "recomputed lines respect the new width");
+const atWidth60Again = cacheComponent.render(60);
+assert.equal(atWidth60Again, atWidth60, "repeated render at the new width returns the cached lines");
+
+// An update() call drops the cache.
+cacheComponent.update(description, previewPolicy, plainTheme, { expanded: true });
+const afterUpdate = cacheComponent.render(80);
+assert.notEqual(afterUpdate, first, "an update() call recomputes the lines at the same width");
+
+// An invalidate() call drops the cache.
+const beforeInvalidate = cacheComponent.render(80);
+cacheComponent.invalidate();
+const afterInvalidate = cacheComponent.render(80);
+assert.notEqual(afterInvalidate, beforeInvalidate, "an invalidate() call recomputes the lines");
+assert.deepEqual(afterInvalidate, beforeInvalidate, "invalidate produces the same content after recompute");
+
 console.log("display component tests: OK");

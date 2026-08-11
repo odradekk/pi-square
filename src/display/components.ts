@@ -214,6 +214,18 @@ export const OPERATIONAL_DISPLAY_COMPONENT_SYMBOL = Symbol.for("@odradekk/pi-squ
 export class OperationalDisplayComponent implements Component {
   readonly [OPERATIONAL_DISPLAY_COMPONENT_SYMBOL] = true;
 
+  // Cache for rendered output. Pi re-renders the full component tree in
+  // each frame, but a static history entry's description, policy, theme,
+  // and options do not change between frames — Pi rebuilds those only on
+  // its tool-execution update path. Returning the cached lines while all
+  // inputs stay the same avoids the full line calculation on each frame.
+  private cachedDescription?: DisplayDescriptionV1;
+  private cachedPolicy?: DisplayPolicy;
+  private cachedTheme?: Theme;
+  private cachedOptions?: OperationalDisplayOptions;
+  private cachedWidth?: number;
+  private cachedLines?: string[];
+
   constructor(
     private description: DisplayDescriptionV1,
     private policy: DisplayPolicy,
@@ -231,9 +243,20 @@ export class OperationalDisplayComponent implements Component {
     this.policy = policy;
     this.theme = theme;
     this.options = options;
+    this.invalidate();
   }
 
   render(width: number): string[] {
+    if (
+      this.cachedLines
+      && this.cachedDescription === this.description
+      && this.cachedPolicy === this.policy
+      && this.cachedTheme === this.theme
+      && this.cachedOptions === this.options
+      && this.cachedWidth === width
+    ) {
+      return this.cachedLines;
+    }
     const safe = Math.max(1, Math.floor(width));
     const description = this.description;
     const opState = resolveState(description);
@@ -409,7 +432,14 @@ export class OperationalDisplayComponent implements Component {
 
     // One bound for each finished line: padVisible truncates the over-width
     // lines itself, so a second truncation here would only repeat the work.
-    return lines.map((line) => padVisible(line, safe));
+    const result = lines.map((line) => padVisible(line, safe));
+    this.cachedDescription = this.description;
+    this.cachedPolicy = this.policy;
+    this.cachedTheme = this.theme;
+    this.cachedOptions = this.options;
+    this.cachedWidth = width;
+    this.cachedLines = result;
+    return result;
   }
 
   /** Bounded preview body for the given line budget. */
@@ -490,7 +520,14 @@ export class OperationalDisplayComponent implements Component {
     return body;
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.cachedDescription = undefined;
+    this.cachedPolicy = undefined;
+    this.cachedTheme = undefined;
+    this.cachedOptions = undefined;
+    this.cachedWidth = undefined;
+    this.cachedLines = undefined;
+  }
 }
 
 export function isOperationalDisplayComponent(value: unknown): value is OperationalDisplayComponent {
