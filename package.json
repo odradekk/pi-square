@@ -1,6 +1,6 @@
 {
   "name": "@odradekk/pi-square",
-  "version": "6.0.0",
+  "version": "6.0.1",
   "description": "Unified local extension package for Pi",
   "type": "module",
   "exports": {
