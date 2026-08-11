@@ -353,6 +353,12 @@ Run the optional, non-blocking deterministic CodeGraph retrieval comparison sepa
 npm run eval:codegraph
 ```
 
+Run the optional, non-blocking frame-cost report to measure the render cost of pi-square TUI surfaces. It reports the cost of one operational display entry, the frame cost of a synthetic history at 10, 50, and 100 entries (cold and cached), and the footer cost, in both bundled themes at width 120. It is a development report, not a required CI gate, and wall-clock timings are never asserted in CI:
+
+```bash
+npm run bench:frames
+```
+
 ## Versioning
 
 Changesets manages package versions and release notes:
