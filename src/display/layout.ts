@@ -25,10 +25,13 @@ export function layoutTier(width: number): DisplayLayoutTier {
  */
 export function padVisible(line: string, width: number): string {
   const safe = Math.max(1, Math.floor(width));
-  const lineWidth = visibleWidth(line);
-  if (lineWidth <= safe) return line + " ".repeat(safe - lineWidth);
-  const truncated = truncateToWidth(line, safe, "\u2026");
-  return truncated + " ".repeat(Math.max(0, safe - visibleWidth(truncated)));
+  let fitted = line;
+  let fittedWidth = visibleWidth(line);
+  if (fittedWidth > safe) {
+    fitted = truncateToWidth(line, safe, "\u2026");
+    fittedWidth = visibleWidth(fitted);
+  }
+  return fitted + " ".repeat(Math.max(0, safe - fittedWidth));
 }
 
 export function wrapHanging(prefix: string, content: string, width: number): string[] {
