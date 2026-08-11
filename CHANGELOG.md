@@ -1,5 +1,26 @@
 # @odradekk/pi-square
 
+## 6.0.1
+
+### Patch Changes
+
+- a0574a1: Bound each operational display line one time. `padVisible` now truncates only
+  when the line does not fit the given width, and the final render pass of the
+  operational component no longer repeats that truncation. The rendered bytes are
+  unchanged, while a collapsed `bash` result renders about nine times faster and a
+  collapsed `read` result about seventeen times faster.
+- 7e6df5c: Cache the rendered lines of the operational display component so a static history entry costs almost nothing in each frame.
+
+  Pi re-renders the full component tree on every frame, but `renderCall` and `renderResult` run only on the tool-execution update path. `OperationalDisplayComponent` now returns its cached lines while the description, policy, theme, render options, and width stay the same, and `update()` and `invalidate()` drop the cache. A running tool still refreshes its duration at the motion interval, a result replaces the pending call, and an expand, collapse, theme change, or width change produces newly calculated lines.
+
+- a32e17a: Memoize the footer usage totals and session name so they recompute only after the session entries change.
+
+  Pi renders the footer in each frame. The snapshot collector previously scanned the full session entry list twice per frame — once to sum cumulative usage and once to resolve the session name. `FooterSnapshotProvider` now caches those derived values by session entry count (the session is append-only, so a stable count means no new entries) and recomputes only after that count changes. The memo holds in-memory derived values for the current entry set; it is never persisted and adds no independent polling.
+
+- bc4e023: Add `npm run bench:frames` to measure the frame cost of pi-square TUI surfaces.
+
+  The command reports the render cost of one operational display entry and the frame cost of a synthetic history at 10, 50, and 100 entries (cold and cached), plus the footer cost, in both bundled themes at width 120. It is a development report, not a required CI gate.
+
 ## 6.0.0
 
 ### Major Changes
