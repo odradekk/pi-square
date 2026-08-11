@@ -31,8 +31,6 @@ Maintain these documents with the corresponding changes:
 - `README.md`: user-visible capabilities, runtime requirements, configuration, themes, and development commands.
 - `AGENTS.md`: architecture, repository rules, quality gates, and versioning policy for contributors and coding agents.
 - `THIRD_PARTY_NOTICES.md`: vendored binary versions, upstream sources, licenses, target coverage, modification status, and runtime library boundaries.
-- `skills/*/SKILL.md`: the contract, workflow, and resources of each skill. Update the owning skill document whenever its behavior changes.
-- `skills/LICENSE`: the upstream MIT notice, the derived-skill list, and the record of Pi-specific modifications. Update it whenever a derived skill is added, removed, renamed, or re-synchronized with upstream.
 - `CHANGELOG.md`: generated or updated by `npm run changeset:version` from pending changesets. Review generated release notes before committing a version bump.
 
 Documentation must describe the repository as it exists. Do not claim that a command, dependency, CI job, or release workflow is available before it has been added and verified.
