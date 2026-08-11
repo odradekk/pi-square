@@ -1,13 +1,14 @@
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { collectEnhancedFooterSnapshot } from "./data";
+import { FooterSnapshotProvider } from "./data";
 import { renderEnhancedFooter } from "./render";
 
 function installEnhancedFooter(
   ctx: ExtensionContext,
   pi: Pick<ExtensionAPI, "getThinkingLevel">,
 ): void {
+  const provider = new FooterSnapshotProvider();
   ctx.ui.setFooter((tui, theme, footerData) => {
     const unsubscribeBranch = footerData.onBranchChange(() => tui.requestRender());
     return {
@@ -21,7 +22,7 @@ function installEnhancedFooter(
           return renderEnhancedFooter(
             theme,
             safeWidth,
-            collectEnhancedFooterSnapshot(ctx, pi, footerData),
+            provider.snapshot(ctx, pi, footerData),
           );
         } catch {
           const project = basename(ctx.cwd) || ctx.cwd || "project";
