@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -175,6 +175,58 @@ for (const theme of themes) {
     const lines = component.render(width);
     assert.ok(lines.every((line) => visibleWidth(line) <= width), `component exceeded ${width}`);
     assert.doesNotMatch(lines.join("\n"), /owned|SECRET/);
+  }
+}
+
+// Each finished line is bounded exactly one time. A second bound of the
+// rendered output must be a no-op for every content category, which is what
+// lets the final render pass drop its redundant truncation.
+const boundOnceDescription = {
+  version: 1,
+  tool: "bash",
+  family: "execution",
+  lifecycle: "completed",
+  title: "Bash",
+  target: `npm run build -- ${"--flag ".repeat(20)}`,
+  sections: [
+    { title: "Command", blocks: [{ kind: "code", text: "npm run build", language: "bash" }] },
+    {
+      title: "Output",
+      blocks: [{
+        kind: "code",
+        // plain, CJK-wide, over-width plain, and over-width CJK-wide content.
+        text: [
+          "plain line",
+          "\u691c\u7d22\u7d50\u679c \u30d5\u30a1\u30a4\u30eb\u540d",
+          "wide output ".repeat(30),
+          "\u691c\u7d22\u7d50\u679c".repeat(40),
+        ].join("\n"),
+        language: "text",
+      }],
+    },
+  ],
+  preview: { text: `plain\n\u691c\u7d22\u7d50\u679c\u306e\u884c\n${"over width ".repeat(30)}`, tailOnly: true },
+  summary: "3 lines",
+  durationMs: 4200,
+};
+for (const theme of themes) {
+  for (const expanded of [false, true]) {
+    for (const width of [1, 5, 39, 40, 63, 64, 80, 99, 100, 120]) {
+      const lines = new OperationalDisplayComponent(
+        boundOnceDescription,
+        previewPolicy,
+        theme,
+        { expanded },
+      ).render(width);
+      for (const line of lines) {
+        assert.equal(visibleWidth(line), width, `line width at ${width} (expanded=${expanded})`);
+        assert.equal(
+          truncateToWidth(line, width, "\u2026"),
+          line,
+          `rendered line changed under a second bound at width ${width} (expanded=${expanded})`,
+        );
+      }
+    }
   }
 }
 
