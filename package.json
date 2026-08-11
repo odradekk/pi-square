@@ -26,7 +26,6 @@
   ],
   "files": [
     "bin",
-    "skills",
     "src",
     "subagents",
     "themes",
@@ -64,9 +63,6 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ],
-    "skills": [
-      "./skills"
     ],
     "themes": [
       "./themes"

@@ -7,7 +7,7 @@ if (!Array.isArray(packs) || packs.length !== 1) {
 }
 
 const pack = packs[0];
-const allowedRoots = new Set(["bin", "skills", "src", "subagents", "themes", "wasm"]);
+const allowedRoots = new Set(["bin", "src", "subagents", "themes", "wasm"]);
 const allowedFiles = new Set([
   "CHANGELOG.md",
   "LICENSE",
