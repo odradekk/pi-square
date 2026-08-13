@@ -119,7 +119,6 @@ const EXPECTED_TITLES = {
   ssh: "SSH",
   todo: "Tasks",
   ask: "Questions",
-  time: "Local time",
   subagent_delegate: "Subagent",
   subagent_resume: "Resume",
 };

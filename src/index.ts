@@ -16,7 +16,6 @@ import registerSearchTools from "./search";
 import registerShellTools from "./shell";
 import registerSshTool from "./ssh";
 import registerSubagents from "./subagents";
-import registerTime from "./time";
 import registerTodo from "./todo";
 import registerWebTools from "./web";
 
@@ -42,7 +41,6 @@ export default function piSquare(pi: ExtensionAPI): void {
   const notifications = registerNotifications(pi);
   registerAskUser(pi, notifications, () => display.runtime);
   registerTodo(pi, () => display.runtime);
-  registerTime(pi, () => display.runtime);
   registerSearchTools(pi, () => display.runtime);
   registerPdfSearch(pi, () => display.runtime);
   registerCodeGraph(pi, confirmations, () => display.runtime);

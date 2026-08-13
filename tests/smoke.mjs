@@ -48,7 +48,7 @@ try {
   const expectedTools = [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
     "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "search",
-    "subagent_delegate", "subagent_resume", "time", "todo",
+    "subagent_delegate", "subagent_resume", "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));
@@ -103,9 +103,6 @@ try {
     assert.equal(typeof definition?.renderResult, "function", `${toolName} must render results through pi-square`);
     assert.equal(definition?.renderShell, "self", `${toolName} must own its display shell`);
   }
-
-  const timeResult = await toolByName("time").execute("smoke:time", {}, undefined, undefined);
-  assert.match(timeResult.content[0].text, /ISO 8601:/);
 
   const todoResult = await toolByName("todo").execute("smoke:todo", {
     action: "set",

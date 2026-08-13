@@ -131,18 +131,6 @@ function askAnswersSection(details: UnknownRecord): DisplaySection | undefined {
   return { title: "Answers", blocks: [{ kind: "records", items: records }] };
 }
 
-// ─── time ──────────────────────────────────────────────────────────
-
-/** Parse the three-line model text into its parts. */
-function timeParts(text: string): { local?: string; iso?: string; timezone?: string } {
-  const lines = text.split("\n");
-  return {
-    local: lines[0],
-    iso: lines[1]?.replace(/^ISO 8601:\s*/, ""),
-    timezone: lines[2]?.replace(/^Timezone:\s*/, ""),
-  };
-}
-
 // ─── lifecycle helpers ─────────────────────────────────────────────
 
 function todoLifecycle(
@@ -167,16 +155,6 @@ function askLifecycle(
     if (detailPhase === "cancelled") return "aborted";
     return "completed";
   }
-  if (context.executionStarted) return "running";
-  if (context.argsComplete) return "pending";
-  return "queued";
-}
-
-function timeLifecycle(
-  context: { executionStarted: boolean; argsComplete: boolean; isError: boolean },
-  phase: "call" | "result",
-): OperationalLifecycle {
-  if (phase === "result") return context.isError ? "failed" : "completed";
   if (context.executionStarted) return "running";
   if (context.argsComplete) return "pending";
   return "queued";
@@ -216,16 +194,6 @@ export function createWorkflowAdapter(
           metadata: [],
           sections: [],
           ...(qualifiers.length > 0 ? { qualifiers } : {}),
-        });
-      }
-
-      if (name === "time") {
-        return baseDescription(description, {
-          lifecycle: timeLifecycle(context, "call"),
-          title: "Local time",
-          target: undefined,
-          metadata: [],
-          sections: [],
         });
       }
 
@@ -318,26 +286,6 @@ export function createWorkflowAdapter(
           target,
           metadata: [],
           sections: answersSection ? [answersSection] : [],
-          rows: [],
-          summary,
-        });
-      }
-
-      // ── time ──
-      if (name === "time") {
-        const parts = timeParts(text);
-        const localTime = parts.local ?? "";
-        const tz = parts.timezone ?? "";
-        const summary = [localTime, tz].filter(Boolean).join(" · ");
-        const isoRow: DisplaySection[] = options.expanded && parts.iso
-          ? [{ title: "ISO", blocks: [{ kind: "text", text: parts.iso, tone: "muted" as DisplayTone }], compact: true }]
-          : [];
-        return baseDescription(description, {
-          lifecycle: timeLifecycle(context, "result"),
-          title: "Local time",
-          target: undefined,
-          metadata: [],
-          sections: isoRow,
           rows: [],
           summary,
         });

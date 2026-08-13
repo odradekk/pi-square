@@ -198,13 +198,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     child: false,
     description: "Present interactive questions to the user",
   },
-  {
-    name: "time",
-    family: "workflow",
-    parent: true,
-    child: false,
-    description: "Return the current local date and time",
-  },
   // ── agent ───────────────────────────────────────────────────────
   {
     name: "subagent_delegate",
