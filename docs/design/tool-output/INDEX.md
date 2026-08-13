@@ -59,7 +59,7 @@ sizes, for example `60 lines · 2.1 KB` or `12 matches in 5 files`. Raw payload
 belongs to the expanded body.
 
 **Exception.** For a tool whose output *is* the result and has no other
-summary — `bash`, `pwsh`, `scheme`, and `ssh` — the collapsed body keeps a
+summary — `bash`, `pwsh`, and `ssh` — the collapsed body keeps a
 bounded output preview. The owning document states this explicitly.
 
 ### C5 — Header order
@@ -114,17 +114,15 @@ removes the majority of the individual defects that the tool documents list.
 | A failure body is rendered twice | `pwsh`, `ssh`, `subagent_delegate`, `subagent_resume` | Render the error stream once |
 | Raw platform or provider text as the failure message | every family | C6 one sentence, raw text in the expanded `ERROR` section |
 | Empty result presented as a fake list entry | `ls`, `find`, `grep`, `codegraph` | A muted state row and no section |
-| Truncation without the `truncated` badge | `read`, `write`, `bash`, `scheme`, `fd`, `rg` | C7 |
+| Truncation without the `truncated` badge | `read`, `write`, `bash`, `fd`, `rg` | C7 |
 | Raw timestamps and full hashes | `codegraph`, `libs`, `github_read`, `github_commit`, `github_search` | Relative time and short SHA |
-| Content that is not what it claims to be | `github_read`, `codegraph`, `scheme`, `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
+| Content that is not what it claims to be | `github_read`, `codegraph`, `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
 
 Three defects are correctness defects rather than presentation defects:
 
 1. `github_read` renders the tool's own header as numbered remote file content,
    so both the content and every line number are wrong.
-2. `scheme` renders a runtime exception as a success, because the sandbox exits
-   with code 0.
-3. `subagent_*` parses each end-phase timeline entry into a malformed activity
+2. `subagent_*` parses each end-phase timeline entry into a malformed activity
    row such as `read:  working`.
 
 ## Status
@@ -147,19 +145,18 @@ Three defects are correctness defects rather than presentation defects:
 | 10 | `pdf_search` | search | [pdf-search.md](pdf-search.md) | Designed |
 | 11 | `bash` | execution | [bash.md](bash.md) | Designed |
 | 12 | `pwsh` | execution | [pwsh.md](pwsh.md) | Designed (Linux-host evidence; Windows run required) |
-| 13 | `scheme` | execution | [scheme.md](scheme.md) | Designed |
-| 14 | `search` | remote | [search.md](search.md) | Designed |
-| 15 | `fetch` | remote | [fetch.md](fetch.md) | Designed |
-| 16 | `libs` | remote | [libs.md](libs.md) | Designed |
-| 17 | `docs` | remote | [docs.md](docs.md) | Designed |
-| 18 | `parse` | remote | [parse.md](parse.md) | Designed |
-| 19 | `github_search` | remote | [github-search.md](github-search.md) | Designed |
-| 20 | `github_read` | remote | [github-read.md](github-read.md) | Designed |
-| 21 | `github_tree` | remote | [github-tree.md](github-tree.md) | Designed |
-| 22 | `github_commit` | remote | [github-commit.md](github-commit.md) | Designed |
-| 23 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
-| 24 | `todo` | workflow | [todo.md](todo.md) | Designed |
-| 25 | `ask` | workflow | [ask.md](ask.md) | Designed |
-| 26 | `time` | workflow | [time.md](time.md) | Designed |
-| 27 | `subagent_delegate` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
-| 28 | `subagent_resume` | agent | [subagent-resume.md](subagent-resume.md) | Designed |
+| 13 | `search` | remote | [search.md](search.md) | Designed |
+| 14 | `fetch` | remote | [fetch.md](fetch.md) | Designed |
+| 15 | `libs` | remote | [libs.md](libs.md) | Designed |
+| 16 | `docs` | remote | [docs.md](docs.md) | Designed |
+| 17 | `parse` | remote | [parse.md](parse.md) | Designed |
+| 18 | `github_search` | remote | [github-search.md](github-search.md) | Designed |
+| 19 | `github_read` | remote | [github-read.md](github-read.md) | Designed |
+| 20 | `github_tree` | remote | [github-tree.md](github-tree.md) | Designed |
+| 21 | `github_commit` | remote | [github-commit.md](github-commit.md) | Designed |
+| 22 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
+| 23 | `todo` | workflow | [todo.md](todo.md) | Designed |
+| 24 | `ask` | workflow | [ask.md](ask.md) | Designed |
+| 25 | `time` | workflow | [time.md](time.md) | Designed |
+| 26 | `subagent_delegate` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
+| 27 | `subagent_resume` | agent | [subagent-resume.md](subagent-resume.md) | Designed |

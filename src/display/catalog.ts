@@ -112,13 +112,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     platformShell: "windows",
     description: "Execute PowerShell commands on Windows",
   },
-  {
-    name: "scheme",
-    family: "execution",
-    parent: true,
-    child: true,
-    description: "Evaluate Chez Scheme code in a WASM sandbox",
-  },
   // ── remote ──────────────────────────────────────────────────────
   {
     name: "search",

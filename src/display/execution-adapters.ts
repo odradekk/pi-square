@@ -11,7 +11,7 @@ import {
   type UnknownRecord,
 } from "./adapter-utils";
 import { DEFAULT_DISPLAY_POLICY } from "./types";
-import type { DisplayRow, DisplaySection, OperationalLifecycle, OperationalQualifier } from "./types";
+import type { DisplaySection, OperationalLifecycle, OperationalQualifier } from "./types";
 
 // ── Text cleaning ──────────────────────────────────────────────────
 
@@ -28,15 +28,6 @@ function stripStatusLine(text: string): string {
     .replace(/\n+Execution timed out after [\d.]+(?:ms|s)\s*$/, "")
     .replace(/\n+pwsh execution failed: .+$/s, "")
     .trimEnd();
-}
-
-/**
- * Strip the scheme model-facing trailer
- * (`-- scheme access=… exit=… duration=…`). It belongs to the model
- * result, not to the displayed output.
- */
-function stripSchemeTrailer(text: string): string {
-  return text.replace(/\n?-- scheme .+$/, "").trimEnd();
 }
 
 // ── Summary builders ───────────────────────────────────────────────
@@ -61,33 +52,10 @@ function countLines(text: string): number {
 }
 
 /**
- * Split scheme output at the `[stderr]` marker into stdout and stderr
- * parts, then build DisplayRow items with the warning tone for stderr
- * lines and the default tone for stdout lines. Returns the joined display
- * text and the rows.
- */
-function schemeRows(text: string): { displayText: string; rows: DisplayRow[] } {
-  const marker = "\n\n[stderr]\n";
-  const index = text.indexOf(marker);
-  if (index < 0) return { displayText: text, rows: [] };
-  const stdout = text.slice(0, index).trimEnd();
-  const stderr = text.slice(index + marker.length).trimEnd();
-  const rows: DisplayRow[] = [];
-  for (const line of stdout.split("\n")) {
-    rows.push({ text: line, tone: "default" });
-  }
-  for (const line of stderr.split("\n")) {
-    rows.push({ text: line, tone: "warning" });
-  }
-  return { displayText: stdout ? (stderr ? `${stdout}\n${stderr}` : stdout) : stderr, rows };
-}
-
-/**
  * Build the C4 summary row for the execution tools. The suffix is the
- * host token for pwsh and the access level for scheme.
+ * host token for pwsh.
  */
 function executionSummary(
-  name: string,
   args: UnknownRecord,
   details: UnknownRecord,
   outputText: string,
@@ -103,9 +71,7 @@ function executionSummary(
     const timeoutMs = numberOf(args.timeoutMs) ?? numberOf(details.timeoutMs) ?? 30_000;
     return `Timed out after ${formatTimeout(timeoutMs)}`;
   }
-  const suffix = name === "scheme"
-    ? (stringOf(details.access) ?? stringOf(args.access) ?? "readonly")
-    : hostToken(details);
+  const suffix = hostToken(details);
   if (isError && exitCode !== undefined && exitCode !== 0) {
     return suffix ? `Exited with code ${exitCode} · ${suffix}` : `Exited with code ${exitCode}`;
   }
@@ -117,16 +83,13 @@ function executionSummary(
 // ── Lifecycle ──────────────────────────────────────────────────────
 
 /**
- * Derive an explicit lifecycle for pwsh and scheme. Bash goes through a
+ * Derive an explicit lifecycle for pwsh. Bash goes through a
  * separate adapter path (builtins.ts).
  *
  * Aborted results take precedence over isError to render the distinct
- * aborted marker. Scheme adds a structural warning: exit code 0 with
- * non-empty stderr becomes `completed` + `warning` — this does NOT match
- * on message text.
+ * aborted marker.
  */
 function executionLifecycle(
-  name: string,
   context: { executionStarted: boolean; argsComplete: boolean },
   isPartial: boolean,
   isError: boolean,
@@ -137,12 +100,6 @@ function executionLifecycle(
     if (isPartial) return { lifecycle: "running" };
     if (details.aborted === true) return { lifecycle: "aborted" };
     if (isError) return { lifecycle: "failed" };
-    if (name === "scheme"
-      && numberOf(details.exitCode) === 0
-      && typeof details.stderr === "string"
-      && details.stderr.length > 0) {
-      return { lifecycle: "completed", qualifiers: ["warning"] };
-    }
     return { lifecycle: "completed", ...(details.truncated === true ? { qualifiers: ["truncated"] } : {}) };
   }
   if (context.executionStarted) return { lifecycle: "running" };
@@ -153,22 +110,16 @@ function executionLifecycle(
 // ── Section helpers ────────────────────────────────────────────────
 
 function commandLanguage(name: string): string {
-  if (name === "scheme") return "scheme";
   if (name === "pwsh") return "powershell";
   return "bash";
 }
 
-function commandSectionTitle(name: string): string {
-  return name === "scheme" ? "Code" : "Command";
-}
-
 /**
- * Whether the Command/Code section should appear in the expanded body.
- * Scheme always shows its source; pwsh shows the Command section only
- * when the command is long enough that the header likely truncated it.
+ * Whether the Command section should appear in the expanded body.
+ * pwsh shows the Command section only when the command is long enough
+ * that the header likely truncated it.
  */
-function shouldShowCommandSection(name: string, args: UnknownRecord): boolean {
-  if (name === "scheme") return Boolean(stringOf(args.code));
+function shouldShowCommandSection(args: UnknownRecord): boolean {
   const command = stringOf(args.command);
   if (!command) return false;
   return command.length > 60 || command.includes("\n");
@@ -185,7 +136,7 @@ export function createExecutionAdapter(
     describeCall(args, context) {
       const description = base.describeCall(args, context);
       return baseDescription(description, {
-        ...executionLifecycle(name, context, false, false, {}, "call"),
+        ...executionLifecycle(context, false, false, {}, "call"),
         metadata: [],
         sections: [],
       });
@@ -203,16 +154,7 @@ export function createExecutionAdapter(
       const rawText = textOf(result);
 
       // ── Clean the display text ───────────────────────────────────
-      let displayText = name === "scheme" ? stripSchemeTrailer(rawText) : rawText;
-      displayText = stripStatusLine(displayText);
-      // Remove the "(no output)" placeholder that scheme inserts.
-      displayText = displayText.replace(/^\(no output\)\n?/, "").trimEnd();
-
-      // For scheme, split at the [stderr] marker to build rows with the
-      // warning tone on stderr lines. The marker itself is removed.
-      const { displayText: schemeText, rows: schemeStderrRows } =
-        name === "scheme" ? schemeRows(displayText) : { displayText, rows: [] as DisplayRow[] };
-      displayText = schemeText;
+      let displayText = stripStatusLine(rawText);
 
       const outputLines = countLines(displayText);
       const isTruncated = details.truncated === true
@@ -220,12 +162,12 @@ export function createExecutionAdapter(
 
       // ── Summary row ──────────────────────────────────────────────
       const summary = executionSummary(
-        name, args, details, displayText,
+        args, details, displayText,
         isError, isAborted, isTimedOut, exitCode, unavailable,
       );
 
       // ── Lifecycle ────────────────────────────────────────────────
-      const lc = executionLifecycle(name, context, options.isPartial, isError, details, "result");
+      const lc = executionLifecycle(context, options.isPartial, isError, details, "result");
 
       // ── Unavailable host ─────────────────────────────────────────
       if (unavailable) {
@@ -243,14 +185,14 @@ export function createExecutionAdapter(
       }
 
       // ── Collapsed body: tail-bounded preview ─────────────────────
-      // ── Expanded body: Command/Code + Output sections ─────────────
+      // ── Expanded body: Command + Output sections ─────────────────
       let expandedSections: DisplaySection[] = [];
       if (options.expanded) {
-        const showCommand = shouldShowCommandSection(name, args);
+        const showCommand = shouldShowCommandSection(args);
         const cmd = showCommand
           ? codeSection(
-            commandSectionTitle(name),
-            name === "scheme" ? stringOf(args.code) : stringOf(args.command),
+            "Command",
+            stringOf(args.command),
             commandLanguage(name),
             false,
           )
@@ -268,9 +210,7 @@ export function createExecutionAdapter(
         truncated: (isTruncated && !isAborted) || undefined,
         ...(options.expanded
           ? { sections: expandedSections, rows: [], preview: undefined }
-          : schemeStderrRows.length > 0
-            ? { rows: schemeStderrRows, preview: undefined }
-            : displayText ? { preview: { text: displayText, tailOnly: true }, rows: [] } : { rows: [] }
+          : displayText ? { preview: { text: displayText, tailOnly: true }, rows: [] } : { rows: [] }
         ),
         summary,
         // Clear error/errorRaw from the base adapter: the output IS

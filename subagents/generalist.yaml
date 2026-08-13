@@ -57,6 +57,5 @@ extensionTools:
   - fetch
   - libs
   - docs
-  - scheme
 
 visible: true

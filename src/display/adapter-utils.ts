@@ -55,7 +55,6 @@ export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
   "write",
   "bash",
   "pwsh",
-  "scheme",
   "ssh",
   "grep",
   "rg",
@@ -150,7 +149,7 @@ export function composeInternalSummary(
     return file ? `${head} in ${file}` : head;
   }
 
-  if (name === "pwsh" || name === "scheme") {
+  if (name === "pwsh") {
     const outputLines = text ? text.split("\n").length : 0;
     return outputLines === 0 ? "No output" : `${outputLines} lines`;
   }

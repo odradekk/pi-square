@@ -16,7 +16,6 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   time: [],
   bash: ["command", "timeout"],
   pwsh: ["command", "cwd", "timeoutMs"],
-  scheme: ["access", "timeoutMs", "code"],
   ssh: ["operation", "profile", "target", "label", "session", "command", "prompt", "cursor", "waitMs", "newline"],
   search: ["queries", "sites", "language", "country", "limit", "no_cache"],
   fetch: ["urls", "mode", "include_links", "describe_images", "max_tokens", "no_cache"],
@@ -35,7 +34,7 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   rg: ["pattern"], fd: ["pattern"], pdf_search: ["query"],
-  codegraph: ["operation"], bash: ["command"], pwsh: ["command"], scheme: ["code"],
+  codegraph: ["operation"], bash: ["command"], pwsh: ["command"],
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
   docs: ["libraryId"], parse: ["path"], github_search: ["query"], github_read: ["path"],
   github_tree: ["path"], github_commit: ["ref"], ask: [], todo: ["action"],
@@ -46,7 +45,7 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
 const TITLES: Readonly<Record<string, string>> = Object.freeze({
   rg: "Text search", fd: "File search", pdf_search: "PDF search",
   codegraph: "CodeGraph", time: "Local time", bash: "Bash", pwsh: "PowerShell",
-  scheme: "Scheme", ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
+  ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", github_search: "GitHub search", github_read: "GitHub read",
   github_tree: "GitHub tree", github_commit: "GitHub commit", ask: "Questions", todo: "Tasks",
   subagent_delegate: "Subagent", subagent_resume: "Resume subagent",
@@ -100,7 +99,6 @@ function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
     if (!Object.hasOwn(source, key) || source[key] === undefined) return [];
     if (name === "ssh" && key === "prompt") return [{ label: key, value: "secure input requested", tone: "warning" as const }];
     if ((name === "bash" || name === "pwsh") && key === "command") return [];
-    if (name === "scheme" && key === "code") return [];
     if ((name === "subagent_delegate" || name === "subagent_resume") && key === "task") return [];
     if (name === "ask" && key === "questions") {
       return [{ label: "questions", value: String(Array.isArray(source[key]) ? source[key].length : 0) }];
@@ -127,7 +125,6 @@ function targetFor(name: string, args: unknown, cwd: string): { value?: string; 
 function callPreview(name: string, args: unknown): string | undefined {
   const source = record(args);
   if ((name === "bash" || name === "pwsh") && typeof source.command === "string") return source.command;
-  if (name === "scheme" && typeof source.code === "string") return source.code;
   if ((name === "subagent_delegate" || name === "subagent_resume") && typeof source.task === "string") return source.task;
   return undefined;
 }
@@ -254,7 +251,7 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
     || definition.name === "pdf_search"
     || definition.name === "codegraph"
     ? createSearchAdapter(definition.name, base)
-    : definition.name === "bash" || definition.name === "pwsh" || definition.name === "scheme"
+    : definition.name === "bash" || definition.name === "pwsh"
       ? createExecutionAdapter(definition.name, base)
       : definition.name === "search"
         || definition.name === "fetch"

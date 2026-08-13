@@ -13,7 +13,7 @@ const OWN = { path: "/package/src/index.ts", source: "@odradekk/pi-square", scop
 const BUILTIN = { path: "<builtin>", source: "built-in", scope: "temporary", origin: "top-level" };
 const EXTERNAL = { path: "/other/extension.ts", source: "other", scope: "user", origin: "top-level" };
 const BUILTINS = ["read", "grep", "find", "ls", "edit", "write", "bash"];
-const PROBES = ["pdf_search", "codegraph", "subagent_delegate", "scheme", "todo"];
+const PROBES = ["pdf_search", "codegraph", "subagent_delegate", "todo"];
 
 function createHarness(options = {}) {
   const events = new Map();

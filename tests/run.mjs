@@ -30,7 +30,6 @@ const suites = [
   "display/integration.test.mjs",
   "display/operational-state.test.mjs",
   "display/attached-content.test.mjs",
-  "display/scheme-motion.test.mjs",
   "display/edit-diffs.test.mjs",
   "display/adapter-bridge.test.mjs",
   "display/write-previews.test.mjs",
@@ -80,8 +79,6 @@ const suites = [
     .filter((name) => name.endsWith(".test.mjs"))
     .sort()
     .map((name) => `footer/${name}`),
-  "scheme/sandbox.test.mjs",
-  "scheme/tool.test.mjs",
   "web/context7-client.test.mjs",
   "web/context7-tools.test.mjs",
   "web/search-fetch-tools.test.mjs",

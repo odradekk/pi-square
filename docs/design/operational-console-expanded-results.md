@@ -89,6 +89,6 @@ The existing smoke test must continue to verify production registration for ever
 - `docs/design/operational-console-expanded-results.md` — this architecture and policy document.
 - `docs/design/expanded-result-filesystem.md` — `read`, `ls`, `edit`, `write`, `find`, `fd`.
 - `docs/design/expanded-result-search.md` — `grep`, `rg`, `codegraph`, `pdf_search`.
-- `docs/design/expanded-result-execution.md` — `bash`, `pwsh`, `scheme`.
+- `docs/design/expanded-result-execution.md` — `bash`, `pwsh`.
 - `docs/design/expanded-result-remote.md` — `search`, `fetch`, `libs`, `docs`, `parse`, `github_search`, `github_read`, `github_tree`, `github_commit`, `ssh`.
 - `docs/design/expanded-result-workflow-agent.md` — `todo`, `ask`, `time`, `subagent_delegate`, `subagent_resume`.

@@ -7,7 +7,7 @@ if (!Array.isArray(packs) || packs.length !== 1) {
 }
 
 const pack = packs[0];
-const allowedRoots = new Set(["bin", "src", "subagents", "themes", "wasm"]);
+const allowedRoots = new Set(["bin", "src", "subagents", "themes"]);
 const allowedFiles = new Set([
   "CHANGELOG.md",
   "LICENSE",
@@ -28,7 +28,6 @@ const requiredFiles = [
   "subagents/generalist.yaml",
   "subagents/librarian.yaml",
   "subagents/oracle.yaml",
-  "wasm/scheme.wasm",
 ];
 const paths = new Set(pack.files.map((file) => file.path));
 

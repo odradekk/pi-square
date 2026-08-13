@@ -489,8 +489,7 @@ export class OperationalDisplayComponent implements Component {
     if (isError && description.family !== "execution") return [];
     const body: string[] = [];
     let notShown = 0;
-    // Execution tools with rows (e.g. scheme with stderr tone) render
-    // those rows in the collapsed body with tail-bounding.
+    // Execution tools with rows render those rows in the collapsed body
     if (payloadTool && description.rows?.length && description.family === "execution") {
       const cap = Math.max(1, Math.floor(this.policy.previewLines));
       const allRows = description.rows.slice(0, MAX_ROWS);

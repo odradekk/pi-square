@@ -148,7 +148,6 @@ Icons are semantic, monochrome, and width-tested:
 | Search | `⌕` |
 | Bash | `$ ❯` |
 | PowerShell | `PS ❯` |
-| Scheme or generic execution | `λ ❯` |
 | Remote | `⌬` |
 | Workflow | `◆` |
 | Agent | `◇` |

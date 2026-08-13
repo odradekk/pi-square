@@ -26,7 +26,7 @@ import { DEFAULT_DISPLAY_POLICY } from "./types";
 
 const BUILTIN_NAMES = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
 const NON_SHELL_NAMES = BUILTIN_NAMES.filter((name) => name !== "bash");
-const OWN_SOURCE_PROBES = ["pdf_search", "codegraph", "subagent_delegate", "scheme", "todo"];
+const OWN_SOURCE_PROBES = ["pdf_search", "codegraph", "subagent_delegate", "todo"];
 const KNOWN_PI_TOOL_DISPLAY_SYMBOL = Symbol.for("pi-tool-display.api.v1");
 const STATUS_KEY = "pi-square.display";
 const MAX_DIAGNOSTIC_CHARS = 500;
