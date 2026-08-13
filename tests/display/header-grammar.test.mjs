@@ -103,7 +103,6 @@ const EXPECTED_TITLES = {
   fd: "File search",
   grep: "Grep",
   rg: "Text search",
-  sg: "Structural search",
   codegraph: "CodeGraph",
   pdf_search: "PDF search",
   bash: "Bash",
@@ -415,7 +414,7 @@ const EXPECTED_TITLES = {
   assert.match(resultHeader, /\[truncated\]/, "bounded read result carries the truncated badge");
   runtime.dispose();
 
-  // The search-family boundedness signals raise the same badge: rg/fd/sg
+  // The search-family boundedness signals raise the same badge: rg/fd
   // content budgets and paged results, and the codegraph output budget.
   const stub = (name) => ({
     name,

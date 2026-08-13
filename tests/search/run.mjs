@@ -10,7 +10,6 @@ const SUITES = [
   "runner.test.mjs",
   "rg-output.test.mjs",
   "fd-output.test.mjs",
-  "sg.test.mjs",
   "tool-contract.test.mjs",
   "tool-execution.test.mjs",
 ];

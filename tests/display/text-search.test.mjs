@@ -528,7 +528,7 @@ function makeFdRgDef(name) {
 }
 
 // ═══ 20. Blast-radius regression: shared search-adapters.ts fixes ═══
-// fd, sg, pdf_search, and codegraph share the metadata-dedup, empty-
+// fd, pdf_search, and codegraph share the metadata-dedup, empty-
 // message, and error-suppression logic fixed for rg/grep. These are out
 // of #22's scope but must not regress from the shared-file changes.
 
@@ -550,23 +550,6 @@ function makeFdRgDef(name) {
     );
     const emptyText = stripVTControlCharacters(empty.render(80).join("\n"));
     assert.match(emptyText, /No files found/, "fd genuine empty shows explicit message");
-  }
-
-  // sg: metadata not duplicated, genuine empty shows explicit message
-  {
-    const decorated = decorateInternalTool(makeFdRgDef("sg"), () => runtime);
-    const call = decorated.renderCall({ pattern: "foo" }, plainTheme, makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true, expanded: true }));
-    const callText = stripVTControlCharacters(call.render(80).join("\n"));
-    assert.doesNotMatch(callText, /pattern=foo/, "sg call body has no key=value metadata");
-
-    const empty = decorated.renderResult(
-      { content: [{ type: "text", text: "sg returned=0" }], details: { page: { offset: 0, returned: 0, total: 0 } } },
-      { expanded: false, isPartial: false },
-      plainTheme,
-      makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
-    );
-    const emptyText = stripVTControlCharacters(empty.render(80).join("\n"));
-    assert.match(emptyText, /No matches/, "sg genuine empty shows explicit message");
   }
 
   // pdf_search: genuine empty (top-level details.returned) shows explicit message

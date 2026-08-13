@@ -42,15 +42,13 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search", "sg", "ssh",
+    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search", "ssh",
     "subagent_delegate", "subagent_resume", "time", "todo",
   ]);
   assert.ok(childToolNames.includes("scheme"));
-  assert.ok(childToolNames.includes("sg"));
   assert.ok(childToolNames.includes("codegraph"));
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
   assert.deepEqual(createChildTools(["pdf_search"]).definitions.map((definition) => definition.name), ["pdf_search"]);
-  assert.deepEqual(createChildTools(["sg"]).definitions.map((definition) => definition.name), ["sg"]);
   const childCodeGraph = createChildTools(["codegraph"]).definitions[0];
   assert.equal(childCodeGraph.parameters.type, "object");
   assert.equal(childCodeGraph.parameters.anyOf, undefined);
@@ -147,7 +145,7 @@ try {
   assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should use the shared display renderer after session start");
   assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should use the shared result renderer");
   for (const name of [
-    "rg", "fd", "sg", "pdf_search", "codegraph", "time", "scheme", "ssh", "bash",
+    "rg", "fd", "pdf_search", "codegraph", "time", "scheme", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
     "github_search", "github_read", "github_tree", "github_commit",

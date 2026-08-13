@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors prebuilt search binaries and installs exact structural-search, semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
+This extension vendors prebuilt search binaries and installs exact semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
 
 ## Included Software
 
@@ -17,18 +17,6 @@ This extension vendors prebuilt search binaries and installs exact structural-se
   - `10.4.2` for `linux-x64`, `linux-arm64`, `darwin-arm64`, `win32-x64`, `win32-arm64`
   - `10.3.0` for `darwin-x64` (official fd release for this target)
 - Distributed binaries are unmodified upstream release artifacts.
-
-### ast-grep (`sg`)
-- Upstream: https://github.com/ast-grep/ast-grep
-- License: MIT
-- Version: `0.44.1`, installed as the exact `@ast-grep/cli` npm dependency.
-- Supported pi-square targets use the unmodified official optional packages `@ast-grep/cli-linux-x64-gnu`, `@ast-grep/cli-linux-arm64-gnu`, `@ast-grep/cli-darwin-x64`, `@ast-grep/cli-darwin-arm64`, `@ast-grep/cli-win32-x64-msvc`, and `@ast-grep/cli-win32-arm64-msvc` at the same version.
-- The upstream package also declares a Windows ia32 optional package, but pi-square does not add that architecture to its supported target set.
-
-### detect-libc
-- Upstream: https://github.com/lovell/detect-libc
-- License: Apache-2.0
-- Version: `2.1.2`, installed transitively by `@ast-grep/cli` for native-package detection.
 
 ### PDF.js (`pdfjs-dist`)
 - Upstream: https://github.com/mozilla/pdf.js
@@ -71,8 +59,7 @@ This extension vendors prebuilt search binaries and installs exact structural-se
 
 - rg `linux-x64` is statically linked and has no runtime library dependency.
 - fd `linux-x64` and both `linux-arm64` vendored binaries (rg and fd) require glibc at runtime.
-- The supported ast-grep Linux x64 and arm64 npm packages require glibc; the CLI package does not provide musl targets.
-- PDF.js itself is portable JavaScript/WASM. Its optional canvas dependency provides separate glibc and musl artifacts for Linux x64/arm64, but pi-square's existing supported Linux boundary remains constrained by its ast-grep and CodeGraph dependencies.
+- PDF.js itself is portable JavaScript/WASM. Its optional canvas dependency provides separate glibc and musl artifacts for Linux x64/arm64, but pi-square's existing supported Linux boundary remains constrained by its CodeGraph dependencies.
 - ssh2 is portable JavaScript. Its optional `cpu-features` accelerator is a Node native addon compiled only when the local build environment supports it; failure or absence does not remove SSH functionality.
 - The verified CodeGraph Linux x64 bundled runtime dynamically links glibc, libstdc++, libgcc, libm, libdl, and libpthread. CodeGraph publishes generic Linux x64/arm64 packages and no musl-specific package.
 - macOS and Windows search and CodeGraph binaries have no additional C library boundary documented here.
@@ -80,8 +67,6 @@ This extension vendors prebuilt search binaries and installs exact structural-se
 ## Notes
 
 - The rg and fd binaries are bundled in `bin/` and Git-tracked. There is no download, integrity manifest, hash verification, or system-binary fallback for them.
-- ast-grep is installed by npm with lockfile integrity metadata and platform-specific optional dependencies. Its wrapper resolves the native package directly at runtime and never falls back to PATH or a system `sg` command.
-- The exposed `sg` wrapper is read-only even though upstream ast-grep also supports rewriting and project scanning.
 - CodeGraph is installed by npm with lockfile integrity metadata for the main package and all six optional platform packages. The wrapper verifies the platform package version and required runtime/entry files before execution, then forces telemetry, update checks, downloads, and watchers off.
 - PDF.js and its optional canvas packages are installed by npm with lockfile integrity metadata. `pdf_search` resolves only package-local assets and keeps extracted text in bounded memory; it creates no PDF cache, index, or artifact on disk.
 - ssh2 and its transitive packages are installed by npm with lockfile integrity metadata. The SSH wrapper always supplies a pinned-fingerprint `hostVerifier`, disables agent forwarding, keeps remote output in bounded memory, and creates no SSH cache, log, socket, or artifact.

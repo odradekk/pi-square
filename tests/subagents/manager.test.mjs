@@ -160,18 +160,7 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
   manager.dispose();
 });
 
-test("manager activity uses specialized sg and GitHub summaries", () => {
-  const sg = runDetails({
-    timeline: [{ kind: "tool", phase: "start", text: "sg {\"kind\":\"identifier\",\"path\":\"src\",\"password\":\"private\"}" }],
-  });
-  const manager = new SubagentManager(data({
-    running: [{ id: sg.id, status: "running", createdAt: 1, updatedAt: 2, details: sg }],
-  }), tui(), theme, keybindings, () => {});
-  const rendered = render(manager, 100);
-  assert.match(rendered, /Activity: sg kind:identifier in src/);
-  assert.doesNotMatch(rendered, /password|private/);
-  manager.dispose();
-
+test("manager activity uses specialized GitHub summaries", () => {
   const github = runDetails({
     timeline: [{ kind: "tool", phase: "start", text: "github_read {\"repo\":\"owner/name\",\"path\":\"README.md\",\"ref\":\"main\",\"token\":\"private\"}" }],
   });

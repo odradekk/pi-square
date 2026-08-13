@@ -55,7 +55,6 @@ let runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment:
 for (const [name, args, expected] of [
   ["rg", { pattern: "needle", path: "src" }, /needle/],
   ["fd", { pattern: "*.ts", path: "src" }, /\*\.ts/],
-  ["sg", { kind: "identifier", path: "src" }, /identifier/],
   ["pdf_search", { path: "manual.pdf", query: "retention", limit: 5 }, /retention/],
   ["codegraph", { operation: "explore", projectPath: ".", query: "runtime", maxFiles: 5 }, /explore/],
   ["bash", { command: "printf 'hello'", timeout: 10 }, /printf 'hello'/],
@@ -90,7 +89,7 @@ for (const [name, args, expected] of [
   }
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
-  if (name === "rg" || name === "fd" || name === "sg" || name === "ssh") {
+  if (name === "rg" || name === "fd" || name === "ssh") {
     // These calls pass path:"src", which renders an expanded-only Filters
     // section (C7); a visible structured section takes priority over the
     // flat text preview, so the raw "model output" fallback does not
@@ -129,7 +128,7 @@ assert.match(timeResult.content[0].text, /^\d{4}-\d{2}-\d{2}/);
 assert.match(timeResult.content[0].text, /ISO 8601:/);
 assert.match(timeResult.content[0].text, /Timezone:/);
 
-for (const child of createChildTools(["rg", "fd", "sg", "codegraph", "pdf_search", "scheme"]).definitions) {
+for (const child of createChildTools(["rg", "fd", "codegraph", "pdf_search", "scheme"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child construction stays independent of parent runtime`);
 }
 runtime.dispose();

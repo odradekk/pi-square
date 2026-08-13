@@ -266,10 +266,10 @@ export function createCodeGraphToolDefinition(deps: CodeGraphToolDeps, allowWrit
       ? "Local semantic code intelligence with bounded explore, status, initialization, incremental sync, and confirmed reindex operations. Paths stay within cwd."
       : "Read-only local semantic code intelligence over an existing CodeGraph index. Supports explore and status only; paths stay within cwd.",
     promptSnippet:
-      "Use codegraph explore first for cross-file behavior, call flows, architecture, and impact when an index is available. Use rg for exact text, sg for AST shapes, and read for a known file.",
+      "Use codegraph explore first for cross-file behavior, call flows, architecture, and impact when an index is available. Use rg for exact text and read for a known file.",
     promptGuidelines: [
       "Use explore for semantic or cross-file questions and treat returned source as already read unless CodeGraph reports a recoverable index condition.",
-      "Use rg for literal text, configuration, and documentation; use sg for syntax shapes; use read when the exact file is already known.",
+      "Use rg for literal text, configuration, and documentation; use read when the exact file is already known.",
       allowWrite
         ? "When NOT_INDEXED is returned, request init once; initialization and reindex require user confirmation, while incremental sync is automatic."
         : "When NOT_INDEXED or REINDEX_REQUIRED is returned, fall back to the available local read-only tools because this child profile cannot modify indexes.",

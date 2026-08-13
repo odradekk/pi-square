@@ -36,7 +36,6 @@ const suites = [
   "display/write-previews.test.mjs",
   "display/path-list.test.mjs",
   "display/text-search.test.mjs",
-  "display/structural-search.test.mjs",
   "display/codegraph.test.mjs",
   "display/pdf-search.test.mjs",
   "display/shell-execution.test.mjs",

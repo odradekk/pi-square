@@ -45,14 +45,6 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
     case "fd":
       summary = `${clipInline(args?.pattern || ".", 40)} in ${shortenPath(args?.path || ".")}`;
       break;
-    case "sg": {
-      const query = args?.pattern
-        ? `/${clipInline(args.pattern, 40)}/`
-        : `kind:${clipInline(args?.kind || "...", 40)}`;
-      const language = clipInline(args?.language, 16);
-      summary = `${query} in ${shortenPath(args?.path || ".")}${language ? ` · ${language}` : ""}`;
-      break;
-    }
     case "codegraph": {
       const operation = clipInline(args?.operation || "...", 16);
       const path = shortenPath(args?.projectPath || ".");
