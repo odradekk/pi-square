@@ -1,5 +1,21 @@
 # @odradekk/pi-square
 
+## 7.0.0
+
+### Major Changes
+
+- 2533d9c: Reduce the `rg` parameter schema to seven high-impact fields: `pattern`, `path`, `globs`, `literal`, `context`, `offset`, `limit`. Removed `case` (use inline regex flags like `(?i)`), `word` (use `\b`), `includeGlobs`/`excludeGlobs` (merged into `globs` with native `!` negation), `types` (use `globs`), `beforeContext`/`afterContext` (merged into symmetric `context`), `hidden`/`noIgnore` (use an explicit `path`), and `maxDepth` (use a narrower `path`). Smart case `-S` is now a fixed wrapper flag. `limit` maximum lowered from 100 to 25.
+- 4f89043: Remove the `scheme` sandboxed evaluator tool and the vendored Chez Scheme WASM runtime. The 13 MB `wasm/` directory (scheme.js, scheme.wasm, scheme.data, no-spawn.cjs) is no longer shipped in the tarball. The tool is not registered in a parent session and is not offered by the child tool catalog. Users who need code evaluation should use the parent `bash`/`pwsh` shell or the generalist's `shell` capability.
+- 2a6d735: Remove the `sg` structural search tool and the `@ast-grep/cli` dependency. The tool is no longer registered in a parent session or offered by the child tool catalog. A subagent definition that still names `sg` fails its run with the supported-tool list, as any unknown name does. Users who relied on `sg` should use `rg` for text search or `codegraph` for semantic code exploration.
+- 7e629ce: Remove the `time` tool. The parent-only date and time tool is no longer registered. A parent session that needs the current date uses its shell (`bash date` on non-Windows, `pwsh Get-Date` on Windows). Read-only roles have no date source.
+- d05b092: Redesign the `rg` and `fd` search tool schemas to eight fields each and add a `filesOnly` mode to `rg`.
+
+  **rg** is now 8 fields: `pattern` (required), `path`, `globs`, `literal`, `context`, `filesOnly`, `offset`, `limit`. The new `filesOnly` boolean returns file paths with match counts instead of individual match lines, paging the file list with `offset`/`limit`. The `limit` maximum remains 25.
+
+  **fd** is now 8 fields: `pattern` (optional, regex only), `path`, `excludeGlobs`, `types`, `extensions`, `maxDepth`, `offset`, `limit`. Removed `case` (smart case only), `matchMode` (regex only; use `rg` with `literal` or `globs` for glob/fixed matching), `hidden`/`noIgnore` (use a narrower `path`), and `minDepth`. The `types` items now use `StringEnum` for provider compatibility instead of `Type.Union`.
+
+  Removed dead constants and type aliases: `DEFAULT_PATH`, `DEFAULT_FD_PATTERN`, `DEFAULT_CASE`, `DEFAULT_FD_MATCH_MODE`, `CaseMode`, `FdMatchMode`.
+
 ## 6.0.1
 
 ### Patch Changes
