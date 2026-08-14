@@ -6,17 +6,17 @@ const NOOP = async () => {};
 
 // ---------- rg argument construction ----------
 
-test("buildRgArgs emits fixed wrapper flags before -- separator", async () => {
+test("buildRgArgs emits fixed wrapper flags then -- separator", async () => {
   const { buildRgArgs } = await loadModule("src/search/arguments.ts");
   const args = buildRgArgs({ pattern: "foo", path: "." });
   const sep = args.indexOf("--");
   assert.ok(sep > 0, "must contain -- separator");
   const head = args.slice(0, sep);
   assert.equal(head[0], "--no-config", "--no-config must be first");
-  assert.deepEqual(
-    head.slice(0, 6),
-    ["--no-config", "--json", "--sort", "path", "--color", "never"],
-  );
+  assert.deepEqual(head, [
+    "--no-config", "--json", "--sort", "path", "--color", "never", "-S",
+  ]);
+  assert.deepEqual(args.slice(sep + 1), ["foo", "."]);
 });
 
 test("buildRgArgs places pattern and path after --", async () => {
@@ -61,18 +61,13 @@ test("buildRgArgs places leading-dash path after --", async () => {
   assert.deepEqual(args.slice(sep + 1), ["foo", "-bar"]);
 });
 
-test("buildRgArgs smart case adds -S by default", async () => {
+test("buildRgArgs always includes -S smart-case as a fixed wrapper flag", async () => {
   const { buildRgArgs } = await loadModule("src/search/arguments.ts");
   const args = buildRgArgs({ pattern: "x", path: "." });
   assert.ok(args.includes("-S"));
-});
-
-test("buildRgArgs sensitive case adds -s, insensitive adds -i", async () => {
-  const { buildRgArgs } = await loadModule("src/search/arguments.ts");
-  const sens = buildRgArgs({ pattern: "x", path: ".", case: "sensitive" });
-  const insens = buildRgArgs({ pattern: "x", path: ".", case: "insensitive" });
-  assert.ok(sens.includes("-s"));
-  assert.ok(insens.includes("-i"));
+  // case is no longer a parameter; -S is fixed and always present
+  assert.ok(!args.includes("-s"));
+  assert.ok(!args.includes("-i"));
 });
 
 test("buildRgArgs literal=true adds -F before --", async () => {
@@ -82,51 +77,41 @@ test("buildRgArgs literal=true adds -F before --", async () => {
   assert.ok(args.slice(0, sep).includes("-F"));
 });
 
-test("buildRgArgs word=true adds -w before --", async () => {
+test("buildRgArgs context: 3 produces -C 3 before --", async () => {
   const { buildRgArgs } = await loadModule("src/search/arguments.ts");
-  const args = buildRgArgs({ pattern: "x", path: ".", word: true });
-  const sep = args.indexOf("--");
-  assert.ok(args.slice(0, sep).includes("-w"));
-});
-
-test("buildRgArgs includeGlobs emit -g entries before --", async () => {
-  const { buildRgArgs } = await loadModule("src/search/arguments.ts");
-  const args = buildRgArgs({ pattern: "x", path: ".", includeGlobs: ["*.ts"] });
+  const args = buildRgArgs({ pattern: "x", path: ".", context: 3 });
   const sep = args.indexOf("--");
   const head = args.slice(0, sep);
-  assert.ok(head.includes("-g"));
-  assert.ok(head.includes("*.ts"));
+  const cIdx = head.indexOf("-C");
+  assert.ok(cIdx >= 0, "must include -C");
+  assert.equal(head[cIdx + 1], "3");
 });
 
-test("buildRgArgs excludeGlobs are converted to ripgrep negation globs", async () => {
+test("buildRgArgs context omitted produces no -C flag", async () => {
   const { buildRgArgs } = await loadModule("src/search/arguments.ts");
-  const args = buildRgArgs({ pattern: "x", path: ".", excludeGlobs: ["*.test.ts"] });
+  const args = buildRgArgs({ pattern: "x", path: "." });
+  const sep = args.indexOf("--");
+  assert.ok(!args.slice(0, sep).includes("-C"));
+});
+
+test("buildRgArgs globs pass through directly with ! negation", async () => {
+  const { buildRgArgs } = await loadModule("src/search/arguments.ts");
+  const args = buildRgArgs({ pattern: "x", path: ".", globs: ["*.ts", "!*.test.ts"] });
   const sep = args.indexOf("--");
   const head = args.slice(0, sep);
+  // Expect exactly: -g *.ts -g !*.test.ts
   const gIdx = head.indexOf("-g");
-  assert.ok(gIdx >= 0);
-  assert.ok(head.includes("!*.test.ts"), "exclude glob must be negated with !");
+  assert.ok(gIdx >= 0, "must include -g");
+  assert.equal(head[gIdx + 1], "*.ts");
+  assert.equal(head[gIdx + 2], "-g");
+  assert.equal(head[gIdx + 3], "!*.test.ts");
 });
 
-test("buildRgArgs types emit -t entries before --", async () => {
+test("buildRgArgs globs omitted produces no -g flag", async () => {
   const { buildRgArgs } = await loadModule("src/search/arguments.ts");
-  const args = buildRgArgs({ pattern: "x", path: ".", types: ["ts", "js"] });
+  const args = buildRgArgs({ pattern: "x", path: "." });
   const sep = args.indexOf("--");
-  const head = args.slice(0, sep);
-  assert.ok(head.includes("-t"));
-  assert.ok(head.includes("ts"));
-  assert.ok(head.includes("js"));
-});
-
-test("buildRgArgs context flags emitted before --", async () => {
-  const { buildRgArgs } = await loadModule("src/search/arguments.ts");
-  const args = buildRgArgs({ pattern: "x", path: ".", beforeContext: 2, afterContext: 3 });
-  const sep = args.indexOf("--");
-  const head = args.slice(0, sep);
-  assert.ok(head.includes("-B"));
-  assert.ok(head.includes("2"));
-  assert.ok(head.includes("-A"));
-  assert.ok(head.includes("3"));
+  assert.ok(!args.slice(0, sep).includes("-g"));
 });
 
 // ---------- fd argument construction ----------
@@ -208,7 +193,7 @@ test("rg schema array properties enforce 1-20 unique non-empty items", async () 
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = def.parameters.properties;
-  for (const key of ["includeGlobs", "excludeGlobs", "types"]) {
+  for (const key of ["globs"]) {
     const arr = props[key];
     assert.ok(arr, `${key} must exist in schema`);
     assert.equal(arr.minItems, 1, `${key} minItems must be 1`);

@@ -9,7 +9,7 @@ import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolD
 import type { DisplayFamily, DisplayMetadataEntry, OperationalLifecycle, OperationalQualifier } from "./types";
 
 const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  rg: ["pattern", "path", "case", "literal", "word", "offset", "limit"],
+  rg: ["pattern", "path", "globs", "literal", "context", "offset", "limit"],
   fd: ["pattern", "path", "matchMode", "offset", "limit", "maxDepth"],
   pdf_search: ["path", "query", "limit"],
   codegraph: ["operation", "projectPath", "query", "maxFiles"],
