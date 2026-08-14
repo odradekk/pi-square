@@ -96,8 +96,8 @@ const message = {
 // ─── 1. Completion content uses the canonical transcript description ──
 
 {
-  const shared = describeSubagentRun("subagent_delegate", run, { expanded: false, isPartial: false, isError: false }, "background content");
-  assert.equal(shared.tool, "subagent_delegate", "notification reuses the transcript tool identity");
+  const shared = describeSubagentRun("delegate", run, { expanded: false, isPartial: false, isError: false }, "background content");
+  assert.equal(shared.tool, "delegate", "notification reuses the transcript tool identity");
   assert.equal(shared.family, "agent", "notification reuses the agent family");
   assert.equal(shared.lifecycle, "completed", "done phase resolves to the completed lifecycle");
   assert.equal(shared.title, "Subagent");

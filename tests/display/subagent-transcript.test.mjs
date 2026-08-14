@@ -31,7 +31,7 @@ function newRuntime(environment = { isTTY: false }) {
   return new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment });
 }
 
-function makeDef(name = "subagent_delegate") {
+function makeDef(name = "delegate") {
   return {
     name, label: name, description: "subagent tool",
     parameters: { type: "object", properties: {}, additionalProperties: false },
@@ -201,7 +201,7 @@ function renderResult(decorated, args, details, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateSubagentTool(makeDef("subagent_resume"), () => runtime);
+  const decorated = decorateSubagentTool(makeDef("resume"), () => runtime);
   const result = renderResult(decorated, ARGS_RESUME, RUN_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text.split("\n")[0], /^✓ Resume abcdef12/, "resume title is Resume, target is the short id");

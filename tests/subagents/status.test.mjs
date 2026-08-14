@@ -76,11 +76,11 @@ test("native status prioritizes active jobs and exposes no tool results", () => 
 test("native status uses specialized GitHub summaries without result payloads", () => {
   const jobs = [
     job("subagent_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "running", 2, "librarian", toolTimeline(
-      "github_commit {\"repo\":\"owner/name\",\"ref\":\"abc123\",\"token\":\"private\"}",
+      "github {\"operation\":\"commit\",\"repo\":\"owner/name\",\"ref\":\"abc123\",\"token\":\"private\"}",
     )),
   ];
   const rendered = renderNativeSubagentStatus(plainTheme(), jobs);
-  assert.match(rendered, /github_commit owner\/name@abc123/);
+  assert.match(rendered, /github owner\/name@abc123/);
   assert.doesNotMatch(rendered, /SECRET TOOL RESULT|token|private/);
 });
 

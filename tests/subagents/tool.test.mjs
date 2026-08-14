@@ -39,14 +39,14 @@ function registered() {
 
 function delegateTool() {
   const pi = registered();
-  const tool = pi.tools.get("subagent_delegate");
+  const tool = pi.tools.get("delegate");
   assert.ok(tool);
   return tool;
 }
 
 function resumeTool() {
   const pi = registered();
-  const tool = pi.tools.get("subagent_resume");
+  const tool = pi.tools.get("resume");
   assert.ok(tool);
   return tool;
 }
@@ -79,8 +79,8 @@ function runDetails(id, overrides = {}) {
 
 test("registerSubagentTool exposes the delegate and resume tools", () => {
   const pi = registered();
-  assert.deepEqual([...pi.tools.keys()], ["subagent_delegate", "subagent_resume"]);
-  const delegateSchema = pi.tools.get("subagent_delegate").parameters;
+  assert.deepEqual([...pi.tools.keys()], ["delegate", "resume"]);
+  const delegateSchema = pi.tools.get("delegate").parameters;
   assert.equal(delegateSchema.additionalProperties, false);
   assert.ok(delegateSchema.properties.mode);
   assert.ok(delegateSchema.properties.context);
@@ -88,7 +88,7 @@ test("registerSubagentTool exposes the delegate and resume tools", () => {
   // property, so id must stay out of the delegate schema entirely.
   assert.equal(delegateSchema.properties.id, undefined);
   assert.deepEqual(delegateSchema.required, ["mode", "task"]);
-  const resumeSchema = pi.tools.get("subagent_resume").parameters;
+  const resumeSchema = pi.tools.get("resume").parameters;
   assert.equal(resumeSchema.additionalProperties, false);
   assert.deepEqual(resumeSchema.required, ["id", "task"]);
   assert.equal(resumeSchema.properties.mode, undefined);
@@ -124,14 +124,14 @@ test("mode-specific validation rejects invalid delegate and resume combinations"
 
   result = await resume.execute("call-3", { id: "x", task: "continue", model: "p/m" }, undefined, undefined, ctx);
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /Unknown subagent_resume parameter\(s\): model/);
+  assert.match(result.content[0].text, /Unknown resume parameter\(s\): model/);
 
   result = await delegate.execute("call-4", { mode: "fg", task: "delegate", background: true }, undefined, undefined, ctx);
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /Unknown subagent_delegate parameter\(s\): background/);
+  assert.match(result.content[0].text, /Unknown delegate parameter\(s\): background/);
 });
 
-test("delegate rejects an id parameter and points to subagent_resume", async () => {
+test("delegate rejects an id parameter and points to resume", async () => {
   // Regression: GPT populated id on every fg/bg call ("", "unused", "x", "omit")
   // and the single-tool schema rejected each one as non-retryable.
   const delegate = delegateTool();
@@ -139,8 +139,8 @@ test("delegate rejects an id parameter and points to subagent_resume", async () 
   const result = await delegate.execute("call-id", { mode: "fg", task: "delegate", id: "" }, undefined, undefined, ctx);
   assert.equal(result.isError, true);
   assert.equal(result.details.error.code, "INVALID_ARGUMENT");
-  assert.match(result.content[0].text, /Unknown subagent_delegate parameter\(s\): id/);
-  assert.match(result.content[0].text, /subagent_resume/);
+  assert.match(result.content[0].text, /Unknown delegate parameter\(s\): id/);
+  assert.match(result.content[0].text, /resume/);
 });
 
 test("delegate normalizes blank optional strings to unset", async () => {

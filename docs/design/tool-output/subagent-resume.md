@@ -1,4 +1,4 @@
-# `subagent_resume`
+# `resume`
 
 **Family:** agent · **Scope:** parent only · **Owner:**
 `src/subagents/tool.ts`, rendered by `src/subagents/display-adapter.ts`

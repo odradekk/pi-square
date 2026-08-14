@@ -21,23 +21,20 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   libs: ["libraryName", "query", "mode", "limit"],
   docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
   parse: ["path", "pages", "mode", "max_tokens", "timeout"],
-  github_search: ["kind", "query", "page", "limit"],
-  github_read: ["repo", "path", "ref", "line", "limit"],
-  github_tree: ["repo", "path", "ref", "depth", "offset", "limit"],
-  github_commit: ["repo", "ref", "page", "limit"],
+  // github uses per-operation GITHUB_ARG_FIELDS below, not this flat map.
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
-  subagent_delegate: ["agent", "mode", "task", "cwd", "model", "thinkingLevel", "context"],
-  subagent_resume: ["id", "task", "context"],
+  delegate: ["agent", "mode", "task", "cwd", "model", "thinkingLevel", "context"],
+  resume: ["id", "task", "context"],
 });
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   rg: ["pattern"], fd: ["pattern"], pdf_search: ["query"],
   codegraph: ["operation"], bash: ["command"], pwsh: ["command"],
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
-  docs: ["libraryId"], parse: ["path"], github_search: ["query"], github_read: ["path"],
-  github_tree: ["path"], github_commit: ["ref"], ask: [], todo: ["action"],
-  subagent_delegate: ["agent"], subagent_resume: ["id"],
+  docs: ["libraryId"], parse: ["path"],
+  ask: [], todo: ["action"],
+  delegate: ["agent"], resume: ["id"],
 });
 
 /** C1 sentence-case titles; unique within each family (`rg` is `Text search`). */
@@ -45,14 +42,27 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
   rg: "Text search", fd: "File search", pdf_search: "PDF search",
   codegraph: "CodeGraph", bash: "Bash", pwsh: "PowerShell",
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
-  docs: "Documentation", parse: "PDF parse", github_search: "GitHub search", github_read: "GitHub read",
-  github_tree: "GitHub tree", github_commit: "GitHub commit", ask: "Questions", todo: "Tasks",
-  subagent_delegate: "Subagent", subagent_resume: "Resume subagent",
+  docs: "Documentation", parse: "PDF parse", github: "GitHub",
+  ask: "Questions", todo: "Tasks",
+  delegate: "Subagent", resume: "Resume subagent",
 });
 
 /** Target fields that hold a local filesystem path and follow C2. */
 const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   parse: ["path"],
+});
+
+/** Per-operation target fields for the merged github tool. */
+const GITHUB_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  search: ["query"], read: ["path"], tree: ["path"], commit: ["ref"],
+});
+
+/** Per-operation metadata fields for the merged github tool. */
+const GITHUB_ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  search: ["kind", "query", "page", "limit"],
+  read: ["repo", "path", "ref", "line", "limit"],
+  tree: ["repo", "path", "ref", "depth", "offset", "limit"],
+  commit: ["repo", "ref", "page", "limit"],
 });
 
 function record(value: unknown): Record<string, unknown> {
@@ -94,11 +104,14 @@ function resolveResultLifecycle(
 
 function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
   const source = record(args);
-  return (ARG_FIELDS[name] ?? []).flatMap((key) => {
+  const fields = name === "github"
+    ? (GITHUB_ARG_FIELDS[String(source.operation)] ?? [])
+    : (ARG_FIELDS[name] ?? []);
+  return fields.flatMap((key) => {
     if (!Object.hasOwn(source, key) || source[key] === undefined) return [];
     if (name === "ssh" && key === "prompt") return [{ label: key, value: "secure input requested", tone: "warning" as const }];
     if ((name === "bash" || name === "pwsh") && key === "command") return [];
-    if ((name === "subagent_delegate" || name === "subagent_resume") && key === "task") return [];
+    if ((name === "delegate" || name === "resume") && key === "task") return [];
     if (name === "ask" && key === "questions") {
       return [{ label: "questions", value: String(Array.isArray(source[key]) ? source[key].length : 0) }];
     }
@@ -108,7 +121,10 @@ function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
 
 function targetFor(name: string, args: unknown, cwd: string): { value?: string; isPath: boolean } {
   const source = record(args);
-  for (const key of TARGET_FIELDS[name] ?? []) {
+  const fields = name === "github"
+    ? (GITHUB_TARGET_FIELDS[String(source.operation)] ?? ["operation"])
+    : (TARGET_FIELDS[name] ?? []);
+  for (const key of fields) {
     const raw = source[key];
     if (raw === undefined) continue;
     if ((PATH_TARGET_FIELDS[name] ?? []).includes(key) && typeof raw === "string" && raw) {
@@ -124,7 +140,7 @@ function targetFor(name: string, args: unknown, cwd: string): { value?: string; 
 function callPreview(name: string, args: unknown): string | undefined {
   const source = record(args);
   if ((name === "bash" || name === "pwsh") && typeof source.command === "string") return source.command;
-  if ((name === "subagent_delegate" || name === "subagent_resume") && typeof source.task === "string") return source.task;
+  if ((name === "delegate" || name === "resume") && typeof source.task === "string") return source.task;
   return undefined;
 }
 
@@ -182,6 +198,13 @@ function summaryRows(detailsValue: unknown): { rows: { text: string }[]; metadat
 
 function createAdapter(name: string, family: DisplayFamily): InternalToolDisplayAdapter<any, unknown, unknown> {
   const title = TITLES[name] ?? name;
+  function resolveTitle(args: unknown): string {
+    if (name === "github") {
+      const op = record(args).operation;
+      if (typeof op === "string" && op) return `GitHub ${op}`;
+    }
+    return title;
+  }
   return {
     describeCall(args, context) {
       const preview = callPreview(name, args);
@@ -196,7 +219,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         tool: name,
         family,
         lifecycle,
-        title,
+        title: resolveTitle(args),
         target: target.value ?? (context.argsComplete ? undefined : "building arguments"),
         ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: metadataForArgs(name, args),
@@ -223,7 +246,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         family,
         lifecycle: lc.lifecycle,
         ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
-        title,
+        title: resolveTitle(context.args),
         target: target.value,
         ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: [...metadataForArgs(name, context.args), ...outcome.metadata],
@@ -257,10 +280,7 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
         || definition.name === "libs"
         || definition.name === "docs"
         || definition.name === "parse"
-        || definition.name === "github_search"
-        || definition.name === "github_read"
-        || definition.name === "github_tree"
-        || definition.name === "github_commit"
+        || definition.name === "github"
         || definition.name === "ssh"
         ? createRemoteAdapter(definition.name, base)
         : definition.name === "ask" || definition.name === "todo"

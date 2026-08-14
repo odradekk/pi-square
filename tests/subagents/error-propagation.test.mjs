@@ -62,7 +62,7 @@ function tool() {
     registry: { definitions: [], errors: [], projectDir: null },
     background: { jobs: new Map() },
   });
-  return tools.get("subagent_delegate");
+  return tools.get("delegate");
 }
 
 test("foreground envelope exposes silent child tool failures as a structured error", async () => {

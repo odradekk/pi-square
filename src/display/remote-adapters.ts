@@ -30,7 +30,7 @@ function sshOutputText(text: string): string {
 
 const WEB_TOOLS = new Set(["search", "fetch", "libs", "docs", "parse"]);
 
-const GITHUB_TOOLS = new Set(["github_search", "github_read", "github_tree", "github_commit"]);
+const GITHUB_TOOLS = new Set(["github"]);
 
 /**
  * Strip the scheme (`https://`, `http://`) from a URL and elide the middle
@@ -606,7 +606,7 @@ function githubErrorSentence(text: string, details: UnknownRecord): string {
   return "GitHub rejected the query";
 }
 
-/** Parse `N: text` lines from github_read model text. */
+/** Parse `N: text` lines from github read model text. */
 function parseReadLines(text: string): Array<{ text: string; line: number }> {
   const result: Array<{ text: string; line: number }> = [];
   for (const rawLine of text.split("\n")) {
@@ -634,20 +634,21 @@ function githubDescribeResult(
 ): ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]> {
   const expanded = options.expanded;
   const rate = asRecord(details.rate);
+  const operation = stringOf(details.tool) ?? stringOf(args.operation);
 
   // ── Target ─────────────────────────────────────────────────────
   let target: string | undefined;
-  if (name === "github_search") {
+  if (name === "github" && operation === "search") {
     target = stringOf(args.query);
-  } else if (name === "github_read") {
+  } else if (name === "github" && operation === "read") {
     const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
     const resolvedPath = stringOf(details.resolvedPath) ?? stringOf(args.path) ?? "README";
     target = `${repo}:${resolvedPath}`;
-  } else if (name === "github_tree") {
+  } else if (name === "github" && operation === "tree") {
     const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
     const path = stringOf(details.path) ?? stringOf(args.path);
     target = path ? `${repo}:${path}` : repo;
-  } else if (name === "github_commit") {
+  } else if (name === "github" && operation === "commit") {
     const repo = stringOf(args.repo) ?? stringOf(details.repo) ?? "?";
     const sha = githubShortSha(details.sha) ?? stringOf(args.ref) ?? "?";
     target = `${repo}@${sha}`;
@@ -684,8 +685,8 @@ function githubDescribeResult(
   const rateSummary = githubRateSummary(rate);
   const resetIn = githubResetIn(rate.reset);
 
-  // ══ github_search ═══════════════════════════════════════════════
-  if (name === "github_search") {
+  // ══ github search ═══════════════════════════════════════════════
+  if (name === "github" && operation === "search") {
     const kind = stringOf(details.kind) ?? "repositories";
     const items = asArray(details.items);
     const returned = typeof details.returned === "number" ? details.returned : items.length;
@@ -765,8 +766,8 @@ function githubDescribeResult(
     });
   }
 
-  // ══ github_read ════════════════════════════════════════════════
-  if (name === "github_read") {
+  // ══ github read ════════════════════════════════════════════════
+  if (name === "github" && operation === "read") {
     // Binary file
     if (details.binary === true) {
       const size = typeof details.size === "number" ? formatBytes(details.size) : undefined;
@@ -828,8 +829,8 @@ function githubDescribeResult(
     });
   }
 
-  // ══ github_tree ════════════════════════════════════════════════
-  if (name === "github_tree") {
+  // ══ github tree ════════════════════════════════════════════════
+  if (name === "github" && operation === "tree") {
     const entries = asArray(details.entries).map((v) => asRecord(v));
     const browsePath = stringOf(details.path) ?? "";
     const returned = typeof details.returned === "number" ? details.returned : entries.length;
@@ -912,8 +913,8 @@ function githubDescribeResult(
     });
   }
 
-  // ══ github_commit ═══════════════════════════════════════════════
-  if (name === "github_commit") {
+  // ══ github commit ═══════════════════════════════════════════════
+  if (name === "github" && operation === "commit") {
     const subject = stringOf(details.message) ?? "(no commit message)";
     const author = stringOf(details.author) ?? "unknown";
     const authoredAt = formatRelativeAge(details.authoredAt);

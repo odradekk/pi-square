@@ -46,10 +46,7 @@ tools:
   - none
 
 extensionTools:
-  - github_search
-  - github_read
-  - github_tree
-  - github_commit
+  - github
 
 skills:
   - none

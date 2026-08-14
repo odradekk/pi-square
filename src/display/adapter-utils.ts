@@ -65,12 +65,9 @@ export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
   "libs",
   "docs",
   "parse",
-  "github_search",
-  "github_read",
-  "github_tree",
-  "github_commit",
-  "subagent_delegate",
-  "subagent_resume",
+  "github",
+  "delegate",
+  "resume",
 ]);
 
 /**
@@ -107,7 +104,7 @@ export function formatBytes(bytes: number): string {
 const SUMMARY_NOUNS: Readonly<Record<string, string>> = Object.freeze({
   rg: "matches",
   fd: "files",
-  github_search: "results",
+  github: "results",
 });
 
 function summaryNoun(name: string): string {
@@ -163,7 +160,7 @@ export function composeInternalSummary(
     }
   }
 
-  // Read-like tools (github_read) report returned lines instead of a page.
+  // Read-like tools (github read) report returned lines instead of a page.
   const returnedLines = numberOf(details.returnedLines);
   if (returnedLines !== undefined) {
     if (returnedLines === 0) return "Empty file";

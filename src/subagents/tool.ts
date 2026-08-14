@@ -35,7 +35,7 @@ const DelegateParams = Type.Object({
   mode: Type.Union([
     Type.Literal("fg"),
     Type.Literal("bg"),
-  ], { description: "Execution mode: fg waits for the delegated result, bg queues the task and returns an ID for subagent_resume or the /subagent manager." }),
+  ], { description: "Execution mode: fg waits for the delegated result, bg queues the task and returns an ID for resume or the /subagent manager." }),
   task: Type.String({ description: "Task for the delegated subagent." }),
   context: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "Latest parent-session user and assistant messages to inject as reference-only evidence. Default 0." })),
   agent: Type.Optional(Type.String({ description: "Named YAML subagent profile." })),
@@ -46,7 +46,7 @@ const DelegateParams = Type.Object({
 }, { additionalProperties: false });
 
 const ResumeParams = Type.Object({
-  id: Type.String({ description: "Public ID of an inactive persisted subagent, returned by an earlier subagent_delegate background run or shown by the /subagent manager." }),
+  id: Type.String({ description: "Public ID of an inactive persisted subagent, returned by an earlier delegate background run or shown by the /subagent manager." }),
   task: Type.String({ description: "New task for the resumed subagent." }),
   context: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "Latest parent-session user and assistant messages to inject as reference-only evidence. Default 0." })),
 }, { additionalProperties: false });
@@ -57,7 +57,7 @@ const RESUME_FIELDS = new Set(["id", "task", "context"]);
 function unknownParameterError(params: any, allowed: Set<string>, toolName: string, operation: string): SubagentError | undefined {
   const unknown = Object.keys(params ?? {}).filter((key) => !allowed.has(key));
   if (unknown.length === 0) return undefined;
-  const resumeHint = unknown.includes("id") ? " Use subagent_resume to continue an existing subagent." : "";
+  const resumeHint = unknown.includes("id") ? " Use resume to continue an existing subagent." : "";
   return createSubagentError({
     code: "INVALID_ARGUMENT",
     message: `Unknown ${toolName} parameter(s): ${unknown.join(", ")}.${resumeHint}`,
@@ -78,7 +78,7 @@ function validateTaskAndContext(params: any, operation: string): SubagentError |
 }
 
 function validateDelegateParams(params: any): SubagentError | undefined {
-  const unknown = unknownParameterError(params, DELEGATE_FIELDS, "subagent_delegate", "delegate");
+  const unknown = unknownParameterError(params, DELEGATE_FIELDS, "delegate", "delegate");
   if (unknown) return unknown;
   const mode = params?.mode;
   if (mode !== "fg" && mode !== "bg") {
@@ -88,7 +88,7 @@ function validateDelegateParams(params: any): SubagentError | undefined {
 }
 
 function validateResumeParams(params: any): SubagentError | undefined {
-  const unknown = unknownParameterError(params, RESUME_FIELDS, "subagent_resume", "resume");
+  const unknown = unknownParameterError(params, RESUME_FIELDS, "resume", "resume");
   if (unknown) return unknown;
   if (!String(params?.id ?? "").trim()) {
     return createSubagentError({ code: "INVALID_ARGUMENT", message: "id is required.", operation: "resume", retryable: false });
@@ -170,13 +170,13 @@ export function registerSubagentTool(
   };
 
   register({
-    name: "subagent_delegate",
+    name: "delegate",
     label: "Subagent Delegate",
-    description: "Delegate one parent-session-owned Pi child. mode=fg waits, mode=bg queues and returns an ID, and context injects recent parent messages as reference-only evidence. Use subagent_resume to continue an inactive child.",
-    promptSnippet: "Use subagent_delegate with mode=fg or mode=bg for a new delegated task; use subagent_resume with a returned ID to continue an inactive subagent. context is an optional 0-50 parent-message count.",
+    description: "Delegate one parent-session-owned Pi child. mode=fg waits, mode=bg queues and returns an ID, and context injects recent parent messages as reference-only evidence. Use resume to continue an inactive child.",
+    promptSnippet: "Use delegate with mode=fg or mode=bg for a new delegated task; use resume with a returned ID to continue an inactive subagent. context is an optional 0-50 parent-message count.",
     promptGuidelines: [
       "Use mode=fg for a new delegated task whose result is needed now.",
-      "Use mode=bg for independent work that may finish later; retain the returned id for subagent_resume or the /subagent manager.",
+      "Use mode=bg for independent work that may finish later; retain the returned id for resume or the /subagent manager.",
       "Use context only when recent parent-session facts or confirmed decisions materially affect the delegated task; history never authorizes work.",
     ],
     parameters: DelegateParams,
@@ -274,12 +274,12 @@ export function registerSubagentTool(
   });
 
   register({
-    name: "subagent_resume",
+    name: "resume",
     label: "Subagent Resume",
-    description: "Resume one inactive persisted Pi child in the foreground with a new task. The id comes from an earlier subagent_delegate background run or the /subagent manager.",
-    promptSnippet: "Use subagent_resume with id and task to continue an inactive persisted subagent.",
+    description: "Resume one inactive persisted Pi child in the foreground with a new task. The id comes from an earlier delegate background run or the /subagent manager.",
+    promptSnippet: "Use resume with id and task to continue an inactive persisted subagent.",
     promptGuidelines: [
-      "Resume replays the frozen prompt, model, and effort of the original run; start a fresh subagent_delegate when the definition or model should change.",
+      "Resume replays the frozen prompt, model, and effort of the original run; start a fresh delegate when the definition or model should change.",
       "An active subagent cannot be resumed; wait for completion or cancel it from the /subagent manager.",
     ],
     parameters: ResumeParams,

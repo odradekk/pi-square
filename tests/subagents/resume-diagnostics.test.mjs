@@ -16,7 +16,7 @@ function tool() {
     registry: { definitions: [], errors: [], projectDir: null },
     background: { jobs: new Map() },
   });
-  return tools.get("subagent_resume");
+  return tools.get("resume");
 }
 
 const ctx = { cwd: "/tmp", sessionManager: { getSessionId: () => "parent-resume-session", getBranch: () => [] } };

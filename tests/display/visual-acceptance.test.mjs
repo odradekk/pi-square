@@ -532,7 +532,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   const compact = stripVTControlCharacters(new OperationalDisplayComponent(
     {
       version: 1,
-      tool: "subagent_delegate",
+      tool: "delegate",
       family: "agent",
       lifecycle: "running",
       qualifiers: ["partial", "cancelling"],

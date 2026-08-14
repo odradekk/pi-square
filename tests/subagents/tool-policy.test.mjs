@@ -57,7 +57,7 @@ const matrix = {
   },
   "librarian.yaml": {
     tools: ["none"],
-    extensionTools: ["github_search", "github_read", "github_tree", "github_commit"],
+    extensionTools: ["github"],
     skills: ["none"],
   },
   "generalist.yaml": {
@@ -79,13 +79,13 @@ test("bundled role tool and skill capabilities match the least-privilege matrix"
 test("none disables every built-in while preserving explicit extension tools", () => {
   const resolved = resolveSubagentTools({
     tools: ["none"],
-    extensionTools: ["github_search", "github_read"],
+    extensionTools: ["github"],
   }, "linux");
   assert.deepEqual(resolved.errors, []);
   assert.deepEqual(resolved.builtInTools, []);
-  assert.deepEqual(resolved.extensionTools, ["github_search", "github_read"]);
+  assert.deepEqual(resolved.extensionTools, ["github"]);
   assert.deepEqual(resolved.persistedTools, ["none"]);
-  assert.deepEqual(resolved.persistedExtensionTools, ["github_search", "github_read"]);
+  assert.deepEqual(resolved.persistedExtensionTools, ["github"]);
 });
 
 test("none is case-insensitive, mutually exclusive, and fails closed", () => {

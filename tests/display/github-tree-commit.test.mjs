@@ -56,8 +56,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: ".", ref: "main", depth: 1, offset: 0, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: ".", ref: "main", depth: 1, offset: 0, limit: 100 };
   const details = {
     tool: "tree", phase: "done", repo: "owner/name", path: ".", ref: "main", depth: 1, offset: 0, limit: 100,
     returned: 4, total: 4, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 1,
@@ -82,8 +82,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: "empty-dir", ref: "main", depth: 1, offset: 0, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: "empty-dir", ref: "main", depth: 1, offset: 0, limit: 100 };
   const details = {
     tool: "tree", phase: "done", repo: "owner/name", path: "empty-dir", ref: "main", depth: 1, offset: 0, limit: 100,
     returned: 0, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 1, entries: [],
@@ -99,8 +99,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 500, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 500, limit: 100 };
   const details = {
     tool: "tree", phase: "done", repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 500, limit: 100,
     returned: 0, total: 50, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 1, entries: [],
@@ -117,8 +117,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: "src", ref: "main", depth: 2, offset: 50, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: "src", ref: "main", depth: 2, offset: 50, limit: 100 };
   const details = {
     tool: "tree", phase: "done", repo: "owner/name", path: "src", ref: "main", depth: 2, offset: 50, limit: 100,
     returned: 50, total: 200, hasMore: true, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 5,
@@ -137,13 +137,13 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
   // Remote truncation only (GitHub 1000-entry directory limit)
   const truncDetails = {
     tool: "tree", phase: "done", repo: "o/n", ref: "main", depth: 1, offset: 0, limit: 100,
     returned: 100, hasMore: true, remoteTruncated: true, requestBudgetExhausted: false, requestsUsed: 1, entries: [],
   };
-  const truncResult = renderResult(decorated, { repo: "o/n", ref: "main" }, truncDetails, "content", { expanded: true });
+  const truncResult = renderResult(decorated, { operation: "tree", repo: "o/n", ref: "main" }, truncDetails, "content", { expanded: true });
   const truncText = stripVTControlCharacters(truncResult.render(100).join("\n"));
   assert.match(truncText, /\[truncated\]/, "remote truncation visible via badge");
   assert.doesNotMatch(truncText, /requestBudget/, "request budget not shown when only remote truncated");
@@ -153,7 +153,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     tool: "tree", phase: "done", repo: "o/n", ref: "main", depth: 4, offset: 0, limit: 100,
     returned: 50, hasMore: true, remoteTruncated: false, requestBudgetExhausted: true, requestsUsed: 20, entries: [],
   };
-  const budgetResult = renderResult(decorated, { repo: "o/n", ref: "main" }, budgetDetails, "content", { expanded: true });
+  const budgetResult = renderResult(decorated, { operation: "tree", repo: "o/n", ref: "main" }, budgetDetails, "content", { expanded: true });
   const budgetText = stripVTControlCharacters(budgetResult.render(100).join("\n"));
   assert.match(budgetText, /\[truncated\]/, "request budget exhaustion visible via badge");
   assert.doesNotMatch(budgetText, /remoteTruncated/, "remote truncation not shown when only budget exhausted");
@@ -163,7 +163,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     tool: "tree", phase: "done", repo: "o/n", ref: "main", depth: 4, offset: 0, limit: 100,
     returned: 100, hasMore: true, remoteTruncated: true, requestBudgetExhausted: true, requestsUsed: 20, entries: [],
   };
-  const bothResult = renderResult(decorated, { repo: "o/n", ref: "main" }, bothDetails, "content", { expanded: true });
+  const bothResult = renderResult(decorated, { operation: "tree", repo: "o/n", ref: "main" }, bothDetails, "content", { expanded: true });
   const bothText = stripVTControlCharacters(bothResult.render(100).join("\n"));
   assert.match(bothText, /\[truncated\]/, "remote truncation and budget both visible via badge");
 
@@ -174,8 +174,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 0, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 0, limit: 100 };
   const details = {
     tool: "tree", phase: "done", repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 0, limit: 100,
     returned: 5, total: 5, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 1,
@@ -194,8 +194,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_commit"), () => runtime);
-  const args = { repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef1234567890", page: 1, limit: 20 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "commit", repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef1234567890", page: 1, limit: 20 };
   const details = {
     tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef1234567890",
     sha: "abcdef1234567890abcdef1234567890abcdef1234567890",
@@ -219,8 +219,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_commit"), () => runtime);
-  const args = { repo: "owner/name", ref: "abcdef", page: 1, limit: 20 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "commit", repo: "owner/name", ref: "abcdef", page: 1, limit: 20 };
   const details = {
     tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef", sha: "abcdef1234567890abcdef1234567890abcdef12",
     page: 1, limit: 20, message: "Mixed changes", author: "bob", additions: 10, deletions: 5, changes: 15,
@@ -248,8 +248,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_commit"), () => runtime);
-  const args = { repo: "owner/name", ref: "abcdef", page: 1, limit: 20 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "commit", repo: "owner/name", ref: "abcdef", page: 1, limit: 20 };
   const details = {
     tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef", sha: "abcdef1234567890abcdef1234567890abcdef12",
     page: 1, limit: 20, message: "Empty commit", author: "bob", authoredAt: "2024-02-01",
@@ -267,8 +267,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_commit"), () => runtime);
-  const args = { repo: "owner/name", ref: "abcdef", page: 2, limit: 10 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "commit", repo: "owner/name", ref: "abcdef", page: 2, limit: 10 };
   const details = {
     tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef", sha: "abcdef1234567890",
     page: 2, limit: 10, message: "Many files", author: "carol",
@@ -288,8 +288,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: "nonexistent", ref: "main" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: "nonexistent", ref: "main" };
   const details = { tool: "tree", phase: "done", repo: "owner/name", path: "nonexistent", ref: "main", depth: 1, offset: 0, limit: 100, returned: 0, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 0, errorCode: "NOT_FOUND", error: "GitHub path 'nonexistent' was not found" };
   const result = renderResult(decorated, args, details, "Error: not found", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
@@ -301,8 +301,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_commit"), () => runtime);
-  const args = { repo: "owner/name", ref: "" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "commit", repo: "owner/name", ref: "" };
   const details = { tool: "commit", phase: "done", repo: "owner/name", ref: "", page: 1, limit: 20, returned: 0, hasMore: false, omittedPatches: 0, errorCode: "INVALID_INPUT", error: "ref is invalid" };
   const result = renderResult(decorated, args, details, "Error: ref is invalid", { expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
@@ -316,9 +316,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
 {
   const runtime = newRuntime();
   for (const [name, args, details] of [
-    ["github_tree", { repo: "o/n", ref: "main" },
+    ["github", { operation: "tree", repo: "o/n", ref: "main" },
       { tool: "tree", phase: "done", repo: "o/n", ref: "main", depth: 1, offset: 0, limit: 100, returned: 0, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 0, errorCode: "RATE_LIMITED", error: "Rate limit exceeded", rate: { limit: 5000, remaining: 0, used: 5000, reset: 1700000000, retryAfter: 120 } }],
-    ["github_commit", { repo: "o/n", ref: "abc" },
+    ["github", { operation: "commit", repo: "o/n", ref: "abc" },
       { tool: "commit", phase: "done", repo: "o/n", ref: "abc", page: 1, limit: 20, returned: 0, hasMore: false, omittedPatches: 0, errorCode: "RATE_LIMITED", error: "Rate limit exceeded", rate: { limit: 5000, remaining: 0, used: 5000, reset: 1700000000, retryAfter: 120 } }],
   ]) {
     const decorated = decorateInternalTool(makeDef(name), () => runtime);
@@ -334,8 +334,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_commit"), () => runtime);
-  const args = { repo: "owner/name", ref: "abcdef", page: 1, limit: 20 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "commit", repo: "owner/name", ref: "abcdef", page: 1, limit: 20 };
   const details = {
     tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef", sha: "abcdef1234567890abcdef1234567890abcdef12",
     page: 1, limit: 20, message: "Test", author: "x", additions: 5, deletions: 2, changes: 7, returned: 1, hasMore: false, omittedPatches: 0,
@@ -360,8 +360,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: ".", ref: "main", depth: 1, offset: 0, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: ".", ref: "main", depth: 1, offset: 0, limit: 100 };
   const details = {
     tool: "tree", phase: "done", repo: "owner/name", ref: "main", depth: 1, offset: 0, limit: 100,
     returned: 1, total: 1, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 1,
@@ -384,9 +384,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
 {
   const runtime = newRuntime();
   for (const [name, args, details] of [
-    ["github_tree", { repo: "owner/name", path: "src/deep/nested/path", ref: "feature-branch-name", depth: 3, offset: 10, limit: 100 },
+    ["github", { operation: "tree", repo: "owner/name", path: "src/deep/nested/path", ref: "feature-branch-name", depth: 3, offset: 10, limit: 100 },
       { tool: "tree", phase: "done", repo: "owner/name", path: "src/deep/nested/path", ref: "feature-branch-name", depth: 3, offset: 10, limit: 100, returned: 3, total: 50, hasMore: true, remoteTruncated: false, requestBudgetExhausted: true, requestsUsed: 20, entries: [{ path: "a.ts", type: "file", size: 1024 }] }],
-    ["github_commit", { repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef1234567890", page: 1, limit: 20 },
+    ["github", { operation: "commit", repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef1234567890", page: 1, limit: 20 },
       { tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef1234567890", sha: "abcdef1234567890abcdef1234567890abcdef1234567890", page: 1, limit: 20, message: "A reasonably long commit message for testing width bounds", author: "alice", authoredAt: "2024-01-15", verified: true, additions: 100, deletions: 50, changes: 150, returned: 5, hasMore: true, omittedPatches: 2, files: [{ filename: "f.ts", status: "modified", additions: 50, deletions: 25, changes: 75, patchState: "included" }] }],
   ]) {
     const decorated = decorateInternalTool(makeDef(name), () => runtime);
@@ -404,12 +404,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  for (const name of ["github_tree", "github_commit"]) {
-    const def = makeDef(name);
-    const decorated = decorateInternalTool(def, () => runtime);
-    assert.equal(decorated.execute, def.execute, `${name} execute unchanged`);
-    assert.deepEqual(decorated.parameters, def.parameters, `${name} parameters unchanged`);
-  }
+  const def = makeDef("github");
+  const decorated = decorateInternalTool(def, () => runtime);
+  assert.equal(decorated.execute, def.execute, "github execute unchanged");
+  assert.deepEqual(decorated.parameters, def.parameters, "github parameters unchanged");
   runtime.dispose();
 }
 

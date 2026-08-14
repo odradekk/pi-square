@@ -52,14 +52,14 @@ const cases = [
   ["libs", { libraryName: "react", query: "context" }, /react/],
   ["docs", { libraryId: "/facebook/react", query: "context" }, /facebook\/react/],
   ["parse", { path: "manual.pdf", pages: "1-3", mode: "auto" }, /manual\.pdf/],
-  ["github_search", { kind: "code", query: "repo:owner/name ghp_SECRET" }, /repo:owner\/name/],
-  ["github_read", { repo: "owner/name", path: "README.md", ref: "main" }, /README\.md/],
-  ["github_tree", { repo: "owner/name", path: "src", ref: "main" }, /src/],
-  ["github_commit", { repo: "owner/name", ref: "abcdef" }, /abcdef/],
+  ["github", { operation: "search", kind: "code", query: "repo:owner/name ghp_SECRET" }, /repo:owner\/name/],
+  ["github", { operation: "read", repo: "owner/name", path: "README.md", ref: "main" }, /README\.md/],
+  ["github", { operation: "tree", repo: "owner/name", path: "src", ref: "main" }, /src/],
+  ["github", { operation: "commit", repo: "owner/name", ref: "abcdef" }, /abcdef/],
   ["ask", { questions: [{ id: "secret-question", text: "private question", options: [] }] }, /Questions/],
   ["todo", { action: "set", todos: [{ text: "private task" }] }, /set/],
-  ["subagent_delegate", { agent: "explorer", mode: "fg", task: "inspect runtime" }, /inspect runtime/],
-  ["subagent_resume", { id: "subagent_12345678", task: "continue review" }, /continue review/],
+  ["delegate", { agent: "explorer", mode: "fg", task: "inspect runtime" }, /inspect runtime/],
+  ["resume", { id: "subagent_12345678", task: "continue review" }, /continue review/],
 ];
 
 for (const [name, args, expected] of cases) {
@@ -78,16 +78,16 @@ for (const [name, args, expected] of cases) {
   const result = { content: [{ type: "text", text: "private result body" }], details: { status: "success", returned: 1 } };
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
   const collapsedText = collapsed.render(80).join("\n");
-  const resultIdentity = name === "subagent_delegate"
+  const resultIdentity = name === "delegate"
     ? /explorer/
-    : name === "subagent_resume"
+    : name === "resume"
       ? /subagent_12345678/
       : expected;
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
   // Payload tools keep content in the collapsed body; non-payload tools
   // collapse to a summary row (C4). Web tools (search, fetch, libs, docs,
   // parse) no longer dump raw text in collapsed mode.
-  const isPayload = name === "subagent_delegate" || name === "subagent_resume";
+  const isPayload = name === "delegate" || name === "resume";
   if (isPayload) {
     assert.match(collapsedText, /private result body/, `${name} collapsed shows result content`);
   }
@@ -97,7 +97,7 @@ for (const [name, args, expected] of cases) {
   // through records or empty-state indicators rather than the raw text
   // fallback; other tools expose the text via output fallback or a
   // content/markdown section.
-  const hasStructuredDomain = name === "github_tree" || name === "github_commit" || name === "github_search" || name === "github_read" || name === "todo" || name === "ask";
+  const hasStructuredDomain = name === "github" || name === "todo" || name === "ask";
   const isWebTool = ["search", "fetch", "libs", "docs", "parse"].includes(name);
   if (!hasStructuredDomain && !isWebTool) {
     assert.match(expandedText, /private result body/);
@@ -106,7 +106,7 @@ for (const [name, args, expected] of cases) {
 }
 
 const subagentArgs = { agent: "explorer", mode: "fg", task: "inspect runtime" };
-const subagent = decorateSubagentTool(fake("subagent_delegate"), runtime);
+const subagent = decorateSubagentTool(fake("delegate"), runtime);
 const subagentDetails = {
   version: 3,
   id: "subagent_12345678-1234-4123-8123-123456789abc",

@@ -149,32 +149,11 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     description: "Parse selected local PDF pages through Firecrawl",
   },
   {
-    name: "github_search",
+    name: "github",
     family: "remote",
     parent: true,
     child: true,
-    description: "Search GitHub repositories, code, and commits",
-  },
-  {
-    name: "github_read",
-    family: "remote",
-    parent: true,
-    child: true,
-    description: "Read files from GitHub repositories",
-  },
-  {
-    name: "github_tree",
-    family: "remote",
-    parent: true,
-    child: true,
-    description: "Browse GitHub repository trees",
-  },
-  {
-    name: "github_commit",
-    family: "remote",
-    parent: true,
-    child: true,
-    description: "Inspect GitHub commit history",
+    description: "Search, read, browse, and inspect GitHub repositories",
   },
   {
     name: "ssh",
@@ -200,14 +179,14 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   // ── agent ───────────────────────────────────────────────────────
   {
-    name: "subagent_delegate",
+    name: "delegate",
     family: "agent",
     parent: true,
     child: false,
     description: "Delegate work to a child subagent",
   },
   {
-    name: "subagent_resume",
+    name: "resume",
     family: "agent",
     parent: true,
     child: false,

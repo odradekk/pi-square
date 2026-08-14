@@ -242,8 +242,8 @@ function subagentSummary(
 // ─── Target ────────────────────────────────────────────────────────
 
 /**
- * Target for subagent_delegate: the agent name.
- * For subagent_resume: agent name + short run ID, identical in call and result.
+ * Target for delegate: the agent name.
+ * For resume: agent name + short run ID, identical in call and result.
  */
 function subagentTarget(
   details: Record<string, unknown>,
@@ -276,7 +276,8 @@ export function describeSubagentRun(
   const details = run as unknown as Record<string, unknown>;
   const live = String(run.liveText || run.finalText || fallbackText || "").trim();
   const lc = subagentLifecycle(details, options.isPartial, options.isError, "result");
-  const isResume = name === "subagent_resume";
+  // Also accept the retired name so persisted records from before the rename still render.
+  const isResume = name === "resume" || name === "subagent_resume";
   const summary = subagentSummary(details, lc.lifecycle);
   const qualifiers: OperationalQualifier[] = [...lc.qualifiers];
   if (Array.isArray(details.toolErrors) && details.toolErrors.length > 0 && !qualifiers.includes("warning")) {
@@ -350,7 +351,8 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
     describeCall(argsValue, context) {
       const args = record(argsValue);
       const task = typeof args.task === "string" ? args.task : undefined;
-      const isResume = name === "subagent_resume";
+      // Also accept the retired name so persisted records from before the rename still render.
+      const isResume = name === "resume" || name === "subagent_resume";
       const id = shortId(args.id);
       const agentName = typeof args.agent === "string" && args.agent ? args.agent : undefined;
 
@@ -395,7 +397,8 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       const text = textResult(result);
       const isRun = details.version === 3 && Array.isArray(details.timeline);
       if (!isRun) {
-        const isResume = name === "subagent_resume";
+        // Also accept the retired name so persisted records from before the rename still render.
+        const isResume = name === "resume" || name === "subagent_resume";
         const lc = subagentLifecycle(details, options.isPartial, context.isError, "result");
         const summary = subagentSummary(details, lc.lifecycle);
         return {

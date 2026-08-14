@@ -162,13 +162,13 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
 
 test("manager activity uses specialized GitHub summaries", () => {
   const github = runDetails({
-    timeline: [{ kind: "tool", phase: "start", text: "github_read {\"repo\":\"owner/name\",\"path\":\"README.md\",\"ref\":\"main\",\"token\":\"private\"}" }],
+    timeline: [{ kind: "tool", phase: "start", text: "github {\"operation\":\"read\",\"repo\":\"owner/name\",\"path\":\"README.md\",\"ref\":\"main\",\"token\":\"private\"}" }],
   });
   const githubManager = new SubagentManager(data({
     running: [{ id: github.id, status: "running", createdAt: 1, updatedAt: 2, details: github }],
   }), tui(), theme, keybindings, () => {});
   const githubRendered = render(githubManager, 100);
-  assert.match(githubRendered, /Activity: github_read owner\/name:README.md @main/);
+  assert.match(githubRendered, /Activity: github owner\/name:README.md @main/);
   assert.doesNotMatch(githubRendered, /token|private/);
   githubManager.dispose();
 });

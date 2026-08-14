@@ -61,10 +61,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
     clearInterval(id) { this.callbacks.delete(id); }, unref() {},
   };
   const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
-  const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
-  assert.equal(decorated.renderShell, "self", "github_search uses self render shell");
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  assert.equal(decorated.renderShell, "self", "github uses self render shell");
 
-  const args = { kind: "repositories", query: "react" };
+  const args = { operation: "search", kind: "repositories", query: "react" };
   const state = {};
   const queued = decorated.renderCall(args, plainTheme, makeCtx(args, state, { argsComplete: false, executionStarted: false }));
   assert.match(stripVTControlCharacters(queued.render(80).join("\n")), /^●/, "queued renders en-dash");
@@ -90,8 +90,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
-  const args = { kind: "code", query: "repo:owner/name fn main", page: 1, limit: 10 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "search", kind: "code", query: "repo:owner/name fn main", page: 1, limit: 10 };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
   assert.match(text, /GitHub search/, "call shows GitHub search title");
@@ -104,8 +104,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
-  const args = { kind: "code", query: "fn main", page: 1, limit: 5 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "search", kind: "code", query: "fn main", page: 1, limit: 5 };
   const details = {
     tool: "search", phase: "done", kind: "code", query: "fn main", page: 1, limit: 5,
     total: 42, returned: 2, omitted: 0, incomplete: true, hasMore: true,
@@ -132,8 +132,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
-  const args = { kind: "repositories", query: "nonexistent-xyz-123" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "search", kind: "repositories", query: "nonexistent-xyz-123" };
   const details = { tool: "search", phase: "done", kind: "repositories", query: "nonexistent-xyz-123", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false };
   const result = renderResult(decorated, args, details, "No results found.");
   const text = stripVTControlCharacters(result.render(80).join("\n"));
@@ -148,8 +148,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 {
   const runtime = newRuntime();
   // Missing token error — tool never sets isError:true
-  const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
-  const args = { kind: "repositories", query: "test" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "search", kind: "repositories", query: "test" };
   const details = { tool: "search", phase: "done", kind: "repositories", query: "test", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false, errorCode: "MISSING_GITHUB_TOKEN", error: "Missing GITHUB_TOKEN." };
   const result = renderResult(decorated, args, details, "Error: Missing GITHUB_TOKEN.", { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
@@ -163,8 +163,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
-  const args = { kind: "repositories", query: "test" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "search", kind: "repositories", query: "test" };
   const details = { tool: "search", phase: "done", kind: "repositories", query: "test", page: 1, limit: 10, total: 0, returned: 0, omitted: 0, incomplete: false, hasMore: false, errorCode: "RATE_LIMITED", error: "GitHub API rate limit exceeded", rate: { limit: 30, remaining: 0, used: 30, reset: 1700000000, resource: "search", retryAfter: 60 } };
   const result = renderResult(decorated, args, details, "Error: rate limit exceeded.", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
@@ -178,8 +178,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_read"), () => runtime);
-  const args = { repo: "owner/name", path: "src/index.ts", ref: "main", line: 1, limit: 200 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "read", repo: "owner/name", path: "src/index.ts", ref: "main", line: 1, limit: 200 };
   const details = { tool: "read", phase: "done", repo: "owner/name", path: "src/index.ts", ref: "main", resolvedPath: "src/index.ts", sha: "abcdef1234567890", size: 1024, binary: false, line: 1, limit: 200, returnedLines: 50, totalLines: 150, hasMore: true, rate: { limit: 5000, remaining: 4999, used: 1 } };
   const result = renderResult(decorated, args, details, "1: import { foo } from 'bar';", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
@@ -194,8 +194,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_read"), () => runtime);
-  const args = { repo: "owner/name", path: "logo.png", ref: "main" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "read", repo: "owner/name", path: "logo.png", ref: "main" };
   const details = { tool: "read", phase: "done", repo: "owner/name", path: "logo.png", ref: "main", resolvedPath: "logo.png", sha: "abcdef", size: 51200, binary: true, line: 1, limit: 200, returnedLines: 0, hasMore: false, errorCode: "UNSUPPORTED_CONTENT_TYPE", error: "Binary file · content omitted" };
   const result = renderResult(decorated, args, details, "Binary file · 51200 bytes · content omitted", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
@@ -209,8 +209,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_read"), () => runtime);
-  const args = { repo: "owner/name", path: "huge.ts", ref: "main" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "read", repo: "owner/name", path: "huge.ts", ref: "main" };
   const details = { tool: "read", phase: "done", repo: "owner/name", path: "huge.ts", ref: "main", resolvedPath: "huge.ts", size: 3_000_000, binary: true, line: 1, limit: 200, returnedLines: 0, hasMore: false, errorCode: "FILE_TOO_LARGE", error: "GitHub file is 3000000 bytes; the local read cap is 2097152 bytes" };
   const result = renderResult(decorated, args, details, "Error: file too large", { expanded: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
@@ -223,8 +223,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: "src", ref: "main", depth: 2, offset: 0, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: "src", ref: "main", depth: 2, offset: 0, limit: 100 };
   const details = {
     tool: "tree", phase: "done", repo: "owner/name", path: "src", ref: "main", depth: 2, offset: 0, limit: 100,
     returned: 3, total: 5, hasMore: true, remoteTruncated: false, requestBudgetExhausted: true, requestsUsed: 20,
@@ -249,8 +249,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_tree"), () => runtime);
-  const args = { repo: "owner/name", path: ".", ref: "main", depth: 1, offset: 0, limit: 100 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "tree", repo: "owner/name", path: ".", ref: "main", depth: 1, offset: 0, limit: 100 };
   const details = { tool: "tree", phase: "done", repo: "owner/name", ref: "main", depth: 1, offset: 0, limit: 100, returned: 100, hasMore: true, remoteTruncated: true, requestBudgetExhausted: false, requestsUsed: 1, entries: [], rate: { limit: 5000, remaining: 4999 } };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
@@ -263,8 +263,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_commit"), () => runtime);
-  const args = { repo: "owner/name", ref: "abcdef1234567890", page: 1, limit: 20 };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "commit", repo: "owner/name", ref: "abcdef1234567890", page: 1, limit: 20 };
   const details = {
     tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef1234567890",
     sha: "abcdef1234567890abcdef1234567890abcdef1234567890",
@@ -289,8 +289,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("github_search"), () => runtime);
-  const args = { kind: "code", query: "repo:owner/name ghp_SECRET_TOKEN_123" };
+  const decorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const args = { operation: "search", kind: "code", query: "repo:owner/name ghp_SECRET_TOKEN_123" };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   const callText = stripVTControlCharacters(call.render(100).join("\n"));
   // Token-shaped patterns are redacted by the shared sanitizer before
@@ -299,8 +299,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
   // Read result: file content with embedded token-like patterns should
   // not leak into the header
-  const readDecorated = decorateInternalTool(makeDef("github_read"), () => runtime);
-  const readArgs = { repo: "owner/name", path: "config.ts", ref: "main" };
+  const readDecorated = decorateInternalTool(makeDef("github"), () => runtime);
+  const readArgs = { operation: "read", repo: "owner/name", path: "config.ts", ref: "main" };
   const readDetails = { tool: "read", phase: "done", repo: "owner/name", path: "config.ts", ref: "main", returnedLines: 10, hasMore: false };
   const readResult = renderResult(readDecorated, readArgs, readDetails, "API_KEY = ghp_EMBEDDED_SECRET_BODY");
   const readText = stripVTControlCharacters(readResult.render(100).join("\n"));
@@ -315,16 +315,16 @@ function renderResult(decorated, args, details, text, opts = {}) {
 {
   const runtime = newRuntime();
   for (const [name, args, details, text] of [
-    ["github_search", { kind: "code", query: "test", page: 1, limit: 10 },
+    ["github", { operation: "search", kind: "code", query: "test", page: 1, limit: 10 },
       { tool: "search", phase: "done", kind: "code", query: "test", page: 1, limit: 10, total: 1, returned: 1, omitted: 0, incomplete: false, hasMore: false, items: [{ repo: "o/n", name: "f", url: "https://github.com/o/n" }] },
       "content"],
-    ["github_read", { repo: "owner/name", path: "README.md", ref: "main" },
+    ["github", { operation: "read", repo: "owner/name", path: "README.md", ref: "main" },
       { tool: "read", phase: "done", repo: "owner/name", path: "README.md", ref: "main", returnedLines: 10, hasMore: false },
       "content"],
-    ["github_tree", { repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 0, limit: 100 },
+    ["github", { operation: "tree", repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 0, limit: 100 },
       { tool: "tree", phase: "done", repo: "owner/name", path: "src", ref: "main", depth: 1, offset: 0, limit: 100, returned: 1, hasMore: false, remoteTruncated: false, requestBudgetExhausted: false, requestsUsed: 1, entries: [{ path: "src/f.ts", type: "file" }] },
       "content"],
-    ["github_commit", { repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef12", page: 1, limit: 20 },
+    ["github", { operation: "commit", repo: "owner/name", ref: "abcdef1234567890abcdef1234567890abcdef12", page: 1, limit: 20 },
       { tool: "commit", phase: "done", repo: "owner/name", ref: "abcdef", returned: 1, hasMore: false, omittedPatches: 0, files: [{ filename: "f.ts", status: "modified", additions: 1, deletions: 1, changes: 2, patchState: "included" }] },
       "content"],
   ]) {
@@ -343,12 +343,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  for (const name of ["github_search", "github_read", "github_tree", "github_commit"]) {
-    const def = makeDef(name);
-    const decorated = decorateInternalTool(def, () => runtime);
-    assert.equal(decorated.execute, def.execute, `${name} execute unchanged`);
-    assert.deepEqual(decorated.parameters, def.parameters, `${name} parameters unchanged`);
-  }
+  const def = makeDef("github");
+  const decorated = decorateInternalTool(def, () => runtime);
+  assert.equal(decorated.execute, def.execute, "github execute unchanged");
+  assert.deepEqual(decorated.parameters, def.parameters, "github parameters unchanged");
   runtime.dispose();
 }
 
