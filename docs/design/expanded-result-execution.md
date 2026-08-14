@@ -1,7 +1,7 @@
 # Execution Expanded Results
 
-Scope: `bash`, `pwsh`, `scheme`
-Parent tools: `bash` on non-Windows, `pwsh` on Windows, `scheme` on both.
+Scope: `bash`, `pwsh`
+Parent tools: `bash` on non-Windows, `pwsh` on Windows.
 Primary family contract: command/code identity first, process output second, process metadata and artifact references last.
 
 ## Shared execution grammar
@@ -49,28 +49,9 @@ Rules:
 - Output snapshots continue at the tool's 100 ms cadence; the shared scheduler only animates status.
 - Windows PowerShell 7/5.1 validation remains a release gate before publication.
 
-## scheme
-
-Expanded sections:
-
-- `ERROR` for spawn failure, nonzero exit, timeout, abort, or evaluator error.
-- `CODE`: bounded submitted Scheme source with conservative language label.
-- `ACCESS`: `readonly`, `write`, or `fullaccess` and timeout.
-- `OUTPUT`: bounded stdout section.
-- `DIAGNOSTICS`: cleaned stderr section and truncation state.
-- `STATUS`: exit code, duration, process-tree termination, and capture limit.
-
-Rules:
-
-- `fullaccess` receives warning tone because it enables host access and `system()`.
-- Stdout and stderr remain semantically distinct in expanded output even if the model-facing format is one result.
-- Reaching the 512 KiB capture limit is visible without changing model output.
-- The display does not write a temporary full-output log for Scheme.
-
 ## Execution regression cases
 
 - Streaming command snapshots transition to one final entry.
 - Nonzero exit and abort states remain visible in collapsed and expanded modes.
 - Long commands preserve newlines and indentation at narrow widths.
 - Full-output log paths are bounded and never treated as readable preview input.
-- `fullaccess` remains visually distinct from sandboxed modes.

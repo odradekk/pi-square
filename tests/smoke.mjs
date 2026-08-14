@@ -47,7 +47,7 @@ try {
 
   const expectedTools = [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search",
+    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "search",
     "subagent_delegate", "subagent_resume", "time", "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();

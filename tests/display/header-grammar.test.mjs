@@ -107,7 +107,6 @@ const EXPECTED_TITLES = {
   pdf_search: "PDF search",
   bash: "Bash",
   pwsh: "PowerShell",
-  scheme: "Scheme",
   search: "Web search",
   fetch: "Web fetch",
   libs: "Library search",

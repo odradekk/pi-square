@@ -42,10 +42,9 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "scheme", "search", "ssh",
+    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "search", "ssh",
     "subagent_delegate", "subagent_resume", "time", "todo",
   ]);
-  assert.ok(childToolNames.includes("scheme"));
   assert.ok(childToolNames.includes("codegraph"));
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
   assert.deepEqual(createChildTools(["pdf_search"]).definitions.map((definition) => definition.name), ["pdf_search"]);
@@ -112,7 +111,6 @@ try {
   const githubToolNames = ["github_search", "github_read", "github_tree", "github_commit"];
   for (const name of githubToolNames) assert.ok(childToolNames.includes(name), `${name} must be opt-in for child sessions`);
   assert.deepEqual(createChildTools(githubToolNames).definitions.map((definition) => definition.name), githubToolNames);
-  assert.deepEqual(createChildTools(["scheme"]).definitions.map((definition) => definition.name), ["scheme"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "display", "prompt-manager", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
@@ -145,7 +143,7 @@ try {
   assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should use the shared display renderer after session start");
   assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should use the shared result renderer");
   for (const name of [
-    "rg", "fd", "pdf_search", "codegraph", "time", "scheme", "ssh", "bash",
+    "rg", "fd", "pdf_search", "codegraph", "time", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
     "github_search", "github_read", "github_tree", "github_commit",

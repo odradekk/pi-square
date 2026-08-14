@@ -6,9 +6,8 @@
 
 **Status:** Implemented.
 
-`bash`, `pwsh`, and `scheme` share one execution grammar. This document is the
-reference for all three; [pwsh.md](pwsh.md) and [scheme.md](scheme.md) record
-only the differences.
+`bash` and `pwsh` share one execution grammar. This document is the
+reference for both; [pwsh.md](pwsh.md) records only the differences.
 
 ## Current output
 

@@ -35,7 +35,6 @@ assert.equal(changesets.access, "public");
 assert.equal(changesets.privatePackages, undefined);
 assert.ok(pkg.files.includes("src"));
 assert.ok(pkg.files.includes("bin"));
-assert.ok(pkg.files.includes("wasm"));
 assert.ok(pkg.files.includes("CHANGELOG.md"));
 assert.ok(!pkg.files.includes("tests"));
 assert.ok(existsSync(join(packageRoot, "LICENSE")));

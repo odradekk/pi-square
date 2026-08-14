@@ -59,7 +59,6 @@ for (const [name, args, expected] of [
   ["codegraph", { operation: "explore", projectPath: ".", query: "runtime", maxFiles: 5 }, /explore/],
   ["bash", { command: "printf 'hello'", timeout: 10 }, /printf 'hello'/],
   ["pwsh", { command: "Get-ChildItem", timeoutMs: 1000 }, /Get-ChildItem/],
-  ["scheme", { code: "(display \"ok\")", access: "readonly", timeoutMs: 1000 }, /display/],
   ["ssh", { operation: "secret_input", session: "session-1", prompt: "credential", data: "never-show" }, /\[needs input\]/],
 ]) {
   const original = definition(name);
@@ -80,7 +79,7 @@ for (const [name, args, expected] of [
   const collapsedText = collapsed.render(80).join("\n");
   // Payload tools keep their output in the collapsed body; non-payload tools
   // collapse to a summary row (C4).
-  if (name === "bash" || name === "pwsh" || name === "scheme") {
+  if (name === "bash" || name === "pwsh") {
     assert.match(collapsedText, /model output/, `${name} collapsed shows content`);
   } else if (name === "ssh") {
     // SSH now shows a summary row (operation-specific text), not raw content
@@ -97,12 +96,10 @@ for (const [name, args, expected] of [
   } else {
     assert.match(expandedText, /model output/);
   }
-  if (name === "bash" || name === "pwsh" || name === "scheme") {
+  if (name === "bash" || name === "pwsh") {
     // Execution tools show the output content in expanded mode. Short
-    // commands do not get a Command section (C8/defect 45); scheme always
-    // shows its Code section because the header truncates multi-line source.
+    // commands do not get a Command section (C8/defect 45).
     assert.match(expandedText, /model output/);
-    if (name === "scheme") assert.match(expandedText, /Code/);
   }
 
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
@@ -128,7 +125,7 @@ assert.match(timeResult.content[0].text, /^\d{4}-\d{2}-\d{2}/);
 assert.match(timeResult.content[0].text, /ISO 8601:/);
 assert.match(timeResult.content[0].text, /Timezone:/);
 
-for (const child of createChildTools(["rg", "fd", "codegraph", "pdf_search", "scheme"]).definitions) {
+for (const child of createChildTools(["rg", "fd", "codegraph", "pdf_search"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child construction stays independent of parent runtime`);
 }
 runtime.dispose();

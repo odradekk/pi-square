@@ -8,7 +8,6 @@ import {
 } from "./github/tools";
 import { createPdfSearchToolDefinition } from "./pdf-search";
 import { createSearchToolDefinitions } from "./search";
-import { createSchemeToolDefinition } from "./scheme/tools/scheme";
 import { isWindowsPlatform } from "./shell/platform";
 import { createPwshToolDefinition } from "./shell/tools/pwsh";
 import { createDocsToolDefinition } from "./web/tools/docs";
@@ -29,7 +28,6 @@ const BASE_EXTENSION_TOOLS = [
   "github_read",
   "github_tree",
   "github_commit",
-  "scheme",
 ] as const;
 
 type SupportedExtensionTool = typeof BASE_EXTENSION_TOOLS[number] | "pwsh";
@@ -53,7 +51,6 @@ function createDefinitions(platform: NodeJS.Platform): Map<SupportedExtensionToo
     ["github_read", createGitHubReadToolDefinition() as ToolDefinition],
     ["github_tree", createGitHubTreeToolDefinition() as ToolDefinition],
     ["github_commit", createGitHubCommitToolDefinition() as ToolDefinition],
-    ["scheme", createSchemeToolDefinition() as ToolDefinition],
   ]);
   if (isWindowsPlatform(platform)) definitions.set("pwsh", createPwshToolDefinition() as ToolDefinition);
   return definitions;

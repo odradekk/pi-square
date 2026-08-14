@@ -77,8 +77,6 @@ const expectedTools = [
   // pi-square remote
   "search", "fetch", "libs", "docs", "parse",
   "github_search", "github_read", "github_tree", "github_commit", "ssh",
-  // pi-square execution
-  "scheme",
   // pi-square workflow
   "todo", "ask", "time",
   // pi-square agent

@@ -12,7 +12,6 @@ import registerGitHub from "./github";
 import registerNotifications from "./notifications";
 import registerPdfSearch from "./pdf-search";
 import registerPromptManager from "./prompt-manager";
-import registerSchemeSandbox from "./scheme";
 import registerSearchTools from "./search";
 import registerShellTools from "./shell";
 import registerSshTool from "./ssh";
@@ -51,7 +50,6 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerGitHub(pi, () => display.runtime);
   const subagents = registerSubagents(pi, () => display.runtime);
   registerFooter(pi);
-  registerSchemeSandbox(pi, () => display.runtime);
   registerShellTools(pi, {}, () => display.runtime);
   registerSshTool(pi, () => display.config, confirmations, () => display.runtime);
   registerBanner(pi, () => display.config);

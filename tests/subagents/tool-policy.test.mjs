@@ -62,7 +62,7 @@ const matrix = {
   },
   "generalist.yaml": {
     tools: ["read", "write", "edit", "shell", "ls"],
-    extensionTools: ["rg", "fd", "codegraph", "search", "fetch", "libs", "docs", "scheme"],
+    extensionTools: ["rg", "fd", "codegraph", "search", "fetch", "libs", "docs"],
     skills: [],
   },
 };
