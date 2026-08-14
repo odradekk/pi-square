@@ -1,4 +1,4 @@
-# `github_search`
+# `github` (search)
 
 **Family:** remote · **Scope:** parent, and child only for explicitly opted-in
 trusted roles (of the bundled roles, only Librarian) · **Owner:**

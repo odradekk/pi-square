@@ -46,9 +46,9 @@ try {
   assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
-    "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
-    "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "search",
-    "subagent_delegate", "subagent_resume", "todo",
+    "ask", "codegraph", "delegate", "docs", "fd", "fetch", "github",
+    "libs", "parse", "pdf_search", "resume", "rg", "search",
+    "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));

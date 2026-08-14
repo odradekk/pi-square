@@ -11,11 +11,8 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const toolsModule = load(join(packageRoot, "src", "github", "tools.ts"));
 const types = load(join(packageRoot, "src", "github", "types.ts"));
 const {
-  createGitHubCommitToolDefinition,
-  createGitHubReadToolDefinition,
-  createGitHubSearchToolDefinition,
+  createGitHubToolDefinition,
   createGitHubToolDefinitions,
-  createGitHubTreeToolDefinition,
   registerGitHubTools,
 } = toolsModule;
 
@@ -60,22 +57,21 @@ function base64File(path, content, extra = {}) {
   };
 }
 
-test("module exposes four strict headless parent tool definitions", () => {
+test("module exposes one merged github tool with operation discriminator", () => {
   const definitions = createGitHubToolDefinitions();
-  assert.deepEqual(definitions.map((tool) => tool.name), ["github_search", "github_read", "github_tree", "github_commit"]);
-  for (const tool of definitions) {
-    assert.equal(tool.renderShell, undefined);
-    assert.equal(tool.parameters.type, "object");
-    assert.equal(tool.parameters.additionalProperties, false);
-    assert.equal(tool.parameters.anyOf, undefined);
-    assert.equal(tool.renderCall, undefined);
-    assert.equal(tool.renderResult, undefined);
-  }
-  assert.deepEqual(createGitHubSearchToolDefinition().parameters.required.sort(), ["kind", "query"]);
-  assert.deepEqual(createGitHubCommitToolDefinition().parameters.required.sort(), ["ref", "repo"]);
+  assert.deepEqual(definitions.map((tool) => tool.name), ["github"]);
+  const tool = definitions[0];
+  assert.equal(tool.renderShell, undefined);
+  assert.equal(tool.parameters.type, "object");
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.equal(tool.parameters.anyOf, undefined);
+  assert.equal(tool.renderCall, undefined);
+  assert.equal(tool.renderResult, undefined);
+  assert.deepEqual(tool.parameters.required, ["operation"]);
+  assert.deepEqual(tool.parameters.properties.operation.enum, ["search", "read", "tree", "commit"]);
   const registered = new Map();
-  registerGitHubTools({ registerTool(tool) { registered.set(tool.name, tool); } });
-  assert.deepEqual([...registered.keys()], definitions.map((tool) => tool.name));
+  registerGitHubTools({ registerTool(t) { registered.set(t.name, t); } });
+  assert.deepEqual([...registered.keys()], definitions.map((t) => t.name));
 });
 
 test("missing PAT fails before network with stable details", async () => {
@@ -87,7 +83,7 @@ test("missing PAT fails before network with stable details", async () => {
   delete process.env.GITHUB_TOKEN;
   const mock = installFetch(() => { throw new Error("network must not run"); });
   try {
-    const result = await createGitHubSearchToolDefinition().execute("x", { kind: "code", query: "hello" });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "search", kind: "code", query: "hello" });
     assert.equal(result.details.errorCode, "MISSING_GITHUB_TOKEN");
     assert.match(result.content[0].text, /auth\.json/);
     assert.equal(mock.calls.length, 0);
@@ -116,13 +112,13 @@ test("github_search parses repository and code results with completeness and rat
   ];
   const mock = installFetch((_call, index) => responses[index]);
   try {
-    const repo = await createGitHubSearchToolDefinition().execute("x", { kind: "repositories", query: "acme", limit: 5 });
+    const repo = await createGitHubToolDefinition().execute("x", { operation: "search", kind: "repositories", query: "acme", limit: 5 });
     assert.equal(repo.details.returned, 1);
     assert.equal(repo.details.hasMore, true);
     assert.equal(repo.details.rate.remaining, 29);
     assert.ok(Buffer.byteLength(JSON.stringify(repo.details)) <= types.GITHUB_DETAILS_CAP);
     assert.match(repo.content[0].text, /42 stars/);
-    const code = await createGitHubSearchToolDefinition().execute("x", { kind: "code", query: "token repo:acme/repo" });
+    const code = await createGitHubToolDefinition().execute("x", { operation: "search", kind: "code", query: "token repo:acme/repo" });
     assert.equal(code.details.incomplete, true);
     assert.doesNotMatch(code.content[0].text, /github_pat_source/);
     assert.match(code.content[0].text, /\[REDACTED\]/);
@@ -140,7 +136,7 @@ test("github_search rejects provider-authored non-GitHub and credentialed URLs",
     ],
   }));
   try {
-    const result = await createGitHubSearchToolDefinition().execute("x", { kind: "repositories", query: "acme" });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "search", kind: "repositories", query: "acme" });
     assert.equal(result.details.returned, 0);
     assert.doesNotMatch(result.content[0].text, /evil|user:pass/);
   } finally { mock.restore(); }
@@ -157,7 +153,7 @@ test("github_search enforces final content and details budgets under high-cardin
   }));
   const mock = installFetch(() => json(200, { total_count: 50, incomplete_results: false, items }));
   try {
-    const result = await createGitHubSearchToolDefinition().execute("x", { kind: "code", query: "needle", limit: 50 });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "search", kind: "code", query: "needle", limit: 50 });
     assert.ok(result.details.omitted > 0);
     assert.ok(Buffer.byteLength(result.content[0].text) <= types.GITHUB_SEARCH_OUTPUT_CAP);
     assert.ok(Buffer.byteLength(JSON.stringify(result.details)) <= types.GITHUB_DETAILS_CAP);
@@ -167,7 +163,7 @@ test("github_search enforces final content and details budgets under high-cardin
 test("github_search enforces the 1000-result window before network", () => withToken(async () => {
   const mock = installFetch(() => { throw new Error("network must not run"); });
   try {
-    const result = await createGitHubSearchToolDefinition().execute("x", { kind: "code", query: "x", page: 21, limit: 50 });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "search", kind: "code", query: "x", page: 21, limit: 50 });
     assert.equal(result.details.errorCode, "INVALID_INPUT");
     assert.equal(mock.calls.length, 0);
   } finally { mock.restore(); }
@@ -177,7 +173,7 @@ test("github_read returns bounded line pages, redacts credentials, and reports c
   const source = ["one", "two github_pat_source-secret", "three", "four"].join("\n");
   const mock = installFetch(() => json(200, base64File("src/a.ts", source)));
   try {
-    const result = await createGitHubReadToolDefinition().execute("x", { repo: "acme/repo", path: "src/a.ts", line: 2, limit: 2, ref: "main" });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", path: "src/a.ts", line: 2, limit: 2, ref: "main" });
     assert.equal(result.details.returnedLines, 2);
     assert.equal(result.details.totalLines, 4);
     assert.equal(result.details.hasMore, true);
@@ -192,7 +188,7 @@ test("github_read returns bounded line pages, redacts credentials, and reports c
 test("github_read applies its cap to the complete serialized result", () => withToken(async () => {
   const mock = installFetch(() => json(200, base64File("long.txt", "😀".repeat(30_000))));
   try {
-    const result = await createGitHubReadToolDefinition().execute("x", { repo: "acme/repo", path: "long.txt", limit: 1 });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", path: "long.txt", limit: 1 });
     assert.ok(Buffer.byteLength(result.content[0].text) <= types.GITHUB_READ_OUTPUT_CAP);
     assert.equal(result.details.truncatedLines, 1);
     assert.doesNotMatch(result.content[0].text, /�/);
@@ -204,10 +200,10 @@ test("github_read identifies binary files and refuses files over the local cap",
   const large = { ...base64File("large.txt", ""), size: types.GITHUB_FILE_CAP + 1, content: "", encoding: "none" };
   const mock = installFetch((_call, index) => json(200, index === 0 ? binary : large));
   try {
-    const first = await createGitHubReadToolDefinition().execute("x", { repo: "acme/repo", path: "asset.bin" });
+    const first = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", path: "asset.bin" });
     assert.equal(first.details.binary, true);
     assert.match(first.content[0].text, /Binary file/);
-    const second = await createGitHubReadToolDefinition().execute("x", { repo: "acme/repo", path: "large.txt" });
+    const second = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", path: "large.txt" });
     assert.equal(second.details.errorCode, "FILE_TOO_LARGE");
     assert.equal(mock.calls.length, 2);
   } finally { mock.restore(); }
@@ -217,7 +213,7 @@ test("github_read uses the raw media type for larger object responses", () => wi
   const metadata = { type: "file", path: "large.txt", sha: "a".repeat(40), size: 5, encoding: "none", content: "", html_url: "https://github.com/acme/repo/blob/main/large.txt" };
   const mock = installFetch((call, index) => index === 0 ? json(200, metadata) : new Response("hello", { status: 200, headers: { "content-type": "application/octet-stream" } }));
   try {
-    const result = await createGitHubReadToolDefinition().execute("x", { repo: "acme/repo", path: "large.txt" });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", path: "large.txt" });
     assert.equal(result.details.binary, false);
     assert.match(result.content[0].text, /1: hello/);
     assert.equal(mock.calls[1].headers.get("accept"), "application/vnd.github.raw+json");
@@ -234,7 +230,7 @@ test("github_tree traverses bounded depth, sorts paths, and paginates", () => wi
     return json(200, [{ type: "file", path: "src/a.ts", size: 2, sha: "a", html_url: "https://github.com/acme/repo/blob/main/src/a.ts" }]);
   });
   try {
-    const result = await createGitHubTreeToolDefinition().execute("x", { repo: "acme/repo", depth: 2, offset: 1, limit: 2 });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "tree", repo: "acme/repo", depth: 2, offset: 1, limit: 2 });
     assert.deepEqual(result.details.entries.map((entry) => entry.path), ["src/a.ts", "z.txt"]);
     assert.equal(result.details.total, 3);
     assert.equal(result.details.requestsUsed, 2);
@@ -252,7 +248,7 @@ test("github_tree applies its cap to the complete serialized result", () => with
   }));
   const mock = installFetch(() => json(200, entries));
   try {
-    const result = await createGitHubTreeToolDefinition().execute("x", { repo: "acme/repo", limit: 200 });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "tree", repo: "acme/repo", limit: 200 });
     assert.ok(result.details.returned < 200);
     assert.equal(result.details.hasMore, true);
     assert.ok(Buffer.byteLength(result.content[0].text) <= types.GITHUB_TREE_OUTPUT_CAP);
@@ -264,7 +260,7 @@ test("github_tree stops at its request budget and marks the result incomplete", 
   const dirs = Array.from({ length: 25 }, (_, index) => ({ type: "dir", path: `d${String(index).padStart(2, "0")}`, size: 0, sha: String(index) }));
   const mock = installFetch((_call, index) => json(200, index === 0 ? dirs : []));
   try {
-    const result = await createGitHubTreeToolDefinition().execute("x", { repo: "acme/repo", depth: 2, limit: 5 });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "tree", repo: "acme/repo", depth: 2, limit: 5 });
     assert.equal(result.details.requestsUsed, 20);
     assert.equal(result.details.requestBudgetExhausted, true);
     assert.equal(result.details.hasMore, true);
@@ -293,7 +289,7 @@ test("github_commit includes bounded patches and marks missing or omitted patche
   };
   const mock = installFetch(() => json(200, response, { link: '<https://api.github.com/commit?page=2>; rel="next"' }));
   try {
-    const result = await createGitHubCommitToolDefinition().execute("x", { repo: "acme/repo", ref: "main", limit: 3 });
+    const result = await createGitHubToolDefinition().execute("x", { operation: "commit", repo: "acme/repo", ref: "main", limit: 3 });
     assert.equal(result.details.returned, 3);
     assert.equal(result.details.hasMore, true);
     assert.equal(result.details.omittedPatches, 1);
@@ -305,6 +301,115 @@ test("github_commit includes bounded patches and marks missing or omitted patche
     assert.match(result.content[0].text, /patch omitted/);
   } finally { mock.restore(); }
 }));
+
+test("github silently discards irrelevant fields (repo with search)", async () => {
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    const result = await createGitHubToolDefinition().execute("x", { operation: "search", query: "" , repo: "acme/repo" });
+    // query is blank → search's own validation rejects it; repo was silently discarded.
+    assert.equal(result.details.errorCode, "INVALID_INPUT");
+    assert.match(result.content[0].text, /query must be non-empty/);
+    assert.doesNotMatch(result.content[0].text, /does not accept/);
+    assert.equal(mock.calls.length, 0);
+  } finally { mock.restore(); }
+});
+
+test("github silently discards irrelevant fields (query with read)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-github-discard-"));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldToken = process.env.GITHUB_TOKEN;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  delete process.env.GITHUB_TOKEN;
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    const result = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", query: "x" });
+    assert.equal(result.details.errorCode, "MISSING_GITHUB_TOKEN");
+    assert.doesNotMatch(result.content[0].text, /does not accept/);
+    assert.equal(mock.calls.length, 0);
+  } finally {
+    mock.restore();
+    rmSync(dir, { recursive: true, force: true });
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = oldToken;
+  }
+});
+
+test("github handles fully populated params from Responses API providers", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-github-populated-"));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldToken = process.env.GITHUB_TOKEN;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  delete process.env.GITHUB_TOKEN;
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    // Every declared property populated with non-blank values (the OpenAI
+    // Responses API behavior); irrelevant fields are silently discarded.
+    const result = await createGitHubToolDefinition().execute("x", {
+      operation: "search",
+      kind: "repositories",
+      query: "acme",
+      repo: "acme/repo",
+      path: "src/index.ts",
+      ref: "main",
+      line: 1,
+      depth: 1,
+      offset: 0,
+      page: 1,
+      limit: 10,
+    });
+    assert.equal(result.details.errorCode, "MISSING_GITHUB_TOKEN");
+    assert.equal(result.details.limit, 10);
+    assert.equal(result.details.page, 1);
+    assert.doesNotMatch(result.content[0].text, /does not accept/);
+    assert.equal(mock.calls.length, 0);
+  } finally {
+    mock.restore();
+    rmSync(dir, { recursive: true, force: true });
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = oldToken;
+  }
+});
+
+test("github blank-as-unset filters empty strings before field validation", async () => {
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    const result = await createGitHubToolDefinition().execute("x", { operation: "search", query: "", repo: "" });
+    assert.equal(result.details.errorCode, "INVALID_INPUT");
+    assert.match(result.content[0].text, /query must be non-empty/);
+    assert.doesNotMatch(result.content[0].text, /does not accept/);
+    assert.equal(mock.calls.length, 0);
+  } finally { mock.restore(); }
+});
+
+test("github limit 0 uses per-operation default and out-of-range clamps per operation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-github-limit-"));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldToken = process.env.GITHUB_TOKEN;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  delete process.env.GITHUB_TOKEN;
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    // limit 0 is filtered out → default applies (search default is 10)
+    const zero = await createGitHubToolDefinition().execute("x", { operation: "search", query: "x", limit: 0 });
+    assert.equal(zero.details.errorCode, "MISSING_GITHUB_TOKEN");
+    assert.equal(zero.details.limit, 10);
+    // limit 2000 exceeds search max (50) → clamped to 50
+    const big = await createGitHubToolDefinition().execute("x", { operation: "search", query: "x", limit: 2000 });
+    assert.equal(big.details.errorCode, "MISSING_GITHUB_TOKEN");
+    assert.equal(big.details.limit, 50);
+  } finally {
+    mock.restore();
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = oldToken;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 let failures = 0;
 for (const { name, fn } of tests) {

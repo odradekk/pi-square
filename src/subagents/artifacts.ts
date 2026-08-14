@@ -67,7 +67,7 @@ export function assertValidSubagentId(id: string, operation = "resume"): void {
     message: `Unknown subagent ID '${id}'.`,
     operation,
     retryable: false,
-    suggestedAction: "Use an ID returned by subagent_delegate or subagent_resume in the current version.",
+    suggestedAction: "Use an ID returned by delegate or resume in the current version.",
   });
 }
 

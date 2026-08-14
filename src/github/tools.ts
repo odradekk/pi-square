@@ -16,6 +16,7 @@ import {
   GITHUB_SEARCH_OUTPUT_CAP,
   GITHUB_TREE_OUTPUT_CAP,
   GITHUB_TREE_REQUEST_CAP,
+  type GitHubBaseDetails,
   type GitHubCommitDetails,
   type GitHubCommitFileDetail,
   type GitHubRateLimit,
@@ -37,6 +38,15 @@ const MAX_SEARCH_LIMIT = 50;
 const MAX_READ_LIMIT = 2_000;
 const MAX_TREE_LIMIT = 200;
 const MAX_COMMIT_LIMIT = 50;
+
+const GITHUB_OPERATIONS = ["search", "read", "tree", "commit"] as const;
+
+const ALLOWED_FIELDS: Record<string, ReadonlySet<string>> = {
+  search: new Set(["operation", "kind", "query", "page", "limit"]),
+  read:   new Set(["operation", "repo", "path", "ref", "line", "limit"]),
+  tree:   new Set(["operation", "repo", "path", "ref", "depth", "offset", "limit"]),
+  commit: new Set(["operation", "repo", "ref", "page", "limit"]),
+};
 
 interface RecordValue { [key: string]: unknown }
 
@@ -218,7 +228,7 @@ function searchItem(raw: unknown, kind: "repositories" | "code", token: string):
 
 function formatSearchContent(details: GitHubSearchDetails, token: string): string {
   const lines = [
-    `github_search ${details.kind}`,
+    `github search ${details.kind}`,
     `query: ${inline(details.query, token, 1_000)}`,
     `page: ${details.page} · returned: ${details.returned} · total: ${details.total} · incomplete: ${details.incomplete}`,
   ];
@@ -241,19 +251,7 @@ function formatSearchContent(details: GitHubSearchDetails, token: string): strin
   return lines.join("\n");
 }
 
-export function createGitHubSearchToolDefinition(): ToolDefinition<any, any> {
-  return {
-    name: "github_search",
-    label: "GitHub Search",
-    description: "Search GitHub repositories or default-branch code using an authenticated PAT. Returns bounded results, text-match snippets for code, pagination, completeness, and rate-limit metadata.",
-    promptSnippet: "Use github_search for authenticated GitHub repository and code search.",
-    parameters: strictObject({
-      kind: StringEnum(SEARCH_KINDS, { description: "Search repositories or source code" }),
-      query: Type.String({ minLength: 1, maxLength: 1_000, description: "GitHub search query, including supported qualifiers" }),
-      page: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000, description: "GitHub result page (default: 1)" })),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SEARCH_LIMIT, description: `Results per page (default: ${DEFAULT_SEARCH_LIMIT})` })),
-    }, ["kind", "query"]),
-    async execute(_id: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) {
+async function executeSearch(params: any, signal: AbortSignal | undefined, onUpdate: ((update: any) => void) | undefined): Promise<{ content: any[]; details: GitHubSearchDetails }> {
       const kind = params.kind === "code" ? "code" : "repositories";
       const query = String(params.query ?? "").trim();
       const page = integer(params.page, 1, 1, 1_000);
@@ -295,8 +293,6 @@ export function createGitHubSearchToolDefinition(): ToolDefinition<any, any> {
       } catch (error) {
         return failed(details, error);
       }
-    },
-  };
 }
 
 function decodeText(bytes: Uint8Array): { text?: string; binary: boolean } {
@@ -347,20 +343,7 @@ function renderReadPage(source: string, startLine: number, limit: number, token:
   };
 }
 
-export function createGitHubReadToolDefinition(): ToolDefinition<any, any> {
-  return {
-    name: "github_read",
-    label: "GitHub Read",
-    description: "Read a UTF-8 file or repository README from GitHub at a branch, tag, or commit. Returns a bounded line-numbered page; binary and oversized files return metadata only.",
-    promptSnippet: "Use github_read to read a GitHub repository file or README with line pagination.",
-    parameters: strictObject({
-      repo: REPO,
-      path: Type.Optional(PATH),
-      ref: Type.Optional(REF),
-      line: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000, description: "First line to return, 1-indexed (default: 1)" })),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum lines (default: ${DEFAULT_READ_LIMIT})` })),
-    }, ["repo"]),
-    async execute(_id: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) {
+async function executeRead(params: any, signal: AbortSignal | undefined, onUpdate: ((update: any) => void) | undefined): Promise<{ content: any[]; details: GitHubReadDetails }> {
       const repo = String(params.repo ?? "").trim();
       const path = params.path === undefined ? undefined : String(params.path).trim();
       const ref = params.ref === undefined ? undefined : String(params.ref).trim();
@@ -379,7 +362,7 @@ export function createGitHubReadToolDefinition(): ToolDefinition<any, any> {
         : `/repos/${owner}/${name}/contents/${encodeGitHubPath(path)}`;
       try {
         const response = await githubRequest<RecordValue>({ token, path: endpoint, query: { ref }, signal });
-        if (!isRecord(response.data) || Array.isArray(response.data)) throw new Error("GitHub path is a directory; use github_tree");
+        if (!isRecord(response.data) || Array.isArray(response.data)) throw new Error("GitHub path is a directory; use operation: tree");
         const type = text(response.data.type);
         const size = Math.max(0, number(response.data.size) ?? 0);
         const remotePath = inline(response.data.path, token, 1_024);
@@ -425,7 +408,7 @@ export function createGitHubReadToolDefinition(): ToolDefinition<any, any> {
         details.phase = "done";
         details.binary = decoded.binary;
         if (decoded.binary || decoded.text === undefined) {
-          const content = `github_read ${repo}:${details.resolvedPath ?? "README"}\nBinary file · ${size} bytes · content omitted`;
+          const content = `github read ${repo}:${details.resolvedPath ?? "README"}\nBinary file · ${size} bytes · content omitted`;
           return { content: [{ type: "text" as const, text: content }], details };
         }
         const page = renderReadPage(decoded.text, line, limit, token);
@@ -434,7 +417,7 @@ export function createGitHubReadToolDefinition(): ToolDefinition<any, any> {
         details.hasMore = page.hasMore;
         if (page.truncatedLines) details.truncatedLines = page.truncatedLines;
         const header = [
-          `github_read ${repo}:${details.resolvedPath ?? "README"}`,
+          `github read ${repo}:${details.resolvedPath ?? "README"}`,
           `ref: ${ref ?? "default"} · sha: ${details.sha ?? "unknown"} · lines: ${line}-${Math.max(line, line + page.returned - 1)}/${page.total}`,
         ];
         const footer: string[] = [];
@@ -448,8 +431,6 @@ export function createGitHubReadToolDefinition(): ToolDefinition<any, any> {
       } catch (error) {
         return failed(details, error);
       }
-    },
-  };
 }
 
 function treeType(entry: RecordValue): GitHubTreeEntryDetail["type"] {
@@ -461,7 +442,7 @@ function treeType(entry: RecordValue): GitHubTreeEntryDetail["type"] {
 
 function formatTreeContent(details: GitHubTreeDetails, token: string): string {
   const lines = [
-    `github_tree ${details.repo}:${details.path || "."}`,
+    `github tree ${details.repo}:${details.path || "."}`,
     `ref: ${details.ref ?? "default"} · depth: ${details.depth} · offset: ${details.offset} · returned: ${details.returned}`,
     "",
   ];
@@ -480,21 +461,7 @@ function formatTreeContent(details: GitHubTreeDetails, token: string): string {
   return lines.join("\n");
 }
 
-export function createGitHubTreeToolDefinition(): ToolDefinition<any, any> {
-  return {
-    name: "github_tree",
-    label: "GitHub Tree",
-    description: "Browse a GitHub repository from a path with bounded depth and pagination. Reports directory, request-budget, and remote truncation explicitly.",
-    promptSnippet: "Use github_tree to inspect a bounded GitHub repository directory tree.",
-    parameters: strictObject({
-      repo: REPO,
-      path: Type.Optional(PATH),
-      ref: Type.Optional(REF),
-      depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 4, description: "Directory depth (default: 1, maximum: 4)" })),
-      offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000, description: "Entries to skip after stable path sorting (default: 0)" })),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_TREE_LIMIT, description: `Maximum entries (default: ${DEFAULT_TREE_LIMIT})` })),
-    }, ["repo"]),
-    async execute(_id: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) {
+async function executeTree(params: any, signal: AbortSignal | undefined, onUpdate: ((update: any) => void) | undefined): Promise<{ content: any[]; details: GitHubTreeDetails }> {
       const repo = String(params.repo ?? "").trim();
       const path = params.path === undefined ? "" : String(params.path).trim().replace(/\/+$/, "");
       const ref = params.ref === undefined ? undefined : String(params.ref).trim();
@@ -559,8 +526,6 @@ export function createGitHubTreeToolDefinition(): ToolDefinition<any, any> {
       } catch (error) {
         return failed(details, error);
       }
-    },
-  };
 }
 
 function fenceFor(value: string): string {
@@ -576,19 +541,7 @@ function commitIdentity(person: unknown, token: string): { name?: string; date?:
   return { ...(name ? { name } : {}), ...(date ? { date } : {}) };
 }
 
-export function createGitHubCommitToolDefinition(): ToolDefinition<any, any> {
-  return {
-    name: "github_commit",
-    label: "GitHub Commit",
-    description: "Inspect one GitHub commit with metadata, stats, changed-file pagination, and bounded available patches. Missing, binary, and omitted patches are explicit.",
-    promptSnippet: "Use github_commit to inspect a GitHub commit and bounded file patches.",
-    parameters: strictObject({
-      repo: REPO,
-      ref: Type.String({ minLength: 1, maxLength: 256, description: "Commit SHA, branch, or tag" }),
-      page: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000, description: "Changed-file page (default: 1)" })),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_COMMIT_LIMIT, description: `Changed files per page (default: ${DEFAULT_COMMIT_LIMIT})` })),
-    }, ["repo", "ref"]),
-    async execute(_id: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) {
+async function executeCommit(params: any, signal: AbortSignal | undefined, onUpdate: ((update: any) => void) | undefined): Promise<{ content: any[]; details: GitHubCommitDetails }> {
       const repo = String(params.repo ?? "").trim();
       const ref = String(params.ref ?? "").trim();
       const page = integer(params.page, 1, 1, 10_000);
@@ -629,7 +582,7 @@ export function createGitHubCommitToolDefinition(): ToolDefinition<any, any> {
         details.hasMore = response.hasNext;
         details.rate = response.rate;
         const lines = [
-          `github_commit ${repo}@${sha ?? ref}`,
+          `github commit ${repo}@${sha ?? ref}`,
           message || "(no commit message)",
           "",
           `author: ${author.name ?? "unknown"}${author.date ? ` · ${author.date}` : ""}`,
@@ -684,17 +637,62 @@ export function createGitHubCommitToolDefinition(): ToolDefinition<any, any> {
       } catch (error) {
         return failed(details, error);
       }
+}
+
+export function createGitHubToolDefinition(): ToolDefinition<any, any> {
+  return {
+    name: "github",
+    label: "GitHub",
+    description: "Search GitHub repositories or code, read files, browse trees, and inspect commits using an authenticated PAT. Returns bounded results with pagination, rate-limit metadata, and explicit truncation.",
+    promptSnippet: "Use github with operation: search|read|tree|commit for authenticated read-only GitHub access.",
+    parameters: strictObject({
+      operation: StringEnum(GITHUB_OPERATIONS, { description: "GitHub operation: search, read, tree, or commit" }),
+      kind: Type.Optional(StringEnum(SEARCH_KINDS, { description: "search only: search repositories or source code" })),
+      query: Type.Optional(Type.String({ minLength: 1, maxLength: 1_000, description: "search only: GitHub search query, including supported qualifiers" })),
+      repo: Type.Optional(REPO),
+      path: Type.Optional(PATH),
+      ref: Type.Optional(REF),
+      line: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000, description: "read only: first line to return, 1-indexed (default: 1)" })),
+      depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 4, description: "tree only: directory depth (default: 1, maximum: 4)" })),
+      offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000, description: "tree only: entries to skip (default: 0)" })),
+      page: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000, description: "search/commit only: result page (default: 1; search caps at 1000, commit at 10000)" })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: "Per-operation default and maximum apply (search 10/50, read 200/2000, tree 100/200, commit 20/50)" })),
+    }, ["operation"]),
+    async execute(_id: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) {
+      const operation = params?.operation;
+      if (!GITHUB_OPERATIONS.includes(operation)) {
+        const details: GitHubBaseDetails = { tool: "search", phase: "done" };
+        return invalidInput(details as GitHubSearchDetails, `operation must be one of: ${GITHUB_OPERATIONS.join(", ")}`);
+      }
+      // Keep only fields the current operation uses, then drop blank values
+      // ("" and 0). The OpenAI Responses API populates every declared schema
+      // property with non-blank values, so irrelevant fields are silently
+      // discarded rather than rejected; per-operation validation inside each
+      // execute function still catches genuine input errors.
+      const allowed = ALLOWED_FIELDS[operation];
+      const filtered: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(params)) {
+        if (key === "operation" || !allowed.has(key)) continue;
+        if (value === undefined) continue;
+        if (typeof value === "string" && value.trim() === "") continue;
+        if (typeof value === "number" && value === 0) continue;
+        filtered[key] = value;
+      }
+      switch (operation) {
+        case "search": return executeSearch(filtered, signal, onUpdate);
+        case "read":   return executeRead(filtered, signal, onUpdate);
+        case "tree":   return executeTree(filtered, signal, onUpdate);
+        case "commit": return executeCommit(filtered, signal, onUpdate);
+      }
+      // Unreachable but satisfies the type checker.
+      const fallback: GitHubBaseDetails = { tool: "search", phase: "done" };
+      return invalidInput(fallback as GitHubSearchDetails, "unknown operation");
     },
   };
 }
 
 export function createGitHubToolDefinitions(): ToolDefinition<any, any>[] {
-  return [
-    createGitHubSearchToolDefinition(),
-    createGitHubReadToolDefinition(),
-    createGitHubTreeToolDefinition(),
-    createGitHubCommitToolDefinition(),
-  ];
+  return [createGitHubToolDefinition()];
 }
 
 export function registerGitHubTools(pi: ExtensionAPI): void {

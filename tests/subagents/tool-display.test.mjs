@@ -33,20 +33,20 @@ test("PDF search summaries expose only bounded query and path arguments", () => 
 
 test("GitHub summaries expose only bounded identity and paging arguments", () => {
   assert.equal(
-    formatToolCall("github_search", { kind: "code", query: "repo:owner/name symbol", password: "private" }),
-    "github_search code: repo:owner/name symbol",
+    formatToolCall("github", { operation: "search", kind: "code", query: "repo:owner/name symbol", password: "private" }),
+    "github code: repo:owner/name symbol",
   );
   assert.equal(
-    formatToolCall("github_read", { repo: "owner/name", path: "src/index.ts", ref: "main", line: 80, token: "private" }),
-    "github_read owner/name:src/index.ts @main · line 80",
+    formatToolCall("github", { operation: "read", repo: "owner/name", path: "src/index.ts", ref: "main", line: 80, token: "private" }),
+    "github owner/name:src/index.ts @main · line 80",
   );
   assert.equal(
-    formatToolCall("github_tree", { repo: "owner/name", path: "src", ref: "v1", depth: 3, token: "private" }),
-    "github_tree owner/name:src @v1 · depth 3",
+    formatToolCall("github", { operation: "tree", repo: "owner/name", path: "src", ref: "v1", depth: 3, token: "private" }),
+    "github owner/name:src @v1 · depth 3",
   );
   assert.equal(
-    formatToolCall("github_commit", { repo: "owner/name", ref: "abc123", page: 2, token: "private" }),
-    "github_commit owner/name@abc123 · page 2",
+    formatToolCall("github", { operation: "commit", repo: "owner/name", ref: "abc123", page: 2, token: "private" }),
+    "github owner/name@abc123 · page 2",
   );
 });
 
@@ -65,17 +65,17 @@ test("legacy JSON calls use the same specialized formatter", () => {
   const github = toolEventDisplay({
     kind: "tool",
     phase: "start",
-    text: "github_read {\"repo\":\"owner/name\",\"path\":\"README.md\"}",
+    text: "github {\"operation\":\"read\",\"repo\":\"owner/name\",\"path\":\"README.md\"}",
   });
-  assert.deepEqual(github, { tool: "github_read", summary: "owner/name:README.md" });
+  assert.deepEqual(github, { tool: "github", summary: "owner/name:README.md" });
 });
 
 test("latest summaries ignore result payloads and redact credentials", () => {
   const summary = latestToolCallSummary([
-    { kind: "tool", phase: "start", text: "github_search code: bearer ghp_secret" },
-    { kind: "tool", phase: "end", text: "github_search: SECRET RESULT" },
+    { kind: "tool", phase: "start", text: "github search: bearer ghp_secret" },
+    { kind: "tool", phase: "end", text: "github: SECRET RESULT" },
   ]);
-  assert.equal(summary, "github_search code: bearer [REDACTED]");
+  assert.equal(summary, "github search: bearer [REDACTED]");
   assert.doesNotMatch(summary, /SECRET RESULT|ghp_secret/);
 });
 

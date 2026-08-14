@@ -108,21 +108,21 @@ removes the majority of the individual defects that the tool documents list.
 | Pattern | Tools affected | Typical fix |
 |---|---|---|
 | Uppercase built-in titles and absolute paths | `read`, `ls`, `edit`, `write`, `find`, `grep` | C1 and C2 |
-| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `codegraph`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`, all `github_*` | C4 summary row plus a bounded, structured body |
+| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `codegraph`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`, `github` | C4 summary row plus a bounded, structured body |
 | Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `fd`, `rg`, `codegraph`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
 | Key-value metadata rows and coded fields | every family | State the same facts in the summary row |
-| A failure body is rendered twice | `pwsh`, `ssh`, `subagent_delegate`, `subagent_resume` | Render the error stream once |
+| A failure body is rendered twice | `pwsh`, `ssh`, `delegate`, `resume` | Render the error stream once |
 | Raw platform or provider text as the failure message | every family | C6 one sentence, raw text in the expanded `ERROR` section |
 | Empty result presented as a fake list entry | `ls`, `find`, `grep`, `codegraph` | A muted state row and no section |
 | Truncation without the `truncated` badge | `read`, `write`, `bash`, `fd`, `rg` | C7 |
-| Raw timestamps and full hashes | `codegraph`, `libs`, `github_read`, `github_commit`, `github_search` | Relative time and short SHA |
-| Content that is not what it claims to be | `github_read`, `codegraph`, `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
+| Raw timestamps and full hashes | `codegraph`, `libs`, `github` | Relative time and short SHA |
+| Content that is not what it claims to be | `github` (read), `codegraph`, `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
 
 Three defects are correctness defects rather than presentation defects:
 
-1. `github_read` renders the tool's own header as numbered remote file content,
+1. `github` (read) renders the tool's own header as numbered remote file content,
    so both the content and every line number are wrong.
-2. `subagent_*` parses each end-phase timeline entry into a malformed activity
+2. `delegate`/`resume` parse each end-phase timeline entry into a malformed activity
    row such as `read:  working`.
 
 ## Status
@@ -150,13 +150,10 @@ Three defects are correctness defects rather than presentation defects:
 | 15 | `libs` | remote | [libs.md](libs.md) | Designed |
 | 16 | `docs` | remote | [docs.md](docs.md) | Designed |
 | 17 | `parse` | remote | [parse.md](parse.md) | Designed |
-| 18 | `github_search` | remote | [github-search.md](github-search.md) | Designed |
-| 19 | `github_read` | remote | [github-read.md](github-read.md) | Designed |
-| 20 | `github_tree` | remote | [github-tree.md](github-tree.md) | Designed |
-| 21 | `github_commit` | remote | [github-commit.md](github-commit.md) | Designed |
-| 22 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
-| 23 | `todo` | workflow | [todo.md](todo.md) | Designed |
-| 24 | `ask` | workflow | [ask.md](ask.md) | Designed |
-| 25 | `time` | workflow | [time.md](time.md) | Designed |
-| 26 | `subagent_delegate` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
-| 27 | `subagent_resume` | agent | [subagent-resume.md](subagent-resume.md) | Designed |
+| 18 | `github` | remote | [github-search.md](github-search.md) | Designed |
+| 19 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
+| 20 | `todo` | workflow | [todo.md](todo.md) | Designed |
+| 21 | `ask` | workflow | [ask.md](ask.md) | Designed |
+| 22 | `time` | workflow | [time.md](time.md) | Designed |
+| 23 | `delegate` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
+| 24 | `resume` | agent | [subagent-resume.md](subagent-resume.md) | Designed |

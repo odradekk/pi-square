@@ -1,11 +1,11 @@
-# `subagent_delegate`
+# `delegate`
 
 **Family:** agent · **Scope:** parent only · **Owner:**
 `src/subagents/tool.ts`, rendered by `src/subagents/display-adapter.ts`
 
 **Status:** Implemented.
 
-`subagent_delegate` and `subagent_resume` share one grammar. This document is
+`delegate` and `resume` share one grammar. This document is
 the reference; [subagent-resume.md](subagent-resume.md) records only the
 differences.
 

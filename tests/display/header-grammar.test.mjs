@@ -112,15 +112,12 @@ const EXPECTED_TITLES = {
   libs: "Library search",
   docs: "Documentation",
   parse: "PDF parse",
-  github_search: "GitHub search",
-  github_read: "GitHub read",
-  github_tree: "GitHub tree",
-  github_commit: "GitHub commit",
+  github: "GitHub",
   ssh: "SSH",
   todo: "Tasks",
   ask: "Questions",
-  subagent_delegate: "Subagent",
-  subagent_resume: "Resume",
+  delegate: "Subagent",
+  resume: "Resume",
 };
 
 // ─── C1: every catalog tool renders a sentence-case title ───────────
@@ -476,7 +473,7 @@ const EXPECTED_TITLES = {
       qualifiers: ["truncated"], durationMs: 1250, rows: [{ text: "60 lines" }], truncated: true,
     },
     {
-      version: 1, tool: "subagent_delegate", family: "agent", lifecycle: "running",
+      version: 1, tool: "delegate", family: "agent", lifecycle: "running",
       title: "Subagent", target: "explorer", qualifiers: ["cancelling", "partial"], durationMs: 4000,
     },
   ];

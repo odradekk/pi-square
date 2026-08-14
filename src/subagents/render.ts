@@ -3,7 +3,7 @@
  *
  * The completion message is the deliberate native-shell exception: Pi owns the
  * success/error message shell, while the bounded result inside it uses the same
- * canonical operational description as the `subagent_delegate` transcript entry.
+ * canonical operational description as the `delegate` transcript entry.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -48,7 +48,7 @@ export function renderSubagentNotification(
     return shell;
   }
   const description = describeSubagentRun(
-    "subagent_delegate",
+    "delegate",
     details,
     {
       expanded: options.expanded,

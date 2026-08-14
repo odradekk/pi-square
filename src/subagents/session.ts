@@ -915,7 +915,7 @@ export async function resumeSubagentTask(input: {
       operation: "resume",
       id: input.id,
       retryable: false,
-      suggestedAction: "Use an ID returned by subagent_delegate or subagent_resume in the current version whose artifacts have not been deleted.",
+      suggestedAction: "Use an ID returned by delegate or resume in the current version whose artifacts have not been deleted.",
     });
   }
 

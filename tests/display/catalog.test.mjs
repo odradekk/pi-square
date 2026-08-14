@@ -76,11 +76,12 @@ const expectedTools = [
   "rg", "fd", "codegraph", "pdf_search",
   // pi-square remote
   "search", "fetch", "libs", "docs", "parse",
-  "github_search", "github_read", "github_tree", "github_commit", "ssh",
+  "github",
+  "ssh",
   // pi-square workflow
   "todo", "ask",
   // pi-square agent
-  "subagent_delegate", "subagent_resume",
+  "delegate", "resume",
 ];
 for (const name of expectedTools) {
   assert.ok(getCatalogEntry(name), `expected tool '${name}' must be in catalog`);
@@ -93,13 +94,13 @@ const parentOnly = allNames.filter((n) => {
   const e = getCatalogEntry(n);
   return e.parent && !e.child;
 });
-// parse, ssh, todo, ask, subagent_delegate, subagent_resume are parent-only
+// parse, ssh, todo, ask, delegate, resume are parent-only
 assert.ok(parentOnly.includes("parse"), "parse must be parent-only");
 assert.ok(parentOnly.includes("ssh"), "ssh must be parent-only");
 assert.ok(parentOnly.includes("todo"), "todo must be parent-only");
 assert.ok(parentOnly.includes("ask"), "ask must be parent-only");
-assert.ok(parentOnly.includes("subagent_delegate"), "subagent_delegate must be parent-only");
-assert.ok(parentOnly.includes("subagent_resume"), "subagent_resume must be parent-only");
+assert.ok(parentOnly.includes("delegate"), "delegate must be parent-only");
+assert.ok(parentOnly.includes("resume"), "resume must be parent-only");
 assert.equal(parentOnly.length, 6, `expected 6 parent-only tools, got ${parentOnly.length}`);
 
 // ── Platform shell ownership ─────────────────────────────────────────

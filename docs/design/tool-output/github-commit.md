@@ -1,4 +1,4 @@
-# `github_commit`
+# `github` (commit)
 
 **Family:** remote · **Scope:** parent, and child only for explicitly opted-in
 trusted roles · **Owner:** `src/github/tools.ts`, rendered by
