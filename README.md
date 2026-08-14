@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
+`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text, file, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
 
 ## Installation
 
@@ -75,7 +75,11 @@ Calls and results use the shared operational interface renderer. Calls expose th
 
 ## Local search tools
 
-The bundled `rg` and `fd` tools expose schema-validated text-search and file-discovery parameters while retaining wrapper-owned protocol and safety flags. Use `rg` for text, configuration, documentation, and unsupported languages, and `fd` to locate files.
+The bundled `rg` and `fd` tools expose schema-validated text-search and file-discovery parameters while retaining wrapper-owned protocol and safety flags. Both use Git-tracked binaries without PATH fallback and always apply smart case (`-S`). Use `rg` for text, configuration, documentation, and unsupported languages, and `fd` to locate files.
+
+`rg` accepts eight fields: `pattern` (required, regex), `path`, `globs` (a single array using native `!` negation to include or exclude), `literal` (treat the pattern as a literal string), `context` (0–20 lines of symmetric context around each match), `filesOnly` (return matching file paths with match counts instead of match text), `offset` (progressive paging), and `limit` (1–25, default 5). Case sensitivity, word matching, file-type filters, hidden or ignored files, and depth bounds are no longer separate parameters: use the inline `(?i)` regex flag for case-insensitive matching, `\b` word boundaries in the pattern, `globs` for file-type and include/exclude filters, and a narrower `path` for hidden, ignored, or depth-bounded scopes.
+
+`fd` accepts eight fields: `pattern` (optional, regex only), `path`, `excludeGlobs`, `types` (`file`, `directory`, `symlink`, or `executable`), `extensions`, `maxDepth`, `offset`, and `limit` (1–100, default 5). Case sensitivity, pattern mode, hidden or ignored files, and minimum depth are no longer separate parameters: use the inline `(?i)` regex flag for case-insensitive matching, regex as the only pattern language, and a narrower `path` for hidden, ignored, or depth-bounded scopes.
 
 Both tools use the shared operational interface renderer. Calls expose allowlisted query, path, filter, and paging metadata while omitting unspecified values. Collapsed results state the outcome in one summary row; `rg` keeps its bounded match rows above it. Expanded results reveal the match and path sections and close with the same summary row. Display text escapes terminal controls, model-facing output stays within explicit budgets, and zero-progress pages fail instead of looping.
 
