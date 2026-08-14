@@ -1,5 +1,12 @@
 # @odradekk/pi-square
 
+## 8.0.0
+
+### Major Changes
+
+- 6445f4d: Merge the four github_search, github_read, github_tree, and github_commit tools into a single `github` tool with an `operation` discriminator (search, read, tree, commit). The four old tool names are retired: they are deleted completely with no aliases. Update subagent definitions that reference the old names.
+- 6445f4d: Rename `subagent_delegate` to `delegate` and `subagent_resume` to `resume`. The old names are retired with no aliases. Update subagent definitions that reference the old names.
+
 ## 7.0.0
 
 ### Major Changes
