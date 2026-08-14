@@ -6,11 +6,11 @@ const NOOP = async () => {};
 
 // ---------- rg schema ----------
 
-test("rg schema exposes exact v2 properties", async () => {
+test("rg schema exposes exact 8 properties", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties).sort();
-  const expected = ["pattern", "path", "globs", "literal", "context", "offset", "limit"];
+  const expected = ["context", "filesOnly", "globs", "limit", "literal", "offset", "path", "pattern"];
   assert.deepEqual(props, [...expected].sort());
 });
 
@@ -27,10 +27,17 @@ test("rg schema omits forbidden and removed properties", async () => {
   }
 });
 
-test("rg schema requires pattern", async () => {
+test("rg schema has additionalProperties false", async () => {
+  const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
+  const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
+  assert.equal(def.parameters.additionalProperties, false);
+});
+
+test("rg schema requires only pattern", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   assert.ok(def.parameters.required.includes("pattern"));
+  assert.equal(def.parameters.required.length, 1);
 });
 
 test("rg schema bounds offset to 1000000, limit to 1-25, and context to 0-20", async () => {
@@ -44,15 +51,6 @@ test("rg schema bounds offset to 1000000, limit to 1-25, and context to 0-20", a
   assert.equal(def.parameters.properties.context.maximum, 20);
 });
 
-test("fd schema bounds offset to 1000000 and limit to 1-100", async () => {
-  const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
-  const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
-  assert.equal(def.parameters.properties.offset.minimum, 0);
-  assert.equal(def.parameters.properties.offset.maximum, 1_000_000);
-  assert.equal(def.parameters.properties.limit.minimum, 1);
-  assert.equal(def.parameters.properties.limit.maximum, 100);
-});
-
 test("rg schema rejects empty pattern, path, and glob strings", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
@@ -63,11 +61,11 @@ test("rg schema rejects empty pattern, path, and glob strings", async () => {
 
 // ---------- fd schema ----------
 
-test("fd schema exposes exact v2 properties", async () => {
+test("fd schema exposes exact 8 properties", async () => {
   const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties).sort();
-  const expected = ["pattern", "path", "case", "hidden", "noIgnore", "offset", "limit", "matchMode", "types", "extensions", "excludeGlobs", "minDepth", "maxDepth"];
+  const expected = ["excludeGlobs", "extensions", "limit", "maxDepth", "offset", "path", "pattern", "types"];
   assert.deepEqual(props, [...expected].sort());
 });
 
@@ -75,16 +73,32 @@ test("fd schema omits forbidden legacy properties", async () => {
   const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties);
-  for (const forbidden of ["rawArgs", "type", "extension", "caseSensitive", "maxdepth", "exact"]) {
+  for (const forbidden of ["rawArgs", "type", "extension", "caseSensitive", "maxdepth", "exact", "case", "hidden", "noIgnore", "matchMode", "minDepth"]) {
     assert.ok(!props.includes(forbidden), `fd schema must not include ${forbidden}`);
   }
+});
+
+test("fd schema has additionalProperties false", async () => {
+  const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
+  const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
+  assert.equal(def.parameters.additionalProperties, false);
 });
 
 test("fd schema has no required fields (pattern is optional)", async () => {
   const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const required = def.parameters.required || [];
+  assert.equal(required.length, 0, "fd should have no required fields");
   assert.ok(!required.includes("pattern"), "fd pattern must be optional");
+});
+
+test("fd schema bounds offset to 1000000 and limit to 1-100", async () => {
+  const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
+  const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
+  assert.equal(def.parameters.properties.offset.minimum, 0);
+  assert.equal(def.parameters.properties.offset.maximum, 1_000_000);
+  assert.equal(def.parameters.properties.limit.minimum, 1);
+  assert.equal(def.parameters.properties.limit.maximum, 100);
 });
 
 test("fd schema rejects empty pattern, path, extension, and exclude strings", async () => {
@@ -96,23 +110,19 @@ test("fd schema rejects empty pattern, path, extension, and exclude strings", as
   assert.equal(def.parameters.properties.excludeGlobs.items.minLength, 1);
 });
 
-test("fd schema types restricted to file/directory/symlink/executable", async () => {
+test("fd schema types items is StringEnum (enum array, not anyOf)", async () => {
   const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const typesSchema = def.parameters.properties.types;
   assert.ok(typesSchema, "fd must have types property");
-  // TypeBox enum representation: extract allowed values
-  let allowed;
-  if (typesSchema.anyOf) {
-    allowed = typesSchema.anyOf.map((s) => s.const);
-  } else if (typesSchema.items?.anyOf) {
-    allowed = typesSchema.items.anyOf.map((s) => s.const);
-  } else if (typesSchema.items?.enum) {
-    allowed = typesSchema.items.enum;
-  } else if (typesSchema.enum) {
-    allowed = typesSchema.enum;
-  }
-  assert.ok(allowed, "must be able to extract type enum values");
+
+  // StringEnum produces { type: "string", enum: [...] }; in an array the
+  // items should carry the enum directly, not via anyOf/const.
+  const items = typesSchema.items;
+  assert.ok(items, "types must have items schema");
+  assert.ok(Array.isArray(items.enum), "types items must have enum array");
+  assert.ok(!items.anyOf, "types items must not use anyOf");
+  const allowed = items.enum;
   for (const t of ["file", "directory", "symlink", "executable"]) {
     assert.ok(allowed.includes(t), `fd types must include ${t}`);
   }
@@ -139,6 +149,20 @@ test("createFdToolDefinition returns object with name fd and execute", async () 
   assert.equal(def.renderCall, undefined);
   assert.equal(def.renderResult, undefined);
   assert.equal(def.renderShell, undefined);
+});
+
+// ---------- prompt guidelines ----------
+
+test("rg has exactly 3 prompt guidelines", async () => {
+  const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
+  const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
+  assert.equal(def.promptGuidelines.length, 3);
+});
+
+test("fd has exactly 2 prompt guidelines", async () => {
+  const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
+  const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
+  assert.equal(def.promptGuidelines.length, 2);
 });
 
 // ---------- index.ts registration ----------

@@ -35,6 +35,7 @@ const rgParameters = Type.Object({
   globs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "Glob patterns to include or exclude (prefix with ! to exclude)" })),
   literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string, not regex" })),
   context: Type.Optional(Type.Integer({ minimum: MIN_CONTEXT, maximum: MAX_CONTEXT, description: "Lines of context before and after each match (default 0)" })),
+  filesOnly: Type.Optional(Type.Boolean({ description: "Return only file paths with match counts, not line content" })),
   offset: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_OFFSET, description: "Result offset for progressive paging (default 0)" })),
   limit: Type.Optional(Type.Integer({ minimum: MIN_LIMIT, maximum: MAX_LIMIT_RG, description: "Maximum results to return (default 5)" })),
 }, { additionalProperties: false });
@@ -52,6 +53,7 @@ export function createRgToolDefinition(deps: RgToolDeps) {
     promptGuidelines: [
       "Prefer a narrow path or globs instead of broad repository-wide dumps. Use globs with a ! prefix to exclude.",
       "Use literal=true when searching plain text containing regex metacharacters like . ( [ ? * + | \\.",
+      "Use filesOnly=true when you need a list of matching files rather than individual match lines.",
     ],
     parameters: rgParameters,
 
@@ -63,6 +65,7 @@ export function createRgToolDefinition(deps: RgToolDeps) {
       const offset = params.offset ?? DEFAULT_OFFSET;
       const limit = params.limit ?? DEFAULT_LIMIT;
       const context = params.context ?? MIN_CONTEXT;
+      const filesOnly = params.filesOnly === true;
 
       const accumulator = new RgAccumulator({
         offset,
@@ -80,6 +83,9 @@ export function createRgToolDefinition(deps: RgToolDeps) {
         stdoutCap: STDOUT_CAP,
         onChunk: (chunk: Buffer) => {
           accumulator.push(chunk);
+          // In filesOnly mode we must consume the entire match stream to
+          // count every file; never signal early-stop.
+          if (filesOnly) return false;
           return accumulator.shouldStop();
         },
       });
@@ -103,11 +109,15 @@ export function createRgToolDefinition(deps: RgToolDeps) {
       const naturalEnd = result.status === "ok" || (result.status === "non-zero" && result.exitCode === 1);
       const stderrText = result.stderr.length > 0 ? result.stderr.toString("utf-8") : "";
 
-      const formatted = accumulator.finish({
+      const finishOpts = {
         naturalEnd,
         exitCode: result.exitCode,
         stderr: stderrText,
-      });
+      };
+
+      const formatted = filesOnly
+        ? accumulator.finishFilesOnly(finishOpts)
+        : accumulator.finish(finishOpts);
 
       return {
         content: formatted.content,

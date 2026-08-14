@@ -4,10 +4,6 @@
 
 export const DEFAULT_OFFSET = 0;
 export const DEFAULT_LIMIT = 5;
-export const DEFAULT_PATH = ".";
-export const DEFAULT_FD_PATTERN = ".";
-export const DEFAULT_CASE: CaseMode = "smart";
-export const DEFAULT_FD_MATCH_MODE: FdMatchMode = "regex";
 
 // ---------- Schema bounds ----------
 
@@ -37,10 +33,6 @@ export const TIMEOUT_MS = 30_000; // 30 seconds
 
 export type ToolName = "rg" | "fd";
 
-export type CaseMode = "smart" | "sensitive" | "insensitive";
-
-export type FdMatchMode = "regex" | "glob" | "fixed";
-
 export type FdFileType = "file" | "directory" | "symlink" | "executable";
 
 export type LineKind = "match" | "context";
@@ -60,6 +52,7 @@ export interface RgToolParams {
   globs?: string[];
   literal?: boolean;
   context?: number;
+  filesOnly?: boolean;
   offset?: number;
   limit?: number;
 }
@@ -67,17 +60,12 @@ export interface RgToolParams {
 export interface FdToolParams {
   pattern?: string;
   path?: string;
-  case?: CaseMode;
-  hidden?: boolean;
-  noIgnore?: boolean;
-  offset?: number;
-  limit?: number;
-  matchMode?: FdMatchMode;
+  excludeGlobs?: string[];
   types?: FdFileType[];
   extensions?: string[];
-  excludeGlobs?: string[];
-  minDepth?: number;
   maxDepth?: number;
+  offset?: number;
+  limit?: number;
 }
 
 // ---------- Detail interfaces ----------
@@ -127,6 +115,13 @@ export interface RgLineDetail {
 export interface RgContinuationDetail {
   omitted: number;
   nextOffset: number | null;
+}
+
+export interface RgFileOnlyDetail {
+  path: string;
+  pathEncoding: TextEncoding;
+  rawPathBase64?: string;
+  matchCount: number;
 }
 
 export interface RgFileDetail {
