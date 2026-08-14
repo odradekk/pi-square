@@ -4,7 +4,7 @@
 
 - **Name:** `pi-square` (pi-squared).
 - **Language:** TypeScript using ECMAScript modules. Tests and supporting scripts also use JavaScript ESM.
-- **Purpose:** A unified local extension package for the Pi coding agent. It provides prompt management, interactive and session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, GitHub, and documentation tools, subagents, TUI customizations, PowerShell execution, skills, and themes.
+- **Purpose:** A unified local extension package for the Pi coding agent. It provides prompt management, interactive and session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, GitHub, and documentation tools, subagents, TUI customizations, PowerShell execution, and themes.
 - **Built on:** Node.js 24, Pi 0.80.6, the Pi extension API, Pi TUI and AI packages, and TypeBox. The public npm package is loaded by Pi directly from `src/index.ts`.
 
 ## Architecture
@@ -16,7 +16,6 @@
 - `src/codegraph/` owns the local semantic `codegraph` tool, exact platform-bundle resolution, workspace path boundary, index-health and lifecycle policy, and bounded execution. The parent definition exposes `explore`, `status`, confirmed `init`, automatic incremental `sync`, and confirmed `reindex`; child definitions are restricted to `explore` and `status`.
 - `src/ssh/` owns the parent-only persistent SSH tool, exact `ssh2` client integration, pinned host verification, agent/private-key authentication, masked secret input, guarded connection-event lifecycle, bounded raw output cursors, single-line terminal projection, connection/session limits, idle cleanup, and lifecycle teardown. It supports one POSIX foreground command per shell and no child exposure, arbitrary targets, password parameters, agent forwarding, output artifacts, transparent reconnect, SFTP, jump hosts, proxies, or port forwarding.
 - `src/tool-catalog.ts` defines the extension tools that may be exposed to subagents.
-- `skills/` contains discoverable Pi skills. Each skill owns its instructions and supporting resources inside its directory. Twenty of the 22 bundled skills are modified derivatives of [mattpocock/skills](https://github.com/mattpocock/skills) (MIT); `commit` and `pr` are original to this package. `skills/LICENSE` carries the upstream notice and the modification record.
 - `subagents/` contains the required `promptVersion: 2` YAML definitions for bundled subagent roles. Effective definitions overlay package, agent, and nearest-project fields in that precedence order.
 - `themes/` contains the matched light and dark Pi themes.
 - `bin/` vendors cross-platform `rg` and `fd` executables.
@@ -35,7 +34,7 @@ Maintain these documents with the corresponding changes:
 
 Documentation must describe the repository as it exists. Do not claim that a command, dependency, CI job, or release workflow is available before it has been added and verified.
 
-## Agent skills
+## Repository conventions
 
 ### Issue tracker
 
@@ -61,7 +60,6 @@ This is a single-context repo with `CONTEXT.md` at the root and ADRs in `docs/ad
 - Keep Firecrawl PDF parsing parent-only and explicit about local data upload. Resolve `FIRECRAWL_API_KEY` before `auth.json` `firecrawl.key`; never expose the key in content, details, errors, logs, or rendering. Canonicalize PDF paths below cwd through symlinks, require a user confirmation for every upload to the fixed `https://api.firecrawl.dev/v2/parse` endpoint, reject encrypted or oversized PDFs before confirmation, and send only an in-memory PDF containing the sorted unique requested pages. Preserve the 50-page, 50-MB, remote-response, timeout, and model-output bounds; make truncation visible; do not retry sent requests; keep ZDR behavior and its data-handling consequence explicit. Do not expose `parse` through the child tool catalog while confirmation is unavailable in child sessions.
 - Keep `pdf_search` local, read-only, and workspace-bounded. Use only package-local PDF.js CMap, font, and WASM assets with no remote document or runtime asset fetches. Preserve the 50-MB, 1,000-page, per-page/document text, 30-second, result, and 64/128-MiB cache bounds; reject encrypted and textless PDFs explicitly; return no partial result after timeout or resource failure. Keep the cache memory-only, clear the parent cache on session start, key entries by canonical file identity, and invalidate changed files before reuse. Preserve exact-first conservative matching, language-neutral normalization, best-effort context ordering, and the no-OCR/no-semantic-search scope. The parent registers the tool; the child catalog permits explicit trusted opt-in, while bundled roles omit it.
 - Keep the bundled role catalog to five visible complementary profiles: Explorer for local evidence, Oracle for complex local reasoning, Crawler for web and Context7 research, Librarian for authenticated GitHub research, and Generalist for scoped writable work. Package profiles omit model and effort so fresh runs inherit the parent values; same-ID resume keeps the original frozen values. All profiles inherit the parent system. Read-only specialists disable discovered skills, while Generalist receives the explicit non-GitHub tool set and all discovered skills.
-- Keep bundled skills platform-correct and attributable. Derived skills must carry the `license` frontmatter field pointing at `skills/LICENSE`, and `commit` and `pr` must not, because they are original work. Skill prose may reference only skills that exist in `skills/` and slash commands that Pi actually provides: Pi has `/compact`, `/new`, `/resume`, and `/settings`, and has no `/clear`. Sub-agent work must be expressed as `subagent_delegate` with a bundled role name, never as Claude Code's `Agent` tool, `subagent_type`, or `general-purpose`. Project configuration written by `setup` targets `AGENTS.md`, not `CLAUDE.md`. Re-synchronizing a derived skill with upstream requires reapplying these adaptations and updating the commit recorded in `skills/LICENSE` and `THIRD_PARTY_NOTICES.md`.
 - Preserve explicit tool-list semantics: omitted or empty `tools` selects runtime defaults, the exclusive `tools: [none]` sentinel selects no built-in tools, and extension tools remain opt-in. Persist the logical selection so resume re-resolves platform capabilities without silently broadening access.
 - Preserve feature ownership and avoid unrelated refactors. Add shared abstractions only when multiple modules have a demonstrated common requirement.
 - Keep model-callable shell tools platform-exclusive: non-Windows sessions expose bash only, Windows sessions expose pwsh only, and subagents request the portable `shell` capability rather than declaring both names. Parent non-Windows bash is registered only by `src/display/builtins.ts`; `src/shell/` registers only Windows pwsh and platform call guards.
@@ -107,7 +105,7 @@ This project publishes the public npm package `@odradekk/pi-square` with Changes
 Add a changeset for every change that requires a package release and select the version level for the entire `@odradekk/pi-square` package. Use `npm run changeset` to create one, `npm run changeset:status` to inspect pending releases, and `npm run changeset:version` to consume pending changesets and update package metadata and `CHANGELOG.md`. Use `npm run package:check` before release to verify the allowlisted tarball. Change detection compares against `main` and therefore requires the repository to have an initial commit.
 
 - **patch:** Backward-compatible fixes and corrections, including metadata and documentation fixes.
-- **minor:** New backward-compatible capabilities, such as tools, skills, themes, configuration options, or other non-breaking additions.
+- **minor:** New backward-compatible capabilities, such as tools, themes, configuration options, or other non-breaking additions.
 - **major:** Breaking changes to schemas, configuration formats, tool contracts, public behavior, or supported Pi/runtime compatibility.
 
 Tests, internal refactors, and repository maintenance that do not change shipped behavior or published documentation do not require a release. When uncertain, choose the smallest level that accurately communicates the compatibility impact and explain the decision in the changeset.
@@ -164,7 +162,7 @@ PI_CODING_AGENT_DIR="$RELEASE_AGENT_DIR" pi install npm:@odradekk/pi-square
 - Confirm `latest` points to the new stable version and no bootstrap, prerelease, or deprecated version owns `latest`.
 - Confirm npm exposes an attestation URL and SLSA provenance for the released version, and that the provenance identifies `odradekk/pi-square`, `.github/workflows/release.yml`, `main`, and the `npm` Environment.
 - Confirm the GitHub Release is non-draft, non-prerelease, and uses the expected `v<version>` tag.
-- Install into an isolated `PI_CODING_AGENT_DIR`; verify the package version, allowlisted assets, TypeScript extension entry, skills, themes, and representative tool registration without changing the maintainer's active Pi configuration.
+- Install into an isolated `PI_CODING_AGENT_DIR`; verify the package version, allowlisted assets, TypeScript extension entry, themes, and representative tool registration without changing the maintainer's active Pi configuration.
 - For a release defect, publish a new patch version through the same workflow. npm versions are immutable: never overwrite, reuse, or silently replace a published version.
 
 ### Failure Recovery and Security
