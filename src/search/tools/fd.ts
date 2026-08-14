@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 
 import { buildFdArgs } from "../arguments";
 import {
@@ -28,35 +29,17 @@ export interface FdToolDeps {
 // ---------- schema ----------
 
 const fdParameters = Type.Object({
-  pattern: Type.Optional(Type.String({ minLength: 1, description: "Regex, glob, or fixed pattern (default: \".\" = match all)" })),
+  pattern: Type.Optional(Type.String({ minLength: 1, description: "Regex pattern (default: \".\" = match all)" })),
   path: Type.Optional(Type.String({ minLength: 1, description: "Directory to search (default: cwd)" })),
-  case: Type.Optional(Type.Union([
-    Type.Literal("smart"),
-    Type.Literal("sensitive"),
-    Type.Literal("insensitive"),
-  ])),
-  hidden: Type.Optional(Type.Boolean()),
-  noIgnore: Type.Optional(Type.Boolean()),
-  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_OFFSET, description: "Result offset for progressive paging (default 0)" })),
-  limit: Type.Optional(Type.Integer({ minimum: MIN_LIMIT, maximum: MAX_LIMIT, description: "Maximum results to return (default 5)" })),
-  matchMode: Type.Optional(Type.Union([
-    Type.Literal("regex"),
-    Type.Literal("glob"),
-    Type.Literal("fixed"),
-  ])),
+  excludeGlobs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "Glob patterns to exclude" })),
   types: Type.Optional(Type.Array(
-    Type.Union([
-      Type.Literal("file"),
-      Type.Literal("directory"),
-      Type.Literal("symlink"),
-      Type.Literal("executable"),
-    ]),
+    StringEnum(["file", "directory", "symlink", "executable"] as const),
     { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "File types to include" },
   )),
   extensions: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "File extensions, e.g. ts or .ts" })),
-  excludeGlobs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "Glob patterns to exclude" })),
-  minDepth: Type.Optional(Type.Integer({ minimum: 0, description: "Minimum search depth" })),
   maxDepth: Type.Optional(Type.Integer({ minimum: 0, description: "Maximum search depth" })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_OFFSET, description: "Result offset for progressive paging (default 0)" })),
+  limit: Type.Optional(Type.Integer({ minimum: MIN_LIMIT, maximum: MAX_LIMIT, description: "Maximum results to return (default 5)" })),
 }, { additionalProperties: false });
 
 // ---------- factory ----------
@@ -71,7 +54,6 @@ export function createFdToolDefinition(deps: FdToolDeps) {
       "Use fd to find candidate files or directories. Start with the first page, then continue with offset=nextOffset only if needed.",
     promptGuidelines: [
       "Prefer a narrow path, types, extensions, or maxDepth instead of broad scans.",
-      "Read the first 5 results, then use offset=nextOffset to continue only when needed.",
       "Use fd to locate targets before reading or editing files.",
     ],
     parameters: fdParameters,

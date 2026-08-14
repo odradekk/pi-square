@@ -67,15 +67,18 @@ test("fd schema exposes exact v2 properties", async () => {
   const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties).sort();
-  const expected = ["pattern", "path", "case", "hidden", "noIgnore", "offset", "limit", "matchMode", "types", "extensions", "excludeGlobs", "minDepth", "maxDepth"];
+  const expected = ["pattern", "path", "excludeGlobs", "types", "extensions", "maxDepth", "offset", "limit"];
   assert.deepEqual(props, [...expected].sort());
 });
 
-test("fd schema omits forbidden legacy properties", async () => {
+test("fd schema omits forbidden and removed properties", async () => {
   const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties);
-  for (const forbidden of ["rawArgs", "type", "extension", "caseSensitive", "maxdepth", "exact"]) {
+  for (const forbidden of [
+    "rawArgs", "type", "extension", "caseSensitive", "maxdepth", "exact",
+    "case", "hidden", "noIgnore", "matchMode", "minDepth", "includeGlobs",
+  ]) {
     assert.ok(!props.includes(forbidden), `fd schema must not include ${forbidden}`);
   }
 });
@@ -96,27 +99,20 @@ test("fd schema rejects empty pattern, path, extension, and exclude strings", as
   assert.equal(def.parameters.properties.excludeGlobs.items.minLength, 1);
 });
 
-test("fd schema types restricted to file/directory/symlink/executable", async () => {
+test("fd schema types is a string enum, not a literal union", async () => {
   const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
   const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const typesSchema = def.parameters.properties.types;
   assert.ok(typesSchema, "fd must have types property");
-  // TypeBox enum representation: extract allowed values
-  let allowed;
-  if (typesSchema.anyOf) {
-    allowed = typesSchema.anyOf.map((s) => s.const);
-  } else if (typesSchema.items?.anyOf) {
-    allowed = typesSchema.items.anyOf.map((s) => s.const);
-  } else if (typesSchema.items?.enum) {
-    allowed = typesSchema.items.enum;
-  } else if (typesSchema.enum) {
-    allowed = typesSchema.enum;
-  }
-  assert.ok(allowed, "must be able to extract type enum values");
+  // StringEnum renders items as { type: "string", enum: [...] } with no anyOf
+  const items = typesSchema.items;
+  assert.ok(items, "types must be an array with items");
+  assert.ok(!items.anyOf, "types items must not use anyOf (literal union)");
+  assert.ok(Array.isArray(items.enum), "types items must be a string enum");
   for (const t of ["file", "directory", "symlink", "executable"]) {
-    assert.ok(allowed.includes(t), `fd types must include ${t}`);
+    assert.ok(items.enum.includes(t), `fd types must include ${t}`);
   }
-  assert.ok(!allowed.includes("f"), "must use full names not single-letter aliases");
+  assert.ok(!items.enum.includes("f"), "must use full names not single-letter aliases");
 });
 
 // ---------- definition shape ----------

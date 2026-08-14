@@ -116,12 +116,12 @@ test("buildRgArgs globs omitted produces no -g flag", async () => {
 
 // ---------- fd argument construction ----------
 
-test("buildFdArgs emits NUL output flag and -- separator", async () => {
+test("buildFdArgs emits fixed wrapper --print0 --color never then -- separator", async () => {
   const { buildFdArgs } = await loadModule("src/search/arguments.ts");
   const args = buildFdArgs({});
   const sep = args.indexOf("--");
-  assert.ok(sep > 0);
-  assert.ok(args.slice(0, sep).some((a) => a === "--print0" || a === "-0"));
+  assert.ok(sep > 0, "must contain -- separator");
+  assert.deepEqual(args.slice(0, sep), ["--print0", "--color", "never"]);
 });
 
 test("buildFdArgs default pattern and path after --", async () => {
@@ -138,24 +138,17 @@ test("buildFdArgs places leading-dash pattern and path after --", async () => {
   assert.deepEqual(args.slice(sep + 1), ["-foo", "-bar"]);
 });
 
-test("buildFdArgs removes leading dot from extension values", async () => {
+test("buildFdArgs extensions map to -e with leading dot stripped before --", async () => {
   const { buildFdArgs } = await loadModule("src/search/arguments.ts");
   const args = buildFdArgs({ extensions: [".ts", "js"] });
   const sep = args.indexOf("--");
   const head = args.slice(0, sep);
-  assert.ok(head.includes("ts"));
-  assert.ok(head.includes("js"));
-  assert.ok(!head.includes(".ts"), "leading dot must be stripped");
-});
-
-test("buildFdArgs matchMode fixed adds -F, glob adds --glob", async () => {
-  const { buildFdArgs } = await loadModule("src/search/arguments.ts");
-  const fixed = buildFdArgs({ matchMode: "fixed" });
-  const glob = buildFdArgs({ matchMode: "glob" });
-  const sep1 = fixed.indexOf("--");
-  const sep2 = glob.indexOf("--");
-  assert.ok(fixed.slice(0, sep1).some((a) => a === "-F" || a === "--fixed-strings"));
-  assert.ok(glob.slice(0, sep2).some((a) => a === "--glob" || a === "-g"));
+  const eIdx = head.indexOf("-e");
+  assert.ok(eIdx >= 0, "must include -e");
+  assert.equal(head[eIdx + 1], "ts", "leading dot must be stripped");
+  assert.equal(head[eIdx + 2], "-e");
+  assert.equal(head[eIdx + 3], "js");
+  assert.ok(!head.includes(".ts"), "no dot-prefixed extension may leak");
 });
 
 test("buildFdArgs types map to -t with full names before --", async () => {
@@ -163,16 +156,33 @@ test("buildFdArgs types map to -t with full names before --", async () => {
   const args = buildFdArgs({ types: ["file", "directory"] });
   const sep = args.indexOf("--");
   const head = args.slice(0, sep);
-  assert.ok(head.includes("file"));
-  assert.ok(head.includes("directory"));
+  const tIdx = head.indexOf("-t");
+  assert.ok(tIdx >= 0, "must include -t");
+  assert.equal(head[tIdx + 1], "file");
+  assert.equal(head[tIdx + 2], "-t");
+  assert.equal(head[tIdx + 3], "directory");
 });
 
-test("buildFdArgs rejects minDepth > maxDepth", async () => {
+test("buildFdArgs excludeGlobs map to -E before --", async () => {
   const { buildFdArgs } = await loadModule("src/search/arguments.ts");
-  assert.throws(
-    () => buildFdArgs({ minDepth: 5, maxDepth: 3 }),
-    /min.*max|depth|invalid/i,
-  );
+  const args = buildFdArgs({ excludeGlobs: ["node_modules", "*.log"] });
+  const sep = args.indexOf("--");
+  const head = args.slice(0, sep);
+  const eIdx = head.indexOf("-E");
+  assert.ok(eIdx >= 0, "must include -E");
+  assert.equal(head[eIdx + 1], "node_modules");
+  assert.equal(head[eIdx + 2], "-E");
+  assert.equal(head[eIdx + 3], "*.log");
+});
+
+test("buildFdArgs maxDepth maps to --max-depth before --", async () => {
+  const { buildFdArgs } = await loadModule("src/search/arguments.ts");
+  const args = buildFdArgs({ maxDepth: 3 });
+  const sep = args.indexOf("--");
+  const head = args.slice(0, sep);
+  const idx = head.indexOf("--max-depth");
+  assert.ok(idx >= 0, "must include --max-depth");
+  assert.equal(head[idx + 1], "3");
 });
 
 // ---------- schema additionalProperties and bounds ----------

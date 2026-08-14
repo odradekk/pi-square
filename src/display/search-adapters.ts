@@ -175,18 +175,10 @@ function fdFilterRow(args: UnknownRecord): string | undefined {
   const parts: string[] = [];
   const types = asArray(args.types).map((t) => stringOf(t)).filter(Boolean);
   if (types.length > 0) parts.push(types.join(","));
-  if (args.hidden === true) parts.push("hidden");
-  if (args.noIgnore === true) parts.push("no-ignore");
   const maxDepth = numberOf(args.maxDepth);
   if (maxDepth !== undefined) parts.push(`max-depth ${maxDepth}`);
-  const minDepth = numberOf(args.minDepth);
-  if (minDepth !== undefined) parts.push(`min-depth ${minDepth}`);
   const excludes = asArray(args.excludeGlobs).map((g) => stringOf(g)).filter(Boolean);
   if (excludes.length > 0) parts.push(excludes.map((e) => `!${e}`).join(" · "));
-  const matchMode = stringOf(args.matchMode);
-  if (matchMode && matchMode !== "regex") parts.push(matchMode);
-  const caseMode = stringOf(args.case);
-  if (caseMode && caseMode !== "smart") parts.push(caseMode === "sensitive" ? "case-sensitive" : caseMode === "insensitive" ? "case-insensitive" : caseMode);
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 

@@ -10,7 +10,7 @@ import type { DisplayFamily, DisplayMetadataEntry, OperationalLifecycle, Operati
 
 const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   rg: ["pattern", "path", "globs", "literal", "context", "filesOnly", "offset", "limit"],
-  fd: ["pattern", "path", "matchMode", "offset", "limit", "maxDepth"],
+  fd: ["pattern", "path", "excludeGlobs", "types", "extensions", "maxDepth", "offset", "limit"],
   pdf_search: ["path", "query", "limit"],
   codegraph: ["operation", "projectPath", "query", "maxFiles"],
   bash: ["command", "timeout"],
