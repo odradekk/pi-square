@@ -13,22 +13,6 @@ const {
   toolEventDisplay,
 } = await load(join(packageRoot, "src", "subagents", "tool-display.ts"));
 
-test("sg summaries show structural query, path, and language", () => {
-  assert.deepEqual(toolDisplayFromArgs("sg", {
-    pattern: "call($ARG)",
-    path: "src",
-    language: "ts",
-    rewrite: "must-not-render",
-  }), {
-    tool: "sg",
-    summary: "/call($ARG)/ in src · ts",
-  });
-  assert.equal(
-    formatToolCall("sg", { kind: "function_declaration", path: "src/parser.ts" }),
-    "sg kind:function_declaration in src/parser.ts",
-  );
-});
-
 test("CodeGraph summaries expose only operation, query, and project path", () => {
   assert.equal(
     formatToolCall("codegraph", { operation: "explore", query: "How does auth work?", projectPath: "services/api", secret: "private" }),
@@ -78,12 +62,6 @@ test("unknown tools and legacy malformed JSON never expose arbitrary arguments",
 });
 
 test("legacy JSON calls use the same specialized formatter", () => {
-  const sg = toolEventDisplay({
-    kind: "tool",
-    phase: "start",
-    text: "sg {\"pattern\":\"foo($A)\",\"path\":\"src\",\"language\":\"ts\"}",
-  });
-  assert.deepEqual(sg, { tool: "sg", summary: "/foo($A)/ in src · ts" });
   const github = toolEventDisplay({
     kind: "tool",
     phase: "start",
@@ -94,8 +72,6 @@ test("legacy JSON calls use the same specialized formatter", () => {
 
 test("latest summaries ignore result payloads and redact credentials", () => {
   const summary = latestToolCallSummary([
-    { kind: "tool", phase: "start", text: "sg {\"kind\":\"identifier\",\"path\":\"src\"}" },
-    { kind: "tool", phase: "end", text: "sg: SECRET RESULT password=private" },
     { kind: "tool", phase: "start", text: "github_search code: bearer ghp_secret" },
     { kind: "tool", phase: "end", text: "github_search: SECRET RESULT" },
   ]);

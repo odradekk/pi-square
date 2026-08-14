@@ -59,7 +59,6 @@ export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
   "ssh",
   "grep",
   "rg",
-  "sg",
   "pdf_search",
   "codegraph",
   "search",
@@ -108,7 +107,6 @@ export function formatBytes(bytes: number): string {
 /** C4 count nouns for the tools whose paging details compose a sentence. */
 const SUMMARY_NOUNS: Readonly<Record<string, string>> = Object.freeze({
   rg: "matches",
-  sg: "matches",
   fd: "files",
   github_search: "results",
 });
@@ -190,12 +188,11 @@ export function composeInternalSummary(
       // fd.md: the empty summary states the search root.
       return name === "fd" ? `No files found in ${stringOf(args.path) ?? "."}` : `No ${noun}`;
     }
-    // File count: rg counts files in details.files, sg counts unique
-    // match paths, fd has no separate file concept (items are files).
-    // Only include the file count when the structured data is present.
+    // File count: rg counts files in details.files, fd has no separate
+    // file concept (items are files). Only include the file count when
+    // the structured data is present.
     const filesArray = name === "rg" ? asArray(details.files) : undefined;
-    const sgPaths = name === "sg" ? new Set(asArray(details.matches).map((m) => stringOf(asRecord(m).path)).filter((v): v is string => Boolean(v))) : undefined;
-    const fileCount = filesArray ? filesArray.length : sgPaths ? sgPaths.size : undefined;
+    const fileCount = filesArray ? filesArray.length : undefined;
     const fileSuffix = fileCount !== undefined && fileCount > 0 ? ` in ${fileCount} ${fileCount === 1 ? "file" : "files"}` : "";
     const head = total !== undefined && total > returned
       ? `${returned} of ${total} ${noun}${fileSuffix}`

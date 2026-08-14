@@ -48,7 +48,6 @@ tools:
 extensionTools:
   - rg
   - fd
-  - sg
   - codegraph
 
 skills:

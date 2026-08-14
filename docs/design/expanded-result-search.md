@@ -1,7 +1,7 @@
 # Search Expanded Results
 
-Scope: `grep`, `rg`, `sg`, `codegraph`, `pdf_search`
-Parent tools: all five. Child-capable: all five with existing role restrictions.
+Scope: `grep`, `rg`, `codegraph`, `pdf_search`
+Parent tools: all four. Child-capable: all four with existing role restrictions.
 Primary family contract: query and location are the first-level identity; content excerpts are evidence, not raw dumps.
 
 ## Shared search grammar
@@ -14,7 +14,7 @@ Expanded search results use this order:
 4. Grouped matches or semantic evidence.
 5. Truncation, stderr, and binary/identity notices.
 
-Structured details already exist for `rg`, `fd`-style paging, `sg`, `codegraph`, and `pdf_search`; adapters must consume those details before falling back to model-facing text.
+Structured details already exist for `rg`, `fd`-style paging, `codegraph`, and `pdf_search`; adapters must consume those details before falling back to model-facing text.
 
 ## grep
 
@@ -49,23 +49,6 @@ Rules:
 - Preserve UTF-8, UTF-16 display mapping, byte-base64 identity, and path normalization semantics from the execution layer.
 - A continuation marker must identify the next offset.
 - No raw malformed JSON event is rendered as a match.
-
-## sg
-
-Expanded sections:
-
-- `ERROR` for process, schema, or malformed NDJSON failure.
-- `QUERY`: pattern or node kind, language, selector, strictness, path, glob/context, offset, and limit.
-- `SUMMARY`: returned, total, next offset, and content-budget status.
-- `MATCHES`: file/location records with the matched structural excerpt.
-- `CAPTURES`: bounded metavariable records grouped under each match.
-- `DIAGNOSTICS`: bounded stderr and unsupported-language notices.
-
-Rules:
-
-- Keep the syntactic/tree-sitter distinction explicit; do not imply type-aware references or call hierarchies.
-- Metavariable values are display-sanitized and bounded.
-- `pattern` and `kind` remain mutually exclusive in display as they are in execution.
 
 ## codegraph
 
@@ -104,7 +87,6 @@ Rules:
 ## Search regression cases
 
 - `rg` Unicode columns, byte paths, and merged context.
-- `sg` metavariable-heavy output at narrow widths.
 - `codegraph` not-indexed and unhealthy-index recoverable displays.
 - `pdf_search` encrypted and textless failure distinctions.
 - No-match pages remain explicit and cannot loop.

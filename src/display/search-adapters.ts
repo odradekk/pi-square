@@ -58,55 +58,6 @@ function rgMatches(details: UnknownRecord): DisplayMatchItem[] {
   return matches;
 }
 
-function sgMatches(details: UnknownRecord): DisplayMatchItem[] {
-  return asArray(details.matches).flatMap((value) => {
-    const match = asRecord(value);
-    const range = asRecord(match.range);
-    const start = asRecord(range.start);
-    const end = asRecord(range.end);
-    const fullText = stringOf(match.displayText) ?? stringOf(match.text) ?? "";
-    const firstLine = fullText.split("\n", 1)[0] ?? "";
-    const startLine = numberOf(start.line);
-    const endLine = numberOf(end.line);
-    const extraLines = startLine !== undefined && endLine !== undefined
-      ? Math.max(0, endLine - startLine)
-      : 0;
-    return stringOf(match.path)
-      ? [{
-        path: stringOf(match.path)!,
-        ...(startLine !== undefined ? { line: startLine } : {}),
-        ...(firstLine ? { excerpt: firstLine } : {}),
-        ...(extraLines > 0 ? { meta: `+${extraLines} lines` } : {}),
-      }]
-      : [];
-  });
-}
-
-/**
- * Build expanded sections showing the full node body for each sg match.
- * Non-compact: only rendered in expanded view.
- */
-function sgNodeBodySections(details: UnknownRecord): DisplaySection[] {
-  const matches = asArray(details.matches).map((m) => asRecord(m));
-  if (matches.length === 0) return [];
-  const records: DisplayRecordItem[] = matches.flatMap((match) => {
-    const path = stringOf(match.path);
-    if (!path) return [];
-    const range = asRecord(match.range);
-    const start = asRecord(range.start);
-    const startLine = numberOf(start.line) ?? 1;
-    const fullText = stringOf(match.displayText) ?? stringOf(match.text) ?? "";
-    return [{
-      title: fullText.split("\n", 1)[0] ?? fullText,
-      tone: "accent" as const,
-      fields: [{ label: "at", value: `${path}:${startLine}` }],
-      ...(fullText.includes("\n") ? { body: fullText.split("\n").slice(1).join("\n") } : {}),
-    }];
-  });
-  const section = recordsSection("Node bodies", records, false);
-  return section ? [section] : [];
-}
-
 function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
   return asArray(details.matches).flatMap((value) => {
     const match = asRecord(value);
@@ -137,7 +88,7 @@ function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
  * search sets details.status = "aborted" and isError = true (matching a
  * genuine failure), so the shared runtime's isError-forces-error safety
  * net would otherwise render the failed ✗ marker instead of the distinct
- * aborted × marker. rg/fd/sg do not model abort this way — they throw a
+ * aborted × marker. rg/fd do not model abort this way — they throw a
  * bare Error that Pi's own generic tool-error handling renders, never
  * reaching a structured details.status at all — so this override is scoped
  * to pdf_search only, mirroring the identical fix already applied for
@@ -155,17 +106,6 @@ function rgErrorSentence(details: UnknownRecord, rawText: string): string | unde
   if (/regex parse error|unclosed/i.test(stderr)) return "Invalid pattern";
   if (/no such file|not found/i.test(stderr)) return "Search root does not exist";
   if (/permission denied/i.test(stderr)) return "Permission denied";
-  return stderr.split("\n", 1)[0]?.trim() || undefined;
-}
-
-function sgErrorSentence(details: UnknownRecord, args: UnknownRecord, rawText: string): string | undefined {
-  const stderr = stringOf(details.stderr);
-  if (!stderr) return rawText.split("\n", 1)[0]?.trim() || undefined;
-  const language = stringOf(args.language) ?? "unknown";
-  if (/parse error|unexpected|invalid/i.test(stderr)) return `Invalid pattern for ${language}`;
-  if (/unknown language|unsupported language/i.test(stderr)) return `Unknown language ${language}`;
-  if (/not found|no such file/i.test(stderr)) return "Search root does not exist";
-  if (/not available|unavailable|binary/i.test(stderr)) return "ast-grep is unavailable for this platform";
   return stderr.split("\n", 1)[0]?.trim() || undefined;
 }
 
@@ -222,19 +162,6 @@ function rgFilterRow(args: UnknownRecord): string | undefined {
   if (args.noIgnore === true) parts.push("no-ignore");
   const maxDepth = numberOf(args.maxDepth);
   if (maxDepth !== undefined) parts.push(`max-depth ${maxDepth}`);
-  return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
-function sgFilterRow(args: UnknownRecord): string | undefined {
-  const parts: string[] = [];
-  const language = stringOf(args.language);
-  if (language) parts.push(language);
-  const path = stringOf(args.path);
-  if (path && path !== ".") parts.push(`in ${path}`);
-  const limit = numberOf(args.limit);
-  if (limit !== undefined) parts.push(`limit ${limit}`);
-  const strictness = stringOf(args.strictness);
-  if (strictness && stringOf(args.pattern) !== undefined) parts.push(strictness);
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
@@ -619,32 +546,25 @@ export function createSearchAdapter(
       const details = asRecord(result.details);
       const page = asRecord(details.page);
       const isError = Boolean((result as { isError?: boolean }).isError);
-      const structuredDomain = name === "rg" || name === "sg" || name === "fd" || name === "pdf_search";
+      const structuredDomain = name === "rg" || name === "fd" || name === "pdf_search";
 
-      // Build the domain section: compact matches for rg/sg/pdf_search
+      // Build the domain section: compact matches for rg/pdf_search
       // (payload tools that keep a bounded body); non-compact paths for fd
       // (expanded only — fd collapses to just the summary row).
       let domain: DisplaySection | undefined;
       if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);
-      else if (name === "sg") domain = matchesSection("Matches", sgMatches(details), true);
       else if (name === "pdf_search") domain = matchesSection("Matches", pdfMatches(details), true);
       else if (name === "fd") domain = pathsSection("Results", fdPaths(details, args), false);
 
-      // sg expanded: full node bodies as a non-compact records section.
-      const sgExpanded = name === "sg" && options.expanded && !isError
-        ? sgNodeBodySections(details)
-        : undefined;
-
       // Confirm genuine empty (returned count is zero, not merely absent
       // or malformed details).
-      const returnedCount = (name === "rg" || name === "fd" || name === "sg")
+      const returnedCount = (name === "rg" || name === "fd")
         ? numberOf(page.returned)
         : numberOf(details.returned);
       const genuinelyEmpty = returnedCount === 0;
 
       // Filter row: expanded only, shown above the domain section.
       const filterText = name === "rg" ? rgFilterRow(args)
-        : name === "sg" ? sgFilterRow(args)
         : name === "fd" ? fdFilterRow(args)
         : undefined;
       const filterSection = options.expanded && filterText
@@ -660,7 +580,6 @@ export function createSearchAdapter(
         ...diagnostics,
         filterSection,
         domain,
-        ...(sgExpanded ?? []),
       );
 
       // Suppress raw text preview/rows whenever the structured domain is
@@ -672,7 +591,6 @@ export function createSearchAdapter(
       const rawText = textOf(result);
       const errorSentence = isError
         ? (name === "rg" ? rgErrorSentence(details, rawText)
-          : name === "sg" ? sgErrorSentence(details, args, rawText)
           : name === "fd" ? fdErrorSentence(details, rawText)
           : name === "pdf_search" ? pdfErrorSentence(details)
           : stringOf(details.error) ?? rawText.split("\n", 1)[0])

@@ -118,9 +118,7 @@ function policyFor(result, toolName) {
   }));
   const rg = policyFor(result, "rg");
   assert.equal(rg.policy.previewLines, 12, "agent tool wins over family and defaults");
-  // Non-rg search tools get family value
-  const sg = policyFor(result, "sg");
-  assert.equal(sg.policy.previewLines, 11, "agent family applies to sg");
+
 }
 
 // ── Project scope overrides agent scope ──────────────────────────────

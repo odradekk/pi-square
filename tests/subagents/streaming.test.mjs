@@ -105,8 +105,6 @@ function createSession(script) {
       isError: false,
       result: { content: [{ type: "text", text: "1 match" }] },
     });
-    emit({ type: "tool_execution_start", toolName: "sg", args: { pattern: "call($ARG)", path: "src", language: "ts", password: "private" } });
-    emit({ type: "tool_execution_end", toolName: "sg", isError: false, result: { content: [{ type: "text", text: "SECRET SG RESULT" }] } });
     emit({ type: "tool_execution_start", toolName: "github_read", args: { repo: "owner/name", path: "README.md", ref: "main", token: "private" } });
     emit({ type: "tool_execution_end", toolName: "github_read", isError: false, result: { content: [{ type: "text", text: "SECRET GITHUB RESULT" }] } });
 
@@ -156,7 +154,6 @@ function createSession(script) {
   const toolStarts = returned.details.timeline.filter((item) => item.kind === "tool" && item.phase === "start").map((item) => item.text);
   assert.deepEqual(toolStarts, [
     "rg /needle/ in .",
-    "sg /call($ARG)/ in src · ts",
     "github_read owner/name:README.md @main",
   ]);
   assert.doesNotMatch(toolStarts.join("\n"), /password|token|private|SECRET/);

@@ -19,7 +19,6 @@ import { createSearchToolDefinition } from "./web/tools/search";
 const BASE_EXTENSION_TOOLS = [
   "rg",
   "fd",
-  "sg",
   "codegraph",
   "pdf_search",
   "search",
@@ -40,11 +39,10 @@ export function extensionToolNamesForPlatform(platform: NodeJS.Platform = proces
 }
 
 function createDefinitions(platform: NodeJS.Platform): Map<SupportedExtensionTool, ToolDefinition> {
-  const [rg, fd, sg] = createSearchToolDefinitions();
+  const [rg, fd] = createSearchToolDefinitions();
   const definitions = new Map<SupportedExtensionTool, ToolDefinition>([
     ["rg", rg as ToolDefinition],
     ["fd", fd as ToolDefinition],
-    ["sg", sg as ToolDefinition],
     ["codegraph", createCodeGraphDefinition(false) as ToolDefinition],
     ["pdf_search", createPdfSearchToolDefinition() as ToolDefinition],
     ["search", createSearchToolDefinition() as ToolDefinition],

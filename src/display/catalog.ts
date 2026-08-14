@@ -82,13 +82,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     description: "Search file contents using a bundled ripgrep binary",
   },
   {
-    name: "sg",
-    family: "search",
-    parent: true,
-    child: true,
-    description: "Search code structure using ast-grep patterns",
-  },
-  {
     name: "codegraph",
     family: "search",
     parent: true,

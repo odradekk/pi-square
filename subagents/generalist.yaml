@@ -52,7 +52,6 @@ tools:
 extensionTools:
   - rg
   - fd
-  - sg
   - codegraph
   - search
   - fetch
