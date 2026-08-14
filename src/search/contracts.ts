@@ -137,6 +137,13 @@ export interface RgFileDetail {
   continuation?: RgContinuationDetail;
 }
 
+export interface RgFileOnlyDetail {
+  path: string;
+  pathEncoding: TextEncoding;
+  rawPathBase64?: string;
+  matchCount: number;
+}
+
 export interface SearchRenderMetadata {
   version: 1;
   executionCwd: string;

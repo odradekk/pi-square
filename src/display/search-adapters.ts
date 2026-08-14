@@ -58,6 +58,21 @@ function rgMatches(details: UnknownRecord): DisplayMatchItem[] {
   return matches;
 }
 
+/** Extract file paths with match counts for the rg filesOnly result shape. */
+function rgFilesOnlyPaths(details: UnknownRecord): DisplayPathItem[] {
+  return asArray(details.files).flatMap((value) => {
+    const file = asRecord(value);
+    const path = stringOf(file.path) ?? stringOf(file.displayPath);
+    if (!path) return [];
+    const count = numberOf(file.matchCount);
+    return [{
+      path,
+      kind: "file" as const,
+      ...(count !== undefined ? { meta: `${count} ${count === 1 ? "match" : "matches"}` } : {}),
+    }];
+  });
+}
+
 function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
   return asArray(details.matches).flatMap((value) => {
     const match = asRecord(value);
@@ -543,7 +558,9 @@ export function createSearchAdapter(
       // (payload tools that keep a bounded body); non-compact paths for fd
       // (expanded only — fd collapses to just the summary row).
       let domain: DisplaySection | undefined;
-      if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);
+      if (name === "rg" && args.filesOnly === true) {
+        domain = pathsSection("Files", rgFilesOnlyPaths(details), true);
+      } else if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);
       else if (name === "pdf_search") domain = matchesSection("Matches", pdfMatches(details), true);
       else if (name === "fd") domain = pathsSection("Results", fdPaths(details, args), false);
 

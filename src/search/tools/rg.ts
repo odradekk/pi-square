@@ -37,6 +37,7 @@ const rgParameters = Type.Object({
   context: Type.Optional(Type.Integer({ minimum: MIN_CONTEXT, maximum: MAX_CONTEXT, description: "Lines of context before and after each match (default 0)" })),
   offset: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_OFFSET, description: "Result offset for progressive paging (default 0)" })),
   limit: Type.Optional(Type.Integer({ minimum: MIN_LIMIT, maximum: MAX_LIMIT_RG, description: "Maximum results to return (default 5)" })),
+  filesOnly: Type.Optional(Type.Boolean({ description: "Return matching file paths with match counts instead of match text" })),
 }, { additionalProperties: false });
 
 // ---------- factory ----------
@@ -52,6 +53,7 @@ export function createRgToolDefinition(deps: RgToolDeps) {
     promptGuidelines: [
       "Prefer a narrow path or globs instead of broad repository-wide dumps. Use globs with a ! prefix to exclude.",
       "Use literal=true when searching plain text containing regex metacharacters like . ( [ ? * + | \\.",
+      "Use filesOnly=true to list which files match without paying for match text.",
     ],
     parameters: rgParameters,
 
@@ -80,7 +82,8 @@ export function createRgToolDefinition(deps: RgToolDeps) {
         stdoutCap: STDOUT_CAP,
         onChunk: (chunk: Buffer) => {
           accumulator.push(chunk);
-          return accumulator.shouldStop();
+          // filesOnly does its own file-based paging; never early-stop on match count.
+          return params.filesOnly ? false : accumulator.shouldStop();
         },
       });
 
@@ -102,6 +105,29 @@ export function createRgToolDefinition(deps: RgToolDeps) {
 
       const naturalEnd = result.status === "ok" || (result.status === "non-zero" && result.exitCode === 1);
       const stderrText = result.stderr.length > 0 ? result.stderr.toString("utf-8") : "";
+
+      if (params.filesOnly) {
+        const formatted = accumulator.finishFilesOnly({
+          naturalEnd,
+          exitCode: result.exitCode,
+          stderr: stderrText,
+        });
+
+        return {
+          content: formatted.content,
+          details: {
+            ...formatted.details,
+            binary,
+            stderr: stderrText || undefined,
+            stderrTruncated: result.stderrTruncated,
+            presentation: {
+              version: 1 as const,
+              executionCwd: cwd,
+              platform: process.platform,
+            },
+          },
+        };
+      }
 
       const formatted = accumulator.finish({
         naturalEnd,

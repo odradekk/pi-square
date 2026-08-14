@@ -9,6 +9,7 @@ const SUITES = [
   "arguments.test.mjs",
   "runner.test.mjs",
   "rg-output.test.mjs",
+  "rg-files-only.test.mjs",
   "fd-output.test.mjs",
   "tool-contract.test.mjs",
   "tool-execution.test.mjs",

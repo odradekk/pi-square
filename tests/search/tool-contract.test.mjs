@@ -10,7 +10,7 @@ test("rg schema exposes exact v2 properties", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties).sort();
-  const expected = ["pattern", "path", "globs", "literal", "context", "offset", "limit"];
+  const expected = ["pattern", "path", "globs", "literal", "context", "filesOnly", "offset", "limit"];
   assert.deepEqual(props, [...expected].sort());
 });
 

@@ -23,6 +23,7 @@ import type {
   LineKind,
   PageDetails,
   RgFileDetail,
+  RgFileOnlyDetail,
   RgLineDetail,
   RgLineDisplay,
   Submatch,
@@ -1025,6 +1026,37 @@ export class RgAccumulator {
       contentBudget: this.contentBudget,
     });
   }
+
+  finishFilesOnly(opts: FinishOptions): FilesOnlyResult {
+    if (this.capExceeded) {
+      throw new Error(`rg stdout exceeded ${this.stdoutCap}-byte cap`);
+    }
+    if (this.malformedError) throw this.malformedError;
+
+    if (this.pendingBuffer.length > 0) {
+      const lineStr = this.pendingBuffer.toString("utf-8");
+      this.pendingBuffer = Buffer.alloc(0);
+      if (opts.naturalEnd && lineStr.length > 0) {
+        try {
+          this.events.push(JSON.parse(lineStr));
+        } catch (e) {
+          throw new Error(
+            `malformed rg JSON line: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
+
+    const { lineEvents } = extractEvents(this.events, this.cwd, this.platform);
+
+    return buildFilesOnlyResult(lineEvents, {
+      offset: this.offset,
+      limit: this.limit,
+      cwd: this.cwd,
+      naturalEnd: opts.naturalEnd,
+      contentBudget: this.contentBudget,
+    });
+  }
 }
 
 // ---------- formatRgResult ----------
@@ -1043,4 +1075,100 @@ export function formatRgResult(events: unknown[], opts: FormatOptions): RgResult
     lineExcerptLimit: opts.lineExcerptLimit ?? RG_LINE_EXCERPT_LIMIT,
     contentBudget: opts.contentBudget ?? CONTENT_BUDGET,
   });
+}
+
+// ---------- formatRgFilesOnly / buildFilesOnlyResult ----------
+
+interface FilesOnlyResult {
+  content: TextContent[];
+  details: {
+    page: PageDetails;
+    truncation: TruncationDetails;
+    files: RgFileOnlyDetail[];
+  };
+}
+
+export function formatRgFilesOnly(events: unknown[], opts: FormatOptions): FilesOnlyResult {
+  const cwd = opts.cwd ?? ".";
+  const platform = opts.platform ?? process.platform;
+  const { lineEvents } = extractEvents(events, cwd, platform);
+
+  return buildFilesOnlyResult(lineEvents, {
+    offset: opts.offset,
+    limit: opts.limit,
+    cwd,
+    naturalEnd: opts.naturalEnd,
+    contentBudget: opts.contentBudget ?? CONTENT_BUDGET,
+  });
+}
+
+function buildFilesOnlyResult(lineEvents: LineEvent[], opts: {
+  offset: number;
+  limit: number;
+  cwd: string;
+  naturalEnd: boolean;
+  contentBudget: number;
+}): FilesOnlyResult {
+
+  // Aggregate match counts per file in first-seen order.
+  const fileOrder: string[] = [];
+  const fileMap = new Map<string, { displayPath: string; encoding: TextEncoding; rawBase64?: string; count: number }>();
+
+  for (const ev of lineEvents) {
+    if (ev.kind !== "match") continue;
+    let entry = fileMap.get(ev.pathKey);
+    if (!entry) {
+      entry = { displayPath: ev.displayPath, encoding: ev.pathEncoding, rawBase64: ev.rawPathBase64, count: 0 };
+      fileMap.set(ev.pathKey, entry);
+      fileOrder.push(ev.pathKey);
+    }
+    entry.count++;
+  }
+
+  // Apply offset and limit paging.
+  const offset = opts.offset;
+  const limit = opts.limit;
+  const pagedOrder = fileOrder.slice(offset, offset + limit);
+  const returned = pagedOrder.length;
+  const hasMore = offset + returned < fileOrder.length;
+  const nextOffset = hasMore ? offset + returned : null;
+  const total = opts.naturalEnd ? fileOrder.length : undefined;
+
+  // Build text output under content budget.
+  const estHeader = `rg returned=${returned} offset=${offset} hasMore=${hasMore} nextOffset=${nextOffset === null ? "null" : nextOffset}${total !== undefined ? ` total=${total}` : ""}`;
+  let remaining = opts.contentBudget ?? CONTENT_BUDGET;
+  remaining -= estHeader.length + 1;
+
+  const textParts: string[] = [];
+  const files: RgFileOnlyDetail[] = [];
+  let contentBudgetReached = false;
+
+  for (const pathKey of pagedOrder) {
+    const entry = fileMap.get(pathKey)!;
+    const line = `${escapeControls(entry.displayPath)} (${entry.count})`;
+    const cost = line.length + 1;
+    if (cost > remaining) {
+      contentBudgetReached = true;
+      break;
+    }
+    remaining -= cost;
+    textParts.push(line);
+    files.push({
+      path: entry.displayPath,
+      pathEncoding: entry.encoding,
+      ...(entry.rawBase64 ? { rawPathBase64: entry.rawBase64 } : {}),
+      matchCount: entry.count,
+    });
+  }
+
+  const text = `${estHeader}\n${textParts.join("\n")}`;
+
+  return {
+    content: [{ type: "text", text }],
+    details: {
+      page: { offset, limit, returned: files.length, hasMore, nextOffset, ...(total !== undefined ? { total } : {}) },
+      truncation: { lineExcerpts: 0, contextLinesOmitted: 0, contentBudgetReached },
+      files,
+    },
+  };
 }
