@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -120,101 +119,7 @@ const cleanDescription = {
 assert.equal(renderFirstChar(cleanDescription), "✓",
   "completed without warning must render ✓ marker");
 
-// ─── 5. Time tool through the production decoration path ─────────────
-// Exercises the full queued-to-settled tracer with explicit lifecycle.
-
-class FakeClock {
-  callbacks = new Map();
-  next = 1;
-  setInterval = (callback) => { const id = this.next++; this.callbacks.set(id, callback); return id; };
-  clearInterval = (id) => { this.callbacks.delete(id); };
-  unref = () => {};
-}
-
-const clock = new FakeClock();
-const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
-const rawTimeDefinition = {
-  name: "time",
-  label: "Time",
-  description: "Return the current local date and time.",
-  parameters: Type.Object({}, { additionalProperties: false }),
-  async execute() {
-    return { content: [{ type: "text", text: "2026-01-15 12:00:00\nISO 8601: 2026-01-15T12:00:00+00:00\nTimezone: UTC (UTC+00:00)" }], details: {} };
-  },
-};
-const decorated = decorateInternalTool(rawTimeDefinition, runtime);
-assert.equal(decorated.renderShell, "self");
-
-const tracerState = {};
-function ctx(overrides = {}) {
-  return {
-    args: {},
-    toolCallId: "call-time-1",
-    invalidate() {},
-    lastComponent: undefined,
-    state: tracerState,
-    cwd: process.cwd(),
-    executionStarted: false,
-    argsComplete: false,
-    isPartial: false,
-    expanded: false,
-    showImages: false,
-    isError: false,
-    ...overrides,
-  };
-}
-
-// Queued: arguments incomplete
-const queued = decorated.renderCall({}, plainTheme, ctx({ argsComplete: false, executionStarted: false }));
-const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
-assert.match(queuedText, /^●/, "queued lifecycle must render bullet");
-assert.match(queuedText, /Local time/, "title must be visible");
-assert.equal(clock.callbacks.size, 0, "queued must not subscribe to motion");
-
-// Pending: arguments complete, not yet executing
-const pending = decorated.renderCall({}, plainTheme, ctx({ argsComplete: true, executionStarted: false, lastComponent: queued }));
-const pendingText = stripVTControlCharacters(pending.render(80).join("\n"));
-assert.match(pendingText, /^●/, "pending lifecycle must render bullet");
-assert.equal(clock.callbacks.size, 0, "pending must not subscribe to motion");
-
-// Running: execution started
-const running = decorated.renderCall({}, plainTheme, ctx({ argsComplete: true, executionStarted: true, lastComponent: pending }));
-const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-assert.match(runningText, /^●/, "running lifecycle must render bullet");
-assert.equal(clock.callbacks.size, 1, "running must subscribe to motion");
-
-// Completed: result settled — replaces the pending entry, not appended
-const result = decorated.renderCall({}, plainTheme, ctx({ argsComplete: true, executionStarted: true, lastComponent: running }));
-const settled = decorated.renderResult(
-  { content: [{ type: "text", text: "2026-01-15 12:00:00\nISO 8601: 2026-01-15T12:00:00+00:00\nTimezone: UTC (UTC+00:00)" }], details: {} },
-  { expanded: false, isPartial: false },
-  plainTheme,
-  ctx({ argsComplete: true, executionStarted: true, lastComponent: result, isError: false }),
-);
-const settledText = stripVTControlCharacters(settled.render(80).join("\n"));
-assert.match(settledText, /^●/, "completed lifecycle must render bullet");
-assert.equal(clock.callbacks.size, 0, "completed must unsubscribe motion");
-
-// One operational entry, not a duplicate
-assert.deepEqual(running.render(80), [], "call slot empties when result arrives");
-const composedEntry = [...running.render(80), ...settled.render(80)].join("\n");
-const titleMatches = (composedEntry.match(/Local time/g) ?? []).length;
-assert.equal(titleMatches, 1, "time tool must replace pending entry with one settled entry");
-
-// Time content visible when expanded through the production path
-const expandedSettled = decorated.renderResult(
-  { content: [{ type: "text", text: "2026-01-15 12:00:00\nISO 8601: 2026-01-15T12:00:00+00:00\nTimezone: UTC (UTC+00:00)" }], details: {} },
-  { expanded: true, isPartial: false },
-  plainTheme,
-  ctx({ argsComplete: true, executionStarted: true, lastComponent: settled, isError: false }),
-);
-const expandedText = stripVTControlCharacters(expandedSettled.render(80).join("\n"));
-assert.match(expandedText, /2026-01-15/);
-assert.match(expandedText, /UTC/);
-
-runtime.dispose();
-
-// ─── 6. Width checks for all lifecycle markers at boundary widths ───
+// ─── 5. Width checks for all lifecycle markers at boundary widths ───
 
 const lifecycleDescriptions = OPERATIONAL_LIFECYCLES.map((lifecycle) => ({
   version: 1,

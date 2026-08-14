@@ -43,7 +43,7 @@ try {
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "docs", "fd", "fetch", "github_commit", "github_read",
     "github_search", "github_tree", "libs", "parse", "pdf_search", "rg", "search", "ssh",
-    "subagent_delegate", "subagent_resume", "time", "todo",
+    "subagent_delegate", "subagent_resume", "todo",
   ]);
   assert.ok(childToolNames.includes("codegraph"));
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
@@ -143,7 +143,7 @@ try {
   assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should use the shared display renderer after session start");
   assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should use the shared result renderer");
   for (const name of [
-    "rg", "fd", "pdf_search", "codegraph", "time", "ssh", "bash",
+    "rg", "fd", "pdf_search", "codegraph", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
     "github_search", "github_read", "github_tree", "github_commit",

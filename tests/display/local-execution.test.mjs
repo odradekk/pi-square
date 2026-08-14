@@ -7,7 +7,6 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
 const { decorateInternalTool } = await load("../../src/display/internal-adapters.ts");
-const { createTimeToolDefinition } = await load("../../src/time/index.ts");
 const { createChildTools } = await load("../../src/tool-catalog.ts");
 
 const theme = {
@@ -118,12 +117,6 @@ summaryConfig.display = {
 };
 runtime = new DisplayRuntime(summaryConfig, { environment: { isTTY: true } });
 assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "provider resolves replacement runtime");
-
-const time = createTimeToolDefinition();
-const timeResult = await time.execute("time", {}, undefined, undefined, {});
-assert.match(timeResult.content[0].text, /^\d{4}-\d{2}-\d{2}/);
-assert.match(timeResult.content[0].text, /ISO 8601:/);
-assert.match(timeResult.content[0].text, /Timezone:/);
 
 for (const child of createChildTools(["rg", "fd", "codegraph", "pdf_search"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child construction stays independent of parent runtime`);

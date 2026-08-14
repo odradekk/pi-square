@@ -13,7 +13,6 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   fd: ["pattern", "path", "matchMode", "offset", "limit", "maxDepth"],
   pdf_search: ["path", "query", "limit"],
   codegraph: ["operation", "projectPath", "query", "maxFiles"],
-  time: [],
   bash: ["command", "timeout"],
   pwsh: ["command", "cwd", "timeoutMs"],
   ssh: ["operation", "profile", "target", "label", "session", "command", "prompt", "cursor", "waitMs", "newline"],
@@ -44,7 +43,7 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
 /** C1 sentence-case titles; unique within each family (`rg` is `Text search`). */
 const TITLES: Readonly<Record<string, string>> = Object.freeze({
   rg: "Text search", fd: "File search", pdf_search: "PDF search",
-  codegraph: "CodeGraph", time: "Local time", bash: "Bash", pwsh: "PowerShell",
+  codegraph: "CodeGraph", bash: "Bash", pwsh: "PowerShell",
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", github_search: "GitHub search", github_read: "GitHub read",
   github_tree: "GitHub tree", github_commit: "GitHub commit", ask: "Questions", todo: "Tasks",
@@ -264,7 +263,7 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
         || definition.name === "github_commit"
         || definition.name === "ssh"
         ? createRemoteAdapter(definition.name, base)
-        : definition.name === "ask" || definition.name === "todo" || definition.name === "time"
+        : definition.name === "ask" || definition.name === "todo"
           ? createWorkflowAdapter(definition.name, base)
           : base;
   return decorateToolDefinition(definition, runtime, adapter) as T;

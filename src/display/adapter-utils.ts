@@ -163,10 +163,6 @@ export function composeInternalSummary(
     }
   }
 
-  if (name === "time") {
-    return stringOf(text.split("\n", 1)[0]);
-  }
-
   // Read-like tools (github_read) report returned lines instead of a page.
   const returnedLines = numberOf(details.returnedLines);
   if (returnedLines !== undefined) {
