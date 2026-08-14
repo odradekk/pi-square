@@ -148,20 +148,11 @@ function rgFilterRow(args: UnknownRecord): string | undefined {
   const parts: string[] = [];
   const path = stringOf(args.path);
   if (path && path !== ".") parts.push(`in ${path}`);
-  const includes = asArray(args.includeGlobs).map((g) => stringOf(g)).filter(Boolean);
-  if (includes.length > 0) parts.push(includes.join(" · "));
-  const excludes = asArray(args.excludeGlobs).map((g) => stringOf(g)).filter(Boolean);
-  if (excludes.length > 0) parts.push(excludes.map((e) => `!${e}`).join(" · "));
-  const types = asArray(args.types).map((t) => stringOf(t)).filter(Boolean);
-  if (types.length > 0) parts.push(types.join(","));
-  const caseMode = stringOf(args.case);
-  if (caseMode && caseMode !== "smart") parts.push(caseMode === "sensitive" ? "case-sensitive" : caseMode === "insensitive" ? "case-insensitive" : caseMode);
-  if (args.word === true) parts.push("whole-word");
+  const globs = asArray(args.globs).map((g) => stringOf(g)).filter(Boolean);
+  if (globs.length > 0) parts.push(globs.join(" · "));
   if (args.literal === true) parts.push("literal");
-  if (args.hidden === true) parts.push("hidden");
-  if (args.noIgnore === true) parts.push("no-ignore");
-  const maxDepth = numberOf(args.maxDepth);
-  if (maxDepth !== undefined) parts.push(`max-depth ${maxDepth}`);
+  const context = numberOf(args.context);
+  if (context !== undefined && context > 0) parts.push(`context ${context}`);
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 

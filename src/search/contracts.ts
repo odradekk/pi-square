@@ -13,6 +13,7 @@ export const DEFAULT_FD_MATCH_MODE: FdMatchMode = "regex";
 
 export const MIN_LIMIT = 1;
 export const MAX_LIMIT = 100;
+export const MAX_LIMIT_RG = 25;
 export const MAX_OFFSET = 1_000_000;
 
 export const MIN_CONTEXT = 0;
@@ -56,19 +57,11 @@ export interface TextContent {
 export interface RgToolParams {
   pattern: string;
   path?: string;
-  case?: CaseMode;
+  globs?: string[];
   literal?: boolean;
-  word?: boolean;
-  hidden?: boolean;
-  noIgnore?: boolean;
+  context?: number;
   offset?: number;
   limit?: number;
-  includeGlobs?: string[];
-  excludeGlobs?: string[];
-  types?: string[];
-  beforeContext?: number;
-  afterContext?: number;
-  maxDepth?: number;
 }
 
 export interface FdToolParams {

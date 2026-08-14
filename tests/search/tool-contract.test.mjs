@@ -10,15 +10,19 @@ test("rg schema exposes exact v2 properties", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties).sort();
-  const expected = ["pattern", "path", "case", "literal", "word", "hidden", "noIgnore", "offset", "limit", "includeGlobs", "excludeGlobs", "types", "beforeContext", "afterContext", "maxDepth"];
+  const expected = ["pattern", "path", "globs", "literal", "context", "offset", "limit"];
   assert.deepEqual(props, [...expected].sort());
 });
 
-test("rg schema omits forbidden legacy properties", async () => {
+test("rg schema omits forbidden and removed properties", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   const props = Object.keys(def.parameters.properties);
-  for (const forbidden of ["rawArgs", "lineNumber", "stats", "caseSensitive", "type", "glob", "context", "exact"]) {
+  for (const forbidden of [
+    "rawArgs", "lineNumber", "stats", "caseSensitive", "type", "glob", "exact",
+    "case", "word", "hidden", "noIgnore", "includeGlobs", "excludeGlobs",
+    "types", "beforeContext", "afterContext", "maxDepth",
+  ]) {
     assert.ok(!props.includes(forbidden), `rg schema must not include ${forbidden}`);
   }
 });
@@ -29,29 +33,32 @@ test("rg schema requires pattern", async () => {
   assert.ok(def.parameters.required.includes("pattern"));
 });
 
-test("rg and fd schemas bound offset to 1000000 and limit to 1-100", async () => {
+test("rg schema bounds offset to 1000000, limit to 1-25, and context to 0-20", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
-  const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
-  const definitions = [
-    createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP }),
-    createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP }),
-  ];
-  for (const def of definitions) {
-    assert.equal(def.parameters.properties.offset.minimum, 0);
-    assert.equal(def.parameters.properties.offset.maximum, 1_000_000);
-    assert.equal(def.parameters.properties.limit.minimum, 1);
-    assert.equal(def.parameters.properties.limit.maximum, 100);
-  }
+  const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
+  assert.equal(def.parameters.properties.offset.minimum, 0);
+  assert.equal(def.parameters.properties.offset.maximum, 1_000_000);
+  assert.equal(def.parameters.properties.limit.minimum, 1);
+  assert.equal(def.parameters.properties.limit.maximum, 25);
+  assert.equal(def.parameters.properties.context.minimum, 0);
+  assert.equal(def.parameters.properties.context.maximum, 20);
 });
 
-test("rg schema rejects empty pattern, path, glob, and type strings", async () => {
+test("fd schema bounds offset to 1000000 and limit to 1-100", async () => {
+  const { createFdToolDefinition } = await loadModule("src/search/tools/fd.ts");
+  const def = createFdToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
+  assert.equal(def.parameters.properties.offset.minimum, 0);
+  assert.equal(def.parameters.properties.offset.maximum, 1_000_000);
+  assert.equal(def.parameters.properties.limit.minimum, 1);
+  assert.equal(def.parameters.properties.limit.maximum, 100);
+});
+
+test("rg schema rejects empty pattern, path, and glob strings", async () => {
   const { createRgToolDefinition } = await loadModule("src/search/tools/rg.ts");
   const def = createRgToolDefinition({ resolveBinary: NOOP, runCommand: NOOP });
   assert.equal(def.parameters.properties.pattern.minLength, 1);
   assert.equal(def.parameters.properties.path.minLength, 1);
-  assert.equal(def.parameters.properties.includeGlobs.items.minLength, 1);
-  assert.equal(def.parameters.properties.excludeGlobs.items.minLength, 1);
-  assert.equal(def.parameters.properties.types.items.minLength, 1);
+  assert.equal(def.parameters.properties.globs.items.minLength, 1);
 });
 
 // ---------- fd schema ----------

@@ -5,7 +5,7 @@ import {
   DEFAULT_LIMIT,
   DEFAULT_OFFSET,
   MAX_CONTEXT,
-  MAX_LIMIT,
+  MAX_LIMIT_RG,
   MAX_ARRAY_ITEMS,
   MAX_OFFSET,
   MIN_ARRAY_ITEMS,
@@ -32,23 +32,11 @@ export interface RgToolDeps {
 const rgParameters = Type.Object({
   pattern: Type.String({ minLength: 1, description: "Search pattern (regex supported)" }),
   path: Type.Optional(Type.String({ minLength: 1, description: "Directory or file to search (default: cwd)" })),
-  case: Type.Optional(Type.Union([
-    Type.Literal("smart"),
-    Type.Literal("sensitive"),
-    Type.Literal("insensitive"),
-  ])),
+  globs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "Glob patterns to include or exclude (prefix with ! to exclude)" })),
   literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string, not regex" })),
-  word: Type.Optional(Type.Boolean({ description: "Match whole words only" })),
-  hidden: Type.Optional(Type.Boolean()),
-  noIgnore: Type.Optional(Type.Boolean()),
+  context: Type.Optional(Type.Integer({ minimum: MIN_CONTEXT, maximum: MAX_CONTEXT, description: "Lines of context before and after each match (default 0)" })),
   offset: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_OFFSET, description: "Result offset for progressive paging (default 0)" })),
-  limit: Type.Optional(Type.Integer({ minimum: MIN_LIMIT, maximum: MAX_LIMIT, description: "Maximum results to return (default 5)" })),
-  includeGlobs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "Glob patterns to include" })),
-  excludeGlobs: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "Glob patterns to exclude" })),
-  types: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: MIN_ARRAY_ITEMS, maxItems: MAX_ARRAY_ITEMS, uniqueItems: true, description: "ripgrep file types, e.g. ts, js, or md" })),
-  beforeContext: Type.Optional(Type.Integer({ minimum: MIN_CONTEXT, maximum: MAX_CONTEXT, description: "Lines of context before each match (default 0)" })),
-  afterContext: Type.Optional(Type.Integer({ minimum: MIN_CONTEXT, maximum: MAX_CONTEXT, description: "Lines of context after each match (default 0)" })),
-  maxDepth: Type.Optional(Type.Integer({ minimum: 0, description: "Maximum directory depth to search" })),
+  limit: Type.Optional(Type.Integer({ minimum: MIN_LIMIT, maximum: MAX_LIMIT_RG, description: "Maximum results to return (default 5)" })),
 }, { additionalProperties: false });
 
 // ---------- factory ----------
@@ -62,10 +50,8 @@ export function createRgToolDefinition(deps: RgToolDeps) {
     promptSnippet:
       "Use rg for local text search. Start narrow, read the first page, then continue with offset=nextOffset only if needed.",
     promptGuidelines: [
-      "Prefer a narrow path, type, or includeGlobs instead of broad repository-wide dumps.",
-      "Read the first 5 results, then use offset=nextOffset to continue only when needed.",
+      "Prefer a narrow path or globs instead of broad repository-wide dumps. Use globs with a ! prefix to exclude.",
       "Use literal=true when searching plain text containing regex metacharacters like . ( [ ? * + | \\.",
-      "Add beforeContext/afterContext only when surrounding lines matter.",
     ],
     parameters: rgParameters,
 
@@ -76,14 +62,13 @@ export function createRgToolDefinition(deps: RgToolDeps) {
 
       const offset = params.offset ?? DEFAULT_OFFSET;
       const limit = params.limit ?? DEFAULT_LIMIT;
-      const beforeContext = params.beforeContext ?? MIN_CONTEXT;
-      const afterContext = params.afterContext ?? MIN_CONTEXT;
+      const context = params.context ?? MIN_CONTEXT;
 
       const accumulator = new RgAccumulator({
         offset,
         limit,
-        beforeContext,
-        afterContext,
+        beforeContext: context,
+        afterContext: context,
         cwd,
         platform: process.platform,
       });

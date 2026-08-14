@@ -16,40 +16,17 @@ function caseFlag(caseMode: CaseMode | undefined, smart: string): string {
 export function buildRgArgs(params: RgToolParams): string[] {
   const pattern = params.pattern;
   const searchPath = params.path ?? ".";
-  const args: string[] = ["--no-config", "--json", "--sort", "path", "--color", "never"];
-
-  args.push(caseFlag(params.case, "-S"));
+  const args: string[] = ["--no-config", "--json", "--sort", "path", "--color", "never", "-S"];
 
   if (params.literal) args.push("-F");
-  if (params.word) args.push("-w");
-  if (params.hidden) args.push("--hidden");
-  if (params.noIgnore) args.push("--no-ignore");
 
-  const before = params.beforeContext ?? 0;
-  const after = params.afterContext ?? 0;
-  if (before > 0) args.push("-B", String(before));
-  if (after > 0) args.push("-A", String(after));
+  const context = params.context ?? 0;
+  if (context > 0) args.push("-C", String(context));
 
-  if (params.includeGlobs) {
-    for (const glob of params.includeGlobs) {
-      if (glob.startsWith("!")) {
-        throw new Error(`Include glob must not begin with '!': ${glob}`);
-      }
+  if (params.globs) {
+    for (const glob of params.globs) {
       args.push("-g", glob);
     }
-  }
-  if (params.excludeGlobs) {
-    for (const glob of params.excludeGlobs) {
-      args.push("-g", `!${glob}`);
-    }
-  }
-  if (params.types) {
-    for (const type of params.types) {
-      args.push("-t", type);
-    }
-  }
-  if (params.maxDepth !== undefined) {
-    args.push("--max-depth", String(params.maxDepth));
   }
 
   args.push("--", pattern, searchPath);
