@@ -302,16 +302,76 @@ test("github_commit includes bounded patches and marks missing or omitted patche
   } finally { mock.restore(); }
 }));
 
-test("github search rejects repo field with hint about query qualifier", async () => {
-  const result = await createGitHubToolDefinition().execute("x", { operation: "search", query: "acme", repo: "acme/repo" });
-  assert.equal(result.details.errorCode, "INVALID_INPUT");
-  assert.match(result.content[0].text, /repo:owner\/name/);
+test("github silently discards irrelevant fields (repo with search)", async () => {
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    const result = await createGitHubToolDefinition().execute("x", { operation: "search", query: "" , repo: "acme/repo" });
+    // query is blank → search's own validation rejects it; repo was silently discarded.
+    assert.equal(result.details.errorCode, "INVALID_INPUT");
+    assert.match(result.content[0].text, /query must be non-empty/);
+    assert.doesNotMatch(result.content[0].text, /does not accept/);
+    assert.equal(mock.calls.length, 0);
+  } finally { mock.restore(); }
 });
 
-test("github read rejects query field", async () => {
-  const result = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", query: "x" });
-  assert.equal(result.details.errorCode, "INVALID_INPUT");
-  assert.match(result.content[0].text, /does not accept.*query/);
+test("github silently discards irrelevant fields (query with read)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-github-discard-"));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldToken = process.env.GITHUB_TOKEN;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  delete process.env.GITHUB_TOKEN;
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    const result = await createGitHubToolDefinition().execute("x", { operation: "read", repo: "acme/repo", query: "x" });
+    assert.equal(result.details.errorCode, "MISSING_GITHUB_TOKEN");
+    assert.doesNotMatch(result.content[0].text, /does not accept/);
+    assert.equal(mock.calls.length, 0);
+  } finally {
+    mock.restore();
+    rmSync(dir, { recursive: true, force: true });
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = oldToken;
+  }
+});
+
+test("github handles fully populated params from Responses API providers", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-github-populated-"));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldToken = process.env.GITHUB_TOKEN;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  delete process.env.GITHUB_TOKEN;
+  const mock = installFetch(() => { throw new Error("network must not run"); });
+  try {
+    // Every declared property populated with non-blank values (the OpenAI
+    // Responses API behavior); irrelevant fields are silently discarded.
+    const result = await createGitHubToolDefinition().execute("x", {
+      operation: "search",
+      kind: "repositories",
+      query: "acme",
+      repo: "acme/repo",
+      path: "src/index.ts",
+      ref: "main",
+      line: 1,
+      depth: 1,
+      offset: 0,
+      page: 1,
+      limit: 10,
+    });
+    assert.equal(result.details.errorCode, "MISSING_GITHUB_TOKEN");
+    assert.equal(result.details.limit, 10);
+    assert.equal(result.details.page, 1);
+    assert.doesNotMatch(result.content[0].text, /does not accept/);
+    assert.equal(mock.calls.length, 0);
+  } finally {
+    mock.restore();
+    rmSync(dir, { recursive: true, force: true });
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = oldToken;
+  }
 });
 
 test("github blank-as-unset filters empty strings before field validation", async () => {

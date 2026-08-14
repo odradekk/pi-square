@@ -664,25 +664,19 @@ export function createGitHubToolDefinition(): ToolDefinition<any, any> {
         const details: GitHubBaseDetails = { tool: "search", phase: "done" };
         return invalidInput(details as GitHubSearchDetails, `operation must be one of: ${GITHUB_OPERATIONS.join(", ")}`);
       }
-      // Blank-as-unset: filter out empty strings and zeros so providers that
-      // populate every declared property (OpenAI Responses API) do not break calls.
+      // Keep only fields the current operation uses, then drop blank values
+      // ("" and 0). The OpenAI Responses API populates every declared schema
+      // property with non-blank values, so irrelevant fields are silently
+      // discarded rather than rejected; per-operation validation inside each
+      // execute function still catches genuine input errors.
+      const allowed = ALLOWED_FIELDS[operation];
       const filtered: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(params)) {
-        if (key === "operation") continue;
+        if (key === "operation" || !allowed.has(key)) continue;
         if (value === undefined) continue;
         if (typeof value === "string" && value.trim() === "") continue;
         if (typeof value === "number" && value === 0) continue;
         filtered[key] = value;
-      }
-      // Strict per-operation field rejection (ssh allowedFields precedent).
-      const allowed = ALLOWED_FIELDS[operation];
-      const unexpected = Object.keys(filtered).filter((key) => !allowed.has(key));
-      if (unexpected.length > 0) {
-        const base: GitHubBaseDetails = { tool: operation as any, phase: "done" };
-        const hint = operation === "search" && unexpected.includes("repo")
-          ? "; use the 'repo:owner/name' query qualifier to scope a search"
-          : "";
-        return invalidInput(base as any, `operation '${operation}' does not accept: ${unexpected.join(", ")}${hint}`);
       }
       switch (operation) {
         case "search": return executeSearch(filtered, signal, onUpdate);

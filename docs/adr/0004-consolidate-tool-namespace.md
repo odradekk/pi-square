@@ -8,7 +8,7 @@ The model-facing tool surface had four github tools (`github_search`, `github_re
 
 ## Decision
 
-Merge the four github tools into one `github` tool with a required `operation` discriminator (`search`, `read`, `tree`, `commit`). Blank-as-unset filtering and strict per-operation field rejection handle the OpenAI Responses API behavior that populates every declared schema property, so no github field needs to be split into a separate tool.
+Merge the four github tools into one `github` tool with a required `operation` discriminator (`search`, `read`, `tree`, `commit`). Per-operation field filtering silently discards fields the current operation does not use, so the OpenAI Responses API behavior that populates every declared schema property with non-blank values does not break calls. Each operation's own validation still catches genuine input errors.
 
 Rename `subagent_delegate` to `delegate` and `subagent_resume` to `resume`. The two tools remain separate because the resume-only `id` field must not appear in the delegate schema — GPT models populate every declared property, which would trip the fg/bg validation.
 
@@ -18,7 +18,7 @@ Retire all six old names completely with no aliases. A definition or call that n
 
 The project rule splits a branch into its own tool when a branch-specific field must not appear in sibling branches at all. The resume-only `id` is exactly that case: `delegate` must reject it, and the Responses API populates every declared property, so a shared schema that declares `id` makes `delegate` unusable for those providers.
 
-No github field has this conflict. The `operation` discriminator selects the branch, and the merged schema declares all operation-specific fields as optional. Blank-as-unset filtering removes empty strings and zeros before per-operation validation, so a provider that populates every property sends blanks for unused fields, which the validator silently ignores. Strict per-operation field rejection (`ALLOWED_FIELDS`) then catches genuine mistakes such as passing `repo` to a search operation.
+No github field has this conflict. The `operation` discriminator selects the branch, and the merged schema declares all operation-specific fields as optional. Per-operation field filtering (`ALLOWED_FIELDS`) silently discards any field the current operation does not use, before blank-as-unset removal of empty strings and zeros. A provider that populates every property sends values for unused fields; those are discarded without error. Each `execute*` function's own validation still rejects genuine input errors such as an empty query or an invalid repository name.
 
 ## Trade-offs accepted
 
