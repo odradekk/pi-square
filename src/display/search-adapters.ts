@@ -58,6 +58,20 @@ function rgMatches(details: UnknownRecord): DisplayMatchItem[] {
   return matches;
 }
 
+function rgFilesOnlyPaths(details: UnknownRecord): DisplayPathItem[] {
+  return asArray(details.files).flatMap((value) => {
+    const entry = asRecord(value);
+    const path = stringOf(entry.path);
+    if (!path) return [];
+    const matchCount = numberOf(entry.matchCount);
+    return [{
+      path,
+      kind: "file" as const,
+      ...(matchCount !== undefined ? { meta: `${matchCount} match${matchCount === 1 ? "" : "es"}` } : {}),
+    }];
+  });
+}
+
 function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
   return asArray(details.matches).flatMap((value) => {
     const match = asRecord(value);
@@ -112,10 +126,7 @@ function rgErrorSentence(details: UnknownRecord, rawText: string): string | unde
 function fdErrorSentence(details: UnknownRecord, rawText: string): string | undefined {
   const stderr = stringOf(details.stderr);
   if (!stderr) return rawText.split("\n", 1)[0]?.trim() || undefined;
-  if (/regex parse error|repetition operator/i.test(stderr)) {
-    if (/--glob|--fixed-strings/i.test(stderr)) return "Invalid regex pattern · use matchMode=glob for a glob";
-    return "Invalid regex pattern";
-  }
+  if (/regex parse error|repetition operator/i.test(stderr)) return "Invalid regex pattern";
   if (/no such file|not found|not a directory/i.test(stderr)) return "Search root does not exist";
   if (/permission denied/i.test(stderr)) return "Permission denied";
   if (/not available|unavailable|binary/i.test(stderr)) return "fd binary is unavailable for this platform";
@@ -160,18 +171,10 @@ function fdFilterRow(args: UnknownRecord): string | undefined {
   const parts: string[] = [];
   const types = asArray(args.types).map((t) => stringOf(t)).filter(Boolean);
   if (types.length > 0) parts.push(types.join(","));
-  if (args.hidden === true) parts.push("hidden");
-  if (args.noIgnore === true) parts.push("no-ignore");
   const maxDepth = numberOf(args.maxDepth);
   if (maxDepth !== undefined) parts.push(`max-depth ${maxDepth}`);
-  const minDepth = numberOf(args.minDepth);
-  if (minDepth !== undefined) parts.push(`min-depth ${minDepth}`);
   const excludes = asArray(args.excludeGlobs).map((g) => stringOf(g)).filter(Boolean);
   if (excludes.length > 0) parts.push(excludes.map((e) => `!${e}`).join(" · "));
-  const matchMode = stringOf(args.matchMode);
-  if (matchMode && matchMode !== "regex") parts.push(matchMode);
-  const caseMode = stringOf(args.case);
-  if (caseMode && caseMode !== "smart") parts.push(caseMode === "sensitive" ? "case-sensitive" : caseMode === "insensitive" ? "case-insensitive" : caseMode);
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
@@ -543,7 +546,8 @@ export function createSearchAdapter(
       // (payload tools that keep a bounded body); non-compact paths for fd
       // (expanded only — fd collapses to just the summary row).
       let domain: DisplaySection | undefined;
-      if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);
+      if (name === "rg" && args.filesOnly === true) domain = pathsSection("Files", rgFilesOnlyPaths(details), true);
+      else if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);
       else if (name === "pdf_search") domain = matchesSection("Matches", pdfMatches(details), true);
       else if (name === "fd") domain = pathsSection("Results", fdPaths(details, args), false);
 

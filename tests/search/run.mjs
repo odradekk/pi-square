@@ -12,6 +12,7 @@ const SUITES = [
   "fd-output.test.mjs",
   "tool-contract.test.mjs",
   "tool-execution.test.mjs",
+  "rg-files-only.test.mjs",
 ];
 
 let failed = 0;

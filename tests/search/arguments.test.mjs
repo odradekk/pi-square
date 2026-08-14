@@ -148,16 +148,6 @@ test("buildFdArgs removes leading dot from extension values", async () => {
   assert.ok(!head.includes(".ts"), "leading dot must be stripped");
 });
 
-test("buildFdArgs matchMode fixed adds -F, glob adds --glob", async () => {
-  const { buildFdArgs } = await loadModule("src/search/arguments.ts");
-  const fixed = buildFdArgs({ matchMode: "fixed" });
-  const glob = buildFdArgs({ matchMode: "glob" });
-  const sep1 = fixed.indexOf("--");
-  const sep2 = glob.indexOf("--");
-  assert.ok(fixed.slice(0, sep1).some((a) => a === "-F" || a === "--fixed-strings"));
-  assert.ok(glob.slice(0, sep2).some((a) => a === "--glob" || a === "-g"));
-});
-
 test("buildFdArgs types map to -t with full names before --", async () => {
   const { buildFdArgs } = await loadModule("src/search/arguments.ts");
   const args = buildFdArgs({ types: ["file", "directory"] });
@@ -167,12 +157,37 @@ test("buildFdArgs types map to -t with full names before --", async () => {
   assert.ok(head.includes("directory"));
 });
 
-test("buildFdArgs rejects minDepth > maxDepth", async () => {
+test("buildFdArgs excludeGlobs map to -E before --", async () => {
   const { buildFdArgs } = await loadModule("src/search/arguments.ts");
-  assert.throws(
-    () => buildFdArgs({ minDepth: 5, maxDepth: 3 }),
-    /min.*max|depth|invalid/i,
-  );
+  const args = buildFdArgs({ excludeGlobs: ["node_modules"] });
+  const sep = args.indexOf("--");
+  const head = args.slice(0, sep);
+  const eIdx = head.indexOf("-E");
+  assert.ok(eIdx >= 0, "must include -E");
+  assert.equal(head[eIdx + 1], "node_modules");
+});
+
+test("buildFdArgs maxDepth maps to --max-depth before --", async () => {
+  const { buildFdArgs } = await loadModule("src/search/arguments.ts");
+  const args = buildFdArgs({ maxDepth: 5 });
+  const sep = args.indexOf("--");
+  const head = args.slice(0, sep);
+  const dIdx = head.indexOf("--max-depth");
+  assert.ok(dIdx >= 0, "must include --max-depth");
+  assert.equal(head[dIdx + 1], "5");
+});
+
+test("buildFdArgs omits removed params (case, hidden, noIgnore, matchMode, minDepth)", async () => {
+  const { buildFdArgs } = await loadModule("src/search/arguments.ts");
+  const args = buildFdArgs({});
+  const sep = args.indexOf("--");
+  const head = args.slice(0, sep);
+  assert.ok(!head.includes("-i") && !head.includes("-s"));
+  assert.ok(!head.includes("-H"));
+  assert.ok(!head.includes("-I"));
+  assert.ok(!head.includes("--fixed-strings"));
+  assert.ok(!head.includes("--glob"));
+  assert.ok(!head.includes("--min-depth"));
 });
 
 // ---------- schema additionalProperties and bounds ----------

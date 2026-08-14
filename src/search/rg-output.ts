@@ -23,6 +23,7 @@ import type {
   LineKind,
   PageDetails,
   RgFileDetail,
+  RgFileOnlyDetail,
   RgLineDetail,
   RgLineDisplay,
   Submatch,
@@ -69,6 +70,15 @@ interface RgResult {
     page: PageDetails;
     truncation: TruncationDetails;
     files: RgFileDetail[];
+  };
+}
+
+interface FilesOnlyResult {
+  content: TextContent[];
+  details: {
+    page: PageDetails;
+    truncation: TruncationDetails;
+    files: RgFileOnlyDetail[];
   };
 }
 
@@ -857,6 +867,116 @@ function buildResult(
   };
 }
 
+// ---------- files-only result builder ----------
+
+function buildFilesOnlyResult(
+  lineEvents: LineEvent[],
+  opts: BuildOptions,
+): FilesOnlyResult {
+  const matchEvents = lineEvents.filter((e) => e.kind === "match");
+
+  // Aggregate per file in first-seen order.
+  const fileOrder: string[] = [];
+  const fileMeta = new Map<string, {
+    displayPath: string;
+    pathEncoding: TextEncoding;
+    rawPathBase64?: string;
+    matchCount: number;
+  }>();
+
+  for (const m of matchEvents) {
+    let meta = fileMeta.get(m.pathKey);
+    if (!meta) {
+      meta = {
+        displayPath: m.displayPath,
+        pathEncoding: m.pathEncoding,
+        rawPathBase64: m.rawPathBase64,
+        matchCount: 0,
+      };
+      fileMeta.set(m.pathKey, meta);
+      fileOrder.push(m.pathKey);
+    }
+    meta.matchCount++;
+  }
+
+  const totalFiles = fileOrder.length;
+  const pageEnd = Math.min(opts.offset + opts.limit, totalFiles);
+  const pageKeys = fileOrder.slice(opts.offset, pageEnd);
+
+  // Reserve budget using the maximum-possible header.
+  const estHasMore = totalFiles > opts.offset + pageKeys.length;
+  const estNext = estHasMore ? opts.offset + pageKeys.length : null;
+  let estHeader = `rg files returned=${pageKeys.length} offset=${opts.offset} hasMore=${estHasMore} nextOffset=${estNext === null ? "null" : estNext}`;
+  if (opts.naturalEnd) estHeader += ` total=${totalFiles}`;
+
+  let remaining = opts.contentBudget - estHeader.length - 1;
+
+  const textParts: string[] = [];
+  let actualReturned = 0;
+  let contentBudgetReached = false;
+
+  for (const pathKey of pageKeys) {
+    const meta = fileMeta.get(pathKey)!;
+    const lineText = `file: ${escapeControls(meta.displayPath)} (${meta.matchCount} match${meta.matchCount === 1 ? "" : "es"})`;
+    const cost = lineText.length + 1;
+
+    if (remaining < cost) {
+      contentBudgetReached = true;
+      break;
+    }
+
+    textParts.push(lineText);
+    remaining -= cost;
+    actualReturned++;
+  }
+
+  const actualHasMore = totalFiles > opts.offset + actualReturned;
+  const actualNext = actualHasMore ? opts.offset + actualReturned : null;
+  let header = `rg files returned=${actualReturned} offset=${opts.offset} hasMore=${actualHasMore} nextOffset=${actualNext === null ? "null" : actualNext}`;
+  if (opts.naturalEnd) header += ` total=${totalFiles}`;
+
+  let text: string;
+  if (textParts.length === 0) {
+    text = `${header}\nNo files found`;
+  } else {
+    text = `${header}\n${textParts.join("\n")}`;
+  }
+
+  const page: PageDetails = {
+    offset: opts.offset,
+    limit: opts.limit,
+    returned: actualReturned,
+    hasMore: actualHasMore,
+    nextOffset: actualNext,
+  };
+  if (opts.naturalEnd) {
+    page.total = totalFiles;
+  }
+
+  const truncation: TruncationDetails = {
+    lineExcerpts: 0,
+    contextLinesOmitted: 0,
+    contentBudgetReached,
+  };
+
+  const files: RgFileOnlyDetail[] = [];
+  for (let i = opts.offset; i < opts.offset + actualReturned && i < fileOrder.length; i++) {
+    const meta = fileMeta.get(fileOrder[i]!)!;
+    const file: RgFileOnlyDetail = {
+      path: meta.displayPath,
+      pathEncoding: meta.pathEncoding,
+      matchCount: meta.matchCount,
+    };
+    if (meta.rawPathBase64) file.rawPathBase64 = meta.rawPathBase64;
+    files.push(file);
+  }
+
+  return {
+    content: [{ type: "text" as const, text }],
+    details: { page, truncation, files },
+  };
+}
+
 // ---------- RgAccumulator ----------
 
 export class RgAccumulator {
@@ -1025,6 +1145,40 @@ export class RgAccumulator {
       contentBudget: this.contentBudget,
     });
   }
+
+  finishFilesOnly(opts: FinishOptions): FilesOnlyResult {
+    if (this.capExceeded) {
+      throw new Error(`rg stdout exceeded ${this.stdoutCap}-byte cap`);
+    }
+    if (this.malformedError) throw this.malformedError;
+
+    if (this.pendingBuffer.length > 0) {
+      const lineStr = this.pendingBuffer.toString("utf-8");
+      this.pendingBuffer = Buffer.alloc(0);
+      if (opts.naturalEnd && lineStr.length > 0) {
+        try {
+          this.events.push(JSON.parse(lineStr));
+        } catch (e) {
+          throw new Error(
+            `malformed rg JSON line: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
+
+    const { lineEvents } = extractEvents(this.events, this.cwd, this.platform);
+
+    return buildFilesOnlyResult(lineEvents, {
+      offset: this.offset,
+      limit: this.limit,
+      cwd: this.cwd,
+      beforeContext: this.beforeContext,
+      afterContext: this.afterContext,
+      naturalEnd: opts.naturalEnd,
+      lineExcerptLimit: this.lineExcerptLimit,
+      contentBudget: this.contentBudget,
+    });
+  }
 }
 
 // ---------- formatRgResult ----------
@@ -1034,6 +1188,22 @@ export function formatRgResult(events: unknown[], opts: FormatOptions): RgResult
   const platform = opts.platform ?? process.platform;
   const { lineEvents, totalMatches } = extractEvents(events, cwd, platform);
   return buildResult(lineEvents, totalMatches, {
+    offset: opts.offset,
+    limit: opts.limit,
+    cwd,
+    beforeContext: opts.beforeContext,
+    afterContext: opts.afterContext,
+    naturalEnd: opts.naturalEnd,
+    lineExcerptLimit: opts.lineExcerptLimit ?? RG_LINE_EXCERPT_LIMIT,
+    contentBudget: opts.contentBudget ?? CONTENT_BUDGET,
+  });
+}
+
+export function formatRgFilesOnly(events: unknown[], opts: FormatOptions): FilesOnlyResult {
+  const cwd = opts.cwd ?? ".";
+  const platform = opts.platform ?? process.platform;
+  const { lineEvents } = extractEvents(events, cwd, platform);
+  return buildFilesOnlyResult(lineEvents, {
     offset: opts.offset,
     limit: opts.limit,
     cwd,
