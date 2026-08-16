@@ -11,6 +11,7 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayController } = await load("../../src/display/index.ts");
 const { default: registerDisplayBuiltins } = await load("../../src/display/builtins.ts");
+const { default: registerAnchoredReplace } = await load("../../src/anchored-edit/workspace-replace.ts");
 
 const OWN = { path: "/package/src/index.ts", source: "@odradekk/pi-square", scope: "user", origin: "package" };
 const BUILTIN = { path: "<builtin>", source: "built-in", scope: "temporary", origin: "top-level" };
@@ -41,8 +42,10 @@ function createHarness(config) {
     },
   };
   const controller = new DisplayController(config);
-  registerDisplayBuiltins(pi, controller);
-  return { events, definitions, controller };
+  let anchoredReadAvailable = false;
+  registerDisplayBuiltins(pi, controller, (available) => { anchoredReadAvailable = available; });
+  registerAnchoredReplace(pi, () => controller.config, () => controller.runtime, () => anchoredReadAvailable);
+  return { events, definitions, controller, activeTools: () => pi.getActiveTools() };
 }
 
 async function start(harness, cwd) {
@@ -88,11 +91,32 @@ try {
   const offResult = await off.definitions.get("read").execute("off", args, undefined, undefined, { cwd: workspace });
   assert.deepEqual(offResult.content, expected.content, "default-off read stays byte-identical to Pi");
   assert.equal(existsSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite")), false, "default-off read creates no anchored state");
-  assert.deepEqual(off.definitions.get("read").promptGuidelines, factory.promptGuidelines, "default-off prompt guidance stays factory-faithful");
+  assert.equal(off.definitions.get("replace"), undefined, "default-off anchored editing registers no replace tool");
+  assert.ok(off.activeTools().includes("edit"), "default-off keeps Pi edit active");
   off.controller.dispose();
+
+  const marker = Symbol.for("pi-tool-display.api.v1");
+  const previousMarker = Object.getOwnPropertyDescriptor(globalThis, marker);
+  Object.defineProperty(globalThis, marker, { configurable: true, value: {} });
+  const conflicted = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true } });
+  try {
+    await start(conflicted, workspace);
+    assert.equal(conflicted.definitions.get("replace"), undefined, "replace is unavailable when the anchored read override is blocked");
+    assert.ok(conflicted.activeTools().includes("edit"), "a blocked anchored read keeps Pi edit active");
+  } finally {
+    conflicted.controller.dispose();
+    if (previousMarker) Object.defineProperty(globalThis, marker, previousMarker);
+    else delete globalThis[marker];
+  }
 
   const on = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true } });
   await start(on, workspace);
+  const replace = on.definitions.get("replace");
+  assert.ok(replace, "enabled anchored editing registers replace");
+  assert.equal(replace.renderShell, "self", "replace uses the shared operational display shell");
+  assert.equal(typeof replace.renderCall, "function", "replace renders through the production decoration path");
+  assert.equal(typeof replace.renderResult, "function", "replace renders results through the production decoration path");
+  assert.ok(!on.activeTools().includes("edit"), "enabled anchored editing removes Pi edit from the active parent tools");
   const read = on.definitions.get("read");
   assert.ok(read.promptGuidelines.some((guideline) => /Do not invent anchors/.test(guideline)));
   assert.ok(read.promptGuidelines.some((guideline) => /inside the current workspace/.test(guideline)));
@@ -168,6 +192,11 @@ try {
     prunedStore.close();
   }
   pruning.controller.dispose();
+
+  on.controller.startSession(DEFAULT_CONFIG, { mode: "rpc" });
+  await start(on, workspace);
+  assert.ok(on.activeTools().includes("edit"), "a later disabled session restores Pi edit to the active parent tools");
+  assert.ok(!on.activeTools().includes("replace"), "a later disabled session removes replace from the active parent tools");
   on.controller.dispose();
 
   const corruptWorkspace = join(root, "corrupt-workspace");

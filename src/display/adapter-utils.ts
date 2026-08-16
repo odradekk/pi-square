@@ -52,6 +52,7 @@ export function asRecord(value: unknown): UnknownRecord {
  */
 export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
   "edit",
+  "replace",
   "write",
   "bash",
   "pwsh",

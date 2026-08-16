@@ -15,6 +15,16 @@ try {
   const load = jiti(import.meta.url, { moduleCache: false });
   const register = (await load("../src/index.ts")).default;
   const { childToolNames, createChildTools } = await load("../src/tool-catalog.ts");
+  const { createAnchoredReplaceToolDefinition } = await load("../src/anchored-edit/workspace-replace.ts");
+  const replaceTool = createAnchoredReplaceToolDefinition(process.cwd());
+  assert.equal(replaceTool.parameters.type, "object");
+  assert.equal(replaceTool.parameters.anyOf, undefined);
+  assert.equal(replaceTool.parameters.additionalProperties, false);
+  assert.deepEqual(replaceTool.parameters.required, ["remove_from", "remove_to", "replacement_text"]);
+  assert.equal(replaceTool.renderCall, undefined, "replace definitions stay renderer-free before parent decoration");
+  assert.equal(replaceTool.renderResult, undefined, "replace definitions stay renderer-free before parent decoration");
+  assert.ok(!childToolNames.includes("replace"), "replace must remain parent-only");
+
   const tools = new Map();
   const commands = new Map();
   const shortcuts = new Map();

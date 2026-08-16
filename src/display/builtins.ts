@@ -50,7 +50,7 @@ const transformReadModelContent: ReadModelContentTransform = (content) => conten
 
 const ANCHORED_READ_GUIDELINES = [
   "When anchoredEditing.enabled is on, read line prefixes are evidence from the current file. Do not invent anchors.",
-  "Read a file again after changing it; changed lines can have new anchors.",
+  "After a replace, use its returned diff rows for an immediate follow-up; read again only when you need wider file context.",
   "Anchored read only serves paths inside the current workspace.",
 ];
 
@@ -763,9 +763,13 @@ function settingsDefinitions(
 export default function registerDisplayBuiltins(
   pi: ExtensionAPI,
   controller: DisplayController,
+  setAnchoredReadAvailable?: (available: boolean) => void,
 ): void {
+  let activeToolBaseline: readonly string[] | undefined;
   pi.on("session_start", async (_event, ctx) => {
     const active = [...pi.getActiveTools()];
+    activeToolBaseline ??= active;
+    setAnchoredReadAvailable?.(false);
     const diagnostics: string[] = [];
     if (Object.getOwnPropertyDescriptor(globalThis, KNOWN_PI_TOOL_DISPLAY_SYMBOL) !== undefined) {
       diagnostics.push("Known pi-tool-display renderer detected; all Pi built-in display overrides are blocked until it is removed and Pi is reloaded");
@@ -805,12 +809,18 @@ export default function registerDisplayBuiltins(
         anchoredRead ? guardAnchoredRead : undefined,
       ));
     }
-    if (!sameNames(active, pi.getActiveTools())) pi.setActiveTools(active);
-
     const owner = ownSource(pi);
     const winners = new Map(pi.getAllTools().map((tool) => [tool.name, tool.sourceInfo]));
     const expected = process.platform === "win32" ? NON_SHELL_NAMES : BUILTIN_NAMES;
     const losing = expected.filter((name) => names.has(name) && !sameSource(winners.get(name), owner));
+    const anchoredReadAvailable = anchoredReadEnabled
+      && names.has("read")
+      && !losing.includes("read");
+    const restoredActive = anchoredReadAvailable
+      ? activeToolBaseline.filter((name) => name !== "edit")
+      : [...activeToolBaseline];
+    if (!sameNames(restoredActive, pi.getActiveTools())) pi.setActiveTools(restoredActive);
+    setAnchoredReadAvailable?.(anchoredReadAvailable);
     if (losing.length > 0) {
       diagnostics.push(`Built-in display ownership conflict: ${losing.join(", ")}; reload after removing the earlier renderer`);
     }
