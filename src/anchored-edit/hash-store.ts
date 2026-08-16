@@ -1,7 +1,8 @@
 import { existsSync } from "fs";
+import { dirname } from "path";
 import { readFile, rename, mkdir, stat } from "fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { hashStorePath, hashStoreDir, legacyHashStorePath } from "./paths";
+import { hashStorePath, legacyHashStorePath } from "./paths";
 import { errCode, isRec, splitLines } from "./utils";
 import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
@@ -25,6 +26,12 @@ interface Prepared {
 export interface HashStore {
   readonly stmts: Prepared;
   readonly engine: "node:sqlite";
+  readonly owner: string | undefined;
+}
+
+export interface HashStoreLoadOptions {
+  owner?: string;
+  migrateLegacy?: boolean;
 }
 
 export interface UndoRecord {
@@ -116,12 +123,12 @@ function withBusyRetry<T>(fn: () => T): T {
   throw lastError;
 }
 
-function openDbWithBusyRetry(storePath: string): { db: DatabaseSync; stmts: Prepared } {
-  return withBusyRetry(() => openDb(storePath));
+function openDbWithBusyRetry(storePath: string, owner: string | undefined): { db: DatabaseSync; stmts: Prepared } {
+  return withBusyRetry(() => openDb(storePath, owner));
 }
 
-let cachedDb: { path: string; db: DatabaseSync; stmts: Prepared } | null = null;
-let opening: { path: string; promise: Promise<HashStore> } | null = null;
+let cachedDb: { path: string; owner: string | undefined; db: DatabaseSync; stmts: Prepared } | null = null;
+let opening: { path: string; owner: string | undefined; promise: Promise<HashStore> } | null = null;
 let exitHandlerRegistered = false;
 interface SnapshotCacheEntry {
   checksum: string;
@@ -130,12 +137,12 @@ interface SnapshotCacheEntry {
 }
 const snapshotCache = new Map<string, SnapshotCacheEntry>();
 export const SNAPSHOT_CACHE_LIMIT = 256;
-function openDb(storePath: string): { db: DatabaseSync; stmts: Prepared } {
+function openDb(storePath: string, owner: string | undefined): { db: DatabaseSync; stmts: Prepared } {
   const db = new DatabaseSync(storePath, {
     timeout: HASH_STORE_BUSY_TIMEOUT,
   });
   try {
-    return buildStore(db);
+    return buildStore(db, owner);
   } catch (error) {
     try {
       db.close();
@@ -146,16 +153,27 @@ function openDb(storePath: string): { db: DatabaseSync; stmts: Prepared } {
 
 function buildStore(
   db: DatabaseSync,
+  owner: string | undefined,
 ): { db: DatabaseSync; stmts: Prepared } {
+  const scoped = owner !== undefined;
+  const ownerColumn = scoped ? "owner TEXT NOT NULL, " : "";
+  const pathColumn = scoped ? "path TEXT NOT NULL, " : "path TEXT PRIMARY KEY, ";
+  const primaryKey = scoped ? ", PRIMARY KEY(owner, path)" : "";
+  const ownerWhere = scoped ? "owner = ? AND " : "";
+  const ownerValues = scoped ? "?, " : "";
+  const ownerColumns = scoped ? "owner, " : "";
+  const withOwner = (params: SqlParams): SqlParams => scoped ? [owner!, ...params] : params;
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
   db.exec(
     "CREATE TABLE IF NOT EXISTS snapshots (" +
-      "path TEXT PRIMARY KEY, " +
+      ownerColumn +
+      pathColumn +
       "checksum TEXT NOT NULL, " +
       "line_count INTEGER NOT NULL, " +
       "hashes TEXT NOT NULL, " +
       "updated_at INTEGER NOT NULL" +
+      primaryKey +
     ")"
   );
   db.exec(
@@ -166,65 +184,79 @@ function buildStore(
   );
   db.exec(
     "CREATE TABLE IF NOT EXISTS undo (" +
-      "path TEXT PRIMARY KEY, " +
+      ownerColumn +
+      pathColumn +
       "content TEXT NOT NULL, " +
       "bom TEXT NOT NULL, " +
       "ending TEXT NOT NULL, " +
       "hashes TEXT NOT NULL, " +
       "result_content TEXT NOT NULL, " +
       "updated_at INTEGER NOT NULL" +
+      primaryKey +
     ")"
   );
   db.exec(
     "CREATE TABLE IF NOT EXISTS served (" +
-      "path TEXT PRIMARY KEY, " +
+      ownerColumn +
+      pathColumn +
       "hashes TEXT NOT NULL, " +
       "updated_at INTEGER NOT NULL" +
+      primaryKey +
     ")"
   );
   const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
   if (versionRow && versionRow.value !== String(HASH_STORE_VERSION)) {
-    db.exec("DELETE FROM snapshots");
-    db.exec("DELETE FROM undo");
+    if (scoped) {
+      db.prepare("DELETE FROM snapshots WHERE owner = ?").run(owner!);
+      db.prepare("DELETE FROM undo WHERE owner = ?").run(owner!);
+    } else {
+      db.exec("DELETE FROM snapshots");
+      db.exec("DELETE FROM undo");
+    }
   }
   db.prepare(
     "INSERT INTO meta (key, value) VALUES ('version', ?) " +
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(String(HASH_STORE_VERSION));
-  const getStmt = db.prepare("SELECT hashes FROM snapshots WHERE path = ? AND checksum = ? AND line_count = ?");
-  const allStmt = db.prepare("SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served");
-  const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots");
-  const delStmt = db.prepare("DELETE FROM snapshots WHERE path = ?");
+  const conflictTarget = scoped ? "owner, path" : "path";
+  const getStmt = db.prepare(
+    `SELECT hashes FROM snapshots WHERE ${ownerWhere}path = ? AND checksum = ? AND line_count = ?`
+  );
+  const allStmt = db.prepare(scoped
+    ? "SELECT path FROM snapshots WHERE owner = ? UNION SELECT path FROM undo WHERE owner = ? UNION SELECT path FROM served WHERE owner = ?"
+    : "SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served");
+  const allHashesStmt = db.prepare(`SELECT path, hashes FROM snapshots${scoped ? " WHERE owner = ?" : ""}`);
+  const delStmt = db.prepare(`DELETE FROM snapshots WHERE ${ownerWhere}path = ?`);
   const upsertStmt = db.prepare(
-    "INSERT INTO snapshots (path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?) " +
-    "ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at"
+    `INSERT INTO snapshots (${ownerColumns}path, checksum, line_count, hashes, updated_at) VALUES (${ownerValues}?, ?, ?, ?, ?) ` +
+    `ON CONFLICT(${conflictTarget}) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at`
   );
   const undoUpsertStmt = db.prepare(
-    "INSERT INTO undo (path, content, bom, ending, hashes, result_content, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
-    "ON CONFLICT(path) DO UPDATE SET content = excluded.content, bom = excluded.bom, ending = excluded.ending, hashes = excluded.hashes, result_content = excluded.result_content, updated_at = excluded.updated_at"
+    `INSERT INTO undo (${ownerColumns}path, content, bom, ending, hashes, result_content, updated_at) VALUES (${ownerValues}?, ?, ?, ?, ?, ?, ?) ` +
+    `ON CONFLICT(${conflictTarget}) DO UPDATE SET content = excluded.content, bom = excluded.bom, ending = excluded.ending, hashes = excluded.hashes, result_content = excluded.result_content, updated_at = excluded.updated_at`
   );
   const undoGetStmt = db.prepare(
-    "SELECT content, bom, ending, hashes, result_content FROM undo WHERE path = ?"
+    `SELECT content, bom, ending, hashes, result_content FROM undo WHERE ${ownerWhere}path = ?`
   );
-  const undoDelStmt = db.prepare("DELETE FROM undo WHERE path = ?");
-  const servedGetStmt = db.prepare("SELECT hashes FROM served WHERE path = ?");
+  const undoDelStmt = db.prepare(`DELETE FROM undo WHERE ${ownerWhere}path = ?`);
+  const servedGetStmt = db.prepare(`SELECT hashes FROM served WHERE ${ownerWhere}path = ?`);
   const servedUpsertStmt = db.prepare(
-    "INSERT INTO served (path, hashes, updated_at) VALUES (?, ?, ?) " +
-    "ON CONFLICT(path) DO UPDATE SET hashes = excluded.hashes, updated_at = excluded.updated_at"
+    `INSERT INTO served (${ownerColumns}path, hashes, updated_at) VALUES (${ownerValues}?, ?, ?) ` +
+    `ON CONFLICT(${conflictTarget}) DO UPDATE SET hashes = excluded.hashes, updated_at = excluded.updated_at`
   );
-  const servedDelStmt = db.prepare("DELETE FROM served WHERE path = ?");
+  const servedDelStmt = db.prepare(`DELETE FROM served WHERE ${ownerWhere}path = ?`);
   const stmts: Prepared = {
-    get: (...params) => getStmt.get(...params) as Record<string, unknown> | undefined,
-    allPaths: (...params) => allStmt.all(...params) as Record<string, unknown>[],
-    allHashes: (...params) => allHashesStmt.all(...params) as Record<string, unknown>[],
-    deleteOne: (...params) => { withBusyRetry(() => { delStmt.run(...params); }); },
-    upsert: (...params) => { withBusyRetry(() => { upsertStmt.run(...params); }); },
-    undoUpsert: (...params) => { withBusyRetry(() => { undoUpsertStmt.run(...params); }); },
-    undoGet: (...params) => undoGetStmt.get(...params) as Record<string, unknown> | undefined,
-    undoDelete: (...params) => { withBusyRetry(() => { undoDelStmt.run(...params); }); },
-    servedGet: (...params) => servedGetStmt.get(...params) as Record<string, unknown> | undefined,
-    servedUpsert: (...params) => { withBusyRetry(() => { servedUpsertStmt.run(...params); }); },
-    servedDelete: (...params) => { withBusyRetry(() => { servedDelStmt.run(...params); }); },
+    get: (...params) => getStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
+    allPaths: (...params) => allStmt.all(...(scoped ? [owner!, owner!, owner!, ...params] : params)) as Record<string, unknown>[],
+    allHashes: (...params) => allHashesStmt.all(...withOwner(params)) as Record<string, unknown>[],
+    deleteOne: (...params) => { withBusyRetry(() => { delStmt.run(...withOwner(params)); }); },
+    upsert: (...params) => { withBusyRetry(() => { upsertStmt.run(...withOwner(params)); }); },
+    undoUpsert: (...params) => { withBusyRetry(() => { undoUpsertStmt.run(...withOwner(params)); }); },
+    undoGet: (...params) => undoGetStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
+    undoDelete: (...params) => { withBusyRetry(() => { undoDelStmt.run(...withOwner(params)); }); },
+    servedGet: (...params) => servedGetStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
+    servedUpsert: (...params) => { withBusyRetry(() => { servedUpsertStmt.run(...withOwner(params)); }); },
+    servedDelete: (...params) => { withBusyRetry(() => { servedDelStmt.run(...withOwner(params)); }); },
   };
   return { db, stmts };
 }
@@ -260,39 +292,40 @@ function shutdownDb(db: DatabaseSync): void {
   db.close();
 }
 
-async function openStore(storePath: string): Promise<HashStore> {
+async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<HashStore> {
   shutdownHashStore();
 
+  const owner = options.owner;
   await initHasher();
-  await mkdir(hashStoreDir(), { recursive: true });
+  await mkdir(dirname(storePath), { recursive: true });
 
   let existed = existsSync(storePath);
   let opened: { db: DatabaseSync; stmts: Prepared };
   try {
-    opened = openDbWithBusyRetry(storePath);
+    opened = openDbWithBusyRetry(storePath, owner);
   } catch (error) {
     if (!isCorruptionError(error)) throw error;
     console.error("Hash store failed to open, rebuilding:", error);
     await quarantineStore(storePath);
     existed = false;
-    opened = openDbWithBusyRetry(storePath);
+    opened = openDbWithBusyRetry(storePath, owner);
   }
   if (!isHealthy(opened.db)) {
     shutdownDb(opened.db);
     await quarantineStore(storePath);
     existed = false;
-    opened = openDbWithBusyRetry(storePath);
+    opened = openDbWithBusyRetry(storePath, owner);
   }
   const { db, stmts } = opened;
 
-  if (!existed) {
+  if (!existed && options.migrateLegacy !== false) {
     try {
       await migrateLegacy(db);
     } catch (error) {
       console.error("Hash store migration failed; continuing without legacy import:", error);
     }
   }
-  cachedDb = { path: storePath, db, stmts };
+  cachedDb = { path: storePath, owner, db, stmts };
 
   if (!exitHandlerRegistered) {
     exitHandlerRegistered = true;
@@ -305,22 +338,26 @@ async function openStore(storePath: string): Promise<HashStore> {
     }
   }
 
-  return { stmts, engine: "node:sqlite" };
+  return { stmts, engine: "node:sqlite", owner };
+}
+
+export function loadHashStoreAt(storePath: string, options: HashStoreLoadOptions = {}): Promise<HashStore> {
+  const owner = options.owner;
+  if (cachedDb && cachedDb.path === storePath && cachedDb.owner === owner && cachedDb.db.isOpen) {
+    return Promise.resolve({ stmts: cachedDb.stmts, engine: "node:sqlite", owner });
+  }
+  if (opening && opening.path === storePath && opening.owner === owner) {
+    return opening.promise;
+  }
+  const promise = openStore(storePath, options).finally(() => {
+    if (opening?.path === storePath && opening.owner === owner) opening = null;
+  });
+  opening = { path: storePath, owner, promise };
+  return promise;
 }
 
 export function loadHashStore(): Promise<HashStore> {
-  const storePath = hashStorePath();
-  if (cachedDb && cachedDb.path === storePath && cachedDb.db.isOpen) {
-    return Promise.resolve({ stmts: cachedDb.stmts, engine: "node:sqlite" });
-  }
-  if (opening && opening.path === storePath) {
-    return opening.promise;
-  }
-  const promise = openStore(storePath).finally(() => {
-    if (opening?.path === storePath) opening = null;
-  });
-  opening = { path: storePath, promise };
-  return promise;
+  return loadHashStoreAt(hashStorePath());
 }
 
 export function shutdownHashStore(): void {

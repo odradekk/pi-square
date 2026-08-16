@@ -263,7 +263,7 @@ This major release adds an explicit package export map for `.`, `./display`, and
 
 ## Configuration
 
-Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict. SSH profiles are the exception to normal overlay behavior: they are accepted only from the agent-level file and cannot be supplied or changed by a project repository.
+Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict. SSH profiles and `anchoredEditing` are agent-only settings: a project configuration that supplies either field is rejected as a whole.
 
 ```json
 {
@@ -294,6 +294,9 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
     }
   },
   "banner": {
+    "enabled": false
+  },
+  "anchoredEditing": {
     "enabled": false
   },
   "ssh": {
@@ -328,6 +331,8 @@ Non-secret settings live in `config/pi-square.json` at agent or project scope. C
 ```
 
 Replace the sample fingerprint with the target's independently verified OpenSSH SHA-256 fingerprint. Agent authentication uses `auth.socket` when supplied, then `SSH_AUTH_SOCK`, with Pageant as the Windows fallback. Private-key authentication instead uses `{ "method": "privateKey", "privateKeyPath": "~/.ssh/id_ed25519" }`; key content and passphrases do not belong in configuration.
+
+`anchoredEditing.enabled` defaults to `false`. When it is enabled in agent configuration, the registered Pi `read` tool adds stable, unique three-character prefixes to workspace text lines after Pi has read the file. Consecutive unchanged reads and changes limited to trailing whitespace keep the same prefixes. The feature preserves Pi image attachments, honors `offset` and `limit`, and gives named alternatives for paths outside the workspace, directories, non-text files, and over-limit source files. Its project-scoped snapshot and served-hash state is stored in `.pi/anchored-edit/hash-store.sqlite`; it is ignored by Git. The setting applies on the next session start.
 
 Display policy resolution is deliberately cross-axis: package defaults, agent defaults/family/tool, then project defaults/family/tool. Project scope therefore wins over every agent-level specificity. Families are `filesystem`, `search`, `execution`, `remote`, `workflow`, and `agent`. `motion` accepts `full`, `reduced`, or `off`; `resultMode` accepts `hidden`, `summary`, or `preview`; `diffView` accepts `auto`, `split`, or `unified`. `wordWrap: true` wraps metadata, rows, previews, and errors to the terminal width; `wordWrap: false` preserves explicit logical lines and truncates each overwide line without continuation rows. `previewLines` is 1-80, `expandedMaxLines` is 0-20,000, `diffSplitMinWidth` is 70-240, and `diffCollapsedLines` is 4-240. Boolean and numeric bounds are validated at the layer boundary, tool names use a bounded stable identifier format, and `display.tools` accepts at most 128 entries. Use `/display` to inspect field-level provenance and stage safe writes instead of editing by hand.
 

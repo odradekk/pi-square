@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import jiti from "jiti";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -154,6 +155,9 @@ try {
   assert.equal(shortcuts.has("alt+s"), false, "native footer must not register the former statusline shortcut");
   assert.equal(typeof tools.get("bash")?.renderCall, "function", "bash should use the shared display renderer after session start");
   assert.equal(typeof tools.get("bash")?.renderResult, "function", "bash should use the shared result renderer");
+  const factoryRead = createReadToolDefinition(ctx.cwd);
+  assert.deepEqual(tools.get("read")?.parameters, factoryRead.parameters, "anchored read must retain Pi's exact read schema");
+  assert.equal(tools.get("anchored-edit"), undefined, "anchored editing must not register a second tool");
   for (const name of [
     "rg", "fd", "pdf_search", "codegraph", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",

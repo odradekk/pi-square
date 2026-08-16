@@ -4,6 +4,10 @@ node_modules/
 # CodeGraph index database
 .codegraph/
 
+# Anchored read project state
+.pi/anchored-edit/hash-store.sqlite*
+**/.pi/anchored-edit/hash-store.sqlite*
+
 # Build and test output
 dist/
 build/

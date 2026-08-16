@@ -27,6 +27,14 @@ export function hashStorePath(): string {
   return join(configDir(), "hash-store.sqlite");
 }
 
+export function projectHashStorePath(workspaceRoot: string): string {
+  return join(workspaceRoot, ".pi", "anchored-edit", "hash-store.sqlite");
+}
+
+export function projectHashStoreDir(workspaceRoot: string): string {
+  return dirname(projectHashStorePath(workspaceRoot));
+}
+
 export function legacyHashStorePath(): string {
   return join(configDir(), "hash-store.json");
 }

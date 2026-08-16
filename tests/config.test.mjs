@@ -28,6 +28,7 @@ try {
     version: 2,
     footer: { mode: "native" },
     banner: { enabled: false },
+    anchoredEditing: { enabled: true },
     ssh: {
       maxSessions: 6,
       profiles: [{
@@ -54,9 +55,11 @@ try {
   const { loadConfig, DEFAULT_CONFIG } = await load("../src/core/config.ts");
   assert.equal(DEFAULT_CONFIG.version, 2);
   assert.equal(DEFAULT_CONFIG.banner.enabled, true);
+  assert.equal(DEFAULT_CONFIG.anchoredEditing.enabled, false);
   const loaded = loadConfig(projectDir);
   assert.equal(loaded.config.version, 2);
   assert.equal(loaded.config.banner.enabled, true);
+  assert.equal(loaded.config.anchoredEditing.enabled, true);
   assert.equal(loaded.config.ssh.maxSessions, 6);
   assert.equal(loaded.config.ssh.profiles.length, 1);
   assert.equal(loaded.config.ssh.profiles[0].targets[0].port, 22);
@@ -76,6 +79,14 @@ try {
   assert.equal(projectSsh.diagnostics.length, 2, "agent footer.mode deprecation + project SSH rejection");
   assert.ok(projectSsh.diagnostics.some((d) => /footer\.mode.*deprecated/.test(d.message)));
   assert.ok(projectSsh.diagnostics.some((d) => /config ignored/.test(d.message)));
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    anchoredEditing: { enabled: false },
+  }));
+  const projectAnchoredEditing = loadConfig(projectDir);
+  assert.equal(projectAnchoredEditing.config.anchoredEditing.enabled, true, "a project layer must not override agent-only anchored editing");
+  assert.ok(projectAnchoredEditing.diagnostics.some((d) => /config ignored/.test(d.message)));
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
     version: 1,
