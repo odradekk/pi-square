@@ -1,5 +1,6 @@
-import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { isWithinWorkspace, resolveWorkspacePath } from "../core/paths.ts";
 
 export class CodeGraphPathError extends Error {
   constructor(
@@ -10,27 +11,22 @@ export class CodeGraphPathError extends Error {
   }
 }
 
-function isWithin(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
-  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
-}
-
 export interface ResolvedCodeGraphPath {
   workspaceRoot: string;
   requestedPath: string;
 }
 
 export function resolveCodeGraphPath(cwd: string, requested?: string): ResolvedCodeGraphPath {
-  let workspaceRoot: string;
-  let requestedPath: string;
+  let resolvedPath: ReturnType<typeof resolveWorkspacePath>;
   try {
-    workspaceRoot = realpathSync(cwd);
-    requestedPath = realpathSync(resolve(workspaceRoot, requested ?? "."));
+    resolvedPath = resolveWorkspacePath(cwd, requested ?? ".", { rejectDoubleDotPrefix: true });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CodeGraphPathError("INVALID_PATH", `CodeGraph project path does not exist: ${reason}`);
   }
-  if (!isWithin(workspaceRoot, requestedPath)) {
+
+  const { workspaceRoot, absolutePath: requestedPath, isInsideWorkspace } = resolvedPath;
+  if (!isInsideWorkspace) {
     throw new CodeGraphPathError(
       "PATH_OUTSIDE_WORKSPACE",
       `CodeGraph project path must stay within the current workspace: ${workspaceRoot}`,
@@ -59,7 +55,7 @@ export function hasCodeGraphResidue(projectPath: string): boolean {
 
 export function findCodeGraphRoot(start: string, workspaceRoot: string): string | undefined {
   let current = start;
-  while (isWithin(workspaceRoot, current)) {
+  while (isWithinWorkspace(workspaceRoot, current, { rejectDoubleDotPrefix: true })) {
     if (hasCodeGraphIndex(current)) return current;
     if (current === workspaceRoot) break;
     const parent = dirname(current);

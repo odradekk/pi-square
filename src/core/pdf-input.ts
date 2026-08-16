@@ -1,5 +1,6 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { extname, relative, sep } from "node:path";
+import { resolveWorkspacePath } from "./paths.ts";
 
 export const MAX_PDF_BYTES = 50_000_000;
 
@@ -39,11 +40,6 @@ export interface ResolvedPdfPath {
 
 export interface ResolvedPdfInput extends ResolvedPdfPath {
   bytes: Uint8Array;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
-  return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 
 function hasPdfHeader(bytes: Uint8Array): boolean {
@@ -96,17 +92,16 @@ export function resolvePdfPath(cwd: string, requestedPath: string): ResolvedPdfP
   const trimmed = requestedPath.trim();
   if (!trimmed) throw new PdfInputError("INVALID_PDF_PATH", "path must identify a PDF file");
 
-  let workspaceRoot: string;
-  let absolutePath: string;
+  let resolvedPath: ReturnType<typeof resolveWorkspacePath>;
   try {
-    workspaceRoot = realpathSync(cwd);
-    absolutePath = realpathSync(resolve(workspaceRoot, trimmed));
+    resolvedPath = resolveWorkspacePath(cwd, trimmed);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new PdfInputError("INVALID_PDF_PATH", `PDF path does not exist or cannot be resolved: ${reason}`);
   }
 
-  if (!isWithin(workspaceRoot, absolutePath)) {
+  const { workspaceRoot, absolutePath, isInsideWorkspace } = resolvedPath;
+  if (!isInsideWorkspace) {
     throw new PdfInputError("PDF_OUTSIDE_WORKSPACE", "PDF path must stay within the current workspace, including through symlinks");
   }
   if (extname(absolutePath).toLowerCase() !== ".pdf") {
