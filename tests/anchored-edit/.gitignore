@@ -1,0 +1,3 @@
+# Vendored-suite scratch space: upstream test fixtures create per-test temp
+# homes under `process.cwd()/.tmp` while the suite runs.
+.tmp/

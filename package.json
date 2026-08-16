@@ -57,7 +57,8 @@
     "@types/ssh2": "1.15.5",
     "jiti": "^2.7.0",
     "typebox": "1.1.38",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "4.1.8"
   },
   "pi": {
     "extensions": [
@@ -83,7 +84,10 @@
   "dependencies": {
     "@cantoo/pdf-lib": "2.7.3",
     "@colbymchenry/codegraph": "1.4.1",
+    "diff": "8.0.4",
+    "file-type": "21.3.4",
     "pdfjs-dist": "6.1.200",
-    "ssh2": "1.17.0"
+    "ssh2": "1.17.0",
+    "xxhash-wasm": "1.1.0"
   }
 }
