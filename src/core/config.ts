@@ -123,9 +123,14 @@ const SshLayerSchema = Type.Object({
   profiles: Type.Optional(Type.Array(SshProfileSchema, { maxItems: 64 })),
 }, { additionalProperties: false });
 
+const AnchoredEditingSchema = Type.Object({
+  enabled: Type.Optional(Type.Boolean()),
+}, { additionalProperties: false });
+
 const AgentConfigLayerSchema = Type.Object({
   ...CommonLayerProperties,
   ssh: Type.Optional(SshLayerSchema),
+  anchoredEditing: Type.Optional(AnchoredEditingSchema),
 }, { additionalProperties: false });
 
 const ProjectConfigLayerSchema = Type.Object(CommonLayerProperties, { additionalProperties: false });
@@ -163,6 +168,10 @@ export interface SshConfig {
   profiles: SshProfileConfig[];
 }
 
+export interface AnchoredEditingConfig {
+  enabled: boolean;
+}
+
 // ── Display effective config ────────────────────────────────────────
 
 export interface DisplayLayerSource {
@@ -182,6 +191,7 @@ export interface PiSquareConfig {
     enabled: boolean;
   };
   ssh: SshConfig;
+  anchoredEditing: AnchoredEditingConfig;
   display: DisplayEffectiveConfig;
 }
 
@@ -189,6 +199,7 @@ export const DEFAULT_CONFIG: Readonly<PiSquareConfig> = Object.freeze({
   version: 2,
   banner: Object.freeze({ enabled: true }),
   ssh: Object.freeze({ maxSessions: 8, profiles: Object.freeze([]) }) as unknown as SshConfig,
+  anchoredEditing: Object.freeze({ enabled: false }),
   display: Object.freeze({ motion: DEFAULT_DISPLAY_MOTION }) as DisplayEffectiveConfig,
 });
 
@@ -374,7 +385,11 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
         diagnostics.push(footerModeDiagnostic(agentPath));
       }
       config = mergeCommonLayer(config, agentLayer.value);
-      config = { ...config, ssh: normalizeSsh(agentLayer.value.ssh) };
+      config = {
+        ...config,
+        ssh: normalizeSsh(agentLayer.value.ssh),
+        anchoredEditing: { enabled: agentLayer.value.anchoredEditing?.enabled ?? config.anchoredEditing.enabled },
+      };
       agentDisplay = agentLayer.value.display;
       sources.push(agentPath);
     }

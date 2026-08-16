@@ -16,6 +16,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { setBannerDisplayDiagnostic } from "../banner";
+import { guardAnchoredRead, initializeAnchoredReadStore, transformAnchoredReadContent } from "../anchored-edit/read-transform";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
@@ -36,9 +37,29 @@ type GenericDefinition = ToolDefinition<any, any, any>;
 type GenericAdapter = InternalToolDisplayAdapter<any, any, any>;
 type ReadModelContentTransform = (
   content: AgentToolResult<unknown>["content"],
-) => AgentToolResult<unknown>["content"];
+  params: unknown,
+  cwd: string,
+) => AgentToolResult<unknown>["content"] | Promise<AgentToolResult<unknown>["content"]>;
+
+type ReadModelContentGuard = (
+  params: unknown,
+  cwd: string,
+) => AgentToolResult<unknown>["content"] | undefined | Promise<AgentToolResult<unknown>["content"] | undefined>;
 
 const transformReadModelContent: ReadModelContentTransform = (content) => content;
+
+const ANCHORED_READ_GUIDELINES = [
+  "When anchoredEditing.enabled is on, read line prefixes are evidence from the current file. Do not invent anchors.",
+  "Read a file again after changing it; changed lines can have new anchors.",
+  "Anchored read only serves paths inside the current workspace.",
+];
+
+function withAnchoredReadGuidelines(definition: GenericDefinition): GenericDefinition {
+  return {
+    ...definition,
+    promptGuidelines: [...(definition.promptGuidelines ?? []), ...ANCHORED_READ_GUIDELINES],
+  };
+}
 
 function safeDiagnostic(value: unknown): string {
   return truncateCodePoints(sanitizeDisplayLine(value), MAX_DIAGNOSTIC_CHARS);
@@ -646,13 +667,18 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
 function withReadModelContentTransform(
   definition: GenericDefinition,
   transform: ReadModelContentTransform,
+  fallbackCwd: string,
+  guard?: ReadModelContentGuard,
 ): GenericDefinition {
   const execute = definition.execute;
   return {
     ...definition,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const executionCwd = ctx?.cwd ?? fallbackCwd;
+      const guarded = await guard?.(params, executionCwd);
+      if (guarded !== undefined) return { content: guarded, details: undefined };
       const result = await execute(toolCallId, params, signal, onUpdate, ctx);
-      const content = transform(result.content);
+      const content = await transform(result.content, params, executionCwd);
       return content === result.content ? result : { ...result, content };
     },
   };
@@ -663,11 +689,12 @@ export function decorateBuiltinDefinition(
   cwd: string,
   runtime: DisplayRuntimeProvider,
   readContentTransform?: ReadModelContentTransform,
+  readContentGuard?: ReadModelContentGuard,
 ): GenericDefinition {
   const name = definition.name as BuiltinName;
   if (!BUILTIN_NAMES.includes(name)) throw new Error(`unsupported Pi built-in display tool: ${definition.name}`);
   const transformed = name === "read" && readContentTransform
-    ? withReadModelContentTransform(definition, readContentTransform)
+    ? withReadModelContentTransform(definition, readContentTransform, cwd, readContentGuard)
     : definition;
   return decorateToolDefinition(transformed, runtime, adapterFor(name, cwd));
 }
@@ -748,6 +775,14 @@ export default function registerDisplayBuiltins(
 
     const settings = settingsDefinitions(ctx.cwd, ctx);
     diagnostics.push(...settings.diagnostics);
+    const anchoredReadEnabled = controller.config?.anchoredEditing?.enabled === true;
+    if (anchoredReadEnabled) {
+      try {
+        await initializeAnchoredReadStore(ctx.cwd);
+      } catch (error) {
+        diagnostics.push(`Anchored read store unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const definitions: GenericDefinition[] = [
       createGrepToolDefinition(ctx.cwd),
       createFindToolDefinition(ctx.cwd),
@@ -758,8 +793,17 @@ export default function registerDisplayBuiltins(
     ];
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
     for (const definition of definitions) {
-      const readContentTransform = definition.name === "read" ? transformReadModelContent : undefined;
-      pi.registerTool(decorateBuiltinDefinition(definition, ctx.cwd, () => controller.runtime, readContentTransform));
+      const anchoredRead = definition.name === "read" && anchoredReadEnabled;
+      const readContentTransform = definition.name === "read"
+        ? (anchoredRead ? transformAnchoredReadContent : transformReadModelContent)
+        : undefined;
+      pi.registerTool(decorateBuiltinDefinition(
+        anchoredRead ? withAnchoredReadGuidelines(definition) : definition,
+        ctx.cwd,
+        () => controller.runtime,
+        readContentTransform,
+        anchoredRead ? guardAnchoredRead : undefined,
+      ));
     }
     if (!sameNames(active, pi.getActiveTools())) pi.setActiveTools(active);
 
