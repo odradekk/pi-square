@@ -92,6 +92,7 @@ const suites = [
   "codegraph/paths.test.mjs",
   "codegraph/tool.test.mjs",
   "codegraph/integration.test.mjs",
+  "anchored-edit/run.mjs",
   "search/run.mjs",
   ...readdirSync(join(testsDir, "subagents"))
     .filter((name) => name.endsWith(".test.mjs"))

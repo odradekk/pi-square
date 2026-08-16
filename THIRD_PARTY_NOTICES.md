@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors prebuilt search binaries and installs exact semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
+This extension vendors prebuilt search binaries, a hash-anchored editing implementation, and exact semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
 
 ## Included Software
 
@@ -41,6 +41,28 @@ This extension vendors prebuilt search binaries and installs exact semantic-code
 - Upstream optionally installs `cpu-features` `0.0.10` (MIT), with `buildcheck` `0.0.7` and `nan` `2.28.0` (both MIT), to accelerate supported crypto paths. The addon is optional and ssh2 retains its portable JavaScript fallback when it is absent or cannot build.
 - pi-square uses only the SSH client, interactive shell/PTY, agent/private-key authentication, keepalive, host-verification, signal, and channel stream APIs. It does not expose ssh2's server, SFTP, forwarding, agent-forwarding, password, keyboard-interactive, proxy, or connection-hopping capabilities.
 
+### hash-anchored editing (`src/anchored-edit/`)
+- Upstream: https://github.com/YuGiMob/pi-hashline-edit-pro
+- License: MIT — Copyright (c) 2026 RimuruW and Yugimob
+- Version: `2.5.3`, vendored at exact commit `1635cbfd9e7ea3d51f262774b08ded1948caa3ba` from `https://github.com/YuGiMob/pi-hashline-edit-pro.git`.
+- The vendored implementation covers the upstream root `index.ts`, `src/`, and `prompts/` trees as one owned module under `src/anchored-edit/`. Its test suite is retained under `tests/anchored-edit/` and is not published. Upstream's error-code table is retained as `src/anchored-edit/ERROR-CODES.md`.
+- Modification status: adapted for pi-square without changing behavior. Adaptations: entry imports re-rooted to the module directory; prompt references changed from `../prompts/` to `./prompts/`; the `read` and `undo_last_replace` parameter schemas made strict top-level `Type.Object`s with `additionalProperties: false` on the pinned TypeBox `1.1.38`; `Array.prototype.findLast` replaced with an equivalent ES2022 reverse scan; an unused `valEdit` parameter renamed to satisfy `noUnusedParameters`. No session registration occurs in this vendoring step.
+
+### `diff`
+- Upstream: https://github.com/kpdecker/jsdiff
+- License: BSD-3-Clause
+- Version: `8.0.4`, installed as an exact npm dependency. The same version is already pinned by `@earendil-works/pi-coding-agent` `0.80.6`, so the dependency dedupes to one installed copy. Vendored editing uses its `diffLines` API for edit and undo diffs.
+
+### `file-type`
+- Upstream: https://github.com/sindresorhus/file-type
+- License: MIT
+- Version: `21.3.4`, installed as an exact npm dependency. Pure JavaScript; used only for magic-byte sniffing when classifying files as text, image, or binary.
+
+### `xxhash-wasm`
+- Upstream: https://github.com/jungomi/xxhash-wasm
+- License: MIT
+- Version: `1.1.0`, installed as an exact npm dependency. WebAssembly xxHash used to derive the stable per-line hash anchors.
+
 ### CodeGraph
 - Upstream: https://github.com/colbymchenry/codegraph
 - License: MIT
@@ -71,3 +93,4 @@ This extension vendors prebuilt search binaries and installs exact semantic-code
 - PDF.js and its optional canvas packages are installed by npm with lockfile integrity metadata. `pdf_search` resolves only package-local assets and keeps extracted text in bounded memory; it creates no PDF cache, index, or artifact on disk.
 - ssh2 and its transitive packages are installed by npm with lockfile integrity metadata. The SSH wrapper always supplies a pinned-fingerprint `hostVerifier`, disables agent forwarding, keeps remote output in bounded memory, and creates no SSH cache, log, socket, or artifact.
 - CodeGraph index databases live under each explicitly initialized project's `.codegraph/` directory and are not vendored or persisted by pi-square itself.
+- The hash-anchored editing module's `diff`, `file-type`, and `xxhash-wasm` dependencies are portable JavaScript/WASM installed by npm with lockfile integrity metadata. Its persistent hash store, undo history, and served-hash records live in SQLite under the user's config directory (`~/.config/pi-hashline-edit-pro/`), created by the vendored code, not by pi-square core.
