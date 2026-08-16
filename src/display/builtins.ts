@@ -34,6 +34,11 @@ const MAX_DIAGNOSTIC_CHARS = 500;
 type BuiltinName = typeof BUILTIN_NAMES[number];
 type GenericDefinition = ToolDefinition<any, any, any>;
 type GenericAdapter = InternalToolDisplayAdapter<any, any, any>;
+type ReadModelContentTransform = (
+  content: AgentToolResult<unknown>["content"],
+) => AgentToolResult<unknown>["content"];
+
+const transformReadModelContent: ReadModelContentTransform = (content) => content;
 
 function safeDiagnostic(value: unknown): string {
   return truncateCodePoints(sanitizeDisplayLine(value), MAX_DIAGNOSTIC_CHARS);
@@ -638,14 +643,33 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   } as GenericAdapter;
 }
 
+function withReadModelContentTransform(
+  definition: GenericDefinition,
+  transform: ReadModelContentTransform,
+): GenericDefinition {
+  const execute = definition.execute;
+  return {
+    ...definition,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const result = await execute(toolCallId, params, signal, onUpdate, ctx);
+      const content = transform(result.content);
+      return content === result.content ? result : { ...result, content };
+    },
+  };
+}
+
 export function decorateBuiltinDefinition(
   definition: GenericDefinition,
   cwd: string,
   runtime: DisplayRuntimeProvider,
+  readContentTransform?: ReadModelContentTransform,
 ): GenericDefinition {
   const name = definition.name as BuiltinName;
   if (!BUILTIN_NAMES.includes(name)) throw new Error(`unsupported Pi built-in display tool: ${definition.name}`);
-  return decorateToolDefinition(definition, runtime, adapterFor(name, cwd));
+  const transformed = name === "read" && readContentTransform
+    ? withReadModelContentTransform(definition, readContentTransform)
+    : definition;
+  return decorateToolDefinition(transformed, runtime, adapterFor(name, cwd));
 }
 
 function sourceKey(info: SourceInfo): string {
@@ -734,7 +758,8 @@ export default function registerDisplayBuiltins(
     ];
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
     for (const definition of definitions) {
-      pi.registerTool(decorateBuiltinDefinition(definition, ctx.cwd, () => controller.runtime));
+      const readContentTransform = definition.name === "read" ? transformReadModelContent : undefined;
+      pi.registerTool(decorateBuiltinDefinition(definition, ctx.cwd, () => controller.runtime, readContentTransform));
     }
     if (!sameNames(active, pi.getActiveTools())) pi.setActiveTools(active);
 

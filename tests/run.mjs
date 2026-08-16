@@ -25,6 +25,7 @@ const suites = [
   "display/local-execution.test.mjs",
   "display/remote-agent.test.mjs",
   "display/builtins.test.mjs",
+  "display/read-content-transform.test.mjs",
   "display/conflicts.test.mjs",
   "display/public-adapter.test.mjs",
   "display/integration.test.mjs",
