@@ -1,5 +1,11 @@
 # @odradekk/pi-square
 
+## 9.0.0
+
+### Major Changes
+
+- 2121f6c: Add opt-in workspace-scoped hash-anchored read, replace, and revert tools that replace Pi edit in enabled parent sessions.
+
 ## 8.0.0
 
 ### Major Changes
