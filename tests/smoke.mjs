@@ -54,7 +54,7 @@ try {
 
   const expectedTools = [
     "ask", "codegraph", "delegate", "docs", "fd", "fetch", "github",
-    "libs", "parse", "pdf_search", "replace", "resume", "rg", "search",
+    "libs", "parse", "pdf_search", "replace", "resume", "revert", "rg", "search",
     "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
@@ -99,13 +99,14 @@ try {
     return tool;
   };
   assert.ok(session.agent.state.tools.some((tool) => tool.name === "replace"), "anchored replace must be active when enabled");
+  assert.ok(session.agent.state.tools.some((tool) => tool.name === "revert"), "anchored revert must be active when enabled");
   assert.ok(!session.agent.state.tools.some((tool) => tool.name === "edit"), "Pi edit must be inactive when anchored editing is enabled");
 
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
   for (const toolName of [
-    "read", "grep", "find", "ls", "replace", "write", "bash",
+    "read", "grep", "find", "ls", "replace", "revert", "write", "bash",
     ...expectedTools,
   ]) {
     const definition = session.getToolDefinition(toolName);

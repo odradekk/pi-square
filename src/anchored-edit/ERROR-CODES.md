@@ -18,7 +18,7 @@ documented here, and every code documented here is emitted by the module source;
 | `[E_NOT_FOUND]` | The path does not exist. |
 | `[E_ACCESS]` | The file is not readable or writable. |
 | `[E_NOT_TEXT]` | The path is a directory, binary file, image, or UTF-16/UTF-32 encoded text; hashline editing only supports text files. |
-| `[E_UNDO_STALE]` | `undo_last_replace` refused: the file was modified or deleted after the last replace. |
+| `[E_UNDO_STALE]` | `revert` refused: the file was modified or deleted after the last replace. |
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted to the hash store; the `replace` was refused and the file was left unchanged. |
 | `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 238,328-line hashline limit or the 100MB size limit. |

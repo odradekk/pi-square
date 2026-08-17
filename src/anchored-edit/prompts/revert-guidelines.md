@@ -1,0 +1,2 @@
+- `revert`: restores only the most recent `replace` on the file. A successful `write` to that file clears the revert history; a failed write keeps it. Call `revert` immediately when a replace diff shows removed rows you meant to keep, such as a closing brace, import, or declaration.
+- `revert`: its post-revert diff has `+HASH│` and ` HASH│` rows with valid restored anchors. Use those rows for follow-up replaces without another read.

@@ -99,6 +99,7 @@ const EXPECTED_TITLES = {
   ls: "List",
   edit: "Edit",
   replace: "Replace",
+  revert: "Revert",
   write: "Write",
   find: "Find",
   fd: "File search",

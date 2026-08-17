@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAskUser from "./ask-user";
 import registerAnchoredReplace from "./anchored-edit/workspace-replace";
+import registerAnchoredRevert from "./anchored-edit/workspace-revert";
 import registerBanner from "./banner";
 import registerCodeGraph from "./codegraph";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config";
@@ -40,6 +41,12 @@ export default function piSquare(pi: ExtensionAPI): void {
   let anchoredReadAvailable = false;
   registerDisplayBuiltins(pi, display, (available) => { anchoredReadAvailable = available; });
   registerAnchoredReplace(
+    pi,
+    () => display.config,
+    () => display.runtime,
+    () => anchoredReadAvailable,
+  );
+  registerAnchoredRevert(
     pi,
     () => display.config,
     () => display.runtime,

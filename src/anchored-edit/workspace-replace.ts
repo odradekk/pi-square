@@ -8,8 +8,7 @@ import type { DisplayRuntimeProvider } from "../display/tool-renderer.ts";
 import { resolveTarget, writeAtomic } from "./fs-write.ts";
 import { safeSnapId } from "./file-reader.ts";
 import { AnchorMismatchError, RangeStaleError } from "./hashline/index.ts";
-import { loadHashStoreAt, type HashStore } from "./hash-store.ts";
-import { projectHashStorePath } from "./paths.ts";
+import { loadProjectHashStore, outsideWorkspaceError } from "./workspace-support.ts";
 import {
   assertReq,
   editToolSchema,
@@ -25,8 +24,6 @@ import { loadGuide, loadP } from "./prompts.ts";
 import { recordServedDiffSafe } from "./served.ts";
 import { abortIf, isRec, makePrepareArguments } from "./utils.ts";
 import { normReq } from "./replace-normalize.ts";
-
-const PROJECT_OWNER = "parent";
 
 type WorkspaceReplaceDefinition = ToolDefinition<any, ReplaceDetails, unknown>;
 
@@ -53,19 +50,6 @@ function anchorWarning(error: RangeStaleError | AnchorMismatchError): {
   };
 }
 
-function outsideWorkspaceError(path: string): Error {
-  return new Error(
-    `[E_OUTSIDE_WORKSPACE] ${path} resolves outside the workspace. Disable anchoredEditing.enabled to use Pi's built-in edit for that path.`,
-  );
-}
-
-async function projectStore(workspaceRoot: string): Promise<HashStore> {
-  return loadHashStoreAt(projectHashStorePath(workspaceRoot), {
-    owner: PROJECT_OWNER,
-    migrateLegacy: false,
-  });
-}
-
 /**
  * Creates the parent-only anchored range replacement definition. The caller
  * applies the shared display adapter; this definition has no renderer fields.
@@ -84,7 +68,7 @@ export function createAnchoredReplaceToolDefinition(fallbackCwd: string): Worksp
       const canonical = normReq(params);
       assertReq(canonical, { allowMissingPath: true });
       const workspace = resolveWorkspacePath(cwd, ".");
-      const store = await projectStore(workspace.workspaceRoot);
+      const store = await loadProjectHashStore(workspace.workspaceRoot);
       const resolution = isRec(canonical)
         ? await resolveMissingPath(canonical, store)
         : undefined;
