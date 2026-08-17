@@ -12,6 +12,7 @@ const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayController } = await load("../../src/display/index.ts");
 const { default: registerDisplayBuiltins } = await load("../../src/display/builtins.ts");
 const { default: registerAnchoredReplace } = await load("../../src/anchored-edit/workspace-replace.ts");
+const { default: registerAnchoredRevert } = await load("../../src/anchored-edit/workspace-revert.ts");
 
 const OWN = { path: "/package/src/index.ts", source: "@odradekk/pi-square", scope: "user", origin: "package" };
 const BUILTIN = { path: "<builtin>", source: "built-in", scope: "temporary", origin: "top-level" };
@@ -45,6 +46,7 @@ function createHarness(config) {
   let anchoredReadAvailable = false;
   registerDisplayBuiltins(pi, controller, (available) => { anchoredReadAvailable = available; });
   registerAnchoredReplace(pi, () => controller.config, () => controller.runtime, () => anchoredReadAvailable);
+  registerAnchoredRevert(pi, () => controller.config, () => controller.runtime, () => anchoredReadAvailable);
   return { events, definitions, controller, activeTools: () => pi.getActiveTools() };
 }
 
@@ -92,6 +94,7 @@ try {
   assert.deepEqual(offResult.content, expected.content, "default-off read stays byte-identical to Pi");
   assert.equal(existsSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite")), false, "default-off read creates no anchored state");
   assert.equal(off.definitions.get("replace"), undefined, "default-off anchored editing registers no replace tool");
+  assert.equal(off.definitions.get("revert"), undefined, "default-off anchored editing registers no revert tool");
   assert.ok(off.activeTools().includes("edit"), "default-off keeps Pi edit active");
   off.controller.dispose();
 
@@ -102,6 +105,7 @@ try {
   try {
     await start(conflicted, workspace);
     assert.equal(conflicted.definitions.get("replace"), undefined, "replace is unavailable when the anchored read override is blocked");
+    assert.equal(conflicted.definitions.get("revert"), undefined, "revert is unavailable when the anchored read override is blocked");
     assert.ok(conflicted.activeTools().includes("edit"), "a blocked anchored read keeps Pi edit active");
   } finally {
     conflicted.controller.dispose();
@@ -112,7 +116,12 @@ try {
   const on = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true } });
   await start(on, workspace);
   const replace = on.definitions.get("replace");
+  const revert = on.definitions.get("revert");
   assert.ok(replace, "enabled anchored editing registers replace");
+  assert.ok(revert, "enabled anchored editing registers revert");
+  assert.equal(revert.renderShell, "self", "revert uses the shared operational display shell");
+  assert.equal(typeof revert.renderCall, "function", "revert renders through the production decoration path");
+  assert.equal(typeof revert.renderResult, "function", "revert renders results through the production decoration path");
   assert.equal(replace.renderShell, "self", "replace uses the shared operational display shell");
   assert.equal(typeof replace.renderCall, "function", "replace renders through the production decoration path");
   assert.equal(typeof replace.renderResult, "function", "replace renders results through the production decoration path");
@@ -197,6 +206,7 @@ try {
   await start(on, workspace);
   assert.ok(on.activeTools().includes("edit"), "a later disabled session restores Pi edit to the active parent tools");
   assert.ok(!on.activeTools().includes("replace"), "a later disabled session removes replace from the active parent tools");
+  assert.ok(!on.activeTools().includes("revert"), "a later disabled session removes revert from the active parent tools");
   on.controller.dispose();
 
   const corruptWorkspace = join(root, "corrupt-workspace");

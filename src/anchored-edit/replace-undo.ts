@@ -54,14 +54,14 @@ export async function saveUndo(
   };
 }
 
-export async function getUndo(path: string): Promise<UndoEntry | undefined> {
+export async function getUndo(path: string, store?: HashStore): Promise<UndoEntry | undefined> {
   try {
-    const store = await loadHashStore();
-    const record = getUndoEntry(store, path);
+    const hashStore = store ?? await loadHashStore();
+    const record = getUndoEntry(hashStore, path);
     if (!record) return undefined;
     const originalEnding = record.ending;
     if (originalEnding !== "\r\n" && originalEnding !== "\n" && originalEnding !== "\r") {
-      await deleteUndo(store, path);
+      await deleteUndo(hashStore, path);
       return undefined;
     }
     return {
@@ -77,10 +77,10 @@ export async function getUndo(path: string): Promise<UndoEntry | undefined> {
   }
 }
 
-export async function clearUndo(path: string): Promise<void> {
+export async function clearUndo(path: string, store?: HashStore): Promise<void> {
   try {
-    const store = await loadHashStore();
-    deleteUndo(store, path);
+    const hashStore = store ?? await loadHashStore();
+    deleteUndo(hashStore, path);
   } catch (error) {
     console.error("Failed to clear undo entry:", error);
   }
