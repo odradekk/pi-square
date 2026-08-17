@@ -46,6 +46,13 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     description: "Edit a file using targeted text replacement",
   },
   {
+    name: "replace",
+    family: "filesystem",
+    parent: true,
+    child: false,
+    description: "Replace an anchored range in a workspace file",
+  },
+  {
     name: "write",
     family: "filesystem",
     parent: true,

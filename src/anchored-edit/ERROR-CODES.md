@@ -1,10 +1,9 @@
 # Error codes
 
-Error-code contract for the vendored hash-anchored editing module. Every code
-emitted by the module source is documented here, and every code documented here
-is emitted by the module source; `tests/anchored-edit/core/error-codes.test.ts`
-enforces both directions. The table is vendored verbatim from the upstream
-project README (see `THIRD_PARTY_NOTICES.md`).
+Error-code contract for the vendored hash-anchored editing module and its
+pi-square workspace wrappers. Every code emitted by the module source is
+documented here, and every code documented here is emitted by the module source;
+`tests/anchored-edit/core/error-codes.test.ts` enforces both directions.
 
 | Code | Meaning |
 | --- | --- |
@@ -23,3 +22,4 @@ project README (see `THIRD_PARTY_NOTICES.md`).
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted to the hash store; the `replace` was refused and the file was left unchanged. |
 | `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 238,328-line hashline limit or the 100MB size limit. |
+| `[E_OUTSIDE_WORKSPACE]` | The canonical target resolves outside the workspace; disable anchored editing to use the Pi built-in path. |

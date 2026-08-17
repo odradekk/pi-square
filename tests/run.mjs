@@ -27,6 +27,7 @@ const suites = [
   "display/builtins.test.mjs",
   "display/read-content-transform.test.mjs",
   "display/anchored-read.test.mjs",
+  "display/anchored-replace.test.mjs",
   "display/conflicts.test.mjs",
   "display/public-adapter.test.mjs",
   "display/integration.test.mjs",

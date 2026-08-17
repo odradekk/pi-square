@@ -77,12 +77,16 @@ export type ReqParams = {
   replacement_text: string;
 };
 
+type ReqParamsWithOptionalPath = Omit<ReqParams, "path"> & { path?: string };
+
 export type ReplaceDetails = {
   diff: string;
   firstChangedLine?: number;
   snapshotId?: string;
   classification?: "noop";
   metrics?: RMetrics;
+  status?: "warning";
+  errorCode?: string;
 };
 
 interface PipelineResult {
@@ -106,16 +110,26 @@ const PREVIEW_DEBOUNCE_MS = 150;
 
 const ROOT_KS = new Set(["path", "remove_from", "remove_to", "replacement_text"]);
 
+export function assertReq(request: unknown): asserts request is ReqParams;
 export function assertReq(
   request: unknown,
-): asserts request is ReqParams {
+  options: { allowMissingPath: true },
+): asserts request is ReqParamsWithOptionalPath;
+export function assertReq(
+  request: unknown,
+  { allowMissingPath = false }: { allowMissingPath?: boolean } = {},
+): void {
   if (!isRec(request)) {
     throw new Error("[E_BAD_SHAPE] Edit request must be an object.");
   }
 
   rejectUnknownFields(request, ROOT_KS, "Edit request");
 
-  if (typeof request.path !== "string" || request.path.length === 0) {
+  const hasPath = Object.hasOwn(request, "path");
+  if (
+    (hasPath && (typeof request.path !== "string" || request.path.length === 0))
+    || (!hasPath && !allowMissingPath)
+  ) {
     throw new Error('[E_BAD_SHAPE] Edit request requires a non-empty "path" string.');
   }
 
@@ -130,10 +144,11 @@ export function assertReq(
   }
 }
 
-async function resolveMissingPath(
+export async function resolveMissingPath(
   request: Record<string, unknown>,
+  store?: HashStore,
 ): Promise<{ path: string; warning: string } | undefined> {
-  if (typeof request.path === "string") return undefined;
+  if (Object.hasOwn(request, "path")) return undefined;
   const from = request.remove_from;
   const to = request.remove_to;
   if (typeof from !== "string" || typeof to !== "string") return undefined;
@@ -145,13 +160,13 @@ async function resolveMissingPath(
       return undefined;
     }
   }
-  let store: HashStore;
+  let hashStore: HashStore;
   try {
-    store = await loadHashStore();
+    hashStore = store ?? await loadHashStore();
   } catch {
     return undefined;
   }
-  const matches = findSnapshotPaths(store, hashes);
+  const matches = findSnapshotPaths(hashStore, hashes);
   if (matches.length === 1) {
     return {
       path: matches[0]!,
@@ -248,9 +263,9 @@ export async function execPipeline(
   } catch (error) {
     if (options?.noPersist !== true) {
       if (error instanceof RangeStaleError) {
-        await recordServedSafe(absolutePath, error.rangeHashes, "range-stale feedback");
+        await recordServedSafe(absolutePath, error.rangeHashes, "range-stale feedback", hashStore);
       } else if (error instanceof AnchorMismatchError) {
-        await recordServedSafe(absolutePath, error.feedbackHashes, "anchor-mismatch feedback");
+        await recordServedSafe(absolutePath, error.feedbackHashes, "anchor-mismatch feedback", hashStore);
       }
     }
     throw error;

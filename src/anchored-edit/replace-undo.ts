@@ -2,7 +2,7 @@ import { readFile } from "fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadHashStore, upsertSnapshot, upsertUndo, getUndoEntry, deleteUndo, type UndoRecord } from "./hash-store";
+import { loadHashStore, upsertSnapshot, upsertUndo, getUndoEntry, deleteUndo, type HashStore, type UndoRecord } from "./hash-store";
 import { recordServedDiff } from "./served";
 import { contentChecksum } from "./hashline/hasher";
 import { resolveTarget, writeAtomic } from "./fs-write";
@@ -23,12 +23,13 @@ export interface UndoEntry {
 export async function saveUndo(
   path: string,
   entry: UndoEntry,
+  store?: HashStore,
 ): Promise<{ persisted: boolean; restore: () => Promise<void> }> {
   let previous: UndoRecord | undefined;
   try {
-    const store = await loadHashStore();
-    previous = getUndoEntry(store, path);
-    upsertUndo(store, path, {
+    const hashStore = store ?? await loadHashStore();
+    previous = getUndoEntry(hashStore, path);
+    upsertUndo(hashStore, path, {
       content: entry.content,
       bom: entry.bom,
       ending: entry.originalEnding,
@@ -43,9 +44,9 @@ export async function saveUndo(
     persisted: true,
     restore: async () => {
       try {
-        const store = await loadHashStore();
-        if (previous) upsertUndo(store, path, previous);
-        else deleteUndo(store, path);
+        const hashStore = store ?? await loadHashStore();
+        if (previous) upsertUndo(hashStore, path, previous);
+        else deleteUndo(hashStore, path);
       } catch (error) {
         console.error("Failed to restore previous undo entry:", error);
       }

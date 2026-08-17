@@ -46,11 +46,11 @@ export async function recordServedSafe(
   path: string,
   hashes: string[],
   context: string,
+  store?: HashStore,
 ): Promise<void> {
   if (hashes.length === 0) return;
   try {
-    const store = await loadHashStore();
-    recordServed(store, path, hashes);
+    recordServed(store ?? await loadHashStore(), path, hashes);
   } catch (error) {
     console.error(`Failed to record served state (${context}):`, error);
   }
@@ -60,7 +60,8 @@ export async function recordServedDiffSafe(
   path: string,
   diff: string,
   context: string,
+  store?: HashStore,
 ): Promise<void> {
   if (!diff) return;
-  await recordServedSafe(path, servedHashesFromDiff(diff), context);
+  await recordServedSafe(path, servedHashesFromDiff(diff), context, store);
 }

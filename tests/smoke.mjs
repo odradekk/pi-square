@@ -12,12 +12,19 @@ import {
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const agentDir = mkdtempSync(join(tmpdir(), "pi-square-smoke-agent-"));
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = agentDir;
 const cwd = join(agentDir, "workspace");
 mkdirSync(cwd, { recursive: true });
 writeFileSync(join(cwd, "sample.txt"), "pi-square-smoke-needle\n", "utf8");
 writeFileSync(join(cwd, "AGENTS.md"), "SMOKE PROJECT INSTRUCTIONS\n", "utf8");
 writeFileSync(join(agentDir, "SYSTEM.md"), "SMOKE NATIVE SYSTEM\n", "utf8");
 writeFileSync(join(agentDir, "auth.json"), "{}\n", "utf8");
+mkdirSync(join(agentDir, "config"), { recursive: true });
+writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+  version: 2,
+  anchoredEditing: { enabled: true },
+}, null, 2) + "\n");
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
   packages: [{ source: packageRoot }],
   quietStartup: true,
@@ -47,7 +54,7 @@ try {
 
   const expectedTools = [
     "ask", "codegraph", "delegate", "docs", "fd", "fetch", "github",
-    "libs", "parse", "pdf_search", "resume", "rg", "search",
+    "libs", "parse", "pdf_search", "replace", "resume", "rg", "search",
     "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
@@ -91,11 +98,14 @@ try {
     assert.ok(tool, `tool not active: ${name}`);
     return tool;
   };
+  assert.ok(session.agent.state.tools.some((tool) => tool.name === "replace"), "anchored replace must be active when enabled");
+  assert.ok(!session.agent.state.tools.some((tool) => tool.name === "edit"), "Pi edit must be inactive when anchored editing is enabled");
+
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
   for (const toolName of [
-    "read", "grep", "find", "ls", "edit", "write", "bash",
+    "read", "grep", "find", "ls", "replace", "write", "bash",
     ...expectedTools,
   ]) {
     const definition = session.getToolDefinition(toolName);
@@ -103,6 +113,17 @@ try {
     assert.equal(typeof definition?.renderResult, "function", `${toolName} must render results through pi-square`);
     assert.equal(definition?.renderShell, "self", `${toolName} must own its display shell`);
   }
+
+  const anchoredRead = await toolByName("read").execute("smoke:anchored-read", { path: "sample.txt" }, undefined, undefined);
+  const anchor = /^([A-Za-z0-9]{3})│pi-square-smoke-needle$/m.exec(anchoredRead.content[0].text)?.[1];
+  assert.ok(anchor, "enabled read must return an anchor");
+  const anchoredReplace = await toolByName("replace").execute("smoke:anchored-replace", {
+    path: "sample.txt",
+    remove_from: anchor,
+    remove_to: anchor,
+    replacement_text: "pi-square-smoke-replaced",
+  }, undefined, undefined);
+  assert.match(anchoredReplace.content[0].text, /Successfully replaced/);
 
   const todoResult = await toolByName("todo").execute("smoke:todo", {
     action: "set",
@@ -113,7 +134,7 @@ try {
   assert.equal(JSON.parse(todoResult.content[0].text).version, 1);
 
   const rgResult = await toolByName("rg").execute("smoke:rg", {
-    pattern: "pi-square-smoke-needle",
+    pattern: "pi-square-smoke-replaced",
     path: ".",
   }, undefined, undefined);
   assert.match(rgResult.content[0].text, /sample\.txt/);
@@ -127,5 +148,7 @@ try {
   console.log("pi-square smoke: OK");
 } finally {
   created.session.dispose?.();
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   rmSync(agentDir, { recursive: true, force: true });
 }
