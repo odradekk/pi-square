@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -88,14 +88,16 @@ try {
   const factory = createReadToolDefinition(workspace);
   const expected = await factory.execute("factory", args, undefined, undefined, { cwd: workspace });
 
-  const off = createHarness(DEFAULT_CONFIG);
+  const disabledConfig = { ...DEFAULT_CONFIG, anchoredEditing: { enabled: false, autoRead: true } };
+  const off = createHarness(disabledConfig);
   await start(off, workspace);
   const offResult = await off.definitions.get("read").execute("off", args, undefined, undefined, { cwd: workspace });
-  assert.deepEqual(offResult.content, expected.content, "default-off read stays byte-identical to Pi");
-  assert.equal(existsSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite")), false, "default-off read creates no anchored state");
-  assert.equal(off.definitions.get("replace"), undefined, "default-off anchored editing registers no replace tool");
-  assert.equal(off.definitions.get("revert"), undefined, "default-off anchored editing registers no revert tool");
-  assert.ok(off.activeTools().includes("edit"), "default-off keeps Pi edit active");
+  assert.deepEqual(offResult.content, expected.content, "explicitly disabled read stays byte-identical to Pi");
+  assert.equal(existsSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite")), false, "explicitly disabled read creates no anchored state");
+  assert.equal(off.definitions.get("replace"), undefined, "explicitly disabled anchored editing registers no replace tool");
+  assert.equal(off.definitions.get("revert"), undefined, "explicitly disabled anchored editing registers no revert tool");
+  assert.ok(off.activeTools().includes("edit"), "explicitly disabled editing keeps Pi edit active");
+  assert.deepEqual(off.activeTools(), ["read", "edit", "write"], "explicitly disabled editing preserves the complete active-tool baseline");
   off.controller.dispose();
 
   const marker = Symbol.for("pi-tool-display.api.v1");
@@ -113,19 +115,19 @@ try {
     else delete globalThis[marker];
   }
 
-  const on = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true } });
+  const on = createHarness(DEFAULT_CONFIG);
   await start(on, workspace);
   const replace = on.definitions.get("replace");
   const revert = on.definitions.get("revert");
-  assert.ok(replace, "enabled anchored editing registers replace");
-  assert.ok(revert, "enabled anchored editing registers revert");
+  assert.ok(replace, "default anchored editing registers replace");
+  assert.ok(revert, "default anchored editing registers revert");
   assert.equal(revert.renderShell, "self", "revert uses the shared operational display shell");
   assert.equal(typeof revert.renderCall, "function", "revert renders through the production decoration path");
   assert.equal(typeof revert.renderResult, "function", "revert renders results through the production decoration path");
   assert.equal(replace.renderShell, "self", "replace uses the shared operational display shell");
   assert.equal(typeof replace.renderCall, "function", "replace renders through the production decoration path");
   assert.equal(typeof replace.renderResult, "function", "replace renders results through the production decoration path");
-  assert.ok(!on.activeTools().includes("edit"), "enabled anchored editing removes Pi edit from the active parent tools");
+  assert.ok(!on.activeTools().includes("edit"), "default anchored editing removes Pi edit from the active parent tools");
   const read = on.definitions.get("read");
   assert.ok(read.promptGuidelines.some((guideline) => /Do not invent anchors/.test(guideline)));
   assert.ok(read.promptGuidelines.some((guideline) => /inside the current workspace/.test(guideline)));
@@ -202,11 +204,14 @@ try {
   }
   pruning.controller.dispose();
 
-  on.controller.startSession(DEFAULT_CONFIG, { mode: "rpc" });
+  const storeBytesBeforeDisable = readFileSync(storePath);
+  on.controller.startSession(disabledConfig, { mode: "rpc" });
   await start(on, workspace);
   assert.ok(on.activeTools().includes("edit"), "a later disabled session restores Pi edit to the active parent tools");
   assert.ok(!on.activeTools().includes("replace"), "a later disabled session removes replace from the active parent tools");
   assert.ok(!on.activeTools().includes("revert"), "a later disabled session removes revert from the active parent tools");
+  assert.deepEqual(on.activeTools(), ["read", "edit", "write"], "a later disabled session restores the complete active-tool baseline");
+  assert.deepEqual(readFileSync(storePath), storeBytesBeforeDisable, "disabling anchored editing leaves the existing store untouched");
   on.controller.dispose();
 
   const corruptWorkspace = join(root, "corrupt-workspace");

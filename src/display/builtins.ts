@@ -46,8 +46,6 @@ type ReadModelContentGuard = (
   cwd: string,
 ) => AgentToolResult<unknown>["content"] | undefined | Promise<AgentToolResult<unknown>["content"] | undefined>;
 
-const transformReadModelContent: ReadModelContentTransform = (content) => content;
-
 const ANCHORED_READ_GUIDELINES = [
   "When anchoredEditing.enabled is on, read line prefixes are evidence from the current file. Do not invent anchors.",
   "After a replace, use its returned diff rows for an immediate follow-up; read again only when you need wider file context.",
@@ -798,8 +796,8 @@ export default function registerDisplayBuiltins(
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
     for (const definition of definitions) {
       const anchoredRead = definition.name === "read" && anchoredReadEnabled;
-      const readContentTransform = definition.name === "read"
-        ? (anchoredRead ? transformAnchoredReadContent : transformReadModelContent)
+      const readContentTransform = anchoredRead
+        ? transformAnchoredReadContent
         : undefined;
       pi.registerTool(decorateBuiltinDefinition(
         anchoredRead ? withAnchoredReadGuidelines(definition) : definition,

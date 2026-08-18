@@ -55,7 +55,7 @@ try {
   const { loadConfig, DEFAULT_CONFIG } = await load("../src/core/config.ts");
   assert.equal(DEFAULT_CONFIG.version, 2);
   assert.equal(DEFAULT_CONFIG.banner.enabled, true);
-  assert.equal(DEFAULT_CONFIG.anchoredEditing.enabled, false);
+  assert.equal(DEFAULT_CONFIG.anchoredEditing.enabled, true);
   assert.equal(DEFAULT_CONFIG.anchoredEditing.autoRead, true);
   const loaded = loadConfig(projectDir);
   assert.equal(loaded.config.version, 2);
