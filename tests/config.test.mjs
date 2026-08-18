@@ -28,7 +28,7 @@ try {
     version: 2,
     footer: { mode: "native" },
     banner: { enabled: false },
-    anchoredEditing: { enabled: true },
+    anchoredEditing: { enabled: true, autoRead: false },
     ssh: {
       maxSessions: 6,
       profiles: [{
@@ -56,10 +56,12 @@ try {
   assert.equal(DEFAULT_CONFIG.version, 2);
   assert.equal(DEFAULT_CONFIG.banner.enabled, true);
   assert.equal(DEFAULT_CONFIG.anchoredEditing.enabled, false);
+  assert.equal(DEFAULT_CONFIG.anchoredEditing.autoRead, true);
   const loaded = loadConfig(projectDir);
   assert.equal(loaded.config.version, 2);
   assert.equal(loaded.config.banner.enabled, true);
   assert.equal(loaded.config.anchoredEditing.enabled, true);
+  assert.equal(loaded.config.anchoredEditing.autoRead, false);
   assert.equal(loaded.config.ssh.maxSessions, 6);
   assert.equal(loaded.config.ssh.profiles.length, 1);
   assert.equal(loaded.config.ssh.profiles[0].targets[0].port, 22);
@@ -82,10 +84,11 @@ try {
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
     version: 2,
-    anchoredEditing: { enabled: false },
+    anchoredEditing: { enabled: false, autoRead: true },
   }));
   const projectAnchoredEditing = loadConfig(projectDir);
   assert.equal(projectAnchoredEditing.config.anchoredEditing.enabled, true, "a project layer must not override agent-only anchored editing");
+  assert.equal(projectAnchoredEditing.config.anchoredEditing.autoRead, false, "a project layer must not override the agent-only auto-read setting");
   assert.ok(projectAnchoredEditing.diagnostics.some((d) => /config ignored/.test(d.message)));
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({

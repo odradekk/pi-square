@@ -88,6 +88,24 @@ try {
   assert.ok(replaced, "result contains the replacement with a fresh anchor");
   assert.notEqual(replaced.hash, middle.hash, "a changed line receives a new anchor instead of the removed line's anchor");
 
+  const silent = join(workspace, "silent.txt");
+  writeFileSync(silent, "before\n", "utf8");
+  const silentRead = await transformAnchoredReadContent(
+    [{ type: "text", text: "factory content" }],
+    { path: "silent.txt" },
+    workspace,
+  );
+  const silentRow = readRows(silentRead)[0];
+  assert.ok(silentRow);
+  const silentReplace = await createAnchoredReplaceToolDefinition(workspace, () => false).execute(
+    "replace-silent",
+    { path: "silent.txt", remove_from: silentRow.hash, remove_to: silentRow.hash, replacement_text: "after" },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  assert.equal(silentReplace.details.diff, "", "disabled auto-read suppresses replace post-edit anchors");
+
   await replace.execute(
     "replace-2",
     {

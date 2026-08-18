@@ -54,7 +54,10 @@ function anchorWarning(error: RangeStaleError | AnchorMismatchError): {
  * Creates the parent-only anchored range replacement definition. The caller
  * applies the shared display adapter; this definition has no renderer fields.
  */
-export function createAnchoredReplaceToolDefinition(fallbackCwd: string): WorkspaceReplaceDefinition {
+export function createAnchoredReplaceToolDefinition(
+  fallbackCwd: string,
+  autoRead: () => boolean = () => true,
+): WorkspaceReplaceDefinition {
   return {
     name: "replace",
     label: "Replace",
@@ -178,14 +181,16 @@ export function createAnchoredReplaceToolDefinition(fallbackCwd: string): Worksp
           snapshotId,
           editMeta,
         });
-        if (changed.details.diff) {
+        const diff = changed.details.diff;
+        if (autoRead() && diff) {
           await recordServedDiffSafe(
             mutationTargetPath,
-            changed.details.diff,
+            diff,
             "post-anchored-replace diff",
             store,
           );
         }
+        if (!autoRead()) changed.details.diff = "";
         return changed;
       });
     },
@@ -200,7 +205,7 @@ export default function registerAnchoredReplace(
 ): void {
   pi.on("session_start", async (_event, ctx) => {
     if (!config().anchoredEditing.enabled || !anchoredReadAvailable()) return;
-    const definition = createAnchoredReplaceToolDefinition(ctx.cwd);
+    const definition = createAnchoredReplaceToolDefinition(ctx.cwd, () => config().anchoredEditing.autoRead);
     pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
   });
 }

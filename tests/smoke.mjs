@@ -126,6 +126,60 @@ try {
   }, undefined, undefined);
   assert.match(anchoredReplace.content[0].text, /Successfully replaced/);
 
+  const writeInput = { path: "sample.txt", content: "pi-square-smoke-written\n" };
+  await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:anchored-write", input: writeInput });
+  const writeResult = await toolByName("write").execute(
+    "smoke:anchored-write",
+    writeInput,
+    undefined,
+    undefined,
+  );
+  const refreshedWrite = await runner.emitToolResult({
+    toolName: "write",
+    toolCallId: "smoke:anchored-write",
+    input: writeInput,
+    content: writeResult.content,
+    details: writeResult.details,
+    isError: writeResult.isError ?? false,
+  });
+  assert.match(refreshedWrite?.content.map((entry) => entry.type === "text" ? entry.text : "").join("\n") ?? "", /Auto-read \(hashline anchors\)/);
+  const clearedRevert = await toolByName("revert").execute(
+    "smoke:cleared-revert",
+    { path: "sample.txt" },
+    undefined,
+    undefined,
+  );
+  assert.equal(clearedRevert.details.status, "warning", "a successful Pi write clears the replace history");
+  assert.equal(clearedRevert.details.errorCode, undefined, "cleared history is not a stale-revert refusal");
+  assert.match(clearedRevert.content[0].text, /No revert history/, "a successful Pi write consumes the replace record");
+
+  const postWriteRead = await toolByName("read").execute("smoke:post-write-read", { path: "sample.txt" }, undefined, undefined);
+  const postWriteAnchor = /^([A-Za-z0-9]{3})│pi-square-smoke-written$/m.exec(postWriteRead.content[0].text)?.[1];
+  assert.ok(postWriteAnchor, "the refreshed write state supports a later anchored replace");
+  await toolByName("replace").execute(
+    "smoke:failed-write-replace",
+    { path: "sample.txt", remove_from: postWriteAnchor, remove_to: postWriteAnchor, replacement_text: "pi-square-smoke-pending" },
+    undefined,
+    undefined,
+  );
+  await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:failed-write", input: writeInput });
+  const failedWrite = await runner.emitToolResult({
+    toolName: "write",
+    toolCallId: "smoke:failed-write",
+    input: writeInput,
+    content: [{ type: "text", text: "Write failed" }],
+    details: {},
+    isError: true,
+  });
+  assert.equal(failedWrite, undefined, "failed writes leave their original result unchanged");
+  const preservedRevert = await toolByName("revert").execute(
+    "smoke:preserved-revert",
+    { path: "sample.txt" },
+    undefined,
+    undefined,
+  );
+  assert.equal(preservedRevert.details.status, undefined, "a failed Pi write preserves the replace history");
+
   const todoResult = await toolByName("todo").execute("smoke:todo", {
     action: "set",
     todos: [{ id: "smoke", text: "verify native state" }],
@@ -135,7 +189,7 @@ try {
   assert.equal(JSON.parse(todoResult.content[0].text).version, 1);
 
   const rgResult = await toolByName("rg").execute("smoke:rg", {
-    pattern: "pi-square-smoke-replaced",
+    pattern: "pi-square-smoke-written",
     path: ".",
   }, undefined, undefined);
   assert.match(rgResult.content[0].text, /sample\.txt/);

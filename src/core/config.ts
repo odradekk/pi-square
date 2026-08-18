@@ -125,6 +125,7 @@ const SshLayerSchema = Type.Object({
 
 const AnchoredEditingSchema = Type.Object({
   enabled: Type.Optional(Type.Boolean()),
+  autoRead: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 
 const AgentConfigLayerSchema = Type.Object({
@@ -170,6 +171,7 @@ export interface SshConfig {
 
 export interface AnchoredEditingConfig {
   enabled: boolean;
+  autoRead: boolean;
 }
 
 // ── Display effective config ────────────────────────────────────────
@@ -199,7 +201,7 @@ export const DEFAULT_CONFIG: Readonly<PiSquareConfig> = Object.freeze({
   version: 2,
   banner: Object.freeze({ enabled: true }),
   ssh: Object.freeze({ maxSessions: 8, profiles: Object.freeze([]) }) as unknown as SshConfig,
-  anchoredEditing: Object.freeze({ enabled: false }),
+  anchoredEditing: Object.freeze({ enabled: false, autoRead: true }),
   display: Object.freeze({ motion: DEFAULT_DISPLAY_MOTION }) as DisplayEffectiveConfig,
 });
 
@@ -388,7 +390,10 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
       config = {
         ...config,
         ssh: normalizeSsh(agentLayer.value.ssh),
-        anchoredEditing: { enabled: agentLayer.value.anchoredEditing?.enabled ?? config.anchoredEditing.enabled },
+        anchoredEditing: {
+          enabled: agentLayer.value.anchoredEditing?.enabled ?? config.anchoredEditing.enabled,
+          autoRead: agentLayer.value.anchoredEditing?.autoRead ?? config.anchoredEditing.autoRead,
+        },
       };
       agentDisplay = agentLayer.value.display;
       sources.push(agentPath);

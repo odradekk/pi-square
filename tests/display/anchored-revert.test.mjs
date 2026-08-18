@@ -106,6 +106,30 @@ try {
     "revert diff restores the original valid anchor",
   );
 
+  const silentRead = await transformAnchoredReadContent(
+    [{ type: "text", text: "factory content" }],
+    { path: "source.txt" },
+    workspace,
+  );
+  const silentMiddle = readRows(silentRead).find((row) => row.text === "middle");
+  assert.ok(silentMiddle);
+  await createAnchoredReplaceToolDefinition(workspace).execute(
+    "replace-silent-revert",
+    { path: "source.txt", remove_from: silentMiddle.hash, remove_to: silentMiddle.hash, replacement_text: "again" },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  const silentRevert = await createAnchoredRevertToolDefinition(workspace, () => false).execute(
+    "revert-silent",
+    { path: "source.txt" },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  assert.equal(silentRevert.details.diff, "", "disabled auto-read suppresses revert post-edit anchors");
+  assert.doesNotMatch(textOf(silentRevert.content), /diff anchors/, "disabled auto-read does not promise a returned diff");
+
   const runtime = new DisplayRuntime(DEFAULT_CONFIG, { environment: { isTTY: false, test: true } });
   const decoratedRevert = decorateInternalTool(createAnchoredRevertToolDefinition(workspace), () => runtime);
   const rendered = stripVTControlCharacters(decoratedRevert.renderResult(
