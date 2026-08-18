@@ -8,8 +8,7 @@ import { MAX_HASH_LINES } from "./hashline/index.ts";
 import { projectHashStorePath } from "./paths.ts";
 import { fmtReadPreview } from "./read.ts";
 import { recordServed } from "./served.ts";
-
-const PROJECT_OWNER = "parent";
+import { PARENT_OWNER } from "./workspace-support.ts";
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];
 
@@ -70,10 +69,13 @@ export async function guardAnchoredRead(
   return undefined;
 }
 
-export async function initializeAnchoredReadStore(cwd: string): Promise<void> {
+export async function initializeAnchoredReadStore(
+  cwd: string,
+  owner: string = PARENT_OWNER,
+): Promise<void> {
   const workspace = resolveWorkspacePath(cwd, ".");
   const store = await loadHashStoreAt(projectHashStorePath(workspace.workspaceRoot), {
-    owner: PROJECT_OWNER,
+    owner,
     migrateLegacy: false,
   });
   await pruneMissing(store);
@@ -83,6 +85,7 @@ export async function transformAnchoredReadContent(
   content: ReadModelContent,
   value: unknown,
   cwd: string,
+  owner: string = PARENT_OWNER,
 ): Promise<ReadModelContent> {
   const params = readParams(value);
   if (!params) return content;
@@ -113,7 +116,7 @@ export async function transformAnchoredReadContent(
 
   try {
     const store = await loadHashStoreAt(projectHashStorePath(workspace.workspaceRoot), {
-      owner: PROJECT_OWNER,
+      owner,
       migrateLegacy: false,
     });
     const normalized = await readNormFile(params.path, workspace.workspaceRoot, {
