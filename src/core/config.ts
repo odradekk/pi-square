@@ -201,7 +201,7 @@ export const DEFAULT_CONFIG: Readonly<PiSquareConfig> = Object.freeze({
   version: 2,
   banner: Object.freeze({ enabled: true }),
   ssh: Object.freeze({ maxSessions: 8, profiles: Object.freeze([]) }) as unknown as SshConfig,
-  anchoredEditing: Object.freeze({ enabled: false, autoRead: true }),
+  anchoredEditing: Object.freeze({ enabled: true, autoRead: true }),
   display: Object.freeze({ motion: DEFAULT_DISPLAY_MOTION }) as DisplayEffectiveConfig,
 });
 

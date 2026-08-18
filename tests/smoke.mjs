@@ -23,7 +23,6 @@ writeFileSync(join(agentDir, "auth.json"), "{}\n", "utf8");
 mkdirSync(join(agentDir, "config"), { recursive: true });
 writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
   version: 2,
-  anchoredEditing: { enabled: true },
 }, null, 2) + "\n");
 writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
   packages: [{ source: packageRoot }],
@@ -98,9 +97,9 @@ try {
     assert.ok(tool, `tool not active: ${name}`);
     return tool;
   };
-  assert.ok(session.agent.state.tools.some((tool) => tool.name === "replace"), "anchored replace must be active when enabled");
-  assert.ok(session.agent.state.tools.some((tool) => tool.name === "revert"), "anchored revert must be active when enabled");
-  assert.ok(!session.agent.state.tools.some((tool) => tool.name === "edit"), "Pi edit must be inactive when anchored editing is enabled");
+  assert.ok(session.agent.state.tools.some((tool) => tool.name === "replace"), "anchored replace must be active by default");
+  assert.ok(session.agent.state.tools.some((tool) => tool.name === "revert"), "anchored revert must be active by default");
+  assert.ok(!session.agent.state.tools.some((tool) => tool.name === "edit"), "Pi edit must be inactive when anchored editing is enabled by default");
 
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
@@ -199,6 +198,18 @@ try {
   }, undefined, undefined);
   assert.equal(codegraphResult.details.code, "NOT_INDEXED");
   assert.equal(codegraphResult.details.phase, "recoverable");
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    anchoredEditing: { enabled: false },
+  }, null, 2) + "\n");
+  await runner.emit({ type: "session_start", reason: "config-change" });
+  assert.ok(session.agent.state.tools.some((tool) => tool.name === "read"), "disabled anchored editing restores Pi read");
+  assert.ok(session.agent.state.tools.some((tool) => tool.name === "edit"), "disabled anchored editing restores Pi edit");
+  assert.ok(!session.agent.state.tools.some((tool) => tool.name === "replace"), "disabled anchored editing removes replace");
+  assert.ok(!session.agent.state.tools.some((tool) => tool.name === "revert"), "disabled anchored editing removes revert");
+  const disabledRead = await toolByName("read").execute("smoke:disabled-read", { path: "sample.txt" }, undefined, undefined);
+  assert.doesNotMatch(disabledRead.content[0].text, /^[A-Za-z0-9]{3}│/m, "disabled read returns Pi content without anchors");
 
   console.log("pi-square smoke: OK");
 } finally {
