@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAskUser from "./ask-user";
+import registerAnchoredAutoRead from "./anchored-edit/auto-read";
 import registerAnchoredReplace from "./anchored-edit/workspace-replace";
 import registerAnchoredRevert from "./anchored-edit/workspace-revert";
 import registerBanner from "./banner";
@@ -50,6 +51,11 @@ export default function piSquare(pi: ExtensionAPI): void {
     pi,
     () => display.config,
     () => display.runtime,
+    () => anchoredReadAvailable,
+  );
+  registerAnchoredAutoRead(
+    pi,
+    () => display.config,
     () => anchoredReadAvailable,
   );
 

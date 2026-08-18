@@ -15,7 +15,7 @@ import { clearUndo, getUndo } from "./replace-undo.ts";
 import { genDiff, restoreEndings, stripBOM, toLF } from "./replace-diff.ts";
 import { buildMetrics, type RMetrics } from "./replace-response.ts";
 import { loadGuide, loadP } from "./prompts.ts";
-import { recordServedDiff, clearServed } from "./served.ts";
+import { recordServedDiff } from "./served.ts";
 import { abortIf, cntDiff, errCode, isRec, makePrepareArguments, rejectUnknownFields, splitLines } from "./utils.ts";
 import { loadProjectHashStore, outsideWorkspaceError } from "./workspace-support.ts";
 
@@ -67,7 +67,10 @@ function warning(message: string, errorCode?: string): {
  * Creates the parent-only, workspace-scoped revert definition. The caller
  * applies the shared display adapter; this definition has no renderer fields.
  */
-export function createAnchoredRevertToolDefinition(fallbackCwd: string): WorkspaceRevertDefinition {
+export function createAnchoredRevertToolDefinition(
+  fallbackCwd: string,
+  autoRead: () => boolean = () => true,
+): WorkspaceRevertDefinition {
   return {
     name: "revert",
     label: "Revert",
@@ -133,7 +136,7 @@ export function createAnchoredRevertToolDefinition(fallbackCwd: string): Workspa
             splitLines(undo.content).length,
             undo.hashes,
           );
-          recordServedDiff(store, mutationTargetPath, diff);
+          if (autoRead()) recordServedDiff(store, mutationTargetPath, diff);
         } catch (error) {
           console.error("Failed to restore hash store snapshot after revert:", error);
         }
@@ -145,11 +148,13 @@ export function createAnchoredRevertToolDefinition(fallbackCwd: string): Workspa
             `Removed ${linesAddedByReplace} line(s) that were added and restored ${linesRemovedByReplace} line(s) that were removed.`,
           );
         }
-        parts.push("File reverted to its previous state. Use the returned diff anchors for follow-up edits.");
+        parts.push(autoRead()
+          ? "File reverted to its previous state. Use the returned diff anchors for follow-up edits."
+          : "File reverted to its previous state.");
         return {
           content: [{ type: "text", text: parts.join("\n") }],
           details: {
-            diff,
+            diff: autoRead() ? diff : "",
             metrics: buildMetrics({
               classification: "applied",
               editsAttempted: 1,
@@ -175,35 +180,8 @@ export function registerAnchoredRevert(
 ): void {
   pi.on("session_start", async (_event, ctx) => {
     if (!config().anchoredEditing.enabled || !anchoredReadAvailable()) return;
-    const definition = createAnchoredRevertToolDefinition(ctx.cwd);
+    const definition = createAnchoredRevertToolDefinition(ctx.cwd, () => config().anchoredEditing.autoRead);
     pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
-  });
-
-  pi.on("tool_result", async (event, ctx) => {
-    if (
-      event.isError
-      || event.toolName !== "write"
-      || !config().anchoredEditing.enabled
-      || !anchoredReadAvailable()
-      || !isRec(event.input)
-      || typeof event.input.path !== "string"
-      || event.input.path.length === 0
-    ) return;
-
-    try {
-      const workspace = resolveWorkspacePath(ctx.cwd, ".");
-      const target = resolveWorkspacePath(workspace.workspaceRoot, event.input.path);
-      if (!target.isInsideWorkspace) return;
-      const mutationTargetPath = await resolveTarget(target.absolutePath);
-      if (!isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) return;
-      return withFileMutationQueue(mutationTargetPath, async () => {
-        const store = await loadProjectHashStore(workspace.workspaceRoot);
-        await clearUndo(mutationTargetPath, store);
-        clearServed(store, mutationTargetPath);
-      });
-    } catch (error) {
-      console.error("Failed to clear anchored revert history after write:", error);
-    }
   });
 }
 
