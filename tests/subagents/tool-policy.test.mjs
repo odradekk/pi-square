@@ -46,8 +46,8 @@ const matrix = {
     skills: ["none"],
   },
   "oracle.yaml": {
-    tools: ["read", "ls"],
-    extensionTools: ["rg", "fd", "codegraph"],
+    tools: ["read", "ls", "shell"],
+    extensionTools: ["rg", "fd", "codegraph", "search", "fetch", "libs", "docs"],
     skills: ["none"],
   },
   "crawler.yaml": {

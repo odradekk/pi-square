@@ -136,14 +136,14 @@ visible: true
 
 Package profiles omit `model` and `effort`. A fresh run inherits the parent session's current values and freezes the resolved values for deterministic same-ID resume; an explicit call override still takes precedence, and following a newly selected parent model requires a fresh ID. Omitted or empty `tools` selects the runtime built-in defaults, while the exclusive `tools: [none]` sentinel disables every built-in tool. Extension tools remain explicit opt-ins. Omitted or empty `skills` loads all discovered skills; `skills: [none]` disables them.
 
-The five visible package roles are intentionally complementary:
+The five visible package roles are intentionally complementary. Oracle's capabilities contain Crawler's, so those two are separated by purpose and cost rather than by tools: reach for Crawler when the task is focused external research, and for Oracle when a hard local question also needs external confirmation. See ADR-0006.
 
 | Role | Responsibility | Default capabilities |
 | --- | --- | --- |
 | `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `rg`, `fd`, read-only `codegraph`; no skills |
-| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | Local read-only retrieval including `rg`, `fd`, and `codegraph`; no skills |
+| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | `read`, `ls`, `shell`, `rg`, `fd`, read-only `codegraph`, `search`, `fetch`, `libs`, `docs`; no skills; non-mutating by policy, not by tools |
 | `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `search`, `fetch`, `libs`, `docs`; no skills |
-| `librarian` | Research authorized GitHub repositories, files, trees, and commits | Only the four authenticated `github_*` tools; no skills |
+| `librarian` | Research authorized GitHub repositories, files, trees, and commits | Only the authenticated `github` tool; no skills |
 | `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, read-only CodeGraph, search, web, Context7, and all discovered skills; no GitHub PAT tools |
 
 This catalog replaces the former package `thinker` and `worker` IDs; the former external-research `librarian` role becomes `crawler`, and `librarian` now means GitHub-only research. Existing agent/project overlays are trusted local definitions and are not renamed automatically, so migrate those filenames and `name` fields explicitly when the new package roles should apply.
