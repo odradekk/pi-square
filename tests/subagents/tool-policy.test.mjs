@@ -9,6 +9,7 @@ const packageRoot = resolve(__dirname, "..", "..");
 const subagentsDir = join(packageRoot, "subagents");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { resolveSubagentTools } = await load(join(packageRoot, "src", "subagents", "tool-policy.ts"));
+const { createChildTools } = await load(join(packageRoot, "src", "tool-catalog.ts"));
 
 function parseList(yamlText, key) {
   const lines = yamlText.split("\n");
@@ -46,8 +47,8 @@ const matrix = {
     skills: ["none"],
   },
   "oracle.yaml": {
-    tools: ["read", "ls"],
-    extensionTools: ["rg", "fd", "codegraph"],
+    tools: ["read", "ls", "shell"],
+    extensionTools: ["rg", "fd", "codegraph", "search", "fetch", "libs", "docs"],
     skills: ["none"],
   },
   "crawler.yaml": {
@@ -107,15 +108,41 @@ test("omitted tools retain portable runtime defaults", () => {
   assert.ok(windows.persistedTools.includes("shell"));
 });
 
-test("no bundled subagent requests legacy, platform-specific, or misplaced tools", () => {
+test("every bundled subagent resolves to supported tools on every platform", () => {
   const files = readdirSync(subagentsDir).filter((file) => file.endsWith(".yaml"));
+  assert.ok(files.length > 0, "expected bundled subagent definitions to exist");
   for (const file of files) {
     const yaml = loadYaml(file);
+    const tools = parseList(yaml, "tools");
     const extensionTools = parseList(yaml, "extensionTools");
-    assert.ok(!yaml.includes("docs_search"), `${file} must not contain docs_search`);
+    for (const platform of ["linux", "win32"]) {
+      const resolved = resolveSubagentTools({ tools, extensionTools }, platform);
+      const child = createChildTools(resolved.extensionTools, platform);
+      assert.deepEqual(
+        [...resolved.errors, ...child.errors],
+        [],
+        `${file} must resolve to supported tools on ${platform}`,
+      );
+    }
     for (const forbidden of ["bash", "pwsh", "shell", "none"]) {
       assert.ok(!extensionTools.includes(forbidden), `${file} must not place ${forbidden} in extensionTools`);
     }
+  }
+});
+
+test("the bundled-definition guard rejects retired and unknown tool names", () => {
+  const unknownBuiltIn = resolveSubagentTools({ tools: ["read", "scheme"] }, "linux");
+  assert.ok(
+    unknownBuiltIn.errors.some((error) => error.includes("scheme")),
+    "an unknown built-in name must be reported",
+  );
+  for (const retired of ["sg", "scheme_eval", "time", "github_search", "subagent_delegate", "docs_search"]) {
+    const resolved = resolveSubagentTools({ extensionTools: [retired] }, "linux");
+    const child = createChildTools(resolved.extensionTools, "linux");
+    assert.ok(
+      child.errors.some((error) => error.includes(retired)),
+      `${retired} must be rejected by the child tool catalog`,
+    );
   }
 });
 
