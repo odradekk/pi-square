@@ -13,10 +13,12 @@ documented here, and every code documented here is emitted by the module source;
 | `[E_AMBIGUOUS_ANCHOR]` | An anchor matches multiple lines; call `read` for fresh anchors. |
 | `[E_INVALID_PATCH]` | A `replacement_text` line is a diff-preview row (`+HASH│`, `-HASH│`, `-   │`). The marker is stripped automatically with a warning. |
 | `[E_BARE_HASH_PREFIX]` | A `replacement_text` line starts with a hash-like `HASH│` prefix. The prefix is stripped automatically with a warning. |
-| `[E_BAD_OP]` | Range start line is after range end line. The pair is swapped automatically with a warning. |
+| `[E_BAD_OP]` | Range start line is after range end line. The implementation swaps the pair with a warning when it can resolve the range; otherwise it refuses the invalid range. |
 | `[E_WOULD_EMPTY]` | An edit would empty a non-empty file; use `write` instead. |
 | `[E_NOT_FOUND]` | The path does not exist. |
 | `[E_ACCESS]` | The file is not readable or writable. |
+| `[E_READ_PATH]` | The requested `read` path cannot be resolved for workspace anchor handling. |
+| `[E_READ_FAILED]` | Anchored-read guarding or post-factory transformation failed. The message gives the cause and may provide an appropriate fallback. |
 | `[E_NOT_TEXT]` | The path is a directory, binary file, image, or UTF-16/UTF-32 encoded text; hashline editing only supports text files. |
 | `[E_UNDO_STALE]` | `revert` refused: the file was modified or deleted after the last replace. |
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted to the hash store; the `replace` was refused and the file was left unchanged. |

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 // the module as src/anchored-edit/ERROR-CODES.md.
 const moduleRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "src", "anchored-edit");
 const codeRe = /\[E_[A-Z0-9_]+\]/g;
+const helperCodeRe = /errorText\(\s*"(E_[A-Z0-9_]+)"/g;
 
 function collectCodes(dir: string): Set<string> {
   const codes = new Set<string>();
@@ -18,6 +19,9 @@ function collectCodes(dir: string): Set<string> {
     } else if (entry.name.endsWith(".ts")) {
       for (const match of readFileSync(full, "utf-8").matchAll(codeRe)) {
         codes.add(match[0]);
+      }
+      for (const match of readFileSync(full, "utf-8").matchAll(helperCodeRe)) {
+        codes.add(`[${match[1]}]`);
       }
     }
   }
