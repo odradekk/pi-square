@@ -1,4 +1,4 @@
-import { loadHashStoreAt, type HashStore } from "./hash-store.ts";
+import { loadHashStoreAt, type HashStoreHandle } from "./hash-store.ts";
 import { projectHashStorePath } from "./paths.ts";
 
 export const PARENT_OWNER = "parent";
@@ -6,7 +6,7 @@ export const PARENT_OWNER = "parent";
 export async function loadProjectHashStore(
   workspaceRoot: string,
   owner: string = PARENT_OWNER,
-): Promise<HashStore> {
+): Promise<HashStoreHandle> {
   return loadHashStoreAt(projectHashStorePath(workspaceRoot), {
     owner,
     migrateLegacy: false,

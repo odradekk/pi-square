@@ -78,7 +78,11 @@ export async function initializeAnchoredReadStore(
     owner,
     migrateLegacy: false,
   });
-  await pruneMissing(store);
+  try {
+    await pruneMissing(store);
+  } finally {
+    store.release();
+  }
 }
 
 export async function transformAnchoredReadContent(
@@ -119,22 +123,26 @@ export async function transformAnchoredReadContent(
       owner,
       migrateLegacy: false,
     });
-    const normalized = await readNormFile(params.path, workspace.workspaceRoot, {
-      preloadedFile: file,
-      maxLines: MAX_HASH_LINES,
-      store,
-    });
-    const preview = await fmtReadPreview(
-      normalized.normalized,
-      { offset: params.offset, limit: params.limit },
-      normalized.fileHashes,
-      normalized.absolutePath,
-    );
-    recordServed(store, normalized.absolutePath, preview.servedHashes);
-    const text = normalized.hadUtf8DecodeErrors
-      ? `${preview.text}\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]`
-      : preview.text;
-    return textContent(text);
+    try {
+      const normalized = await readNormFile(params.path, workspace.workspaceRoot, {
+        preloadedFile: file,
+        maxLines: MAX_HASH_LINES,
+        store,
+      });
+      const preview = await fmtReadPreview(
+        normalized.normalized,
+        { offset: params.offset, limit: params.limit },
+        normalized.fileHashes,
+        normalized.absolutePath,
+      );
+      recordServed(store, normalized.absolutePath, preview.servedHashes);
+      const text = normalized.hadUtf8DecodeErrors
+        ? `${preview.text}\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]`
+        : preview.text;
+      return textContent(text);
+    } finally {
+      store.release();
+    }
   } catch (error) {
     return errorText(
       "E_READ_FAILED",

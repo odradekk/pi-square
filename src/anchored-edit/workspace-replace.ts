@@ -78,127 +78,131 @@ export function createAnchoredReplaceToolDefinition(
       assertReq(canonical, { allowMissingPath: true });
       const workspace = resolveWorkspacePath(cwd, ".");
       const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
-      const resolution = isRec(canonical)
-        ? await resolveMissingPath(canonical, store)
-        : undefined;
-      if (resolution && isRec(canonical)) canonical.path = resolution.path;
-      assertReq(canonical);
+      try {
+        const resolution = isRec(canonical)
+          ? await resolveMissingPath(canonical, store)
+          : undefined;
+        if (resolution && isRec(canonical)) canonical.path = resolution.path;
+        assertReq(canonical);
 
-      const normalizedParams: ReqParams = canonical;
-      const target = resolveWorkspacePath(workspace.workspaceRoot, normalizedParams.path);
-      if (!target.isInsideWorkspace) throw outsideWorkspaceError(normalizedParams.path);
-      const mutationTargetPath = await resolveTarget(target.absolutePath);
-      if (!isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) {
-        throw outsideWorkspaceError(normalizedParams.path);
-      }
-
-      return withFileMutationQueue(mutationTargetPath, async () => {
-        abortIf(signal);
-        let pipeline;
-        try {
-          pipeline = await execPipeline(normalizedParams, workspace.workspaceRoot, {
-            accessMode: constants.R_OK | constants.W_OK,
-            signal,
-            store,
-          });
-        } catch (error) {
-          if (error instanceof RangeStaleError || error instanceof AnchorMismatchError) {
-            return anchorWarning(error);
-          }
-          throw error;
+        const normalizedParams: ReqParams = canonical;
+        const target = resolveWorkspacePath(workspace.workspaceRoot, normalizedParams.path);
+        if (!target.isInsideWorkspace) throw outsideWorkspaceError(normalizedParams.path);
+        const mutationTargetPath = await resolveTarget(target.absolutePath);
+        if (!isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) {
+          throw outsideWorkspaceError(normalizedParams.path);
         }
 
-        const {
-          originalNormalized,
-          originalHashes,
-          result,
-          bom,
-          originalEnding,
-          hadUtf8DecodeErrors,
-          warnings,
-          noopEdit,
-          firstChangedLine,
-          lastChangedLine,
-          resultHashes,
-          totalAddedLines,
-          totalRemovedLines,
-        } = pipeline;
-        if (resolution) warnings.unshift(resolution.warning);
-
-        const editsAttempted = 1;
-        if (originalNormalized === result) {
-          const snapshotId = await safeSnapId(mutationTargetPath, "noop anchored replace");
-          return buildNoop({
-            path: normalizedParams.path,
-            noopEdit,
-            snapshotId,
-            editMeta: {
-              editsAttempted,
-              noopEditsCount: noopEdit ? 1 : 0,
-              addedLines: 0,
-              removedLines: 0,
-            },
-            warnings,
-          });
-        }
-
-        if (hadUtf8DecodeErrors) {
-          warnings.push(
-            "Non-UTF-8 bytes were shown as U+FFFD; this edit rewrote the file as UTF-8.",
-          );
-        }
-
-        const undo = await saveUndo(mutationTargetPath, {
-          content: originalNormalized,
-          bom,
-          originalEnding,
-          hashes: originalHashes,
-          resultContent: result,
-        }, store);
-        if (!undo.persisted) {
-          throw new Error(
-            `[E_UNDO_UNAVAILABLE] Cannot persist undo history to the hash store; the edit was NOT applied and ${normalizedParams.path} is unchanged. Retry the replace, or use write if the store cannot be recovered.`,
-          );
-        }
-
-        try {
+        return withFileMutationQueue(mutationTargetPath, async () => {
           abortIf(signal);
-          await writeAtomic(target.absolutePath, bom + restoreEndings(result, originalEnding));
-        } catch (error) {
-          await undo.restore();
-          throw error;
-        }
-        const snapshotId = await safeSnapId(mutationTargetPath, "post-anchored-replace");
-        const editMeta: RMeta = {
-          editsAttempted,
-          noopEditsCount: noopEdit ? 1 : 0,
-          firstChangedLine,
-          lastChangedLine,
-          addedLines: totalAddedLines,
-          removedLines: totalRemovedLines,
-        };
-        const changed = buildChanged({
-          path: normalizedParams.path,
-          originalNormalized,
-          originalHashes,
-          result,
-          resultHashes,
-          warnings,
-          snapshotId,
-          editMeta,
+          let pipeline;
+          try {
+            pipeline = await execPipeline(normalizedParams, workspace.workspaceRoot, {
+              accessMode: constants.R_OK | constants.W_OK,
+              signal,
+              store,
+            });
+          } catch (error) {
+            if (error instanceof RangeStaleError || error instanceof AnchorMismatchError) {
+              return anchorWarning(error);
+            }
+            throw error;
+          }
+
+          const {
+            originalNormalized,
+            originalHashes,
+            result,
+            bom,
+            originalEnding,
+            hadUtf8DecodeErrors,
+            warnings,
+            noopEdit,
+            firstChangedLine,
+            lastChangedLine,
+            resultHashes,
+            totalAddedLines,
+            totalRemovedLines,
+          } = pipeline;
+          if (resolution) warnings.unshift(resolution.warning);
+
+          const editsAttempted = 1;
+          if (originalNormalized === result) {
+            const snapshotId = await safeSnapId(mutationTargetPath, "noop anchored replace");
+            return buildNoop({
+              path: normalizedParams.path,
+              noopEdit,
+              snapshotId,
+              editMeta: {
+                editsAttempted,
+                noopEditsCount: noopEdit ? 1 : 0,
+                addedLines: 0,
+                removedLines: 0,
+              },
+              warnings,
+            });
+          }
+
+          if (hadUtf8DecodeErrors) {
+            warnings.push(
+              "Non-UTF-8 bytes were shown as U+FFFD; this edit rewrote the file as UTF-8.",
+            );
+          }
+
+          const undo = await saveUndo(mutationTargetPath, {
+            content: originalNormalized,
+            bom,
+            originalEnding,
+            hashes: originalHashes,
+            resultContent: result,
+          }, store);
+          if (!undo.persisted) {
+            throw new Error(
+              `[E_UNDO_UNAVAILABLE] Cannot persist undo history to the hash store; the edit was NOT applied and ${normalizedParams.path} is unchanged. Retry the replace, or use write if the store cannot be recovered.`,
+            );
+          }
+
+          try {
+            abortIf(signal);
+            await writeAtomic(target.absolutePath, bom + restoreEndings(result, originalEnding));
+          } catch (error) {
+            await undo.restore();
+            throw error;
+          }
+          const snapshotId = await safeSnapId(mutationTargetPath, "post-anchored-replace");
+          const editMeta: RMeta = {
+            editsAttempted,
+            noopEditsCount: noopEdit ? 1 : 0,
+            firstChangedLine,
+            lastChangedLine,
+            addedLines: totalAddedLines,
+            removedLines: totalRemovedLines,
+          };
+          const changed = buildChanged({
+            path: normalizedParams.path,
+            originalNormalized,
+            originalHashes,
+            result,
+            resultHashes,
+            warnings,
+            snapshotId,
+            editMeta,
+          });
+          const diff = changed.details.diff;
+          if (autoRead() && diff) {
+            await recordServedDiffSafe(
+              mutationTargetPath,
+              diff,
+              "post-anchored-replace diff",
+              store,
+            );
+          }
+          if (!autoRead()) changed.details.diff = "";
+          return changed;
         });
-        const diff = changed.details.diff;
-        if (autoRead() && diff) {
-          await recordServedDiffSafe(
-            mutationTargetPath,
-            diff,
-            "post-anchored-replace diff",
-            store,
-          );
-        }
-        if (!autoRead()) changed.details.diff = "";
-        return changed;
-      });
+      } finally {
+        store.release();
+      }
     },
   };
 }
