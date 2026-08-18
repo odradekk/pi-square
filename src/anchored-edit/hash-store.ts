@@ -29,6 +29,11 @@ export interface HashStore {
   readonly owner: string | undefined;
 }
 
+export interface HashStoreHandle extends HashStore {
+  /** Releases this store acquisition so the underlying database can be evicted when idle. Safe to call once; later calls are no-ops. */
+  release(): void;
+}
+
 export interface HashStoreLoadOptions {
   owner?: string;
   migrateLegacy?: boolean;
@@ -127,8 +132,6 @@ function openDbWithBusyRetry(storePath: string, owner: string | undefined): { db
   return withBusyRetry(() => openDb(storePath, owner));
 }
 
-let cachedDb: { path: string; owner: string | undefined; db: DatabaseSync; stmts: Prepared } | null = null;
-let opening: { path: string; owner: string | undefined; promise: Promise<HashStore> } | null = null;
 let exitHandlerRegistered = false;
 interface SnapshotCacheEntry {
   checksum: string;
@@ -137,6 +140,93 @@ interface SnapshotCacheEntry {
 }
 const snapshotCache = new Map<string, SnapshotCacheEntry>();
 export const SNAPSHOT_CACHE_LIMIT = 256;
+
+interface OpenStore {
+  key: string;
+  path: string;
+  owner: string | undefined;
+  db: DatabaseSync;
+  stmts: Prepared;
+  refs: number;
+  lastUsed: number;
+}
+
+/**
+ * Bound on how many databases the module holds open at once across distinct
+ * (store file, owner) pairs. When the cache exceeds this bound, the
+ * least-recently-used database with no in-flight caller is closed. A database
+ * that an in-flight caller still holds (refs > 0) is never closed, so the
+ * bound is a soft cap under concurrent load.
+ */
+export const OPEN_STORE_LIMIT = 4;
+
+const openStores = new Map<string, OpenStore>();
+const openingStores = new Map<string, Promise<OpenStore>>();
+let openTick = 0;
+
+function storeKey(path: string, owner: string | undefined): string {
+  return `${path}\u0000${owner ?? ""}`;
+}
+
+function acquireStore(entry: OpenStore): HashStoreHandle {
+  entry.refs += 1;
+  entry.lastUsed = ++openTick;
+  return new HashStoreHandleImpl(entry);
+}
+
+function maybeEvict(): void {
+  while (openStores.size > OPEN_STORE_LIMIT) {
+    let idleLru: OpenStore | undefined;
+    for (const entry of openStores.values()) {
+      if (entry.refs > 0 || !entry.db.isOpen) continue;
+      // An entry whose open has not yet been handed to its caller (the key is
+      // still in the opening map) must not be evicted before that acquire.
+      if (openingStores.has(entry.key)) continue;
+      if (!idleLru || entry.lastUsed < idleLru.lastUsed) idleLru = entry;
+    }
+    if (!idleLru) break;
+    openStores.delete(idleLru.key);
+    shutdownDb(idleLru.db);
+  }
+}
+
+class HashStoreHandleImpl implements HashStoreHandle {
+  readonly engine = "node:sqlite" as const;
+  readonly owner: string | undefined;
+  readonly stmts: Prepared;
+  private readonly entry: OpenStore;
+  private released = false;
+
+  constructor(entry: OpenStore) {
+    this.entry = entry;
+    this.owner = entry.owner;
+    this.stmts = entry.stmts;
+  }
+
+  release(): void {
+    if (this.released) return;
+    this.released = true;
+    this.entry.refs -= 1;
+    maybeEvict();
+  }
+
+  /** @internal Runs a mutation inside a transaction on this store's database. */
+  withTransaction(fn: () => void): void {
+    if (!this.entry.db.isOpen) {
+      throw new Error("Hash store is not open; transactional update aborted");
+    }
+    withBusyRetry(() => {
+      this.entry.db.exec("BEGIN IMMEDIATE");
+      try {
+        fn();
+        this.entry.db.exec("COMMIT");
+      } catch (e) {
+        try { this.entry.db.exec("ROLLBACK"); } catch {}
+        throw e;
+      }
+    });
+  }
+}
 function openDb(storePath: string, owner: string | undefined): { db: DatabaseSync; stmts: Prepared } {
   const db = new DatabaseSync(storePath, {
     timeout: HASH_STORE_BUSY_TIMEOUT,
@@ -292,9 +382,7 @@ function shutdownDb(db: DatabaseSync): void {
   db.close();
 }
 
-async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<HashStore> {
-  shutdownHashStore();
-
+async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
   const owner = options.owner;
   await initHasher();
   await mkdir(dirname(storePath), { recursive: true });
@@ -325,63 +413,71 @@ async function openStore(storePath: string, options: HashStoreLoadOptions): Prom
       console.error("Hash store migration failed; continuing without legacy import:", error);
     }
   }
-  cachedDb = { path: storePath, owner, db, stmts };
 
-  if (!exitHandlerRegistered) {
-    exitHandlerRegistered = true;
-    process.once("exit", () => shutdownHashStore());
-    for (const sig of ["SIGINT", "SIGTERM"] as const) {
-      process.once(sig, () => {
-        shutdownHashStore();
-        process.kill(process.pid, sig);
-      });
-    }
-  }
+  const entry: OpenStore = {
+    key: storeKey(storePath, owner),
+    path: storePath,
+    owner,
+    db,
+    stmts,
+    refs: 0,
+    lastUsed: ++openTick,
+  };
+  openStores.set(entry.key, entry);
+  maybeEvict();
 
-  return { stmts, engine: "node:sqlite", owner };
+  registerExitHandler();
+  return entry;
 }
 
-export function loadHashStoreAt(storePath: string, options: HashStoreLoadOptions = {}): Promise<HashStore> {
+function registerExitHandler(): void {
+  if (exitHandlerRegistered) return;
+  exitHandlerRegistered = true;
+  process.once("exit", () => shutdownHashStore());
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.once(sig, () => {
+      shutdownHashStore();
+      process.kill(process.pid, sig);
+    });
+  }
+}
+
+export function loadHashStoreAt(
+  storePath: string,
+  options: HashStoreLoadOptions = {},
+): Promise<HashStoreHandle> {
   const owner = options.owner;
-  if (cachedDb && cachedDb.path === storePath && cachedDb.owner === owner && cachedDb.db.isOpen) {
-    return Promise.resolve({ stmts: cachedDb.stmts, engine: "node:sqlite", owner });
+  const key = storeKey(storePath, owner);
+  const cached = openStores.get(key);
+  if (cached && cached.db.isOpen) {
+    return Promise.resolve(acquireStore(cached));
   }
-  if (opening && opening.path === storePath && opening.owner === owner) {
-    return opening.promise;
+  let pending = openingStores.get(key);
+  if (!pending) {
+    pending = openStore(storePath, options).finally(() => {
+      openingStores.delete(key);
+    });
+    openingStores.set(key, pending);
   }
-  const promise = openStore(storePath, options).finally(() => {
-    if (opening?.path === storePath && opening.owner === owner) opening = null;
-  });
-  opening = { path: storePath, owner, promise };
-  return promise;
+  return pending.then(acquireStore);
 }
 
-export function loadHashStore(): Promise<HashStore> {
+export function loadHashStore(): Promise<HashStoreHandle> {
   return loadHashStoreAt(hashStorePath());
 }
 
 export function shutdownHashStore(): void {
-  if (cachedDb) {
-    shutdownDb(cachedDb.db);
-    cachedDb = null;
+  for (const entry of openStores.values()) {
+    shutdownDb(entry.db);
   }
+  openStores.clear();
+  openingStores.clear();
   snapshotCache.clear();
 }
 
-function withStore(fn: () => void): void {
-  if (!cachedDb) {
-    throw new Error("Hash store is not open; transactional update aborted");
-  }
-  withBusyRetry(() => {
-    cachedDb!.db.exec("BEGIN IMMEDIATE");
-    try {
-      fn();
-      cachedDb!.db.exec("COMMIT");
-    } catch (e) {
-      try { cachedDb!.db.exec("ROLLBACK"); } catch {}
-      throw e;
-    }
-  });
+/** Number of databases currently held open across distinct (store file, owner) pairs. */
+export function openStoreCount(): number {
+  return openStores.size;
 }
 
 async function migrateLegacy(db: DatabaseSync): Promise<void> {
@@ -548,11 +644,11 @@ async function statMissing(rows: { path: string }[]): Promise<string[]> {
   return missing;
 }
 
-export async function pruneMissing(store: HashStore): Promise<void> {
+export async function pruneMissing(store: HashStoreHandle): Promise<void> {
   const rows = store.stmts.allPaths() as { path: string }[];
   const missing = await statMissing(rows);
   if (missing.length === 0) return;
-  withStore(() => {
+  (store as HashStoreHandleImpl).withTransaction(() => {
     for (const path of missing) {
       store.stmts.deleteOne(path);
       snapshotCache.delete(path);

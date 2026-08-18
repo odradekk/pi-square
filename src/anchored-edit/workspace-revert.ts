@@ -95,85 +95,89 @@ export function createAnchoredRevertToolDefinition(
       }
       const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
 
-      return withFileMutationQueue(mutationTargetPath, async () => {
-        abortIf(signal);
-        const undo = await getUndo(mutationTargetPath, store);
-        if (!undo) {
-          return warning(`No revert history for ${params.path}. There is no previous replace to revert.`);
-        }
+      try {
+        return withFileMutationQueue(mutationTargetPath, async () => {
+          abortIf(signal);
+          const undo = await getUndo(mutationTargetPath, store);
+          if (!undo) {
+            return warning(`No revert history for ${params.path}. There is no previous replace to revert.`);
+          }
 
-        let currentRaw: string | undefined;
-        try {
-          currentRaw = await readFile(mutationTargetPath, "utf8");
-        } catch (error) {
-          if (errCode(error) !== "ENOENT") throw error;
-        }
-        if (currentRaw === undefined) {
+          let currentRaw: string | undefined;
+          try {
+            currentRaw = await readFile(mutationTargetPath, "utf8");
+          } catch (error) {
+            if (errCode(error) !== "ENOENT") throw error;
+          }
+          if (currentRaw === undefined) {
+            await clearUndo(mutationTargetPath, store);
+            return warning(
+              `[E_UNDO_STALE] Cannot revert ${params.path}: the file no longer exists. Call read to inspect the current state.`,
+              "E_UNDO_STALE",
+            );
+          }
+          if (currentRaw !== undo.bom + restoreEndings(undo.resultContent, undo.originalEnding)) {
+            await clearUndo(mutationTargetPath, store);
+            return warning(
+              `[E_UNDO_STALE] Cannot revert ${params.path}: the file was modified after the replace, so reverting would overwrite newer content. Call read to inspect the current state.`,
+              "E_UNDO_STALE",
+            );
+          }
+
+          const { text: currentStripped } = stripBOM(currentRaw);
+          const currentNormalized = toLF(currentStripped);
+          const currentHashes = await lineHashes(currentNormalized, mutationTargetPath, undefined, store);
+          const diffResult = genDiff(undo.content, currentNormalized, 0, undefined, undo.hashes);
+          const linesAddedByReplace = cntDiff(diffResult.diff, "+");
+          const linesRemovedByReplace = cntDiff(diffResult.diff, "-");
+          const restoredRange = changedRange(currentNormalized, undo.content);
+          const diff = genDiff(currentNormalized, undo.content, 1, undo.hashes, currentHashes).diff;
+
+          abortIf(signal);
+          await writeAtomic(mutationTargetPath, undo.bom + restoreEndings(undo.content, undo.originalEnding));
+          try {
+            upsertSnapshot(
+              store,
+              mutationTargetPath,
+              contentChecksum(undo.content),
+              splitLines(undo.content).length,
+              undo.hashes,
+            );
+            if (autoRead()) recordServedDiff(store, mutationTargetPath, diff);
+          } catch (error) {
+            console.error("Failed to restore hash store snapshot after revert:", error);
+          }
           await clearUndo(mutationTargetPath, store);
-          return warning(
-            `[E_UNDO_STALE] Cannot revert ${params.path}: the file no longer exists. Call read to inspect the current state.`,
-            "E_UNDO_STALE",
-          );
-        }
-        if (currentRaw !== undo.bom + restoreEndings(undo.resultContent, undo.originalEnding)) {
-          await clearUndo(mutationTargetPath, store);
-          return warning(
-            `[E_UNDO_STALE] Cannot revert ${params.path}: the file was modified after the replace, so reverting would overwrite newer content. Call read to inspect the current state.`,
-            "E_UNDO_STALE",
-          );
-        }
 
-        const { text: currentStripped } = stripBOM(currentRaw);
-        const currentNormalized = toLF(currentStripped);
-        const currentHashes = await lineHashes(currentNormalized, mutationTargetPath, undefined, store);
-        const diffResult = genDiff(undo.content, currentNormalized, 0, undefined, undo.hashes);
-        const linesAddedByReplace = cntDiff(diffResult.diff, "+");
-        const linesRemovedByReplace = cntDiff(diffResult.diff, "-");
-        const restoredRange = changedRange(currentNormalized, undo.content);
-        const diff = genDiff(currentNormalized, undo.content, 1, undo.hashes, currentHashes).diff;
-
-        abortIf(signal);
-        await writeAtomic(mutationTargetPath, undo.bom + restoreEndings(undo.content, undo.originalEnding));
-        try {
-          upsertSnapshot(
-            store,
-            mutationTargetPath,
-            contentChecksum(undo.content),
-            splitLines(undo.content).length,
-            undo.hashes,
-          );
-          if (autoRead()) recordServedDiff(store, mutationTargetPath, diff);
-        } catch (error) {
-          console.error("Failed to restore hash store snapshot after revert:", error);
-        }
-        await clearUndo(mutationTargetPath, store);
-
-        const parts = [`Reverted the last replace on ${params.path}.`];
-        if (linesAddedByReplace > 0 || linesRemovedByReplace > 0) {
-          parts.push(
-            `Removed ${linesAddedByReplace} line(s) that were added and restored ${linesRemovedByReplace} line(s) that were removed.`,
-          );
-        }
-        parts.push(autoRead()
-          ? "File reverted to its previous state. Use the returned diff anchors for follow-up edits."
-          : "File reverted to its previous state.");
-        return {
-          content: [{ type: "text", text: parts.join("\n") }],
-          details: {
-            diff: autoRead() ? diff : "",
-            metrics: buildMetrics({
-              classification: "applied",
-              editsAttempted: 1,
-              noopEditsCount: 0,
-              warningsCount: 0,
-              firstChangedLine: restoredRange?.firstChangedLine,
-              lastChangedLine: restoredRange?.lastChangedLine,
-              addedLines: linesRemovedByReplace,
-              removedLines: linesAddedByReplace,
-            }),
-          },
-        };
-      });
+          const parts = [`Reverted the last replace on ${params.path}.`];
+          if (linesAddedByReplace > 0 || linesRemovedByReplace > 0) {
+            parts.push(
+              `Removed ${linesAddedByReplace} line(s) that were added and restored ${linesRemovedByReplace} line(s) that were removed.`,
+            );
+          }
+          parts.push(autoRead()
+            ? "File reverted to its previous state. Use the returned diff anchors for follow-up edits."
+            : "File reverted to its previous state.");
+          return {
+            content: [{ type: "text", text: parts.join("\n") }],
+            details: {
+              diff: autoRead() ? diff : "",
+              metrics: buildMetrics({
+                classification: "applied",
+                editsAttempted: 1,
+                noopEditsCount: 0,
+                warningsCount: 0,
+                firstChangedLine: restoredRange?.firstChangedLine,
+                lastChangedLine: restoredRange?.lastChangedLine,
+                addedLines: linesRemovedByReplace,
+                removedLines: linesAddedByReplace,
+              }),
+            },
+          };
+        });
+      } finally {
+        store.release();
+      }
     },
   };
 }

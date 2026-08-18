@@ -85,40 +85,44 @@ export function registerAnchoredAutoRead(
     try {
       return await withFileMutationQueue(pending.path, async () => {
         const store = await loadProjectHashStore(pending.workspaceRoot);
-        deleteUndo(store, pending.path);
-        clearServed(store, pending.path);
-        if (!config().anchoredEditing.autoRead || !pending.changed) return;
         try {
-          const file = await loadFileKindAndText(pending.path, {
-            maxLines: MAX_HASH_LINES,
-            displayPath: pending.displayPath,
-          });
-          if (file.kind !== "text") return;
-          const normalized = await readNormFile(pending.displayPath, pending.workspaceRoot, {
-            maxLines: MAX_HASH_LINES,
-            preloadedFile: file,
-            store,
-          });
-          const preview = await fmtReadPreview(
-            normalized.normalized,
-            {},
-            normalized.fileHashes,
-            normalized.absolutePath,
-            DEFAULT_MAX_BYTES,
-            AUTO_READ_MAX,
-          );
-          recordServed(store, normalized.absolutePath, preview.servedHashes);
-          const skipped = preview.nextOffset === undefined
-            ? ""
-            : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
-          const warning = normalized.hadUtf8DecodeErrors
-            ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
-            : "";
-          return append(event.content, `\n\n--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("Auto-read after write failed:", error);
-          return append(event.content, `\n\n--- Auto-read failed: ${message} ---`);
+          deleteUndo(store, pending.path);
+          clearServed(store, pending.path);
+          if (!config().anchoredEditing.autoRead || !pending.changed) return;
+          try {
+            const file = await loadFileKindAndText(pending.path, {
+              maxLines: MAX_HASH_LINES,
+              displayPath: pending.displayPath,
+            });
+            if (file.kind !== "text") return;
+            const normalized = await readNormFile(pending.displayPath, pending.workspaceRoot, {
+              maxLines: MAX_HASH_LINES,
+              preloadedFile: file,
+              store,
+            });
+            const preview = await fmtReadPreview(
+              normalized.normalized,
+              {},
+              normalized.fileHashes,
+              normalized.absolutePath,
+              DEFAULT_MAX_BYTES,
+              AUTO_READ_MAX,
+            );
+            recordServed(store, normalized.absolutePath, preview.servedHashes);
+            const skipped = preview.nextOffset === undefined
+              ? ""
+              : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
+            const warning = normalized.hadUtf8DecodeErrors
+              ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
+              : "";
+            return append(event.content, `\n\n--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error("Auto-read after write failed:", error);
+            return append(event.content, `\n\n--- Auto-read failed: ${message} ---`);
+          }
+        } finally {
+          store.release();
         }
       });
     } catch (error) {
