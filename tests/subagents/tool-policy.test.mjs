@@ -146,6 +146,18 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
   }
 });
 
+test("child tool construction accepts a child working directory without changing tools", () => {
+  const names = ["rg", "fd", "codegraph"];
+  const plain = createChildTools(names);
+  const withCwd = createChildTools(names, undefined, "/workspace/child");
+  assert.deepEqual(withCwd.errors, []);
+  assert.deepEqual(
+    withCwd.definitions.map((definition) => definition.name),
+    plain.definitions.map((definition) => definition.name),
+    "the child working directory must not change the constructed tools",
+  );
+});
+
 let failed = 0;
 for (const { name, fn } of tests) {
   try {

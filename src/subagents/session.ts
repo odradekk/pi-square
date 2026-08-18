@@ -721,7 +721,7 @@ export async function runSubagentTask(input: {
     tools: input.definition?.tools,
     extensionTools: input.definition?.extensionTools,
   });
-  const customTools = createChildTools(resolvedTools.extensionTools);
+  const customTools = createChildTools(resolvedTools.extensionTools, undefined, cwd);
   const selectedSkillNames = (input.definition?.skills ?? []).map((item) => item.trim()).filter(Boolean);
   const skillsDisabled = selectedSkillNames.length === 1 && selectedSkillNames[0].toLowerCase() === "none";
   const modelSpec = input.modelOverride ?? input.definition?.model;
@@ -948,7 +948,7 @@ export async function resumeSubagentTask(input: {
       tools: persisted.agent?.tools,
       extensionTools: persisted.agent?.extensionTools,
     });
-    const customTools = createChildTools(resolvedTools.extensionTools);
+    const customTools = createChildTools(resolvedTools.extensionTools, undefined, runCwd);
     const selectedSkillNames = persisted.agent?.skills ?? [];
     const modelSpec = persisted.agent?.model ?? persisted.model;
     const effortSpec = persisted.agent?.effort;
