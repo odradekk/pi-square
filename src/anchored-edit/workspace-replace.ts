@@ -8,7 +8,7 @@ import type { DisplayRuntimeProvider } from "../display/tool-renderer.ts";
 import { resolveTarget, writeAtomic } from "./fs-write.ts";
 import { safeSnapId } from "./file-reader.ts";
 import { AnchorMismatchError, RangeStaleError } from "./hashline/index.ts";
-import { loadProjectHashStore, outsideWorkspaceError } from "./workspace-support.ts";
+import { loadProjectHashStore, outsideWorkspaceError, PARENT_OWNER } from "./workspace-support.ts";
 import {
   assertReq,
   editToolSchema,
@@ -53,10 +53,16 @@ function anchorWarning(error: RangeStaleError | AnchorMismatchError): {
 /**
  * Creates the parent-only anchored range replacement definition. The caller
  * applies the shared display adapter; this definition has no renderer fields.
+ *
+ * @param fallbackCwd Directory used when the execution context provides no cwd.
+ * @param autoRead Whether post-edit anchored diff rows are recorded and returned.
+ * @param owner Anchor-store owner the replace reads and writes under; defaults
+ *   to the parent owner so existing records stay on the same owner.
  */
 export function createAnchoredReplaceToolDefinition(
   fallbackCwd: string,
   autoRead: () => boolean = () => true,
+  owner: string = PARENT_OWNER,
 ): WorkspaceReplaceDefinition {
   return {
     name: "replace",
@@ -71,7 +77,7 @@ export function createAnchoredReplaceToolDefinition(
       const canonical = normReq(params);
       assertReq(canonical, { allowMissingPath: true });
       const workspace = resolveWorkspacePath(cwd, ".");
-      const store = await loadProjectHashStore(workspace.workspaceRoot);
+      const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
       const resolution = isRec(canonical)
         ? await resolveMissingPath(canonical, store)
         : undefined;

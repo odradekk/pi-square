@@ -17,7 +17,7 @@ import { buildMetrics, type RMetrics } from "./replace-response.ts";
 import { loadGuide, loadP } from "./prompts.ts";
 import { recordServedDiff } from "./served.ts";
 import { abortIf, cntDiff, errCode, isRec, makePrepareArguments, rejectUnknownFields, splitLines } from "./utils.ts";
-import { loadProjectHashStore, outsideWorkspaceError } from "./workspace-support.ts";
+import { loadProjectHashStore, outsideWorkspaceError, PARENT_OWNER } from "./workspace-support.ts";
 
 const REVERT_FIELDS = new Set(["path"]);
 
@@ -66,10 +66,16 @@ function warning(message: string, errorCode?: string): {
 /**
  * Creates the parent-only, workspace-scoped revert definition. The caller
  * applies the shared display adapter; this definition has no renderer fields.
+ *
+ * @param fallbackCwd Directory used when the execution context provides no cwd.
+ * @param autoRead Whether the restored diff is recorded and returned.
+ * @param owner Anchor-store owner the revert reads and writes under; defaults
+ *   to the parent owner so existing records stay on the same owner.
  */
 export function createAnchoredRevertToolDefinition(
   fallbackCwd: string,
   autoRead: () => boolean = () => true,
+  owner: string = PARENT_OWNER,
 ): WorkspaceRevertDefinition {
   return {
     name: "revert",
@@ -87,7 +93,7 @@ export function createAnchoredRevertToolDefinition(
       if (!isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) {
         throw outsideWorkspaceError(params.path);
       }
-      const store = await loadProjectHashStore(workspace.workspaceRoot);
+      const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
 
       return withFileMutationQueue(mutationTargetPath, async () => {
         abortIf(signal);

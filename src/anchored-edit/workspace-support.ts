@@ -3,9 +3,12 @@ import { projectHashStorePath } from "./paths.ts";
 
 export const PARENT_OWNER = "parent";
 
-export async function loadProjectHashStore(workspaceRoot: string): Promise<HashStore> {
+export async function loadProjectHashStore(
+  workspaceRoot: string,
+  owner: string = PARENT_OWNER,
+): Promise<HashStore> {
   return loadHashStoreAt(projectHashStorePath(workspaceRoot), {
-    owner: PARENT_OWNER,
+    owner,
     migrateLegacy: false,
   });
 }
