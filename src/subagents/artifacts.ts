@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { dropChildPartition } from "../anchored-edit/partitions";
 import { subagentsStateRoot } from "./agent-paths";
 import { createSubagentError, normalizeSubagentError, SubagentError } from "./errors";
 import type { SubagentRunDetails } from "./types";
@@ -238,6 +239,12 @@ export function deleteParentSessionRun(parentSessionId: string, id: string): voi
   }
   try {
     withTransientFsRetries(() => rmSync(artifactsDirFor(id), { recursive: true, force: true }));
+    // The child's anchor-store partition follows its artifacts: drop it as a
+    // best-effort cleanup now, and the parent-session reconciliation in
+    // subagents guarantees it if this process exits before the drop completes.
+    dropChildPartition(details.cwd, id).catch((error) => {
+      console.error(`Failed to drop anchor-store partition for ${id}:`, error);
+    });
     const path = parentIndexPath(parentSessionId);
     if (!existsSync(path)) return;
     const index = readParentIndex(parentSessionId);
@@ -413,6 +420,18 @@ export function listRunDirs(): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Subagent IDs whose artifacts are still retained and resumable (a valid
+ * run.json exists). Used as the anchor-store retained set when reconciling
+ * child partitions: a partition whose child ID is not in this set belongs to
+ * dropped artifacts and is evicted.
+ */
+export function listRetainedSubagentIds(): string[] {
+  return listRunDirs()
+    .map((dir) => basename(dir))
+    .filter((id) => Boolean(tryReadRunState(artifactsDirFor(id))));
 }
 
 export const __testables = {
