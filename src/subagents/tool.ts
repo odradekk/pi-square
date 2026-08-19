@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { PiSquareConfig } from "../core/config";
 import { createSubagentId } from "./artifacts";
 import {
   type BackgroundState,
@@ -24,7 +25,13 @@ export interface SubagentRuntimeState {
   background: BackgroundState;
   sessionCtx?: any;
   inheritedSystemCore?: string;
+  config?: () => PiSquareConfig;
   refresh?: (cwd: string) => void;
+}
+
+/** Resolves the current parent-session anchored-editing flag for child runs. */
+export function anchoredEditingEnabled(state: SubagentRuntimeState): boolean {
+  return state.config?.()?.anchoredEditing?.enabled === true;
 }
 
 // The former single subagent tool exposed mode=fg/bg/resume plus an optional id
@@ -231,6 +238,7 @@ export function registerSubagentTool(
           parentSessionId: parentContext.parentSessionId,
           contextMessages: parentContext.contextMessages,
           cwd: normalized.cwd,
+          anchoredEditing: anchoredEditingEnabled(state),
           inheritedSystemCore: state.inheritedSystemCore,
           systemPrompt: normalized.systemPrompt,
           thinkingLevel: pi.getThinkingLevel(),
@@ -253,6 +261,7 @@ export function registerSubagentTool(
           parentSessionId: parentContext.parentSessionId,
           contextMessages: parentContext.contextMessages,
           cwd: normalized.cwd,
+          anchoredEditing: anchoredEditingEnabled(state),
           inheritedSystemCore: state.inheritedSystemCore,
           systemPrompt: normalized.systemPrompt,
           thinkingLevel: pi.getThinkingLevel(),
@@ -297,6 +306,7 @@ export function registerSubagentTool(
           ctx,
           id,
           task,
+          anchoredEditing: anchoredEditingEnabled(state),
           parentSessionId: parentContext.parentSessionId,
           contextMessages: parentContext.contextMessages,
           signal,

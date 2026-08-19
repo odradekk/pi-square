@@ -6,9 +6,10 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { createChildAnchoredReadTool } from "../anchored-edit/child-read";
 import { createChildTools } from "../tool-catalog";
 import {
   artifactsDirFor,
@@ -300,6 +301,31 @@ function resolveParentSessionId(ctx: ExtensionContext, explicit?: string): strin
     operation: "persistence",
     retryable: false,
   });
+}
+
+/**
+ * A child is writable when its declared built-in tools include a file-writing
+ * tool. Read-only roles (Explorer, Oracle, Crawler, Librarian) carry `read` but
+ * no `write`/`edit`, so they must receive no anchored read.
+ */
+function isWritableChild(builtInTools: string[]): boolean {
+  return builtInTools.includes("write") || builtInTools.includes("edit");
+}
+
+/**
+ * Appends the child anchored read when the child is writable and anchored
+ * editing is enabled. The custom definition carries the built-in read name and
+ * overrides the child's built-in read, so the model is offered exactly one read
+ * tool; served rows are recorded under the child's own owner.
+ */
+function appendChildAnchoredRead(
+  customTools: { definitions: ToolDefinition[] },
+  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string },
+): void {
+  if (!options.anchoredEditing) return;
+  if (!options.builtInTools.includes("read")) return;
+  if (!isWritableChild(options.builtInTools)) return;
+  customTools.definitions.push(createChildAnchoredReadTool(options.cwd, options.owner));
 }
 
 function updateSnapshotContext(
@@ -694,6 +720,7 @@ export async function runSubagentTask(input: {
   parentSessionId?: string;
   contextMessages?: ParentContextMessage[];
   cwd?: string;
+  anchoredEditing?: boolean;
   inheritedSystemCore?: string;
   systemPrompt?: string;
   thinkingLevel?: string;
@@ -722,6 +749,12 @@ export async function runSubagentTask(input: {
     extensionTools: input.definition?.extensionTools,
   });
   const customTools = createChildTools(resolvedTools.extensionTools, undefined, cwd);
+  appendChildAnchoredRead(customTools, {
+    anchoredEditing: input.anchoredEditing,
+    builtInTools: resolvedTools.builtInTools,
+    cwd,
+    owner: input.id,
+  });
   const selectedSkillNames = (input.definition?.skills ?? []).map((item) => item.trim()).filter(Boolean);
   const skillsDisabled = selectedSkillNames.length === 1 && selectedSkillNames[0].toLowerCase() === "none";
   const modelSpec = input.modelOverride ?? input.definition?.model;
@@ -902,6 +935,7 @@ export async function resumeSubagentTask(input: {
   ctx: ExtensionContext;
   id: string;
   task: string;
+  anchoredEditing?: boolean;
   parentSessionId?: string;
   contextMessages?: ParentContextMessage[];
   signal?: AbortSignal;
@@ -949,6 +983,12 @@ export async function resumeSubagentTask(input: {
       extensionTools: persisted.agent?.extensionTools,
     });
     const customTools = createChildTools(resolvedTools.extensionTools, undefined, runCwd);
+    appendChildAnchoredRead(customTools, {
+      anchoredEditing: input.anchoredEditing,
+      builtInTools: resolvedTools.builtInTools,
+      cwd: runCwd,
+      owner: input.id,
+    });
     const selectedSkillNames = persisted.agent?.skills ?? [];
     const modelSpec = persisted.agent?.model ?? persisted.model;
     const effortSpec = persisted.agent?.effort;
@@ -1062,6 +1102,7 @@ export const __testables = {
   createChildSettings,
   freezeSystemPrompt,
   appendLiveTextTail,
+  appendChildAnchoredRead,
   promptSession,
   LIVE_UPDATE_THROTTLE_MS,
   MAX_LIVE_TEXT,

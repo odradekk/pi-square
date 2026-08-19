@@ -67,7 +67,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerCodeGraph(pi, confirmations, () => display.runtime);
   registerWebTools(pi, confirmations, () => display.runtime);
   registerGitHub(pi, () => display.runtime);
-  const subagents = registerSubagents(pi, () => display.runtime);
+  const subagents = registerSubagents(pi, () => display.runtime, () => display.config);
   registerFooter(pi);
   registerShellTools(pi, {}, () => display.runtime);
   registerSshTool(pi, () => display.config, confirmations, () => display.runtime);
