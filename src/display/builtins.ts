@@ -17,6 +17,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { setBannerDisplayDiagnostic } from "../banner";
 import { guardAnchoredRead, initializeAnchoredReadStore, transformAnchoredReadContent } from "../anchored-edit/read-transform";
+import {
+  withAnchoredReadGuidelines,
+  withAnchoredReadTransform,
+  type ReadContentGuard,
+  type ReadContentTransform,
+} from "../anchored-edit/read-tool";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
@@ -35,29 +41,6 @@ const MAX_DIAGNOSTIC_CHARS = 500;
 type BuiltinName = typeof BUILTIN_NAMES[number];
 type GenericDefinition = ToolDefinition<any, any, any>;
 type GenericAdapter = InternalToolDisplayAdapter<any, any, any>;
-type ReadModelContentTransform = (
-  content: AgentToolResult<unknown>["content"],
-  params: unknown,
-  cwd: string,
-) => AgentToolResult<unknown>["content"] | Promise<AgentToolResult<unknown>["content"]>;
-
-type ReadModelContentGuard = (
-  params: unknown,
-  cwd: string,
-) => AgentToolResult<unknown>["content"] | undefined | Promise<AgentToolResult<unknown>["content"] | undefined>;
-
-const ANCHORED_READ_GUIDELINES = [
-  "When anchoredEditing.enabled is on, read line prefixes are evidence from the current file. Do not invent anchors.",
-  "After a replace, use its returned diff rows for an immediate follow-up; read again only when you need wider file context.",
-  "Anchored read only serves paths inside the current workspace.",
-];
-
-function withAnchoredReadGuidelines(definition: GenericDefinition): GenericDefinition {
-  return {
-    ...definition,
-    promptGuidelines: [...(definition.promptGuidelines ?? []), ...ANCHORED_READ_GUIDELINES],
-  };
-}
 
 function safeDiagnostic(value: unknown): string {
   return truncateCodePoints(sanitizeDisplayLine(value), MAX_DIAGNOSTIC_CHARS);
@@ -662,37 +645,17 @@ function adapterFor(name: BuiltinName, cwd: string): GenericAdapter {
   } as GenericAdapter;
 }
 
-function withReadModelContentTransform(
-  definition: GenericDefinition,
-  transform: ReadModelContentTransform,
-  fallbackCwd: string,
-  guard?: ReadModelContentGuard,
-): GenericDefinition {
-  const execute = definition.execute;
-  return {
-    ...definition,
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const executionCwd = ctx?.cwd ?? fallbackCwd;
-      const guarded = await guard?.(params, executionCwd);
-      if (guarded !== undefined) return { content: guarded, details: undefined };
-      const result = await execute(toolCallId, params, signal, onUpdate, ctx);
-      const content = await transform(result.content, params, executionCwd);
-      return content === result.content ? result : { ...result, content };
-    },
-  };
-}
-
 export function decorateBuiltinDefinition(
   definition: GenericDefinition,
   cwd: string,
   runtime: DisplayRuntimeProvider,
-  readContentTransform?: ReadModelContentTransform,
-  readContentGuard?: ReadModelContentGuard,
+  readContentTransform?: ReadContentTransform,
+  readContentGuard?: ReadContentGuard,
 ): GenericDefinition {
   const name = definition.name as BuiltinName;
   if (!BUILTIN_NAMES.includes(name)) throw new Error(`unsupported Pi built-in display tool: ${definition.name}`);
   const transformed = name === "read" && readContentTransform
-    ? withReadModelContentTransform(definition, readContentTransform, cwd, readContentGuard)
+    ? withAnchoredReadTransform(definition, cwd, readContentTransform, readContentGuard)
     : definition;
   return decorateToolDefinition(transformed, runtime, adapterFor(name, cwd));
 }

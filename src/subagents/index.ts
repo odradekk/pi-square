@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { PiSquareConfig } from "../core/config";
 import type { PromptManagerSegment } from "../prompt-manager/types";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
@@ -37,12 +38,17 @@ export interface SubagentFeature {
   setInheritedSystemCore(systemPrompt: string | undefined): void;
 }
 
-export default function registerSubagents(pi: ExtensionAPI, runtime?: DisplayRuntimeProvider): SubagentFeature {
+export default function registerSubagents(
+  pi: ExtensionAPI,
+  runtime?: DisplayRuntimeProvider,
+  config?: () => PiSquareConfig,
+): SubagentFeature {
   const state: SubagentRuntimeState = {
     registry: { definitions: [], errors: [], projectDir: null },
     background: createBackgroundState(),
     sessionCtx: undefined,
     inheritedSystemCore: undefined,
+    config,
   };
 
   const refresh = (cwd: string) => {
