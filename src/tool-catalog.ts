@@ -28,7 +28,9 @@ export function extensionToolNamesForPlatform(platform: NodeJS.Platform = proces
   return isWindowsPlatform(platform) ? [...BASE_EXTENSION_TOOLS, "pwsh"] : [...BASE_EXTENSION_TOOLS];
 }
 
-function createDefinitions(platform: NodeJS.Platform): Map<SupportedExtensionTool, ToolDefinition> {
+function createDefinitions(platform: NodeJS.Platform, _cwd?: string): Map<SupportedExtensionTool, ToolDefinition> {
+  // _cwd is reserved for composing a child read factory for the child's working
+  // directory (the anchored-read follow-up); no shipped child tool consumes it yet.
   const [rg, fd] = createSearchToolDefinitions();
   const definitions = new Map<SupportedExtensionTool, ToolDefinition>([
     ["rg", rg as ToolDefinition],
@@ -48,11 +50,12 @@ function createDefinitions(platform: NodeJS.Platform): Map<SupportedExtensionToo
 export function createChildTools(
   names: readonly string[],
   platform: NodeJS.Platform = process.platform,
+  cwd?: string,
 ): {
   definitions: ToolDefinition[];
   errors: string[];
 } {
-  const available = createDefinitions(platform);
+  const available = createDefinitions(platform, cwd);
   const supported = extensionToolNamesForPlatform(platform);
   const definitions: ToolDefinition[] = [];
   const errors: string[] = [];
