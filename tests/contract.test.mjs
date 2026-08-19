@@ -17,6 +17,7 @@ try {
   const { childToolNames, createChildTools } = await load("../src/tool-catalog.ts");
   const { createAnchoredReplaceToolDefinition } = await load("../src/anchored-edit/workspace-replace.ts");
   const { createAnchoredRevertToolDefinition } = await load("../src/anchored-edit/workspace-revert.ts");
+  const { createChildAnchoredEditTools } = await load("../src/anchored-edit/child-edit.ts");
   const replaceTool = createAnchoredReplaceToolDefinition(process.cwd());
   const revertTool = createAnchoredRevertToolDefinition(process.cwd());
   assert.equal(replaceTool.parameters.type, "object");
@@ -25,7 +26,7 @@ try {
   assert.deepEqual(replaceTool.parameters.required, ["remove_from", "remove_to", "replacement_text"]);
   assert.equal(replaceTool.renderCall, undefined, "replace definitions stay renderer-free before parent decoration");
   assert.equal(replaceTool.renderResult, undefined, "replace definitions stay renderer-free before parent decoration");
-  assert.ok(!childToolNames.includes("replace"), "replace must remain parent-only");
+  assert.ok(!childToolNames.includes("replace"), "replace stays out of the extension catalog; the capability mapping grants it to children");
   assert.equal(revertTool.parameters.type, "object");
   assert.equal(revertTool.parameters.anyOf, undefined);
   assert.equal(revertTool.parameters.additionalProperties, false);
@@ -33,7 +34,14 @@ try {
   assert.equal(revertTool.renderCall, undefined, "revert definitions stay renderer-free before parent decoration");
   assert.equal(revertTool.renderResult, undefined, "revert definitions stay renderer-free before parent decoration");
   assert.ok(revertTool.promptGuidelines.some((guideline) => /successful `write`.*failed write/s.test(guideline)), "revert carries the adapted write-history guideline");
-  assert.ok(!childToolNames.includes("revert"), "revert must remain parent-only");
+  assert.ok(!childToolNames.includes("revert"), "revert stays out of the extension catalog; the capability mapping grants it to children");
+  const [childReplace, childRevert] = createChildAnchoredEditTools(process.cwd(), "subagent-child");
+  assert.deepEqual(childReplace.parameters, replaceTool.parameters, "the child replace schema matches the parent's exactly");
+  assert.deepEqual(childRevert.parameters, revertTool.parameters, "the child revert schema matches the parent's exactly");
+  assert.equal(childReplace.renderCall, undefined, "child replace definitions stay renderer-free");
+  assert.equal(childReplace.renderResult, undefined, "child replace definitions stay renderer-free");
+  assert.equal(childRevert.renderCall, undefined, "child revert definitions stay renderer-free");
+  assert.equal(childRevert.renderResult, undefined, "child revert definitions stay renderer-free");
 
   const tools = new Map();
   const commands = new Map();

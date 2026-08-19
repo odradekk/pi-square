@@ -186,6 +186,14 @@ export interface ExecPipelineOptions {
   signal?: AbortSignal;
   store?: HashStore;
   noPersist?: boolean;
+  /**
+   * Forces the range-served verification even when the calling owner has no
+   * served record for the path. A missing record then behaves as an empty set,
+   * so a child that names anchors it never read for itself is refused and
+   * receives the current range with fresh anchors. The parent leaves this off
+   * to preserve its existing edit-without-prior-read behaviour.
+   */
+  requireServed?: boolean;
 }
 
 function collectRemovedHashes(
@@ -249,7 +257,10 @@ export async function execPipeline(
     path, cwd, { signal: options?.signal, accessMode: options?.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: options?.noPersist },
   );
 
-  const served = await getServed(hashStore, absolutePath);
+  const servedRow = await getServed(hashStore, absolutePath);
+  const served = options?.requireServed === true && servedRow === undefined
+    ? new Set<string>()
+    : servedRow;
   let anchorResult: ReturnType<typeof applyEdit>;
   try {
     anchorResult = applyEdit(

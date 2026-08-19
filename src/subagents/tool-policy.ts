@@ -4,6 +4,11 @@ const BUILT_IN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "l
 const NON_SHELL_BUILT_INS = BUILT_IN_TOOL_NAMES.filter((name) => name !== "bash");
 const NO_BUILT_IN_TOOLS = "none";
 
+// Anchored editing tools are granted only by the edit capability, never by
+// name: a definition that lists `edit` resolves to them while anchored editing
+// is on, and a definition that names them directly is rejected.
+const CAPABILITY_ONLY_TOOL_NAMES = new Set(["replace", "revert"]);
+
 type BuiltInToolName = typeof BUILT_IN_TOOL_NAMES[number];
 
 export interface SubagentToolSelection {
@@ -59,6 +64,10 @@ export function resolveSubagentTools(
       if (!persistedTools.includes("shell")) persistedTools.push("shell");
       continue;
     }
+    if (CAPABILITY_ONLY_TOOL_NAMES.has(rawName)) {
+      errors.push(`Anchored tool '${rawName}' is granted only by the edit capability; list 'edit' in tools to enable it.`);
+      continue;
+    }
     if (rawName === "bash" && (legacyPortableShell || legacyDefaultTools)) {
       if (!persistedTools.includes("shell")) persistedTools.push("shell");
       continue;
@@ -85,6 +94,10 @@ export function resolveSubagentTools(
     }
     if (isBuiltInTool(rawName)) {
       errors.push(`Built-in tool '${rawName}' must be listed under tools, not extensionTools.`);
+      continue;
+    }
+    if (CAPABILITY_ONLY_TOOL_NAMES.has(rawName)) {
+      errors.push(`Anchored tool '${rawName}' cannot be requested in extensionTools; it is granted by the edit capability.`);
       continue;
     }
     if (rawName === "pwsh" && !windows) {

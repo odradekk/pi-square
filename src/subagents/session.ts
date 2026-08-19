@@ -10,6 +10,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { createChildAnchoredReadTool } from "../anchored-edit/child-read";
+import { createChildAnchoredEditTools } from "../anchored-edit/child-edit";
 import { createChildTools } from "../tool-catalog";
 import {
   artifactsDirFor,
@@ -326,6 +327,35 @@ function appendChildAnchoredRead(
   if (!options.builtInTools.includes("read")) return;
   if (!isWritableChild(options.builtInTools)) return;
   customTools.definitions.push(createChildAnchoredReadTool(options.cwd, options.owner));
+}
+
+/**
+ * Grants the child the anchored replace and revert tools when the child
+ * declares the built-in edit capability and anchored editing is enabled. The
+ * definitions are the parent's own, executed under the child's owner. Returns
+ * true when the edit capability was replaced, so the caller removes the
+ * built-in edit tool and adds replace/revert to the session allowlist; the
+ * child then has exactly one range-editing path, as the parent does.
+ */
+function appendChildAnchoredEdit(
+  customTools: { definitions: ToolDefinition[] },
+  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string },
+): boolean {
+  if (!options.anchoredEditing) return false;
+  if (!options.builtInTools.includes("edit")) return false;
+  customTools.definitions.push(...createChildAnchoredEditTools(options.cwd, options.owner));
+  return true;
+}
+
+/**
+ * Computes the effective built-in tool allowlist after capability resolution:
+ * when the child's edit capability was replaced by the anchored replace/revert,
+ * the built-in edit tool is removed and the anchored tool names are added so
+ * their custom definitions stay active in the child session registry.
+ */
+function resolveChildToolAllowlist(builtInTools: string[], editReplaced: boolean): string[] {
+  if (!editReplaced) return [...builtInTools];
+  return [...builtInTools.filter((name) => name !== "edit"), "replace", "revert"];
 }
 
 function updateSnapshotContext(
@@ -755,6 +785,13 @@ export async function runSubagentTask(input: {
     cwd,
     owner: input.id,
   });
+  const editReplaced = appendChildAnchoredEdit(customTools, {
+    anchoredEditing: input.anchoredEditing,
+    builtInTools: resolvedTools.builtInTools,
+    cwd,
+    owner: input.id,
+  });
+  const childToolAllowlist = resolveChildToolAllowlist(resolvedTools.builtInTools, editReplaced);
   const selectedSkillNames = (input.definition?.skills ?? []).map((item) => item.trim()).filter(Boolean);
   const skillsDisabled = selectedSkillNames.length === 1 && selectedSkillNames[0].toLowerCase() === "none";
   const modelSpec = input.modelOverride ?? input.definition?.model;
@@ -893,7 +930,7 @@ export async function runSubagentTask(input: {
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
       resourceLoader,
       thinkingLevel: resolvedEffort ?? undefined,
-      tools: [...resolvedTools.builtInTools, ...resolvedTools.extensionTools],
+      tools: [...childToolAllowlist, ...resolvedTools.extensionTools],
       ...(customTools.definitions.length > 0 ? { customTools: customTools.definitions } : {}),
       sessionManager,
       settingsManager: createChildSettings(),
@@ -989,6 +1026,13 @@ export async function resumeSubagentTask(input: {
       cwd: runCwd,
       owner: input.id,
     });
+    const editReplaced = appendChildAnchoredEdit(customTools, {
+      anchoredEditing: input.anchoredEditing,
+      builtInTools: resolvedTools.builtInTools,
+      cwd: runCwd,
+      owner: input.id,
+    });
+    const childToolAllowlist = resolveChildToolAllowlist(resolvedTools.builtInTools, editReplaced);
     const selectedSkillNames = persisted.agent?.skills ?? [];
     const modelSpec = persisted.agent?.model ?? persisted.model;
     const effortSpec = persisted.agent?.effort;
@@ -1064,7 +1108,7 @@ export async function resumeSubagentTask(input: {
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
       resourceLoader,
       thinkingLevel: resolvedEffort ?? undefined,
-      tools: [...resolvedTools.builtInTools, ...resolvedTools.extensionTools],
+      tools: [...childToolAllowlist, ...resolvedTools.extensionTools],
       ...(customTools.definitions.length > 0 ? { customTools: customTools.definitions } : {}),
       sessionManager,
       settingsManager: createChildSettings(),
@@ -1103,6 +1147,8 @@ export const __testables = {
   freezeSystemPrompt,
   appendLiveTextTail,
   appendChildAnchoredRead,
+  appendChildAnchoredEdit,
+  resolveChildToolAllowlist,
   promptSession,
   LIVE_UPDATE_THROTTLE_MS,
   MAX_LIVE_TEXT,
