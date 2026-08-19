@@ -158,6 +158,21 @@ test("child tool construction accepts a child working directory without changing
   );
 });
 
+test("anchored editing tools are capability-gated and cannot be requested by name", () => {
+  const inTools = resolveSubagentTools({ tools: ["read", "replace"] }, "linux");
+  assert.ok(
+    inTools.errors.some((error) => error.includes("replace") && error.includes("edit capability")),
+    "replace in tools is rejected with the capability-gated error",
+  );
+  assert.ok(!inTools.builtInTools.includes("replace"), "replace is never resolved as a built-in tool");
+  const inExtension = resolveSubagentTools({ tools: ["read"], extensionTools: ["revert"] }, "linux");
+  assert.ok(
+    inExtension.errors.some((error) => error.includes("revert") && error.includes("edit capability")),
+    "revert in extensionTools is rejected with the capability-gated error",
+  );
+  assert.ok(!inExtension.extensionTools.includes("revert"), "revert is never resolved as an extension tool");
+});
+
 let failed = 0;
 for (const { name, fn } of tests) {
   try {

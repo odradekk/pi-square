@@ -1,0 +1,5 @@
+---
+"@odradekk/pi-square": minor
+---
+
+Give writable subagents anchored replace and revert with capability resolution. When anchored editing is enabled, a writable child that declares the built-in `edit` capability receives the same anchored `replace` and `revert` tools as the parent under its own anchor-store owner, and Pi's built-in `edit` is absent so the child has exactly one range-editing path. The child replace verifies against the child's own served record: a child that names anchors it never read for itself is refused with the recoverable `[E_RANGE_STALE]` code, receives the current range as fresh anchored rows, and is served those rows so its immediate retry succeeds. Revert records are written under the editing child's own owner. The anchored tool names cannot be requested in a definition; only the `edit` capability grants them, and a resumed child re-resolves the capability against current configuration. With anchored editing off, the same definitions resolve to Pi's built-in `edit` and no anchored tools; read-only roles still receive no editing capability.

@@ -58,11 +58,15 @@ function anchorWarning(error: RangeStaleError | AnchorMismatchError): {
  * @param autoRead Whether post-edit anchored diff rows are recorded and returned.
  * @param owner Anchor-store owner the replace reads and writes under; defaults
  *   to the parent owner so existing records stay on the same owner.
+ * @param requireServed Forces verification against the owner's served record
+ *   even when the owner never read the file. Used by child replaces so a child
+ *   cannot edit a region it was never shown; the parent leaves it off.
  */
 export function createAnchoredReplaceToolDefinition(
   fallbackCwd: string,
   autoRead: () => boolean = () => true,
   owner: string = PARENT_OWNER,
+  requireServed: boolean = false,
 ): WorkspaceReplaceDefinition {
   return {
     name: "replace",
@@ -101,6 +105,7 @@ export function createAnchoredReplaceToolDefinition(
               accessMode: constants.R_OK | constants.W_OK,
               signal,
               store,
+              requireServed,
             });
           } catch (error) {
             if (error instanceof RangeStaleError || error instanceof AnchorMismatchError) {
