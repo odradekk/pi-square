@@ -21,6 +21,18 @@ interface Prepared {
   servedGet: (...params: SqlParams) => Record<string, unknown> | undefined;
   servedUpsert: (...params: SqlParams) => void;
   servedDelete: (...params: SqlParams) => void;
+  /** Owner-agnostic partition operations; present only on scoped stores. */
+  listOwners?: () => Record<string, unknown>[];
+  undoOwners?: () => Record<string, unknown>[];
+  deleteOwner?: (owner: string) => void;
+}
+
+export interface OwnerPartition {
+  owner: string;
+  /** Newest updated_at across the owner's snapshot, undo, and served rows. */
+  updatedAt: number;
+  /** Whether the owner still holds a revert record (an undo row). */
+  hasUndo: boolean;
 }
 
 export interface HashStore {
@@ -335,6 +347,17 @@ function buildStore(
     `ON CONFLICT(${conflictTarget}) DO UPDATE SET hashes = excluded.hashes, updated_at = excluded.updated_at`
   );
   const servedDelStmt = db.prepare(`DELETE FROM served WHERE ${ownerWhere}path = ?`);
+  const ownerListStmt = scoped ? db.prepare(
+    "SELECT owner, MAX(updated_at) AS updated_at FROM (" +
+    "SELECT owner, updated_at FROM snapshots " +
+    "UNION ALL SELECT owner, updated_at FROM undo " +
+    "UNION ALL SELECT owner, updated_at FROM served" +
+    ") GROUP BY owner"
+  ) : undefined;
+  const undoOwnersStmt = scoped ? db.prepare("SELECT DISTINCT owner FROM undo") : undefined;
+  const deleteOwnerSnapshotsStmt = scoped ? db.prepare("DELETE FROM snapshots WHERE owner = ?") : undefined;
+  const deleteOwnerUndoStmt = scoped ? db.prepare("DELETE FROM undo WHERE owner = ?") : undefined;
+  const deleteOwnerServedStmt = scoped ? db.prepare("DELETE FROM served WHERE owner = ?") : undefined;
   const stmts: Prepared = {
     get: (...params) => getStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
     allPaths: (...params) => allStmt.all(...(scoped ? [owner!, owner!, owner!, ...params] : params)) as Record<string, unknown>[],
@@ -347,6 +370,19 @@ function buildStore(
     servedGet: (...params) => servedGetStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
     servedUpsert: (...params) => { withBusyRetry(() => { servedUpsertStmt.run(...withOwner(params)); }); },
     servedDelete: (...params) => { withBusyRetry(() => { servedDelStmt.run(...withOwner(params)); }); },
+    ...(scoped && ownerListStmt && undoOwnersStmt && deleteOwnerSnapshotsStmt && deleteOwnerUndoStmt && deleteOwnerServedStmt
+      ? {
+          listOwners: () => ownerListStmt.all() as Record<string, unknown>[],
+          undoOwners: () => undoOwnersStmt.all() as Record<string, unknown>[],
+          deleteOwner: (owner: string) => {
+            withBusyRetry(() => {
+              deleteOwnerSnapshotsStmt.run(owner);
+              deleteOwnerUndoStmt.run(owner);
+              deleteOwnerServedStmt.run(owner);
+            });
+          },
+        }
+      : {}),
   };
   return { db, stmts };
 }
@@ -656,6 +692,27 @@ export async function pruneMissing(store: HashStoreHandle): Promise<void> {
       store.stmts.servedDelete(path);
     }
   });
+}
+
+/**
+ * Lists every distinct owner partition in a scoped store, with the newest
+ * activity across its snapshot, undo, and served rows and whether it still
+ * holds a revert record. Unscoped (legacy) stores have no owner column and
+ * return no partitions.
+ */
+export function listOwnerPartitions(store: HashStore): OwnerPartition[] {
+  const rows = store.stmts.listOwners?.() ?? [];
+  const undoOwners = new Set((store.stmts.undoOwners?.() ?? []).map((row) => String(row.owner)));
+  return rows.map((row) => ({
+    owner: String(row.owner),
+    updatedAt: Number(row.updated_at ?? 0),
+    hasUndo: undoOwners.has(String(row.owner)),
+  }));
+}
+
+/** Deletes every row belonging to one owner in a scoped store. No-op on unscoped stores. */
+export function deleteOwnerPartition(store: HashStore, owner: string): void {
+  store.stmts.deleteOwner?.(owner);
 }
 
 export function findSnapshotPaths(store: HashStore, hashes: string[]): string[] {

@@ -6,10 +6,12 @@ import {
   abortAllBackgroundJobs,
   createBackgroundState,
 } from "./background";
+import { listRetainedSubagentIds } from "./artifacts";
+import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
 import { registerSubagentManager } from "./manager";
 import { createNativeSubagentStatusController } from "./status";
-import { registerSubagentTool, type SubagentRuntimeState } from "./tool";
+import { anchoredEditingEnabled, registerSubagentTool, type SubagentRuntimeState } from "./tool";
 import { decorateSubagentTool } from "./display-adapter";
 
 function formatSubagentCatalog(state: SubagentRuntimeState): string {
@@ -66,6 +68,17 @@ export default function registerSubagents(
     state.sessionCtx = ctx;
     state.inheritedSystemCore = undefined;
     refresh(ctx.cwd);
+    // Child anchor-store partitions follow subagent artifacts: reconcile the
+    // workspace store against the retained children and prune records for
+    // every owner, best-effort, so dropped artifacts never leave partitions or
+    // stale file records behind.
+    if (anchoredEditingEnabled(state)) {
+      try {
+        await reconcileChildPartitions(ctx.cwd, new Set(listRetainedSubagentIds()));
+      } catch (error) {
+        console.error("Failed to reconcile child anchor-store partitions:", error);
+      }
+    }
     nativeStatus.start(ctx);
     if (ctx.hasUI && state.registry.errors.length > 0) {
       const suffix = state.registry.errors.length > 1 ? ` (+${state.registry.errors.length - 1} more)` : "";

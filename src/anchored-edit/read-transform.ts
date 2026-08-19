@@ -3,12 +3,13 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { resolveWorkspacePath } from "../core/paths.ts";
 import { loadFileKindAndText } from "./file-kind.ts";
 import { readNormFile } from "./file-reader.ts";
-import { loadHashStoreAt, pruneMissing } from "./hash-store.ts";
+import { loadHashStoreAt } from "./hash-store.ts";
 import { MAX_HASH_LINES } from "./hashline/index.ts";
 import { projectHashStorePath } from "./paths.ts";
 import { fmtReadPreview } from "./read.ts";
 import { recordServed } from "./served.ts";
 import { PARENT_OWNER } from "./workspace-support.ts";
+import { pruneMissingForAllOwners } from "./partitions.ts";
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];
 
@@ -69,20 +70,8 @@ export async function guardAnchoredRead(
   return undefined;
 }
 
-export async function initializeAnchoredReadStore(
-  cwd: string,
-  owner: string = PARENT_OWNER,
-): Promise<void> {
-  const workspace = resolveWorkspacePath(cwd, ".");
-  const store = await loadHashStoreAt(projectHashStorePath(workspace.workspaceRoot), {
-    owner,
-    migrateLegacy: false,
-  });
-  try {
-    await pruneMissing(store);
-  } finally {
-    store.release();
-  }
+export async function initializeAnchoredReadStore(cwd: string): Promise<void> {
+  await pruneMissingForAllOwners(cwd);
 }
 
 export async function transformAnchoredReadContent(
