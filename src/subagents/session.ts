@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { createChildAnchoredReadTool } from "../anchored-edit/child-read";
 import { createChildAnchoredEditTools } from "../anchored-edit/child-edit";
+import { createChildAnchoredWriteTool } from "../anchored-edit/child-write";
 import { createChildTools } from "../tool-catalog";
 import {
   artifactsDirFor,
@@ -344,6 +345,25 @@ function appendChildAnchoredEdit(
   if (!options.anchoredEditing) return false;
   if (!options.builtInTools.includes("edit")) return false;
   customTools.definitions.push(...createChildAnchoredEditTools(options.cwd, options.owner));
+  return true;
+}
+
+/**
+ * Appends the child anchored write when the child declares the built-in write
+ * capability and anchored editing is enabled. The custom definition carries the
+ * built-in write name and overrides the child's built-in write, so the child
+ * writes exactly as before; a successful write clears the file's single revert
+ * record (whoever made the recorded edit) and the child's own served rows, so a
+ * later revert cannot clobber the write and the child's next edit on the new
+ * content is not refused by stale served rows. A failed write keeps both.
+ */
+function appendChildAnchoredWrite(
+  customTools: { definitions: ToolDefinition[] },
+  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string },
+): boolean {
+  if (!options.anchoredEditing) return false;
+  if (!options.builtInTools.includes("write")) return false;
+  customTools.definitions.push(createChildAnchoredWriteTool(options.cwd, options.owner));
   return true;
 }
 
@@ -791,6 +811,12 @@ export async function runSubagentTask(input: {
     cwd,
     owner: input.id,
   });
+  appendChildAnchoredWrite(customTools, {
+    anchoredEditing: input.anchoredEditing,
+    builtInTools: resolvedTools.builtInTools,
+    cwd,
+    owner: input.id,
+  });
   const childToolAllowlist = resolveChildToolAllowlist(resolvedTools.builtInTools, editReplaced);
   const selectedSkillNames = (input.definition?.skills ?? []).map((item) => item.trim()).filter(Boolean);
   const skillsDisabled = selectedSkillNames.length === 1 && selectedSkillNames[0].toLowerCase() === "none";
@@ -1032,6 +1058,12 @@ export async function resumeSubagentTask(input: {
       cwd: runCwd,
       owner: input.id,
     });
+    appendChildAnchoredWrite(customTools, {
+      anchoredEditing: input.anchoredEditing,
+      builtInTools: resolvedTools.builtInTools,
+      cwd: runCwd,
+      owner: input.id,
+    });
     const childToolAllowlist = resolveChildToolAllowlist(resolvedTools.builtInTools, editReplaced);
     const selectedSkillNames = persisted.agent?.skills ?? [];
     const modelSpec = persisted.agent?.model ?? persisted.model;
@@ -1148,6 +1180,7 @@ export const __testables = {
   appendLiveTextTail,
   appendChildAnchoredRead,
   appendChildAnchoredEdit,
+  appendChildAnchoredWrite,
   resolveChildToolAllowlist,
   promptSession,
   LIVE_UPDATE_THROTTLE_MS,

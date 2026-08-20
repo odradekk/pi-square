@@ -9,7 +9,7 @@ import { readNormFile } from "./file-reader.ts";
 import { resolveTarget } from "./fs-write.ts";
 import { MAX_HASH_LINES } from "./hashline/index.ts";
 import { fmtReadPreview } from "./read.ts";
-import { deleteUndo } from "./hash-store.ts";
+import { clearUndoRecord } from "./replace-undo.ts";
 import { extractWarnings } from "./replace-render.ts";
 import { clearServed, recordServed } from "./served.ts";
 import { isRec, visLines } from "./utils.ts";
@@ -86,7 +86,7 @@ export function registerAnchoredAutoRead(
       return await withFileMutationQueue(pending.path, async () => {
         const store = await loadProjectHashStore(pending.workspaceRoot);
         try {
-          deleteUndo(store, pending.path);
+          clearUndoRecord(pending.path, store);
           clearServed(store, pending.path);
           if (!config().anchoredEditing.autoRead || !pending.changed) return;
           try {

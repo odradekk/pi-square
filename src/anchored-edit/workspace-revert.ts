@@ -11,7 +11,7 @@ import { resolveTarget, writeAtomic } from "./fs-write.ts";
 import { changedRange, lineHashes } from "./hashline/index.ts";
 import { contentChecksum } from "./hashline/hasher.ts";
 import { upsertSnapshot } from "./hash-store.ts";
-import { clearUndo, getUndo } from "./replace-undo.ts";
+import { clearUndoRecord, getUndoRecord } from "./replace-undo.ts";
 import { genDiff, restoreEndings, stripBOM, toLF } from "./replace-diff.ts";
 import { buildMetrics, type RMetrics } from "./replace-response.ts";
 import { loadGuide, loadP } from "./prompts.ts";
@@ -64,6 +64,30 @@ function warning(message: string, errorCode?: string): {
 }
 
 /**
+ * Names the agent that owns a revert record for the ownership refusal. The
+ * parent owner is rendered as "the parent session"; child owners are subagent
+ * IDs and already carry the `subagent_` prefix, so they are shown as-is.
+ */
+function ownerLabel(owner: string | undefined): string {
+  return owner === PARENT_OWNER ? "the parent session" : String(owner);
+}
+
+/**
+ * Refusal a subagent gets when it tries to revert the most recent edit it does
+ * not own. Distinct from `[E_UNDO_STALE]` (a modified or deleted file) so the
+ * two refusals are distinguishable.
+ */
+function ownershipWarning(owner: string | undefined, path: string): {
+  content: Array<{ type: "text"; text: string }>;
+  details: RevertDetails;
+} {
+  return warning(
+    `[E_UNDO_OWNER] Cannot revert ${path}: the most recent edit was made by ${ownerLabel(owner)}, not by this subagent. A subagent can revert only an edit it made itself.`,
+    "E_UNDO_OWNER",
+  );
+}
+
+/**
  * Creates the parent-only, workspace-scoped revert definition. The caller
  * applies the shared display adapter; this definition has no renderer fields.
  *
@@ -71,11 +95,17 @@ function warning(message: string, errorCode?: string): {
  * @param autoRead Whether the restored diff is recorded and returned.
  * @param owner Anchor-store owner the revert reads and writes under; defaults
  *   to the parent owner so existing records stay on the same owner.
+ * @param revertAnyOwner Whether this revert may consume the single file-global
+ *   revert record regardless of which owner made the edit. The parent passes
+ *   true so a supervisor can roll back a subagent's edit; a subagent keeps the
+ *   default false so it can revert only an edit it made itself and is refused
+ *   otherwise with the owning agent named.
  */
 export function createAnchoredRevertToolDefinition(
   fallbackCwd: string,
   autoRead: () => boolean = () => true,
   owner: string = PARENT_OWNER,
+  revertAnyOwner: boolean = false,
 ): WorkspaceRevertDefinition {
   return {
     name: "revert",
@@ -98,10 +128,14 @@ export function createAnchoredRevertToolDefinition(
       try {
         return withFileMutationQueue(mutationTargetPath, async () => {
           abortIf(signal);
-          const undo = await getUndo(mutationTargetPath, store);
-          if (!undo) {
+          const found = await getUndoRecord(mutationTargetPath, store);
+          if (!found) {
             return warning(`No revert history for ${params.path}. There is no previous replace to revert.`);
           }
+          if (!revertAnyOwner && found.owner !== owner) {
+            return ownershipWarning(found.owner, params.path);
+          }
+          const undo = found.entry;
 
           let currentRaw: string | undefined;
           try {
@@ -110,14 +144,14 @@ export function createAnchoredRevertToolDefinition(
             if (errCode(error) !== "ENOENT") throw error;
           }
           if (currentRaw === undefined) {
-            await clearUndo(mutationTargetPath, store);
+            await clearUndoRecord(mutationTargetPath, store);
             return warning(
               `[E_UNDO_STALE] Cannot revert ${params.path}: the file no longer exists. Call read to inspect the current state.`,
               "E_UNDO_STALE",
             );
           }
           if (currentRaw !== undo.bom + restoreEndings(undo.resultContent, undo.originalEnding)) {
-            await clearUndo(mutationTargetPath, store);
+            await clearUndoRecord(mutationTargetPath, store);
             return warning(
               `[E_UNDO_STALE] Cannot revert ${params.path}: the file was modified after the replace, so reverting would overwrite newer content. Call read to inspect the current state.`,
               "E_UNDO_STALE",
@@ -147,7 +181,7 @@ export function createAnchoredRevertToolDefinition(
           } catch (error) {
             console.error("Failed to restore hash store snapshot after revert:", error);
           }
-          await clearUndo(mutationTargetPath, store);
+          await clearUndoRecord(mutationTargetPath, store);
 
           const parts = [`Reverted the last replace on ${params.path}.`];
           if (linesAddedByReplace > 0 || linesRemovedByReplace > 0) {
@@ -190,7 +224,12 @@ export function registerAnchoredRevert(
 ): void {
   pi.on("session_start", async (_event, ctx) => {
     if (!config().anchoredEditing.enabled || !anchoredReadAvailable()) return;
-    const definition = createAnchoredRevertToolDefinition(ctx.cwd, () => config().anchoredEditing.autoRead);
+    const definition = createAnchoredRevertToolDefinition(
+      ctx.cwd,
+      () => config().anchoredEditing.autoRead,
+      PARENT_OWNER,
+      true,
+    );
     pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
   });
 }

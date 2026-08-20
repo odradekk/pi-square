@@ -2,7 +2,7 @@ import { readFile } from "fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadHashStore, upsertSnapshot, upsertUndo, getUndoEntry, deleteUndo, type HashStore, type UndoRecord } from "./hash-store";
+import { loadHashStore, upsertSnapshot, upsertUndo, getUndoEntry, getUndoEntryAny, deleteUndo, deleteUndoAny, upsertUndoFor, type HashStore, type UndoRecord } from "./hash-store";
 import { recordServedDiff } from "./served";
 import { contentChecksum } from "./hashline/hasher";
 import { resolveTarget, writeAtomic } from "./fs-write";
@@ -25,10 +25,18 @@ export async function saveUndo(
   entry: UndoEntry,
   store?: HashStore,
 ): Promise<{ persisted: boolean; restore: () => Promise<void> }> {
-  let previous: UndoRecord | undefined;
+  let previous: { owner: string | undefined; entry: UndoRecord } | undefined;
   try {
     const hashStore = store ?? await loadHashStore();
-    previous = getUndoEntry(hashStore, path);
+    previous = getUndoEntryAny(hashStore, path);
+    // The revert record is single-level per file across all owners: writing a
+    // new record replaces any prior record, from any owner, so only the most
+    // recent edit is revertible. On an unscoped (legacy) store the undo table
+    // is already path-keyed, so only the scoped branch clears other owners'
+    // rows before writing the new one.
+    if (hashStore.owner !== undefined) {
+      deleteUndoAny(hashStore, path);
+    }
     upsertUndo(hashStore, path, {
       content: entry.content,
       bom: entry.bom,
@@ -45,13 +53,63 @@ export async function saveUndo(
     restore: async () => {
       try {
         const hashStore = store ?? await loadHashStore();
-        if (previous) upsertUndo(hashStore, path, previous);
-        else deleteUndo(hashStore, path);
+        deleteUndoAny(hashStore, path);
+        if (previous) upsertUndoFor(hashStore, path, previous.entry, previous.owner);
       } catch (error) {
         console.error("Failed to restore previous undo entry:", error);
       }
     },
   };
+}
+
+export interface UndoRecordWithOwner {
+  owner: string | undefined;
+  entry: UndoEntry;
+}
+
+/**
+ * Reads the single file-global revert record for a path and the owner who made
+ * that most recent edit. On an unscoped (legacy) store the owner is undefined
+ * and the record is the single path-keyed row.
+ */
+export async function getUndoRecord(path: string, store?: HashStore): Promise<UndoRecordWithOwner | undefined> {
+  try {
+    const hashStore = store ?? await loadHashStore();
+    const found = getUndoEntryAny(hashStore, path);
+    if (!found) return undefined;
+    const originalEnding = found.entry.ending;
+    if (originalEnding !== "\r\n" && originalEnding !== "\n" && originalEnding !== "\r") {
+      deleteUndoAny(hashStore, path);
+      return undefined;
+    }
+    return {
+      owner: found.owner,
+      entry: {
+        content: found.entry.content,
+        bom: found.entry.bom,
+        originalEnding,
+        hashes: found.entry.hashes,
+        resultContent: found.entry.resultContent,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to load undo entry:", error);
+    return undefined;
+  }
+}
+
+/**
+ * Clears the single file-global revert record for a path, regardless of which
+ * owner holds it. A successful write or a successful (or stale) revert calls
+ * this so single-level history never outlives the edit it describes.
+ */
+export async function clearUndoRecord(path: string, store?: HashStore): Promise<void> {
+  try {
+    const hashStore = store ?? await loadHashStore();
+    deleteUndoAny(hashStore, path);
+  } catch (error) {
+    console.error("Failed to clear undo entry:", error);
+  }
 }
 
 export async function getUndo(path: string, store?: HashStore): Promise<UndoEntry | undefined> {

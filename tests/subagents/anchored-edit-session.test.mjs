@@ -9,6 +9,9 @@ import jiti from "jiti";
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 const { createChildAnchoredEditTools } = await load("../../src/anchored-edit/child-edit.ts");
+const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
+const { loadProjectHashStore } = await load("../../src/anchored-edit/workspace-support.ts");
+const { getUndoEntry } = await load("../../src/anchored-edit/hash-store.ts");
 
 const CHILD_ONE = "subagent_00000000-0000-4000-8000-000000000001";
 
@@ -67,6 +70,47 @@ try {
   );
   assert.ok(editResult.details?.status !== "warning", "the session replace applies the anchored edit");
   assert.equal(readFileSync(source, "utf8"), "alpha\nBETA2\ndelta", "the file changed as intended");
+
+  // A child that also receives the anchored write override has exactly one
+  // write tool, and a successful write consumes the file's single revert
+  // record so a later revert is refused as having no history.
+  const writeAnchored = await sessionWith(
+    ["read", "write", "replace", "revert"],
+    [
+      createChildAnchoredReadTool(workspace, CHILD_ONE),
+      ...createChildAnchoredEditTools(workspace, CHILD_ONE),
+      createChildAnchoredWriteTool(workspace, CHILD_ONE),
+    ],
+  );
+  assert.equal(
+    writeAnchored.getAllTools().filter((tool) => tool.name === "write").length,
+    1,
+    "the anchored write override leaves exactly one write tool",
+  );
+  const writeTool = writeAnchored.getToolDefinition("write");
+  assert.ok(writeTool, "the anchored write is offered");
+  const writeResult = await writeTool.execute(
+    "session-write",
+    { path: "source.txt", content: "alpha\nWRITTEN\ndelta\n" },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  assert.match(textOf(writeResult.content), /Successfully wrote/, "the anchored write writes the file");
+  assert.equal(
+    await getUndoEntry(await loadProjectHashStore(workspace, CHILD_ONE), source),
+    undefined,
+    "a successful child write clears the child's revert record in the session",
+  );
+  const noHistoryRevert = await writeAnchored.getToolDefinition("revert").execute(
+    "session-revert-after-write",
+    { path: "source.txt" },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  assert.match(textOf(noHistoryRevert.content), /No revert history/, "the child's write consumed the revert record");
+  writeAnchored.dispose();
   anchored.dispose();
 
   // Anchored editing off: the same writable definition keeps Pi's built-in
