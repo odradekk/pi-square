@@ -219,6 +219,7 @@ export function createQueuedJob(input: {
       finalText: "",
       retries: 0,
       toolErrors: [],
+      toolWarnings: [],
       usage: {
         input: 0,
         output: 0,

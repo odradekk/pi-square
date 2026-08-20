@@ -288,9 +288,13 @@ function renderMatches(block: Extract<DisplaySectionBlock, { kind: "matches" }>,
 
 function renderActivity(block: Extract<DisplaySectionBlock, { kind: "activity" }>, context: RenderContext): string[] {
   const items = block.items.slice(0, MAX_SECTION_ITEMS);
-  const glyph = (status?: "running" | "done" | "error") => status === "error" ? "×" : status === "done" ? "✓" : "●";
+  // `!` is the established completed-with-warning fallback glyph, reused here
+  // for a refused anchored call so a working refusal is never read as a failure.
+  const glyph = (status?: "running" | "done" | "warning" | "error") =>
+    status === "error" ? "×" : status === "warning" ? "!" : status === "done" ? "✓" : "●";
   const lines = items.map((item) => {
-    const prefix = styleTone(context.theme, item.status === "error" ? "error" : item.status === "done" ? "success" : "accent", glyph(item.status));
+    const tone = item.status === "error" ? "error" : item.status === "warning" ? "warning" : item.status === "done" ? "success" : "accent";
+    const prefix = styleTone(context.theme, tone, glyph(item.status));
     const rest = `${truncateCodePoints(sanitizeDisplayLine(item.tool), 80)}  ${truncateCodePoints(sanitizeDisplayLine(item.summary), 1_024)}`.trimEnd();
     return padVisible(truncateToWidth(`  ${prefix}  ${rest}`, context.width, "…"), context.width);
   });

@@ -908,12 +908,15 @@ export class SubagentManager implements Component, Focusable {
     if (this.tab() === "running") {
       const job = this.data.running[this.selectedIndex()];
       if (!job) return ["Active jobs will appear here as they are queued."];
-      return [
+      const refusals = Array.isArray(job.details.toolWarnings) ? job.details.toolWarnings.length : 0;
+      const rows = [
         `ID: ${job.id}`,
         `Task: ${sanitizeSubagentDisplay(job.details.task)}`,
         `Activity: ${latestToolCallSummary(job.details.timeline)}`,
-        `Usage: ${job.details.usage.turns} turns · ${formatDuration(Date.now() - job.details.startedAt)}`,
       ];
+      if (refusals > 0) rows.push(`Refusals: ${refusals}`);
+      rows.push(`Usage: ${job.details.usage.turns} turns · ${formatDuration(Date.now() - job.details.startedAt)}`);
+      return rows;
     }
     if (this.tab() === "session") {
       const run = this.selectedRun();

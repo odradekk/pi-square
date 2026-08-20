@@ -344,7 +344,7 @@ export interface DisplayMatchItem {
 export interface DisplayActivityItem {
   readonly tool: string;
   readonly summary: string;
-  readonly status?: "running" | "done" | "error";
+  readonly status?: "running" | "done" | "warning" | "error";
 }
 
 export type DisplaySectionBlock =
