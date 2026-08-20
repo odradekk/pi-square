@@ -1,5 +1,0 @@
----
-"@odradekk/pi-square": minor
----
-
-Make revert authority asymmetric between the parent and subagents. The revert record is now single-level per file across all owners: exactly one record per file, owned by whoever made the most recent edit, so the parent can revert the most recent edit to a file regardless of which agent made it (a supervisor can roll back a subagent's mistake exactly, including byte order mark and line endings), while a subagent can revert only an edit it made itself and is otherwise refused with the owning agent named by the new `[E_UNDO_OWNER]` code, distinguishable from the modified-file `[E_UNDO_STALE]` refusal. A successful write clears the file's revert record whichever agent wrote it: writable children now receive the anchored write (Pi's own factory under the same name), which also clears the child's served rows, and the parent's write-clear clears across owners. Revert remains single-level per file, and a file modified after the recorded edit still refuses the revert for the parent as well as for a child.
