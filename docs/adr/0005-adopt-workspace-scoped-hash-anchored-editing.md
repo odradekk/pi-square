@@ -36,7 +36,8 @@ a failed write does not.
 
 The feature is limited to canonical workspace text paths, including symlink
 resolution. Paths outside the workspace remain a Pi built-in workflow after
-anchored editing is disabled. Child sessions do not receive the anchored tools.
+anchored editing is disabled. Writable child sessions receive anchored editing
+under capability resolution; see ADR-0007.
 
 ## Alternatives considered
 
@@ -61,12 +62,21 @@ repository. The vendored source and exact upstream provenance are recorded in
 ## Trade-offs accepted
 
 1. History is single-level per file. A successful revert consumes its record.
-2. The implementation does not add a cross-process write lock. A revert refuses
-   a file that changed after the saved replace instead of overwriting it.
+2. The implementation did not add a cross-process write lock at this stage; a
+   revert refused a file that changed after the saved replace instead of
+   overwriting it. Superseded by ADR-0007, which adds the cross-process write
+   lock with a fixed lock ordering.
 3. The feature is workspace-bounded. Paths outside the canonical workspace use
    Pi's built-in tools after the feature is disabled.
 4. The public tool is named `revert`; the vendor implementation and its retained
    regression suite keep the upstream `undo_last_replace` name internally.
+
+## Superseded by ADR-0007
+
+The statement in the decision that the revert record is per `parent` owner is
+superseded: the record is single-level per file across all owners, owned by the
+most recent editor. ADR-0007 also covers the ownership, retention, capability
+resolution, and concurrency rules for anchored editing in child sessions.
 
 ## Vocabulary note
 
