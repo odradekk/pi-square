@@ -16,7 +16,10 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
  * is refused with the recoverable stale-range code, and the refusal serves the
  * current range for its immediate retry. The child keeps `autoRead` on so each
  * successful edit records its result rows and the child's next edit on that
- * content is not refused.
+ * content is not refused. The child revert is `revertAnyOwner: false`, so it
+ * can revert only an edit it made itself and is refused otherwise with the
+ * owning agent named; the parent's registration grants `revertAnyOwner: true`
+ * so a supervisor can roll back a subagent's edit.
  *
  * The returned definitions carry no renderer fields, so child tool construction
  * needs no parent display runtime.
@@ -28,6 +31,6 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
 export function createChildAnchoredEditTools(cwd: string, owner: string): GenericToolDefinition[] {
   return [
     createAnchoredReplaceToolDefinition(cwd, () => true, owner, true) as GenericToolDefinition,
-    createAnchoredRevertToolDefinition(cwd, () => true, owner) as GenericToolDefinition,
+    createAnchoredRevertToolDefinition(cwd, () => true, owner, false) as GenericToolDefinition,
   ];
 }

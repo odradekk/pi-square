@@ -21,6 +21,7 @@ documented here, and every code documented here is emitted by the module source;
 | `[E_READ_FAILED]` | Anchored-read guarding or post-factory transformation failed. The message gives the cause and may provide an appropriate fallback. |
 | `[E_NOT_TEXT]` | The path is a directory, binary file, image, or UTF-16/UTF-32 encoded text; hashline editing only supports text files. |
 | `[E_UNDO_STALE]` | `revert` refused: the file was modified or deleted after the last replace. |
+| `[E_UNDO_OWNER]` | A subagent's `revert` refused: the most recent edit belongs to another agent, and the message names the owning agent. The parent may revert any agent's edit. |
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted to the hash store; the `replace` was refused and the file was left unchanged. |
 | `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 238,328-line hashline limit or the 100MB size limit. |

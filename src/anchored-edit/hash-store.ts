@@ -25,6 +25,19 @@ interface Prepared {
   listOwners?: () => Record<string, unknown>[];
   undoOwners?: () => Record<string, unknown>[];
   deleteOwner?: (owner: string) => void;
+  /** Owner-agnostic undo (revert record) operations; present only on scoped stores. */
+  undoGetAny?: (path: string) => (Record<string, unknown> & { owner: unknown }) | undefined;
+  undoDeleteAny?: (path: string) => void;
+  undoUpsertAs?: (
+    owner: string,
+    path: string,
+    content: string,
+    bom: string,
+    ending: string,
+    hashes: string,
+    resultContent: string,
+    updatedAt: number,
+  ) => void;
 }
 
 export interface OwnerPartition {
@@ -358,6 +371,23 @@ function buildStore(
   const deleteOwnerSnapshotsStmt = scoped ? db.prepare("DELETE FROM snapshots WHERE owner = ?") : undefined;
   const deleteOwnerUndoStmt = scoped ? db.prepare("DELETE FROM undo WHERE owner = ?") : undefined;
   const deleteOwnerServedStmt = scoped ? db.prepare("DELETE FROM served WHERE owner = ?") : undefined;
+  // The undo (revert) record is file-global: exactly one row per path across
+  // all owners, with the owner recorded as data (who made the most recent
+  // edit). These owner-agnostic statements let any scoped handle read, clear,
+  // or rewrite that single record, so the parent can revert any agent's edit
+  // while a child is limited to records it owns.
+  const undoGetAnyStmt = scoped ? db.prepare(
+    "SELECT owner, content, bom, ending, hashes, result_content FROM undo " +
+    "WHERE path = ? ORDER BY updated_at DESC LIMIT 1"
+  ) : undefined;
+  const undoDeleteAnyStmt = scoped ? db.prepare("DELETE FROM undo WHERE path = ?") : undefined;
+  const undoUpsertAsStmt = scoped ? db.prepare(
+    "INSERT INTO undo (owner, path, content, bom, ending, hashes, result_content, updated_at) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+    "ON CONFLICT(owner, path) DO UPDATE SET content = excluded.content, bom = excluded.bom, " +
+    "ending = excluded.ending, hashes = excluded.hashes, result_content = excluded.result_content, " +
+    "updated_at = excluded.updated_at"
+  ) : undefined;
   const stmts: Prepared = {
     get: (...params) => getStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
     allPaths: (...params) => allStmt.all(...(scoped ? [owner!, owner!, owner!, ...params] : params)) as Record<string, unknown>[],
@@ -379,6 +409,21 @@ function buildStore(
               deleteOwnerSnapshotsStmt.run(owner);
               deleteOwnerUndoStmt.run(owner);
               deleteOwnerServedStmt.run(owner);
+            });
+          },
+        }
+      : {}),
+    ...(scoped && undoGetAnyStmt && undoDeleteAnyStmt && undoUpsertAsStmt
+      ? {
+          undoGetAny: (path: string) => undoGetAnyStmt.get(path) as (Record<string, unknown> & { owner: unknown }) | undefined,
+          undoDeleteAny: (path: string) => {
+            withBusyRetry(() => {
+              undoDeleteAnyStmt.run(path);
+            });
+          },
+          undoUpsertAs: (owner: string, path: string, content: string, bom: string, ending: string, hashes: string, resultContent: string, updatedAt: number) => {
+            withBusyRetry(() => {
+              undoUpsertAsStmt.run(owner, path, content, bom, ending, hashes, resultContent, updatedAt);
             });
           },
         }
@@ -651,6 +696,68 @@ export function getUndoEntry(store: HashStore, path: string): UndoRecord | undef
     hashes: parsed,
     resultContent: row.result_content as string,
   };
+}
+
+export interface UndoRecordWithOwner {
+  owner: string | undefined;
+  entry: UndoRecord;
+}
+
+/**
+ * Reads the single file-global revert record for a path, together with the
+ * owner who made that most recent edit. On a scoped store the record is
+ * selected across all owners (the newest row wins), because the undo table
+ * holds exactly one record per file regardless of owner; on an unscoped
+ * (legacy) store the record is the single path-keyed row and the owner is
+ * undefined.
+ */
+export function getUndoEntryAny(store: HashStore, path: string): UndoRecordWithOwner | undefined {
+  const row = store.stmts.undoGetAny ? store.stmts.undoGetAny(path) : store.stmts.undoGet(path);
+  if (!row) return undefined;
+  const parsed = parseHashList(row.hashes as string, () => deleteUndoAny(store, path));
+  if (!parsed) return undefined;
+  return {
+    owner: store.stmts.undoGetAny ? String(row.owner) : undefined,
+    entry: {
+      content: row.content as string,
+      bom: row.bom as string,
+      ending: row.ending as string,
+      hashes: parsed,
+      resultContent: row.result_content as string,
+    },
+  };
+}
+
+/**
+ * Clears the single file-global revert record for a path. On a scoped store
+ * this removes the row regardless of which owner holds it; on an unscoped
+ * (legacy) store it removes the single path-keyed row.
+ */
+export function deleteUndoAny(store: HashStore, path: string): void {
+  if (store.stmts.undoDeleteAny) store.stmts.undoDeleteAny(path);
+  else store.stmts.undoDelete(path);
+}
+
+/**
+ * Writes a revert record under an explicit owner on a scoped store, or under
+ * the store's own scope on an unscoped store. Used when a failed replace must
+ * restore the prior record under the owner who made that edit.
+ */
+export function upsertUndoFor(store: HashStore, path: string, entry: UndoRecord, owner: string | undefined): void {
+  if (store.stmts.undoUpsertAs && owner !== undefined) {
+    store.stmts.undoUpsertAs(
+      owner,
+      path,
+      entry.content,
+      entry.bom,
+      entry.ending,
+      JSON.stringify(entry.hashes),
+      entry.resultContent,
+      Date.now(),
+    );
+  } else {
+    upsertUndo(store, path, entry);
+  }
 }
 
 export function deleteUndo(store: HashStore, path: string): void {
