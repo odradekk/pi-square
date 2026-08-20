@@ -11,6 +11,7 @@ import { resolveTarget, writeAtomic } from "./fs-write.ts";
 import { changedRange, lineHashes } from "./hashline/index.ts";
 import { contentChecksum } from "./hashline/hasher.ts";
 import { upsertSnapshot } from "./hash-store.ts";
+import { acquireFileLock, fileLockedMessage, lockFilePath } from "./file-lock.ts";
 import { clearUndoRecord, getUndoRecord } from "./replace-undo.ts";
 import { genDiff, restoreEndings, stripBOM, toLF } from "./replace-diff.ts";
 import { buildMetrics, type RMetrics } from "./replace-response.ts";
@@ -128,7 +129,16 @@ export function createAnchoredRevertToolDefinition(
       try {
         return withFileMutationQueue(mutationTargetPath, async () => {
           abortIf(signal);
-          const found = await getUndoRecord(mutationTargetPath, store);
+          const lock = await acquireFileLock(
+            lockFilePath(workspace.workspaceRoot, mutationTargetPath),
+            { signal },
+          );
+          if (!lock) {
+            return warning(fileLockedMessage(params.path, "revert"), "E_FILE_LOCKED");
+          }
+          try {
+            abortIf(signal);
+            const found = await getUndoRecord(mutationTargetPath, store);
           if (!found) {
             return warning(`No revert history for ${params.path}. There is no previous replace to revert.`);
           }
@@ -208,6 +218,9 @@ export function createAnchoredRevertToolDefinition(
               }),
             },
           };
+          } finally {
+            await lock.release();
+          }
         });
       } finally {
         store.release();
