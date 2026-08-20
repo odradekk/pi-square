@@ -117,7 +117,7 @@ function activityItems(timeline: SubagentTimelineItem[]): DisplayActivityItem[] 
     const tool = startDisplay?.tool ?? call.toolName;
     const summary = startDisplay?.summary ?? "called";
     const status = call.endItem
-      ? (call.endItem.isError ? "error" : "done")
+      ? (call.endItem.isWarning ? "warning" : call.endItem.isError ? "error" : "done")
       : call.startItem ? "running" : "done";
     return { tool, summary, status };
   });
@@ -153,6 +153,26 @@ function issueSection(details: Record<string, unknown>): DisplaySection | undefi
   const rows = issueRows(details);
   return rows.length > 0
     ? { title: "Issues", blocks: rows.map((r) => ({ kind: "text" as const, text: r.text, tone: r.tone })) }
+    : undefined;
+}
+
+function refusalRows(details: Record<string, unknown>): DisplayRow[] {
+  if (!Array.isArray(details.toolWarnings)) return [];
+  return details.toolWarnings.slice(-4).flatMap((value) => {
+    const refusal = record(value);
+    const message = typeof refusal.message === "string" && refusal.message
+      ? refusal.message
+      : typeof refusal.tool === "string" && refusal.tool ? `${refusal.tool} refused` : undefined;
+    return message ? [{ text: message, tone: "warning" as DisplayTone }] : [];
+  });
+}
+
+/** Anchored refusals are the safety mechanism doing its job, so they render in
+ *  their own warning section rather than the failure-toned Issues section. */
+function refusalSection(details: Record<string, unknown>): DisplaySection | undefined {
+  const rows = refusalRows(details);
+  return rows.length > 0
+    ? { title: "Refusals", blocks: rows.map((r) => ({ kind: "text" as const, text: r.text, tone: r.tone })) }
     : undefined;
 }
 
@@ -206,6 +226,7 @@ function subagentSummary(
   const cost = typeof usage.cost === "number" ? usage.cost : undefined;
   const totalTokens = input + output + cacheRead;
   const toolErrors = Array.isArray(details.toolErrors) ? details.toolErrors.length : 0;
+  const toolWarnings = Array.isArray(details.toolWarnings) ? details.toolWarnings.length : 0;
   const isResume = typeof details.resumed === "boolean" && details.resumed;
 
   const parts: string[] = [];
@@ -235,6 +256,7 @@ function subagentSummary(
   }
 
   if (toolErrors > 0) parts.push(`${toolErrors} ${toolErrors === 1 ? "tool error" : "tool errors"}`);
+  if (toolWarnings > 0) parts.push(`${toolWarnings} anchored refusal${toolWarnings === 1 ? "" : "s"}`);
 
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
@@ -283,6 +305,9 @@ export function describeSubagentRun(
   if (Array.isArray(details.toolErrors) && details.toolErrors.length > 0 && !qualifiers.includes("warning")) {
     qualifiers.push("warning");
   }
+  if (Array.isArray(details.toolWarnings) && details.toolWarnings.length > 0 && !qualifiers.includes("warning")) {
+    qualifiers.push("warning");
+  }
 
   const isTerminal = lc.lifecycle === "completed" || lc.lifecycle === "failed" || lc.lifecycle === "aborted";
 
@@ -322,6 +347,7 @@ export function describeSubagentRun(
       taskSection(details),
       resultSection(options.isPartial ? "Live" : "Result", live),
       activitySection(run.timeline),
+      refusalSection(details),
       issueSection(details),
       usageSection(details),
     ].filter((s): s is DisplaySection => Boolean(s)));

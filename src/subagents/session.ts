@@ -89,6 +89,75 @@ function recordToolError(details: SubagentRunDetails, tool: string, message: str
   }
 }
 
+/** Codes the anchored safety mechanism emits when it refuses a call because the
+ *  requested edit no longer applies safely to the current state (stale range,
+ *  stale or ambiguous anchor, wrong revert owner, concurrent editor, or an undo
+ *  record it could not persist). These are working refusals, not failures. */
+const ANCHOR_REFUSAL_CODES = new Set([
+  "E_RANGE_STALE",
+  "E_STALE_ANCHOR",
+  "E_AMBIGUOUS_ANCHOR",
+  "E_UNDO_STALE",
+  "E_UNDO_OWNER",
+  "E_FILE_LOCKED",
+  "E_UNDO_UNAVAILABLE",
+]);
+
+/** Anchored tools whose refusal is a working mechanism, not a failed call. */
+const ANCHORED_TOOL_NAMES = new Set(["replace", "revert", "write"]);
+
+/** Extracts the anchored-refusal code from a child tool result, or undefined.
+ *  A warning result from an anchored tool with a refusal code is a working
+ *  refusal; a thrown error whose first line names a refusal code (for example
+ *  the child write blocked by the cross-process write lock) is the same
+ *  mechanism refusing. A genuine environment failure carries no refusal code. */
+export function anchorRefusalCode(result: unknown, isError: boolean): string | undefined {
+  const details = (result as { details?: { status?: unknown; errorCode?: unknown } })?.details;
+  if (details?.status === "warning") {
+    const code = String(details.errorCode ?? "");
+    return ANCHOR_REFUSAL_CODES.has(code) ? code : undefined;
+  }
+  if (!isError) return undefined;
+  const code = /^\[([A-Z_]+)\]/.exec(formatToolErrorMessage(result))?.[1] ?? "";
+  return ANCHOR_REFUSAL_CODES.has(code) ? code : undefined;
+}
+
+function recordToolWarning(details: SubagentRunDetails, tool: string, message: string): void {
+  if (!Array.isArray(details.toolWarnings)) details.toolWarnings = [];
+  const item = { tool, message: clip(message, 500) || "anchored edit refused" };
+  details.toolWarnings.push(item);
+  if (details.toolWarnings.length > MAX_TOOL_ERRORS) {
+    details.toolWarnings.splice(0, details.toolWarnings.length - MAX_TOOL_ERRORS);
+  }
+}
+
+/** Classifies one child tool result: a genuine error becomes a tool error, an
+ *  anchored refusal becomes a warning (the safety mechanism doing its job), and
+ *  a successful call is recorded as such. Returns the refusal code when the
+ *  call was an anchored refusal. */
+export function classifyToolEnd(
+  details: SubagentRunDetails,
+  toolName: string,
+  result: unknown,
+  isError: boolean,
+): string | undefined {
+  const refusalCode = ANCHORED_TOOL_NAMES.has(toolName) ? anchorRefusalCode(result, isError) : undefined;
+  const refusal = refusalCode !== undefined;
+  if (isError && !refusal) {
+    recordToolError(details, toolName, formatToolErrorMessage(result));
+  } else if (refusal) {
+    recordToolWarning(details, toolName, `${toolName} refused with [${refusalCode}]`);
+  }
+  pushTimeline(details, {
+    kind: "tool",
+    phase: "end",
+    text: formatToolResult(toolName, result),
+    isError: Boolean(isError) && !refusal,
+    ...(refusal ? { isWarning: true } : {}),
+  });
+  return refusalCode;
+}
+
 function formatToolErrorList(toolErrors: SubagentRunDetails["toolErrors"]): string {
   return toolErrors
     .slice(-MAX_CONTENT_TOOL_ERRORS)
@@ -516,6 +585,7 @@ async function promptSession(input: {
         agent: details.agent ? { ...details.agent } : undefined,
         liveText: details.liveText ?? "",
         toolErrors: details.toolErrors.map((item) => ({ ...item })),
+        toolWarnings: Array.isArray(details.toolWarnings) ? details.toolWarnings.map((item) => ({ ...item })) : [],
         usage: { ...details.usage },
         timeline: details.timeline.map((item) => ({ ...item })),
       },
@@ -604,13 +674,7 @@ async function promptSession(input: {
       }
       case "tool_execution_end": {
         const toolName = String(event.toolName ?? "tool");
-        if (event.isError) recordToolError(details, toolName, formatToolErrorMessage(event.result));
-        pushTimeline(details, {
-          kind: "tool",
-          phase: "end",
-          text: formatToolResult(toolName, event.result),
-          isError: Boolean(event.isError),
-        });
+        classifyToolEnd(details, toolName, event.result, Boolean(event.isError));
         emitUpdate();
         break;
       }
@@ -891,6 +955,7 @@ export async function runSubagentTask(input: {
       finalText: "",
       retries: 0,
       toolErrors: [],
+      toolWarnings: [],
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
       timeline: [],
     };
@@ -1183,6 +1248,8 @@ export const __testables = {
   appendChildAnchoredWrite,
   resolveChildToolAllowlist,
   promptSession,
+  anchorRefusalCode,
+  classifyToolEnd,
   LIVE_UPDATE_THROTTLE_MS,
   MAX_LIVE_TEXT,
 };

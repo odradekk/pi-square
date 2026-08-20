@@ -41,9 +41,19 @@ export interface SubagentTimelineItem {
   text: string;
   at?: number;
   isError?: boolean;
+  /** Set on a tool end item whose call was refused by the anchored safety
+   *  mechanism (stale range, owner mismatch, lock contention) — a working
+   *  refusal, never a failed call. */
+  isWarning?: boolean;
 }
 
 export interface SubagentToolError {
+  tool: string;
+  message: string;
+}
+
+/** A working anchored refusal recorded apart from tool errors. */
+export interface SubagentToolWarning {
   tool: string;
   message: string;
 }
@@ -129,6 +139,10 @@ export interface SubagentRunDetails {
   errorInfo?: SubagentErrorInfo;
   retries: number;
   toolErrors: SubagentToolError[];
+  /** Bounded list of anchored refusals: calls the anchored safety mechanism
+   *  refused recoverably (stale range, owner mismatch, lock contention). Kept
+   *  apart from toolErrors so a refusal never reads as a failed call. */
+  toolWarnings: SubagentToolWarning[];
   usage: SubagentUsage;
   timeline: SubagentTimelineItem[];
 }
