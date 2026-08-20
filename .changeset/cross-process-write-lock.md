@@ -1,0 +1,5 @@
+---
+"@odradekk/pi-square": minor
+---
+
+Add a cross-process per-target-file write lock to the anchored `replace`, `revert`, and writable-subagent `write` tools, held across served-state verification and the write and released after. Two agents (or two Pi sessions in the same workspace) editing the same file now produce one success and one recoverable refusal instead of a silent overwrite; the lock files live under `.pi/anchored-edit/locks/`, are excluded from version control, and record the owning process so a lock whose owner no longer exists is reclaimed rather than blocking. Parallel edits to different files are unaffected, and the lock is acquired inside Pi's per-session mutation queue so the two coexist without deadlocking. After a bounded wait, `replace` refuses with the existing recoverable `[E_RANGE_STALE]` code carrying the current range with fresh anchors, while `revert` and the child `write` refuse with the new `[E_FILE_LOCKED]` code and leave state (including the revert record) intact for a retry.

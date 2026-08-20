@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
-import { createWriteToolDefinition, withFileMutationQueue, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createWriteToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { isWithinWorkspace, resolveWorkspacePath } from "../core/paths.ts";
 import { resolveTarget } from "./fs-write.ts";
+import { acquireFileLock, fileLockedMessage, lockFilePath } from "./file-lock.ts";
 import { clearUndoRecord } from "./replace-undo.ts";
 import { clearServed } from "./served.ts";
 import { loadProjectHashStore } from "./workspace-support.ts";
@@ -30,29 +31,40 @@ export function createChildAnchoredWriteTool(cwd: string, owner: string): Generi
   return {
     ...base,
     async execute(toolCallId, params: { path: string; content: string }, signal, onUpdate, ctx) {
-      const result = await base.execute(toolCallId, params, signal, onUpdate, ctx);
-      if (typeof params.path === "string") {
+      const workspace = resolveWorkspacePath(cwd, ".");
+      const path = await resolveTarget(resolve(workspace.workspaceRoot, params.path));
+      if (!isWithinWorkspace(workspace.workspaceRoot, path)) {
+        return base.execute(toolCallId, params, signal, onUpdate, ctx);
+      }
+      // The child write also takes the cross-process write lock, so a child
+      // write and a parent (or another session's) replace or revert on the same
+      // file can never interleave; one wins and the other is refused or waits.
+      const lock = await acquireFileLock(lockFilePath(workspace.workspaceRoot, path), { signal });
+      if (!lock) {
+        throw new Error(fileLockedMessage(params.path, "write"));
+      }
+      try {
+        const result = await base.execute(toolCallId, params, signal, onUpdate, ctx);
         try {
-          const workspace = resolveWorkspacePath(cwd, ".");
-          const path = await resolveTarget(resolve(workspace.workspaceRoot, params.path));
-          if (!isWithinWorkspace(workspace.workspaceRoot, path)) return result;
-          // Clear under the per-file mutation queue, as the parent's auto-read
-          // write-clear does, so a concurrent replace on the same file cannot
-          // interleave between the write and this state clear.
-          await withFileMutationQueue(path, async () => {
-            const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
-            try {
-              clearUndoRecord(path, store);
-              clearServed(store, path);
-            } finally {
-              store.release();
-            }
-          });
+          // The cross-process lock serializes this file for every other writer,
+          // so the state clear cannot interleave with a concurrent replace or
+          // revert and needs no separate per-file mutation queue here (wrapping
+          // the clear in one would invert lock order against replace/revert and
+          // could deadlock a same-process contender).
+          const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
+          try {
+            clearUndoRecord(path, store);
+            clearServed(store, path);
+          } finally {
+            store.release();
+          }
         } catch (error) {
           console.error(`Failed to clear anchored write state for ${owner}:`, error);
         }
+        return result;
+      } finally {
+        await lock.release();
       }
-      return result;
     },
   } as GenericToolDefinition;
 }

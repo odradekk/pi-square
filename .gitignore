@@ -8,6 +8,10 @@ node_modules/
 .pi/anchored-edit/hash-store.sqlite*
 **/.pi/anchored-edit/hash-store.sqlite*
 
+# Cross-process write lock artefacts
+.pi/anchored-edit/locks/
+**/.pi/anchored-edit/locks/
+
 # Build and test output
 dist/
 build/
