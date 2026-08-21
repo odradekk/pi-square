@@ -723,12 +723,12 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   const plain = stripVTControlCharacters(header);
   assert.match(plain, /Bash/, "title present");
   assert.match(plain, /npm test/, "target present");
-  // No accent (state) tone is applied to title or target: strip the ANSI and
-  // confirm the marker still carries its lifecycle color.
-  assert.match(header, /\u001b\[38;2;113;176;128m\u2713\u001b\[39m/, "marker uses the success state tone");
-  // The title text itself is not wrapped in the accentStrong fg code.
-  const accentCode = "\u001b[38;2;217;122;82m";
-  assert.ok(!header.includes(accentCode), "title and target avoid the accent tone");
+  // No accent (state) tone is applied to title or target, while the marker
+  // still carries its lifecycle color. Expectations derive from the theme so
+  // the assertions hold in truecolor and 256-color environments alike.
+  assert.ok(header.includes(darkTheme.fg("success", "\u2713")), "marker uses the success state tone");
+  assert.ok(!header.includes(darkTheme.fg("toolTitle", "Bash")), "title avoids the accent tone");
+  assert.ok(!header.includes(darkTheme.fg("accent", "npm test")), "target avoids the accent tone");
 }
 
 console.log("visual acceptance tests: OK");
