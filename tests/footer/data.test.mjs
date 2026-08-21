@@ -47,7 +47,12 @@ const ctx = {
     reasoning: true,
     contextWindow: 200_000,
   },
-  modelRegistry: { isUsingOAuth() { return true; } },
+  // Pi shows the subscription marker for OAuth whose provider declares the auth
+  // method subscription-backed, so the fixture is a genuine subscription provider.
+  modelRegistry: {
+    isUsingOAuth() { return true; },
+    getProvider() { return { auth: { oauth: { isSubscription: true } } }; },
+  },
   sessionManager: {
     getEntries() { return entries; },
     getCwd() { return "/workspace/project"; },
@@ -109,6 +114,26 @@ assert.equal(empty.contextWindow, 0);
 assert.equal(empty.subscription, false);
 assert.deepEqual(empty.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
 
+// OAuth alone is not a subscription: Pi marks it only when the provider declares
+// the OAuth method subscription-backed, and Kimi Coding is subscription-backed
+// despite authenticating with an API key.
+const subscriptionCase = (registry, model) => collectEnhancedFooterSnapshot(
+  { ...ctx, model, modelRegistry: registry },
+  { getThinkingLevel() { return "off"; } },
+  { getGitBranch() { return undefined; }, getExtensionStatuses() { return new Map(); }, getAvailableProviderCount() { return 1; } },
+).subscription;
+const plainModel = { ...ctx.model, provider: "test-provider" };
+assert.equal(
+  subscriptionCase({ isUsingOAuth() { return true; }, getProvider() { return { auth: { oauth: {} } }; } }, plainModel),
+  false,
+  "OAuth without a subscription-backed provider is not reported as a subscription",
+);
+assert.equal(
+  subscriptionCase({ isUsingOAuth() { return false; }, getProvider() { return undefined; } }, { ...ctx.model, provider: "kimi-coding" }),
+  true,
+  "Kimi Coding is subscription-backed without OAuth",
+);
+
 console.log("enhanced footer data: native cumulative semantics OK");
 
 // --- FooterSnapshotProvider cache contract ---
@@ -133,7 +158,7 @@ let mutableEntries = [
 ];
 const memoCtx = {
   model: { id: "m", name: "M", provider: "p", reasoning: false, contextWindow: 100_000 },
-  modelRegistry: { isUsingOAuth() { return false; } },
+  modelRegistry: { isUsingOAuth() { return false; }, getProvider() { return undefined; } },
   sessionManager: {
     getEntries() { getEntriesCalls += 1; return [...mutableEntries]; },
     getCwd() { return "/proj"; },

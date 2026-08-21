@@ -45,7 +45,15 @@ const sessionManager = {
   getCwd() { return packageRoot; },
   getSessionName() { return "native-parity"; },
 };
-const modelRegistry = { isUsingOAuth() { return false; } };
+// Pi 0.84.2 resolves the footer subscription marker through
+// modelRuntime.isUsingSubscription, while an extension can only recompose it
+// from the registry. Both fakes report the same answer so the parity assertion
+// compares rendering rather than diverging inputs.
+const modelRegistry = {
+  isUsingOAuth() { return false; },
+  getProvider() { return undefined; },
+};
+const modelRuntime = { isUsingSubscription() { return false; } };
 const contextUsage = { percent: 75, contextWindow: 200_000 };
 const footerData = {
   getGitBranch() { return "main"; },
@@ -67,6 +75,7 @@ const nativeSession = {
   state: { model, thinkingLevel: "high" },
   sessionManager,
   modelRegistry,
+  modelRuntime,
   getContextUsage() { return contextUsage; },
 };
 const native = new FooterComponent(nativeSession, footerData)

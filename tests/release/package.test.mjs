@@ -26,10 +26,10 @@ assert.ok(existsSync(join(packageRoot, "src", "display-api.ts")));
 assert.equal(pkg.scripts["version-packages"], "changeset version && npm install --package-lock-only --ignore-scripts");
 assert.equal(pkg.scripts.release, "changeset publish");
 assert.deepEqual(pkg.peerDependencies, {
-  "@earendil-works/pi-ai": "0.80.6",
-  "@earendil-works/pi-coding-agent": "0.80.6",
-  "@earendil-works/pi-tui": "0.80.6",
-  typebox: "1.1.38",
+  "@earendil-works/pi-ai": "0.84.2",
+  "@earendil-works/pi-coding-agent": "0.84.2",
+  "@earendil-works/pi-tui": "0.84.2",
+  typebox: "1.3.7",
 });
 assert.equal(changesets.access, "public");
 assert.equal(changesets.privatePackages, undefined);

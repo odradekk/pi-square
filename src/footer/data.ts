@@ -66,6 +66,25 @@ function computeUsage(entries: Iterable<{ type: string; message?: any }>): Foote
   return total;
 }
 
+/**
+ * Mirrors Pi's native footer subscription rule. Pi resolves it through
+ * `ModelRuntime.isUsingSubscription`, which is not reachable from an extension
+ * context, so this recomposes the same rule from the public model registry:
+ * OAuth authentication whose provider declares that auth method
+ * subscription-backed. Kimi Coding is subscription-backed despite using
+ * API-key authentication, exactly as Pi special-cases it.
+ *
+ * Reporting plain OAuth here would over-report, because Pi shows the
+ * subscription marker only for providers whose OAuth method sets
+ * `isSubscription`.
+ */
+function usesSubscription(ctx: ExtensionContext, model: NonNullable<ExtensionContext["model"]>): boolean {
+  const provider = model.provider;
+  if (provider === "kimi-coding") return true;
+  if (!ctx.modelRegistry.isUsingOAuth(model)) return false;
+  return ctx.modelRegistry.getProvider(provider)?.auth?.oauth?.isSubscription === true;
+}
+
 function buildSnapshot(
   ctx: ExtensionContext,
   pi: Pick<ExtensionAPI, "getThinkingLevel">,
@@ -84,7 +103,7 @@ function buildSnapshot(
     showProvider: footerData.getAvailableProviderCount() > 1,
     thinkingLevel: pi.getThinkingLevel(),
     reasoning: model?.reasoning === true,
-    subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
+    subscription: model ? usesSubscription(ctx, model) : false,
     usage,
     contextPercent: context?.percent ?? null,
     contextWindow: context?.contextWindow ?? model?.contextWindow ?? 0,
