@@ -85,44 +85,40 @@ and the remaining text is not a call summary.
 
 ## Target design
 
-The subagent result is the deliverable, so a bounded result preview stays in
-the collapsed body. This is an explicit C4 exception.
+The subagent entry follows C4: the collapsed entry is one row with the
+outcome inline, and the result preview renders only when the entry is
+expanded.
 
 ### Call
 
 ```
-● Subagent explorer                                                       0.0s
-│    Trace how the display runtime resolves the effective policy and report…
-└─   fg · 2 context messages
+● Subagent explorer fg · 2 context messages                                0.0s
 ```
 
-The target is the agent name. The task preview keeps one row. The second row
-states the delivery mode and the context count in words. Custom system text is
-never rendered, and this rule does not change.
+The target is the agent name. The inline summary states the delivery mode and
+the context count in words; the task text renders only when the entry is
+expanded. Custom system text is never rendered, and this rule does not
+change.
 
 ### Collapsed result
 
-A bounded result preview, then one summary row.
+One row (C4). The inline summary states the phase, the turns, the total
+tokens, the cost, and the short run ID:
 
 ```
-● Subagent explorer                                                      42.0s
-│    Findings
-│    The runtime resolves policy in src/display/policy.ts.
-│    - package defaults
-│    - agent layer
-│    - project layer
-└─   done · 6 turns · 31.5k tokens · $0.018 · run 12345678
+● Subagent explorer done · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
 ```
+
+The normalized result preview renders only when the entry is expanded.
 
 Rules:
 
 1. The preview uses the same Markdown normalization as the expanded body, so
    `# Findings` never appears in one state and `Findings` in the other.
-2. Activity rows never appear in the collapsed body.
-3. The summary row states the phase, the turns, the total tokens, the cost,
-   and the short run ID. The full run ID is never rendered.
+2. Activity rows never appear in the collapsed entry.
+3. The full run ID is never rendered.
 
-Summary row cases:
+Inline summary cases:
 
 | Case | Row |
 |---|---|
@@ -160,14 +156,14 @@ Four sections, in this order.
    │    6 turns · 18.2k in · 1.3k out · 12.0k cached · $0.018
    ```
 
-One muted row above `TASK` states the run identity that the summary row does
-not carry: the mode, the model, and the effort.
+One muted row above `TASK` states the run identity that the inline summary
+does not carry: the mode, the model, and the effort.
 
 ### Failure
 
 The error text appears exactly once, as the `RESULT` section content and the
-collapsed preview, never twice. Collected `toolErrors` appear as a bounded
-muted row below `ACTIVITY`.
+inline failure sentence, never twice. Collected `toolErrors` appear as a
+bounded muted row below `ACTIVITY`.
 
 ### Privacy
 
@@ -178,8 +174,9 @@ raw session data, no artifact path, and no full run ID in any state.
 
 1. The header shows `●`, the title `Subagent`, and the agent name as the
    target.
-2. The collapsed body contains a normalized result preview and exactly one
-   summary row, and no activity rows.
+2. The collapsed entry is exactly one row with the outcome inline, and no
+   activity rows; the normalized result preview renders only when the entry
+   is expanded.
 3. Markdown normalization is identical in the collapsed and the expanded
    bodies.
 4. `ACTIVITY` renders exactly one row per tool call, with the lifecycle glyph

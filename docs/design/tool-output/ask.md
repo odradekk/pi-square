@@ -75,7 +75,7 @@ badge stays for the whole time the wizard is open.
 
 ### Collapsed result
 
-One outcome row.
+One row (C4); the outcome is the inline summary.
 
 | Case | Row |
 |---|---|
@@ -86,8 +86,7 @@ One outcome row.
 | Invalid input | `Invalid question set` |
 
 ```
-● Questions 2 questions                                                   4.2s
-└─   2 answered
+● Questions 2 questions 2 answered                                        4.2s
 ```
 
 ### Expanded result
@@ -111,8 +110,8 @@ This follows convention C9: the expanded body holds one kind of content, so no
 section rule is drawn. Each question text already leads its own group.
 
 A skipped question shows the muted word `skipped` instead of the label list.
-The `REQUEST` section is removed; its four counters are already in the outcome
-row.
+The `REQUEST` section is removed; its four counters are already in the inline
+summary.
 
 ### Failure
 
@@ -125,7 +124,7 @@ exactly once.
 1. The call target is the question count, and no question or option text is
    rendered before submission.
 2. The `needs-input` badge is present while the wizard is open.
-3. The collapsed result is exactly one outcome row.
+3. The collapsed result is exactly one row, with the outcome inline.
 4. The expanded body renders no section rule and no separator, uses no
    `selected=` key-value pair, and labels a comment with `note:`.
 5. A cancelled call renders the aborted marker and the row `Cancelled`.

@@ -69,8 +69,10 @@ sort | uniq -c
 
 ## Target design
 
-Execution is an explicit exception to C4. The output is the result, so it
-stays in the collapsed body.
+Execution follows C4. The collapsed entry is one row, and the output renders
+only when the entry is expanded. While the command runs, the row carries the
+live progress sentence in the inline summary slot; a live output tail never
+renders in the collapsed view.
 
 ### Header
 
@@ -82,35 +84,25 @@ The title is `Bash`. The target is the command on one row. A command that does
 not fit is truncated with `…`; the header never wraps. The complete command is
 always visible in the expanded body.
 
-### Collapsed body
+### Collapsed entry
 
-The last rows of the combined output, bounded by `previewLines`. When rows are
-dropped, one muted row states it at the top, and the header carries the
-`truncated` badge.
+One row (C4). The inline summary states the outcome:
 
 ```
-● Bash seq 1 40                                               [truncated]  0ms
-│    … 33 earlier lines
-│    35
-│    36
-│    37
-│    38
-│    39
-│    40
-└─   40 lines
+● Bash seq 1 40 40 lines · 33 earlier lines not shown       [truncated]  0ms
 ```
 
 Rules:
 
-1. stdout uses the default tone; stderr uses the warning tone. In a no-color
-   environment the two are not separated, which matches a real merged terminal
-   stream.
-2. Empty trailing rows are removed. The body never ends with a blank row.
-3. A command with no output renders `No output` as the summary row and no
-   output rows.
+1. stdout uses the default tone; stderr uses the warning tone when the
+   output renders expanded. In a no-color environment the two are not
+   separated, which matches a real merged terminal stream.
+2. Empty trailing rows are removed. The expanded body never ends with a
+   blank row.
+3. A command with no output renders `No output` as the inline summary.
 4. A line that does not fit is truncated with `…`, never wrapped.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -128,10 +120,11 @@ prints `Command exited with code 0`.
 ### Expanded body
 
 One `COMMAND` section with the complete command, then one `OUTPUT` section
-with the full output bounded by the policy, then the same summary row. The
-`COMMAND` section exists only when the header truncated the command. When it
-is absent, only one section remains, so convention C9 applies and the `OUTPUT`
-rule is not drawn: the output attaches directly under the header.
+with the full output bounded by the policy, then the same outcome sentence
+as the final row. The `COMMAND` section exists only when the header truncated
+the command. When it is absent, only one section remains, so convention C9
+applies and the `OUTPUT` rule is not drawn: the output attaches directly
+under the header.
 
 ```
 ● Bash find . -type f -name '*.ts' -not -path './node_modules/*' | head…      0ms
@@ -147,21 +140,21 @@ rule is not drawn: the output attaches directly under the header.
 
 ### Running state
 
-While the command runs, the body shows the latest bounded output rows and the
-summary row states the elapsed work: `12 lines so far`. The duration in the
-header is the live element; the marker stays static.
+While the command runs, the entry is one row and the inline summary states
+the elapsed work: `12 lines so far`. The output tail never renders in the
+collapsed view. The duration in the header is the live element; the marker
+stays static.
 
 ## Acceptance criteria
 
 1. The header shows `●`, the title `Bash`, and the command truncated to one
-   row. The header never wraps, and the duration always stays on the header
-   row.
-2. The collapsed body keeps the last output rows and states dropped rows at
-   the top, with the `truncated` badge set.
+   row. The header never wraps, and the duration never lands on its own row.
+2. The collapsed entry is one row; the output renders only when the entry is
+   expanded, and a bounded output sets the `truncated` badge.
 3. stderr rows use the warning tone and stdout rows use the default tone.
-4. The body never contains a trailing empty row.
-5. The summary row states the line count, or the exit code, signal, timeout,
-   or cancellation. Exit code zero is never printed.
+4. The expanded body never contains a trailing empty row.
+5. The inline summary states the line count, or the exit code, signal,
+   timeout, or cancellation. Exit code zero is never printed.
 6. The expanded body shows the complete command whenever the header truncated
    it.
 7. The model-facing result is unchanged.

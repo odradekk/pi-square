@@ -4,7 +4,7 @@
 
 This directory holds one design document for each model-callable tool. Each
 document defines the exact transcript output of that tool: the header, the
-collapsed body, the expanded body, and every state.
+one-row collapsed entry, the expanded body, and every state.
 
 These documents are **proposals**. They do not describe the current
 implementation. Each document records the observed current output first, then
@@ -23,8 +23,8 @@ adapter) at 80 columns with a plain theme.
 These conventions apply to every tool. A tool document repeats a convention
 only when it needs an exception, and it must then give the reason.
 
-The marker, the color contract, the no-color fallback, and the removal of
-family icons are defined once in
+The marker, the color contract, the no-color fallback, the content column,
+and the removal of family icons are defined once in
 [00-visual-vocabulary.md](00-visual-vocabulary.md).
 
 ### C1 — Sentence case titles
@@ -52,23 +52,34 @@ tools of the same family must not share a title.
 The duration is always shown for a running call and for a terminal result. It
 is the first header item dropped when the terminal is too narrow.
 
-### C4 — Collapsed body is a summary
+### C4 — The collapsed entry is one row
 
-The collapsed body is one summary row that states the outcome in counts and
-sizes, for example `60 lines · 2.1 KB` or `12 matches in 5 files`. Raw payload
-belongs to the expanded body.
+A collapsed entry is exactly one row: the state marker, the title, the
+target, an inline muted outcome summary (or a one-sentence failure message),
+the qualifier badges, and the elapsed duration. The summary states the
+outcome in counts and sizes, for example `60 lines · 2.1 KB` or
+`12 matches in 5 files`. There is no separate summary row, and raw payload
+belongs to the expanded body. A running or queued entry is also one row and
+never streams a live tail into the collapsed view.
 
-**Exception.** For a tool whose output *is* the result and has no other
-summary — `bash`, `pwsh`, and `ssh` — the collapsed body keeps a
-bounded output preview. The owning document states this explicitly.
+**Exception.** The mutation family only — `edit`, `replace`, `revert`, and
+`write` — keeps a bounded diff or preview body below the row. A failed
+mutation renders no payload body; its failure sentence is inline.
+
+When the row is tight, the drop order is fixed: duration, then the inline
+summary (it elides in place before it drops), then all but the
+highest-priority qualifier badge, then target middle elision. A `[REDACTED]`
+token is never split by elision.
 
 ### C5 — Header order
 
-`marker · title · target · badges · duration`
+`marker · title · target · summary · badges · duration`
 
 The marker is always `●`. The target is the single most identifying argument
-and is separated by one space, without parentheses. The duration is dropped
-first at compact widths, then all but the highest-priority badge.
+and is separated by one space, without parentheses. The summary is the inline
+outcome summary of C4. The duration is dropped first at compact widths, then
+the summary, then all but the highest-priority badge; the target is elided
+only after that.
 
 ### C6 — Errors are stated, not dumped
 
@@ -108,9 +119,9 @@ removes the majority of the individual defects that the tool documents list.
 | Pattern | Tools affected | Typical fix |
 |---|---|---|
 | Uppercase built-in titles and absolute paths | `read`, `ls`, `edit`, `write`, `find`, `grep` | C1 and C2 |
-| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `codegraph`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`, `github` | C4 summary row plus a bounded, structured body |
+| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `codegraph`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`, `github` | C4 one-row collapsed entry; the payload moves to the expanded body |
 | Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `fd`, `rg`, `codegraph`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
-| Key-value metadata rows and coded fields | every family | State the same facts in the summary row |
+| Key-value metadata rows and coded fields | every family | State the same facts in the inline summary |
 | A failure body is rendered twice | `pwsh`, `ssh`, `delegate`, `resume` | Render the error stream once |
 | Raw platform or provider text as the failure message | every family | C6 one sentence, raw text in the expanded `ERROR` section |
 | Empty result presented as a fake list entry | `ls`, `find`, `grep`, `codegraph` | A muted state row and no section |

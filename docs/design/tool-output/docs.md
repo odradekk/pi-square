@@ -69,10 +69,14 @@ The target is the library ID. The query belongs to the expanded option row.
 
 ### Record layout
 
-Two rows per snippet:
+The collapsed entry is one row (C4) with the snippet counts inline. The
+records render only when the entry is expanded, two rows per snippet:
 
-1. The rank and the snippet title, truncated with `…`.
-2. The language and the token count in the muted tone.
+```
+● Documentation /burntsushi/ripgrep 3 code snippets · 770 of 800 tokens…   2.3s
+```
+
+Expanded:
 
 ```
 ● Documentation /burntsushi/ripgrep                                       2.3s
@@ -85,7 +89,12 @@ Two rows per snippet:
 └─   3 code snippets · 770 of 800 tokens · 2 omitted
 ```
 
-### Summary row
+Each record uses two rows:
+
+1. The rank and the snippet title, truncated with `…`.
+2. The language and the token count in the muted tone.
+
+### Inline summary
 
 The coded fields become one sentence.
 
@@ -121,9 +130,9 @@ The failure rows of [libs.md](libs.md) apply, plus:
 ## Acceptance criteria
 
 1. The header target is the library ID.
-2. Each snippet uses two rows in the collapsed body, with the title, the
-   language, and the token count.
-3. The summary row states the snippet counts and the token budget in words,
+2. Each snippet uses two rows when expanded, with the title, the language,
+   and the token count.
+3. The inline summary states the snippet counts and the token budget in words,
    and sets the `truncated` badge when the budget was reached.
 4. `status`, `phase`, `kind`, `code=`, `info=`, and `tokens=` never appear as
    coded key-value pairs.

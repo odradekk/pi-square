@@ -61,11 +61,11 @@ No match:
 ● Find **/*.ts                                                             1ms
 ```
 
-The target is the query. The search root belongs to the summary row.
+The target is the query. The search root belongs to the inline summary.
 
-### Collapsed body
+### Collapsed entry
 
-One summary row.
+One row (C4); the summary is inline.
 
 | Case | Row |
 |---|---|
@@ -74,15 +74,14 @@ One summary row.
 | No match | `No files found` |
 
 ```
-● Find **/*.ts                                                             1ms
-└─   6 files
+● Find **/*.ts 6 files                                                     1ms
 ```
 
 ### Expanded body
 
-One `RESULTS` section, then the same summary row. Paths are
-workspace-relative, sorted as the tool returned them, with no `f` prefix. A
-directory result keeps a trailing `/`, exactly as in `ls`.
+One `RESULTS` section, then the same outcome sentence as the final row. Paths
+are workspace-relative, sorted as the tool returned them, with no `f` prefix.
+A directory result keeps a trailing `/`, exactly as in `ls`.
 
 ```
 ● Find **/*.ts                                                             1ms
@@ -95,17 +94,16 @@ directory result keeps a trailing `/`, exactly as in `ls`.
 └─   6 files
 ```
 
-A result set with no match produces no `RESULTS` section. The summary row is
-the whole body.
+A result set with no match produces no `RESULTS` section. The inline summary
+is the whole collapsed entry.
 
-When the section drops rows, the summary row states it: `24 files · 18 not
+When the section drops rows, the inline summary states it: `24 files · 18 not
 shown`, and the header carries the `truncated` badge.
 
 ### Failure
 
 ```
-● Find **/*.ts                                                             0ms
-└─   Search root does not exist
+● Find **/*.ts Search root does not exist                                  0ms
 ```
 
 | Cause | Row |
@@ -121,7 +119,7 @@ The raw platform text stays available in the expanded `ERROR` section.
 
 1. The header shows `●`, the title `Find`, and the query as the target.
 2. The call body does not repeat the query.
-3. The collapsed body is exactly one row and lists no paths.
+3. The collapsed entry is exactly one row and lists no paths.
 4. Result rows carry no `f` or `d` prefix, and a directory keeps a trailing `/`.
 5. No match renders `No files found` and no `RESULTS` section.
 6. A bounded result states the number of paths not shown and carries the

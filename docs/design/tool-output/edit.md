@@ -67,8 +67,9 @@ No match:
 
 ## Target design
 
-`edit` is an explicit exception to C4. The diff is the result, so it stays in
-the collapsed body. The reference implementation does the same
+`edit` is in the mutation family, the one exception to C4: the collapsed
+entry keeps a bounded diff body below the row, because the diff is the
+result. The reference implementation does the same
 (`~/Projects/claude-code/src/components/FileEditToolUpdatedMessage.tsx:91`).
 
 ### Header
@@ -86,15 +87,14 @@ The call preview states the work that was requested:
 
 ### Collapsed body
 
-A bounded diff, then one summary row.
+A bounded diff below the one-row entry; the summary is inline in the row.
 
 ```
-● Edit src/parser.ts                                                       0ms
+● Edit src/parser.ts 1 replacement · +1 −1                                 0ms
 │      6   export function step3(input: string): string {
 │      7 -   return tokenize(input)[3] ?? "";
 │      7 +   return tokenize(input)[3] ?? fallback;
-│      8   }
-└─   1 replacement · +1 −1
+└─   8   }
 ```
 
 Rules:
@@ -102,12 +102,12 @@ Rules:
 1. The diff keeps the `previewLines` budget of the effective policy, which is
    nine rows by default. The kept rows are the changed rows and their nearest
    context.
-2. The summary row states the applied replacements and the totals:
+2. The inline summary states the applied replacements and the totals:
    `3 replacements · +12 −4`.
-3. When rows are dropped, the summary row states the overflow:
+3. When rows are dropped, the inline summary states the overflow:
    `3 replacements · +12 −4 · 18 more diff lines`.
-4. There is no `(+1, -1)` header row. Its information moved into the summary
-   row.
+4. There is no `(+1, -1)` header row. Its information moved into the inline
+   summary.
 5. There is no `@@` hunk header. When two kept hunks are not adjacent, one
    muted `⋯` row separates them.
 
@@ -127,14 +127,13 @@ Word-level emphasis on a replaced line stays unchanged.
 ### Expanded body
 
 The same diff without the preview bound, inside a `DIFF` section, followed by
-the same summary row. Nothing else is added; the path is already in the
-header.
+the same outcome sentence as the final row. Nothing else is added; the path is
+already in the header.
 
 ### Failure
 
 ```
-● Edit src/parser.ts                                                       0ms
-└─   Edit 1 of 1 found no exact match
+● Edit src/parser.ts Edit 1 of 1 found no exact match                     0ms
 ```
 
 | Cause | Row |
@@ -151,10 +150,10 @@ change is applied when an edit fails, so no diff is rendered.
 ## Acceptance criteria
 
 1. The header shows `●`, the title `Edit`, and a workspace-relative path.
-2. The collapsed body shows a diff bounded by `previewLines`, then exactly one
-   summary row.
-3. The summary row states the replacement count and the `+N −M` totals, and
-   states the dropped diff rows when the diff is bounded.
+2. The collapsed entry is one row with the summary inline, and a diff body
+   bounded by `previewLines` below it.
+3. The inline summary states the replacement count and the `+N −M` totals,
+   and states the dropped diff rows when the diff is bounded.
 4. No `@@` header and no `(+N, -M)` row is rendered.
 5. Every diff row carries a new-file line number, and no file shows the same
    number on two rows.

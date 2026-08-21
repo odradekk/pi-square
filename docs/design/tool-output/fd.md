@@ -89,10 +89,10 @@ The target is the query, resolved in this order:
 
 The internal default `.` is never shown.
 
-### Collapsed body
+### Collapsed entry
 
-One summary row. It states the returned count, the total, the search root, and
-the way to continue.
+One row (C4). The inline summary states the returned count, the total, the
+search root, and the way to continue.
 
 | Case | Row |
 |---|---|
@@ -101,8 +101,7 @@ the way to continue.
 | No match | `No files found in src/display` |
 
 ```
-● File search *.ts                                            [truncated]  1ms
-└─   6 of 24 files in src/display · continue at offset 6
+● File search *.ts 6 of 24 files in src/display · continue at offset 6 [truncated] 1ms
 ```
 
 The `truncated` badge is set exactly when the result is bounded. The fields
@@ -111,11 +110,11 @@ pairs.
 
 ### Expanded body
 
-One `RESULTS` section, then the same summary row. The `QUERY` and `SUMMARY`
-sections are removed. Active filters that are not visible in the header or the
-summary row — `types`, `hidden`, `noIgnore`, `maxDepth`, `minDepth`,
-`excludeGlobs`, `matchMode`, `case` — appear as one bounded muted row above
-the section, and only when the model set them:
+One `RESULTS` section, then the same outcome sentence as the final row. The
+`QUERY` and `SUMMARY` sections are removed. Active filters that are not
+visible in the header or the inline summary — `types`, `hidden`, `noIgnore`,
+`maxDepth`, `minDepth`, `excludeGlobs`, `matchMode`, `case` — appear as one
+bounded muted row above the section, and only when the model set them:
 
 ```
 ● File search *.ts                                                         1ms
@@ -128,8 +127,7 @@ the section, and only when the model set them:
 ### Failure
 
 ```
-● File search *.test.mjs                                                   0ms
-└─   Invalid regex pattern · use matchMode=glob for a glob
+● File search *.test.mjs Invalid regex pattern · use matchMode=glob…       0ms
 ```
 
 | Cause | Row |
@@ -147,7 +145,8 @@ metadata row is not shown on a failure.
 
 1. The header target uses the pattern, the derived extension glob, or the
    path, and never the internal `.` default.
-2. The collapsed body is exactly one summary row in the sentence form above.
+2. The collapsed entry is exactly one row, and the inline summary uses the
+   sentence form above.
 3. No surface prints `returned`, `total`, `next`, or `hasMore` as key-value
    pairs.
 4. The `truncated` badge appears exactly when the result is bounded.

@@ -71,9 +71,10 @@ model asked for the README without a path, the resolved file name is shown.
 The target is elided in the middle when it does not fit; the repository and
 the file name stay visible.
 
-### Collapsed body
+### Collapsed entry
 
-One summary row, exactly as [read.md](read.md) defines for a local file.
+One row, exactly as [read.md](read.md) defines for a local file: the summary
+is inline.
 
 | Case | Row |
 |---|---|
@@ -82,8 +83,7 @@ One summary row, exactly as [read.md](read.md) defines for a local file.
 | Empty | `Empty file` |
 
 ```
-● GitHub read BurntSushi/ripgrep README.md                                1.1s
-└─   lines 1-6 of 542 · continue at line 7 · rate 4999 of 5000 left
+● GitHub read BurntSushi/ripgrep README.md lines 1-6 of 542 · continue…  1.1s
 ```
 
 ### Expanded body
@@ -117,7 +117,8 @@ One muted row below the section states the resolved ref and the short SHA:
 2. The `CONTENT` section contains only remote file text, and its line numbers
    are the real remote line numbers.
 3. No tool header row, no `More lines:` hint, and no full SHA is rendered.
-4. The summary row states the line window, the total, and the continuation.
+4. The inline summary states the line window, the total, and the
+   continuation.
 5. The ref and the short SHA appear once, in the expanded body.
 6. The model-facing text is unchanged.
 7. Every state is bounded at 39, 40, 63, 64, 80, 99, 100, and 120 columns in

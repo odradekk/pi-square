@@ -69,10 +69,11 @@ Empty directory and missing directory:
 The target is the workspace-relative path. The working directory itself is
 shown as `.`.
 
-### Collapsed body
+### Collapsed entry
 
-One counting row. A count of zero is omitted, so a directory that holds only
-files does not print `0 directories`.
+One row (C4). The inline summary counts the entries; a count of zero is
+omitted, so a directory that holds only files does not print
+`0 directories`.
 
 | Case | Row |
 |---|---|
@@ -83,8 +84,7 @@ files does not print `0 directories`.
 | Failure | one sentence, see below |
 
 ```
-● List .                                                                   1ms
-└─   3 directories · 9 files
+● List . 3 directories · 9 files                                           1ms
 ```
 
 ### Expanded body
@@ -106,18 +106,17 @@ sorted alphabetically. A directory keeps its trailing `/` and there is no
 Rules:
 
 1. The section keeps the line budget of the effective display policy.
-2. When entries are dropped, the summary row states the overflow:
+2. When entries are dropped, the inline summary states the overflow:
    `3 directories · 9 files · 6 not shown`.
-3. An empty directory produces no `ENTRIES` section. The collapsed row is the
-   whole body.
+3. An empty directory produces no `ENTRIES` section. The collapsed entry is
+   the whole entry.
 4. Reordering is presentation only. The text returned to the model keeps the
    order that Pi produced.
 
 ### Failure
 
 ```
-● List src/absent                                                          0ms
-└─   Directory does not exist
+● List src/absent Directory does not exist                                 0ms
 ```
 
 | Cause | Row |
@@ -133,7 +132,7 @@ The raw platform text stays available in the expanded `ERROR` section.
 
 1. The header shows `●`, the title `List`, and a workspace-relative path, with
    the working directory shown as `.`.
-2. The collapsed body is exactly one row and lists no entry names.
+2. The collapsed entry is exactly one row and lists no entry names.
 3. Zero counts are omitted from the counting row.
 4. The expanded body sorts directories before files, marks directories with a
    trailing `/`, and shows no `d`/`f` prefix.

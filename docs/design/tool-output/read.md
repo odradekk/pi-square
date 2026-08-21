@@ -97,10 +97,10 @@ absolute line range that was returned:
 The `truncated` badge appears only when the tool did not return the rest of
 the file.
 
-### Collapsed body
+### Collapsed entry
 
-One summary row. The row states what was read and, when the read was bounded,
-how to continue.
+One row (C4). The inline summary states what was read and, when the read was
+bounded, how to continue.
 
 | Case | Row |
 |---|---|
@@ -111,8 +111,7 @@ how to continue.
 | Failure | one sentence, see below |
 
 ```
-● Read src/parser.ts                                                       1ms
-└─   178 lines · 6.4 KB
+● Read src/parser.ts 178 lines · 6.4 KB                                    1ms
 ```
 
 ### Expanded body
@@ -143,8 +142,7 @@ expanded body adds nothing.
 ### Failure
 
 ```
-● Read src/absent.ts                                                       0ms
-└─   File does not exist
+● Read src/absent.ts File does not exist                                   0ms
 ```
 
 | Cause | Row |
@@ -164,7 +162,7 @@ section, so nothing is lost.
    workspace-relative path.
 2. A windowed read shows `path:start-end` with the real file line numbers.
 3. A truncated read carries the `truncated` badge and a continuation hint.
-4. The collapsed body is exactly one row and never contains file content.
+4. The collapsed entry is exactly one row and never contains file content.
 5. The expanded body contains one `CONTENT` section whose numbers match the
    file, and no `FILE` section.
 6. A missing file renders one sentence, not the raw `ENOENT` string, and the

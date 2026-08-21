@@ -64,13 +64,19 @@ The target is `owner/repo@<short sha>`. When the model supplied a branch or a
 tag, the resolved short SHA is still shown, because it is the identity of what
 was read.
 
-### Collapsed body
+### Collapsed entry
 
-The commit identity, then the changed-file list bounded by `previewLines`,
-then the summary row.
+One row (C4). The inline summary states the file counts, the totals, and the
+rate limit:
 
 ```
-● GitHub commit BurntSushi/ripgrep@3fce3b5                                1.2s
+● GitHub commit BurntSushi/ripgrep@3fce3b5 2 files · +3 −3 · rate 4996…   1.2s
+```
+
+The commit identity and the changed-file list render only when the entry is
+expanded, the file list bounded by `previewLines`:
+
+```
 │    ignore-0.4.33
 │    Andrew Gallant · 5d ago · verified
 │    M  crates/ignore/Cargo.toml                                         +2 −2
@@ -86,9 +92,10 @@ Rules:
    A raw ISO date and a full SHA are never rendered.
 3. Each changed file uses one row: the status letter, the path, and the
    per-file `+N −M` counts.
-4. Patch text is never rendered in the collapsed body.
+4. Patch text never renders in the collapsed entry; it renders only in the
+   expanded `PATCH` section.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -109,8 +116,8 @@ missing or omitted patch is stated once in the muted tone.
 
 1. The header target is `owner/repo@<short sha>`.
 2. No full SHA and no raw ISO date is rendered in any state.
-3. The collapsed body shows the subject, the author line, and a bounded
-   changed-file list, and no patch text.
+3. The subject, the author line, and the changed-file list render only when
+   expanded, and no patch text renders in the collapsed entry.
 4. Each changed file states its status and its `+N −M` counts on one row.
 5. Patches render with the `edit` diff rules and never with `@@` headers.
 6. The expanded body has no `SUMMARY` section and no key-value field list.

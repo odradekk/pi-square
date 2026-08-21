@@ -72,14 +72,20 @@ target is the first query followed by `+2 more`.
 
 ### Record layout
 
-The collapsed and the expanded bodies use the **same** record layout. Only the
-bound and the extra fields differ.
+The records render only when the entry is expanded. The collapsed entry is
+one row (C4) with the result counts inline:
+
+```
+● Web search ripgrep json output format 4 results for 1 query             1.4s
+```
 
 Each record uses two rows:
 
 1. The rank, then the title, truncated with `…`.
 2. The URL in the muted tone, without the scheme, elided in the middle so that
    the host and the last segment stay visible.
+
+Expanded:
 
 ```
 ● Web search ripgrep json output format                                   1.4s
@@ -92,10 +98,9 @@ Each record uses two rows:
 └─   4 results for 1 query
 ```
 
-The collapsed body keeps the `previewLines` budget and therefore shows four
-records at the default policy.
+The expanded record list keeps the policy line budget.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -128,8 +133,7 @@ and only when the model set them.
 ### Failure
 
 ```
-● Web search ripgrep json output format                                   0.8s
-└─   Search provider returned 401
+● Web search ripgrep json output format Search provider returned 401     0.8s
 ```
 
 | Cause | Row |
@@ -147,11 +151,12 @@ token, or authorization header ever appears in any row.
 ## Acceptance criteria
 
 1. The header shows `●`, the title `Web search`, and the query as the target.
-2. The collapsed and the expanded bodies use the same record layout.
+2. The record layout is the same wherever records render; the collapsed
+   entry is one row.
 3. Each record shows the rank, the title, and a scheme-less middle-elided URL.
-4. The collapsed body keeps the `previewLines` budget and contains no orphan
-   provenance token.
-5. The summary row states the result count and the query count, and the
+4. The expanded record list keeps the policy line budget and contains no
+   orphan provenance token.
+5. The inline summary states the result count and the query count, and the
    `partial` qualifier is set when a query failed.
 6. The expanded body has one `RESULTS` section, at most one request-option
    row, and no `REQUEST` or `SUMMARY` section.
