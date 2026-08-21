@@ -18,11 +18,11 @@ Install the public npm package for the current user:
 pi install npm:@odradekk/pi-square
 ```
 
-Use `-l` to install it for only the current project. The package requires Pi 0.80.6 and Node.js 24.
+Use `-l` to install it for only the current project. The package requires Pi 0.84.2 and Node.js 24.
 
 ## Runtime contract
 
-- Pi 0.80.6
+- Pi 0.84.2
 - Node.js 24
 - One extension entry point: `src/index.ts`
 - Package-provided themes
@@ -31,7 +31,7 @@ Use `-l` to install it for only the current project. The package requires Pi 0.8
 
 ## Themes
 
-The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their palette uses low-contrast surfaces with a warm rust-orange accent for structure, dim gray supporting text, and restrained semantic status colors (green success, red failure, amber warning). Both variants include explicit HTML export colors and the complete Pi 0.80.6 theme token set. The display runtime itself uses only Pi's standard semantic tokens, so any valid third-party Pi theme remains supported; bundled themes tune the standard tokens toward the Claude Code color relationship without imposing fixed RGB values on third-party themes.
+The package provides the matched `pi-square-theme-dark` and `pi-square-theme-light` variants. Their palette uses low-contrast surfaces with a warm rust-orange accent for structure, dim gray supporting text, and restrained semantic status colors (green success, red failure, amber warning). Both variants include explicit HTML export colors and the complete Pi 0.84.2 theme token set. The display runtime itself uses only Pi's standard semantic tokens, so any valid third-party Pi theme remains supported; bundled themes tune the standard tokens toward the Claude Code color relationship without imposing fixed RGB values on third-party themes.
 
 ## Operational display
 
@@ -230,7 +230,7 @@ Results are deliberately bounded and explicit about incompleteness. Search expos
 
 ## Built-in ownership and adapters
 
-pi-square recreates Pi's seven public built-in definitions from Pi 0.80.6 factories at `session_start`, spreads each complete definition, and replaces renderer fields only. When anchored editing is enabled, the declared `read` content seam adds anchors to model-visible workspace text after factory execution; it does not wrap Pi `read` or `write` execution. The active parent list replaces Pi `edit` with `replace` and `revert`. When anchored editing is disabled, Pi's factory-faithful `read` and `edit` definitions and active-tool order return. Schemas, prompt metadata, argument preparation, execution functions, mutation queues, and model-facing results otherwise remain Pi-owned. `write` pending output may show a workspace-bounded, 1 MB maximum projected diff; it never wraps execution or claims that preview as an authoritative final state. When Pi `edit` is restored, its results use Pi's returned diff details.
+pi-square recreates Pi's seven public built-in definitions from Pi 0.84.2 factories at `session_start`, spreads each complete definition, and replaces renderer fields only. When anchored editing is enabled, the declared `read` content seam adds anchors to model-visible workspace text after factory execution; it does not wrap Pi `read` or `write` execution. The active parent list replaces Pi `edit` with `replace` and `revert`. When anchored editing is disabled, Pi's factory-faithful `read` and `edit` definitions and active-tool order return. Schemas, prompt metadata, argument preparation, execution functions, mutation queues, and model-facing results otherwise remain Pi-owned. `write` pending output may show a workspace-bounded, 1 MB maximum projected diff; it never wraps execution or claims that preview as an authoritative final state. When Pi `edit` is restored, its results use Pi's returned diff details.
 
 `read` preserves Pi's effective `images.autoResize`; non-Windows `bash` preserves `shellPath` and `shellCommandPrefix`. If Pi's global or trusted-project settings fail to parse, only those two overrides are blocked: native definitions remain on first startup, and a previously loaded valid definition remains in effect until reload. A bounded warning appears in the footer status area, banner, and `/display`.
 

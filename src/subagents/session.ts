@@ -358,7 +358,12 @@ function createChildResourceLoader(input: {
       ? { agentsFiles: [] }
       : baseLoader.getAgentsFiles(),
     getSystemPrompt: () => input.systemPrompt,
+    // The child system prompt is composed by pi-square rather than read from a
+    // file, so it has no source path to report, and the append list is empty by
+    // construction. Both source accessors mirror their prompt accessors above.
+    getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
+    getAppendSystemPromptSources: () => [],
     extendResources: () => {},
   };
 }

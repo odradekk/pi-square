@@ -51,7 +51,7 @@ This extension vendors prebuilt search binaries, a hash-anchored editing impleme
 ### `diff`
 - Upstream: https://github.com/kpdecker/jsdiff
 - License: BSD-3-Clause
-- Version: `8.0.4`, installed as an exact npm dependency. The same version is already pinned by `@earendil-works/pi-coding-agent` `0.80.6`, so the dependency dedupes to one installed copy. Vendored editing uses its `diffLines` API for edit and undo diffs.
+- Version: `8.0.4`, installed as an exact npm dependency. The same version is already pinned by `@earendil-works/pi-coding-agent` `0.84.2`, so the dependency dedupes to one installed copy. Vendored editing uses its `diffLines` API for edit and undo diffs.
 
 ### `file-type`
 - Upstream: https://github.com/sindresorhus/file-type

@@ -65,7 +65,9 @@ const session = {
     getSessionName() { return "native-footer"; },
   },
   getContextUsage() { return { percent: 75, contextWindow: 200_000 }; },
-  modelRegistry: { isUsingOAuth() { return false; } },
+  modelRegistry: { isUsingOAuth() { return false; }, getProvider() { return undefined; } },
+  // Pi 0.84.2's native footer reads the subscription marker from modelRuntime.
+  modelRuntime: { isUsingSubscription() { return false; } },
 };
 
 for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
