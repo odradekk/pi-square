@@ -21,10 +21,10 @@ This extension vendors prebuilt search binaries, a hash-anchored editing impleme
 ### PDF.js (`pdfjs-dist`)
 - Upstream: https://github.com/mozilla/pdf.js
 - License: Apache-2.0
-- Version: `6.1.200`, installed as an exact npm dependency with a Node requirement of `>=22.13.0 || >=24`.
-- The unmodified distribution is approximately 36 MiB unpacked and includes JavaScript builds, 168 Adobe CMap files, standard Foxit and Liberation fonts, ICC profiles, and JBIG2, OpenJPEG, and QCMS WASM assets.
+- Version: `6.2.108`, installed as an exact npm dependency with a Node requirement of `>=22.13.0 || >=24`.
+- The unmodified distribution is approximately 35 MiB unpacked and includes JavaScript builds, 169 Adobe CMap files, standard Foxit and Liberation fonts, ICC profiles, and JBIG2, OpenJPEG, QCMS, and QuickJS WASM assets.
 - Bundled component notices remain in the package: Foxit fonts use a BSD-style license, Liberation fonts use SIL OFL 1.1, OpenJPEG uses BSD-2-Clause, PDFium JBIG2 uses a BSD-style license, and QCMS uses MIT terms. The package also carries separate PDF.js wrapper notices for the WASM artifacts.
-- `pi-square` loads the Node legacy ESM build for local text extraction, resolves CMap/font/WASM directories directly from the installed package, passes PDF bytes in memory, and disables worker fetches. It does not use a CDN, remote asset fallback, browser worker, rendering API, or external process.
+- `pi-square` loads the Node legacy ESM build for local text extraction, resolves CMap/font/WASM directories directly from the installed package, passes PDF bytes in memory, and disables worker fetches. It does not use a CDN, remote asset fallback, browser worker, rendering API, or external process. The bundled QuickJS artifact backs PDF.js's optional PDF-scripting sandbox, which `pdf_search` never activates: it builds no annotation layer and no scripting manager, so the scripting path that CVE-2026-16633 targets is not reachable from text extraction.
 
 ### `@napi-rs/canvas`
 - Upstream: https://github.com/Brooooooklyn/canvas
