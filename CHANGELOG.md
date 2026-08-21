@@ -1,5 +1,19 @@
 # @odradekk/pi-square
 
+## 10.0.0
+
+### Major Changes
+
+- db98f54: Move the supported Pi runtime from 0.80.6 to 0.84.2 and the peer TypeBox pin from 1.1.38 to 1.3.7, which Pi 0.84.2 requires. This is a breaking compatibility change: the package no longer loads under Pi 0.80.6.
+
+  The upgrade clears nine advisories that reached the tree through the pinned Pi dependency: five high `undici` advisories (now 8.9.0), three high `brace-expansion` advisories (now 5.0.9), and one moderate `protobufjs` advisory (now 7.6.5).
+
+  Two source changes were required. The child resource loader implements the two accessors Pi 0.84.2 added to `ResourceLoader`; because pi-square composes a child system prompt rather than reading one from a file, both report no source. The footer subscription marker now mirrors Pi 0.84.2, which reports a subscription only for OAuth whose provider declares that auth method subscription-backed, plus the Kimi Coding special case; the previous plain-OAuth check would have over-reported. Tool registration, the public built-in factories, the child tool allowlist and name-keyed override, `withFileMutationQueue`, `sourceInfo`, and the anchored editing behaviour are unaffected. Pi 0.84.2's new `defaultTools` setting cannot change subagent tools, because pi-square always passes an explicit tool list.
+
+### Patch Changes
+
+- df0bffc: Update the exact `pdfjs-dist` dependency from 6.1.200 to 6.2.108, which clears the high-severity PDF.js advisory for CVE-2026-16633 (arbitrary JavaScript execution when a malicious PDF is opened with PDF scripting enabled). `pdf_search` was not exposed to that vector because it extracts text only and never builds an annotation layer or a scripting manager, so the advisory is resolved at the dependency level rather than by a behaviour change. The Node requirement, the optional `@napi-rs/canvas` targets, and the package-local CMap, font, and WASM asset resolution are unchanged.
+
 ## 9.1.0
 
 ### Minor Changes
