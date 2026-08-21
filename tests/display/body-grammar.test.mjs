@@ -145,6 +145,9 @@ function assertNoTrailingEmptyRow(lines, label) {
 }
 
 // ------------------------------------------------------- C4 collapsed body
+// C4 revision: a collapsed entry is exactly one row. The outcome summary
+// (or one-sentence failure) renders inline in that row; no body row follows
+// for any tool outside the mutation family.
 {
   const runtime = newRuntime();
   const read = decorateBuiltinDefinition(createReadToolDefinition(TMP), TMP, runtime);
@@ -154,11 +157,11 @@ function assertNoTrailingEmptyRow(lines, label) {
     details: { path: "notes.txt", returnedLines: 60, hasMore: false, truncatedLines: 0 },
   };
   const component = read.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ path: "notes.txt" }));
-  const body = bodyLines(component);
-  assert.equal(body.length, 1, "collapsed read renders exactly one summary row");
-  assert.match(body[0], /60 lines/, "the summary row states the line count");
-  assert.match(body[0], /\d+(\.\d+)?\s?[KM]?B\b/, "the summary row states the size");
-  assertNoTrailingEmptyRow(renderLines(component), "read collapsed");
+  const rendered = renderLines(component);
+  assert.equal(rendered.length, 1, "collapsed read renders exactly one row");
+  assert.match(rendered[0], /60 lines/, "the inline summary states the line count");
+  assert.match(rendered[0], /\d+(\.\d+)?\s?[KM]?B\b/, "the inline summary states the size");
+  assertNoTrailingEmptyRow(rendered, "read collapsed");
   runtime.dispose();
 }
 
@@ -170,9 +173,9 @@ function assertNoTrailingEmptyRow(lines, label) {
     details: { entries: 3 },
   };
   const component = ls.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ path: "." }));
-  const body = bodyLines(component);
-  assert.equal(body.length, 1, "collapsed ls renders exactly one summary row");
-  assert.match(body[0], /3 files/, "the ls summary states the file count");
+  const rendered = renderLines(component);
+  assert.equal(rendered.length, 1, "collapsed ls renders exactly one row");
+  assert.match(rendered[0], /3 files/, "the inline summary states the file count");
   runtime.dispose();
 
   const find = decorateBuiltinDefinition(createFindToolDefinition(TMP), TMP, runtime);
@@ -181,9 +184,9 @@ function assertNoTrailingEmptyRow(lines, label) {
     details: { files: 2 },
   };
   const findComponent = find.renderResult(findResult, { expanded: false, isPartial: false }, plainTheme, makeCtx({ pattern: "*.ts", path: "src" }));
-  const findBody = bodyLines(findComponent);
-  assert.equal(findBody.length, 1, "collapsed find renders exactly one summary row");
-  assert.match(findBody[0], /2 files in src/, "the find summary states the count and the root");
+  const findRendered = renderLines(findComponent);
+  assert.equal(findRendered.length, 1, "collapsed find renders exactly one row");
+  assert.match(findRendered[0], /2 files in src/, "the inline summary states the count and the root");
 
   const emptyFind = find.renderResult(
     { content: [{ type: "text", text: "" }], details: { files: 0 } },
@@ -191,9 +194,9 @@ function assertNoTrailingEmptyRow(lines, label) {
     plainTheme,
     makeCtx({ pattern: "*.xyz", path: "src" }),
   );
-  const emptyBody = bodyLines(emptyFind);
-  assert.equal(emptyBody.length, 1, "an empty find still renders one summary row");
-  assert.match(emptyBody[0], /No files found/, "the empty summary states no match");
+  const emptyRendered = renderLines(emptyFind);
+  assert.equal(emptyRendered.length, 1, "an empty find still renders one row");
+  assert.match(emptyRendered[0], /No files found/, "the inline summary states no match");
 }
 
 {
@@ -212,10 +215,10 @@ function assertNoTrailingEmptyRow(lines, label) {
     },
   };
   const component = todo.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ action: "set" }));
-  const body = bodyLines(component);
-  assert.equal(body.length, 1, "collapsed todo renders exactly one summary row");
-  assert.match(body[0], /1 of 4 done/, "the todo summary states the total and completed count");
-  assert.ok(!body[0].includes("action=set"), "no key=value metadata noise in the summary row");
+  const rendered = renderLines(component);
+  assert.equal(rendered.length, 1, "collapsed todo renders exactly one row");
+  assert.match(rendered[0], /1 of 4 done/, "the inline summary states the total and completed count");
+  assert.ok(!rendered[0].includes("action=set"), "no key=value metadata noise in the row");
   runtime.dispose();
 }
 
@@ -233,12 +236,11 @@ function assertNoTrailingEmptyRow(lines, label) {
     },
   };
   const component = rg.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ pattern: "needle" }));
-  const body = bodyLines(component);
-  const last = body.at(-1);
-  assert.match(last, /12 of 60 matches/, "the rg summary states returned and total");
-  assert.match(last, /continue at offset 12/, "the rg summary states how to continue");
-  assert.ok(body.length <= DEFAULT_DISPLAY_POLICY.previewLines + 2, "the payload stays bounded (cap + hidden notice + summary row)");
-  assert.ok(!body.some((line) => line.includes("pattern=needle")), "no key=value metadata row in the collapsed body");
+  const rendered = renderLines(component);
+  assert.equal(rendered.length, 1, "collapsed rg renders exactly one row");
+  assert.match(rendered[0], /12 of 60 matches/, "the inline summary states returned and total");
+  assert.match(rendered[0], /continue at offset 12/, "the inline summary states how to continue");
+  assert.ok(!rendered[0].includes("pattern=needle"), "no key=value metadata row in the collapsed row");
   runtime.dispose();
 }
 
@@ -251,10 +253,9 @@ function assertNoTrailingEmptyRow(lines, label) {
     details: { matches: 12, files: 12 },
   };
   const component = grep.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ pattern: "needle" }));
-  const body = bodyLines(component);
-  const last = body.at(-1);
-  assert.match(last, /12 matches in 12 files/, "the grep summary states matches and files");
-  assert.ok(body.length <= DEFAULT_DISPLAY_POLICY.previewLines + 2, "grep collapsed stays bounded (cap + hidden notice + summary row)");
+  const rendered = renderLines(component);
+  assert.equal(rendered.length, 1, "collapsed grep renders exactly one row");
+  assert.match(rendered[0], /12 matches in 12 files/, "the inline summary states matches and files");
   runtime.dispose();
 }
 
@@ -266,9 +267,10 @@ function assertNoTrailingEmptyRow(lines, label) {
     details: { exitCode: 0, durationMs: 3, truncated: false },
   };
   const component = bash.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ command: "ls" }));
-  const body = bodyLines(component);
-  assert.match(body.at(-1), /2 lines/, "the bash summary states the output size");
-  assert.ok(body.some((line) => line.includes("a.ts")), "the bounded output preview stays");
+  const rendered = renderLines(component);
+  assert.equal(rendered.length, 1, "collapsed bash renders exactly one row");
+  assert.match(rendered[0], /2 lines/, "the inline summary states the output size");
+  assert.doesNotMatch(rendered[0], /a\.ts/, "no live output tail in the collapsed row");
 
   const empty = bash.renderResult(
     { content: [{ type: "text", text: "" }], details: { exitCode: 0, durationMs: 1, truncated: false } },
@@ -276,8 +278,9 @@ function assertNoTrailingEmptyRow(lines, label) {
     plainTheme,
     makeCtx({ command: "true" }),
   );
-  const emptyBody = bodyLines(empty);
-  assert.deepEqual(emptyBody.map((line) => line.replace(/^[│└─\s]+/, "")), ["No output"], "a command with no output renders only the No output row");
+  const emptyRendered = renderLines(empty);
+  assert.equal(emptyRendered.length, 1, "a command with no output renders exactly one row");
+  assert.match(emptyRendered[0], /No output/, "the inline summary states no output");
   runtime.dispose();
 }
 
@@ -292,10 +295,10 @@ function assertNoTrailingEmptyRow(lines, label) {
     isError: true,
   };
   const collapsed = read.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ path: "missing.txt" }, {}, { isError: true }));
-  const collapsedBody = bodyLines(collapsed);
-  assert.equal(collapsedBody.length, 1, "a collapsed failure renders exactly one sentence row");
-  assert.match(collapsedBody[0], /File does not exist/, "the sentence states the failure");
-  assert.ok(!collapsedBody[0].includes("ENOENT"), "the raw platform text stays out of the collapsed body");
+  const collapsedLines = renderLines(collapsed);
+  assert.equal(collapsedLines.length, 1, "a collapsed failure renders exactly one row");
+  assert.match(collapsedLines[0], /File does not exist/, "the sentence states the failure inline");
+  assert.ok(!collapsedLines[0].includes("ENOENT"), "the raw platform text stays out of the collapsed row");
 
   const expanded = read.renderResult(result, { expanded: true, isPartial: false }, plainTheme, makeCtx({ path: "missing.txt" }, {}, { isError: true }));
   const expandedLines = renderLines(expanded);
@@ -317,8 +320,8 @@ function assertNoTrailingEmptyRow(lines, label) {
   assert.equal(countOccurrences(lines, "Write-Error: boom"), 1, "the pwsh failure body renders the raw text exactly once");
   const collapsed = pwsh.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ command: "boom" }, {}, { isError: true }));
   const collapsedLines = renderLines(collapsed);
-  assert.equal(countOccurrences(collapsedLines, "Write-Error: boom"), 1, "the collapsed pwsh failure renders the output exactly once");
-  assert.ok(collapsedLines.some((l) => l.includes("Exited with code 1")), "the collapsed pwsh failure summary states the exit code");
+  assert.equal(collapsedLines.length, 1, "the collapsed pwsh failure renders exactly one row");
+  assert.ok(collapsedLines[0].includes("Exited with code 1"), "the collapsed pwsh failure states the exit code inline");
   runtime.dispose();
 }
 
@@ -405,7 +408,7 @@ for (const [label, theme] of themes) {
       makeCtx({ path: "missing.txt" }, {}, { isError: true }),
     );
     const failureLines = failure.render(width);
-    assert.equal(failureLines.length, 2, `${label} collapsed failure keeps header + one row at ${width}`);
+    assert.equal(failureLines.length, 1, `${label} collapsed failure keeps exactly one row at ${width}`);
     for (const line of failureLines) {
       assert.ok(visibleWidth(line) <= width, `${label} failure row exceeds ${width}`);
     }

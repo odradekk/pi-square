@@ -76,15 +76,11 @@ for (const [name, args, expected] of [
   const result = { content: [{ type: "text", text: "model output\nsecond line" }], details: { status: "success", returned: 2 } };
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
   const collapsedText = collapsed.render(80).join("\n");
-  // Payload tools keep their output in the collapsed body; non-payload tools
-  // collapse to a summary row (C4).
-  if (name === "bash" || name === "pwsh") {
-    assert.match(collapsedText, /model output/, `${name} collapsed shows content`);
-  } else if (name === "ssh") {
-    // SSH now shows a summary row (operation-specific text), not raw content
-  } else {
-    assert.match(collapsedText, /2 (matches|files|results)/, `${name} collapsed shows a summary row`);
-  }
+  // C4 revision: collapsed entries are exactly one row for every tool except
+  // the mutation family. The outcome summary renders inline in that row;
+  // payload output is visible only when expanded.
+  assert.match(collapsedText, /2 (matches|files|results|lines)|Secret input sent/, `${name} collapsed shows the inline summary`);
+  assert.doesNotMatch(collapsedText, /model output/, `${name} collapsed hides the payload`);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
   if (name === "rg" || name === "fd" || name === "ssh") {
@@ -108,7 +104,8 @@ for (const [name, args, expected] of [
 
 const dynamic = decorateInternalTool(definition("rg"), () => runtime);
 const result = { content: [{ type: "text", text: "dynamic preview" }], details: { returned: 1 } };
-assert.match(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "default preview shows content");
+assert.match(dynamic.renderResult(result, { expanded: true, isPartial: false }, theme, context({ pattern: "x" }, { expanded: true })).render(80).join("\n"), /dynamic preview/, "expanded shows the preview content");
+assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "collapsed hides the preview payload");
 runtime.dispose();
 const summaryConfig = structuredClone(DEFAULT_CONFIG);
 summaryConfig.display = {

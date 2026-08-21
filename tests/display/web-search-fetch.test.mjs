@@ -242,9 +242,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(collapsedText, /^✓/, "collapsed keeps lifecycle marker");
   assert.match(collapsedText, /Web search/, "collapsed keeps identity/title");
   assert.match(collapsedText, /test/, "collapsed keeps query target");
-  // Collapsed shows two-row records (rank + title, then secondary line muted)
-  assert.match(collapsedText, /1\s+R/, "collapsed shows ranked record title");
-  assert.match(collapsedText, /ex\.com/, "collapsed shows record secondary line");
+  // C4 revision: a collapsed entry is exactly one row; the record payload is
+  // visible only when expanded. The inline summary states the outcome.
+  assert.equal(collapsed.render(100).length, 1, "collapsed web search renders exactly one row");
+  assert.match(collapsedText, /1 of 2 results for 1 query/, "collapsed shows the inline outcome summary");
+  assert.doesNotMatch(collapsedText, /1\s+R|ex\.com/, "collapsed hides the record payload");
 
   const expanded = renderResult(decorated, args, details, "[1] R", { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));

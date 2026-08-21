@@ -413,6 +413,29 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 }
 
+// ── 12b. Bundled themes are a recalibrated matched pair ──────────
+
+{
+  const darkData = JSON.parse(readFileSync(join(root, "themes", "pi-square-theme-dark.json"), "utf8"));
+  const lightData = JSON.parse(readFileSync(join(root, "themes", "pi-square-theme-light.json"), "utf8"));
+  // The palette variables are retuned as a pair; every value stays a hex color.
+  for (const [name, themeData] of [["dark", darkData], ["light", lightData]]) {
+    for (const [variable, value] of Object.entries(themeData.vars)) {
+      assert.match(value, /^#[0-9a-fA-F]{6}$/, `${name} theme var ${variable} is a hex color`);
+    }
+  }
+  // The accent family is retained in both themes (terracotta hue ~18-24°).
+  for (const themeData of [darkData, lightData]) {
+    for (const variable of ["accent", "accentStrong"]) {
+      const hex = themeData.vars[variable];
+      const red = parseInt(hex.slice(1, 3), 16);
+      const green = parseInt(hex.slice(3, 5), 16);
+      const blue = parseInt(hex.slice(5, 7), 16);
+      assert.ok(red > green && red > blue, `${variable} keeps a warm terracotta family`);
+    }
+  }
+}
+
 // ── 13. Summary result mode across all catalog tools ──
 // integration.test.mjs covers hidden/summary/preview for the 6 core states;
 // this section adds summary mode for the extra states (empty, truncated, expanded).
@@ -617,6 +640,95 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 
   runtime.dispose();
+}
+
+// ── 18. C4 revision: every non-mutation collapsed entry is one row ──
+
+{
+  const mutationFamily = new Set(["edit", "replace", "revert", "write"]);
+  const runStates = ["queued", "pending", "running", "completed", "failed", "aborted"];
+  for (const entry of DISPLAY_CATALOG) {
+    for (const lifecycle of runStates) {
+      const description = {
+        version: 1,
+        tool: entry.name,
+        family: entry.family,
+        lifecycle,
+        phase: lifecycle === "running" ? "call" : "result",
+        title: entry.name.toUpperCase(),
+        target: "src/target.ts",
+        rows: [{ text: "outcome row" }],
+        preview: { text: "payload line one\npayload line two" },
+        summary: "3 results",
+        ...(lifecycle === "failed" ? { error: "it failed" } : {}),
+        ...(entry.name === "edit" || entry.name === "write"
+          ? { diff: { path: "src/target.ts", before: "old\n", after: "new\n" } }
+          : {}),
+      };
+      for (const [themeName, theme] of themes) {
+        for (const width of widths) {
+          const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(width);
+          if (mutationFamily.has(entry.name)) {
+            assert.ok(lines.length >= 1, `${entry.name}/${lifecycle}/${themeName}/${width} renders at least the row`);
+          } else {
+            assert.equal(lines.length, 1, `${entry.name}/${lifecycle}/${themeName}/${width} collapsed entry is exactly one row`);
+            const plain = stripVTControlCharacters(lines.join("\n"));
+            assert.doesNotMatch(plain, /payload line/, `${entry.name}/${lifecycle}/${themeName}/${width} hides the payload collapsed`);
+          }
+        }
+      }
+    }
+  }
+}
+
+// ── 19. Wide-tier content column: max(60, floor(0.6 × viewport)) ──
+
+{
+  const description = {
+    version: 1,
+    tool: "bash",
+    family: "execution",
+    lifecycle: "completed",
+    title: "Bash",
+    target: `echo ${Array.from({ length: 120 }, () => "x").join("")}`,
+    rows: [{ text: "done" }],
+  };
+  for (const [themeName, theme] of themes) {
+    for (const width of widths) {
+      const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: true }).render(width);
+      const column = width >= 100 ? Math.max(60, Math.floor(0.6 * width)) : width;
+      for (const line of lines) {
+        assert.ok(visibleWidth(line) <= width, `${themeName}/${width} bounded by viewport`);
+        assert.ok(visibleWidth(stripVTControlCharacters(line).trimEnd()) <= column, `${themeName}/${width} content stays within the column`);
+      }
+    }
+  }
+}
+
+// ── 20. Title and target render in neutral tones (state-only hue) ──
+
+{
+  const description = {
+    version: 1,
+    tool: "bash",
+    family: "execution",
+    lifecycle: "completed",
+    title: "Bash",
+    target: "npm test",
+    durationMs: 42,
+  };
+  // The dark theme maps toolTitle → accentStrong. The component styles the
+  // title with the text token (neutral), the target with muted.
+  const header = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false }).render(120)[0];
+  const plain = stripVTControlCharacters(header);
+  assert.match(plain, /Bash/, "title present");
+  assert.match(plain, /npm test/, "target present");
+  // No accent (state) tone is applied to title or target: strip the ANSI and
+  // confirm the marker still carries its lifecycle color.
+  assert.match(header, /\u001b\[38;2;113;176;128m\u2713\u001b\[39m/, "marker uses the success state tone");
+  // The title text itself is not wrapped in the accentStrong fg code.
+  const accentCode = "\u001b[38;2;217;122;82m";
+  assert.ok(!header.includes(accentCode), "title and target avoid the accent tone");
 }
 
 console.log("visual acceptance tests: OK");

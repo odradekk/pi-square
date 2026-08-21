@@ -70,7 +70,9 @@ export function styleBadge(
 }
 
 export function styleTitle(theme: Theme, text: string): string {
-  return theme.fg("toolTitle", theme.bold(text));
+  // State-only hue: tool titles move to the neutral text token so color
+  // marks operational state only (marker, badges, diff added/removed).
+  return theme.fg("text", theme.bold(text));
 }
 
 export function styleRule(theme: Theme, text: string): string {

@@ -34,6 +34,18 @@ _Avoid_: lifecycle, free-form status
 The fixed visual symbol that represents an operational state within the Claude-like visual language. Claude's core markers may be extended when pi-square must preserve additional operational-state distinctions.
 _Avoid_: status, state
 
+**Collapsed entry**:
+The resting presentation of a tool entry in the operational interface: exactly one row that carries the state marker, title, target, outcome summary, qualifier badges, and elapsed duration. The mutation family is the only exception.
+_Avoid_: folded card, multi-row summary
+
+**Mutation family**:
+The four tools whose collapsed entries keep a bounded payload body below the header row: edit, replace, revert, and write. Every other tool's collapsed entry is a single row; its payload is visible only when expanded.
+_Avoid_: payload tools, edit tools
+
+**Content column**:
+The width that an operational display entry occupies in the wide layout tier (viewport of 100 columns or more): 60 percent of the viewport width, at least 60 cells, left-aligned. Below the wide tier an entry occupies the full width.
+_Avoid_: full width, fixed width, centered column
+
 ### Tooling
 
 **Extension tool**:

@@ -46,30 +46,17 @@ export function asRecord(value: unknown): UnknownRecord {
 }
 
 /**
- * C4 payload exceptions: tools whose output *is* the result. Their collapsed
- * body keeps a bounded payload plus the summary row; every other tool shows
- * exactly the summary row.
+ * Mutation family (C4 revision): the only tools whose collapsed entries keep
+ * a bounded diff/preview body below the single row — edit, replace, revert,
+ * and write. Anchored replace/revert are covered so anchored editing keeps
+ * its diff-forward review experience. Every other tool's collapsed entry is
+ * exactly one row; its payload is visible only when expanded.
  */
-export const COLLAPSED_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
+export const MUTATION_FAMILY_TOOLS: ReadonlySet<string> = new Set([
   "edit",
   "replace",
   "revert",
   "write",
-  "bash",
-  "pwsh",
-  "ssh",
-  "grep",
-  "rg",
-  "pdf_search",
-  "codegraph",
-  "search",
-  "fetch",
-  "libs",
-  "docs",
-  "parse",
-  "github",
-  "delegate",
-  "resume",
 ]);
 
 /**

@@ -175,7 +175,7 @@ function renderResult(decorated, args, content, details, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 4b. Compact Index/Result sections stay visible when collapsed ────
+// ─── 4b. Compact Index/Result sections stay visible when expanded ────
 
 {
   const runtime = newRuntime();
@@ -183,16 +183,20 @@ function renderResult(decorated, args, content, details, opts = {}) {
 
   const statusArgs = { operation: "status", projectPath: "." };
   const statusDetails = { version: 1, operation: "status", phase: "done", projectPath: "/tmp", status: statusValue({ pendingChanges: { added: 2, modified: 1, removed: 0 } }) };
-  const statusCollapsed = renderResult(decorated, statusArgs, "{}", statusDetails, { expanded: true });
-  const statusCollapsedText = stripVTControlCharacters(statusCollapsed.render(100).join("\n"));
-  assert.match(statusCollapsedText, /files=120/, "status result shows the index health content");
-  assert.doesNotMatch(statusCollapsedText, /QUERY/, "status result omits the restating Query section");
+  const statusExpanded = renderResult(decorated, statusArgs, "{}", statusDetails, { expanded: true });
+  const statusExpandedText = stripVTControlCharacters(statusExpanded.render(100).join("\n"));
+  assert.match(statusExpandedText, /files=120/, "status result shows the index health content when expanded");
+  assert.doesNotMatch(statusExpandedText, /QUERY/, "status result omits the restating Query section");
 
   const recoverableArgs = { operation: "explore", query: "how does auth work" };
   const recoverableDetails = { version: 1, operation: "explore", phase: "recoverable", projectPath: "/tmp", code: "NOT_INDEXED", message: "No CodeGraph index exists here; request operation=init once" };
+  // C4 revision: a collapsed entry is exactly one row; the recoverable
+  // message is the inline summary.
   const recoverableCollapsed = renderResult(decorated, recoverableArgs, "{}", recoverableDetails, { expanded: false });
-  const recoverableCollapsedText = stripVTControlCharacters(recoverableCollapsed.render(100).join("\n"));
-  assert.match(recoverableCollapsedText, /No CodeGraph index exists here/, "collapsed recoverable message stays visible as the summary row");
+  const recoverableCollapsedLines = stripVTControlCharacters(recoverableCollapsed.render(100).join("\n"));
+  assert.equal(recoverableCollapsed.render(100).length, 1, "collapsed recoverable renders exactly one row");
+  assert.match(recoverableCollapsedLines, /No CodeGraph/, "collapsed recoverable message stays visible as the inline summary");
+  assert.match(recoverableCollapsedLines, /on=init once/, "the inline summary keeps the action tail");
 
   runtime.dispose();
 }
@@ -229,7 +233,8 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const result = renderResult(decorated, args, JSON.stringify(raw), details);
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^!/, "recoverable renders the completed-with-warning marker");
-  assert.match(text, /No CodeGraph index exists here/, "recoverable shows the actionable message");
+  assert.match(text, /No CodeGraph/, "recoverable shows the actionable message");
+  assert.match(text, /on=init once/, "the inline summary keeps the action tail");
   assert.doesNotMatch(text, /"version":1,"status":"recoverable"/, "recoverable does not dump raw JSON");
 
   // recoverable results that also carry a status object (e.g.
@@ -264,7 +269,8 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const details = { version: 1, operation: "init", phase: "declined", projectPath: "/tmp", code: "USER_DECLINED", message: raw.message };
   const result = renderResult(decorated, args, JSON.stringify(raw), details);
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /CodeGraph initialization was declined/, "declined shows the decline message");
+  assert.match(text, /CodeGraph initial/, "declined shows the decline message head");
+  assert.match(text, /tion was declined/, "declined keeps the decline message tail");
   assert.doesNotMatch(text, /"version":1,"status":"declined"/, "declined does not dump raw JSON");
 
   runtime.dispose();
@@ -298,8 +304,8 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const result = renderResult(decorated, args, JSON.stringify(raw), details, { isError: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
   assert.match(text, /^×/, "hard error renders the failed marker");
-  assert.match(text, /CodeGraph is unavailable for this platform/, "hard error shows the mapped safe message");
-  assert.equal((text.match(/CodeGraph is unavailable for this platform/g) ?? []).length, 1, "the error message is not duplicated across preview and error field");
+  assert.match(text, /CodeGraph is una…or this platform/, "hard error shows the mapped safe message");
+  assert.equal((text.match(/CodeGraph is una…or this platform/g) ?? []).length, 1, "the error message is not duplicated across preview and error field");
 
   runtime.dispose();
 }
@@ -314,7 +320,7 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const details = { version: 1, operation: "explore", phase: "running", projectPath: "/tmp", message: raw.message };
   const result = renderResult(decorated, args, JSON.stringify(raw), details, { isPartial: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /exploring semantic graph/, "running progress message is visible");
+  assert.match(text, /exploring …ntic graph/, "running progress message is visible inline");
   assert.doesNotMatch(text, /"version":1,"status":"running"/, "running does not dump the raw streaming envelope as a fallback");
 
   runtime.dispose();

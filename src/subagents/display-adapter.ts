@@ -311,7 +311,14 @@ export function describeSubagentRun(
 
   const isTerminal = lc.lifecycle === "completed" || lc.lifecycle === "failed" || lc.lifecycle === "aborted";
 
-  // Rows for non-terminal states (running, queued)
+  // C4 revision: collapsed entries are exactly one row, so state messages
+  // that used to live in the collapsed body move into the inline summary.
+  const queuedMessage = !isTerminal && lc.lifecycle === "queued" && run.mode === "bg"
+    ? "Queued in the parent session"
+    : undefined;
+  const effectiveSummary = queuedMessage ?? summary;
+
+  // Rows for non-terminal states (running, queued) render only when expanded.
   const rows: DisplayRow[] = [];
   if (!isTerminal) {
     if (lc.lifecycle === "queued" && run.mode === "bg") {
@@ -365,7 +372,7 @@ export function describeSubagentRun(
     rows,
     sections: options.expanded ? expandedSections : collapsedSections,
     durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
-    summary,
+    summary: effectiveSummary,
     ...(options.isError || run.phase === "error"
       ? { error: String(run.error || fallbackText || "Subagent failed") }
       : {}),

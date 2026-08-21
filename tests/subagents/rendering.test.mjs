@@ -116,10 +116,11 @@ assert.ok(collapsedBackgrounds.includes("toolSuccessBg"), "done result keeps Pi'
 // ─── 3. Collapsed entry uses the operational grammar ─────────────────
 
 assert.match(collapsed, /✓ Subagent explorer/, "marker, title, and target");
-assert.match(collapsed, /Finding/, "the result preview renders the normalized result text");
-// Collapsed output is bounded by preview lines; the summary always renders
-assert.match(collapsed, /run 12345678/, "collapsed shows the run ID in the summary");
-assert.doesNotMatch(collapsed, /id=12345678|mode=bg|phase=done/, "key=value metadata stays out of the collapsed body");
+// C4 revision: the collapsed notification is one row; the result preview is
+// visible only when expanded. The inline summary states the outcome.
+assert.doesNotMatch(collapsed, /Finding/, "collapsed hides the result preview");
+assert.match(collapsed, /run 12345678/, "collapsed shows the run ID in the inline summary");
+assert.doesNotMatch(collapsed, /id=12345678|mode=bg|phase=done/, "key=value metadata stays out of the collapsed row");
 
 // ─── 4. Privacy: no prompts, artifacts, raw sessions, or payloads ────
 

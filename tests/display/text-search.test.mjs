@@ -118,9 +118,9 @@ function makeFdRgDef(name) {
   const call = decorated.renderCall({ pattern: "const" }, plainTheme, makeCtx({ pattern: "const" }, {}, { argsComplete: true, executionStarted: true }));
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "a.ts:1:const x = 1;\na.ts:2:const y = 2;" }], details: {} },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ pattern: "const" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ pattern: "const" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.ok(!text.includes("Matches"), "a lone Matches section draws no title rule (C9)");
@@ -175,9 +175,11 @@ function makeFdRgDef(name) {
     makeCtx({ pattern: "const", path: "." }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: false }),
   );
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
-  assert.ok(!collapsedText.includes("Matches"), "collapsed shows match content without a section title (C9)");
-  assert.match(collapsedText, /a\.ts/, "collapsed shows the file header");
-  assert.match(collapsedText, /1 {2}const x = 1;/, "collapsed shows match content");
+  // C4 revision: a collapsed entry is exactly one row; the match payload is
+  // visible only when expanded. The inline summary carries the counts.
+  assert.equal(collapsed.render(80).length, 1, "collapsed grep renders exactly one row");
+  assert.doesNotMatch(collapsedText, /Matches|a\.ts|const x = 1/, "collapsed hides the match payload");
+  assert.match(collapsedText, /1 match in 1 file/, "collapsed shows the inline summary");
   assert.doesNotMatch(collapsedText, /QUERY/, "collapsed omits QUERY summary");
 
   const expanded = decorated.renderResult(
@@ -356,9 +358,9 @@ function makeFdRgDef(name) {
         files: [{ path: "src/a.ts", lines: [{ kind: "match", line: 10, column: 3, text: "foo bar" }] }],
       },
     },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     plainTheme,
-    makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false }),
+    makeCtx({ pattern: "foo" }, {}, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.ok(!text.includes("Matches"), "a lone Matches section draws no title rule (C9)");
@@ -468,7 +470,13 @@ function makeFdRgDef(name) {
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
   assert.doesNotMatch(collapsedText, /hasMore=true/, "collapsed omits hasMore; secondary paging metadata moves into expanded form");
   assert.doesNotMatch(collapsedText, /next=1/, "collapsed omits next offset");
-  assert.match(collapsedText, /1 of 5 matches in 1 file · continue at offset 1/, "collapsed summary row states pagination and continuation");
+  // The inline summary states pagination and continuation; at the 80-column
+  // regular tier it is middle-elided (…), at the wide tier it survives whole.
+  assert.match(collapsedText, /1 of 5 matches/, "collapsed inline summary states returned and total");
+  assert.match(collapsedText, /continue at offset 1/, "collapsed inline summary states the continuation");
+  const collapsedWide = stripVTControlCharacters(collapsed.render(120).join("\n"));
+  assert.match(collapsedWide, /1 of 5 matches/, "wide-tier collapsed summary states returned and total");
+  assert.match(collapsedWide, /tinue at offset 1/, "wide-tier collapsed summary keeps the continuation tail");
 
   runtime.dispose();
 }

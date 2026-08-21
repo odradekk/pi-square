@@ -157,27 +157,46 @@ The implementation must extend the exhaustive display catalog to assign the conc
 
 ## Content density and expansion
 
+A collapsed entry is exactly one row. It carries the state marker, tool title,
+target, an inline muted outcome summary (or one-sentence failure message),
+qualifier badges, and elapsed duration; running and queued entries are also one
+row and never stream a live tail into the collapsed view. The mutation family
+(`edit`, `replace`, `revert`, `write`) is the only exception: it keeps a bounded
+diff/preview body below the row so file mutations stay reviewable without
+expanding. Payloads of every other tool are visible only when the entry is
+expanded. In the wide layout tier (viewport of 100 columns or more) an entry
+renders at `max(60, floor(0.6 × viewport))` cells, left-aligned; below the wide
+tier it keeps full width, and expanded entries keep the same column so
+expansion never causes a horizontal jump. Hue marks operational state only:
+tool titles and targets use neutral text tones while the state marker, qualifier
+badges, and diff added/removed lines carry semantic state tokens.
+
 The new defaults are:
 
 - `resultMode: preview`;
 - `previewLines: 9`;
-- a default budget of nine collapsed body rows for an ordinary tool transcript entry, excluding its header; a configured preview budget may raise or lower this within the existing bounds;
-- bounded expanded content using the existing expanded maximum unless a later evidence-based limit is lower;
+- a bounded expanded budget using the existing expanded maximum unless a later
+  evidence-based limit is lower;
 - `diffView: unified`;
 - a default collapsed diff budget aligned with the nine-row body budget.
 
-Collapsed rendering protects identity, lifecycle, targets, required actions, errors, security warnings, diff metadata, and other lines whose omission would change meaning. Remaining space uses a surface-specific strategy:
+Collapsed rendering protects identity, lifecycle, targets, required actions,
+errors, security warnings, and diff metadata. A redaction token (`[REDACTED]`)
+is never split by inline middle elision, so security redaction stays visible
+even when the surrounding sentence is elided. The row drop order is fixed:
+duration, then the inline summary (eliding in place before dropping), then all
+but the highest-priority qualifier badge, then target truncation.
 
-- Read-like content preserves useful head and tail lines.
-- Execution output preserves the most recent lines and puts the omission marker first.
-- Diff content protects repository or path and change-count metadata.
-- Summary-oriented remote and agent results preserve their bounded content summary.
+Omissions use an English, dim message that distinguishes hidden source lines
+from additional rows introduced by wrapping.
 
-Omissions use an English, dim, italic message that distinguishes hidden source lines from additional rows introduced by wrapping.
+`resultMode: hidden` and `resultMode: summary` remain supported. Hidden policy
+never suppresses errors, confirmations, required actions, secret-input notices,
+or security warnings. Expanded output remains bounded and sanitized.
 
-`resultMode: hidden` and `resultMode: summary` remain supported. Hidden policy never suppresses errors, confirmations, required actions, secret-input notices, or security warnings. Expanded output remains bounded and sanitized.
-
-With `wordWrap: true`, content wraps within the attached-body width. With `wordWrap: false`, every physical line is truncated to the available width with `…`; terminal-native overflow or accidental wrapping is not allowed.
+With `wordWrap: true`, content wraps within the attached-body width. With
+`wordWrap: false`, every physical line is truncated to the available width with
+`…`; terminal-native overflow or accidental wrapping is not allowed.
 
 ## Diff presentation
 

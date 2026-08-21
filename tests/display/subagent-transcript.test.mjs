@@ -78,7 +78,7 @@ function renderResult(decorated, args, details, opts = {}) {
 
 // ═══════════════════════════════════════════════════════════════════
 
-// ─── 1. Completed shows ✓, result preview visible in collapsed ────
+// ─── 1. Completed shows ✓, inline summary states the outcome ────
 
 {
   const runtime = newRuntime();
@@ -86,12 +86,16 @@ function renderResult(decorated, args, details, opts = {}) {
   const collapsed = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: false });
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
   assert.match(collapsedText, /^✓/, "completed delegate renders the check-mark fallback");
-  assert.match(collapsedText, /display adapters/, "result preview text visible in the collapsed body");
-  assert.match(collapsedText, /done · 6 turns · 2\.4k tokens · \$0\.020 · run abcdef12/, "collapsed summary states the outcome");
+  // C4 revision: the collapsed entry is one row; the result preview is
+  // visible only when expanded.
+  assert.equal(collapsed.render(80).length, 1, "collapsed delegate renders exactly one row");
+  assert.doesNotMatch(collapsedText, /display adapters/, "collapsed hides the result preview");
+  assert.match(collapsedText, /done · 6 turns · 2\.4k tokens · \$0\.020 · run abcdef12/, "collapsed inline summary states the outcome");
 
   const expanded = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
   assert.match(expandedText, /explorer/, "agent name visible as the header target");
+  assert.match(expandedText, /display adapters/, "expanded shows the result preview");
 
   runtime.dispose();
 }
@@ -313,7 +317,7 @@ function renderResult(decorated, args, details, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 15. Call shows the task preview but never the cwd ────────────
+// ─── 15. Call shows the task inline but never the cwd ────────────
 
 {
   const runtime = newRuntime();
@@ -322,9 +326,14 @@ function renderResult(decorated, args, details, opts = {}) {
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true }));
   const text = stripVTControlCharacters(call.render(80).join("\n"));
   assert.match(text.split("\n")[0], /explorer/, "agent name visible in the call header");
-  assert.match(text, /Find adapters/, "task visible in the call body");
-  assert.match(text, /fg · 3 context messages/, "call states mode and context count");
+  // C4 revision: the collapsed call is one row; the task is the inline summary.
+  assert.match(text, /Find adapters/, "task visible as the inline summary");
   assert.doesNotMatch(text, /\/secret\/path/, "cwd never appears in the call display");
+
+  const expandedCall = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
+  const expandedText = stripVTControlCharacters(expandedCall.render(80).join("\n"));
+  assert.match(expandedText, /fg · 3 context messages/, "expanded call states mode and context count");
+  assert.doesNotMatch(expandedText, /\/secret\/path/, "cwd never appears even expanded");
 
   runtime.dispose();
 }

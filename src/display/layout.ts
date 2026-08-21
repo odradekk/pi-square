@@ -18,6 +18,18 @@ export function layoutTier(width: number): DisplayLayoutTier {
 }
 
 /**
+ * Content-column width for the wide layout tier (viewport of 100 columns or
+ * more): 60 percent of the viewport, at least 60 cells, left-aligned. Below
+ * the wide tier an entry keeps full width. The rule is pure viewport-width
+ * and applies uniformly to the header, body, sections, preview, and diff.
+ */
+export function contentColumnWidth(width: number): number {
+  const safe = Math.max(1, Math.floor(width));
+  if (layoutTier(safe) !== "wide") return safe;
+  return Math.min(safe, Math.max(60, Math.floor(0.6 * safe)));
+}
+
+/**
  * Pad one finished line to the given width, truncating with `…` only when it
  * does not fit. The pi-tui truncation returns the input unchanged for a line
  * that fits, so the fast path is byte-identical while it avoids the grapheme
@@ -105,6 +117,13 @@ export interface HeaderRowSpec {
   readonly badges?: readonly string[];
   /** Right-aligned element, usually the duration. */
   readonly right?: string;
+  /**
+   * Inline muted outcome summary (C4 collapsed-entry revision): the one-row
+   * collapsed entry carries it between the target and the right-side badges
+   * and duration. It is middle-elided when space runs out, then dropped
+   * before any badge but after the duration.
+   */
+  readonly inlineSummary?: string;
 }
 
 export interface FittedHeaderRow {
@@ -112,6 +131,8 @@ export interface FittedHeaderRow {
   readonly target?: string;
   readonly badges: readonly string[];
   readonly right?: string;
+  /** Inline muted outcome summary when it survives the drop order. */
+  readonly inlineSummary?: string;
 }
 
 /**
@@ -138,54 +159,152 @@ export function elidePathMiddle(path: string, width: number): string {
 }
 
 /**
+ * Middle-elide plain (ANSI-free) text to a cell budget with `…`, keeping
+ * the head and the tail so a bounded summary keeps its outcome and its
+ * continuation hint. Degenerate widths fall back to end truncation. A
+ * `[REDACTED]` token is never split: security redaction must stay visible
+ * even when the surrounding sentence is elided.
+ */
+export function elideTextMiddle(text: string, width: number): string {
+  const safe = Math.max(1, Math.floor(width));
+  if (visibleWidth(text) <= safe) return text;
+  if (safe <= 4) return truncatePlain(text, safe);
+  const points = Array.from(text);
+  const budget = safe - 1; // reserve one cell for the ellipsis
+  const keep = Math.max(2, Math.floor(budget / 2));
+  let head = points.slice(0, keep).join("");
+  let tail = points.slice(-keep).join("");
+  const REDACTED = "[REDACTED]";
+  // Protect a redaction token from being split across the ellipsis.
+  if (text.includes(REDACTED)) {
+    const index = text.indexOf(REDACTED);
+    const prefix = text.slice(0, index);
+    const suffix = text.slice(index + REDACTED.length);
+    const prefixWidth = visibleWidth(prefix);
+    const suffixWidth = visibleWidth(suffix);
+    if (visibleWidth(REDACTED) + 1 <= safe) {
+      const remaining = safe - visibleWidth(REDACTED) - 1;
+      const prefixKeep = Math.min(prefixWidth, Math.floor(remaining * 0.6));
+      const suffixKeep = Math.max(0, remaining - prefixKeep);
+      const elidedPrefix = prefixWidth > prefixKeep ? truncatePlain(prefix, Math.max(1, prefixKeep)) : prefix;
+      const elidedSuffix = suffixWidth > suffixKeep ? truncatePlain(suffix, Math.max(1, suffixKeep)) : suffix;
+      return `${elidedPrefix}${REDACTED}${elidedSuffix}`;
+    }
+  }
+  // Trim the wider side until the elided result fits the width budget.
+  while (visibleWidth(head) + visibleWidth(tail) + 1 > safe && (head.length > 0 || tail.length > 0)) {
+    if (visibleWidth(head) >= visibleWidth(tail)) {
+      head = Array.from(head).slice(0, -1).join("");
+    } else {
+      tail = Array.from(tail).slice(1).join("");
+    }
+  }
+  return `${head}\u2026${tail}`;
+}
+
+/**
  * Fit one header row into the given width without wrapping (C5). The drop
  * order is fixed: compact tiers drop the right element and keep only the
  * highest-priority badge; deeper scarcity drops the right element first,
- * then all but the highest-priority badge, then truncates the target below
- * its minimum, and truncates the title only as a final resort. The returned
- * badges are always a prefix of the input badges.
+ * then the inline summary, then all but the highest-priority badge, then
+ * truncates the target below its minimum, and truncates the title only as a
+ * final resort. The returned badges are always a prefix of the input badges.
  */
-export function fitHeaderRow(spec: HeaderRowSpec, width: number): FittedHeaderRow {
+export function fitHeaderRow(spec: HeaderRowSpec, width: number, viewportWidth = width): FittedHeaderRow {
   const safe = Math.max(1, Math.floor(width));
+  const viewport = Math.max(1, Math.floor(viewportWidth));
   const allBadges = spec.badges ?? [];
-  const compact = layoutTier(safe) === "compact";
+  const compact = layoutTier(viewport) === "compact";
   const markerWidth = visibleWidth(spec.marker) + 1;
   const titleWidth = visibleWidth(spec.title);
   const badgesWidth = (badges: readonly string[]) =>
     badges.reduce((sum, badge) => sum + 1 + visibleWidth(badge), 0);
   const rightWidth = (right: string | undefined) =>
     right ? HEADER_GAP_CELLS + visibleWidth(right) : 0;
+  const targetNatural = spec.target ? visibleWidth(spec.target) : 0;
+  const summaryNatural = spec.inlineSummary ? visibleWidth(spec.inlineSummary) : 0;
   const truncateTarget = (budget: number): string =>
     spec.targetKind === "path"
       ? elidePathMiddle(spec.target!, budget)
       : truncatePlain(spec.target!, budget);
+  const elideSummary = (budget: number): string | undefined => {
+    if (!spec.inlineSummary) return undefined;
+    if (summaryNatural <= budget) return spec.inlineSummary;
+    return budget >= 6 ? elideTextMiddle(spec.inlineSummary, budget) : undefined;
+  };
 
   interface Candidate {
     readonly right?: string;
     readonly badges: readonly string[];
+    readonly withSummary: boolean;
   }
+  // Drop order: duration, inline summary, all but the highest-priority
+  // badge, then badges entirely. Within a candidate the target is truncated
+  // as the final resort, so a candidate only fails when the target would be
+  // squeezed below its minimum. Compact tiers always drop the duration.
   const candidates: readonly Candidate[] = compact
-    ? [{ badges: allBadges.slice(0, 1) }, { badges: [] }]
+    ? [
+      { badges: allBadges.slice(0, 1), withSummary: true },
+      { badges: allBadges.slice(0, 1), withSummary: false },
+      { badges: [], withSummary: false },
+    ]
     : [
-      { right: spec.right, badges: allBadges },
-      { badges: allBadges },
-      { badges: allBadges.slice(0, 1) },
-      { badges: [] },
+      { right: spec.right, badges: allBadges, withSummary: true },
+      { badges: allBadges, withSummary: true },
+      { badges: allBadges, withSummary: false },
+      { badges: allBadges.slice(0, 1), withSummary: false },
+      { badges: [], withSummary: false },
     ];
 
   for (const candidate of candidates) {
-    const used = markerWidth + titleWidth + badgesWidth(candidate.badges) + rightWidth(candidate.right);
-    if (!spec.target) {
-      if (used <= safe) return { title: spec.title, badges: candidate.badges, right: candidate.right };
+    const fixed = markerWidth + titleWidth + badgesWidth(candidate.badges) + rightWidth(candidate.right);
+    const hasTarget = spec.target !== undefined;
+    const wantsSummary = candidate.withSummary && spec.inlineSummary !== undefined;
+    if (!hasTarget && !wantsSummary) {
+      if (fixed <= safe) return { title: spec.title, badges: candidate.badges, right: candidate.right };
       continue;
     }
-    const budget = safe - used - 1;
-    if (budget >= MIN_TARGET_CELLS || budget >= visibleWidth(spec.target)) {
+    // Content budget: everything after marker+title (plus one leading gap).
+    const contentBudget = safe - fixed - 1;
+    if (hasTarget && wantsSummary) {
+      // The target is truncated as the final resort, so the summary is kept
+      // by giving it room first and truncating the target to the remainder.
+      // A small floor keeps the target from disappearing entirely.
+      const targetFloor = Math.min(MIN_TARGET_CELLS, targetNatural);
+      const summary = elideSummary(contentBudget - targetFloor - 1);
+      if (summary !== undefined) {
+        const targetBudget = contentBudget - visibleWidth(summary) - 1;
+        return {
+          title: spec.title,
+          target: truncateTarget(Math.max(targetBudget, targetFloor)),
+          badges: candidate.badges,
+          right: candidate.right,
+          inlineSummary: summary,
+        };
+      }
+      // The summary cannot fit alongside any target; drop it and let the
+      // next candidate give the target the full budget.
+      continue;
+    }
+    if (hasTarget) {
+      if (contentBudget >= MIN_TARGET_CELLS || contentBudget >= targetNatural) {
+        return {
+          title: spec.title,
+          target: truncateTarget(contentBudget),
+          badges: candidate.badges,
+          right: candidate.right,
+        };
+      }
+      continue;
+    }
+    // Summary only (no target): elide the summary to the available budget.
+    const summary = elideSummary(contentBudget);
+    if (summary !== undefined) {
       return {
         title: spec.title,
-        target: truncateTarget(budget),
         badges: candidate.badges,
         right: candidate.right,
+        inlineSummary: summary,
       };
     }
   }

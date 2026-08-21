@@ -98,10 +98,10 @@ const component = new OperationalDisplayComponent(
   description,
   DEFAULT_DISPLAY_POLICY,
   plainTheme,
-  { expanded: false },
+  { expanded: true },
 );
 const rendered = component.render(80);
-assert.ok(rendered.length > 1, "must render header + body");
+assert.ok(rendered.length > 1, "must render header + body when expanded");
 const plainRendered = rendered.map((l) => stripVTControlCharacters(l));
 
 // First line is the header (starts with marker)

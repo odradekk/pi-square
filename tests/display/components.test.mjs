@@ -36,17 +36,22 @@ assert.match(summaryText, /✓ Search src/, "header shows marker, title, and tar
 assert.match(summaryText, /1\.3s/);
 assert.match(summaryText, /files 3\/3/);
 assert.doesNotMatch(summaryText, /SECRET|owned|one/);
-assert.match(summaryText, /3 matches/);
+assert.match(summaryText, /3 matches/, "the inline summary states the outcome");
 // C7: metadata renders only when expanded.
 const summaryExpanded = new OperationalDisplayComponent(description, summaryPolicy, plainTheme, { expanded: true }).render(80).join("\n");
 assert.match(summaryExpanded, /matches=3/, "expanded metadata shows the matches field");
 assert.doesNotMatch(summaryExpanded, /SECRET/, "expanded metadata redacts secret-shaped values");
 
 const previewPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", previewLines: 2 };
-const preview = new OperationalDisplayComponent(description, previewPolicy, plainTheme, { expanded: false });
+const preview = new OperationalDisplayComponent(description, previewPolicy, plainTheme, { expanded: true });
 const previewText = preview.render(40).join("\n");
 assert.match(previewText, /one/);
 assert.match(previewText, /source lines hidden/);
+// Collapsed: preview content is hidden; the row carries the inline summary.
+const previewCollapsed = new OperationalDisplayComponent(description, previewPolicy, plainTheme, { expanded: false });
+const previewCollapsedText = previewCollapsed.render(40).join("\n");
+assert.doesNotMatch(previewCollapsedText, /one|source lines hidden/, "collapsed hides the preview payload");
+assert.match(previewCollapsedText, /3 matches/, "collapsed shows the inline summary");
 
 const hiddenPolicy = { ...DEFAULT_DISPLAY_POLICY, resultMode: "hidden" };
 const hidden = new OperationalDisplayComponent(description, hiddenPolicy, plainTheme, { expanded: false }).render(80).join("\n");
@@ -81,16 +86,17 @@ const wrappedLines = new OperationalDisplayComponent(
   noWrapDescription,
   { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", wordWrap: true },
   plainTheme,
-  { expanded: false },
+  { expanded: true },
 ).render(40);
 const clippedLines = new OperationalDisplayComponent(
   noWrapDescription,
   { ...DEFAULT_DISPLAY_POLICY, resultMode: "preview", wordWrap: false },
   plainTheme,
-  { expanded: false },
+  { expanded: true },
 ).render(40);
 assert.ok(wrappedLines.length > clippedLines.length);
-assert.equal(clippedLines.length, 3, "header, row, and preview remain one line each");
+// Expanded: header + row + preview + closing summary row.
+assert.equal(clippedLines.length, 4, "header, row, preview, and summary close the expanded body");
 assert.ok(clippedLines.every((line) => visibleWidth(line) === 40));
 assert.doesNotMatch(clippedLines.join("\n"), /ROW_TAIL|PREVIEW_TAIL/);
 
@@ -134,7 +140,9 @@ const structuredCollapsedDescription = {
   sections: structuredDescription.sections.filter((section) => section.compact === true),
 };
 const structuredCollapsed = new OperationalDisplayComponent(structuredCollapsedDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(80).join("\n");
-assert.match(structuredCollapsed, /returned=2/);
+// C4 revision: non-mutation tools collapse to exactly one row, so compact
+// sections no longer render in the collapsed body.
+assert.doesNotMatch(structuredCollapsed, /returned=2/);
 assert.doesNotMatch(structuredCollapsed, /Matches|console\.log/);
 const structuredExpanded = new OperationalDisplayComponent(structuredDescription, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(80).join("\n");
 assert.match(structuredExpanded, /Details/);

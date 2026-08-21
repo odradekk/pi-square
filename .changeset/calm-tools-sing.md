@@ -1,0 +1,5 @@
+---
+"@odradekk/pi-square": minor
+---
+
+Revise the operational display grammar: collapsed tool entries are now exactly one row with the outcome summary (or one-sentence failure) inline; only the mutation family (`edit`, `replace`, `revert`, `write`) keeps a bounded diff/preview body below the row; running and queued entries no longer stream a live tail into the collapsed view. On wide terminals (100 columns or more) entries render in a 60 percent content column (at least 60 cells, left-aligned) that expanded entries keep, so expansion never causes a horizontal jump. Hue now marks operational state only: tool titles use the neutral text token and targets use muted, while the state marker, qualifier badges, and diff added/removed lines keep semantic state tokens. Both bundled themes are recalibrated as a matched pair that retains the terracotta accent family while retuning the palette variables; token structure, token names, and var-alias indirection are unchanged so third-party themes keep working.
