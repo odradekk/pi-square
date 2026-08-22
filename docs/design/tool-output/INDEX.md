@@ -69,7 +69,7 @@ mutation renders no payload body; its failure sentence is inline.
 When the row is tight, the drop order is fixed: duration, then the inline
 summary (it elides in place before it drops), then all but the
 highest-priority qualifier badge, then target middle elision. A `[REDACTED]`
-token is never split by elision.
+token that fits the elision budget is never split by elision.
 
 ### C5 — Header order
 

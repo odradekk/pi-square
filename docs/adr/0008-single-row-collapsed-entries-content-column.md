@@ -29,8 +29,10 @@ The inline outcome summary (or one-sentence failure message) is a muted segment
 between the target and the right-side badges/duration. Row drop order is fixed:
 duration, then the inline summary (eliding in place before dropping), then all
 but the highest-priority qualifier badge, then target truncation. A redaction
-token (`[REDACTED]`) is never split by middle elision, so security redaction
-stays visible even when the surrounding sentence is elided.
+token (`[REDACTED]`) that fits the elision budget is never split by middle
+elision, so security redaction stays visible even when the surrounding
+sentence is elided; below that degenerate budget the sentence falls back to
+plain truncation.
 
 ### Content column
 

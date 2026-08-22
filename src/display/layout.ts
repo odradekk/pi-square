@@ -162,8 +162,8 @@ export function elidePathMiddle(path: string, width: number): string {
  * Middle-elide plain (ANSI-free) text to a cell budget with `…`, keeping
  * the head and the tail so a bounded summary keeps its outcome and its
  * continuation hint. Degenerate widths fall back to end truncation. A
- * `[REDACTED]` token is never split: security redaction must stay visible
- * even when the surrounding sentence is elided.
+ * `[REDACTED]` token that fits the budget is never split: security
+ * redaction must stay visible even when the surrounding sentence is elided.
  */
 export function elideTextMiddle(text: string, width: number): string {
   const safe = Math.max(1, Math.floor(width));

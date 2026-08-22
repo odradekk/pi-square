@@ -182,8 +182,8 @@ The new defaults are:
 
 Collapsed rendering protects identity, lifecycle, targets, required actions,
 errors, security warnings, and diff metadata. A redaction token (`[REDACTED]`)
-is never split by inline middle elision, so security redaction stays visible
-even when the surrounding sentence is elided. The row drop order is fixed:
+that fits the elision budget is never split by inline middle elision, so
+security redaction stays visible even when the surrounding sentence is elided. The row drop order is fixed:
 duration, then the inline summary (eliding in place before dropping), then all
 but the highest-priority qualifier badge, then target truncation.
 
