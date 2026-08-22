@@ -38,11 +38,9 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
       break;
     }
     case "grep":
-    case "rg":
       summary = `/${clipInline(args?.pattern || "...", 40)}/ in ${shortenPath(args?.path || ".")}`;
       break;
     case "find":
-    case "fd":
       summary = `${clipInline(args?.pattern || ".", 40)} in ${shortenPath(args?.path || ".")}`;
       break;
     case "codegraph": {

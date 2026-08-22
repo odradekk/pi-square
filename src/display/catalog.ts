@@ -73,13 +73,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     child: true,
     description: "Find files and directories by pattern",
   },
-  {
-    name: "fd",
-    family: "filesystem",
-    parent: true,
-    child: true,
-    description: "Find files and directories using a bundled fd binary",
-  },
   // ── search ──────────────────────────────────────────────────────
   {
     name: "grep",
@@ -87,13 +80,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     parent: true,
     child: true,
     description: "Search file contents using literal or regex patterns",
-  },
-  {
-    name: "rg",
-    family: "search",
-    parent: true,
-    child: true,
-    description: "Search file contents using a bundled ripgrep binary",
   },
   {
     name: "codegraph",

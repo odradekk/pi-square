@@ -91,8 +91,6 @@ export function formatBytes(bytes: number): string {
 
 /** C4 count nouns for the tools whose paging details compose a sentence. */
 const SUMMARY_NOUNS: Readonly<Record<string, string>> = Object.freeze({
-  rg: "matches",
-  fd: "files",
   github: "results",
 });
 
@@ -165,27 +163,15 @@ export function composeInternalSummary(
   const total = numberOf(page.total) ?? numberOf(details.total) ?? numberOf(details.totalMatches);
   if (returned !== undefined) {
     const noun = summaryNoun(name);
-    if (returned === 0) {
-      // fd.md: the empty summary states the search root.
-      return name === "fd" ? `No files found in ${stringOf(args.path) ?? "."}` : `No ${noun}`;
-    }
-    // File count: rg counts files in details.files, fd has no separate
-    // file concept (items are files). Only include the file count when
-    // the structured data is present.
-    const filesArray = name === "rg" ? asArray(details.files) : undefined;
-    const fileCount = filesArray ? filesArray.length : undefined;
-    const fileSuffix = fileCount !== undefined && fileCount > 0 ? ` in ${fileCount} ${fileCount === 1 ? "file" : "files"}` : "";
+    if (returned === 0) return `No ${noun}`;
     const head = total !== undefined && total > returned
-      ? `${returned} of ${total} ${noun}${fileSuffix}`
-      : `${total ?? returned} ${noun}${fileSuffix}`;
-    // fd.md: the summary states the returned count, the total, the root,
-    // and the way to continue.
-    const root = name === "fd" ? ` in ${stringOf(args.path) ?? "."}` : "";
+      ? `${returned} of ${total} ${noun}`
+      : `${total ?? returned} ${noun}`;
     if (page.hasMore === true || details.hasMore === true) {
       const offset = numberOf(page.nextOffset) ?? ((numberOf(page.offset) ?? 0) + returned);
-      return `${head}${root} · continue at offset ${offset}`;
+      return `${head} · continue at offset ${offset}`;
     }
-    return `${head}${root}`;
+    return head;
   }
 
   const countEntries = Object.entries(counts).slice(0, 8);

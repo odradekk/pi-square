@@ -15,7 +15,6 @@ import registerGitHub from "./github";
 import registerNotifications from "./notifications";
 import registerPdfSearch from "./pdf-search";
 import registerPromptManager from "./prompt-manager";
-import registerSearchTools from "./search";
 import registerShellTools from "./shell";
 import registerSshTool from "./ssh";
 import registerSubagents from "./subagents";
@@ -62,7 +61,6 @@ export default function piSquare(pi: ExtensionAPI): void {
   const notifications = registerNotifications(pi);
   registerAskUser(pi, notifications, () => display.runtime);
   registerTodo(pi, () => display.runtime);
-  registerSearchTools(pi, () => display.runtime);
   registerPdfSearch(pi, () => display.runtime);
   registerCodeGraph(pi, confirmations, () => display.runtime);
   registerWebTools(pi, confirmations, () => display.runtime);

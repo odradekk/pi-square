@@ -24,54 +24,6 @@ import {
 import type { DisplayMatchItem, DisplayMetadataEntry, DisplayPathItem, DisplayRecordItem, DisplaySection, OperationalLifecycle, OperationalQualifier } from "./types";
 import { DEFAULT_DISPLAY_POLICY } from "./types";
 
-function rgMatches(details: UnknownRecord): DisplayMatchItem[] {
-  const matches: DisplayMatchItem[] = [];
-  for (const fileValue of asArray(details.files)) {
-    const file = asRecord(fileValue);
-    const path = stringOf(file.path) ?? "(unknown path)";
-    for (const lineValue of asArray(file.lines)) {
-      const line = asRecord(lineValue);
-      const display = asRecord(line.display);
-      const excerpt = stringOf(display.text) ?? stringOf(line.text);
-      const isContext = stringOf(line.kind) === "context";
-      // Emphasis ranges from rg's precomputed display.highlights (character
-      // offsets into the display text). Context lines carry no highlights.
-      const highlights = !isContext && Array.isArray(display.highlights)
-        ? (display.highlights as unknown[])
-          .map((h) => {
-            const r = asRecord(h);
-            const start = numberOf(r.start);
-            const end = numberOf(r.end);
-            return start !== undefined && end !== undefined ? { start, end } : undefined;
-          })
-          .filter((h): h is { start: number; end: number } => Boolean(h))
-        : undefined;
-      matches.push({
-        path,
-        ...(numberOf(line.line) !== undefined ? { line: numberOf(line.line) } : {}),
-        ...(excerpt ? { excerpt } : {}),
-        ...(isContext ? { tone: "muted" as const } : {}),
-        ...(highlights && highlights.length > 0 ? { highlights } : {}),
-      });
-    }
-  }
-  return matches;
-}
-
-function rgFilesOnlyPaths(details: UnknownRecord): DisplayPathItem[] {
-  return asArray(details.files).flatMap((value) => {
-    const entry = asRecord(value);
-    const path = stringOf(entry.path);
-    if (!path) return [];
-    const matchCount = numberOf(entry.matchCount);
-    return [{
-      path,
-      kind: "file" as const,
-      ...(matchCount !== undefined ? { meta: `${matchCount} match${matchCount === 1 ? "" : "es"}` } : {}),
-    }];
-  });
-}
-
 function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
   return asArray(details.matches).flatMap((value) => {
     const match = asRecord(value);
@@ -102,36 +54,15 @@ function pdfMatches(details: UnknownRecord): DisplayMatchItem[] {
  * search sets details.status = "aborted" and isError = true (matching a
  * genuine failure), so the shared runtime's isError-forces-error safety
  * net would otherwise render the failed ✗ marker instead of the distinct
- * aborted × marker. rg/fd do not model abort this way — they throw a
- * bare Error that Pi's own generic tool-error handling renders, never
- * reaching a structured details.status at all — so this override is scoped
- * to pdf_search only, mirroring the identical fix already applied for
- * CodeGraph's own structured aborted phase.
+ * aborted × marker, so this override is scoped to pdf_search only,
+ * mirroring the identical fix already applied for CodeGraph's own
+ * structured aborted phase.
  */
 function pdfSearchLifecycle(details: UnknownRecord): { lifecycle: OperationalLifecycle; qualifiers: OperationalQualifier[] } | undefined {
   return stringOf(details.status) === "aborted" ? { lifecycle: "aborted", qualifiers: [] } : undefined;
 }
 
 // ─── Error sentences ─────────────────────────────────────────────────
-
-function rgErrorSentence(details: UnknownRecord, rawText: string): string | undefined {
-  const stderr = stringOf(details.stderr);
-  if (!stderr) return rawText.split("\n", 1)[0]?.trim() || undefined;
-  if (/regex parse error|unclosed/i.test(stderr)) return "Invalid pattern";
-  if (/no such file|not found/i.test(stderr)) return "Search root does not exist";
-  if (/permission denied/i.test(stderr)) return "Permission denied";
-  return stderr.split("\n", 1)[0]?.trim() || undefined;
-}
-
-function fdErrorSentence(details: UnknownRecord, rawText: string): string | undefined {
-  const stderr = stringOf(details.stderr);
-  if (!stderr) return rawText.split("\n", 1)[0]?.trim() || undefined;
-  if (/regex parse error|repetition operator/i.test(stderr)) return "Invalid regex pattern";
-  if (/no such file|not found|not a directory/i.test(stderr)) return "Search root does not exist";
-  if (/permission denied/i.test(stderr)) return "Permission denied";
-  if (/not available|unavailable|binary/i.test(stderr)) return "fd binary is unavailable for this platform";
-  return stderr.split("\n", 1)[0]?.trim() || undefined;
-}
 
 function pdfErrorSentence(details: UnknownRecord): string | undefined {
   const code = stringOf(details.errorCode) ?? stringOf(details.code);
@@ -147,57 +78,6 @@ function pdfErrorSentence(details: UnknownRecord): string | undefined {
   }
   if (/timeout|did not finish/i.test(message ?? "")) return "Search did not finish in 30s";
   return message?.split("\n", 1)[0]?.trim() || undefined;
-}
-
-// ─── Filter rows ─────────────────────────────────────────────────────
-
-/**
- * Compose a single bounded muted filter-row string from active arguments
- * that the header does not show. Returns undefined when no filters are set.
- */
-function rgFilterRow(args: UnknownRecord): string | undefined {
-  const parts: string[] = [];
-  const path = stringOf(args.path);
-  if (path && path !== ".") parts.push(`in ${path}`);
-  const globs = asArray(args.globs).map((g) => stringOf(g)).filter(Boolean);
-  if (globs.length > 0) parts.push(globs.join(" · "));
-  if (args.literal === true) parts.push("literal");
-  const context = numberOf(args.context);
-  if (context !== undefined && context > 0) parts.push(`context ${context}`);
-  return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
-function fdFilterRow(args: UnknownRecord): string | undefined {
-  const parts: string[] = [];
-  const types = asArray(args.types).map((t) => stringOf(t)).filter(Boolean);
-  if (types.length > 0) parts.push(types.join(","));
-  const maxDepth = numberOf(args.maxDepth);
-  if (maxDepth !== undefined) parts.push(`max-depth ${maxDepth}`);
-  const excludes = asArray(args.excludeGlobs).map((g) => stringOf(g)).filter(Boolean);
-  if (excludes.length > 0) parts.push(excludes.map((e) => `!${e}`).join(" · "));
-  return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
-function fdPaths(details: UnknownRecord, args: UnknownRecord): DisplayPathItem[] {
-  const types = asArray(args.types).map((t) => stringOf(t)).filter((v): v is string => Boolean(v));
-  const singleType = types.length === 1 ? types[0] : undefined;
-  return asArray(details.paths).flatMap((value) => {
-    const entry = asRecord(value);
-    const path = stringOf(entry.displayPath) ?? stringOf(entry.path);
-    if (!path) return [];
-    const kind = entry.encoding === "bytes"
-      ? "special" as const
-      : singleType === "directory"
-        ? "directory" as const
-        : singleType === "symlink"
-          ? "symlink" as const
-          : "file" as const;
-    return [{
-      path,
-      kind,
-      meta: entry.encoding === "bytes" ? "byte path" : undefined,
-    }];
-  });
 }
 
 function markCompact(section: DisplaySection | undefined): DisplaySection | undefined {
@@ -536,35 +416,20 @@ export function createSearchAdapter(
     describeResult(result, options, context) {
       const description = base.describeResult(result, options, context);
       if (name === "codegraph") return describeCodeGraphResult(result, options, context, description);
-      const args = asRecord(context.args);
       const details = asRecord(result.details);
-      const page = asRecord(details.page);
       const isError = Boolean((result as { isError?: boolean }).isError);
-      const structuredDomain = name === "rg" || name === "fd" || name === "pdf_search";
+      const structuredDomain = name === "pdf_search";
 
-      // Build the domain section: compact matches for rg/pdf_search,
-      // non-compact paths for fd. These sections render in the expanded
-      // body only; a collapsed entry is a single row for all of them.
-      let domain: DisplaySection | undefined;
-      if (name === "rg" && args.filesOnly === true) domain = pathsSection("Files", rgFilesOnlyPaths(details), true);
-      else if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);
-      else if (name === "pdf_search") domain = matchesSection("Matches", pdfMatches(details), true);
-      else if (name === "fd") domain = pathsSection("Results", fdPaths(details, args), false);
+      // Build the domain section: compact matches for pdf_search. The
+      // section renders in the expanded body only; a collapsed entry is a
+      // single row.
+      const domain: DisplaySection | undefined = name === "pdf_search"
+        ? matchesSection("Matches", pdfMatches(details), true)
+        : undefined;
 
       // Confirm genuine empty (returned count is zero, not merely absent
       // or malformed details).
-      const returnedCount = (name === "rg" || name === "fd")
-        ? numberOf(page.returned)
-        : numberOf(details.returned);
-      const genuinelyEmpty = returnedCount === 0;
-
-      // Filter row: expanded only, shown above the domain section.
-      const filterText = name === "rg" ? rgFilterRow(args)
-        : name === "fd" ? fdFilterRow(args)
-        : undefined;
-      const filterSection = options.expanded && filterText
-        ? textSection("Filters", filterText, "muted", false)
-        : undefined;
+      const genuinelyEmpty = numberOf(details.returned) === 0;
 
       // Diagnostics (stderr) for expanded view.
       const diagnostics = sections(
@@ -573,7 +438,6 @@ export function createSearchAdapter(
 
       const structured = sections(
         ...diagnostics,
-        filterSection,
         domain,
       );
 
@@ -585,9 +449,8 @@ export function createSearchAdapter(
       // Error sentence: one human-readable sentence, with raw text in errorRaw.
       const rawText = textOf(result);
       const errorSentence = isError
-        ? (name === "rg" ? rgErrorSentence(details, rawText)
-          : name === "fd" ? fdErrorSentence(details, rawText)
-          : name === "pdf_search" ? pdfErrorSentence(details)
+        ? (name === "pdf_search"
+          ? pdfErrorSentence(details)
           : stringOf(details.error) ?? rawText.split("\n", 1)[0])
         : undefined;
       const errorRaw = isError && rawText && rawText !== errorSentence ? rawText : undefined;

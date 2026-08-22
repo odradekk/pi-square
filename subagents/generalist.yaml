@@ -48,10 +48,10 @@ tools:
   - edit
   - shell
   - ls
+  - grep
+  - find
 
 extensionTools:
-  - rg
-  - fd
   - codegraph
   - search
   - fetch
