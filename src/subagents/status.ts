@@ -57,14 +57,21 @@ function jobText(theme: Theme, job: BackgroundJobSnapshot): string {
 export function renderNativeSubagentStatus(
   theme: Theme,
   jobs: BackgroundJobSnapshot[],
+  undelivered = 0,
 ): string | undefined {
   const active = activeJobs(jobs);
-  if (active.length === 0) return undefined;
+  if (active.length === 0 && undelivered <= 0) return undefined;
 
   const separator = theme.fg("dim", " │ ");
-  const parts = [theme.fg("muted", `subagents ${active.length}`)];
-  for (const job of active.slice(0, MAX_VISIBLE_JOBS)) parts.push(jobText(theme, job));
-  if (active.length > MAX_VISIBLE_JOBS) parts.push(theme.fg("dim", `+${active.length - MAX_VISIBLE_JOBS}`));
+  const parts: string[] = [];
+  if (active.length > 0) {
+    parts.push(theme.fg("muted", `subagents ${active.length}`));
+    for (const job of active.slice(0, MAX_VISIBLE_JOBS)) parts.push(jobText(theme, job));
+    if (active.length > MAX_VISIBLE_JOBS) parts.push(theme.fg("dim", `+${active.length - MAX_VISIBLE_JOBS}`));
+  }
+  // Finished results that the parent has not received yet stay visible, so an
+  // interrupted turn never hides a result that is still waiting.
+  if (undelivered > 0) parts.push(theme.fg("warning", `undelivered ${undelivered}`));
 
   return truncateToWidth(parts.join(separator), MAX_STATUS_WIDTH, theme.fg("dim", "..."));
 }
@@ -86,7 +93,7 @@ export function createNativeSubagentStatusController(
     const jobs = listBackgroundJobs(state);
     context.ui.setStatus(
       SUBAGENT_STATUS_KEY,
-      renderNativeSubagentStatus(context.ui.theme, jobs),
+      renderNativeSubagentStatus(context.ui.theme, jobs, state.delivery?.pendingCount() ?? 0),
     );
   };
 

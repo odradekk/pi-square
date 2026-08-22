@@ -56,6 +56,8 @@ interface ManagerSnapshot {
   running: BackgroundJobSnapshot[];
   session: SubagentRunDetails[];
   activeSessionIds?: string[];
+  /** Finished runs whose result the parent has not received yet. */
+  undeliveredIds?: string[];
   definitions: SubagentDefinition[];
   errors: string[];
 }
@@ -213,6 +215,7 @@ function snapshot(state: SubagentRuntimeState, parentSessionId: string): Manager
     running: activeJobs(state),
     session,
     activeSessionIds: session.filter((run) => isRunLeaseActive(run.id)).map((run) => run.id),
+    undeliveredIds: state.background.delivery?.pendingIds() ?? [],
     definitions: [...state.registry.definitions].sort((a, b) => a.name.localeCompare(b.name)),
     errors: [...state.registry.errors],
   };
@@ -337,6 +340,9 @@ function createProductionServices(
     deleteHistory(id) {
       try {
         deleteParentSessionRun(parentSessionId, id);
+        // Deleting the history states that this result is no longer wanted, so
+        // it also leaves the pending delivery set.
+        state.background.delivery?.remove(id);
         return { ok: true, message: `Deleted subagent history ${shortId(id)}.` };
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) };
@@ -893,7 +899,10 @@ export class SubagentManager implements Component, Focusable {
         const marker = index === selected ? this.theme.fg("accent", "›") : " ";
         const name = run.agent?.name ?? "generic";
         const active = this.runIsActive(run);
-        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${sessionPhasePresentation(active, run.phase, this.theme)}`;
+        const undelivered = this.data.undeliveredIds?.includes(run.id)
+          ? `  ${this.theme.fg("warning", "undelivered")}`
+          : "";
+        return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${sessionPhasePresentation(active, run.phase, this.theme)}${undelivered}`;
       });
     }
     if (this.data.definitions.length === 0) return [this.theme.fg("dim", "No valid V2 definitions")];

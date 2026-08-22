@@ -177,11 +177,35 @@ export interface SubagentCancelDetails {
   notFound: string[];
 }
 
+export interface SubagentNotificationResult {
+  id: string;
+  status: "done" | "error";
+  result: SubagentRunDetails;
+}
+
+/**
+ * V4 completion payload: one delivery carries every finished run that the
+ * parent has not confirmed yet, so a burst of background results costs one
+ * parent turn instead of one turn for each result.
+ */
 export interface SubagentNotificationDetails {
+  version: 4;
+  deliveryId: string;
+  /** The parent never confirmed an earlier delivery of these results. */
+  resent: boolean;
+  results: SubagentNotificationResult[];
+}
+
+/** V3 payload written by earlier sessions; still rendered when one is resumed. */
+export interface LegacySubagentNotificationDetails {
   id: string;
   status: "done" | "error" | "aborted";
   result: SubagentRunDetails;
 }
+
+export type AnySubagentNotificationDetails =
+  | SubagentNotificationDetails
+  | LegacySubagentNotificationDetails;
 
 export interface SubagentAlreadyRunningDetails {
   status: "already_running";

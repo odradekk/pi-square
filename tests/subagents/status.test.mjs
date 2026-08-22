@@ -73,6 +73,19 @@ test("native status prioritizes active jobs and exposes no tool results", () => 
   assert.equal(renderNativeSubagentStatus(plainTheme(), [{ ...jobs[0], status: "done" }]), undefined);
 });
 
+test("native status keeps undelivered results visible without any active job", () => {
+  const jobs = [
+    job("subagent_55555555-5555-4555-8555-555555555555", "done", 0, "explorer", toolTimeline("read file")),
+  ];
+
+  assert.equal(renderNativeSubagentStatus(plainTheme(), jobs), undefined);
+  assert.match(renderNativeSubagentStatus(plainTheme(), jobs, 3), /^undelivered 3$/);
+  assert.match(
+    renderNativeSubagentStatus(plainTheme(), [{ ...jobs[0], status: "running" }], 2),
+    /^subagents 1 │ .* │ undelivered 2$/,
+  );
+});
+
 test("native status uses specialized GitHub summaries without result payloads", () => {
   const jobs = [
     job("subagent_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "running", 2, "librarian", toolTimeline(

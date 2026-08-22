@@ -5,7 +5,9 @@ import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   abortAllBackgroundJobs,
   createBackgroundState,
+  notifyBackgroundChange,
 } from "./background";
+import { createDeliveryController } from "./delivery";
 import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
@@ -57,6 +59,15 @@ export default function registerSubagents(
     state.registry = discoverSubagents(cwd);
   };
   state.refresh = refresh;
+  // Background results are delivered through the session-owned controller: it
+  // coalesces finished runs, delivers them only at a safe moment, and re-sends
+  // a result the parent never received.
+  const delivery = createDeliveryController({
+    pi,
+    isIdle: () => state.sessionCtx?.isIdle() ?? true,
+    notify: () => notifyBackgroundChange(state.background),
+  });
+  state.background.delivery = delivery;
   const nativeStatus = createNativeSubagentStatusController(state.background);
 
   registerSubagentTool(pi, state, runtime
@@ -67,6 +78,7 @@ export default function registerSubagents(
   pi.on("session_start", async (_event, ctx) => {
     state.sessionCtx = ctx;
     state.inheritedSystemCore = undefined;
+    delivery.reset();
     refresh(ctx.cwd);
     // Child anchor-store partitions follow subagent artifacts: reconcile the
     // workspace store against the retained children and prune records for
@@ -86,9 +98,35 @@ export default function registerSubagents(
     }
   });
 
+  // Delivery timing. A running parent receives results at a turn boundary; a
+  // parent that settled naturally receives them at once; a parent that the
+  // user interrupted stays silent until it starts its next turn.
+  pi.on("agent_start", () => {
+    delivery.handleAgentStart();
+  });
+
+  pi.on("turn_end", () => {
+    delivery.handleTurnEnd();
+  });
+
+  pi.on("agent_end", (event) => {
+    delivery.handleAgentEnd(event.messages);
+  });
+
+  pi.on("agent_settled", () => {
+    delivery.handleAgentSettled();
+  });
+
+  // Delivery confirmation: a result counts as delivered only when Pi injects
+  // the message that carries it into the parent transcript.
+  pi.on("message_start", (event) => {
+    delivery.observeMessage(event.message);
+  });
+
   pi.on("session_shutdown", async () => {
     nativeStatus.stop();
     abortAllBackgroundJobs(state.background);
+    delivery.reset();
     state.sessionCtx = undefined;
     state.inheritedSystemCore = undefined;
   });

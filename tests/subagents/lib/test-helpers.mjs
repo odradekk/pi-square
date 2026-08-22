@@ -68,6 +68,10 @@ export async function loadBackgroundModule() {
   return load(join(packageRoot, "src", "subagents", "background.ts"));
 }
 
+export async function loadDeliveryModule() {
+  return load(join(packageRoot, "src", "subagents", "delivery.ts"));
+}
+
 export async function loadToolModule() {
   return loadTool(join(packageRoot, "src", "subagents", "tool.ts"));
 }
