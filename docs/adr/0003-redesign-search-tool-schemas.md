@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Redesign search tool schemas
+
+Superseded by [ADR-0010](0010-retire-vendored-search-tools.md): the `rg` and `fd` tools described here were retired in 11.0.
 
 The `rg` and `fd` tools had grown parameter schemas that mixed rarely used options with core search controls. The previous `rg` schema was already reduced to seven fields; this ADR records the complete redesign that finishes that work for both tools and adds a `filesOnly` mode to `rg`.
 

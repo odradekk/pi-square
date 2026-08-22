@@ -1,6 +1,6 @@
 # Search Expanded Results
 
-Scope: `grep`, `rg`, `codegraph`, `pdf_search`
+Scope: `grep`, `codegraph`, `pdf_search`
 Parent tools: all four. Child-capable: all four with existing role restrictions.
 Primary family contract: query and location are the first-level identity; content excerpts are evidence, not raw dumps.
 
@@ -14,7 +14,7 @@ Expanded search results use this order:
 4. Grouped matches or semantic evidence.
 5. Truncation, stderr, and binary/identity notices.
 
-Structured details already exist for `rg`, `fd`-style paging, `codegraph`, and `pdf_search`; adapters must consume those details before falling back to model-facing text.
+Structured details already exist for `codegraph` and `pdf_search`; adapters must consume those details before falling back to model-facing text.
 
 ## grep
 
@@ -31,24 +31,6 @@ Rules:
 - Pi's built-in grep result remains authoritative; pi-square does not re-run or reinterpret the search.
 - Match highlighting uses safe display ranges only; byte-encoded values remain escaped and unlinked.
 - Context and matches are visually distinct but use the same semantic theme family.
-
-## rg
-
-Expanded sections:
-
-- `ERROR` for invalid regex, native failure, or cap overflow.
-- `QUERY`: pattern, path, case, literal, word, glob/type/context, offset, and limit.
-- `SUMMARY`: file count, returned, total, next offset, and omission counts.
-- `MATCHES`: file-grouped sections with aligned line/column gutter, bounded excerpts, and exact-match emphasis.
-- `CONTEXT`: merged context ranges remain attached to their file group.
-- `DIAGNOSTICS`: bounded stderr, binary/byte-path notice, and content-budget details.
-
-Rules:
-
-- Use `details.files` and safe display ranges when available.
-- Preserve UTF-8, UTF-16 display mapping, byte-base64 identity, and path normalization semantics from the execution layer.
-- A continuation marker must identify the next offset.
-- No raw malformed JSON event is rendered as a match.
 
 ## codegraph
 
@@ -86,7 +68,6 @@ Rules:
 
 ## Search regression cases
 
-- `rg` Unicode columns, byte paths, and merged context.
 - `codegraph` not-indexed and unhealthy-index recoverable displays.
 - `pdf_search` encrypted and textless failure distinctions.
 - No-match pages remain explicit and cannot loop.
