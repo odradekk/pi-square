@@ -309,12 +309,7 @@ export class OperationalDisplayComponent implements Component {
     const orderedBadges = QUALIFIER_BADGE_ORDER
       .filter((qualifier) => opState.qualifiers.includes(qualifier))
       .map((qualifier) => ({ qualifier, label: `[${QUALIFIER_BADGES[qualifier]!}]` }));
-    const rightText = [
-      this.policy.showDuration && Number.isFinite(description.durationMs)
-        ? formatDuration(description.durationMs!)
-        : undefined,
-      progressText(description),
-    ].filter((part): part is string => Boolean(part)).join(" · ") || undefined;
+    const progress = progressText(description);
 
     const isCall = description.phase === "call";
     const state = resolveState(description);
@@ -339,6 +334,10 @@ export class OperationalDisplayComponent implements Component {
     // A running or queued entry carries its live progress message in the same
     // slot; the execution tail never renders in the collapsed row.
     let inlineSummary: string | undefined;
+    // True when the live progress message moved into the inline summary slot;
+    // the right element then keeps only the duration so the one row never
+    // renders the same progress text twice.
+    let progressInline = false;
     if (terminal && collapsed && !hidden) {
       // A failure states the one-sentence message inline; a success carries
       // the outcome sentence. The failure message takes priority so a
@@ -350,8 +349,20 @@ export class OperationalDisplayComponent implements Component {
       // A running or queued entry carries its live progress message (or, for
       // execution tools, the running outcome summary) in the same slot; the
       // execution tail never renders in the collapsed row.
-      inlineSummary = progressText(description) ?? summarySentence(description);
+      if (progress) {
+        inlineSummary = progress;
+        progressInline = true;
+      } else {
+        inlineSummary = summarySentence(description);
+      }
     }
+
+    const rightText = [
+      this.policy.showDuration && Number.isFinite(description.durationMs)
+        ? formatDuration(description.durationMs!)
+        : undefined,
+      progressInline ? undefined : progress,
+    ].filter((part): part is string => Boolean(part)).join(" · ") || undefined;
 
     // C5: the header is always exactly one row. The target is truncated (a
     // path target is elided in the middle), the right element drops first at

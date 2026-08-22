@@ -266,4 +266,26 @@ const afterInvalidate = cacheComponent.render(80);
 assert.notEqual(afterInvalidate, beforeInvalidate, "an invalidate() call recomputes the lines");
 assert.deepEqual(afterInvalidate, beforeInvalidate, "invalidate produces the same content after recompute");
 
+// C4 revision: a running collapsed entry carries its live progress message in
+// the inline summary slot. The right element then keeps only the duration, so
+// the one row never renders the same progress text twice.
+{
+  const running = {
+    version: 1,
+    tool: "bash",
+    family: "execution",
+    lifecycle: "running",
+    phase: "call",
+    title: "Bash",
+    target: "npm test",
+    progress: { label: "partial output", current: 3 },
+    durationMs: 1200,
+  };
+  const collapsedHeader = new OperationalDisplayComponent(running, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(120)[0];
+  assert.equal(collapsedHeader.split("partial output").length - 1, 1, "the progress message renders exactly once in the collapsed row");
+  assert.match(collapsedHeader, /1\.2s/, "the duration stays on the row");
+  const expandedHeader = new OperationalDisplayComponent(running, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: true }).render(120)[0];
+  assert.match(expandedHeader, /partial output/, "an expanded running entry keeps the progress message in the right element");
+}
+
 console.log("display component tests: OK");

@@ -319,8 +319,11 @@ function renderResult(decorated, args, content, details, opts = {}) {
   const raw = { version: 1, status: "running", operation: "explore", projectPath: "/tmp", message: "exploring semantic graph" };
   const details = { version: 1, operation: "explore", phase: "running", projectPath: "/tmp", message: raw.message };
   const result = renderResult(decorated, args, JSON.stringify(raw), details, { isPartial: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /exploring …ntic graph/, "running progress message is visible inline");
+  // Render wide enough that the message is not middle-elided, so the
+  // assertion does not depend on the exact elision cut.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
+  assert.match(text, /exploring semantic graph/, "running progress message is visible inline");
+  assert.equal((text.match(/exploring semantic graph/g) ?? []).length, 1, "the progress message renders exactly once, not inline and in the right element");
   assert.doesNotMatch(text, /"version":1,"status":"running"/, "running does not dump the raw streaming envelope as a fallback");
 
   runtime.dispose();
