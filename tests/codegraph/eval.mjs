@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -8,7 +8,6 @@ import jiti from "jiti";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createCodeGraphDefinition } = await load(join(packageRoot, "src", "codegraph", "index.ts"));
-const { createSearchToolDefinitions } = await load(join(packageRoot, "src", "search", "index.ts"));
 const root = mkdtempSync(join(tmpdir(), "pi-codegraph-eval-"));
 const src = join(root, "src");
 mkdirSync(src);
@@ -49,21 +48,6 @@ try {
   const codegraphElapsedMs = performance.now() - codegraphStart;
   if (graphResult.details.phase !== "done") throw new Error(graphResult.content[0].text);
 
-  const [rg] = createSearchToolDefinitions();
-  const baselineStart = performance.now();
-  const rgResult = await rg.execute(
-    "eval:rg",
-    { pattern: "handleOrder|getOrder|loadOrder", path: "src" },
-    undefined,
-    undefined,
-    { cwd: root },
-  );
-  const baselineText = [
-    rgResult.content[0].text,
-    ...expectedPaths.map((path) => `${path}\n${readFileSync(join(root, path), "utf8")}`),
-  ].join("\n");
-  const baselineElapsedMs = performance.now() - baselineStart;
-
   console.log(JSON.stringify({
     version: 1,
     note: "Non-blocking deterministic retrieval comparison; this is not a model-quality benchmark.",
@@ -73,13 +57,6 @@ try {
       elapsedMs: Math.round(codegraphElapsedMs),
       referenceAccuracy: accuracy(graphResult.content[0].text),
       outputChars: graphResult.content[0].text.length,
-    },
-    baseline: {
-      toolCalls: 4,
-      elapsedMs: Math.round(baselineElapsedMs),
-      referenceAccuracy: accuracy(baselineText),
-      outputChars: baselineText.length,
-      method: "one rg call plus three known-file reads",
     },
   }, null, 2));
 } finally {

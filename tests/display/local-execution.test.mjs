@@ -52,8 +52,6 @@ function context(args, overrides = {}) {
 
 let runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true } });
 for (const [name, args, expected] of [
-  ["rg", { pattern: "needle", path: "src" }, /needle/],
-  ["fd", { pattern: "*.ts", path: "src" }, /\*\.ts/],
   ["pdf_search", { path: "manual.pdf", query: "retention", limit: 5 }, /retention/],
   ["codegraph", { operation: "explore", projectPath: ".", query: "runtime", maxFiles: 5 }, /explore/],
   ["bash", { command: "printf 'hello'", timeout: 10 }, /printf 'hello'/],
@@ -83,11 +81,10 @@ for (const [name, args, expected] of [
   assert.doesNotMatch(collapsedText, /model output/, `${name} collapsed hides the payload`);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
-  if (name === "rg" || name === "fd" || name === "ssh") {
-    // These calls pass path:"src", which renders an expanded-only Filters
-    // section (C7); a visible structured section takes priority over the
-    // flat text preview, so the raw "model output" fallback does not
-    // render here. QUERY and SUMMARY remain pruned restating sections (C8).
+  if (name === "ssh") {
+    // The ssh call renders an expanded-only structured section; a visible
+    // structured section takes priority over the flat text preview, so the
+    // raw "model output" fallback does not render here.
   } else {
     assert.match(expandedText, /model output/);
   }
@@ -102,20 +99,18 @@ for (const [name, args, expected] of [
   }
 }
 
-const dynamic = decorateInternalTool(definition("rg"), () => runtime);
+const dynamic = decorateInternalTool(definition("pdf_search"), () => runtime);
 const result = { content: [{ type: "text", text: "dynamic preview" }], details: { returned: 1 } };
-assert.match(dynamic.renderResult(result, { expanded: true, isPartial: false }, theme, context({ pattern: "x" }, { expanded: true })).render(80).join("\n"), /dynamic preview/, "expanded shows the preview content");
-assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "collapsed hides the preview payload");
+assert.match(dynamic.renderResult(result, { expanded: true, isPartial: false }, theme, context({ path: "manual.pdf", query: "x" }, { expanded: true })).render(80).join("\n"), /dynamic preview/, "expanded shows the preview content");
+assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ path: "manual.pdf", query: "x" })).render(80).join("\n"), /dynamic preview/, "collapsed hides the preview payload");
 runtime.dispose();
 const summaryConfig = structuredClone(DEFAULT_CONFIG);
 summaryConfig.display = {
   motion: "off",
-  agent: { path: "/agent/config/pi-square.json", config: { tools: { rg: { resultMode: "summary" } } } },
+  agent: { path: "/agent/config/pi-square.json", config: { tools: { pdf_search: { resultMode: "summary" } } } },
 };
-runtime = new DisplayRuntime(summaryConfig, { environment: { isTTY: true } });
-assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ pattern: "x" })).render(80).join("\n"), /dynamic preview/, "provider resolves replacement runtime");
 
-for (const child of createChildTools(["rg", "fd", "codegraph", "pdf_search"]).definitions) {
+for (const child of createChildTools(["codegraph", "pdf_search"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child construction stays independent of parent runtime`);
 }
 runtime.dispose();

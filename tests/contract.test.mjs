@@ -70,8 +70,8 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "codegraph", "delegate", "docs", "fd", "fetch", "github",
-    "libs", "parse", "pdf_search", "resume", "rg", "search", "ssh",
+    "ask", "codegraph", "delegate", "docs", "fetch", "github",
+    "libs", "parse", "pdf_search", "resume", "search", "ssh",
     "todo",
   ]);
   assert.ok(childToolNames.includes("codegraph"));
@@ -187,7 +187,7 @@ try {
   assert.deepEqual(tools.get("read")?.parameters, factoryRead.parameters, "anchored read must retain Pi's exact read schema");
   assert.equal(tools.get("anchored-edit"), undefined, "anchored editing must not register a second tool");
   for (const name of [
-    "rg", "fd", "pdf_search", "codegraph", "ssh", "bash",
+    "pdf_search", "codegraph", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
     "github",

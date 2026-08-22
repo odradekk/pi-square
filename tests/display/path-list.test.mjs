@@ -14,7 +14,6 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
 const { decorateBuiltinDefinition } = await load("../../src/display/builtins.ts");
-const { decorateInternalTool } = await load("../../src/display/internal-adapters.ts");
 
 const plainTheme = {
   fg(_token, text) { return String(text); },
@@ -340,122 +339,6 @@ function newRuntime() {
   );
   const findText = stripVTControlCharacters(findResult.render(80).join("\n"));
   assert.match(findText, /✓ Find/, "find renders through filesystem family (not search)");
-
-  runtime.dispose();
-}
-
-// ─── 10. FD path-kind detection from args.types ─────────────────────
-
-{
-  const runtime = newRuntime();
-  // Create a minimal fd definition with the right shape
-  const fdDef = {
-    name: "fd",
-    label: "fd",
-    description: "Fast file finder",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    async execute() { return { content: [], details: {} }; },
-  };
-  const decorated = decorateInternalTool(fdDef, () => runtime);
-
-  // Directory type search — all results should have d marker
-  const call = decorated.renderCall(
-    { pattern: ".", types: ["directory"] },
-    plainTheme,
-    makeCtx({ pattern: ".", types: ["directory"] }, { argsComplete: true, executionStarted: true }),
-  );
-  const result = decorated.renderResult(
-    {
-      content: [{ type: "text", text: "fd returned=2" }],
-      details: {
-        page: { returned: 2, total: 2 },
-        paths: [
-          { displayPath: "src/", encoding: "text" },
-          { displayPath: "tests/", encoding: "text" },
-        ],
-      },
-    },
-    { expanded: true, isPartial: false },
-    plainTheme,
-    makeCtx({ pattern: ".", types: ["directory"] }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
-  );
-  const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /src\//, "fd directory-type result shows path");
-  assert.match(text, /tests\//, "fd directory-type result shows path");
-
-  runtime.dispose();
-}
-
-// ─── 11. FD default (no type filter) uses f marker ──────────────────
-
-{
-  const runtime = newRuntime();
-  const fdDef = {
-    name: "fd",
-    label: "fd",
-    description: "Fast file finder",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    async execute() { return { content: [], details: {} }; },
-  };
-  const decorated = decorateInternalTool(fdDef, () => runtime);
-
-  const call = decorated.renderCall(
-    { pattern: "." },
-    plainTheme,
-    makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true }),
-  );
-  const result = decorated.renderResult(
-    {
-      content: [{ type: "text", text: "fd returned=1" }],
-      details: {
-        page: { returned: 1, total: 1 },
-        paths: [
-          { displayPath: "src/index.ts", encoding: "text" },
-        ],
-      },
-    },
-    { expanded: true, isPartial: false },
-    plainTheme,
-    makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
-  );
-  const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /src\/index\.ts/, "fd default result shows path");
-  assert.doesNotMatch(text, /f src\/index/, "fd default result has no f prefix");
-
-  runtime.dispose();
-}
-
-// ─── 12. FD byte-path entries show special marker ───────────────────
-
-{
-  const runtime = newRuntime();
-  const fdDef = {
-    name: "fd",
-    label: "fd",
-    description: "Fast file finder",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    async execute() { return { content: [], details: {} }; },
-  };
-  const decorated = decorateInternalTool(fdDef, () => runtime);
-
-  const call = decorated.renderCall({ pattern: "." }, plainTheme, makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true }));
-  const result = decorated.renderResult(
-    {
-      content: [{ type: "text", text: "fd returned=1" }],
-      details: {
-        page: { returned: 1, total: 1 },
-        paths: [
-          { displayPath: "bad??path", encoding: "bytes", rawBase64: "AAA=" },
-        ],
-      },
-    },
-    { expanded: true, isPartial: false },
-    plainTheme,
-    makeCtx({ pattern: "." }, { argsComplete: true, executionStarted: true, lastComponent: call, isError: false, expanded: true }),
-  );
-  const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /bad\?\?path/, "fd byte-path result shows path");
-  assert.match(text, /byte path/, "fd byte-path result shows byte path meta");
 
   runtime.dispose();
 }

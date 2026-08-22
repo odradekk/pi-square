@@ -102,9 +102,7 @@ const EXPECTED_TITLES = {
   revert: "Revert",
   write: "Write",
   find: "Find",
-  fd: "File search",
   grep: "Grep",
-  rg: "Text search",
   codegraph: "CodeGraph",
   pdf_search: "PDF search",
   bash: "Bash",
@@ -385,14 +383,13 @@ const EXPECTED_TITLES = {
 }
 
 // ─── C7: a bounded or truncated result carries the truncated badge ───
-
 {
   const description = {
     version: 1,
-    tool: "rg",
+    tool: "pdf_search",
     family: "search",
     lifecycle: "completed",
-    title: "Text search",
+    title: "PDF search",
     target: "needle",
     rows: [{ text: "3 matches" }],
     truncated: true,
@@ -430,36 +427,38 @@ const EXPECTED_TITLES = {
   assert.match(resultHeader, /\[truncated\]/, "bounded read result carries the truncated badge");
   runtime.dispose();
 
-  // The search-family boundedness signals raise the same badge: rg/fd
-  // content budgets and paged results, and the codegraph output budget.
+  // The search-family boundedness signals raise the same badge: paged
+  // pdf_search results with more matches available, and the codegraph
+  // output budget.
   const stub = (name) => ({
     name,
     description: name,
     parameters: { type: "object", properties: {}, additionalProperties: false },
     execute() { return { content: [] }; },
   });
-  const rgRuntime = newRuntime();
-  const rg = decorateInternalTool(stub("rg"), () => rgRuntime);
-  const rgResult = rg.renderResult(
+  const pdfRuntime = newRuntime();
+  const pdf = decorateInternalTool(stub("pdf_search"), () => pdfRuntime);
+  const pdfResult = pdf.renderResult(
     {
-      content: [{ type: "text", text: "src/a.ts:1:needle" }],
+      content: [{ type: "text", text: "pdf_search returned=5" }],
       details: {
-        status: "ok",
-        page: { returned: 5, total: 24, hasMore: true },
-        truncation: { lineExcerpts: 0, contextLinesOmitted: 0, contentBudgetReached: true },
+        status: "success",
+        totalMatches: 24,
+        returned: 5,
+        hasMore: true,
+        matches: [{ page: 3, type: "exact", context: "needle found here", matchedText: "needle" }],
       },
     },
     { expanded: false, isPartial: false },
     plainTheme,
-    makeCtx({ pattern: "needle" }, {}, { executionStarted: true, isError: false }),
+    makeCtx({ path: "reports/q3.pdf", query: "needle" }, {}, { executionStarted: true, isError: false }),
   );
   assert.match(
-    stripVTControlCharacters(rgResult.render(80)[0]),
+    stripVTControlCharacters(pdfResult.render(80)[0]),
     /\[truncated\]/,
-    "a paged rg result with a reached content budget carries the truncated badge",
+    "a paged pdf_search result with more matches available carries the truncated badge",
   );
-  rgRuntime.dispose();
-
+  pdfRuntime.dispose();
   const codegraphRuntime = newRuntime();
   const codegraph = decorateInternalTool(stub("codegraph"), () => codegraphRuntime);
   const codegraphResult = codegraph.renderResult(

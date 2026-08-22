@@ -224,26 +224,28 @@ function assertNoTrailingEmptyRow(lines, label) {
 
 {
   const runtime = newRuntime();
-  const rg = decorateInternalTool(stub("rg"), () => runtime);
+  const pdf = decorateInternalTool(stub("pdf_search"), () => runtime);
+  const args = { path: "reports/q3.pdf", query: "needle" };
   const result = {
-    content: [{ type: "text", text: "src/f0.ts:1:3:needle();" }],
+    content: [{ type: "text", text: "pdf_search returned=12" }],
     details: {
-      status: "ok",
+      status: "success",
       returned: 12,
       totalMatches: 60,
-      page: { returned: 12, total: 60, hasMore: true, nextOffset: 12 },
-      truncation: { lineExcerpts: 0, contextLinesOmitted: 0, contentBudgetReached: false },
+      pageCount: 40,
+      hasMore: true,
+      matches: [{ page: 3, type: "exact", context: "needle occurrence", matchedText: "needle" }],
     },
   };
-  const component = rg.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx({ pattern: "needle" }));
+  const component = pdf.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx(args));
   const rendered = renderLines(component);
-  assert.equal(rendered.length, 1, "collapsed rg renders exactly one row");
-  assert.match(rendered[0], /12 of 60 matches/, "the inline summary states returned and total");
-  assert.match(rendered[0], /continue at offset 12/, "the inline summary states how to continue");
-  assert.ok(!rendered[0].includes("pattern=needle"), "no key=value metadata row in the collapsed row");
+  assert.equal(rendered.length, 1, "collapsed pdf_search renders exactly one row");
+  assert.match(rendered[0], /60 matches on 12 of 40 pages/, "the inline summary states returned and total");
+  assert.match(rendered[0], /in q3\.pdf/, "the inline summary states the searched document");
+  assert.ok(!rendered[0].includes("query=needle"), "no key=value metadata row in the collapsed row");
+  assert.ok(!rendered[0].includes("needle occurrence"), "no match payload in the collapsed row");
   runtime.dispose();
 }
-
 {
   const runtime = newRuntime();
   const grep = decorateBuiltinDefinition(createGrepToolDefinition(TMP), TMP, runtime);
@@ -344,24 +346,23 @@ function assertNoTrailingEmptyRow(lines, label) {
   assert.ok(!body.some((line) => line.includes("STATUS")), "no STATUS section that restates the header");
   runtime.dispose();
 
-  const rgRuntime = newRuntime();
-  const rg = decorateInternalTool(stub("rg"), () => rgRuntime);
-  const rgResult = {
-    content: [{ type: "text", text: "src/f0.ts:1:needle();" }],
+  const pdfRuntime = newRuntime();
+  const pdf = decorateInternalTool(stub("pdf_search"), () => pdfRuntime);
+  const pdfResult = {
+    content: [{ type: "text", text: "pdf_search returned=1" }],
     details: {
-      status: "ok",
+      status: "success",
       returned: 1,
       totalMatches: 1,
-      page: { returned: 1, total: 1, hasMore: false },
-      truncation: { lineExcerpts: 0, contextLinesOmitted: 0, contentBudgetReached: false },
-      matches: [{ path: "src/f0.ts", line: 1, text: "needle();", kind: "match" }],
+      hasMore: false,
+      matches: [{ page: 3, type: "exact", context: "needle occurrence", matchedText: "needle" }],
     },
   };
-  const rgComponent = rg.renderResult(rgResult, { expanded: true, isPartial: false }, plainTheme, makeCtx({ pattern: "needle" }));
-  const rgBody = bodyLines(rgComponent);
-  assert.ok(!rgBody.some((line) => line.includes("QUERY")), "no QUERY section that restates the header");
-  assert.ok(!rgBody.some((line) => line.includes("SUMMARY")), "no SUMMARY section that restates the header");
-  rgRuntime.dispose();
+  const pdfComponent = pdf.renderResult(pdfResult, { expanded: true, isPartial: false }, plainTheme, makeCtx({ path: "reports/q3.pdf", query: "needle" }));
+  const pdfBody = bodyLines(pdfComponent);
+  assert.ok(!pdfBody.some((line) => line.includes("QUERY")), "no QUERY section that restates the header");
+  assert.ok(!pdfBody.some((line) => line.includes("SUMMARY")), "no SUMMARY section that restates the header");
+  pdfRuntime.dispose();
 }
 
 // --------------------------------------- truncation notice is never numbered
@@ -419,20 +420,22 @@ for (const [label, theme] of themes) {
 // -------------------------------------------------- model output unchanged
 {
   const runtime = newRuntime();
-  const rg = decorateInternalTool(stub("rg"), () => runtime);
+  const pdf = decorateInternalTool(stub("pdf_search"), () => runtime);
   const result = {
-    content: [{ type: "text", text: "src/f0.ts:1:needle();" }],
+    content: [{ type: "text", text: "pdf_search returned=1" }],
     details: {
-      status: "ok",
-      page: { returned: 1, total: 1, hasMore: false },
-      truncation: { lineExcerpts: 0, contextLinesOmitted: 0, contentBudgetReached: false },
+      status: "success",
+      returned: 1,
+      totalMatches: 1,
+      hasMore: false,
+      matches: [{ page: 3, type: "exact", context: "needle occurrence", matchedText: "needle" }],
     },
   };
   const frozen = structuredClone(result);
   Object.freeze(result);
   Object.freeze(result.content);
   Object.freeze(result.details);
-  rg.renderResult(result, { expanded: true, isPartial: false }, plainTheme, makeCtx({ pattern: "needle" }));
+  pdf.renderResult(result, { expanded: true, isPartial: false }, plainTheme, makeCtx({ path: "reports/q3.pdf", query: "needle" }));
   assert.deepEqual(result, frozen, "rendering never mutates the model-facing result");
   runtime.dispose();
 }
