@@ -197,4 +197,48 @@ for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {
 
 assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u, "no emoji presentation characters");
 
+// ─── 9. One V4 delivery stacks every run it carries ──────────────────
+
+{
+  const first = details({ id: "subagent_11111111-aaaa-4aaa-8aaa-111111111111", agent: { promptVersion: 2, name: "explorer", inheritParentSystem: true } });
+  const second = details({
+    id: "subagent_22222222-bbbb-4bbb-8bbb-222222222222",
+    phase: "error",
+    finalText: "",
+    error: "second run failed",
+    agent: { promptVersion: 2, name: "oracle", inheritParentSystem: true },
+  });
+  const batch = {
+    content: "[Background subagents: 2 results]",
+    details: {
+      version: 4,
+      deliveryId: "delivery-1",
+      resent: false,
+      results: [
+        { id: first.id, status: "done", result: first },
+        { id: second.id, status: "error", result: second },
+      ],
+    },
+  };
+
+  const batchBackgrounds = [];
+  const batchCollapsed = plainLines(renderSubagentNotification(batch, { expanded: false }, {
+    ...plainTheme,
+    bg(color, text) { batchBackgrounds.push(color); return String(text); },
+  }), 80).join("\n");
+
+  assert.match(batchCollapsed, /✓ Subagent explorer/, "the first run keeps its own canonical description");
+  assert.match(batchCollapsed, /× Subagent oracle/, "the second run keeps its own state marker");
+  assert.ok(batchBackgrounds.includes("toolErrorBg"), "a batch with a failed run uses the error shell");
+
+  for (const width of [40, 80, 120]) {
+    for (const expandedMode of [false, true]) {
+      const component = renderSubagentNotification(batch, { expanded: expandedMode }, plainTheme);
+      for (const line of component.render(width)) {
+        assert.ok(visibleWidth(line) <= width, `batch delivery exceeds ${width}: ${JSON.stringify(line)}`);
+      }
+    }
+  }
+}
+
 console.log("subagent notification rendering: shared description, privacy, shells, and width contracts passed");

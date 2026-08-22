@@ -4,11 +4,11 @@ import type { ParentContextMessage } from "./context";
 import type { SubagentDefinition } from "./definitions";
 import { applyRunFailure, createSubagentError, normalizeSubagentError } from "./errors";
 import { resumeSubagentTask, runSubagentTask } from "./session";
+import { createDeliveryController, type DeliveryController } from "./delivery";
 import type {
   ActiveSubagentConfig,
   BackgroundJobSnapshot,
   SubagentCancelDetails,
-  SubagentNotificationDetails,
   SubagentPromptSnapshot,
   SubagentRunDetails,
   SubagentStatusDetails,
@@ -32,16 +32,16 @@ export interface BackgroundState {
   jobs: Map<string, BackgroundJob>;
   onChange?: () => void;
   listeners: Set<() => void>;
+  /**
+   * Owns the pending completion results. It is attached by the session
+   * registrar; a state without one falls back to immediate delivery, which
+   * keeps headless and unit-test lifecycles working.
+   */
+  delivery?: DeliveryController;
 }
 
 const MAX_FINISHED_JOBS = 20;
 const DEFAULT_CANCEL_REASON = "Background subagent job canceled.";
-
-function clip(text: string, max = 800): string {
-  const normalized = String(text ?? "").trim();
-  if (!normalized) return "";
-  return normalized.length > max ? `${normalized.slice(0, max - 3)}...` : normalized;
-}
 
 function buildAgentConfig(definition?: SubagentDefinition, modelOverride?: string, effortOverride?: string): ActiveSubagentConfig {
   return {
@@ -83,13 +83,22 @@ function emitChange(state: BackgroundState): void {
 }
 
 function compactFinishedJobs(state: BackgroundState): void {
+  // A finished job whose result the parent has not received yet is exempt from
+  // compaction: dropping it here would destroy the only copy of a result that
+  // is still waiting for delivery. The pending set has its own hard bound.
   const finished = Array.from(state.jobs.values())
     .filter((job) => job.status === "done" || job.status === "error" || job.status === "aborted")
+    .filter((job) => !state.delivery?.isPending(job.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   for (const extra of finished.slice(MAX_FINISHED_JOBS)) {
     state.jobs.delete(extra.id);
   }
+}
+
+/** Refreshes pi-square status surfaces after an external state change. */
+export function notifyBackgroundChange(state: BackgroundState): void {
+  emitChange(state);
 }
 
 function ensureAbortedDetails(job: BackgroundJob, reason = DEFAULT_CANCEL_REASON): void {
@@ -124,46 +133,25 @@ function snapshot(job: BackgroundJob): BackgroundJobSnapshot {
   };
 }
 
-function buildNotificationContent(job: BackgroundJob): string {
-  const label = job.details.agent?.name ?? "generic";
-  const summary = job.status === "done"
-    ? clip(job.details.finalText || "(no output)", 1600)
-    : clip(job.details.error || "Subagent failed.", 800);
-
-  const lines = [
-    `[Background subagent ${job.status}]`,
-    `id: ${job.id}`,
-    `agent: ${label}`,
-    `task: ${clip(job.details.task, 300)}`,
-    "",
-    job.status === "done" ? "Result:" : "Error:",
-    summary,
-  ];
-
-  return lines.join("\n");
-}
-
-function notifyCompletion(pi: ExtensionAPI, job: BackgroundJob): void {
+/**
+ * Hands one finished run to the delivery controller, which owns budgeting,
+ * coalescing, delivery timing, confirmation, and re-delivery. A state without
+ * an attached controller receives one on first use so a completion is never
+ * dropped for a missing session registration.
+ */
+function deliverCompletion(pi: ExtensionAPI, state: BackgroundState, job: BackgroundJob): void {
   if (job.status !== "done" && job.status !== "error") return;
 
-  const details: SubagentNotificationDetails = {
+  const delivery = state.delivery ?? (state.delivery = createDeliveryController({
+    pi,
+    notify: () => emitChange(state),
+  }));
+
+  delivery.enqueue({
     id: job.id,
     status: job.status,
-    result: job.details,
-  };
-
-  pi.sendMessage(
-    {
-      customType: "pi-square.subagent-notification",
-      content: buildNotificationContent(job),
-      display: true,
-      details,
-    },
-    {
-      triggerTurn: true,
-      deliverAs: "steer",
-    },
-  );
+    details: job.details,
+  });
 }
 
 /** Creates the session-owned background job store for subagent runs. */
@@ -290,7 +278,8 @@ export function getBackgroundStatusDetails(state: BackgroundState): SubagentStat
 /** Formats the compact status-line indicator for the current job counts. */
 export function formatBackgroundIndicator(state: BackgroundState): string | null {
   const details = getBackgroundStatusDetails(state);
-  if (details.jobs.length === 0) return null;
+  const undelivered = state.delivery?.pendingCount() ?? 0;
+  if (details.jobs.length === 0 && undelivered === 0) return null;
 
   const parts: string[] = [];
   if (details.queued > 0) parts.push(`queued ${details.queued}`);
@@ -305,6 +294,7 @@ export function formatBackgroundIndicator(state: BackgroundState): string | null
   if (done > 0) parts.push(`✓ ${done}`);
   if (failed > 0) parts.push(`✗ ${failed}`);
   if (aborted > 0) parts.push(`× ${aborted}`);
+  if (undelivered > 0) parts.push(`undelivered ${undelivered}`);
 
   return parts.length > 0 ? parts.join(" ") : null;
 }
@@ -418,7 +408,7 @@ function startBackgroundLifecycle(input: {
     job.status = result.details.phase === "error" ? "error" : result.details.phase === "aborted" ? "aborted" : "done";
     compactFinishedJobs(state);
     emitChange(state);
-    notifyCompletion(pi, job);
+    deliverCompletion(pi, state, job);
   })().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     job.updatedAt = now();
@@ -443,7 +433,7 @@ function startBackgroundLifecycle(input: {
     job.details.timeline = [...job.details.timeline, { kind: "error", text: message, isError: true }];
     compactFinishedJobs(state);
     emitChange(state);
-    notifyCompletion(pi, job);
+    deliverCompletion(pi, state, job);
   });
 }
 

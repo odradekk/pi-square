@@ -5,6 +5,7 @@ import {
   createPromptSnapshot,
   getRunSubagentTaskCalls,
   loadBackgroundModule,
+  loadDeliveryModule,
   run,
   setRunSubagentTaskMock,
   test,
@@ -20,6 +21,7 @@ const {
   startBackgroundJob,
   startBackgroundResumeJob,
 } = await loadBackgroundModule();
+const { createDeliveryController } = await loadDeliveryModule();
 
 const ID = "subagent_00000000-0000-4000-8000-000000000021";
 
@@ -62,9 +64,12 @@ function assertCompletion(pi, status) {
   assert.equal(pi.sent.length, 1);
   assert.equal(pi.sent[0].message.customType, "pi-square.subagent-notification");
   assert.equal(pi.sent[0].message.display, true);
-  assert.equal(pi.sent[0].message.details.id, ID);
-  assert.equal(pi.sent[0].message.details.status, status);
-  assert.equal(pi.sent[0].message.details.result.id, ID);
+  assert.equal(pi.sent[0].message.details.version, 4);
+  assert.equal(pi.sent[0].message.details.resent, false);
+  assert.equal(pi.sent[0].message.details.results.length, 1);
+  assert.equal(pi.sent[0].message.details.results[0].id, ID);
+  assert.equal(pi.sent[0].message.details.results[0].status, status);
+  assert.equal(pi.sent[0].message.details.results[0].result.id, ID);
   assert.match(pi.sent[0].message.content, new RegExp(`^\\[Background subagent ${status}\\]`));
   assert.deepEqual(pi.sent[0].options, {
     triggerTurn: true,
@@ -184,7 +189,8 @@ test("running, partial, and final transitions preserve one id", async () => {
   const contextMessages = [{ role: "user", text: "parent context" }];
   startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session", contextMessages });
   await waitFor(() => job.status === "done", "done background job");
-  assert.equal(observed.changes(), 3);
+  // running, partial, final, and one change for the pending delivery set.
+  assert.equal(observed.changes(), 4);
   assert.equal(getRunSubagentTaskCalls()[0].id, ID);
   assert.equal(getRunSubagentTaskCalls()[0].mode, "bg");
   assert.deepEqual(getRunSubagentTaskCalls()[0].contextMessages, contextMessages);
@@ -230,6 +236,42 @@ test("thrown background failures become structured run failures", async () => {
   assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
   assert.match(job.details.error, /synthetic failure/);
   assertCompletion(pi, "error");
+});
+
+test("undelivered results survive job compaction and stay visible in the indicator", async () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const pi = createPiStub();
+  // A parent that never becomes idle keeps every completion pending, which is
+  // the state that job compaction must not destroy.
+  observed.state.delivery = createDeliveryController({ pi: pi.api, isIdle: () => false });
+  setRunSubagentTaskMock(async () => ({ content: "ACK", details: details("done", { endedAt: 20, durationMs: 10 }) }));
+
+  const total = 22;
+  for (let index = 0; index < total; index += 1) {
+    const id = `subagent_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+    const job = createQueuedJob({
+      state: observed.state,
+      id,
+      task: "smoke task",
+      cwd: "/tmp/subagents",
+      parentSessionId: "parent-session",
+      promptSnapshot: createPromptSnapshot(),
+    });
+    startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
+  }
+
+  await waitFor(
+    () => observed.state.delivery.pendingCount() === total,
+    "every completion registered as pending",
+  );
+  assert.equal(pi.sent.length, 0, "a busy parent receives nothing before a turn boundary");
+  assert.equal(observed.state.jobs.size, total, "compaction never drops an undelivered result");
+  assert.match(formatBackgroundIndicator(observed.state), /undelivered 22/);
+
+  observed.state.delivery.handleTurnEnd();
+  assert.equal(pi.sent.length, 1, "the burst costs one parent turn, not 22");
+  assert.equal(pi.sent[0].message.details.results.length, 6);
 });
 
 await run();
