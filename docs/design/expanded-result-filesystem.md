@@ -1,6 +1,6 @@
 # Filesystem Expanded Results
 
-Scope: `read`, `ls`, `edit`, `write`, `find`, `fd`
+Scope: `read`, `ls`, `edit`, `write`, `find`
 Parent tools: all six. Child-capable: all six.
 Primary family contract: paths first, authoritative content second, projected state always labeled.
 
@@ -94,22 +94,6 @@ Rules:
 - Results remain in Pi result order.
 - Paths are not read or stat'ed again by display.
 - Empty results are an explicit `No matching paths` state, not a blank body.
-
-## fd
-
-Expanded sections:
-
-- `ERROR` when the native process or wrapper failed.
-- `QUERY`: pattern, path, match mode, depth, type, offset, and limit.
-- `RESULTS`: bounded path hierarchy with relative/absolute path display exactly as produced by the formatter.
-- `PAGING`: offset, returned, next offset, total, and has-more.
-- `DIAGNOSTICS`: bounded stderr and binary/base64 identity notices.
-
-Rules:
-
-- Preserve invalid UTF-8/base64 identity; display must not conflate byte-distinct paths.
-- Do not decode or resolve a path solely for presentation.
-- A zero-progress page remains an execution error rather than a decorative empty list.
 
 ## Filesystem regression cases
 

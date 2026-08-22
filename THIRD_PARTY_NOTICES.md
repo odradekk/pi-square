@@ -1,22 +1,8 @@
 # Third-Party Notices
 
-This extension vendors prebuilt search binaries, a hash-anchored editing implementation, and exact semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies.
+This extension vendors a hash-anchored editing implementation and exact semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies. It vendors no prebuilt executables: the retired `rg` and `fd` binaries were removed in 11.0, and local search now uses Pi's own built-in tools.
 
 ## Included Software
-
-### ripgrep (`rg`)
-- Upstream: https://github.com/BurntSushi/ripgrep
-- License: MIT OR Unlicense
-- Version: `15.1.0` for all six targets (`linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `win32-x64`, `win32-arm64`)
-- Distributed binaries are unmodified upstream release artifacts.
-
-### fd (`fd`)
-- Upstream: https://github.com/sharkdp/fd
-- License: MIT OR Apache-2.0
-- Versions:
-  - `10.4.2` for `linux-x64`, `linux-arm64`, `darwin-arm64`, `win32-x64`, `win32-arm64`
-  - `10.3.0` for `darwin-x64` (official fd release for this target)
-- Distributed binaries are unmodified upstream release artifacts.
 
 ### PDF.js (`pdfjs-dist`)
 - Upstream: https://github.com/mozilla/pdf.js
@@ -79,16 +65,14 @@ This extension vendors prebuilt search binaries, a hash-anchored editing impleme
 
 ## libc Boundary
 
-- rg `linux-x64` is statically linked and has no runtime library dependency.
-- fd `linux-x64` and both `linux-arm64` vendored binaries (rg and fd) require glibc at runtime.
 - PDF.js itself is portable JavaScript/WASM. Its optional canvas dependency provides separate glibc and musl artifacts for Linux x64/arm64, but pi-square's existing supported Linux boundary remains constrained by its CodeGraph dependencies.
 - ssh2 is portable JavaScript. Its optional `cpu-features` accelerator is a Node native addon compiled only when the local build environment supports it; failure or absence does not remove SSH functionality.
 - The verified CodeGraph Linux x64 bundled runtime dynamically links glibc, libstdc++, libgcc, libm, libdl, and libpthread. CodeGraph publishes generic Linux x64/arm64 packages and no musl-specific package.
-- macOS and Windows search and CodeGraph binaries have no additional C library boundary documented here.
+- macOS and Windows CodeGraph binaries have no additional C library boundary documented here.
 
 ## Notes
 
-- The rg and fd binaries are bundled in `bin/` and Git-tracked. There is no download, integrity manifest, hash verification, or system-binary fallback for them.
+- This package ships no vendored executable. Text search and file discovery use Pi's built-in `grep` and `find` tools, which resolve their own ripgrep and fd executables from Pi's tools directory, `PATH`, or a GitHub release download, outside this package's control.
 - CodeGraph is installed by npm with lockfile integrity metadata for the main package and all six optional platform packages. The wrapper verifies the platform package version and required runtime/entry files before execution, then forces telemetry, update checks, downloads, and watchers off.
 - PDF.js and its optional canvas packages are installed by npm with lockfile integrity metadata. `pdf_search` resolves only package-local assets and keeps extracted text in bounded memory; it creates no PDF cache, index, or artifact on disk.
 - ssh2 and its transitive packages are installed by npm with lockfile integrity metadata. The SSH wrapper always supplies a pinned-fingerprint `hostVerifier`, disables agent forwarding, keeps remote output in bounded memory, and creates no SSH cache, log, socket, or artifact.

@@ -43,13 +43,14 @@ output: |
 tools:
   - read
   - ls
+  - grep
+  - find
 
 # Extension tools are opt-in. Supported names are validated at runtime and may be
 # platform-specific. Authenticated GitHub tools can be requested here by trusted
 # local definitions; returned private content persists in the child session.
 extensionTools:
-  - rg
-  - fd
+  - codegraph
 
 # Omitted or [] loads all discovered skills. Use [none] to disable every skill.
 skills:

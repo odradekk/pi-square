@@ -120,12 +120,12 @@ removes the majority of the individual defects that the tool documents list.
 |---|---|---|
 | Uppercase built-in titles and absolute paths | `read`, `ls`, `edit`, `write`, `find`, `grep` | C1 and C2 |
 | Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `codegraph`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`, `github` | C4 one-row collapsed entry; the payload moves to the expanded body |
-| Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `fd`, `rg`, `codegraph`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
+| Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `codegraph`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
 | Key-value metadata rows and coded fields | every family | State the same facts in the inline summary |
 | A failure body is rendered twice | `pwsh`, `ssh`, `delegate`, `resume` | Render the error stream once |
 | Raw platform or provider text as the failure message | every family | C6 one sentence, raw text in the expanded `ERROR` section |
 | Empty result presented as a fake list entry | `ls`, `find`, `grep`, `codegraph` | A muted state row and no section |
-| Truncation without the `truncated` badge | `read`, `write`, `bash`, `fd`, `rg` | C7 |
+| Truncation without the `truncated` badge | `read`, `write`, `bash` | C7 |
 | Raw timestamps and full hashes | `codegraph`, `libs`, `github` | Relative time and short SHA |
 | Content that is not what it claims to be | `github` (read), `codegraph`, `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
 
@@ -149,22 +149,20 @@ Three defects are correctness defects rather than presentation defects:
 | 3 | `edit` | filesystem | [edit.md](edit.md) | Designed |
 | 4 | `write` | filesystem | [write.md](write.md) | Designed |
 | 5 | `find` | filesystem | [find.md](find.md) | Designed |
-| 6 | `fd` | filesystem | [fd.md](fd.md) | Designed |
-| 7 | `grep` | search | [grep.md](grep.md) | Designed |
-| 8 | `rg` | search | [rg.md](rg.md) | Designed |
-| 9 | `codegraph` | search | [codegraph.md](codegraph.md) | Designed |
-| 10 | `pdf_search` | search | [pdf-search.md](pdf-search.md) | Designed |
-| 11 | `bash` | execution | [bash.md](bash.md) | Designed |
-| 12 | `pwsh` | execution | [pwsh.md](pwsh.md) | Designed (Linux-host evidence; Windows run required) |
-| 13 | `search` | remote | [search.md](search.md) | Designed |
-| 14 | `fetch` | remote | [fetch.md](fetch.md) | Designed |
-| 15 | `libs` | remote | [libs.md](libs.md) | Designed |
-| 16 | `docs` | remote | [docs.md](docs.md) | Designed |
-| 17 | `parse` | remote | [parse.md](parse.md) | Designed |
-| 18 | `github` | remote | [github-search.md](github-search.md) | Designed |
-| 19 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
-| 20 | `todo` | workflow | [todo.md](todo.md) | Designed |
-| 21 | `ask` | workflow | [ask.md](ask.md) | Designed |
-| 22 | `time` | workflow | [time.md](time.md) | Designed |
-| 23 | `delegate` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
-| 24 | `resume` | agent | [subagent-resume.md](subagent-resume.md) | Designed |
+| 6 | `grep` | search | [grep.md](grep.md) | Designed |
+| 7 | `codegraph` | search | [codegraph.md](codegraph.md) | Designed |
+| 8 | `pdf_search` | search | [pdf-search.md](pdf-search.md) | Designed |
+| 9 | `bash` | execution | [bash.md](bash.md) | Designed |
+| 10 | `pwsh` | execution | [pwsh.md](pwsh.md) | Designed (Linux-host evidence; Windows run required) |
+| 11 | `search` | remote | [search.md](search.md) | Designed |
+| 12 | `fetch` | remote | [fetch.md](fetch.md) | Designed |
+| 13 | `libs` | remote | [libs.md](libs.md) | Designed |
+| 14 | `docs` | remote | [docs.md](docs.md) | Designed |
+| 15 | `parse` | remote | [parse.md](parse.md) | Designed |
+| 16 | `github` | remote | [github-search.md](github-search.md) | Designed |
+| 17 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
+| 18 | `todo` | workflow | [todo.md](todo.md) | Designed |
+| 19 | `ask` | workflow | [ask.md](ask.md) | Designed |
+| 20 | `time` | workflow | [time.md](time.md) | Designed |
+| 21 | `delegate` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
+| 22 | `resume` | agent | [subagent-resume.md](subagent-resume.md) | Designed |

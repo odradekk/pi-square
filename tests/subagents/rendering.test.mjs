@@ -80,8 +80,8 @@ function details(overrides = {}) {
     toolErrors: [],
     usage: { input: 1200, output: 340, cacheRead: 20, cacheWrite: 0, cost: 0.0012, turns: 2 },
     timeline: [
-      { kind: "tool", phase: "start", text: "rg {\"pattern\":\"needle\",\"path\":\"src\"}" },
-      { kind: "tool", phase: "end", text: "rg: SECRET TOOL OUTPUT", isError: false },
+      { kind: "tool", phase: "start", text: "grep {\"pattern\":\"needle\",\"path\":\"src\"}" },
+      { kind: "tool", phase: "end", text: "grep: SECRET TOOL OUTPUT", isError: false },
     ],
     ...overrides,
   };

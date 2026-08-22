@@ -75,13 +75,9 @@ Calls and results use the shared operational interface renderer. Calls expose th
 
 ## Local search tools
 
-The bundled `rg` and `fd` tools expose schema-validated text-search and file-discovery parameters while retaining wrapper-owned protocol and safety flags. Use `rg` for text, configuration, documentation, and unsupported languages, and `fd` to locate files.
+pi-square no longer ships text-search or file-discovery tools. Local search is the responsibility of Pi's own built-in `grep` and `find` tools, which pi-square only re-registers to apply the shared operational display. The bundled `rg` and `fd` binaries and their wrapper tools were retired in 11.0.
 
-`rg` accepts eight fields: `pattern` (required regex), `path`, `globs` (include/exclude with `!` prefix), `literal` (treat pattern as literal string), `context` (0–20 lines of symmetric context), `filesOnly` (return file paths with match counts instead of match lines), `offset`, and `limit` (1–25, default 5). Smart case (`-S`) is always on. Use `globs` with a `!` prefix to exclude, `literal=true` for regex metacharacters, and `filesOnly=true` for a file list.
-
-`fd` accepts eight fields: `pattern` (optional regex), `path`, `excludeGlobs`, `types` (file, directory, symlink, executable), `extensions`, `maxDepth`, `offset`, and `limit` (1–100, default 5). Removed parameters (`case`, `matchMode`, `hidden`, `noIgnore`, `minDepth`) are replaced by simpler scoping: use a narrower `path` for hidden or ignore-bypassing scans, and use `rg` with `globs` or `literal=true` for glob or literal matching.
-
-Both tools use the shared operational interface renderer. Calls expose allowlisted query, path, filter, and paging metadata while omitting unspecified values. Collapsed results state the outcome inline in the one-row entry. Expanded results reveal the match and path sections and close with the same summary row. Display text escapes terminal controls, model-facing output stays within explicit budgets, and zero-progress pages fail instead of looping.
+Pi resolves the `rg` and `fd` executables itself: it uses its own tools directory, then `PATH`, and otherwise downloads the current release from GitHub on first use. Search is therefore unavailable in an environment that has neither executable and no network access to GitHub, including a session started with `PI_OFFLINE=1`, a restricted corporate proxy, and Android/Termux, where Pi never downloads. Install ripgrep and fd through the platform package manager in such an environment.
 
 The local `pdf_search` tool accepts a workspace PDF `path`, a required `query`, and an optional result `limit` from 1-20 (default 10). It uses exact `pdfjs-dist` `6.1.200` with package-local CMap, standard-font, and WASM assets to extract embedded text page by page without network access. Unicode NFKC, case, whitespace, CJK spacing, and line-end hyphen normalization run before exact phrase matching; queries of 6-11 characters allow one edit, and longer queries allow at most 15% edits capped at four. Exact matches rank first. Each result contains the page, match type, score, edit count, matched text, and approximately 200 characters of best-effort context so the caller can select pages for `parse`.
 
@@ -89,9 +85,9 @@ The local `pdf_search` tool accepts a workspace PDF `path`, a required `query`, 
 
 ## Semantic CodeGraph tool
 
-The `codegraph` tool integrates the exact `@colbymchenry/codegraph` `1.4.1` platform bundle for local semantic code intelligence. Use `operation: explore` for cross-file behavior, call paths, architecture, and impact; exact text remains an `rg` concern, and known files should be read directly. Explore returns CodeGraph's line-numbered source and relationship Markdown with a 24,000-character model-facing cap. `status` returns structured index health and statistics.
+The `codegraph` tool integrates the exact `@colbymchenry/codegraph` `1.4.1` platform bundle for local semantic code intelligence. Use `operation: explore` for cross-file behavior, call paths, architecture, and impact; exact text remains a `grep` concern, and known files should be read directly. Explore returns CodeGraph's line-numbered source and relationship Markdown with a 24,000-character model-facing cap. `status` returns structured index health and statistics.
 
-The parent session also exposes index lifecycle operations. `init` creates `.codegraph/codegraph.db` only after Pi confirmation, `sync` performs an incremental update, and `reindex` replaces an unhealthy or version-stale database only after separate confirmation. Explore checks index health first and automatically runs a bounded incremental sync when files changed; it never silently initializes or fully rebuilds an index. Missing indexes and rebuild requirements are recoverable results so the model can request initialization once or fall back to `rg` and `read`.
+The parent session also exposes index lifecycle operations. `init` creates `.codegraph/codegraph.db` only after Pi confirmation, `sync` performs an incremental update, and `reindex` replaces an unhealthy or version-stale database only after separate confirmation. Explore checks index health first and automatically runs a bounded incremental sync when files changed; it never silently initializes or fully rebuilds an index. Missing indexes and rebuild requirements are recoverable results so the model can request initialization once or fall back to `grep` and `read`.
 
 Every path is canonicalized and must remain at or below the session cwd, including through symlinks. CodeGraph runs as a cancellable foreground process with bounded stdout/stderr and process-tree termination; pi-square does not start its MCP daemon or watcher. The wrapper resolves the installed platform package directly and invokes its bundled Node runtime without PATH lookup or the npm shim, so the shim's network download fallback is unreachable. It also forces `DO_NOT_TRACK=1`, disables CodeGraph telemetry/update checks/downloads/watchers, and performs no CodeGraph network requests. The platform package is large because it includes a complete runtime; the installed Linux x64 package is approximately 226 MiB unpacked.
 
@@ -146,8 +142,8 @@ The five visible package roles are intentionally complementary. Oracle's capabil
 
 | Role | Responsibility | Default capabilities |
 | --- | --- | --- |
-| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `rg`, `fd`, read-only `codegraph`; no skills |
-| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | `read`, `ls`, `shell`, `rg`, `fd`, read-only `codegraph`, `search`, `fetch`, `libs`, `docs`; no skills; non-mutating by policy, not by tools |
+| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `grep`, `find`, read-only `codegraph`; no skills |
+| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | `read`, `ls`, `shell`, `grep`, `find`, read-only `codegraph`, `search`, `fetch`, `libs`, `docs`; no skills; non-mutating by policy, not by tools |
 | `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `search`, `fetch`, `libs`, `docs`; no skills |
 | `librarian` | Research authorized GitHub repositories, files, trees, and commits | Only the authenticated `github` tool; no skills |
 | `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, read-only CodeGraph, search, web, Context7, and all discovered skills; no GitHub PAT tools |
@@ -379,7 +375,7 @@ npm run package:check
 npm run changeset:status
 ```
 
-Run the optional, non-blocking deterministic CodeGraph retrieval comparison separately. It reports one semantic query against a fixed three-file fixture versus an `rg` plus known-file-read baseline; it is not a model-quality benchmark and is not part of `npm test`:
+Run the optional, non-blocking deterministic CodeGraph retrieval comparison separately. It reports one semantic query against a fixed three-file fixture; it is not a model-quality benchmark and is not part of `npm test`:
 
 ```bash
 npm run eval:codegraph

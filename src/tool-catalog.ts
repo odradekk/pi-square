@@ -2,7 +2,6 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createCodeGraphDefinition } from "./codegraph";
 import { createGitHubToolDefinition } from "./github/tools";
 import { createPdfSearchToolDefinition } from "./pdf-search";
-import { createSearchToolDefinitions } from "./search";
 import { isWindowsPlatform } from "./shell/platform";
 import { createPwshToolDefinition } from "./shell/tools/pwsh";
 import { createDocsToolDefinition } from "./web/tools/docs";
@@ -11,8 +10,6 @@ import { createLibsToolDefinition } from "./web/tools/libs";
 import { createSearchToolDefinition } from "./web/tools/search";
 
 const BASE_EXTENSION_TOOLS = [
-  "rg",
-  "fd",
   "codegraph",
   "pdf_search",
   "search",
@@ -31,10 +28,7 @@ export function extensionToolNamesForPlatform(platform: NodeJS.Platform = proces
 function createDefinitions(platform: NodeJS.Platform, _cwd?: string): Map<SupportedExtensionTool, ToolDefinition> {
   // _cwd is reserved for composing a child read factory for the child's working
   // directory (the anchored-read follow-up); no shipped child tool consumes it yet.
-  const [rg, fd] = createSearchToolDefinitions();
   const definitions = new Map<SupportedExtensionTool, ToolDefinition>([
-    ["rg", rg as ToolDefinition],
-    ["fd", fd as ToolDefinition],
     ["codegraph", createCodeGraphDefinition(false) as ToolDefinition],
     ["pdf_search", createPdfSearchToolDefinition() as ToolDefinition],
     ["search", createSearchToolDefinition() as ToolDefinition],

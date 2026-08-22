@@ -5,8 +5,8 @@
 
 **Status:** Implemented.
 
-`find` and `fd` share one path-list grammar. This document is the reference for
-both; [fd.md](fd.md) records only the differences.
+`find` is Pi's built-in file discovery and the reference for the path-list
+grammar. The retired `fd` extension tool shared this grammar until 11.0.
 
 ## Current output
 

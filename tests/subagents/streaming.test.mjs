@@ -98,10 +98,10 @@ function createSession(script) {
     emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "world" } });
     await wait(LIVE_UPDATE_THROTTLE_MS + 30);
 
-    emit({ type: "tool_execution_start", toolName: "rg", args: { pattern: "needle", path: "." } });
+    emit({ type: "tool_execution_start", toolName: "grep", args: { pattern: "needle", path: "." } });
     emit({
       type: "tool_execution_end",
-      toolName: "rg",
+      toolName: "grep",
       isError: false,
       result: { content: [{ type: "text", text: "1 match" }] },
     });
@@ -153,7 +153,7 @@ function createSession(script) {
   assert.equal(returned.details.phase, "done");
   const toolStarts = returned.details.timeline.filter((item) => item.kind === "tool" && item.phase === "start").map((item) => item.text);
   assert.deepEqual(toolStarts, [
-    "rg /needle/ in .",
+    "grep /needle/ in .",
     "github owner/name:README.md @main",
   ]);
   assert.doesNotMatch(toolStarts.join("\n"), /password|token|private|SECRET/);

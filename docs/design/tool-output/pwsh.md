@@ -82,7 +82,7 @@ addition:
 | 47 | Two empty rows remain between the output and the summary | — |
 
 Defect 43 is the same class as the duplication that
-[grep.md](grep.md) and [rg.md](rg.md) record, but here it duplicates a whole
+[grep.md](grep.md) records, but here it duplicates a whole
 error body rather than metadata. It is specific to the internal execution
 adapter; the `bash` built-in path does not have it.
 

@@ -56,13 +56,9 @@ _Avoid_: custom tool, plugin, native tool
 The fixed set of extension tools that a subagent definition may request by name.
 _Avoid_: tool list, allowlist
 
-**Bundled binary**:
-A native executable that this repository vendors under `bin/` and resolves by platform target, with no PATH lookup and no download.
-_Avoid_: vendored dependency, local binary
-
 **Platform package**:
 A native executable that an npm optional dependency delivers per platform, resolved through the installed package rather than PATH.
-_Avoid_: bundled binary, native module
+_Avoid_: vendored dependency, native module
 
 **Retired tool**:
 An extension tool that a major release deletes completely, including its code, dependencies, assets, catalog entry, and documented rules. A retired name stays invalid rather than becoming an alias.

@@ -9,8 +9,6 @@ import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolD
 import type { DisplayFamily, DisplayMetadataEntry, OperationalLifecycle, OperationalQualifier } from "./types";
 
 const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  rg: ["pattern", "path", "globs", "literal", "context", "filesOnly", "offset", "limit"],
-  fd: ["pattern", "path", "excludeGlobs", "types", "extensions", "maxDepth", "offset", "limit"],
   pdf_search: ["path", "query", "limit"],
   codegraph: ["operation", "projectPath", "query", "maxFiles"],
   bash: ["command", "timeout"],
@@ -31,7 +29,7 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 });
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  rg: ["pattern"], fd: ["pattern"], pdf_search: ["query"],
+  pdf_search: ["query"],
   codegraph: ["operation"], bash: ["command"], pwsh: ["command"],
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
   docs: ["libraryId"], parse: ["path"], replace: ["path"], revert: ["path"],
@@ -39,9 +37,9 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   delegate: ["agent"], resume: ["id"],
 });
 
-/** C1 sentence-case titles; unique within each family (`rg` is `Text search`). */
+/** C1 sentence-case titles; unique within each family (`grep` is `Text search`). */
 const TITLES: Readonly<Record<string, string>> = Object.freeze({
-  rg: "Text search", fd: "File search", pdf_search: "PDF search",
+  pdf_search: "PDF search",
   codegraph: "CodeGraph", bash: "Bash", pwsh: "PowerShell",
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", replace: "Replace", revert: "Revert", github: "GitHub",
@@ -150,7 +148,7 @@ function callPreview(name: string, args: unknown): string | undefined {
 
 /**
  * C7 boundedness signals shared by the extension tools: an explicit
- * `truncated` flag, a truncation detail object (rg/fd content budgets),
+ * `truncated` flag, a truncation detail object (content budgets),
  * the codegraph model-facing output budget, a truncated stderr stream, a
  * paged result with more entries available, and over-long lines truncated
  * by GitHub reads. Any of them raises the `truncated` header badge.
@@ -281,9 +279,7 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
   const entry = getCatalogEntry(definition.name);
   if (!entry) throw new Error(`Missing display catalog entry for '${definition.name}'`);
   const base = createAdapter(definition.name, entry.family);
-  const adapter = definition.name === "rg"
-    || definition.name === "fd"
-    || definition.name === "pdf_search"
+  const adapter = definition.name === "pdf_search"
     || definition.name === "codegraph"
     ? createSearchAdapter(definition.name, base)
     : definition.name === "bash" || definition.name === "pwsh"

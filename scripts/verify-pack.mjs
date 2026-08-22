@@ -7,7 +7,7 @@ if (!Array.isArray(packs) || packs.length !== 1) {
 }
 
 const pack = packs[0];
-const allowedRoots = new Set(["bin", "src", "subagents", "themes"]);
+const allowedRoots = new Set(["src", "subagents", "themes"]);
 const allowedFiles = new Set([
   "CHANGELOG.md",
   "LICENSE",
@@ -41,7 +41,7 @@ for (const path of requiredFiles) {
   if (!paths.has(path)) throw new Error(`missing required publication file: ${path}`);
 }
 if (pack.name !== "@odradekk/pi-square") throw new Error(`unexpected package name: ${pack.name}`);
-if (pack.size > 30 * 1024 * 1024) throw new Error(`compressed package exceeds 30 MiB: ${pack.size}`);
-if (pack.unpackedSize > 70 * 1024 * 1024) throw new Error(`unpacked package exceeds 70 MiB: ${pack.unpackedSize}`);
+if (pack.size > 1024 * 1024) throw new Error(`compressed package exceeds 1 MiB: ${pack.size}`);
+if (pack.unpackedSize > 4 * 1024 * 1024) throw new Error(`unpacked package exceeds 4 MiB: ${pack.unpackedSize}`);
 
 console.log(`${pack.name}@${pack.version}: ${pack.entryCount} files, ${pack.size} bytes compressed`);

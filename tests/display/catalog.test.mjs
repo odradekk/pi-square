@@ -73,7 +73,7 @@ const expectedTools = [
   // Platform shell
   "bash", "pwsh",
   // pi-square search
-  "rg", "fd", "codegraph", "pdf_search",
+  "codegraph", "pdf_search",
   // pi-square remote
   "search", "fetch", "libs", "docs", "parse",
   "github",
@@ -222,7 +222,7 @@ assert.deepEqual([...DISPLAY_FAMILIES], ["filesystem", "search", "execution", "r
 
 // ── catalogFamilyFor helper ──────────────────────────────────────────
 
-assert.equal(catalogFamilyFor("rg"), "search");
+assert.equal(catalogFamilyFor("pdf_search"), "search");
 assert.equal(catalogFamilyFor("bash"), "execution");
 assert.equal(catalogFamilyFor("nonexistent"), undefined);
 

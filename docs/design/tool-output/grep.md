@@ -5,8 +5,8 @@
 
 **Status:** Implemented.
 
-`grep` and `rg` share one text-search grammar. This document is the reference
-for both; [rg.md](rg.md) records only the differences.
+`grep` is Pi's built-in text search and the reference for the text-search
+grammar. The retired `rg` extension tool shared this grammar until 11.0.
 
 ## Current output
 
@@ -170,5 +170,4 @@ The raw stderr stays available in the expanded `ERROR` section.
 ## Out of scope
 
 - Syntax highlighting of the matched line.
-- Context lines. Pi's `grep` does not return them; `rg` does, and
-  [rg.md](rg.md) covers that case.
+- Context lines. Pi's `grep` returns none, so the grammar has no context row.

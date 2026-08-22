@@ -52,10 +52,10 @@ tools:
   - read
   - ls
   - shell
+  - grep
+  - find
 
 extensionTools:
-  - rg
-  - fd
   - codegraph
   - search
   - fetch

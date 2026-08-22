@@ -42,13 +42,13 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 const matrix = {
   "explorer.yaml": {
-    tools: ["read", "ls"],
-    extensionTools: ["rg", "fd", "codegraph"],
+    tools: ["read", "ls", "grep", "find"],
+    extensionTools: ["codegraph"],
     skills: ["none"],
   },
   "oracle.yaml": {
-    tools: ["read", "ls", "shell"],
-    extensionTools: ["rg", "fd", "codegraph", "search", "fetch", "libs", "docs"],
+    tools: ["read", "ls", "shell", "grep", "find"],
+    extensionTools: ["codegraph", "search", "fetch", "libs", "docs"],
     skills: ["none"],
   },
   "crawler.yaml": {
@@ -62,8 +62,8 @@ const matrix = {
     skills: ["none"],
   },
   "generalist.yaml": {
-    tools: ["read", "write", "edit", "shell", "ls"],
-    extensionTools: ["rg", "fd", "codegraph", "search", "fetch", "libs", "docs"],
+    tools: ["read", "write", "edit", "shell", "ls", "grep", "find"],
+    extensionTools: ["codegraph", "search", "fetch", "libs", "docs"],
     skills: [],
   },
 };
@@ -147,7 +147,7 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
 });
 
 test("child tool construction accepts a child working directory without changing tools", () => {
-  const names = ["rg", "fd", "codegraph"];
+  const names = ["codegraph", "pdf_search"];
   const plain = createChildTools(names);
   const withCwd = createChildTools(names, undefined, "/workspace/child");
   assert.deepEqual(withCwd.errors, []);

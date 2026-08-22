@@ -52,8 +52,8 @@ try {
   assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
-    "ask", "codegraph", "delegate", "docs", "fd", "fetch", "github",
-    "libs", "parse", "pdf_search", "replace", "resume", "revert", "rg", "search",
+    "ask", "codegraph", "delegate", "docs", "fetch", "github",
+    "libs", "parse", "pdf_search", "replace", "resume", "revert", "search",
     "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
@@ -186,12 +186,6 @@ try {
   assert.equal(todoResult.details.counts.total, 1);
   assert.equal(todoResult.details.currentId, "smoke");
   assert.equal(JSON.parse(todoResult.content[0].text).version, 1);
-
-  const rgResult = await toolByName("rg").execute("smoke:rg", {
-    pattern: "pi-square-smoke-written",
-    path: ".",
-  }, undefined, undefined);
-  assert.match(rgResult.content[0].text, /sample\.txt/);
 
   const codegraphResult = await toolByName("codegraph").execute("smoke:codegraph", {
     operation: "status",

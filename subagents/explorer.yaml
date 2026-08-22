@@ -44,10 +44,10 @@ output: |
 tools:
   - read
   - ls
+  - grep
+  - find
 
 extensionTools:
-  - rg
-  - fd
   - codegraph
 
 skills:
