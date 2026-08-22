@@ -107,7 +107,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
     makeCtx(args, state, { argsComplete: true, executionStarted: true, lastComponent: running, isPartial: true }),
   );
   assert.match(stripVTControlCharacters(streaming.render(80).join("\n")), /^●/, "streaming partial renders running spinner");
-  assert.match(stripVTControlCharacters(streaming.render(80).join("\n")), /partial output/, "streaming output is visible");
+  assert.match(stripVTControlCharacters(streaming.render(80).join("\n")), /1 line/, "streaming partial shows the inline running summary");
+  assert.doesNotMatch(stripVTControlCharacters(streaming.render(80).join("\n")), /partial output/, "streaming partial hides the live tail in the collapsed row");
 
   const completed = decorated.renderResult(
     { content: [{ type: "text", text: "done" }], details: { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 } },
@@ -253,8 +254,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(collapsedText, /^✓/, "collapsed keeps lifecycle marker visible");
   assert.match(collapsedText, /PowerShell/, "collapsed keeps identity/title visible");
   assert.match(collapsedText, /Get-Process/, "collapsed keeps command target visible");
-  assert.match(collapsedText, /process list output/, "collapsed shows the output content");
-  assert.match(collapsedText, /pwsh 7\.4\.0/, "collapsed shows the host token in the summary row");
+  // C4 revision: no live output tail in the collapsed row; the inline
+  // summary states the outcome and the host token.
+  assert.doesNotMatch(collapsedText, /process list output/, "collapsed hides the output payload");
+  assert.match(collapsedText, /pwsh 7\.4\.0/, "collapsed shows the host token in the inline summary");
   assert.doesNotMatch(collapsedText, /Status/, "collapsed has no Status section");
 
   const expanded = renderResult(decorated, args, { exitCode: 0, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "process list output", { expanded: true });
@@ -372,11 +375,20 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(text, /^✓/, "bash success renders completed marker");
   assert.match(text, / Bash/, "bash result keeps the Bash title");
   assert.match(text, /echo hello/, "bash result keeps the command visible");
-  assert.match(text, /hello/, "bash output is visible in preview");
-  // Pi's bash tool embeds exit/timeout/abort status as appended text
-  // (e.g. "Command exited with code N"), and the display layer surfaces
-  // it through the preview — no structured sections needed.
-  assert.match(text, /world/, "bash multi-line output preserves recent lines");
+  // C4 revision: the collapsed row carries the inline outcome summary, not
+  // the output payload; the output is visible only when expanded.
+  assert.match(text, /2 lines/, "bash inline summary states the output size");
+  assert.doesNotMatch(text, /\bworld\b/, "bash collapsed hides the output payload");
+
+  const expandedResult = decorated.renderResult(
+    { content: [{ type: "text", text: "hello\nworld" }], details: {} },
+    { expanded: true, isPartial: false },
+    plainTheme,
+    makeCtx(args, {}, { argsComplete: true, executionStarted: true, lastComponent: result, isError: false, expanded: true }),
+  );
+  const expandedText = stripVTControlCharacters(expandedResult.render(80).join("\n"));
+  assert.match(expandedText, /hello/, "bash expanded shows the output");
+  assert.match(expandedText, /world/, "bash multi-line output preserves recent lines when expanded");
 
   // Error result: Pi's bash sets isError and appends status to text.
   const errResult = decorated.renderResult(

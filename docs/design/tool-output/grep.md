@@ -66,9 +66,8 @@ Invalid pattern:
 
 ## Target design
 
-Text search is an explicit exception to C4: a bounded set of matches stays in
-the collapsed body, because the matches are the result. The reference
-implementation does the same (`~/Projects/claude-code/src/tools/GrepTool/UI.tsx:178`).
+Text search follows C4: the collapsed entry is one row with the match totals
+inline, and the matches render only when the entry is expanded.
 
 ### Header
 
@@ -76,13 +75,22 @@ implementation does the same (`~/Projects/claude-code/src/tools/GrepTool/UI.tsx:
 ● Grep tokenize                                                            1ms
 ```
 
-The target is the pattern. The search root belongs to the summary row.
+The target is the pattern. The search root belongs to the inline summary.
 
-### Collapsed body
+### Collapsed entry
 
-Matches are grouped by file. A file row carries the workspace-relative path.
-Each match below it uses one row: a right-aligned dim line number, two spaces,
-then the matched line with the matched text emphasized.
+One row (C4). The inline summary states the match totals:
+
+```
+● Grep tokenize 60 matches in 1 file · 56 not shown         [truncated]  1ms
+```
+
+### Match rows
+
+Matches are grouped by file and render only when the entry is expanded. A
+file row carries the workspace-relative path. Each match below it uses one
+row: a right-aligned dim line number, two spaces, then the matched line with
+the matched text emphasized.
 
 ```
 ● Grep tokenize                                                            1ms
@@ -96,18 +104,18 @@ then the matched line with the matched text emphasized.
 
 Rules:
 
-1. The match rows keep the `previewLines` budget of the effective policy.
+1. The match rows keep the policy line budget when expanded.
 2. A file row counts against the budget.
 3. Long lines are truncated with `…` at the display width. The emphasized
    match stays visible; when the match is beyond the width, the line is elided
    from the left instead of the right.
-4. The summary row states the totals and the dropped rows:
+4. The inline summary states the totals and the dropped rows:
    `60 matches in 1 file · 56 not shown`. The header carries the `truncated`
    badge when rows are dropped.
 5. Leading indentation of the source line is preserved but collapsed to at
    most four columns, so deep code does not push the match out of view.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -120,17 +128,18 @@ Rules:
 ### Expanded body
 
 One `MATCHES` section with the same grouped layout and the full policy line
-budget, then the same summary row. The `QUERY` section is removed. A search
-that used a filter the header does not show — `include`, `exclude`, case
-mode, or a non-default root — adds one bounded muted row above the section.
+budget, then the same outcome sentence as the final row. The `QUERY` section
+is removed. A search that used a filter the header does not show — `include`,
+`exclude`, case mode, or a non-default root — adds one bounded muted row above
+the section.
 
-A search with no match produces no section. The summary row is the whole body.
+A search with no match produces no section. The inline summary is the whole
+collapsed entry.
 
 ### Failure
 
 ```
-● Grep step[0-9                                                            0ms
-└─   Invalid pattern · unclosed character class
+● Grep step[0-9 Invalid pattern · unclosed character class                 0ms
 ```
 
 | Cause | Row |
@@ -146,10 +155,10 @@ The raw stderr stays available in the expanded `ERROR` section.
 
 1. The header shows `●`, the title `Grep`, and the pattern as the target.
 2. Matches are grouped by file, and each match uses exactly one row.
-3. The collapsed body never exceeds the `previewLines` budget plus the summary
-   row.
+3. The collapsed entry is exactly one row; the matches render only when the
+   entry is expanded.
 4. The matched text is emphasized in every match row.
-5. The summary row states the match count, the file count, and the dropped
+5. The inline summary states the match count, the file count, and the dropped
    rows, and the `truncated` badge is set exactly when rows are dropped.
 6. No match renders `No matches` and no `MATCHES` section.
 7. An invalid pattern renders one sentence, and the raw stderr is only in the

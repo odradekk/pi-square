@@ -80,12 +80,11 @@ the model set an explicit `projectPath`, which is then shown workspace-relative.
 ### `status`
 
 ```
-● CodeGraph status                                                         1ms
-└─   278 files · 7,711 nodes · 22,679 edges · 24.8 MB · indexed 22h ago
+● CodeGraph status 278 files · 7,711 nodes · 22,679 edges · 24.8 MB · i… 1ms
 ```
 
-The age is relative and rounded. When the index is missing or stale, the row
-states the required action:
+The age is relative and rounded. When the index is missing or stale, the
+inline summary states the required action:
 
 | Case | Row |
 |---|---|
@@ -100,7 +99,14 @@ rows, plus the absolute timestamp and the resolved project path.
 ### `explore`
 
 ```
-● CodeGraph explore lifecycle color resolution                             2ms
+● CodeGraph explore lifecycle color resolution 17 symbols in 4 files        2ms
+```
+
+The collapsed entry is one row with the symbol totals inline. The expanded
+body lists the files that the exploration returned, with the number of
+symbols in each, bounded by the policy:
+
+```
 │    src/display/theme.ts          6 symbols
 │    src/display/types.ts          5 symbols
 │    src/display/components.ts     4 symbols
@@ -108,10 +114,7 @@ rows, plus the absolute timestamp and the resolved project path.
 └─   17 symbols in 4 files
 ```
 
-The collapsed body lists the files that the exploration returned, with the
-number of symbols in each, bounded by `previewLines`.
-
-The expanded body adds one `BLAST RADIUS` section: one row per symbol, with
+It adds one `BLAST RADIUS` section: one row per symbol, with
 the symbol name, its declaration site, the caller count, and the test state.
 
 ```
@@ -124,7 +127,8 @@ the symbol name, its declaration site, the caller count, and the test state.
 Verbatim source blocks are **not** rendered. They are context for the model.
 A user who needs the source uses `read`.
 
-`No relevant source` is the whole body when the exploration returns nothing.
+`No relevant source` is the inline summary when the exploration returns
+nothing.
 
 ### Sanitization
 
@@ -143,13 +147,12 @@ The text returned to the model is unchanged.
 
 `init` and `reindex` require confirmation. Their call carries the
 `needs-input` badge until the user answers, and their result states the
-outcome in one row: `Indexed 278 files in 42s` or `Declined`.
+outcome in the inline summary: `Indexed 278 files in 42s` or `Declined`.
 
 ### Failure
 
 ```
-● CodeGraph explore lifecycle color resolution                             0ms
-└─   Project path is outside the workspace
+● CodeGraph explore lifecycle color resolution Project path is outside…    0ms
 ```
 
 | Cause | Row |
@@ -164,11 +167,12 @@ outcome in one row: `Indexed 278 files in 42s` or `Declined`.
 
 1. No rendered row contains an emoji presentation character.
 2. No rendered row contains an instruction addressed to the model.
-3. The collapsed `explore` body lists files with symbol counts and never
-   exceeds the `previewLines` budget plus the summary row.
+3. The collapsed `explore` entry is one row; the file list with symbol counts
+   renders only when expanded.
 4. No verbatim source block is rendered in any state.
-5. `status` states counts, size, and a relative index age in one row, and
-   states the required action when the index is missing or stale.
+5. `status` states counts, size, and a relative index age in the inline
+   summary, and states the required action when the index is missing or
+   stale.
 6. The expanded body has no `QUERY` section and no key-value metadata row.
 7. `init` and `reindex` show the `needs-input` badge while a confirmation is
    open.

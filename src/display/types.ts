@@ -394,9 +394,9 @@ export interface DisplayDescriptionV1 {
    */
   readonly errorRaw?: string;
   /**
-   * C4 one-row outcome sentence (`60 lines · 2.1 KB`). The collapsed body
-   * of a non-payload tool is exactly this row; payload tools append it
-   * after their bounded body, and the expanded body closes with it.
+   * C4 outcome sentence (`60 lines · 2.1 KB`). A terminal collapsed entry
+   * renders it inline in its single row; the expanded body closes with it
+   * as a summary row.
    */
   readonly summary?: string;
   readonly qualifiers?: readonly OperationalQualifier[];

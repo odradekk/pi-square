@@ -84,13 +84,9 @@ for (const [name, args, expected] of cases) {
       ? /subagent_12345678/
       : expected;
   assert.match(collapsedText, resultIdentity, `${name} result identity`);
-  // Payload tools keep content in the collapsed body; non-payload tools
-  // collapse to a summary row (C4). Web tools (search, fetch, libs, docs,
-  // parse) no longer dump raw text in collapsed mode.
-  const isPayload = name === "delegate" || name === "resume";
-  if (isPayload) {
-    assert.match(collapsedText, /private result body/, `${name} collapsed shows result content`);
-  }
+  // C4 revision: collapsed entries are exactly one row. The inline summary
+  // states the outcome; payload content is visible only when expanded.
+  assert.doesNotMatch(collapsedText, /private result body/, `${name} collapsed hides the payload`);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
   // Tools with structured domain sections (tree/commit) carry content
@@ -131,7 +127,10 @@ const running = subagent.renderResult(
   context(subagentArgs, { isPartial: true }),
 ).render(80).join("\n");
 assert.match(running, /explorer/);
-assert.match(running, /scanning repository|found 3 matches/);
+// C4 revision: the collapsed running entry is one row; the inline summary
+// states the running outcome, and the live text is visible only expanded.
+assert.match(running, /running · 1 turns so far/, "collapsed running shows the inline outcome");
+assert.doesNotMatch(running, /scanning repository|found 3 matches/, "collapsed running hides the live text");
 // Activity rows never appear in the collapsed body
 assert.doesNotMatch(running, /Activity/);
 const expandedSubagent = subagent.renderResult(

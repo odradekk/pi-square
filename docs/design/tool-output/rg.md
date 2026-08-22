@@ -77,9 +77,9 @@ The target is the pattern.
 
 ### Match rows
 
-Matches are grouped by file, exactly as in [grep.md](grep.md). The position is
-the line number only; the column is not shown. There is no `match` or
-`context` label column.
+Matches are grouped by file, exactly as in [grep.md](grep.md), and render
+only when the entry is expanded. The position is the line number only; the
+column is not shown. There is no `match` or `context` label column.
 
 A context line requested through `beforeContext` or `afterContext` is shown in
 the same file group, in the muted tone, with its own line number and no label.
@@ -87,6 +87,8 @@ A match line uses the default tone with the matched text emphasized, so the
 two kinds stay separable when color is unavailable.
 
 A line that does not fit is truncated with `…`; it is never wrapped.
+
+Expanded:
 
 ```
 ● Text search export function \w+                                          0ms
@@ -98,9 +100,10 @@ A line that does not fit is truncated with `…`; it is never wrapped.
 └─   3 matches in 1 file
 ```
 
-### Summary row
+### Inline summary
 
-Paging uses the same sentence form as [fd.md](fd.md).
+Paging uses the same sentence form as [fd.md](fd.md). The sentence renders
+inline in the single collapsed row.
 
 | Case | Row |
 |---|---|
@@ -114,8 +117,8 @@ key-value pairs, and a null value is never rendered.
 
 ### Expanded body
 
-One `MATCHES` section and the same summary row. The `QUERY` and `SUMMARY`
-sections are removed. Active filters that the header does not show —
+One `MATCHES` section and the same outcome sentence as the final row. The
+`QUERY` and `SUMMARY` sections are removed. Active filters that the header does not show —
 `includeGlobs`, `excludeGlobs`, `types`, `case`, `word`, `literal`, `hidden`,
 `noIgnore`, `maxDepth`, and a non-default `path` — appear as one bounded muted
 row above the section:
@@ -127,8 +130,7 @@ row above the section:
 ### Failure
 
 ```
-● Text search step[0-9                                                     0ms
-└─   Invalid pattern · unclosed character class
+● Text search step[0-9 Invalid pattern · unclosed character class         0ms
 ```
 
 The complete `rg` stderr stays available in the expanded `ERROR` section.
@@ -141,10 +143,10 @@ The complete `rg` stderr stays available in the expanded `ERROR` section.
    and are never wrapped.
 3. Context lines use the muted tone and no label, and match text is
    emphasized.
-4. The collapsed body never exceeds the `previewLines` budget plus the summary
-   row.
-5. The summary row uses the sentence form, and no surface prints `returned`,
-   `total`, `next`, `hasMore`, or a null value.
+4. The collapsed entry is exactly one row; the matches render only when the
+   entry is expanded.
+5. The inline summary uses the sentence form, and no surface prints
+   `returned`, `total`, `next`, `hasMore`, or a null value.
 6. The expanded body has one `MATCHES` section, at most one filter row, and no
    `QUERY` or `SUMMARY` section.
 7. A failure renders one sentence, with the raw stderr only in the expanded

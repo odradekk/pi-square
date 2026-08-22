@@ -57,12 +57,18 @@ addition:
 The target is the URL without the scheme, elided in the middle. With several
 URLs the target is the first host followed by `+2 more`.
 
-### Collapsed body
+### Collapsed entry
 
-One record per URL, two rows, in the layout of [search.md](search.md):
+One row (C4). The inline summary states the fetched page counts:
 
 ```
-● Web fetch example.com                                                   1.2s
+● Web fetch example.com 1 page fetched                                    1.2s
+```
+
+The records render only when the entry is expanded, one record per URL, two
+rows, in the layout of [search.md](search.md):
+
+```
 │    1  Example Domain
 │       example.com · 3 lines · 29 tokens
 └─   1 page fetched
@@ -76,7 +82,7 @@ warning tone:
 │       example.com/missing · 404
 ```
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -99,13 +105,14 @@ removed, and `retried` is never rendered.
 1. The header target is the scheme-less URL.
 2. Each URL produces one two-row record; a failed URL states its reason in the
    warning tone.
-3. The collapsed body contains no page content and no reader header block.
+3. The collapsed entry is one row; it contains no page content and no reader
+   header block.
 4. The expanded `CONTENT` section contains no `URL:` or `Usage:` row and no
    raw Markdown link syntax.
 5. `tokens`, `usage`, and `retried` are never printed as key-value pairs, and
    the token count appears once.
-6. The summary row states the fetched and requested page counts, and sets the
-   `partial` or `truncated` qualifier when applicable.
+6. The inline summary states the fetched and requested page counts, and sets
+   the `partial` or `truncated` qualifier when applicable.
 7. The model-facing text is unchanged.
 8. Every state is bounded at 39, 40, 63, 64, 80, 99, 100, and 120 columns in
    both bundled themes.

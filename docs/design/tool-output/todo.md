@@ -75,15 +75,15 @@ An unknown ID appends the raw JSON body after the sections:
 The title is `Tasks`. The target is the action word: `set`, `add`, `update`,
 `start`, `pause`, `check`, `uncheck`, `clear`, or `list`.
 
-### Collapsed body
+### Collapsed entry
 
-One progress row. The task list stays in the expanded body, because the
+One row (C4). The inline summary states the list title, the progress, and
+the current task. The task list stays in the expanded body, because the
 read-only widget above the editor already shows the live list; the transcript
 row records what this call changed.
 
 ```
-● Tasks set                                                                2ms
-└─   Tool output redesign · 1 of 3 done · now: Render current output for eve…
+● Tasks set Tool output redesign · 1 of 3 done · now: Render current ou…   2ms
 ```
 
 | Case | Row |
@@ -142,8 +142,8 @@ the model-facing result and in the expanded `ERROR` section.
 ## Acceptance criteria
 
 1. The header shows `●`, the title `Tasks`, and the action as the target.
-2. The collapsed body is exactly one progress row that names the list and the
-   current task.
+2. The collapsed entry is exactly one row whose inline summary names the
+   list and the current task.
 3. The expanded `TASKS` section uses one row per task with the `○`, `●`, `✓`
    glyphs and no `id=`, `status=`, or `current=` fields.
 4. No `ACTION`, `SUMMARY`, or `PERSISTENCE` section exists, and no internal

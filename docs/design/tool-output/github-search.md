@@ -67,11 +67,19 @@ addition, these are shared by the whole `github_*` group:
 ```
 
 The title is `GitHub search`. The target is the query, truncated with `…`. The
-search kind belongs to the summary row.
+search kind belongs to the inline summary.
 
 ### Record layout
 
-Two rows, as in [search.md](search.md):
+The collapsed entry is one row (C4) with the result counts and the rate
+limit inline:
+
+```
+● GitHub search ripgrep language:rust stars:>1000 2 repositories · rate…  1.4s
+```
+
+The records render only when the entry is expanded, two rows, as in
+[search.md](search.md):
 
 1. The rank and the repository or file identity, stated exactly once.
 2. The secondary facts in the muted tone.
@@ -97,7 +105,7 @@ Code search:
 The GitHub URL is never rendered. `owner/repo` and the file path are the
 identity, and they are shorter and unambiguous.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -107,9 +115,9 @@ identity, and they are shorter and unambiguous.
 | Incomplete provider result | adds the `partial` qualifier |
 | Nothing found | `No results` |
 
-The rate limit appears once, in this row, as a plain count. The reset time is
-rendered only in the expanded body, and only as a relative time such as
-`resets in 12m`. A raw Unix timestamp is never shown.
+The rate limit appears once, in the inline summary, as a plain count. The
+reset time is rendered only in the expanded body, and only as a relative time
+such as `resets in 12m`. A raw Unix timestamp is never shown.
 
 ### Expanded body
 
@@ -139,7 +147,7 @@ The token never appears in any row, error, detail, or diagnostic.
 3. The rate limit appears once, as a plain count, and the reset time is
    relative and expanded-only.
 4. No machine header row and no model-facing continuation hint is rendered.
-5. The summary row states the result counts and the paging continuation.
+5. The inline summary states the result counts and the paging continuation.
 6. No token ever appears in any state.
 7. The model-facing text is unchanged.
 8. Every state is bounded at 39, 40, 63, 64, 80, 99, 100, and 120 columns in

@@ -43,19 +43,18 @@ is simply larger than the fact it states.
 The title is `Local time`. There is no target, because the tool takes no
 argument.
 
-### Collapsed body
+### Collapsed entry
 
-One row with the local time and the zone.
+One row (C4). The inline summary carries the local time and the zone.
 
 ```
-● Local time                                                               1ms
-└─   2026-08-09 14:42:36 · Asia/Shanghai (UTC+08:00)
+● Local time 2026-08-09 14:42:36 · Asia/Shanghai (UTC+08:00)              1ms
 ```
 
 ### Expanded body
 
-The same row, plus one muted row with the ISO 8601 value, because that is the
-form a user copies into code:
+The same summary, plus one muted row with the ISO 8601 value, because that is
+the form a user copies into code:
 
 ```
 ● Local time                                                               1ms
@@ -76,7 +75,8 @@ text in the expanded `ERROR` section.
 ## Acceptance criteria
 
 1. The header shows `●` and the title `Local time`, with no target.
-2. The collapsed body is exactly one row with the local time and the zone.
+2. The collapsed entry is exactly one row whose inline summary carries the
+   local time and the zone.
 3. The expanded body adds exactly one muted ISO row.
 4. No section rule and no key-value pair is rendered.
 5. The model-facing text is unchanged.

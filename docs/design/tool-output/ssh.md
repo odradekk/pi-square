@@ -112,9 +112,15 @@ profile and its optional user label, which the user chose.
 
 ### `command`
 
-The output uses the execution grammar of [bash.md](bash.md): the last rows
-bounded by `previewLines`, the `truncated` badge when rows are dropped, and no
-trailing empty row.
+The output uses the execution grammar of [bash.md](bash.md): one collapsed
+row with the outcome inline, the output only when the entry is expanded, the
+`truncated` badge when rows are dropped, and no trailing empty row.
+
+```
+● SSH profile-a ls -la /etc | head -30 30 lines · exit 0 · session 2 of 4 [truncated] 0.4s
+```
+
+Expanded, the tail keeps the `previewLines` bound:
 
 ```
 ● SSH profile-a ls -la /etc | head -30                        [truncated] 0.4s
@@ -124,7 +130,7 @@ trailing empty row.
 └─   30 lines · exit 0 · session 2 of 4
 ```
 
-Summary row cases:
+Inline summary cases:
 
 | Case | Row |
 |---|---|
@@ -138,8 +144,7 @@ Summary row cases:
 ### `connect`
 
 ```
-● SSH connect profile-a/primary                                           2.0s
-└─   Connected as user@host:22 · label design-evidence
+● SSH connect profile-a/primary Connected as user@host:22 · label design… 2.0s
 ```
 
 The endpoint is shown once, because the user must be able to verify which host
@@ -152,13 +157,11 @@ carries the `needs-input` badge while the prompt is open.
 ### `list`
 
 ```
-● SSH list                                                                0.0s
-│    profile-a       primary   user@host:22
-│    profile-b       primary   user@host:22
-└─   4 profiles · no sessions
+● SSH list 4 profiles · no sessions                                       0.0s
 ```
 
-With sessions, one `SESSIONS` section is added above the profile rows:
+The profile rows render when the entry is expanded. With sessions, one
+`SESSIONS` section is added above the profile rows:
 
 ```
 │    design-evidence  profile-a/primary  connected  idle 42s
@@ -171,8 +174,7 @@ Raw JSON is never rendered. `version`, `omissions`, `sshCode`, `status`, and
 ### Failure
 
 ```
-● SSH connect profile-a/primary                                           2.0s
-└─   Handshake timed out
+● SSH connect profile-a/primary Handshake timed out                       2.0s
 ```
 
 | Cause | Row |
@@ -197,11 +199,11 @@ never enter a row, a detail, a log, or an artifact.
 2. The header target uses the profile and the user label, never the machine
    session ID.
 3. A failure renders its message exactly once.
-4. `command` output follows the `bash` output rules, including the tail bound
-   and the `truncated` badge.
+4. `command` output follows the `bash` output rules, including the one-row
+   collapsed entry and the `truncated` badge.
 5. `connect` states the endpoint once and never the fingerprint.
-6. `list` renders profiles and sessions as aligned rows, with no key-value
-   pairs and no internal fields.
+6. `list` renders profiles and sessions as aligned rows when expanded, with
+   no key-value pairs and no internal fields.
 7. Secret material never appears in any state.
 8. The model-facing JSON result is unchanged.
 9. Every state is bounded at 39, 40, 63, 64, 80, 99, 100, and 120 columns in

@@ -73,32 +73,31 @@ Missing document:
 ● PDF search marker                                                      485ms
 ```
 
-The target is the query. The document belongs to the summary row, because one
-call searches one document.
+The target is the query. The document belongs to the inline summary, because
+one call searches one document.
 
-### Collapsed body
+### Collapsed entry
 
-One row per match. The row starts with the page label `page 1`, then the
-normalized context with the matched text emphasized, truncated with `…`.
+One row (C4). The inline summary states the match counts. The match rows
+render only when the entry is expanded; each starts with the page label
+`page 1`, then the normalized context with the matched text emphasized,
+truncated with `…`.
 
 ```
-● PDF search marker                                                      485ms
-│    page 1  operational interface design the renderer owns every tool entry…
-│    page 3  motion policy a static marker removes the fast repaint loop. the…
-└─   2 matches on 2 of 4 pages in design-notes.pdf
+● PDF search marker 2 matches on 2 of 4 pages in design-notes.pdf        485ms
 ```
 
 Rules:
 
-1. Match rows keep the `previewLines` budget. Dropped rows are stated in the
-   summary row and set the `truncated` badge.
+1. Match rows render only when expanded and keep the policy line budget.
+   Dropped rows set the `truncated` badge.
 2. An exact match carries no label. A fuzzy match closes its row with a muted
    `fuzzy`. The score and the edit distance appear only in the expanded body.
 3. A context line is never wrapped.
-4. The document name in the summary row is the file name. The full
+4. The document name in the inline summary is the file name. The full
    workspace-relative path appears in the expanded body.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -109,7 +108,8 @@ Rules:
 ### Expanded body
 
 One `MATCHES` section with the full context of each match, bounded by the
-policy, then one muted document row and the same summary row:
+policy, then one muted document row and the same outcome sentence as the
+final row:
 
 ```
 │    page 1  operational interface design the renderer owns every tool entry.
@@ -129,8 +129,7 @@ are never printed as key-value pairs. The cache state appears only as the word
 ### Failure
 
 ```
-● PDF search marker                                                        1ms
-└─   PDF does not exist
+● PDF search marker PDF does not exist                                     1ms
 ```
 
 | Cause | Row |
@@ -153,7 +152,7 @@ expanded `ERROR` section. No row shows a system call name or an absolute path.
 2. Each match uses one row that starts with `page N` and never repeats the
    document path.
 3. An exact match shows no type label; a fuzzy match shows a muted `fuzzy`.
-4. The summary row states matches, matched pages, total pages, and the
+4. The inline summary states matches, matched pages, total pages, and the
    document name.
 5. No surface prints `status`, `phase`, `returned`, `totalMatches`, or
    `cacheHit` as key-value pairs.

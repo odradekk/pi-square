@@ -18,20 +18,32 @@ defines one `BLACK_CIRCLE` for all tool entries, and
 ## Header grammar
 
 ```
-● Title target [badges] duration
+● Title target summary [badges] duration
 ```
 
 - `●` is one cell, followed by one space.
-- `Title` uses sentence case and is bold.
-- `target` follows one space. It is not parenthesized.
-- Badges and duration keep their existing rules and drop order.
+- `Title` uses sentence case, is bold, and uses the neutral text token.
+- `target` follows one space. It is not parenthesized and uses the muted
+  token.
+- `summary` is the inline muted outcome summary of a collapsed entry. A
+  collapsed entry is exactly one row; only the mutation family (`edit`,
+  `replace`, `revert`, `write`) keeps a bounded diff or preview body below
+  the row, and a failed mutation renders no payload body.
+- Badges and duration keep their existing rules and drop order: duration,
+  then the summary (it elides in place before it drops), then all but the
+  highest-priority badge, then the target. A `[REDACTED]` token is never
+  split by elision.
 - The body rails `│` and `└─` do not change.
+
+In the wide layout tier (viewport of 100 columns or more) an entry renders in
+the content column, `max(60, floor(0.6 × viewport))` cells, left-aligned;
+below the wide tier an entry keeps full width. An expanded entry keeps the
+same column, so expansion never causes a horizontal jump.
 
 Example:
 
 ```
-● Read src/parser.ts                                                  1ms
-└─   60 lines · 2.1 KB
+● Read src/parser.ts 60 lines · 2.1 KB                                   1ms
 ```
 
 ## State to color
@@ -51,8 +63,8 @@ All tokens already exist in `src/display/theme.ts`.
 **Accepted limitation.** `queued`, `pending`, and `aborted` share the `muted`
 token, because Pi exposes no fourth quiet token. The three states are
 separated by context, not by color: a queued or pending entry has no duration
-and no body, while an aborted entry has both and its body row states the
-cancellation. This limitation is acceptable because all three are quiet
+and no inline summary, while an aborted entry has both and its inline summary
+states the cancellation. This limitation is acceptable because all three are quiet
 non-success states.
 
 ## Fallback when color is unavailable

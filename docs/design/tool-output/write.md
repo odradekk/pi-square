@@ -80,42 +80,41 @@ asynchronously. The row `78 bytes projected` is the documented fallback
 
 ## Target design
 
-`write` is an explicit exception to C4, like `edit`. The content is the
-result. The reference implementation keeps a bounded preview and an overflow
-notice (`~/Projects/claude-code/src/tools/FileWriteTool/UI.tsx:88,108`).
+`write` is in the mutation family with `edit`, the one exception to C4: the
+collapsed entry keeps a bounded preview body below the row, because the
+content is the result. The reference implementation keeps a bounded preview
+and an overflow notice
+(`~/Projects/claude-code/src/tools/FileWriteTool/UI.tsx:88,108`).
 
 ### Call
 
 ```
-● Write src/new-module.ts                                     [projected]
+● Write src/new-module.ts 5 lines · 78 bytes                  [projected]
 │      1 + export const version = 1;
 │      2 +
-│      3 + export function hello(): string {
-└─   5 lines · 78 bytes
+└─   3 + export function hello(): string {
 ```
 
-When the projected preview cannot be produced, the diff rows are omitted and
-the summary row stays. The reason is a muted row, and the `projected` badge is
-not shown, because nothing was projected.
+When the projected preview cannot be produced, the preview rows are omitted
+and the inline summary stays. The reason is a muted body row, and the
+`projected` badge is not shown, because nothing was projected.
 
 ### Result
 
 ```
-● Write src/new-module.ts                                                  0ms
+● Write src/new-module.ts Created · 5 lines · 78 bytes                      0ms
 │    export const version = 1;
 │
 │    export function hello(): string {
 │      return "hi";
-│    }
-└─   Created · 5 lines · 78 bytes
+└─   }
 ```
 
 ```
-● Write README.md                                                          0ms
+● Write README.md Overwrote · 3 lines · 30 bytes                           0ms
 │    # Project
 │
-│    Rewritten content.
-└─   Overwrote · 3 lines · 30 bytes
+└─   Rewritten content.
 ```
 
 Rules:
@@ -124,14 +123,15 @@ Rules:
    splits head and tail, because a written file is read from the top.
 2. When rows are dropped, the last preview row is a muted
    `… +33 lines`, and the header carries the `truncated` badge.
-3. The summary row starts with `Created` or `Overwrote`. The verb is derived
-   from whether the path existed before the write.
+3. The inline summary starts with `Created` or `Overwrote`. The verb is
+   derived from whether the path existed before the write.
 4. A preview never ends with an empty row.
 
 ### Expanded body
 
 One `CONTENT` section with right-aligned dim line numbers, exactly like
-`read`, then the same summary row. The `TARGET` section is removed.
+`read`, then the same outcome sentence as the final row. The `TARGET` section
+is removed.
 
 ```
 ● Write src/big.ts                                                         0ms
@@ -144,8 +144,7 @@ One `CONTENT` section with right-aligned dim line numbers, exactly like
 ### Failure
 
 ```
-● Write src/locked.ts                                                      0ms
-└─   Permission denied
+● Write src/locked.ts Permission denied                                    0ms
 ```
 
 | Cause | Row |
@@ -160,8 +159,8 @@ Pi creates missing parent directories, so a missing parent is not a failure.
 ## Acceptance criteria
 
 1. The header shows `●`, the title `Write`, and a workspace-relative path.
-2. The result summary row starts with `Created` or `Overwrote` and states the
-   line count and the byte size.
+2. The result inline summary starts with `Created` or `Overwrote` and states
+   the line count and the byte size.
 3. The collapsed preview shows the first rows only, never a head and tail
    split, and never ends with an empty row.
 4. A bounded preview states `… +N lines` and sets the `truncated` badge.

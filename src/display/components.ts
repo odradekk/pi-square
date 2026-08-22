@@ -1,10 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
-import { COLLAPSED_PAYLOAD_TOOLS } from "./adapter-utils";
+import { MUTATION_FAMILY_TOOLS } from "./adapter-utils";
 import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
-import { boundedHeadTailLines, fitHeaderRow, padVisible, rightPriorityRows, wrapHanging } from "./layout";
+import { boundedHeadTailLines, contentColumnWidth, fitHeaderRow, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
 import { styleBadge, styleRule, styleOperational, styleTitle, styleTone } from "./theme";
 import {
@@ -36,6 +36,31 @@ function logicalLines(prefix: string, content: string, width: number): string[] 
     safeWidth,
     "\u2026",
   ));
+}
+
+/** Right-aligned gap between the header left side and the right element. */
+function padToRight(left: string, right: string, width: number): string {
+  const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
+  return " ".repeat(gap) + right;
+}
+
+/** C4 inline outcome sentence for a terminal collapsed entry. */
+function summarySentence(description: DisplayDescriptionV1): string | undefined {
+  const text = description.summary
+    ?? description.rows?.[0]?.text
+    ?? description.preview?.text?.split("\n")[0]
+    ?? undefined;
+  return text
+    ? truncateCodePoints(sanitizeDisplayLine(text), MAX_ROW_CODE_POINTS)
+    : undefined;
+}
+
+/** C6 one-sentence failure message for the inline collapsed row. */
+function errorSentenceText(description: DisplayDescriptionV1): string | undefined {
+  const text = description.error ?? description.summary ?? undefined;
+  return text
+    ? truncateCodePoints(sanitizeDisplayLine(text), MAX_ROW_CODE_POINTS)
+    : undefined;
 }
 
 export class HangingText implements Component {
@@ -258,6 +283,12 @@ export class OperationalDisplayComponent implements Component {
       return this.cachedLines;
     }
     const safe = Math.max(1, Math.floor(width));
+    // Content-column rule (wide tier): entries render at
+    // max(60, floor(0.6 × viewport)) cells, left-aligned. Below the wide
+    // tier an entry keeps full width. The column applies uniformly to the
+    // header, body, sections, preview, and diff so expansion never causes a
+    // horizontal jump.
+    const column = contentColumnWidth(safe);
     const description = this.description;
     const opState = resolveState(description);
     const colorAvailable = this.options.colorAvailable ?? false;
@@ -278,38 +309,7 @@ export class OperationalDisplayComponent implements Component {
     const orderedBadges = QUALIFIER_BADGE_ORDER
       .filter((qualifier) => opState.qualifiers.includes(qualifier))
       .map((qualifier) => ({ qualifier, label: `[${QUALIFIER_BADGES[qualifier]!}]` }));
-    const rightText = [
-      this.policy.showDuration && Number.isFinite(description.durationMs)
-        ? formatDuration(description.durationMs!)
-        : undefined,
-      progressText(description),
-    ].filter((part): part is string => Boolean(part)).join(" · ") || undefined;
-    // C5: the header is always exactly one row. The target is truncated (a
-    // path target is elided in the middle), the right element drops first at
-    // compact widths, then all but the highest-priority badge. Nothing wraps.
-    const fitted = fitHeaderRow({
-      marker: markerText,
-      title: titleText,
-      ...(targetText ? { target: targetText, targetKind: description.targetKind ?? "text" } : {}),
-      badges: orderedBadges.map((badge) => badge.label),
-      ...(rightText ? { right: rightText } : {}),
-    }, safe);
-    const title = styleTitle(this.theme, fitted.title);
-    const target = fitted.target ? ` ${this.theme.fg("accent", fitted.target)}` : "";
-    const badges = fitted.badges
-      .map((label, index) => ` ${styleBadge(this.theme, orderedBadges[index]!.qualifier, label)}`)
-      .join("");
-    const left = `${rail} ${title}${target}${badges}`;
-    const header = fitted.right
-      ? `${left}${" ".repeat(Math.max(1, safe - visibleWidth(left) - visibleWidth(fitted.right)))}${this.theme.fg("muted", fitted.right)}`
-      : left;
-    const lines = [header];
-
-    // Body content renders at a reduced width to accommodate tree rails.
-    // Each body line receives a │ continuation or └─ last-line prefix.
-    const TREE_RAIL_WIDTH = 3;
-    const bodyWidth = Math.max(1, safe - TREE_RAIL_WIDTH);
-    const body: string[] = [];
+    const progress = progressText(description);
 
     const isCall = description.phase === "call";
     const state = resolveState(description);
@@ -325,9 +325,76 @@ export class OperationalDisplayComponent implements Component {
       && !isWarning
       && !isError
       && !isAborted;
-    // C4 payload exceptions keep a bounded collapsed body; every other tool
-    // collapses to exactly one summary row.
-    const payloadTool = COLLAPSED_PAYLOAD_TOOLS.has(description.tool);
+
+    // Inline muted outcome summary (C4 revision): a terminal collapsed entry
+    // carries its outcome sentence (or one-sentence failure message) inside
+    // the single row, between the target and the right-side badges. The
+    // mutation family keeps its bounded body below the row as the sole
+    // exception. Failed and aborted entries fall back to the error sentence.
+    // A running or queued entry carries its live progress message in the same
+    // slot; the execution tail never renders in the collapsed row.
+    let inlineSummary: string | undefined;
+    // True when the live progress message moved into the inline summary slot;
+    // the right element then keeps only the duration so the one row never
+    // renders the same progress text twice.
+    let progressInline = false;
+    if (terminal && collapsed && !hidden) {
+      // A failure states the one-sentence message inline; a success carries
+      // the outcome sentence. The failure message takes priority so a
+      // preview fallback never masks an error.
+      inlineSummary = isError || isAborted
+        ? (errorSentenceText(description) ?? summarySentence(description))
+        : (summarySentence(description) ?? errorSentenceText(description));
+    } else if (!terminal && collapsed && !hidden) {
+      // A running or queued entry carries its live progress message (or, for
+      // execution tools, the running outcome summary) in the same slot; the
+      // execution tail never renders in the collapsed row.
+      if (progress) {
+        inlineSummary = progress;
+        progressInline = true;
+      } else {
+        inlineSummary = summarySentence(description);
+      }
+    }
+
+    const rightText = [
+      this.policy.showDuration && Number.isFinite(description.durationMs)
+        ? formatDuration(description.durationMs!)
+        : undefined,
+      progressInline ? undefined : progress,
+    ].filter((part): part is string => Boolean(part)).join(" · ") || undefined;
+
+    // C5: the header is always exactly one row. The target is truncated (a
+    // path target is elided in the middle), the right element drops first at
+    // compact widths, then the inline summary, then all but the
+    // highest-priority badge. Nothing wraps.
+    const fitted = fitHeaderRow({
+      marker: markerText,
+      title: titleText,
+      ...(targetText ? { target: targetText, targetKind: description.targetKind ?? "text" } : {}),
+      badges: orderedBadges.map((badge) => badge.label),
+      ...(rightText ? { right: rightText } : {}),
+      ...(inlineSummary ? { inlineSummary } : {}),
+    }, column, safe);
+    const title = styleTitle(this.theme, fitted.title);
+    const target = fitted.target ? ` ${this.theme.fg("muted", fitted.target)}` : "";
+    const inline = fitted.inlineSummary
+      ? ` ${this.theme.fg("muted", fitted.inlineSummary)}`
+      : "";
+    const badges = fitted.badges
+      .map((label, index) => ` ${styleBadge(this.theme, orderedBadges[index]!.qualifier, label)}`)
+      .join("");
+    const left = `${rail} ${title}${target}${inline}${badges}`;
+    const header = fitted.right
+      ? `${left}${padToRight(left, fitted.right, column)}`
+      : left;
+    const lines = [header];
+
+    // Body content renders at a reduced width to accommodate tree rails.
+    // Each body line receives a │ continuation or └─ last-line prefix.
+    const TREE_RAIL_WIDTH = 3;
+    const bodyWidth = Math.max(1, column - TREE_RAIL_WIDTH);
+    const body: string[] = [];
 
     // The key=value metadata row only renders expanded. The collapsed body
     // states the same outcome in one summary row (C4).
@@ -349,8 +416,9 @@ export class OperationalDisplayComponent implements Component {
     }
 
     // Flat rows carry call and running state. A terminal result states its
-    // outcome through the summary row or the failure sentence instead.
-    if (!terminal && !hidden && description.rows?.length) {
+    // outcome through the inline summary instead. C4 revision: rows render
+    // only when expanded; a collapsed entry is exactly one row.
+    if (this.options.expanded && !hidden && description.rows?.length) {
       const selectedRows = description.rows.slice(0, MAX_ROWS);
       for (const row of selectedRows) {
         const indent = " ".repeat(Math.min(8, Math.max(0, Math.floor(row.indent ?? 2))));
@@ -370,12 +438,16 @@ export class OperationalDisplayComponent implements Component {
       }
     }
 
-    if (terminal && collapsed && !hidden) {
-      body.push(...this.collapsedTerminalBody(description, isError, payloadTool, bodyWidth));
-    } else {
-      const showPreview = isCall
-        || isRunning
-        || this.options.expanded
+    if (collapsed && !hidden && MUTATION_FAMILY_TOOLS.has(description.tool)) {
+      // C4 revision: the mutation family (edit, replace, revert, write) is
+      // the only exception to the one-row collapsed entry. It keeps a
+      // bounded diff/preview body below the row in every state — including
+      // the running call, where write shows its projected preview and edit
+      // shows its pending edits — so file mutations stay reviewable without
+      // expanding.
+      body.push(...this.mutationFamilyBody(description, isError, bodyWidth));
+    } else if (this.options.expanded) {
+      const showPreview = this.options.expanded
         || this.policy.resultMode === "preview";
       // C6: an expanded failure carries the raw platform text exactly once,
       // as an ERROR section that joins the section flow (so C9 counts it).
@@ -408,7 +480,10 @@ export class OperationalDisplayComponent implements Component {
       }
     }
 
-    if (description.error) {
+    // The one-sentence failure message renders inline in the collapsed row;
+    // the error body row only appears when expanded (and the raw platform
+    // text renders as the expanded ERROR section).
+    if (description.error && this.options.expanded) {
       const message = truncateCodePoints(sanitizeDisplayText(description.error), MAX_ERROR_CODE_POINTS);
       body.push(...(
         this.policy.wordWrap
@@ -474,39 +549,24 @@ export class OperationalDisplayComponent implements Component {
   }
 
   /**
-   * C4/C6 collapsed terminal body: a failure renders only the sentence row
-   * (rendered by the caller); a success renders one summary row, and a
-   * payload tool keeps its bounded body above it. Execution tools are a
-   * C4 exception — their output is the result, so it stays in the body
-   * even on failure.
+   * C4/C6 mutation-family collapsed body: the only exception to the
+   * one-row collapsed entry. edit, replace, revert, and write keep a
+   * bounded diff/preview body below the row so file mutations stay
+   * reviewable without expanding. The outcome summary already sits inline
+   * in the row, so this body never appends a summary row. A failed
+   * mutation renders no payload body; the failure sentence is inline.
    */
-  private collapsedTerminalBody(
+  private mutationFamilyBody(
     description: DisplayDescriptionV1,
     isError: boolean,
-    payloadTool: boolean,
     bodyWidth: number,
   ): string[] {
-    if (isError && description.family !== "execution") return [];
+    if (isError) return [];
     const body: string[] = [];
-    let notShown = 0;
-    // Execution tools with rows render those rows in the collapsed body
-    if (payloadTool && description.rows?.length && description.family === "execution") {
-      const cap = Math.max(1, Math.floor(this.policy.previewLines));
-      const allRows = description.rows.slice(0, MAX_ROWS);
-      const tailRows = allRows.length > cap ? allRows.slice(-(cap - 1)) : allRows;
-      if (allRows.length > tailRows.length) {
-        body.push(padVisible(this.theme.fg("muted", `\u2026 ${allRows.length - tailRows.length} earlier lines`), bodyWidth));
-      }
-      for (const row of tailRows) {
-        const text = styleTone(this.theme, row.tone ?? "default",
-          truncateToWidth(sanitizeDisplayText(row.text), bodyWidth, "\u2026"));
-        body.push(padVisible(text, bodyWidth));
-      }
-    } else if (payloadTool && this.policy.resultMode === "preview") {
+    if (this.policy.resultMode === "preview") {
       const collapsedSections = renderDisplaySections(description.sections ?? [], this.policy, this.theme, bodyWidth, false);
       if (collapsedSections.length > 0) {
         const cap = Math.max(1, Math.floor(this.policy.previewLines));
-        notShown = Math.max(0, collapsedSections.length - cap);
         body.push(...collapsedSections.slice(0, Math.min(cap, collapsedSections.length)));
       } else {
         body.push(...this.previewBodyLines(description, this.policy.previewLines, bodyWidth));
@@ -515,7 +575,6 @@ export class OperationalDisplayComponent implements Component {
         body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
       }
     }
-    body.push(...this.summaryBodyRow(description, true, notShown));
     return body;
   }
 

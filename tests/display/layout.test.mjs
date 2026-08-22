@@ -10,6 +10,8 @@ const {
   rightPriorityRows,
   boundedVisualLines,
   assertBoundedLines,
+  contentColumnWidth,
+  elideTextMiddle,
 } = await load("../../src/display/layout.ts");
 
 assert.equal(layoutTier(39), "compact");
@@ -17,6 +19,31 @@ assert.equal(layoutTier(63), "compact");
 assert.equal(layoutTier(64), "regular");
 assert.equal(layoutTier(99), "regular");
 assert.equal(layoutTier(100), "wide");
+
+// Content-column rule: wide tier clamps to max(60, floor(0.6 × viewport));
+// below the wide tier the entry keeps full width.
+assert.equal(contentColumnWidth(80), 80);
+assert.equal(contentColumnWidth(99), 99);
+assert.equal(contentColumnWidth(100), 60);
+assert.equal(contentColumnWidth(120), 72);
+assert.equal(contentColumnWidth(150), 90);
+assert.equal(contentColumnWidth(200), 120);
+assert.equal(contentColumnWidth(1), 1);
+
+// Middle elision keeps head and tail; the redaction token is never split.
+assert.equal(elideTextMiddle("short", 20), "short");
+const elided = elideTextMiddle("a very long sentence that must be elided", 20);
+assert.ok(visibleWidth(elided) <= 20, "elided text stays bounded");
+assert.match(elided, /…/, "elision uses the middle ellipsis");
+assert.match(elided, /^a very/, "elision keeps the head");
+assert.match(elided, /elided$/, "elision keeps the tail");
+const redacted = elideTextMiddle("password=[REDACTED] and more text here", 24);
+assert.ok(visibleWidth(redacted) <= 24, "redacted elision stays bounded");
+assert.ok(redacted.includes("[REDACTED]"), "redaction token is never split");
+for (const width of [1, 5, 10]) {
+  const degenerate = elideTextMiddle("password=[REDACTED] tail", width);
+  assert.ok(visibleWidth(degenerate) <= width, `degenerate elision bounded at ${width}`);
+}
 
 for (const width of [1, 39, 40, 63, 64, 80, 99, 100, 120]) {
   const padded = padVisible("alpha", width);

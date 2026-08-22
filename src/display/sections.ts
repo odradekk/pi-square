@@ -238,10 +238,13 @@ function renderMatches(block: Extract<DisplaySectionBlock, { kind: "matches" }>,
       const excerpt = excerptWithHighlights(item, context);
       const meta = item.meta ? context.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(item.meta), 256)) : "";
       const left = `  ${pathText}  ${excerpt}`;
-      const row = meta
-        ? rightPriorityRows(left, meta, context.width, 2, 4)[0] ?? ""
-        : truncateToWidth(left, context.width, "\u2026");
-      lines.push(padVisible(row, context.width));
+      if (meta) {
+        // Keep every row: when the meta cannot share the line it stacks as
+        // a muted suffix row instead of disappearing.
+        lines.push(...rightPriorityRows(left, meta, context.width, 2, 4).map((line) => padVisible(line, context.width)));
+      } else {
+        lines.push(padVisible(truncateToWidth(left, context.width, "\u2026"), context.width));
+      }
     }
     if (block.items.length > items.length) {
       lines.push(padVisible(context.theme.fg("muted", `${block.items.length - items.length} matches omitted`), context.width));

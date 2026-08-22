@@ -101,9 +101,16 @@ The title is `PowerShell`. The target is the command truncated to one row.
 
 ### Body
 
-The error text and the captured output are one stream. A failure renders it
-exactly once, in the same rows as a success, with stderr rows in the warning
-tone.
+The error text and the captured output are one stream, rendered only when
+the entry is expanded. A failure renders it exactly once, with stderr rows
+in the warning tone. Collapsed, the entry is one row and the failure
+sentence is inline:
+
+```
+● PowerShell Get-Item /definitely-not-here Exited with code 1 · pwsh 7.6.4 485ms
+```
+
+Expanded:
 
 ```
 ● PowerShell Get-Item /definitely-not-here                                485ms
@@ -116,10 +123,10 @@ tone.
 ```
 
 The row `Command exited with code 1` that the tool writes into its own output
-is removed before the rows are built, because the summary row already states
-it.
+is removed before the rows are built, because the inline summary already
+states it.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -137,13 +144,14 @@ it.
 ### Expanded body
 
 One `COMMAND` section, but only when the header truncated the command, then
-one `OUTPUT` section with the full stream bounded by the policy, then the same
-summary row. The `STATUS` section is removed. When the `COMMAND` section is
-absent, convention C9 suppresses the remaining `OUTPUT` rule.
+one `OUTPUT` section with the full stream bounded by the policy, then the
+same outcome sentence as the final row. The `STATUS` section is removed. When
+the `COMMAND` section is absent, convention C9 suppresses the remaining
+`OUTPUT` rule.
 
 ### Unavailable host
 
-The result is `failed`, and the body is the single row
+The result is `failed`, and the inline summary is
 `PowerShell is not installed`. The resolution detail stays in the expanded
 `ERROR` section.
 
@@ -153,7 +161,7 @@ The result is `failed`, and the body is the single row
    one row.
 2. A failure renders the error stream exactly once in every state.
 3. No row repeats the exit statement that the tool wrote into its own output.
-4. The summary row states the line count and one host token such as
+4. The inline summary states the line count and one host token such as
    `pwsh 7.6.4` or `powershell 5.1`.
 5. `exit`, `durationMs`, `flavor`, `version`, and `unavailable` are never
    rendered as key-value pairs, and no `STATUS` section exists.

@@ -99,25 +99,25 @@ The target is the file name. The full workspace-relative path appears in the
 expanded body. While the confirmation is open, the header carries the
 `needs-input` badge and the lifecycle is `pending`.
 
-### Collapsed body
+### Collapsed entry
 
-One row per parsed page, in the `page N` form of
-[pdf-search.md](pdf-search.md), with the parsed text truncated with `…`, then
-the summary row.
+One row (C4). The inline summary states the parsed pages, the uploaded size,
+and the token count:
 
 ```
-● PDF parse design-notes.pdf                                              2.4s
-│    page 1  Placeholder document page one Alpha beta gamma delta epsilon.…
-│    page 2  Placeholder document page two Lambda mu nu xi omicron. Pi rho…
-└─   2 of 4 pages · 1.1 KB uploaded · 108 tokens
+● PDF parse design-notes.pdf 2 of 4 pages · 1.1 KB uploaded · 108 tokens   2.4s
 ```
+
+The parsed pages render only when the entry is expanded, one row per page,
+in the `page N` form of [pdf-search.md](pdf-search.md), with the parsed text
+truncated with `…`.
 
 The model-facing header block — `# Parsed PDF`, `Path:`, `Pages:`,
 `Selected pages:`, `Mode:`, `Firecrawl parsed pages:`, `Firecrawl warning:` —
 is removed before any row is built. Its values are already in the header, the
-summary row, or the diagnostics.
+inline summary, or the diagnostics.
 
-### Summary row
+### Inline summary
 
 | Case | Row |
 |---|---|
@@ -135,15 +135,15 @@ that left the machine.
 
 One `PAGES` section with the full parsed text of each page bounded by the
 policy, then one muted row with the workspace-relative path, the parse mode,
-and the destination host, then the summary row.
+and the destination host, then the same outcome sentence as the final row.
 
 Provider diagnostics appear exactly once, in a `DIAGNOSTICS` section, and only
 when the provider returned one.
 
 ### Declined and confirmation states
 
-A declined upload is the `aborted` lifecycle. Its body is the single summary
-row `Upload declined`. No `MARKDOWN` section and no metadata row is rendered.
+A declined upload is the `aborted` lifecycle. Its inline summary is
+`Upload declined`. No `MARKDOWN` section and no metadata row is rendered.
 
 The confirmation prompt itself stays Pi-owned and is unchanged. It remains the
 only place that states the destination endpoint, the page selection, and the
@@ -169,13 +169,13 @@ appears in any row, error, or diagnostic.
 
 1. The header target is the file name, and the `needs-input` badge is shown
    while the confirmation is open.
-2. The collapsed body shows one row per parsed page and contains no
-   model-facing header block.
-3. The summary row states the parsed and total page counts, the uploaded size,
-   and the token count.
+2. The collapsed entry is one row; the parsed pages render only when expanded,
+   and no model-facing header block is rendered.
+3. The inline summary states the parsed and total page counts, the uploaded
+   size, and the token count.
 4. Provider diagnostics appear exactly once, in the expanded body.
-5. A declined upload renders the aborted marker and the single row
-   `Upload declined`.
+5. A declined upload renders the aborted marker with `Upload declined`
+   inline.
 6. `status`, `phase`, `pageCount`, `outputLines`, `tokens`, `uploaded`, and
    `sourceSize` never appear as key-value pairs.
 7. No credential appears in any state.

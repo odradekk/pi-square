@@ -247,6 +247,24 @@ const EXPECTED_TITLES = {
   assert.equal(cramped.right, undefined, "duration is dropped first");
   assert.equal(cramped.target, "some-target", "target survives when duration drops");
 
+  // Then the inline summary elides before any badge is reduced.
+  const summaryCramped = fitHeaderRow(
+    { marker: "●", title: "T".repeat(30), target: "some-target", badges: ["[cancelling]"], right: "5ms", inlineSummary: "8 results · 2 not shown" },
+    64,
+  );
+  assert.equal(summaryCramped.right, undefined, "duration drops first");
+  assert.deepEqual(summaryCramped.badges, ["[cancelling]"], "the badge survives");
+  assert.ok(summaryCramped.inlineSummary && summaryCramped.inlineSummary.includes("…"), "the inline summary elides in place");
+  assert.equal(summaryCramped.target, "some-ta…", "the target truncates only as the final resort");
+
+  // When the summary cannot fit at all, it drops before any badge is reduced.
+  const summaryDropped = fitHeaderRow(
+    { marker: "●", title: "T".repeat(44), target: "t", badges: ["[cancelling]"], inlineSummary: "a very long inline outcome summary that cannot fit" },
+    64,
+  );
+  assert.equal(summaryDropped.inlineSummary, undefined, "the inline summary drops before the badge");
+  assert.deepEqual(summaryDropped.badges, ["[cancelling]"], "the badge survives the summary drop");
+
   // Then all but the highest-priority badge.
   const badgeCramped = fitHeaderRow(
     { marker: "●", title: "T".repeat(30), target: "some-target", badges: ["[cancelling]", "[retrying]"], right: "5ms" },
@@ -303,10 +321,11 @@ const EXPECTED_TITLES = {
       const header = stripVTControlCharacters(lines[0]);
       assert.match(header, /Bash/, `title on the header row at ${width} in ${themeName}`);
       assert.match(header, /…/, `long target truncated with … at ${width} in ${themeName}`);
+      const trimmed = header.trimEnd();
       if (width >= 64) {
-        assert.match(header, /1\.5s$/, `duration stays on the header row at ${width} in ${themeName}`);
+        assert.match(trimmed, /1\.5s$/, `duration stays on the header row at ${width} in ${themeName}`);
       } else {
-        assert.doesNotMatch(header, /1\.5s/, `compact width ${width} drops the duration in ${themeName}`);
+        assert.doesNotMatch(trimmed, /1\.5s/, `compact width ${width} drops the duration in ${themeName}`);
       }
     }
   }
@@ -331,7 +350,7 @@ const EXPECTED_TITLES = {
     makeCtx(args, {}, { executionStarted: true, isError: false }),
   );
   const resultLines = result.render(80).map((line) => stripVTControlCharacters(line));
-  assert.match(resultLines[0], /ms$|s$/, "result duration stays on the header row");
+  assert.match(resultLines[0].trimEnd(), /ms$|s$/, "result duration stays on the header row");
   assert.match(resultLines[0], /…/, "result target stays truncated");
   runtime.dispose();
 }
@@ -356,7 +375,7 @@ const EXPECTED_TITLES = {
     new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(64)[0],
   );
   assert.match(header, /src\/…\/very-long-file-name\.ts/, "path target is elided in the middle");
-  assert.match(header, /12ms$/, "duration stays on the row");
+  assert.match(header.trimEnd(), /12ms$/, "duration stays on the row");
   const compact = stripVTControlCharacters(
     new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(40)[0],
   );

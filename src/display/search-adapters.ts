@@ -542,9 +542,9 @@ export function createSearchAdapter(
       const isError = Boolean((result as { isError?: boolean }).isError);
       const structuredDomain = name === "rg" || name === "fd" || name === "pdf_search";
 
-      // Build the domain section: compact matches for rg/pdf_search
-      // (payload tools that keep a bounded body); non-compact paths for fd
-      // (expanded only — fd collapses to just the summary row).
+      // Build the domain section: compact matches for rg/pdf_search,
+      // non-compact paths for fd. These sections render in the expanded
+      // body only; a collapsed entry is a single row for all of them.
       let domain: DisplaySection | undefined;
       if (name === "rg" && args.filesOnly === true) domain = pathsSection("Files", rgFilesOnlyPaths(details), true);
       else if (name === "rg") domain = matchesSection("Matches", rgMatches(details), true);

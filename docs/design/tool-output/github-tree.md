@@ -54,9 +54,9 @@ addition:
 The target is `owner/repo` and the browsed path. The repository root is shown
 as `owner/repo` alone.
 
-### Collapsed body
+### Collapsed entry
 
-One summary row.
+One row (C4); the counts are the inline summary.
 
 | Case | Row |
 |---|---|
@@ -99,8 +99,8 @@ remote truncation flag are stated in words when they matter:
 1. The header target states `owner/repo` and the browsed path.
 2. Entries carry no `d` or `f` prefix, directories end with `/`, and no
    directory shows a byte size.
-3. The summary row states directory and file counts, or the bounded window and
-   the continuation offset.
+3. The inline summary states directory and file counts, or the bounded window
+   and the continuation offset.
 4. Remote truncation is stated in words and sets the `truncated` badge.
 5. The internal request counter is never rendered as a key-value pair.
 6. The model-facing text is unchanged.
