@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,6 +11,7 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const mockSdkPath = join(tmpdir(), `pi-square-resume-e2e-sdk-${process.pid}.mjs`);
 const state = {
   createCalls: [],
+  effectiveSystems: [],
   openedPaths: [],
   prompts: [],
   messageSequence: 0,
@@ -31,11 +33,27 @@ function appendConversation(manager, prompt, reply) {
   appendFileSync(manager.getSessionFile(), JSON.stringify({ type: "message", id: userId, parentId, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() } }) + "\\n");
   appendFileSync(manager.getSessionFile(), JSON.stringify({ type: "message", id: assistantId, parentId: userId, timestamp: new Date().toISOString(), message: reply }) + "\\n");
 }
-function createSession(input) {
+// Mirrors Pi 0.84.2 buildSystemPrompt's custom-prompt branch: agent context
+// files are baked into the custom prompt, then exactly one volatile
+// working-directory suffix (forward slashes, trailing newline) is appended.
+function buildSystemPrompt(input) {
+  let prompt = input.resourceLoader.getSystemPrompt();
+  const agentsFiles = input.resourceLoader.getAgentsFiles().agentsFiles;
+  if (agentsFiles.length > 0) {
+    prompt += "\\n\\n<project_context>\\n\\nProject-specific instructions and guidelines:\\n\\n";
+    for (const { path, content } of agentsFiles) {
+      prompt += \`<project_instructions path="\${path}">\\n\${content}\\n</project_instructions>\\n\\n\`;
+    }
+    prompt += "</project_context>\\n";
+  }
+  prompt += \`\\nCurrent working directory: \${(input.cwd ?? "").replace(/\\\\/g, "/")}\\n\`;
+  return prompt;
+}
+function createSession(input, systemPrompt) {
   const listeners = [];
   const sessionState = { messages: [] };
   return {
-    agent: { state: { systemPrompt: input.resourceLoader.getSystemPrompt() }, abort() {} },
+    agent: { state: { systemPrompt }, abort() {} },
     state: sessionState,
     subscribe(listener) { listeners.push(listener); return () => {}; },
     async prompt(prompt) {
@@ -50,7 +68,13 @@ function createSession(input) {
     dispose() {},
   };
 }
-export async function createAgentSession(input) { globalThis.__pi_square_resume_e2e_state__.createCalls.push(input); return { session: createSession(input) }; }
+export async function createAgentSession(input) {
+  const state = globalThis.__pi_square_resume_e2e_state__;
+  const systemPrompt = buildSystemPrompt(input);
+  state.createCalls.push(input);
+  state.effectiveSystems.push(systemPrompt);
+  return { session: createSession(input, systemPrompt) };
+}
 export function createExtensionRuntime() { return {}; }
 export function getAgentDir() { return ${JSON.stringify(resolve(packageRoot, "..", ".."))}; }
 export class DefaultResourceLoader {
@@ -112,10 +136,19 @@ function definition(overrides = {}) {
   };
 }
 
+function countCwdLines(system) {
+  return String(system ?? "").split("\nCurrent working directory: ").length - 1;
+}
+
+function hashPromptValue(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 test("done subagents resume with the same public and native session IDs", async () => {
   const cwd = root();
   process.env.PI_AGENT_DIR = cwd;
   state.createCalls = [];
+  state.effectiveSystems = [];
   state.openedPaths = [];
   state.prompts = [];
   state.messageSequence = 0;
@@ -159,8 +192,10 @@ test("resume restores original model, tools, effort, and system prompt", async (
   const id = "subagent_00000000-0000-4000-8000-000000000082";
   process.env.PI_AGENT_DIR = cwd;
   state.createCalls = [];
+  state.effectiveSystems = [];
   state.openedPaths = [];
   state.prompts = [];
+  state.agentsFiles = [];
   try {
     mkdirSync(cwd, { recursive: true });
     await runSubagentTask({
@@ -197,6 +232,7 @@ test("resume migrates the former dual-shell declaration to a portable shell inte
   const id = "subagent_00000000-0000-4000-8000-000000000083";
   process.env.PI_AGENT_DIR = cwd;
   state.createCalls = [];
+  state.effectiveSystems = [];
   state.openedPaths = [];
   state.prompts = [];
   try {
@@ -228,12 +264,171 @@ test("resume migrates the former dual-shell declaration to a portable shell inte
   }
 });
 
-test("frozen prompt snapshots remove only Pi's runtime date and cwd suffix", () => {
+test("fresh runs compile exactly one working-directory suffix and freeze it out of the snapshot", async () => {
+  const cwd = root();
+  const id = "subagent_00000000-0000-4000-8000-000000000084";
+  process.env.PI_AGENT_DIR = cwd;
+  state.createCalls = [];
+  state.effectiveSystems = [];
+  state.openedPaths = [];
+  state.prompts = [];
+  state.messageSequence = 0;
+  state.agentsFiles = [{ path: "/child/AGENTS.md", content: "CHILD CONTEXT" }];
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const freshEffective = state.effectiveSystems.at(-1);
+    assert.equal(first.details.phase, "done");
+    assert.equal(countCwdLines(freshEffective), 1, "Pi must append exactly one working-directory suffix");
+    assert.match(freshEffective, /<project_instructions path="\/child\/AGENTS\.md">/);
+
+    const runPath = join(first.details.artifactsDir, "run.json");
+    const persisted = JSON.parse(readFileSync(runPath, "utf8"));
+    assert.equal(countCwdLines(persisted.promptSnapshot.system), 0, "the frozen snapshot must not keep Pi's volatile suffix");
+    assert.match(persisted.promptSnapshot.system, /<project_instructions path="\/child\/AGENTS\.md">/);
+
+    await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
+    assert.equal(state.createCalls.at(-1).resourceLoader.getSystemPrompt(), persisted.promptSnapshot.system,
+      "resume must reuse the frozen system, not a re-suffixed copy");
+    assert.equal(state.effectiveSystems.at(-1), freshEffective,
+      "resume must not append another working-directory suffix");
+    const resumedPersisted = JSON.parse(readFileSync(runPath, "utf8"));
+    assert.equal(countCwdLines(resumedPersisted.promptSnapshot.system), 0);
+    assert.equal(resumedPersisted.promptSnapshot.manifest.effectiveSystemHash, persisted.promptSnapshot.manifest.effectiveSystemHash,
+      "the effective SYSTEM hash must stay stable across equivalent fresh and resume operations");
+    assert.equal(resumedPersisted.promptSnapshot.system, persisted.promptSnapshot.system);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resume strips the historical date-plus-cwd suffix from persisted snapshots", async () => {
+  const cwd = root();
+  const id = "subagent_00000000-0000-4000-8000-000000000085";
+  process.env.PI_AGENT_DIR = cwd;
+  state.createCalls = [];
+  state.effectiveSystems = [];
+  state.openedPaths = [];
+  state.prompts = [];
+  state.messageSequence = 0;
+  state.agentsFiles = [];
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const runPath = join(first.details.artifactsDir, "run.json");
+    const persisted = JSON.parse(readFileSync(runPath, "utf8"));
+    const frozenSystem = persisted.promptSnapshot.system;
+    const frozenHash = persisted.promptSnapshot.manifest.effectiveSystemHash;
+
+    persisted.promptSnapshot.system = `${frozenSystem}\nCurrent date: 2026-07-13\nCurrent working directory: /old-work`;
+    writeFileSync(runPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+    await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
+    const effective = state.effectiveSystems.at(-1);
+    assert.equal(countCwdLines(effective), 1, "the historical suffix must be replaced by exactly one current suffix");
+    assert.ok(effective.endsWith(`\nCurrent working directory: ${cwd}\n`));
+    assert.ok(!effective.includes("/old-work"));
+    const resumedPersisted = JSON.parse(readFileSync(runPath, "utf8"));
+    assert.equal(resumedPersisted.promptSnapshot.system, frozenSystem,
+      "the historical suffix must be frozen out without changing the effective SYSTEM");
+    assert.equal(resumedPersisted.promptSnapshot.manifest.effectiveSystemHash, frozenHash);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("early resume failures persist the frozen SYSTEM with its matching hash", async () => {
+  const cwd = root();
+  const id = "subagent_00000000-0000-4000-8000-000000000087";
+  process.env.PI_AGENT_DIR = cwd;
+  state.createCalls = [];
+  state.effectiveSystems = [];
+  state.openedPaths = [];
+  state.prompts = [];
+  state.messageSequence = 0;
+  state.agentsFiles = [];
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const runPath = join(first.details.artifactsDir, "run.json");
+    const persisted = JSON.parse(readFileSync(runPath, "utf8"));
+    const frozenSystem = persisted.promptSnapshot.system;
+    const legacySystem = `${frozenSystem}\nCurrent working directory: /old-work`;
+
+    persisted.promptSnapshot.system = legacySystem;
+    persisted.promptSnapshot.manifest.effectiveSystemHash = hashPromptValue(legacySystem);
+    persisted.agent.model = "missing-provider/missing-model";
+    writeFileSync(runPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+    const resumed = await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
+    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.details.phase, "error");
+    assert.equal(state.createCalls.length, 1, "unknown model must fail before creating a resumed child session");
+
+    const failedPersisted = JSON.parse(readFileSync(runPath, "utf8"));
+    assert.equal(failedPersisted.promptSnapshot.system, frozenSystem,
+      "an early failure must still persist the suffix-free frozen SYSTEM");
+    assert.equal(
+      failedPersisted.promptSnapshot.manifest.effectiveSystemHash,
+      hashPromptValue(failedPersisted.promptSnapshot.system),
+      "an early failure must persist a hash matching the frozen SYSTEM",
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resume collapses duplicated working-directory suffixes persisted by earlier versions", async () => {
+  const cwd = root();
+  const id = "subagent_00000000-0000-4000-8000-000000000086";
+  process.env.PI_AGENT_DIR = cwd;
+  state.createCalls = [];
+  state.effectiveSystems = [];
+  state.openedPaths = [];
+  state.prompts = [];
+  state.messageSequence = 0;
+  state.agentsFiles = [];
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const runPath = join(first.details.artifactsDir, "run.json");
+    const persisted = JSON.parse(readFileSync(runPath, "utf8"));
+    const frozenSystem = persisted.promptSnapshot.system;
+
+    persisted.promptSnapshot.system = `${frozenSystem}\nCurrent working directory: ${cwd}\nCurrent working directory: ${cwd}`;
+    writeFileSync(runPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+    await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
+    assert.equal(countCwdLines(state.effectiveSystems.at(-1)), 1,
+      "a corrupted snapshot must not leak its duplicated suffixes into the effective SYSTEM");
+    const resumedPersisted = JSON.parse(readFileSync(runPath, "utf8"));
+    assert.equal(resumedPersisted.promptSnapshot.system, frozenSystem,
+      "resume must collapse duplicated suffixes back to the frozen effective SYSTEM");
+    assert.equal(resumedPersisted.promptSnapshot.manifest.effectiveSystemHash, first.details.promptSnapshot.manifest.effectiveSystemHash);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("frozen prompt snapshots remove every supported Pi runtime suffix", () => {
   const frozen = __testables.freezeSystemPrompt(
     "CORE\n\nCONTEXT\nCurrent date: 2026-07-13\nCurrent working directory: /work",
   );
   assert.equal(frozen, "CORE\n\nCONTEXT");
   assert.equal(__testables.freezeSystemPrompt("CORE\nCurrent date: not-a-date"), "CORE\nCurrent date: not-a-date");
+  assert.equal(__testables.freezeSystemPrompt("CORE\nCurrent working directory: /work\n"), "CORE");
+  assert.equal(__testables.freezeSystemPrompt("CORE\nCurrent working directory: /work"), "CORE");
+  assert.equal(__testables.freezeSystemPrompt("CORE\nCurrent working directory: C:/work spaced/a b"), "CORE");
+  assert.equal(
+    __testables.freezeSystemPrompt("CORE\nCurrent working directory: /a\nCurrent working directory: /b"),
+    "CORE",
+    "repeated suffixes from earlier resumes must collapse in one freeze",
+  );
+  assert.equal(
+    __testables.freezeSystemPrompt("CORE\nCurrent date: 2026-07-13\nCurrent working directory: /a\nCurrent working directory: /b"),
+    "CORE",
+  );
+  assert.equal(__testables.freezeSystemPrompt(undefined), undefined);
 });
 
 await run();
