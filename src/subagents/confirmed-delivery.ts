@@ -31,8 +31,8 @@ export interface ConfirmedDeliveryCore<T> {
   remove(id: string): void;
   /** Offers one observed consumer message for confirmation. */
   observeMessage(message: unknown): void;
-  /** Turn boundary of a running consumer: deliver without waiting for idle. */
-  handleTurnEnd(): void;
+  /** Turn boundary of a running consumer; an aborted terminal message suppresses delivery. */
+  handleTurnEnd(message?: unknown): void;
   /** A new consumer run started, so an earlier interruption no longer holds. */
   handleAgentStart(): void;
   /** Records whether the finished run ended through an interruption. */
@@ -59,9 +59,13 @@ interface PendingEntry<T> {
   resent: boolean;
 }
 
+function isAbortedMessage(message: unknown): boolean {
+  return (message as { stopReason?: unknown } | undefined)?.stopReason === "aborted";
+}
+
 function wasInterrupted(messages: unknown): boolean {
   if (!Array.isArray(messages)) return false;
-  return messages.some((message) => (message as { stopReason?: unknown } | undefined)?.stopReason === "aborted");
+  return messages.some(isAbortedMessage);
 }
 
 export function createConfirmedDeliveryCore<T>(options: {
@@ -177,7 +181,9 @@ export function createConfirmedDeliveryCore<T>(options: {
       if (changed) notify();
     },
 
-    handleTurnEnd() {
+    handleTurnEnd(message) {
+      if (isAbortedMessage(message)) interrupted = true;
+      if (interrupted) return;
       flush();
     },
 
@@ -186,7 +192,7 @@ export function createConfirmedDeliveryCore<T>(options: {
     },
 
     handleAgentEnd(messages) {
-      interrupted = wasInterrupted(messages);
+      interrupted ||= wasInterrupted(messages);
     },
 
     handleAgentSettled() {

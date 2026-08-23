@@ -144,19 +144,23 @@ test("an unconfirmed result is resent after a natural settle and marked as repea
   assert.equal(probe.sent.length, 2, "confirmation stops re-delivery");
 });
 
-test("an interrupted run suppresses delivery until the next agent start", () => {
+test("an interrupted run suppresses delivery in Pi's turn-end-before-agent-end order", () => {
   const probe = harness({ idle: false });
   probe.core.enqueue({ id: "held", value: "v" });
+
+  // Pi 0.84.2 emits the aborted assistant turn before agent_end. Delivery must
+  // be suppressed at this boundary, after the UI has already cleared queues.
+  probe.core.handleTurnEnd({ stopReason: "aborted" });
   probe.core.handleAgentEnd([{ stopReason: "aborted" }]);
   probe.core.handleAgentSettled();
-  assert.equal(probe.sent.length, 0, "an interruption never starts a new turn");
+  assert.equal(probe.sent.length, 0, "an aborted turn never re-queues a steering message");
 
   probe.setIdle(true);
   probe.core.enqueue({ id: "after", value: "v2" });
   assert.equal(probe.sent.length, 0, "silence holds across further completions");
 
   probe.core.handleAgentStart();
-  probe.core.handleTurnEnd();
+  probe.core.handleTurnEnd({ stopReason: "endTurn" });
   assert.equal(probe.sent.length, 1);
   assert.deepEqual(probe.last().ids, ["held", "after"]);
 });

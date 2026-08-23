@@ -56,8 +56,8 @@ export interface DeliveryController {
   remove(id: string): void;
   /** Confirms delivery from an injected parent message. */
   observeMessage(message: unknown): void;
-  /** Turn boundary of a running parent: deliver without waiting for idle. */
-  handleTurnEnd(): void;
+  /** Turn boundary of a running parent; an aborted terminal message suppresses delivery. */
+  handleTurnEnd(message?: unknown): void;
   /** A new parent run started, so an earlier interruption no longer holds. */
   handleAgentStart(): void;
   /** Records whether the finished run ended through a user interruption. */
@@ -204,7 +204,7 @@ export function createDeliveryController(options: {
     },
     remove: (id) => core.remove(id),
     observeMessage: (message) => core.observeMessage(message),
-    handleTurnEnd: () => core.handleTurnEnd(),
+    handleTurnEnd: (message) => core.handleTurnEnd(message),
     handleAgentStart: () => core.handleAgentStart(),
     handleAgentEnd: (messages) => core.handleAgentEnd(messages),
     handleAgentSettled: () => core.handleAgentSettled(),
