@@ -5,14 +5,21 @@
  * queued message when the user interrupts a turn (`clearAllQueues`), while
  * `pi.sendMessage` is fire-and-forget and reports no failure to the caller. A
  * result that is sent once and forgotten can therefore disappear without any
- * trace. This module owns the pending set instead: it coalesces finished runs
- * into one message per safe moment, confirms delivery by observing the message
- * that Pi actually injected, and re-sends a result the parent never received.
+ * trace. The generic mechanics — the bounded pending set, batch selection,
+ * safe delivery timing, confirmation, resend, interruption suppression, and
+ * send-failure retention — live in `confirmed-delivery.ts`; this module is the
+ * Subagent adapter: it supplies the run identity, the V4 notification payload
+ * and message construction, and the transcript confirmation parser.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  createConfirmedDeliveryCore,
+  DEFAULT_MAX_BATCH_RESULTS,
+  DEFAULT_MAX_PENDING_RESULTS,
+} from "./confirmed-delivery";
 import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
 
 export const SUBAGENT_NOTIFICATION_TYPE = "pi-square.subagent-notification";
@@ -22,23 +29,24 @@ export const MAX_RESULT_CHARS = 24_000;
 /** Share of the budget kept from the head; the remainder keeps the tail. */
 const HEAD_SHARE = 0.7;
 /** Results coalesced into a single delivery; the rest follow at the next one. */
-export const MAX_BATCH_RESULTS = 6;
+export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
 /** Hard bound on the pending set so an unattended session stays bounded. */
-export const MAX_PENDING_RESULTS = 50;
+export const MAX_PENDING_RESULTS = DEFAULT_MAX_PENDING_RESULTS;
 const MAX_TASK_CHARS = 300;
 
 export type DeliverableStatus = "done" | "error";
 
-/** One finished run waiting for confirmed delivery to the parent. */
-interface PendingResult {
+/** One finished run as the delivery core carries it. */
+interface SubagentDeliveryValue {
+  status: DeliverableStatus;
+  details: SubagentRunDetails;
+}
+
+/** One run rendered into a delivery message. */
+export interface SubagentDeliveryEntry {
   id: string;
   status: DeliverableStatus;
   details: SubagentRunDetails;
-  completedAt: number;
-  /** Sent to Pi and not yet observed in the parent transcript. */
-  sent: boolean;
-  /** Sent at least once before, so the next delivery states that it repeats. */
-  resent: boolean;
 }
 
 export interface DeliveryController {
@@ -91,18 +99,18 @@ export function budgetResultText(text: unknown, max: number = MAX_RESULT_CHARS):
   return `${normalized.slice(0, head)}\n... [omitted ${omitted} characters] ...\n${normalized.slice(normalized.length - tail)}`;
 }
 
-function agentLabel(result: PendingResult): string {
+function agentLabel(result: SubagentDeliveryEntry): string {
   return result.details.agent?.name ?? "generic";
 }
 
-function resultText(result: PendingResult): string {
+function resultText(result: SubagentDeliveryEntry): string {
   return result.status === "done"
     ? budgetResultText(result.details.finalText || "(no output)")
     : budgetResultText(result.details.error || "Subagent failed.");
 }
 
 /** Builds the model-facing content of one delivery. */
-export function buildDeliveryContent(results: PendingResult[], resent: boolean): string {
+export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: boolean): string {
   const suffix = resent ? " (resent)" : "";
   if (results.length === 1) {
     const only = results[0]!;
@@ -146,11 +154,6 @@ export function notificationResultIds(message: unknown): string[] {
   return typeof details?.id === "string" ? [details.id] : [];
 }
 
-function wasInterrupted(messages: unknown): boolean {
-  if (!Array.isArray(messages)) return false;
-  return messages.some((message) => (message as { stopReason?: unknown } | undefined)?.stopReason === "aborted");
-}
-
 export function createDeliveryController(options: {
   pi: Pick<ExtensionAPI, "sendMessage">;
   /** Reads the parent run state; a missing reader assumes an idle parent. */
@@ -158,54 +161,29 @@ export function createDeliveryController(options: {
   /** Refreshes pi-square status surfaces after a pending-set change. */
   notify?: () => void;
 }): DeliveryController {
-  const pending = new Map<string, PendingResult>();
-  let interrupted = false;
   let sequence = 0;
-
-  const notify = () => {
-    try {
-      options.notify?.();
-    } catch {
-      // isolate status refresh failures from delivery
-    }
-  };
-
-  const isIdle = () => {
-    try {
-      return options.isIdle ? options.isIdle() : true;
-    } catch {
-      return false;
-    }
-  };
-
-  const flush = () => {
-    const batch: PendingResult[] = [];
-    for (const result of pending.values()) {
-      if (result.sent) continue;
-      batch.push(result);
-      if (batch.length >= MAX_BATCH_RESULTS) break;
-    }
-    if (batch.length === 0) return;
-
-    const resent = batch.some((result) => result.resent);
-    sequence += 1;
-    const details: SubagentNotificationDetails = {
-      version: 4,
-      deliveryId: `delivery-${sequence}`,
-      resent,
-      results: batch.map((result) => ({
-        id: result.id,
-        status: result.status,
-        result: result.details,
-      })),
-    };
-
-    for (const result of batch) result.sent = true;
-    try {
+  const core = createConfirmedDeliveryCore<SubagentDeliveryValue>({
+    send(batch, resent) {
+      sequence += 1;
+      const entries: SubagentDeliveryEntry[] = batch.map((entry) => ({
+        id: entry.id,
+        status: entry.value.status,
+        details: entry.value.details,
+      }));
+      const details: SubagentNotificationDetails = {
+        version: 4,
+        deliveryId: `delivery-${sequence}`,
+        resent,
+        results: entries.map((entry) => ({
+          id: entry.id,
+          status: entry.status,
+          result: entry.details,
+        })),
+      };
       options.pi.sendMessage(
         {
           customType: SUBAGENT_NOTIFICATION_TYPE,
-          content: buildDeliveryContent(batch, resent),
+          content: buildDeliveryContent(entries, resent),
           display: true,
           details,
         },
@@ -214,98 +192,25 @@ export function createDeliveryController(options: {
           deliverAs: "steer",
         },
       );
-    } catch {
-      // The send never reached Pi: keep the results pending for the next safe
-      // moment rather than losing them in a swallowed failure.
-      for (const result of batch) {
-        result.sent = false;
-        result.resent = true;
-      }
-    }
-    notify();
-  };
+    },
+    confirmIds: notificationResultIds,
+    isIdle: options.isIdle,
+    onPendingChange: options.notify,
+  });
 
   return {
     enqueue(input) {
-      const existing = pending.get(input.id);
-      pending.set(input.id, {
-        id: input.id,
-        status: input.status,
-        details: input.details,
-        completedAt: existing?.completedAt ?? Date.now(),
-        sent: false,
-        resent: existing?.resent ?? false,
-      });
-      while (pending.size > MAX_PENDING_RESULTS) {
-        const oldest = pending.keys().next().value;
-        if (oldest === undefined) break;
-        pending.delete(oldest);
-      }
-      // An idle parent receives the result at once; a busy parent receives it
-      // at the next turn boundary. An interrupted parent keeps its silence
-      // until it starts the next turn. A delivery refreshes the status itself,
-      // so the pending set reports one change for each completion.
-      if (!interrupted && isIdle()) flush();
-      else notify();
+      core.enqueue({ id: input.id, value: { status: input.status, details: input.details } });
     },
-
-    remove(id) {
-      if (pending.delete(id)) notify();
-    },
-
-    observeMessage(message) {
-      const ids = notificationResultIds(message);
-      if (ids.length === 0) return;
-      let changed = false;
-      for (const id of ids) {
-        if (pending.delete(id)) changed = true;
-      }
-      if (changed) notify();
-    },
-
-    handleTurnEnd() {
-      flush();
-    },
-
-    handleAgentStart() {
-      interrupted = false;
-    },
-
-    handleAgentEnd(messages) {
-      interrupted = wasInterrupted(messages);
-    },
-
-    handleAgentSettled() {
-      // Pi drains its queues before the run settles, so a result that is still
-      // unconfirmed here was discarded (an interruption clears the queue).
-      let lost = false;
-      for (const result of pending.values()) {
-        if (!result.sent) continue;
-        result.sent = false;
-        result.resent = true;
-        lost = true;
-      }
-      if (lost) notify();
-      if (!interrupted) flush();
-    },
-
-    isPending(id) {
-      return pending.has(id);
-    },
-
-    pendingCount() {
-      return pending.size;
-    },
-
-    pendingIds() {
-      return [...pending.keys()];
-    },
-
-    reset() {
-      const had = pending.size > 0;
-      pending.clear();
-      interrupted = false;
-      if (had) notify();
-    },
+    remove: (id) => core.remove(id),
+    observeMessage: (message) => core.observeMessage(message),
+    handleTurnEnd: () => core.handleTurnEnd(),
+    handleAgentStart: () => core.handleAgentStart(),
+    handleAgentEnd: (messages) => core.handleAgentEnd(messages),
+    handleAgentSettled: () => core.handleAgentSettled(),
+    isPending: (id) => core.isPending(id),
+    pendingCount: () => core.pendingCount(),
+    pendingIds: () => core.pendingIds(),
+    reset: () => core.reset(),
   };
 }
