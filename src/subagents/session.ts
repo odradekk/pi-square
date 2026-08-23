@@ -514,12 +514,25 @@ function getSystemPromptSnapshot(created: any, fallback?: string): string | unde
   return typeof snapshot === "string" && snapshot.trim() ? snapshot : fallback;
 }
 
+/**
+ * Pi appends a volatile runtime suffix to every custom SYSTEM prompt: Pi 0.84.2
+ * appends only the working directory (with a trailing newline), while earlier
+ * Pi versions appended a date line before it. Strip every supported form from
+ * the end, repeatedly, so equivalent fresh and resumed sessions freeze to the
+ * same effective SYSTEM and a persisted snapshot never grows another suffix per
+ * resume.
+ */
+const SYSTEM_RUNTIME_SUFFIX = /(?:\nCurrent date: \d{4}-\d{2}-\d{2})?\nCurrent working directory: [^\n]*\n?$/;
+
 function freezeSystemPrompt(prompt: string | undefined): string | undefined {
   if (!prompt) return undefined;
-  return prompt.replace(
-    /\nCurrent date: \d{4}-\d{2}-\d{2}\nCurrent working directory: [^\n]*$/,
-    "",
-  );
+  let frozen = prompt;
+  let stripped = frozen.replace(SYSTEM_RUNTIME_SUFFIX, "");
+  while (stripped !== frozen) {
+    frozen = stripped;
+    stripped = frozen.replace(SYSTEM_RUNTIME_SUFFIX, "");
+  }
+  return frozen;
 }
 
 function finishRunFailure(

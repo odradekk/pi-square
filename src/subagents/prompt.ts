@@ -114,7 +114,11 @@ export function finalizePromptSnapshot(
   snapshot: SubagentPromptSnapshot,
   effectiveSystem: string,
 ): SubagentPromptSnapshot {
-  const system = effectiveSystem.trim();
+  // Trim only leading whitespace: a frozen snapshot may keep the trailing
+  // newline that separated Pi's runtime suffix from the effective SYSTEM (for
+  // example after a project-context block), and preserving it lets a resume
+  // re-append the suffix and reproduce the exact same effective SYSTEM bytes.
+  const system = effectiveSystem.replace(/^\s+/, "");
   return {
     ...snapshot,
     system,
