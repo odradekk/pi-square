@@ -1154,7 +1154,7 @@ export async function resumeSubagentTask(input: {
     const resolvedModel = resolveModelFromSpec(modelSpec, input.ctx);
     const resolvedEffort = normalizeEffort(effortSpec);
     const systemPrompt = freezeSystemPrompt(promptSnapshot.system) ?? promptSnapshot.system;
-
+    promptSnapshot = finalizePromptSnapshot(promptSnapshot, systemPrompt);
     details = {
       ...persisted,
       agent: persisted.agent
@@ -1169,7 +1169,7 @@ export async function resumeSubagentTask(input: {
       mode: "resume",
       task: input.task,
       lastParentSessionId: parentSessionId,
-      promptSnapshot: { ...promptSnapshot, system: systemPrompt },
+      promptSnapshot,
       phase: "running",
       finalText: "",
       liveText: "",

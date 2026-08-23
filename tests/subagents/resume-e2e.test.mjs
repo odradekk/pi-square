@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -137,6 +138,10 @@ function definition(overrides = {}) {
 
 function countCwdLines(system) {
   return String(system ?? "").split("\nCurrent working directory: ").length - 1;
+}
+
+function hashPromptValue(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 test("done subagents resume with the same public and native session IDs", async () => {
@@ -327,6 +332,47 @@ test("resume strips the historical date-plus-cwd suffix from persisted snapshots
     assert.equal(resumedPersisted.promptSnapshot.system, frozenSystem,
       "the historical suffix must be frozen out without changing the effective SYSTEM");
     assert.equal(resumedPersisted.promptSnapshot.manifest.effectiveSystemHash, frozenHash);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("early resume failures persist the frozen SYSTEM with its matching hash", async () => {
+  const cwd = root();
+  const id = "subagent_00000000-0000-4000-8000-000000000087";
+  process.env.PI_AGENT_DIR = cwd;
+  state.createCalls = [];
+  state.effectiveSystems = [];
+  state.openedPaths = [];
+  state.prompts = [];
+  state.messageSequence = 0;
+  state.agentsFiles = [];
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const runPath = join(first.details.artifactsDir, "run.json");
+    const persisted = JSON.parse(readFileSync(runPath, "utf8"));
+    const frozenSystem = persisted.promptSnapshot.system;
+    const legacySystem = `${frozenSystem}\nCurrent working directory: /old-work`;
+
+    persisted.promptSnapshot.system = legacySystem;
+    persisted.promptSnapshot.manifest.effectiveSystemHash = hashPromptValue(legacySystem);
+    persisted.agent.model = "missing-provider/missing-model";
+    writeFileSync(runPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+    const resumed = await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
+    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.details.phase, "error");
+    assert.equal(state.createCalls.length, 1, "unknown model must fail before creating a resumed child session");
+
+    const failedPersisted = JSON.parse(readFileSync(runPath, "utf8"));
+    assert.equal(failedPersisted.promptSnapshot.system, frozenSystem,
+      "an early failure must still persist the suffix-free frozen SYSTEM");
+    assert.equal(
+      failedPersisted.promptSnapshot.manifest.effectiveSystemHash,
+      hashPromptValue(failedPersisted.promptSnapshot.system),
+      "an early failure must persist a hash matching the frozen SYSTEM",
+    );
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
