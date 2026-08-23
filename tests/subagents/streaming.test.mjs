@@ -195,4 +195,27 @@ function createSession(script) {
   rmSync(artifactsDir, { recursive: true, force: true });
 }
 
+{
+  const artifactsDir = mkdtempSync(join(tmpdir(), "pi-square-subagent-stream-initial-update-error-"));
+  const details = makeDetails(artifactsDir);
+  let disposeCount = 0;
+  let promptCount = 0;
+  const session = createSession(async () => { promptCount += 1; });
+  session.dispose = () => { disposeCount += 1; };
+
+  await assert.rejects(
+    () => promptSession({
+      session,
+      prompt: "must not start",
+      details,
+      onUpdate() { throw new Error("initial update failed"); },
+    }),
+    /initial update failed/,
+  );
+
+  assert.equal(promptCount, 0, "a failed initial update must stop before prompting");
+  assert.equal(disposeCount, 1, "a failed initial update must still dispose the child session exactly once");
+  rmSync(artifactsDir, { recursive: true, force: true });
+}
+
 console.log("subagent live streaming: bounded, throttled, and terminal-safe");

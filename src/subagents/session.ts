@@ -1,5 +1,4 @@
 import {
-  createAgentSession,
   createExtensionRuntime,
   DefaultResourceLoader,
   getAgentDir,
@@ -13,6 +12,13 @@ import { createChildAnchoredReadTool } from "../anchored-edit/child-read";
 import { createChildAnchoredEditTools } from "../anchored-edit/child-edit";
 import { createChildAnchoredWriteTool } from "../anchored-edit/child-write";
 import { createChildTools } from "../tool-catalog";
+import {
+  createChildSessionUsage,
+  createOneTimeChildSession,
+  extractTextFromContent,
+  formatModel,
+  runOneTimeChildSession,
+} from "./child-session-executor";
 import {
   artifactsDirFor,
   ensureArtifactsDir,
@@ -34,7 +40,7 @@ import { tryAcquireRunLease } from "./lease";
 import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./prompt";
 import { formatToolCall } from "./tool-display";
 import { resolveSubagentTools } from "./tool-policy";
-import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, SubagentTimelineItem, SubagentUsage } from "./types";
+import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, SubagentTimelineItem } from "./types";
 
 const MAX_TIMELINE_ITEMS = 120;
 const MAX_TIMELINE_TEXT = 1600;
@@ -230,14 +236,6 @@ function buildReturnContent(details: SubagentRunDetails): string {
   return `ID: ${details.id}\n\n${body}`;
 }
 
-function extractTextFromContent(content: any): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part) => part?.type === "text")
-    .map((part) => String(part.text ?? ""))
-    .join("\n")
-    .trim();
-}
 
 function collectFinalAssistantText(messages: any): string {
   if (!Array.isArray(messages)) return "";
@@ -261,32 +259,7 @@ function collectLastMessages(messages: any, count: number): string {
   }
 }
 
-function formatModel(model: any): string | undefined {
-  if (!model) return undefined;
-  if (typeof model === "string") return model;
-  if (typeof model === "object") {
-    const provider = typeof model.provider === "string" ? model.provider : undefined;
-    const id = typeof model.id === "string" ? model.id : undefined;
-    if (provider && id) return `${provider}/${id}`;
-    if (id) return id;
-    if (typeof model.name === "string") return model.name;
-  }
-  return undefined;
-}
 
-function accumulateUsage(target: SubagentUsage, usage: any): void {
-  if (!usage || typeof usage !== "object") return;
-  target.input += Number(usage.input ?? 0) || 0;
-  target.output += Number(usage.output ?? 0) || 0;
-  target.cacheRead += Number(usage.cacheRead ?? 0) || 0;
-  target.cacheWrite += Number(usage.cacheWrite ?? 0) || 0;
-  target.turns += 1;
-
-  const costTotal = typeof usage.cost === "object"
-    ? Number(usage.cost?.total ?? 0) || 0
-    : Number(usage.cost ?? 0) || 0;
-  target.cost += costTotal;
-}
 
 function formatToolResult(toolName: string, result: any): string {
   const text = clip(extractTextFromContent(result?.content), 240);
@@ -585,7 +558,7 @@ async function promptSession(input: {
 }): Promise<{ content: string; details: SubagentRunDetails }> {
   const { session, prompt, details } = input;
   let persistenceFailure: SubagentError | undefined;
-  let terminalAssistantError: string | undefined;
+  let executorOwnsSession = false;
   let liveUpdateTimer: NodeJS.Timeout | undefined;
   let liveUpdateDirty = false;
   let lastLiveUpdateAt = 0;
@@ -653,21 +626,10 @@ async function promptSession(input: {
     liveUpdateTimer.unref?.();
   };
 
-  const onAbort = () => {
-    try {
-      session?.abortRetry?.();
-      session?.agent?.abort?.();
-    } catch {
-      // Abort remains best-effort; the signal is classified after prompt returns.
-    }
-  };
-
-  if (input.signal) {
-    if (input.signal.aborted) onAbort();
-    else input.signal.addEventListener("abort", onAbort, { once: true });
-  }
-
-  const unsubscribe = session.subscribe((event: any) => {
+  // The one-time child-session executor owns the native run lifecycle — the
+  // abort wiring, the single subscription, the prompt call, and disposal —
+  // while this observer interprets the same events into Subagent run state.
+  const observeEvent = (event: any) => {
     switch (event?.type) {
       case "agent_start": {
         pushTimeline(details, { kind: "status", text: input.definitionName ? `subagent '${input.definitionName}' started` : "subagent started" });
@@ -699,15 +661,12 @@ async function promptSession(input: {
       case "message_end": {
         const message = event.message;
         if (message?.role !== "assistant") break;
-        accumulateUsage(details.usage, message.usage);
         const model = formatModel(message.model);
         if (model && (model.includes("/") || !details.model)) details.model = model;
         if (message.stopReason === "error" || message.stopReason === "aborted") {
-          terminalAssistantError = String(message.errorMessage ?? message.stopReason);
           emitUpdate();
           break;
         }
-        terminalAssistantError = undefined;
         const text = extractTextFromContent(message.content);
         if (text) {
           details.finalText = text;
@@ -772,21 +731,44 @@ async function promptSession(input: {
       default:
         break;
     }
-  });
+  };
 
   try {
     emitUpdate();
-    if (input.signal?.aborted) throw Object.assign(new Error("Subagent execution was aborted before it started."), { name: "AbortError" });
-    await session.prompt(prompt, { expandPromptTemplates: false });
-    if (terminalAssistantError && !details.errorInfo) {
-      applyRunFailure(details, normalizeSubagentError(new Error(terminalAssistantError), {
+    executorOwnsSession = true;
+    const outcome = await runOneTimeChildSession({
+      session,
+      prompt,
+      signal: input.signal,
+      onEvent: observeEvent,
+      usage: details.usage,
+    });
+    if (outcome.status === "error" || (!outcome.prompted && outcome.status === "aborted")) {
+      const raw = outcome.status === "error"
+        ? outcome.error ?? new Error("Child session execution failed.")
+        : Object.assign(new Error("Subagent execution was aborted before it started."), { name: "AbortError" });
+      const normalized = normalizeSubagentError(raw, {
+        operation: details.mode,
+        id: details.id,
+        retries: details.retries,
+        suggestedAction: isContextOverflowMessage(raw) ? "Reduce context and retry." : undefined,
+      });
+      applyRunFailure(details, normalized);
+      details.endedAt = nowMs();
+      details.durationMs = details.endedAt - details.startedAt;
+      details.liveText = "";
+      pushTimeline(details, { kind: "error", text: normalized.info.cause ?? normalized.info.message, isError: true });
+      emitUpdate();
+      return { content: buildReturnContent(details), details };
+    }
+    if (outcome.terminalAssistantError && !details.errorInfo) {
+      applyRunFailure(details, normalizeSubagentError(new Error(outcome.terminalAssistantError), {
         operation: details.mode,
         id: details.id,
         retries: details.retries,
       }));
     }
-    const messages = session?.state?.messages ?? [];
-    deriveTerminalPhase(details, messages);
+    deriveTerminalPhase(details, outcome.messages);
     if (details.phase === "error" && !details.errorInfo) {
       applyRunFailure(details, createSubagentError({
         code: "SUBAGENT_FAILED",
@@ -829,16 +811,12 @@ async function promptSession(input: {
   } finally {
     clearLiveUpdateTimer();
     liveUpdateDirty = false;
-    try {
-      unsubscribe?.();
-    } catch {
-      // Ignore listener cleanup failures.
-    }
-    if (input.signal) input.signal.removeEventListener("abort", onAbort);
-    try {
-      session?.dispose?.();
-    } catch {
-      // Ignore child-session disposal failures.
+    if (!executorOwnsSession) {
+      try {
+        session?.dispose?.();
+      } catch {
+        // Session ownership transfers to the executor only when its run starts.
+      }
     }
   }
 }
@@ -974,7 +952,7 @@ export async function runSubagentTask(input: {
       retries: 0,
       toolErrors: [],
       toolWarnings: [],
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+      usage: createChildSessionUsage(),
       timeline: [],
     };
 
@@ -1034,13 +1012,13 @@ export async function runSubagentTask(input: {
     if (details.agent) details.agent.skills = selectedSkillNames.length > 0 ? selectedSkillNames : availableSkills;
     writeRunState(artifactsDir, details);
 
-    const created = await createAgentSession({
+    const created = await createOneTimeChildSession({
       cwd,
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
       resourceLoader,
       thinkingLevel: resolvedEffort ?? undefined,
       tools: [...childToolAllowlist, ...resolvedTools.extensionTools],
-      ...(customTools.definitions.length > 0 ? { customTools: customTools.definitions } : {}),
+      customTools: customTools.definitions,
       sessionManager,
       settingsManager: createChildSettings(),
     });
@@ -1218,13 +1196,13 @@ export async function resumeSubagentTask(input: {
     });
     await resourceLoader.reload();
     const sessionManager = SessionManager.open(persisted.sessionFile);
-    const created = await createAgentSession({
+    const created = await createOneTimeChildSession({
       cwd: runCwd,
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
       resourceLoader,
       thinkingLevel: resolvedEffort ?? undefined,
       tools: [...childToolAllowlist, ...resolvedTools.extensionTools],
-      ...(customTools.definitions.length > 0 ? { customTools: customTools.definitions } : {}),
+      customTools: customTools.definitions,
       sessionManager,
       settingsManager: createChildSettings(),
     });
