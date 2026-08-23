@@ -230,6 +230,25 @@ test("a mid-run abort reaches the session and classifies the outcome as aborted"
   assert.equal(session.calls.dispose, 1);
 });
 
+test("a signal-driven prompt rejection remains an aborted outcome", async () => {
+  reset();
+  const controller = new AbortController();
+  const abortError = Object.assign(new Error("cancelled by caller"), { name: "AbortError" });
+  const session = makeSession(async () => {
+    controller.abort();
+    throw abortError;
+  });
+
+  const outcome = await runOneTimeChildSession({ session, prompt: "task", signal: controller.signal });
+
+  assert.equal(outcome.status, "aborted", "the caller signal is the root cause even when abort rejects the prompt");
+  assert.equal(outcome.error, undefined, "an aborted outcome is not an infrastructure error");
+  assert.equal(outcome.prompted, true);
+  assert.equal(session.calls.abortRetry, 1);
+  assert.equal(session.calls.abort, 1);
+  assert.equal(session.calls.dispose, 1);
+});
+
 test("a deadline timeout aborts the session and wins the terminal classification", async () => {
   reset();
   const session = makeSession(async (emit) => {

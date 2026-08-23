@@ -558,6 +558,7 @@ async function promptSession(input: {
 }): Promise<{ content: string; details: SubagentRunDetails }> {
   const { session, prompt, details } = input;
   let persistenceFailure: SubagentError | undefined;
+  let executorOwnsSession = false;
   let liveUpdateTimer: NodeJS.Timeout | undefined;
   let liveUpdateDirty = false;
   let lastLiveUpdateAt = 0;
@@ -734,6 +735,7 @@ async function promptSession(input: {
 
   try {
     emitUpdate();
+    executorOwnsSession = true;
     const outcome = await runOneTimeChildSession({
       session,
       prompt,
@@ -809,6 +811,13 @@ async function promptSession(input: {
   } finally {
     clearLiveUpdateTimer();
     liveUpdateDirty = false;
+    if (!executorOwnsSession) {
+      try {
+        session?.dispose?.();
+      } catch {
+        // Session ownership transfers to the executor only when its run starts.
+      }
+    }
   }
 }
 

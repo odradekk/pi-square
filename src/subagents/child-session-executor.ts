@@ -120,9 +120,10 @@ export interface OneTimeChildSessionRunInput {
 
 export interface OneTimeChildSessionOutcome {
   /**
-   * `timeout` beats `error` beats `aborted`: a deadline whose abort surfaces as
-   * a prompt rejection still classifies as a timeout, because the deadline is
-   * the root cause. Only a deadline sets `timeout`.
+   * `timeout` beats `aborted` beats `error`: a deadline whose abort surfaces as
+   * a prompt rejection still classifies as a timeout, while a caller signal whose
+   * abort rejects the prompt remains an aborted run rather than an infrastructure
+   * failure. Only a deadline sets `timeout`.
    */
   status: "completed" | "aborted" | "timeout" | "error";
   /** Whether the single prompt call was made at all. */
@@ -263,10 +264,10 @@ export async function runOneTimeChildSession(
   const failed = subscribeFailed || promptFailed;
   const status: OneTimeChildSessionOutcome["status"] = timedOut
     ? "timeout"
-    : failed
-      ? "error"
-      : input.signal?.aborted
-        ? "aborted"
+    : input.signal?.aborted
+      ? "aborted"
+      : failed
+        ? "error"
         : "completed";
 
   return {
