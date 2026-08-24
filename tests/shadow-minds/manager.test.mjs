@@ -192,8 +192,10 @@ function render(manager, width = 100) {
     const sent = [];
     const registered = new Map();
     const handlers = new Map();
+    const renderers = new Map();
     const pi = {
       registerCommand: (name, definition) => registered.set(name, definition),
+      registerMessageRenderer: (name, renderer) => renderers.set(name, renderer),
       on: (event, handler) => handlers.set(event, handler),
       sendMessage: (message) => sent.push(message),
       sendUserMessage: (message) => sent.push(message),
@@ -204,6 +206,7 @@ function render(manager, width = 100) {
 
     assert.deepEqual([...registered.keys()], ["shadow"]);
     assert.equal(registered.get("shadow").description.length > 0, true);
+    assert.ok(renderers.has("pi-square.shadow-config-guide"), "the config guide renderer is registered");
 
     // No UI: the handler must not open anything nor send anything.
     let opened = 0;
@@ -211,6 +214,7 @@ function render(manager, width = 100) {
       hasUI: false,
       ui: { custom: async () => { opened += 1; } },
       cwd: tmp,
+      isProjectTrusted: () => false,
     });
     assert.equal(opened, 0, "a headless session opens no view");
     assert.deepEqual(sent, [], "the command never sends messages");
@@ -220,6 +224,7 @@ function render(manager, width = 100) {
       hasUI: true,
       ui: { custom: async () => { opened += 1; } },
       cwd: tmp,
+      isProjectTrusted: () => false,
     });
     assert.equal(opened, 1, "a TUI session opens the read-only view");
     assert.deepEqual(sent, [], "the read-only view creates no model calls");

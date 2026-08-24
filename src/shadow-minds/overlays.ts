@@ -188,6 +188,17 @@ async function readOverlayContent(filePath: string): Promise<string> {
   }
 }
 
+/** Canonical, scope-checked overlay path for one scope and ID. */
+export function shadowOverlayFilePath(
+  scope: ShadowOverlayScope,
+  cwd: string,
+  id: string,
+): string {
+  const paths = resolveOverlayPaths(scope, cwd, id);
+  assertOverlayPathSafe(paths);
+  return paths.filePath;
+}
+
 /**
  * Reviews-ready state for one overlay: its canonical path plus the
  * fingerprint of the exact current content (empty string when absent).
