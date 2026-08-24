@@ -16,8 +16,9 @@
  * and agent definitions remain available in the same registry.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { realpathSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { isWithinWorkspace } from "../core/paths";
 import { diagnostic, type DiagnosticMessage } from "../core/diagnostics";
 import { getAgentPath, getPackagePath } from "../core/paths";
 import {
@@ -93,12 +94,25 @@ export interface ShadowDefinitionRegistry {
   diagnostics: DiagnosticMessage[];
 }
 
-function findNearestProjectShadowDir(cwd: string): string | null {
+interface ProjectShadowLocation {
+  dir: string;
+  projectRoot: string;
+  error?: string;
+}
+
+function findNearestProjectShadowDir(cwd: string): ProjectShadowLocation | null {
   let current = resolve(cwd);
   for (;;) {
     const candidate = join(current, ".pi", "shadow-minds");
     try {
-      if (statSync(candidate).isDirectory()) return candidate;
+      if (statSync(candidate).isDirectory()) {
+        const projectRoot = realpathSync(current);
+        const dir = realpathSync(candidate);
+        if (!isWithinWorkspace(projectRoot, dir)) {
+          return { dir: candidate, projectRoot, error: `Shadow definitions in ${candidate} are ignored because the canonical directory is outside the project workspace` };
+        }
+        return { dir, projectRoot };
+      }
     } catch {
       // absent — keep walking
     }
@@ -115,7 +129,11 @@ interface LoadedLayer {
   errors: string[];
 }
 
-function loadLayersFromDir(dir: string, scope: ShadowDefinitionScope): LoadedLayer[] {
+function loadLayersFromDir(
+  dir: string,
+  scope: ShadowDefinitionScope,
+  projectRoot?: string,
+): LoadedLayer[] {
   let entries: string[];
   try {
     entries = readdirSync(dir).sort();
@@ -125,8 +143,16 @@ function loadLayersFromDir(dir: string, scope: ShadowDefinitionScope): LoadedLay
   const layers: LoadedLayer[] = [];
   for (const name of entries) {
     if (!/\.md$/i.test(name)) continue;
-    const filePath = join(dir, name);
+    const requestedPath = join(dir, name);
+    let filePath = requestedPath;
     try {
+      if (projectRoot) {
+        filePath = realpathSync(requestedPath);
+        if (!isWithinWorkspace(projectRoot, filePath)) {
+          layers.push({ scope, filePath, errors: [`${requestedPath}: canonical file is outside the project workspace`] });
+          continue;
+        }
+      }
       if (!statSync(filePath).isFile()) continue;
       const content = readFileSync(filePath, "utf8");
       const result = parseShadowDefinitionFile(filePath, content);
@@ -163,7 +189,7 @@ function mergeLayers(
 ): { definition?: EffectiveShadowDefinition; errors: string[] } {
   const errors: string[] = [];
   const fieldSources: Record<string, ShadowDefinitionSource> = {};
-  const fields: ShadowDefinitionFields = { id, name: "" };
+  const fields: ShadowDefinitionFields = { id };
 
   const scalarKeys: (keyof ShadowDefinitionFields)[] = [
     "name",
@@ -287,18 +313,20 @@ export function discoverShadowDefinitions(
   options: { projectTrusted: boolean },
 ): ShadowDefinitionRegistry {
   const diagnostics: DiagnosticMessage[] = [];
-  const scopes: { dir: string | null; scope: ShadowDefinitionScope }[] = [
+  const scopes: { dir: string | null; scope: ShadowDefinitionScope; projectRoot?: string }[] = [
     { dir: getPackagePath("shadow-minds"), scope: "package" },
     { dir: getAgentPath("shadow-minds"), scope: "agent" },
   ];
-  const projectDir = findNearestProjectShadowDir(cwd);
-  if (projectDir && !options.projectTrusted) {
+  const projectLocation = findNearestProjectShadowDir(cwd);
+  if (projectLocation?.error) {
+    diagnostics.push(diagnostic("warning", projectLocation.error));
+  } else if (projectLocation && !options.projectTrusted) {
     diagnostics.push(diagnostic(
       "warning",
-      `Shadow definitions in ${projectDir} are ignored because the project is not trusted`,
+      `Shadow definitions in ${projectLocation.dir} are ignored because the project is not trusted`,
     ));
-  } else if (projectDir) {
-    scopes.push({ dir: projectDir, scope: "project" });
+  } else if (projectLocation) {
+    scopes.push({ dir: projectLocation.dir, scope: "project", projectRoot: projectLocation.projectRoot });
   }
 
   // Load every layer, grouped by effective ID and scope. A scope with more
@@ -306,9 +334,9 @@ export function discoverShadowDefinitions(
   const byId = new Map<string, { scope: ShadowDefinitionScope; layers: (LoadedLayer & { parsed: ParsedShadowDefinition })[] }[]>();
   const invalid: InvalidShadowDefinition[] = [];
   const erroredById = new Map<string, InvalidShadowDefinition>();
-  for (const { dir, scope } of scopes) {
+  for (const { dir, scope, projectRoot } of scopes) {
     if (!dir) continue;
-    for (const layer of loadLayersFromDir(dir, scope)) {
+    for (const layer of loadLayersFromDir(dir, scope, projectRoot)) {
       const id = stemOf(layer.filePath);
       if (!layer.parsed) {
         const existing = erroredById.get(id);
@@ -380,5 +408,7 @@ export function discoverShadowDefinitions(
 /** Canonical scope directory for definition overlays; #154 writes here. */
 export function shadowDefinitionScopeDir(scope: "agent" | "project", cwd: string): string {
   if (scope === "agent") return getAgentPath("shadow-minds");
-  return findNearestProjectShadowDir(cwd) ?? join(resolve(cwd), ".pi", "shadow-minds");
+  const project = findNearestProjectShadowDir(cwd);
+  if (project?.error) throw new Error(project.error);
+  return project?.dir ?? join(resolve(cwd), ".pi", "shadow-minds");
 }

@@ -111,7 +111,7 @@ export class ShadowManager implements Component, Focusable {
   }
 
   render(terminalWidth: number): string[] {
-    const width = Math.max(40, terminalWidth);
+    const width = Math.max(1, terminalWidth);
     const lines: string[] = [];
     const identity = `${this.theme.fg("accent", "●")} ${this.theme.fg("toolTitle", "Shadows")}`;
     if (this.data.config) {
@@ -135,16 +135,25 @@ export class ShadowManager implements Component, Focusable {
       lines.push(fit(this.theme.fg("dim", "No Shadow definitions discovered."), width));
     }
 
-    const detailWidth = Math.max(20, width - LIST_WIDTH - 3);
-    const detail = this.renderDetail(detailWidth);
-    const listLines = this.renderList(LIST_WIDTH - 2);
-    const rows = Math.max(listLines.length, detail.length);
-    for (let row = 0; row < rows; row += 1) {
-      const left = listLines[row] ?? "";
-      const pad = " ".repeat(Math.max(1, LIST_WIDTH - plainLength(left)));
-      lines.push(fit(`${left}${pad}${this.theme.fg("borderMuted", "│")} ${detail[row] ?? ""}`, width));
+    if (width < 64) {
+      lines.push(...this.renderList(Math.max(1, width)));
+      const detail = this.renderDetail(Math.max(1, width));
+      if (detail.length > 0) {
+        lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
+        lines.push(...detail.map((line) => fit(line, width)));
+      }
+    } else {
+      const listWidth = Math.min(LIST_WIDTH, Math.max(20, Math.floor(width * 0.4)));
+      const detailWidth = Math.max(20, width - listWidth - 3);
+      const detail = this.renderDetail(detailWidth);
+      const listLines = this.renderList(listWidth - 2);
+      const rows = Math.max(listLines.length, detail.length);
+      for (let row = 0; row < rows; row += 1) {
+        const left = listLines[row] ?? "";
+        const pad = " ".repeat(Math.max(1, listWidth - plainLength(left)));
+        lines.push(fit(`${left}${pad}${this.theme.fg("borderMuted", "│")} ${detail[row] ?? ""}`, width));
+      }
     }
-
     const diagnostics = this.renderDiagnostics(width);
     if (diagnostics.length > 0) {
       lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));

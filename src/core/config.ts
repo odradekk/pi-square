@@ -297,7 +297,7 @@ function legacyConfirmCommandsPath(value: unknown): string | undefined {
 function readLayer<T extends TSchema>(
   path: string,
   schema: T,
-): { value?: Static<T>; diagnostics: DiagnosticMessage[] } {
+): { value?: Static<T>; diagnostics: DiagnosticMessage[]; shadowMindsDeclared?: boolean; unreadable?: boolean } {
   if (!existsSync(path)) return { diagnostics: [] };
   let value: unknown;
   try {
@@ -305,8 +305,10 @@ function readLayer<T extends TSchema>(
   } catch (error) {
     return {
       diagnostics: [diagnostic("warning", `pi-square config ignored at ${path}: ${error instanceof Error ? error.message : String(error)}`)],
+      unreadable: true,
     };
   }
+  const shadowMindsDeclared = Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "shadowMinds"));
   if (
     value
     && typeof value === "object"
@@ -318,6 +320,7 @@ function readLayer<T extends TSchema>(
         "warning",
         `pi-square config ignored at ${path}: configuration V1 and the former statusline settings are no longer supported; remove statusline and set version to 2`,
       )],
+      shadowMindsDeclared,
     };
   }
   const confirmCommandsPath = legacyConfirmCommandsPath(value);
@@ -327,15 +330,16 @@ function readLayer<T extends TSchema>(
         "warning",
         `pi-square config ignored at ${path}: ${confirmCommandsPath} is no longer supported; remove confirmCommands because SSH commands now run without per-command confirmation`,
       )],
+      shadowMindsDeclared,
     };
   }
   if (!Value.Check(schema, value)) {
     const first = [...Value.Errors(schema, value)][0];
     const errorPath = first ? String((first as any).path ?? (first as any).instancePath ?? "/") : "/";
     const detail = first ? `${errorPath}: ${first.message}` : "schema validation failed";
-    return { diagnostics: [diagnostic("warning", `pi-square config ignored at ${path}: ${detail}`)] };
+    return { diagnostics: [diagnostic("warning", `pi-square config ignored at ${path}: ${detail}`)], shadowMindsDeclared };
   }
-  return { value: value as Static<T>, diagnostics: [] };
+  return { value: value as Static<T>, diagnostics: [], shadowMindsDeclared };
 }
 
 function semanticSshError(layer: AgentConfigLayer): string | undefined {
@@ -442,6 +446,7 @@ function footerModeDiagnostic(path: string): DiagnosticMessage {
 export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: DiagnosticMessage[]; sources: string[] } {
   const agentPath = getAgentPath("config", "pi-square.json");
   const projectPath = getProjectPath(cwd, "config", "pi-square.json");
+  let shadowMindsInvalid = false;
   let config = structuredClone(DEFAULT_CONFIG) as PiSquareConfig;
   const diagnostics: DiagnosticMessage[] = [];
   const sources: string[] = [];
@@ -451,12 +456,17 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
 
   const agentLayer = readLayer(agentPath, AgentConfigLayerSchema);
   diagnostics.push(...agentLayer.diagnostics);
+  shadowMindsInvalid ||= agentLayer.unreadable === true || (agentLayer.shadowMindsDeclared === true && agentLayer.value === undefined);
   if (agentLayer.value) {
     const sshError = semanticSshError(agentLayer.value);
     const displayError = semanticDisplayError(agentLayer.value);
-    if (sshError) diagnostics.push(diagnostic("warning", `pi-square config ignored at ${agentPath}: ${sshError}`));
-    else if (displayError) diagnostics.push(diagnostic("warning", `pi-square config ignored at ${agentPath}: ${displayError}`));
-    else {
+    if (sshError) {
+      diagnostics.push(diagnostic("warning", `pi-square config ignored at ${agentPath}: ${sshError}`));
+      if (agentLayer.shadowMindsDeclared) shadowMindsInvalid = true;
+    } else if (displayError) {
+      diagnostics.push(diagnostic("warning", `pi-square config ignored at ${agentPath}: ${displayError}`));
+      if (agentLayer.shadowMindsDeclared) shadowMindsInvalid = true;
+    } else {
       if (agentLayer.value.footer?.mode !== undefined) {
         diagnostics.push(footerModeDiagnostic(agentPath));
       }
@@ -480,10 +490,13 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
 
   const projectLayer = readLayer(projectPath, ProjectConfigLayerSchema);
   diagnostics.push(...projectLayer.diagnostics);
+  shadowMindsInvalid ||= projectLayer.unreadable === true || (projectLayer.shadowMindsDeclared === true && projectLayer.value === undefined);
   if (projectLayer.value) {
     const displayError = semanticDisplayError(projectLayer.value);
-    if (displayError) diagnostics.push(diagnostic("warning", `pi-square config ignored at ${projectPath}: ${displayError}`));
-    else {
+    if (displayError) {
+      diagnostics.push(diagnostic("warning", `pi-square config ignored at ${projectPath}: ${displayError}`));
+      if (projectLayer.shadowMindsDeclared) shadowMindsInvalid = true;
+    } else {
       if (projectLayer.value.footer?.mode !== undefined) {
         diagnostics.push(footerModeDiagnostic(projectPath));
       }
@@ -500,6 +513,7 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
     }
   }
 
+  if (shadowMindsInvalid) config = { ...config, shadowMinds: { ...config.shadowMinds, enabled: false } };
   config = { ...config, display: mergeDisplay(agentDisplay, agentPath, projectDisplay, projectPath) };
   return { config, diagnostics, sources };
 }

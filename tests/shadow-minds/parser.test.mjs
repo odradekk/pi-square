@@ -125,7 +125,9 @@ parseErr(file("promptVersion: 1\nid: probe\nname: Probe\n<<: {a: 1}\n", ""), /me
 parseErr(file("promptVersion: 1\nid: probe\n\tname: Probe\n", ""), /tab/i);
 parseErr(file("promptVersion: 1\nid: probe\nid: probe2\nname: Probe\n", ""), /duplicate/i);
 parseErr(file("promptVersion: 1\n? complex\n: value\nid: probe\nname: Probe\n", ""), /complex/i);
-
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\ntools: [read,]\n", ""), /empty items/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\ntools: ['read]\n", ""), /unterminated/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\n__proto__: polluted\n", ""), /__proto__/i);
 // ── Identity and field bounds ────────────────────────────────────────
 
 parseErr(file("promptVersion: 1\nid: other\nname: Probe\n", ""), /probe\.md/i);
@@ -245,6 +247,12 @@ parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: 
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: string\n      maxLength: 12001\n", ""), /maxLength/i);
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: array\n      maxItems: 65\n", ""), /maxItems/i);
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: string\n  required: [b]\n", ""), /required/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: number\n      enum: [wrong]\n", ""), /enum.*number|match type/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  enum: [x]\n", ""), /enum.*scalar/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: string\n  required: [a, a]\n", ""), /required.*unique/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: string\n      minimum: 1\n", ""), /minimum.*number|keyword.*string|string.*minimum/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: number\n      maxLength: 5\n", ""), /maxLength.*string|keyword.*number|number.*maxLength/i);
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: object\n  additionalProperties: false\n  properties:\n    a:\n      type: array\n      minimum: 1\n", ""), /minimum.*number|keyword.*array|array.*minimum/i);
 
 // ── Schema and payload validation as standalone functions ────────────
 
@@ -284,6 +292,14 @@ assert.ok(validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: 5 }).length >=
   const errors = validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: "x".repeat(25_000) });
   assert.equal(errors.length, 1);
   assert.match(errors[0], /24,?000/);
+}
+{
+  const schema = { type: "object", additionalProperties: false, properties: { text: { type: "string" } }, required: ["text"] };
+  assert.ok(validateShadowPayload(schema, { text: "x".repeat(12_001) }).some((error) => /12,?000|maxLength/i), "strings stay under the absolute schema cap even when maxLength is omitted");
+}
+{
+  const schema = { type: "object", additionalProperties: false, properties: { values: { type: "array", items: { type: "string" } } }, required: ["values"] };
+  assert.ok(validateShadowPayload(schema, { values: Array.from({ length: 65 }, () => "x") }).some((error) => /64|maxItems/i), "arrays stay under the absolute schema cap even when maxItems is omitted");
 }
 
 console.log("shadow-minds parser tests: OK");

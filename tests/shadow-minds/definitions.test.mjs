@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import jiti from "jiti";
@@ -9,6 +9,7 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const {
   DEFAULT_SHADOW_LOCAL_TOOLS,
   discoverShadowDefinitions,
+  shadowDefinitionScopeDir,
 } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 
 const TEMPLATE_IDS = [
@@ -207,6 +208,47 @@ await withRoot(async (dir, project) => {
   assert.deepEqual(mine.requiredTools, []);
   assert.equal(mine.tools, undefined, "omitted tools keep the default local read-only set unresolved until #156");
   assert.deepEqual([...DEFAULT_SHADOW_LOCAL_TOOLS], ["read", "grep", "find", "ls", "codegraph", "pdf_search"]);
+});
+
+// ── Minimal overlays inherit package identity and body ───────────────
+
+await withRoot(async (dir, project) => {
+  write(
+    join(dir, "agent", "shadow-minds", "project-grounding.md"),
+    "---\npromptVersion: 1\nid: project-grounding\nenabled: true\n---\n",
+  );
+  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
+  assert.ok(grounding, "a minimal overlay must keep the package definition effective");
+  assert.equal(grounding.name, "Project grounding", "an omitted overlay name inherits");
+  assert.equal(grounding.enabled, true);
+  assert.ok(grounding.body.includes("Ground the current work"), "an omitted body inherits");
+});
+
+// ── Trusted-project paths remain canonical and workspace-bounded ─────
+
+await withRoot(async (dir, project) => {
+  const outside = join(dir, "outside-shadow-definitions");
+  mkdirSync(outside, { recursive: true });
+  write(join(outside, "escaped.md"), definitionFile({ id: "escaped", name: "Escaped", enabled: true }));
+  mkdirSync(join(project, ".pi"), { recursive: true });
+  symlinkSync(outside, join(project, ".pi", "shadow-minds"));
+
+  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  assert.equal(registry.definitions.some((definition) => definition.id === "escaped"), false, "a project symlink may not import definitions from outside the workspace");
+  assert.ok(registry.diagnostics.some((entry) => /outside|canonical|symlink/i.test(entry.message)), "the rejected project directory is diagnosed");
+  assert.throws(() => shadowDefinitionScopeDir("project", project), /outside the project workspace/i, "the future write scope refuses the same unsafe symlink");
+});
+// ── Standalone definitions still require an effective name ──────────
+
+await withRoot(async (dir, project) => {
+  write(
+    join(dir, "agent", "shadow-minds", "nameless.md"),
+    "---\npromptVersion: 1\nid: nameless\nenabled: true\n---\nBody.\n",
+  );
+  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  assert.equal(registry.definitions.some((definition) => definition.id === "nameless"), false);
+  assert.ok(registry.invalid.find((entry) => entry.id === "nameless")?.errors.some((error) => /name is missing/i.test(error)));
 });
 
 // ── Untrusted project exclusion ──────────────────────────────────────

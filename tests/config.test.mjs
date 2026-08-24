@@ -565,12 +565,12 @@ try {
   }));
   const shadowProjectSwitch = loadConfig(projectDir);
   assert.equal(
-    shadowProjectSwitch.config.shadowMinds.enabled, true,
-    "a project cannot set the agent-only master switch — the whole project layer is rejected and the agent value survives",
+    shadowProjectSwitch.config.shadowMinds.enabled, false,
+    "an invalid project shadowMinds section cannot re-enable or leave automatic activation enabled",
   );
   assert.ok(
     shadowProjectSwitch.diagnostics.some((d) => /config ignored/.test(d.message)),
-    "a project layer containing shadowMinds.enabled must be rejected atomically with a diagnostic",
+    "a project layer containing shadowMinds.enabled must be rejected atomically, diagnosed, and fail closed",
   );
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
@@ -578,7 +578,8 @@ try {
     shadowMinds: { defaults: { runTimeoutSeconds: 601 } },
   }));
   const shadowOverCap = loadConfig(projectDir);
-  assert.equal(shadowOverCap.config.shadowMinds.defaults.runTimeoutSeconds, 90, "a value above the package hard cap rejects the layer and keeps the agent value");
+  assert.equal(shadowOverCap.config.shadowMinds.enabled, false, "an invalid project shadowMinds section pauses automatic activation fail closed");
+  assert.equal(shadowOverCap.config.shadowMinds.defaults.runTimeoutSeconds, 90, "the invalid project defaults do not replace the valid agent value");
   assert.ok(shadowOverCap.diagnostics.some((d) => /config ignored/.test(d.message)));
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({

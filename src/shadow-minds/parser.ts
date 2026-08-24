@@ -50,8 +50,9 @@ export const SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT = 32;
 export const SHADOW_SCHEMA_MAX_ITEMS = 64;
 /** `maxLength` a schema may declare. */
 export const SHADOW_SCHEMA_STRING_MAX_LENGTH = 12_000;
-/** Encoded result payload bound enforced at validation time. */
 export const SHADOW_PAYLOAD_MAX_CHARS = 24_000;
+/** Maximum field-level errors returned for one invalid payload. */
+export const SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX = 32;
 
 export const SHADOW_TRIGGERS = ["tool_turn", "failure", "mutation", "completion"] as const;
 export type ShadowTrigger = (typeof SHADOW_TRIGGERS)[number];
@@ -89,10 +90,11 @@ export const DEFAULT_OUTPUT_SCHEMA: ShadowOutputSchema = Object.freeze({
 }) as ShadowOutputSchema;
 
 const SCALAR_TYPES = new Set(["string", "number", "integer", "boolean", "null"]);
-const ARRAY_ITEM_ONLY_KEYS = new Set(["items"]);
-const OBJECT_ONLY_KEYS = new Set(["properties", "required", "additionalProperties"]);
-const COMMON_KEYS = new Set(["type", "enum", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems"]);
-
+const STRING_SCHEMA_KEYS = new Set(["type", "enum", "minLength", "maxLength"]);
+const NUMBER_SCHEMA_KEYS = new Set(["type", "enum", "minimum", "maximum"]);
+const SCALAR_SCHEMA_KEYS = new Set(["type", "enum"]);
+const ARRAY_SCHEMA_KEYS = new Set(["type", "enum", "items", "minItems", "maxItems"]);
+const OBJECT_SCHEMA_KEYS = new Set(["type", "enum", "properties", "required", "additionalProperties"]);
 /**
  * Validates a candidate output schema against the bounded subset. Returns one
  * message per violation; an empty array means the schema is accepted.
@@ -129,35 +131,45 @@ function validateSchemaNode(value: unknown, path: string, depth: number, errors:
     errors.push(`${path || "root"}: unsupported type ${JSON.stringify(type)}`);
     return;
   }
+  const allowedKeys = type === "string"
+    ? STRING_SCHEMA_KEYS
+    : type === "number" || type === "integer"
+      ? NUMBER_SCHEMA_KEYS
+      : type === "boolean" || type === "null"
+        ? SCALAR_SCHEMA_KEYS
+        : type === "array"
+          ? ARRAY_SCHEMA_KEYS
+          : OBJECT_SCHEMA_KEYS;
   for (const key of Object.keys(record)) {
-    if (!COMMON_KEYS.has(key) && !OBJECT_ONLY_KEYS.has(key) && !ARRAY_ITEM_ONLY_KEYS.has(key)) {
-      errors.push(`${path || "root"}: unsupported keyword '${key}'`);
-    }
-  }
-  if ("$ref" in record) errors.push(`${path || "root"}: $ref is not supported`);
-  for (const keyword of ["allOf", "anyOf", "oneOf", "not", "patternProperties", "propertyNames", "if", "then", "else"]) {
-    if (keyword in record) errors.push(`${path || "root"}: ${keyword} is not supported`);
-  }
-  if (type !== "object" && ("properties" in record || "required" in record || "additionalProperties" in record)) {
-    errors.push(`${path || "root"}: properties/required/additionalProperties apply only to object schemas`);
-  }
-  if (type !== "array" && "items" in record) {
-    errors.push(`${path || "root"}: items applies only to array schemas`);
+    if (!allowedKeys.has(key)) errors.push(`${path || "root"}: keyword '${key}' is not supported for type '${type}'`);
   }
   if (type === "object" && record.additionalProperties !== false) {
     errors.push(`${path || "root"}: every object schema must set additionalProperties: false`);
   }
-  validateNumberKeyword(record, "minLength", path, errors);
-  validateNumberKeyword(record, "maxLength", path, errors, SHADOW_SCHEMA_STRING_MAX_LENGTH, "maxLength");
-  validateNumberKeyword(record, "minimum", path, errors);
-  validateNumberKeyword(record, "maximum", path, errors);
-  validateNumberKeyword(record, "minItems", path, errors);
-  validateNumberKeyword(record, "maxItems", path, errors, SHADOW_SCHEMA_MAX_ITEMS, "maxItems");
+  validateNonNegativeIntegerKeyword(record, "minLength", path, errors);
+  validateNonNegativeIntegerKeyword(record, "maxLength", path, errors, SHADOW_SCHEMA_STRING_MAX_LENGTH);
+  validateFiniteNumberKeyword(record, "minimum", path, errors);
+  validateFiniteNumberKeyword(record, "maximum", path, errors);
+  validateNonNegativeIntegerKeyword(record, "minItems", path, errors);
+  validateNonNegativeIntegerKeyword(record, "maxItems", path, errors, SHADOW_SCHEMA_MAX_ITEMS);
+  if (typeof record.minLength === "number" && typeof record.maxLength === "number" && record.minLength > record.maxLength) {
+    errors.push(`${path || "root"}: minLength cannot exceed maxLength`);
+  }
+  if (typeof record.minItems === "number" && typeof record.maxItems === "number" && record.minItems > record.maxItems) {
+    errors.push(`${path || "root"}: minItems cannot exceed maxItems`);
+  }
+  if (typeof record.minimum === "number" && typeof record.maximum === "number" && record.minimum > record.maximum) {
+    errors.push(`${path || "root"}: minimum cannot exceed maximum`);
+  }
   if (record.enum !== undefined) {
     if (!Array.isArray(record.enum) || record.enum.length === 0 || record.enum.length > SHADOW_SCHEMA_MAX_ITEMS) {
       errors.push(`${path || "root"}: enum must list between 1 and ${SHADOW_SCHEMA_MAX_ITEMS} values`);
-    } else if (!record.enum.every((entry) => typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean" || entry === null)) {
-      errors.push(`${path || "root"}: enum values must be scalars`);
+    } else if (type === "object" || type === "array") {
+      errors.push(`${path || "root"}: enum is supported only for scalar schemas`);
+    } else if (!record.enum.every((entry) => enumValueMatchesType(entry, type))) {
+      errors.push(`${path || "root"}: enum values must match type '${type}'`);
+    } else if (record.enum.some((entry) => typeof entry === "string" && entry.length > SHADOW_SCHEMA_STRING_MAX_LENGTH)) {
+      errors.push(`${path || "root"}: enum string values exceed the maximum of ${SHADOW_SCHEMA_STRING_MAX_LENGTH}`);
     }
   }
   if (type === "object") {
@@ -180,10 +192,18 @@ function validateSchemaNode(value: unknown, path: string, depth: number, errors:
     if (required !== undefined) {
       if (!Array.isArray(required) || !required.every((entry) => typeof entry === "string")) {
         errors.push(`${path || "root"}: required must be a list of property names`);
-      } else if (isPlainObject(properties)) {
-        for (const name of required) {
-          if (!Object.hasOwn(properties, name)) {
-            errors.push(`${path || "root"}: required property '${name}' is not declared in properties`);
+      } else {
+        if (required.length > SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT) {
+          errors.push(`${path || "root"}: required allows at most ${SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT} entries`);
+        }
+        if (new Set(required).size !== required.length) {
+          errors.push(`${path || "root"}: required property names must be unique`);
+        }
+        if (isPlainObject(properties)) {
+          for (const name of required) {
+            if (!Object.hasOwn(properties, name)) {
+              errors.push(`${path || "root"}: required property '${name}' is not declared in properties`);
+            }
           }
         }
       }
@@ -197,21 +217,39 @@ function validateSchemaNode(value: unknown, path: string, depth: number, errors:
     }
   }
 }
+function enumValueMatchesType(value: unknown, type: string): boolean {
+  if (type === "string") return typeof value === "string";
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "integer") return typeof value === "number" && Number.isInteger(value);
+  if (type === "boolean") return typeof value === "boolean";
+  return type === "null" && value === null;
+}
 
-function validateNumberKeyword(
+function validateNonNegativeIntegerKeyword(
   record: Record<string, unknown>,
   key: string,
   path: string,
   errors: string[],
   max?: number,
-  label?: string,
 ): void {
   const value = record[key];
   if (value === undefined) return;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     errors.push(`${path || "root"}: ${key} must be a non-negative integer`);
   } else if (max !== undefined && value > max) {
-    errors.push(`${path || "root"}: ${label ?? key} exceeds the maximum of ${max}`);
+    errors.push(`${path || "root"}: ${key} exceeds the maximum of ${max}`);
+  }
+}
+
+function validateFiniteNumberKeyword(
+  record: Record<string, unknown>,
+  key: "minimum" | "maximum",
+  path: string,
+  errors: string[],
+): void {
+  const value = record[key];
+  if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+    errors.push(`${path || "root"}: ${key} must be a finite number`);
   }
 }
 
@@ -226,7 +264,7 @@ export function validateShadowPayload(schema: ShadowOutputSchema, payload: unkno
   }
   const errors: string[] = [];
   validatePayloadNode(schema, payload, "", errors);
-  return errors;
+  return errors.slice(0, SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX);
 }
 
 function validatePayloadNode(schema: ShadowOutputSchema, payload: unknown, path: string, errors: string[]): void {
@@ -244,8 +282,9 @@ function validatePayloadNode(schema: ShadowOutputSchema, payload: unknown, path:
       if (schema.minLength !== undefined && payload.length < schema.minLength) {
         errors.push(`${label}: shorter than minLength ${schema.minLength}`);
       }
-      if (schema.maxLength !== undefined && payload.length > schema.maxLength) {
-        errors.push(`${label}: longer than maxLength ${schema.maxLength}`);
+      const maxLength = schema.maxLength ?? SHADOW_SCHEMA_STRING_MAX_LENGTH;
+      if (payload.length > maxLength) {
+        errors.push(`${label}: longer than maxLength ${maxLength}`);
       }
       return;
     case "integer":
@@ -276,14 +315,16 @@ function validatePayloadNode(schema: ShadowOutputSchema, payload: unknown, path:
         errors.push(`${label}: expected array`);
         return;
       }
+      if (errors.length >= SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX) return;
       if (schema.minItems !== undefined && payload.length < schema.minItems) {
         errors.push(`${label}: fewer than minItems ${schema.minItems}`);
       }
-      if (schema.maxItems !== undefined && payload.length > schema.maxItems) {
-        errors.push(`${label}: more than maxItems ${schema.maxItems}`);
+      const maxItems = schema.maxItems ?? SHADOW_SCHEMA_MAX_ITEMS;
+      if (payload.length > maxItems) {
+        errors.push(`${label}: more than maxItems ${maxItems}`);
       }
       if (schema.items) {
-        for (let index = 0; index < payload.length; index += 1) {
+        for (let index = 0; index < payload.length && errors.length < SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX; index += 1) {
           validatePayloadNode(schema.items, payload[index], `${path}[${index}]`, errors);
         }
       }
@@ -295,16 +336,19 @@ function validatePayloadNode(schema: ShadowOutputSchema, payload: unknown, path:
         return;
       }
       for (const key of Object.keys(payload)) {
+        if (errors.length >= SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX) return;
         if (!schema.properties || !Object.hasOwn(schema.properties, key)) {
           errors.push(`${path ? `${path}/` : ""}${key}: additional property is not allowed`);
         }
       }
       for (const name of schema.required ?? []) {
+        if (errors.length >= SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX) return;
         if (!Object.hasOwn(payload, name)) {
           errors.push(`${path ? `${path}/` : ""}${name}: required property is missing`);
         }
       }
       for (const [key, child] of Object.entries(schema.properties ?? {})) {
+        if (errors.length >= SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX) return;
         if (Object.hasOwn(payload, key)) {
           validatePayloadNode(child, payload[key], path ? `${path}/${key}` : key, errors);
         }
@@ -343,7 +387,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Frontmatter fields of one definition layer; absent means inherit. */
 export interface ShadowDefinitionFields {
   id: string;
-  name: string;
+  name?: string;
   enabled?: boolean;
   hidden?: boolean;
   priority?: number;
@@ -467,7 +511,7 @@ function parseBlock(
     errors.push(`${source}: line ${lines[start]!.number}: nesting exceeds the supported depth`);
     return undefined;
   }
-  const map: { [key: string]: YamlValue } = {};
+  const map: { [key: string]: YamlValue } = Object.create(null) as { [key: string]: YamlValue };
   let index = start;
   while (index < lines.length) {
     const line = lines[index]!;
@@ -492,7 +536,7 @@ function parseBlock(
     }
     const rest = match[2]!.trim();
     if (rest === "{}") {
-      map[key] = {};
+      map[key] = Object.create(null) as { [key: string]: YamlValue };
       index += 1;
       continue;
     }
@@ -596,8 +640,11 @@ function parseFlowList(text: string): YamlValue[] | string {
   if (!text.endsWith("]")) return "flow lists must close on one line";
   const inner = text.slice(1, -1).trim();
   if (inner === "") return [];
+  const parts = splitFlowItems(inner);
+  if (typeof parts === "string") return parts;
+  if (parts.some((part) => part.trim() === "")) return "flow lists cannot contain empty items";
   const items: YamlValue[] = [];
-  for (const part of splitFlowItems(inner)) {
+  for (const part of parts) {
     const scalar = parseScalar(part.trim());
     const scalarFailure = asScalarError(scalar);
     if (scalarFailure !== undefined) return scalarFailure;
@@ -606,7 +653,7 @@ function parseFlowList(text: string): YamlValue[] | string {
   return items;
 }
 
-function splitFlowItems(text: string): string[] {
+function splitFlowItems(text: string): string[] | string {
   const parts: string[] = [];
   let current = "";
   let quote: '"' | "'" | undefined;
@@ -628,8 +675,9 @@ function splitFlowItems(text: string): string[] {
     }
     current += character;
   }
+  if (quote) return "flow lists contain an unterminated quoted scalar";
   parts.push(current);
-  return parts.map((part) => part.trim()).filter((part) => part !== "");
+  return parts.map((part) => part.trim());
 }
 
 const YAML_ERROR_PREFIX = "__yaml_error__:";
@@ -723,14 +771,16 @@ function normalizeDefinitionFields(
     return fail(`promptVersion must be 1 (got ${JSON.stringify(frontmatter.promptVersion) ?? "null"})`);
   }
   const id = expectString(source, frontmatter, "id", errors, 1, SHADOW_ID_MAX_CHARS);
-  const name = expectString(source, frontmatter, "name", errors, 1, SHADOW_NAME_MAX_CHARS);
+  const name = frontmatter.name === undefined
+    ? undefined
+    : expectString(source, frontmatter, "name", errors, 1, SHADOW_NAME_MAX_CHARS);
   const fileStem = source.replace(/\.md$/i, "").split(/[\\/]/).pop()!;
   if (id !== undefined && !SHADOW_ID_PATTERN.test(id)) {
     errors.push(`${source}: id must match [A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}`);
   } else if (id !== undefined && id !== fileStem) {
     errors.push(`${source}: id '${id}' must equal the Markdown filename stem '${fileStem}'`);
   }
-  const fields: ShadowDefinitionFields = { id: id ?? fileStem, name: name ?? "" };
+  const fields: ShadowDefinitionFields = { id: id ?? fileStem, ...(name !== undefined ? { name } : {}) };
 
   assignBoolean(source, frontmatter, "enabled", fields, errors);
   assignBoolean(source, frontmatter, "hidden", fields, errors);
@@ -904,10 +954,6 @@ function normalizeDefinitionFields(
   fields.body = body;
 
   if (errors.length > 0) return { errors };
-  if (!fields.name) {
-    errors.push(`${source}: name is required`);
-    return { errors };
-  }
   return { fields, errors: [] };
 }
 

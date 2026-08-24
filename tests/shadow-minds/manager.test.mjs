@@ -80,10 +80,11 @@ function render(manager, width = 100) {
     "layer sources render with scope, file name, and hash",
   );
   assert.ok(grounded.includes("BODY:"), "the responsibility body has a bounded preview");
-  const narrowed = render(manager, 60);
-  assert.ok(narrowed.every((line) => line.replace(PLAIN, "").length <= 60), "every line stays inside the terminal width");
+  for (const width of [39, 40, 60, 63, 64, 80, 100, 120]) {
+    const narrowed = render(manager, width);
+    assert.ok(narrowed.every((line) => line.replace(PLAIN, "").length <= width), `every line stays inside width ${width}`);
+  }
 }
-
 // ── The effective configuration is inspectable in the view ───────────
 
 {
