@@ -81,15 +81,10 @@ export const SHADOW_SAFE_EXTENSION_TOOLS = [
 ] as const;
 
 /** Resolves Shadow-safe extension tools from the child-safe factories only. */
-export function createShadowSafeExtensionTools(names: readonly string[]): {
-  definitions: ToolDefinition[];
-  unknown: string[];
-} {
+export function createShadowSafeExtensionTools(names: readonly string[]): ToolDefinition[] {
   const allowed = new Set<string>(SHADOW_SAFE_EXTENSION_TOOLS);
   const requested = [...new Set(names)];
-  const unknown = requested.filter((name) => !allowed.has(name));
-  const { definitions } = createChildTools(requested.filter((name) => allowed.has(name)));
-  return { definitions, unknown };
+  return createChildTools(requested.filter((name) => allowed.has(name))).definitions;
 }
 
 export const childToolNames = extensionToolNamesForPlatform();

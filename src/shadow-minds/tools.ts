@@ -21,6 +21,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createShadowSafeExtensionTools, SHADOW_SAFE_EXTENSION_TOOLS } from "../tool-catalog";
+import { SHADOW_DEFAULT_TOOLS } from "./parser";
 import { canonicalSchemaJson } from "./prompt";
 import { SUBMIT_SHADOW_RESULT_PARAMETERS, SUBMIT_SHADOW_RESULT_TOOL } from "./result";
 
@@ -33,8 +34,7 @@ export const SHADOW_EXTENSION_BASE_ORDER = SHADOW_SAFE_EXTENSION_TOOLS;
 /** Every tool a Shadow may investigate with, in canonical order. */
 export const SHADOW_SAFE_TOOLS = [...SHADOW_BUILTIN_BASE_ORDER, ...SHADOW_EXTENSION_BASE_ORDER] as const;
 
-/** `tools` omitted selects this default local read-only evidence set. */
-export const SHADOW_DEFAULT_TOOLS = SHADOW_BUILTIN_BASE_ORDER;
+export { SHADOW_DEFAULT_TOOLS };
 
 /** One resolved, canonically ordered evidence-tool envelope. */
 export interface ShadowToolEnvelope {
@@ -121,7 +121,7 @@ export function resolveShadowTools(input: ResolveShadowToolsInput): ShadowToolRe
       error: `Required Shadow tools are unavailable: ${unavailableRequired.join(", ")}.`,
     };
   }
-  const { definitions } = createShadowSafeExtensionTools(extensionNames);
+  const definitions = createShadowSafeExtensionTools(extensionNames);
   const extensionOrder: readonly string[] = SHADOW_EXTENSION_BASE_ORDER;
   const customTools = [...definitions].sort(
     (left, right) => extensionOrder.indexOf(left.name) - extensionOrder.indexOf(right.name),

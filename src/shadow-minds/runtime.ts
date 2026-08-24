@@ -22,6 +22,7 @@ import {
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ShadowMindsConfig } from "../core/config";
 import {
+  addUsageValues,
   createChildSessionUsage,
   createOneTimeChildSession,
   runOneTimeChildSession,
@@ -33,6 +34,7 @@ import {
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
 import { buildShadowUserPrompt, canonicalSchemaJson, type ShadowTrajectory } from "./prompt";
+import type { ShadowModelResolution } from "./resolve";
 import { SUBMIT_SHADOW_RESULT_PARAMETERS } from "./result";
 import type { ShadowToolEnvelope } from "./tools";
 import {
@@ -99,17 +101,10 @@ export interface ShadowRunView {
   systemHash?: string;
   toolSchemaHash?: string;
   trajectoryHash?: string;
+  /** Whether the frozen trajectory was deterministically truncated. */
+  trajectoryTruncated?: boolean;
   /** Per-request usage and TTFT, bounded by the turn budget. */
   requests?: ShadowRequestMetric[];
-}
-
-export interface ShadowModelResolution {
-  /** Resolved model object handed to the child session. */
-  model?: any;
-  /** `provider/id` label for records when the object does not report one. */
-  label?: string;
-  /** Explicit-model failure; the run never starts and never falls back. */
-  error?: string;
 }
 
 export interface ShadowManualRunRequest {
@@ -313,6 +308,7 @@ export function createShadowRuntime(input: {
       systemHash: cohortHash(request.system),
       toolSchemaHash,
       trajectoryHash: cohortHash(`${request.trajectory.text}\0${request.trajectory.truncation}`),
+      ...(request.trajectory.truncation !== "none" ? { trajectoryTruncated: true } : {}),
     };
 
     let abortReason: "cancelled" | "timeout" | "max_turns" | "max_tool_calls" | undefined;
@@ -388,16 +384,11 @@ export function createShadowRuntime(input: {
           return;
         }
         if (event?.type === "message_end" && event.message?.role === "assistant") {
-          const reported = event.message?.usage;
-          if (currentRequest && reported && typeof reported === "object") {
-            currentRequest.input += Number(reported.input ?? 0) || 0;
-            currentRequest.output += Number(reported.output ?? 0) || 0;
-            currentRequest.cacheRead += Number(reported.cacheRead ?? 0) || 0;
-            currentRequest.cacheWrite += Number(reported.cacheWrite ?? 0) || 0;
-            const cost = typeof reported.cost === "object"
-              ? Number(reported.cost?.total ?? 0) || 0
-              : Number(reported.cost ?? 0) || 0;
-            currentRequest.cost += cost;
+          // The request finalizes at its assistant message end whether or not
+          // the provider attached usage; a missing report lands as zeros so
+          // the request count and TTFT stay observable.
+          if (currentRequest) {
+            addUsageValues(currentRequest, event.message?.usage);
             if (requests.length < REQUEST_METRICS_MAX) requests.push(currentRequest);
             currentRequest = undefined;
             requestStartedAt = undefined;

@@ -602,6 +602,32 @@ function baseRequest(overrides = {}) {
 }
 
 {
+  // A usage-less assistant completion finalizes its request with zeros.
+  const fake = makeFake({ script: async (input) => {
+    input.onEvent({ type: "turn_start" });
+    fake.advance(90);
+    input.onEvent({ type: "message_start", message: { role: "assistant" } });
+    input.onEvent({ type: "message_end", message: { role: "assistant" } });
+    return COMPLETED_NO_SUBMISSION;
+  } });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  assert.deepEqual(runtime.snapshot().runs[0].requests, [
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, ttftMs: 90 },
+  ]);
+}
+
+{
+  // A truncated trajectory marks its run with the qualifier.
+  const fake = makeFake();
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest({
+    trajectory: { text: "[user] long", includedMessages: 1, totalMessages: 5, truncated: true, truncation: "dropped" },
+  })).done;
+  assert.equal(runtime.snapshot().runs[0].trajectoryTruncated, true);
+}
+
+{
   // A run without assistant completions reports no request metrics.
   const fake = makeFake({ script: async (input) => {
     input.onEvent({ type: "turn_start" });

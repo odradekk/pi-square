@@ -30,6 +30,9 @@ export const SHADOW_FILE_MAX_BYTES = 64 * 1024;
 export const SHADOW_BODY_MAX_CHARS = 24_000;
 /** One trigger-specific instruction bound. */
 export const SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS = 8_000;
+/** The default local evidence set an omitted `tools` field resolves to. */
+export const SHADOW_DEFAULT_TOOLS: readonly string[] = Object.freeze(["read", "grep", "find", "ls"]);
+
 /** Entries allowed in `tools` and `requiredTools`. */
 export const SHADOW_TOOLS_MAX = 16;
 /** Fixed automatic trigger enum values. */
@@ -59,7 +62,7 @@ export type ShadowTrigger = (typeof SHADOW_TRIGGERS)[number];
 
 export const SHADOW_DELIVERIES = ["steer", "wake", "notify"] as const;
 export type ShadowDelivery = (typeof SHADOW_DELIVERIES)[number];
-export const SHADOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const SHADOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ShadowThinkingLevel = (typeof SHADOW_THINKING_LEVELS)[number];
 
 /** The single shared ID pattern; writers and the manager reuse it. */

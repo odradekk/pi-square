@@ -104,8 +104,12 @@ function parentCoreFromOptions(options: unknown): string | undefined {
 /** Resolves the run model: an explicit Shadow model or the activating parent model. */
 function captureTrajectory(ctx: ExtensionCommandContext, evidence: readonly ShadowTrajectoryEvidence[] = []) {
   try {
-    const leafId = ctx.sessionManager?.getLeafId?.() ?? undefined;
-    const branch = ctx.sessionManager?.getBranch?.(leafId);
+    // The compaction-aware context projection: `buildContextEntries` follows
+    // the current leaf and omits entries the latest compaction replaced, so
+    // the trajectory matches what the parent model actually sees. The plain
+    // branch remains the fallback for surfaces without the projection.
+    const manager = ctx.sessionManager;
+    const branch = manager?.buildContextEntries?.() ?? manager?.getBranch?.(manager.getLeafId?.() ?? undefined);
     return buildTrajectory(Array.isArray(branch) ? branch : [], { evidence });
   } catch {
     return buildTrajectory([], { evidence });

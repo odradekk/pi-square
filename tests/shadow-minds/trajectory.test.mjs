@@ -120,6 +120,17 @@ function assistantCall(parts) {
 }
 
 {
+  // Branch summaries render alongside compaction summaries.
+  const trajectory = buildTrajectory([
+    { type: "branch_summary", summary: "explored the alternative parser" },
+    message("user", "back on the main line"),
+  ]);
+  assert.match(trajectory.text, /\[branch\] explored the alternative parser/);
+  assert.match(trajectory.text, /\[user\] back on the main line/);
+  assert.equal(trajectory.truncation, "none");
+}
+
+{
   // Unpaired calls still surface as requests.
   const trajectory = buildTrajectory([
     assistantCall([toolCall("pending", "grep", { pattern: "x" })]),

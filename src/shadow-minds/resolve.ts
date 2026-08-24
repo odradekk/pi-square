@@ -67,7 +67,10 @@ const VALID_LEVELS: ReadonlySet<string> = new Set(SHADOW_THINKING_LEVELS);
  * Ordered thinking-level fallback: the Shadow value wins, then the activating
  * parent value; the first enum-valid value is used and unsupported levels are
  * dropped rather than passed through. Pi 0.84.2 clamps a supported-but-
- * unavailable level for the selected model natively.
+ * unavailable level for the selected model natively. When a configuration
+ * thinking default is added later, it slots between these two candidates per
+ * the epic order (Shadow value, effective configuration default, parent
+ * value).
  */
 export function resolveShadowThinkingLevel(
   shadowLevel: ShadowThinkingLevel | undefined,

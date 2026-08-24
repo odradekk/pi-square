@@ -7,10 +7,10 @@ import jiti from "jiti";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
-  DEFAULT_SHADOW_LOCAL_TOOLS,
   discoverShadowDefinitions,
   shadowDefinitionScopeDir,
 } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { SHADOW_DEFAULT_TOOLS } = await load(join(packageRoot, "src", "shadow-minds", "parser.ts"));
 
 const TEMPLATE_IDS = [
   "alternative-explorer",
@@ -207,7 +207,7 @@ await withRoot(async (dir, project) => {
   assert.equal(mine.debug, false);
   assert.deepEqual(mine.requiredTools, []);
   assert.equal(mine.tools, undefined, "omitted tools keep the default local read-only set unresolved until #156");
-  assert.deepEqual([...DEFAULT_SHADOW_LOCAL_TOOLS], ["read", "grep", "find", "ls", "codegraph", "pdf_search"]);
+  assert.deepEqual([...SHADOW_DEFAULT_TOOLS], ["read", "grep", "find", "ls"]);
 });
 
 // ── Minimal overlays inherit package identity and body ───────────────

@@ -157,6 +157,11 @@ parseErr(file("promptVersion: 1\nid: probe\nname: Probe\nparentModels: [\"**\"]\
 parseErr(file('promptVersion: 1\nid: probe\nname: Probe\nparentModels: ["cpa/a", "cpa/a"]\n', ""), /duplicate/i);
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\nmodel: not-a-model-reference\n", ""), /model/i);
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\nthinking: ultra\n", ""), /thinking/i);
+// Pi 0.84.2 adds the "max" level; definitions may request it.
+{
+  const definition = parseOk(file("promptVersion: 1\nid: probe\nname: Probe\nthinking: max\n", ""));
+  assert.equal(definition.fields.thinking, "max");
+}
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\ntimeoutSeconds: 601\n", ""), /timeoutSeconds/i);
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\ntimeoutSeconds: 0\n", ""), /timeoutSeconds/i);
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\nmaxTurns: 33\n", ""), /maxTurns/i);

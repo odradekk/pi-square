@@ -25,6 +25,7 @@ import { getAgentPath, getPackagePath } from "../core/paths";
 import {
   DEFAULT_OUTPUT_SCHEMA,
   parseShadowDefinitionFile,
+  SHADOW_DEFAULT_TOOLS,
   type ParsedShadowDefinition,
   type ShadowDefinitionFields,
   type ShadowDelivery,
@@ -34,16 +35,6 @@ import {
 } from "./parser";
 
 export type ShadowDefinitionScope = "package" | "agent" | "project";
-
-/** Tool names an omitted `tools` field resolves to; catalog construction is #156. */
-export const DEFAULT_SHADOW_LOCAL_TOOLS: readonly string[] = Object.freeze([
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "codegraph",
-  "pdf_search",
-]);
 
 export interface ShadowDefinitionSource {
   scope: ShadowDefinitionScope;
@@ -299,7 +290,7 @@ function mergeLayers(
   if (effective.completionGate && !effective.triggers.includes("completion")) {
     errors.push(`${id}: completionGate requires a completion trigger subscription`);
   }
-  const finalTools = new Set(effective.tools ?? DEFAULT_SHADOW_LOCAL_TOOLS);
+  const finalTools = new Set(effective.tools ?? SHADOW_DEFAULT_TOOLS);
   for (const required of effective.requiredTools) {
     if (!finalTools.has(required)) {
       errors.push(`${id}: required tool '${required}' is outside the final tool set`);

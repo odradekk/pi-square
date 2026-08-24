@@ -180,11 +180,12 @@ function collectToolCalls(entries: readonly LooseEntry[]): Map<string, { name: s
 
 /** Renders one visible branch entry as trajectory lines, or none. */
 function renderEntry(entry: LooseEntry, toolCalls: Map<string, { name: string; arguments?: Record<string, unknown> }>): { lines: string[]; clipped: boolean; summary: boolean } {
-  if (entry.type === "compaction") {
+  if (entry.type === "compaction" || entry.type === "branch_summary") {
     const raw = typeof entry.summary === "string" ? sanitizeDisplayLine(entry.summary).replace(/\s+/g, " ").trim() : "";
     if (!raw) return { lines: [], clipped: false, summary: false };
     const clippedSummary = clip(raw, SHADOW_TRAJECTORY_MESSAGE_MAX_CHARS);
-    return { lines: [`[summary] ${clippedSummary}`], clipped: clippedSummary !== raw, summary: true };
+    const marker = entry.type === "compaction" ? "[summary]" : "[branch]";
+    return { lines: [`${marker} ${clippedSummary}`], clipped: clippedSummary !== raw, summary: true };
   }
   if (entry.type !== "message" || !entry.message) return { lines: [], clipped: false, summary: false };
   const role = entry.message.role;

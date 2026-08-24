@@ -378,7 +378,15 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   try {
     const harness = fakePi();
     const notifications = [];
+    // A realistic post-compaction branch: the raw branch still carries the
+    // replaced pre-compaction history, while the compaction-aware context
+    // projection (what the parent model sees) keeps only the compaction
+    // summary, the branch summary, and the post-compaction entries.
+    const replacedHistory = { type: "message", message: { role: "user", content: "Ancient replaced request that must never reach the Shadow." } };
     const branchEntries = [
+      replacedHistory,
+      { type: "compaction", summary: "Earlier parser investigation was summarized." },
+      { type: "branch_summary", summary: "An alternative tokenizer branch was explored." },
       { type: "message", message: { role: "user", content: "Investigate the flaky parser test." } },
       { type: "message", message: { role: "assistant", content: [{ type: "text", text: "I will inspect the tokenizer." }] } },
     ];
@@ -403,6 +411,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
       sessionManager: {
         getLeafId: () => "leaf-1",
         getBranch: () => branchEntries,
+        buildContextEntries: () => branchEntries.filter((entry) => entry !== replacedHistory),
       },
       getSystemPromptOptions: () => ({
         customPrompt: "Live core policy.",
@@ -537,6 +546,9 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(ran[2].prompt.includes("Investigate the flaky parser test."), "the visible branch becomes the trajectory");
+    assert.ok(ran[2].prompt.includes("Earlier parser investigation was summarized."), "compaction summaries are retained");
+    assert.ok(ran[2].prompt.includes("An alternative tokenizer branch was explored."), "branch summaries are retained");
+    assert.ok(!ran[2].prompt.includes("Ancient replaced request"), "compaction-replaced history never reaches the Shadow");
     assert.ok(ran[2].prompt.includes("I will inspect the tokenizer."), "assistant text is retained");
     assert.ok(ran[2].prompt.includes("Trial run."), "the manual note is embedded");
     assert.ok(!ran[2].prompt.includes("Live core policy."), "SYSTEM material stays out of the USER prompt");

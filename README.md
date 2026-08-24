@@ -226,7 +226,8 @@ What works today:
   and tool calls at Pi’s pre-validation `tool_execution_start` boundary, with a second check before payload acceptance. Session
   replacement clears the in-memory inbox and rejects late submissions from the
   old child. The trajectory follows the parent's currently visible branch:
-  reasoning is removed, compaction summaries are retained, known tools reduce
+  reasoning is removed, compaction and branch summaries are retained,
+  compaction-replaced history never re-enters, known tools reduce
   to bounded allowed-field summaries with mandatory credential cleaning
   (unknown tools expose only name, outcome, and scale — never raw arguments
   or bodies), only delivered Shadow evidence is included, and oversized

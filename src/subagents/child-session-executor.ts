@@ -53,12 +53,21 @@ export function formatModel(model: any): string | undefined {
 
 export function accumulateUsage(target: ChildSessionUsage, usage: any): void {
   if (!usage || typeof usage !== "object") return;
+  addUsageValues(target, usage);
+  target.turns += 1;
+}
+
+/**
+ * Coerces one provider usage report into a totals-shaped target without the
+ * turn increment, so both run totals and per-request metrics share one
+ * numeric and cost-shape interpretation.
+ */
+export function addUsageValues(target: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }, usage: any): void {
+  if (!usage || typeof usage !== "object") return;
   target.input += Number(usage.input ?? 0) || 0;
   target.output += Number(usage.output ?? 0) || 0;
   target.cacheRead += Number(usage.cacheRead ?? 0) || 0;
   target.cacheWrite += Number(usage.cacheWrite ?? 0) || 0;
-  target.turns += 1;
-
   const costTotal = typeof usage.cost === "object"
     ? Number(usage.cost?.total ?? 0) || 0
     : Number(usage.cost ?? 0) || 0;

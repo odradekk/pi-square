@@ -763,6 +763,9 @@ function makeRuntimeService(initial) {
   const settledRun = {
     id: "run-2", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
     trigger: "manual", phase: "submitted", startedAt: 1_000, endedAt: 2_000, resultId: "shr-1",
+    systemHash: "aaaaaaaaaaaaaaaa", toolSchemaHash: "bbbbbbbbbbbbbbbb", trajectoryHash: "cccccccccccccccc",
+    trajectoryTruncated: true,
+    requests: [{ input: 700, output: 80, cacheRead: 12, cacheWrite: 4, cost: 0.02, ttftMs: 120 }],
   };
   const result = {
     id: "shr-1", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
@@ -802,6 +805,18 @@ function makeRuntimeService(initial) {
   service.emit();
   manager.handleInput("down");
   manager.handleInput("\r");
+  // Run facts: the frozen envelope, qualifiers, cohorts, and metrics render.
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("run facts"), "the facts view opens from the run detail");
+  assert.ok(lines.includes("system: aaaaaaaaaaaaaaaa"), "the system cohort hash renders");
+  assert.ok(lines.includes("(truncated: dropped)"), "the truncation qualifier renders");
+  assert.ok(lines.includes("1. in 700 · out 80"), "per-request metrics render");
+  manager.handleInput("\r");
+  manager.handleInput("up");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("View result"), "back returns to the run detail actions");
   manager.handleInput("\r");
   lines = render(manager).join("\n");
   assert.ok(lines.includes("Two decisions remain open."), "the result summary renders");
