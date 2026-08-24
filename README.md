@@ -239,11 +239,14 @@ What works today:
   notified ones and recording visible eviction events. Corrupt result files
   are quarantined, a corrupt index rebuilds from a bounded validated scan,
   and no disk content is ever surfaced without validation. Non-persisted
-  sessions fall back to a visible in-memory inbox, and orphaned partitions
-  (sessions deleted externally) reconcile at session start. Debug-enabled
+  sessions fall back to a visible in-memory inbox, and a partition whose
+  session file was deleted (Pi stores sessions as flat files in the shared
+  per-project sessions directory) is removed by the session-start
+  reconciliation. Debug-enabled
   definitions additionally store one sanitized native child-session JSONL
   per run in the partition with bounded metadata, capped at 20 logs per
-  Shadow and 128 MiB total, and debug stays off by default.
+  Shadow and 128 MiB total (a log too large to sanitize is dropped rather
+  than kept), and debug stays off by default.
 
   The runtime freezes its
   configuration and definition at start; timeout is enforced by a fixed

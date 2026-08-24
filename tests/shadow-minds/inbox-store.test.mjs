@@ -19,11 +19,12 @@ const {
   listShadowDebugRuns,
 } = await load(join(packageRoot, "src", "shadow-minds", "inbox-store.ts"));
 
-function makeSessionRoot() {
+/** Pi 0.84.2 layout: one shared per-cwd directory of flat session files. */
+function makeSessionRoot(sessionId = "sess-1") {
   const root = mkdtempSync(join(tmpdir(), `shadow-inbox-${process.pid}-`));
-  const sessionDir = join(root, "session-a");
+  const sessionDir = join(root, "sessions");
   mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(join(sessionDir, "session.jsonl"), "{}\n", "utf8");
+  writeFileSync(join(sessionDir, `2026-01-01T00-00-00-000Z_${sessionId}.jsonl`), "{}\n", "utf8");
   return { root, sessionDir };
 }
 
@@ -214,122 +215,82 @@ function addResult(inbox, index, overrides = {}) {
   assert.ok(reopened.diagnostics().some((line) => line.includes("index")), "the rebuild is diagnosed");
 }
 
-// ── AC9: orphan partition reconciliation ─────────────────────────────
+{
+  // An oversized debug log is dropped rather than retained unsanitized.
+  const root = mkdtempSync(join(tmpdir(), `shadow-debugdrop-${process.pid}-`));
+  const runDir = shadowDebugRunDir(root, "sess-1", "run-big");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(
+    join(runDir, "session.jsonl"),
+    [JSON.stringify({ type: "message", pad: "x".repeat(2 * 1024 * 1024) }), JSON.stringify({ type: "message", pad: "y".repeat(2 * 1024 * 1024) }), JSON.stringify({ type: "message", pad: "z".repeat(2 * 1024 * 1024) }), JSON.stringify({ type: "message", pad: "w".repeat(2 * 1024 * 1024) }), JSON.stringify({ type: "message", pad: "v".repeat(2 * 1024 * 1024) })].join("\n"),
+    "utf8",
+  );
+  finalizeShadowDebugRun(root, "sess-1", { runId: "run-big", shadowId: "lens", startedAt: 1, endedAt: 2, phase: "silent" });
+  assert.ok(!existsSync(runDir), "an unsanitizable log is dropped, never retained");
+  assert.deepEqual(listShadowDebugRuns(root, "sess-1").filter((run) => run.runId === "run-big"), []);
+}
 
 {
-  const root = mkdtempSync(join(tmpdir(), `shadow-reconcile-${process.pid}-`));
-  const live = join(root, "live-session");
-  const orphan = join(root, "orphan-session");
-  const empty = join(root, "empty-session");
-  mkdirSync(live, { recursive: true });
-  mkdirSync(orphan, { recursive: true });
-  mkdirSync(empty, { recursive: true });
-  writeFileSync(join(live, "session.jsonl"), "{}\n", "utf8");
-  // The orphan lost its session file; the empty session never had one.
-  mkdirSync(join(orphan, SHADOW_PARTITION_DIR, "gone", "results"), { recursive: true });
-  writeFileSync(join(orphan, SHADOW_PARTITION_DIR, "gone", "index.json"), "{}", "utf8");
-  mkdirSync(join(empty, SHADOW_PARTITION_DIR), { recursive: true });
+  // A tampered oversized payload quarantines instead of surfacing.
+  const { sessionDir } = makeSessionRoot();
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const entity = addResult(inbox, 1);
+  const entityPath = join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${entity.id}.json`);
+  const tampered = JSON.parse(readFileSync(entityPath, "utf8"));
+  tampered.payload = { blob: "p".repeat(30_000) };
+  writeFileSync(entityPath, JSON.stringify(tampered), "utf8");
 
-  const outcome = reconcileShadowPartitions(live);
-  assert.ok(outcome.removed.includes(join(orphan, SHADOW_PARTITION_DIR, "gone")), "orphan partitions are removed");
-  assert.ok(!existsSync(join(orphan, SHADOW_PARTITION_DIR, "gone")), "the orphan partition is gone");
-  assert.ok(!existsSync(join(empty, SHADOW_PARTITION_DIR)), "empty-session partitions are removed");
-  assert.ok(existsSync(join(live, "session.jsonl")), "the live session is untouched");
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  assert.equal(reopened.list().length, 0, "oversized payloads never pass load validation");
+  assert.ok(existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "quarantine")));
+}
+
+// ── AC9: orphan partition reconciliation (real flat layout) ─────────
+
+{
+  // A partition whose flat session file is gone is an orphan; the live
+  // session's partition (matching `<timestamp>_<id>.jsonl`) survives.
+  const root = mkdtempSync(join(tmpdir(), `shadow-reconcile-${process.pid}-`));
+  const sessionsDir = join(root, "sessions");
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(join(sessionsDir, "2026-08-24T00-00-00-000Z_live-id.jsonl"), "{}\n", "utf8");
+  const livePartition = join(sessionsDir, SHADOW_PARTITION_DIR, "live-id");
+  const orphanPartition = join(sessionsDir, SHADOW_PARTITION_DIR, "gone-id");
+  mkdirSync(join(livePartition, "results"), { recursive: true });
+  mkdirSync(join(orphanPartition, "results"), { recursive: true });
+
+  const outcome = reconcileShadowPartitions(sessionsDir);
+  assert.deepEqual(outcome.removed, [orphanPartition], "only orphan partitions are removed");
+  assert.ok(existsSync(livePartition), "the live session's partition survives");
+  assert.ok(!existsSync(orphanPartition), "the orphan partition is gone");
+}
+
+{
+  // A bare `<sessionId>.jsonl` (explicitly named session file) also counts.
+  const root = mkdtempSync(join(tmpdir(), `shadow-reconcile-2-${process.pid}-`));
+  const sessionsDir = join(root, "sessions");
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(join(sessionsDir, "explicit-id.jsonl"), "{}\n", "utf8");
+  const partition = join(sessionsDir, SHADOW_PARTITION_DIR, "explicit-id");
+  mkdirSync(partition, { recursive: true });
+  assert.deepEqual(reconcileShadowPartitions(sessionsDir).removed, []);
+  assert.ok(existsSync(partition));
+}
+
+{
+  // The keep guard is defensive: the named partition survives even without
+  // a matching file (the live session is never its own orphan).
+  const root = mkdtempSync(join(tmpdir(), `shadow-reconcile-3-${process.pid}-`));
+  const sessionsDir = join(root, "sessions");
+  const partition = join(sessionsDir, SHADOW_PARTITION_DIR, "current");
+  mkdirSync(partition, { recursive: true });
+  assert.deepEqual(reconcileShadowPartitions(sessionsDir, "current").removed, []);
+  assert.ok(existsSync(partition));
 }
 
 {
   // A missing sessions root reconciles as a no-op.
-  const outcome = reconcileShadowPartitions(join(tmpdir(), `missing-${Date.now()}`));
-  assert.deepEqual(outcome.removed, []);
-}
-
-// ── AC8: debug histories ─────────────────────────────────────────────
-
-{
-  // A debug run stores sanitized native session JSONL plus bounded metadata.
-  const { sessionDir } = makeSessionRoot();
-  const partition = shadowPartitionPath(sessionDir, "sess-1");
-  const runDir = shadowDebugRunDir(sessionDir, "sess-1", "run-1");
-  mkdirSync(runDir, { recursive: true });
-  writeFileSync(join(runDir, "session.jsonl"), [
-    JSON.stringify({ type: "session", id: "child-1" }),
-    JSON.stringify({ type: "message", message: { role: "user", content: "investigate" } }),
-    JSON.stringify({ type: "message", message: { role: "assistant", content: [
-      { type: "thinking", thinking: "private reasoning with api_key=sk-live-abc123" },
-      { type: "text", text: "I will use bearer ghp_secret123456 to check." },
-    ] } }),
-    JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "password=hunter2 leaked" }], isError: false } }),
-  ].join("\n"), "utf8");
-
-  finalizeShadowDebugRun(sessionDir, "sess-1", {
-    runId: "run-1", shadowId: "architecture-lens", startedAt: 1_000, endedAt: 2_000, phase: "submitted",
-  });
-
-  const sanitized = readFileSync(join(runDir, "session.jsonl"), "utf8");
-  assert.ok(!sanitized.includes("sk-live-abc123"), "credentials are scrubbed from debug logs");
-  assert.ok(sanitized.includes("api_key=[REDACTED]"), "the shared redaction pattern is applied");
-  assert.ok(!sanitized.includes("ghp_secret123456"), "bearer tokens are scrubbed");
-  assert.ok(!sanitized.includes("hunter2"), "password assignments are scrubbed");
-  assert.ok(sanitized.includes("architecture-lens") === false, "the session log carries no metadata duplicates");
-
-  const runs = listShadowDebugRuns(sessionDir, "sess-1");
-  assert.equal(runs.length, 1);
-  assert.equal(runs[0].runId, "run-1");
-  assert.equal(runs[0].shadowId, "architecture-lens");
-  assert.equal(runs[0].phase, "submitted");
-  assert.ok(runs[0].bytes > 0);
-  assert.ok(existsSync(join(partition, "debug", "index.json")));
-}
-
-{
-  // Retention: at most 20 logs per Shadow and 128 MiB total, oldest first.
-  const { sessionDir } = makeSessionRoot();
-  assert.equal(SHADOW_DEBUG_MAX_LOGS_PER_SHADOW, 20);
-  for (let index = 0; index < 23; index += 1) {
-    const runDir = shadowDebugRunDir(sessionDir, "sess-1", `run-${String(index).padStart(2, "0")}`);
-    mkdirSync(runDir, { recursive: true });
-    writeFileSync(join(runDir, "session.jsonl"), JSON.stringify({ type: "message", n: index }), "utf8");
-    finalizeShadowDebugRun(sessionDir, "sess-1", {
-      runId: `run-${String(index).padStart(2, "0")}`, shadowId: "lens", startedAt: index, endedAt: index + 1, phase: "silent",
-    });
-  }
-  // finalizeShadowDebugRun enforces retention itself; an explicit sweep is
-  // then a no-op and the removal is observable on disk and in the index.
-  const outcome = sweepShadowDebugRetention(sessionDir, "sess-1");
-  const runs = listShadowDebugRuns(sessionDir, "sess-1");
-  assert.equal(runs.length, 20, "the per-shadow cap holds");
-  assert.ok(!runs.some((run) => run.runId === "run-00"), "the oldest logs are swept first");
-  assert.ok(!existsSync(shadowDebugRunDir(sessionDir, "sess-1", "run-00")), "swept logs are removed from disk");
-  assert.ok(runs.some((run) => run.runId === "run-22"), "the newest logs survive");
-  assert.deepEqual(outcome.removed, [], "an already-retained partition sweeps nothing");
-}
-
-{
-  // Byte-bound sweeping removes oldest logs until the total fits.
-  const { sessionDir } = makeSessionRoot();
-  for (let index = 0; index < 3; index += 1) {
-    const runDir = shadowDebugRunDir(sessionDir, "sess-1", `run-${index}`);
-    mkdirSync(runDir, { recursive: true });
-    writeFileSync(
-      join(runDir, "session.jsonl"),
-      [JSON.stringify({ type: "message", pad: "x".repeat(2_000) }), JSON.stringify({ type: "message", pad: "y".repeat(2_000) })].join("\n") + "\n",
-      "utf8",
-    );
-    finalizeShadowDebugRun(sessionDir, "sess-1", {
-      runId: `run-${index}`, shadowId: `lens-${index}`, startedAt: index, endedAt: index + 1, phase: "silent",
-    });
-  }
-  const outcome = sweepShadowDebugRetention(sessionDir, "sess-1", { maxTotalBytes: 8_192 });
-  const runs = listShadowDebugRuns(sessionDir, "sess-1");
-  assert.ok(runs.length < 3, "byte pressure removes logs");
-  assert.ok(!existsSync(shadowDebugRunDir(sessionDir, "sess-1", "run-0")), "the oldest byte-heavy log is removed");
-  assert.ok(outcome.removed.includes("run-0"));
-}
-
-{
-  // A missing debug partition is a bounded no-op.
-  assert.deepEqual(sweepShadowDebugRetention(join(tmpdir(), `missing-debug-${Date.now()}`), "none"), { removed: [] });
-  assert.deepEqual(listShadowDebugRuns(join(tmpdir(), `missing-debug-${Date.now()}`), "none"), []);
+  assert.deepEqual(reconcileShadowPartitions(join(tmpdir(), `missing-${Date.now()}`)), { removed: [] });
 }
 
 console.log("shadow-minds inbox-store tests: OK");

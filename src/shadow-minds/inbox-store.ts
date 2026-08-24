@@ -25,7 +25,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   SHADOW_INBOX_DEFAULT_MAX_RESULTS,
   evictionCandidate,
@@ -38,7 +38,7 @@ import {
 } from "./result";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { sanitizeDisplayText } from "../display/sanitize";
-import { SHADOW_DELIVERIES, SHADOW_TRIGGERS } from "./parser";
+import { SHADOW_DELIVERIES, SHADOW_PAYLOAD_MAX_CHARS, SHADOW_TRIGGERS } from "./parser";
 
 /** Hidden partition directory beneath the parent session directory. */
 export const SHADOW_PARTITION_DIR = ".pi-square-shadow";
@@ -52,7 +52,6 @@ const INDEX_EVENTS_MAX = 32;
 const INDEX_SCAN_MAX_FILES = 512;
 const ID_MAX_CHARS = 128;
 const RECONCILE_MAX_SESSION_DIRS = 1_000;
-const SESSION_FILE_NAME = "session.jsonl";
 
 export interface ShadowInboxEvictionEvent {
   kind: "evicted";
@@ -122,6 +121,9 @@ function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined
   if (record.trigger !== "manual") return undefined;
   if (record.note !== undefined && !isBoundedString(record.note, 8_000)) return undefined;
   if (record.payload === null || typeof record.payload !== "object" || Array.isArray(record.payload)) return undefined;
+  // The payload re-validates the same canonical bound enforced at write
+  // time, so tampered oversized payloads quarantine instead of surfacing.
+  if (JSON.stringify(record.payload).length > SHADOW_PAYLOAD_MAX_CHARS) return undefined;
   if (!isBoundedString(record.summary, 300)) return undefined;
   if (record.delivery !== "notified" && record.delivery !== "pending" && record.delivery !== "delivered") return undefined;
   if (record.attention !== "unread" && record.attention !== "read" && record.attention !== "dismissed") return undefined;
@@ -427,6 +429,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
         ...(input.triggers ? { triggers: [...input.triggers] } : {}),
         ...(input.taskIdentity ? { taskIdentity: clone(input.taskIdentity) } : {}),
       };
+      writeEntity({ entity, bytes: 0 });
       let bytes = 0;
       try {
         bytes = statSync(entityPath(entity.id)).size;
@@ -434,7 +437,6 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
         bytes = JSON.stringify(entity).length;
       }
       loaded.set(entity.id, { entity, bytes });
-      writeEntity({ entity, bytes });
       enforceRetention();
       writeIndex();
       return clone(entity);
@@ -596,23 +598,28 @@ export function finalizeShadowDebugRun(
   let bytes = 0;
   try {
     const raw = readFileSync(sessionFile, "utf8");
-    if (raw.length <= DEBUG_SANITIZE_MAX_BYTES) {
-      // Sanitize in place through a temporary sibling and atomic rename.
-      const sanitized = raw
-        .split("\n")
-        .filter((line) => line.trim())
-        .map((line) => {
-          try {
-            return JSON.stringify(sanitizeDebugValue(JSON.parse(line)));
-          } catch {
-            return JSON.stringify({ type: "debug_corrupt_line", dropped: true });
-          }
-        })
-        .join("\n") + "\n";
-      const tmp = `${sessionFile}.tmp`;
-      writeFileSync(tmp, sanitized, "utf8");
-      renameSync(tmp, sessionFile);
+    if (raw.length > DEBUG_SANITIZE_MAX_BYTES) {
+      // A log too large to sanitize cannot be vouched credential-free, so
+      // it is dropped rather than retained unsanitized.
+      rmSync(sessionFile, { force: true });
+      rmSync(runDir, { recursive: true, force: true });
+      return;
     }
+    // Sanitize in place through a temporary sibling and atomic rename.
+    const sanitized = raw
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        try {
+          return JSON.stringify(sanitizeDebugValue(JSON.parse(line)));
+        } catch {
+          return JSON.stringify({ type: "debug_corrupt_line", dropped: true });
+        }
+      })
+      .join("\n") + "\n";
+    const tmp = `${sessionFile}.tmp`;
+    writeFileSync(tmp, sanitized, "utf8");
+    renameSync(tmp, sessionFile);
   } catch {
     // No session file: the run produced no debug history.
   }
@@ -707,56 +714,44 @@ export function sweepShadowDebugRetention(
 }
 
 /**
- * Reconciles Shadow partitions against surviving parent sessions. For every
- * sibling session directory (bounded scan), a partition whose session file
- * is gone is orphaned: each session-keyed partition inside it is removed
- * and reported, then the emptied partition root is cleaned up. Inside the
- * surviving session's own partition, subdirectories other than the current
- * session ID are foreign orphans and are removed too. Deleting a parent
- * session removes its directory — and with it its partition — so this pass
- * covers sessions whose files were removed externally while the directory
- * remained.
+ * Reconciles Shadow partitions against surviving parent sessions. Pi 0.84.2
+ * stores sessions as flat `<timestamp>_<sessionId>.jsonl` files inside one
+ * shared per-cwd session directory, so a partition keyed by session ID is
+ * orphaned exactly when no matching session file remains: partitions whose
+ * `*_<id>.jsonl` file is gone (the session was deleted externally or its
+ * directory was pruned) are removed, bounded by the scan cap. The live
+ * session's own partition is always kept.
  */
 export function reconcileShadowPartitions(sessionDir: string, keepSessionId?: string): { removed: string[] } {
-  const root = dirname(resolve(sessionDir));
+  const root = resolve(sessionDir);
+  const partitionRoot = join(root, SHADOW_PARTITION_DIR);
   const removed: string[] = [];
-  if (!existsSync(root)) return { removed };
-  let entries;
+  if (!existsSync(partitionRoot)) return { removed };
+  let subEntries;
   try {
-    entries = readdirSync(root, { withFileTypes: true });
+    subEntries = readdirSync(partitionRoot, { withFileTypes: true });
   } catch {
     return { removed };
   }
-  for (const entry of entries.slice(0, RECONCILE_MAX_SESSION_DIRS)) {
-    if (!entry.isDirectory()) continue;
-    const dir = join(root, entry.name);
-    const partitionRoot = join(dir, SHADOW_PARTITION_DIR);
-    if (!existsSync(partitionRoot)) continue;
-    const sessionSurvives = existsSync(join(dir, SESSION_FILE_NAME));
-    let subEntries;
+  let sessionFiles: Set<string>;
+  try {
+    // Session file names are `<timestamp>_<sessionId>.jsonl`; also accept a
+    // bare `<sessionId>.jsonl` for explicitly named session files.
+    sessionFiles = new Set(readdirSync(root).filter((name) => name.endsWith(".jsonl")));
+  } catch {
+    return { removed };
+  }
+  for (const sub of subEntries.slice(0, RECONCILE_MAX_SESSION_DIRS)) {
+    if (!sub.isDirectory()) continue;
+    if (keepSessionId !== undefined && sub.name === keepSessionId) continue;
+    const survives = [...sessionFiles].some((name) => name === `${sub.name}.jsonl` || name.endsWith(`_${sub.name}.jsonl`));
+    if (survives) continue;
+    const subPath = join(partitionRoot, sub.name);
     try {
-      subEntries = readdirSync(partitionRoot, { withFileTypes: true });
+      rmSync(subPath, { recursive: true, force: true });
+      removed.push(subPath);
     } catch {
-      continue;
-    }
-    for (const sub of subEntries) {
-      if (!sub.isDirectory()) continue;
-      const subPath = join(partitionRoot, sub.name);
-      if (sessionSurvives && keepSessionId !== undefined && sub.name === keepSessionId) continue;
-      if (sessionSurvives && keepSessionId === undefined) continue;
-      try {
-        rmSync(subPath, { recursive: true, force: true });
-        removed.push(subPath);
-      } catch {
-        // A partition that cannot be removed now reconciles on the next start.
-      }
-    }
-    if (!sessionSurvives) {
-      try {
-        rmSync(partitionRoot, { recursive: true, force: true });
-      } catch {
-        // The emptied root reconciles on the next start.
-      }
+      // A partition that cannot be removed now reconciles on the next start.
     }
   }
   return { removed };

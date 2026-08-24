@@ -64,10 +64,14 @@ function cohortHash(value: string): string {
 function definitionHashOf(definition: EffectiveShadowDefinition): string | undefined {
   const layers = definition.layers;
   if (!Array.isArray(layers) || layers.length === 0) return undefined;
-  const sources = layers
-    .map((layer) => `${layer.scope}:${typeof layer.filePath === "string" ? layer.filePath : ""}`)
-    .join("|");
-  return cohortHash(canonicalSchemaJson({ sources }));
+  // Layer content hashes make the record change when a definition file is
+  // edited, not only when its path or scope assignment changes.
+  const sources = layers.map((layer) => ({
+    scope: layer.scope,
+    ...(typeof layer.filePath === "string" ? { filePath: layer.filePath } : {}),
+    ...(typeof layer.contentHash === "string" ? { contentHash: layer.contentHash } : {}),
+  }));
+  return cohortHash(canonicalSchemaJson(sources));
 }
 
 export type ShadowRunPhase =

@@ -742,15 +742,14 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   const { readFileSync: readDisk } = await import("node:fs");
   const dir = mkdtempSync(join(tmpdir(), "shadow-persist-"));
   const project = join(dir, "project");
-  const sessionDir = join(dir, "session-alpha");
+  // Pi 0.84.2 layout: one shared per-cwd directory of flat session files.
+  const sessionDir = join(dir, "sessions");
+  const sessionFile = join(sessionDir, "2026-08-24T00-00-00-000Z_alpha-1.jsonl");
   mkdirSync(project, { recursive: true });
   mkdirSync(sessionDir, { recursive: true });
-  writeDisk(join(sessionDir, "session.jsonl"), "{}\n", "utf8");
-  // A foreign orphan partition in this session's own directory.
+  writeDisk(sessionFile, "{}\n", "utf8");
+  // A foreign orphan partition in the same shared directory.
   mkdirSync(join(sessionDir, ".pi-square-shadow", "other-session", "results"), { recursive: true });
-  // An orphan sibling session (no session file).
-  const orphanDir = join(dir, "session-orphan");
-  mkdirSync(join(orphanDir, ".pi-square-shadow", "gone-session", "results"), { recursive: true });
 
   const previousAgentDir = process.env.PI_AGENT_DIR;
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -768,7 +767,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
       modelRegistry: { find: (provider, id) => ({ provider, id }) },
       sessionManager: {
         getSessionDir: () => sessionDir,
-        getSessionFile: () => join(sessionDir, "session.jsonl"),
+        getSessionFile: () => sessionFile,
         getSessionId: () => "alpha-1",
         getLeafId: () => "leaf-1",
         getBranch: () => [],
@@ -805,8 +804,8 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     );
     await harness.handlers.get("session_start")({}, sessionCtx);
     assert.equal(state.partition?.sessionId, "alpha-1", "the session partition is bound");
-    assert.ok(!existsSync(join(sessionDir, ".pi-square-shadow", "other-session")), "foreign partitions reconcile");
-    assert.ok(!existsSync(join(orphanDir, ".pi-square-shadow", "gone-session")), "orphan sibling partitions reconcile");
+    assert.ok(!existsSync(join(sessionDir, ".pi-square-shadow", "other-session")), "orphan partitions without session files reconcile");
+    assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "alpha-1")), "the live session's partition survives reconciliation");
     const services = __testables.makeServices(state, sessionCtx, new (await load(join(packageRoot, "src", "core", "confirmation.ts"))).ConfirmationCoordinator());
 
     const started = services.runtime.runManual({ shadowId: "session-synthesizer" });
@@ -823,8 +822,15 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "alpha-1", "results", `${resultId}.json`)));
 
     // Reopening the same session keeps the result; the memory path warns.
+    const referencesBefore = harness.entries.filter((entry) => entry.type === "pi-square.shadow-result").length;
     await harness.handlers.get("session_start")({}, sessionCtx);
     assert.equal(state.runtime.snapshot().results.length, 1, "results survive a session reopen");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(
+      harness.entries.filter((entry) => entry.type === "pi-square.shadow-result").length,
+      referencesBefore,
+      "a reopen never re-appends reference entries for known results",
+    );
     assert.equal(state.runtime.snapshot().results[0].id, resultId);
 
     // A non-persisted session falls back to memory visibly.

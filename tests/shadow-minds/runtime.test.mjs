@@ -688,6 +688,23 @@ function baseRequest(overrides = {}) {
 }
 
 {
+  // The recorded definition hash changes when layer content changes.
+  const runOne = makeFake({ submit: JSON.stringify({ summary: "a" }) });
+  const runtimeOne = createShadowRuntime({ config: () => config(), deps: runOne.deps });
+  await runtimeOne.startManualRun(baseRequest({
+    definition: definition({ layers: [{ scope: "package", filePath: "/pkg/s.md", contentHash: "aaa" }] }),
+  })).done;
+  const runTwo = makeFake({ submit: JSON.stringify({ summary: "b" }) });
+  const runtimeTwo = createShadowRuntime({ config: () => config(), deps: runTwo.deps });
+  await runtimeTwo.startManualRun(baseRequest({
+    definition: definition({ layers: [{ scope: "package", filePath: "/pkg/s.md", contentHash: "bbb" }] }),
+  })).done;
+  const [one, two] = [runtimeOne, runtimeTwo].map((runtime) => runtime.snapshot().results[0]);
+  assert.ok(one.definitionHash && two.definitionHash);
+  assert.notEqual(one.definitionHash, two.definitionHash, "content edits change the recorded source hash");
+}
+
+{
   // Result entities record provenance metadata.
   const fake = makeFake({ submit: JSON.stringify({ summary: "provenance" }) });
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });

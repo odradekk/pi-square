@@ -486,7 +486,11 @@ export default function registerShadowMinds(
     const sessionDir = sessionCtx.sessionManager?.getSessionDir?.() ?? "";
     const sessionFile = sessionCtx.sessionManager?.getSessionFile?.();
     let inbox: ShadowInbox | undefined;
-    if (sessionDir && typeof sessionFile === "string" && sessionFile.length > 0) {
+    if (!effectiveConfig().enabled) {
+      // Disabled: no partition is opened, scanned, or created, and the
+      // fallback notice stays silent.
+      state.partition = undefined;
+    } else if (sessionDir && typeof sessionFile === "string" && sessionFile.length > 0) {
       const sessionId = String(sessionCtx.sessionManager?.getSessionId?.() ?? "session");
       state.partition = { sessionDir, sessionId };
       const reconciled = reconcileShadowPartitions(sessionDir, sessionId);
@@ -511,7 +515,7 @@ export default function registerShadowMinds(
       }
     } else {
       state.partition = undefined;
-      if (effectiveConfig().enabled && sessionCtx.hasUI) {
+      if (sessionCtx.hasUI) {
         sessionCtx.ui.notify(
           "shadow-minds: this session is not persisted; Shadow results stay in memory",
           "info",
@@ -541,10 +545,12 @@ export default function registerShadowMinds(
   // the inbox stays the single authoritative payload store.
   // Every non-running phase is terminal, so a phase change away from running
   // notifies once; entries for runs that left the history are pruned.
-  const seenResults = new Set<string>();
   let unsubscribeRuntime: (() => void) | undefined;
   const bindRuntimeNotifications = (): void => {
     unsubscribeRuntime?.();
+    // Fresh per-runtime instance: a reopened session does not re-append
+    // reference entries for results it already recorded.
+    const seenResults = new Set<string>();
     unsubscribeRuntime = state.runtime.subscribe(() => {
       const sessionCtx = ctx;
       const results = state.runtime.snapshot().results;
