@@ -7,9 +7,10 @@
  * be a subset of the requested set. Pi built-ins are validated and hashed from
  * Pi 0.84.2 public factories — never from parent registry overrides — and
  * extension tools come only from the child-safe read-only factories. The final
- * envelope is canonically ordered and carries a stable full-schema hash so
- * prompt/tool cache cohorts stay comparable across runs; `submit_shadow_result`
- * is built in and always hashes last.
+ * envelope is canonically ordered and carries a stable hash of every
+ * model-visible tool name, description, and parameter schema so prompt/tool
+ * cache cohorts stay comparable across runs; `submit_shadow_result` is built in
+ * and always hashes last.
  */
 
 import { createHash } from "node:crypto";
@@ -23,7 +24,11 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createShadowSafeExtensionTools, SHADOW_SAFE_EXTENSION_TOOLS } from "../tool-catalog";
 import { SHADOW_DEFAULT_TOOLS } from "./parser";
 import { canonicalSchemaJson } from "./prompt";
-import { SUBMIT_SHADOW_RESULT_PARAMETERS, SUBMIT_SHADOW_RESULT_TOOL } from "./result";
+import {
+  SUBMIT_SHADOW_RESULT_DESCRIPTION,
+  SUBMIT_SHADOW_RESULT_PARAMETERS,
+  SUBMIT_SHADOW_RESULT_TOOL,
+} from "./result";
 
 /** Package-defined canonical order of the local evidence built-ins. */
 export const SHADOW_BUILTIN_BASE_ORDER = ["read", "grep", "find", "ls"] as const;
@@ -42,7 +47,7 @@ export interface ShadowToolEnvelope {
   toolNames: string[];
   /** Extension tool definitions in canonical order, for `customTools`. */
   customTools: ToolDefinition<any, any, any>[];
-  /** Stable full-schema hash of the final envelope, submit tool included. */
+  /** Stable hash of the final model-visible envelope, submit tool included. */
   schemaHash: string;
   /** Bounded warnings for requested tools that are unavailable. */
   warnings: string[];
@@ -71,10 +76,14 @@ const BUILTIN_FACTORIES: Readonly<Record<string, BuiltinFactory>> = Object.freez
 const HASH_CHARS = 16;
 const WARNINGS_MAX = 16;
 
-/** Hashes the canonical [name, parameters] list of one final tool envelope. */
-function hashEnvelope(tools: ReadonlyArray<{ name: string; parameters: unknown }>): string {
+/** Hashes the canonical model-visible name, description, and parameter schema list. */
+function hashEnvelope(tools: ReadonlyArray<{ name: string; description: string; parameters: unknown }>): string {
   return createHash("sha256")
-    .update(canonicalSchemaJson(tools.map((tool) => ({ name: tool.name, parameters: tool.parameters }))))
+    .update(canonicalSchemaJson(tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    }))))
     .digest("hex")
     .slice(0, HASH_CHARS);
 }
@@ -133,13 +142,25 @@ export function resolveShadowTools(input: ResolveShadowToolsInput): ShadowToolRe
   );
   const builtinSchemas = orderedBuiltins.map((entry) => {
     const definition = entry.factory(input.cwd);
-    return { name: entry.name, parameters: definition.parameters };
+    return {
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters,
+    };
   });
 
   const hashInput = [
     ...builtinSchemas,
-    ...customTools.map((tool) => ({ name: tool.name, parameters: tool.parameters })),
-    { name: SUBMIT_SHADOW_RESULT_TOOL, parameters: SUBMIT_SHADOW_RESULT_PARAMETERS },
+    ...customTools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    })),
+    {
+      name: SUBMIT_SHADOW_RESULT_TOOL,
+      description: SUBMIT_SHADOW_RESULT_DESCRIPTION,
+      parameters: SUBMIT_SHADOW_RESULT_PARAMETERS,
+    },
   ];
 
   return {

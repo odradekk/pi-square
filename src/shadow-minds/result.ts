@@ -19,7 +19,7 @@ import type { ChildSessionUsage } from "../subagents/child-session-executor";
 import { SHADOW_PAYLOAD_MAX_CHARS, validateShadowPayload, type ShadowOutputSchema } from "./parser";
 
 export const SUBMIT_SHADOW_RESULT_TOOL = "submit_shadow_result";
-
+export const SUBMIT_SHADOW_RESULT_DESCRIPTION = "Submit the final Shadow result. The payload must be a JSON string matching the output schema. A valid submission completes the run; an invalid one returns the exact fields to fix.";
 const SubmitParams = Type.Object({
   payload: Type.String({
     maxLength: SHADOW_PAYLOAD_MAX_CHARS,
@@ -52,7 +52,7 @@ export function createSubmitShadowResultTool(handlers: SubmitShadowResultHandler
   return {
     name: SUBMIT_SHADOW_RESULT_TOOL,
     label: "Submit Shadow result",
-    description: "Submit the final Shadow result. The payload must be a JSON string matching the output schema. A valid submission completes the run; an invalid one returns the exact fields to fix.",
+    description: SUBMIT_SHADOW_RESULT_DESCRIPTION,
     executionMode: "sequential",
     parameters: SubmitParams,
     async execute(_toolCallId, params) {

@@ -80,6 +80,7 @@ export interface ShadowRuntimeServices {
     shadowId: string;
     note?: string;
     definitionFingerprint?: string;
+    defaultThinking?: string;
     timeoutSeconds?: number;
     maxTurns?: number;
     maxToolCalls?: number;
@@ -984,6 +985,7 @@ export class ShadowManager implements Component, Focusable {
             `Definition: ${definition.name} (${definition.id})`,
             `Tools: ${toolsLabel(definition)}`,
             `Bounds: ${runBoundLabel(bounds)}`,
+            `Thinking: ${definition.thinking ?? this.data.config?.defaults.thinking ?? "inherit parent"}`,
             `Evidence: the current parent trajectory, reference only`,
             ...(note ? ["", "MANUAL NOTE", note] : []),
           ],
@@ -993,6 +995,7 @@ export class ShadowManager implements Component, Focusable {
             const outcome = this.services?.runtime?.runManual({
               shadowId: definition.id,
               definitionFingerprint,
+              ...(this.data.config?.defaults.thinking ? { defaultThinking: this.data.config.defaults.thinking } : {}),
               ...bounds,
               ...(note ? { note } : {}),
             });

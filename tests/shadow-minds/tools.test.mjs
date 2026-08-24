@@ -111,11 +111,14 @@ function ok(input) {
 }
 
 {
-  // The hash covers the full final envelope, submit tool schema included.
+  // The hash covers the complete model-visible envelope, submit tool included.
   const envelope = ok({ cwd, tools: ["read"] });
+  const read = (await load("@earendil-works/pi-coding-agent")).createReadToolDefinition(cwd);
+  const { createSubmitShadowResultTool } = await load(resolve(pi, "src/shadow-minds/result.ts"));
+  const submit = createSubmitShadowResultTool({ schema: { type: "object", additionalProperties: false }, onAccepted() {} });
   const expected = createHash("sha256").update(canonicalSchemaJson([
-    { name: "read", parameters: (await load("@earendil-works/pi-coding-agent")).createReadToolDefinition(cwd).parameters },
-    { name: "submit_shadow_result", parameters: SUBMIT_SHADOW_RESULT_PARAMETERS },
+    { name: read.name, description: read.description, parameters: read.parameters },
+    { name: submit.name, description: submit.description, parameters: submit.parameters },
   ])).digest("hex").slice(0, 16);
   assert.equal(envelope.schemaHash, expected);
 }
@@ -123,13 +126,16 @@ function ok(input) {
 // ── AC2: factory sources, never the parent registry ─────────────────
 
 {
-  // Built-ins come from Pi public factories: the hashed schema equals a
-  // factory-fresh definition's schema, and resolution accepts no registry.
+  // Built-ins come from Pi public factories: the hashed model-visible shape
+  // equals a factory-fresh definition, and resolution accepts no registry.
   const { createReadToolDefinition } = await load("@earendil-works/pi-coding-agent");
+  const { createSubmitShadowResultTool } = await load(resolve(pi, "src/shadow-minds/result.ts"));
+  const read = createReadToolDefinition(cwd);
+  const submit = createSubmitShadowResultTool({ schema: { type: "object", additionalProperties: false }, onAccepted() {} });
   const envelope = ok({ cwd, tools: ["read"] });
   const canonical = createHash("sha256").update(canonicalSchemaJson([
-    { name: "read", parameters: createReadToolDefinition(cwd).parameters },
-    { name: "submit_shadow_result", parameters: SUBMIT_SHADOW_RESULT_PARAMETERS },
+    { name: read.name, description: read.description, parameters: read.parameters },
+    { name: submit.name, description: submit.description, parameters: submit.parameters },
   ])).digest("hex").slice(0, 16);
   assert.equal(envelope.schemaHash, canonical);
 }

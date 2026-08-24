@@ -174,11 +174,13 @@ function makeServices(
             maxToolCalls: definition.maxToolCalls ?? liveConfig.defaults.maxToolCallsPerRun,
           };
           const carriesReview = input.definitionFingerprint !== undefined
+            || input.defaultThinking !== undefined
             || input.timeoutSeconds !== undefined
             || input.maxTurns !== undefined
             || input.maxToolCalls !== undefined;
           if (carriesReview && (
             liveFingerprint !== input.definitionFingerprint
+            || liveConfig.defaults.thinking !== input.defaultThinking
             || expectedBounds.timeoutSeconds !== input.timeoutSeconds
             || expectedBounds.maxTurns !== input.maxTurns
             || expectedBounds.maxToolCalls !== input.maxToolCalls
@@ -214,7 +216,21 @@ function makeServices(
           for (const warning of resolution.envelope.warnings) {
             ctx.ui.notify(`shadow-minds: ${notifyText(warning)}`, "warning");
           }
-          const thinkingLevel = resolveShadowThinkingLevel(definition.thinking, ctx.thinkingLevel);
+          const modelResolution = resolveShadowModel(definition.model, ctx);
+          if (modelResolution.error) {
+            ctx.ui.notify(`shadow-minds: ${notifyText(modelResolution.error)}`, "warning");
+            return { ok: false, message: modelResolution.error };
+          }
+          const thinkingResolution = resolveShadowThinkingLevel(
+            definition.thinking,
+            liveConfig.defaults.thinking,
+            ctx.thinkingLevel,
+            modelResolution.model,
+          );
+          if (thinkingResolution.error) {
+            ctx.ui.notify(`shadow-minds: ${notifyText(thinkingResolution.error)}`, "warning");
+            return { ok: false, message: thinkingResolution.error };
+          }
           const outcome = runtime.startManualRun({
             definition,
             ...(input.note ? { note: input.note } : {}),
@@ -225,8 +241,8 @@ function makeServices(
             }),
             trajectory: captureTrajectory(ctx, deliveredEvidence(runtime)),
             cwd: snapshot.cwd,
-            modelResolution: resolveShadowModel(definition.model, ctx),
-            ...(thinkingLevel ? { thinkingLevel } : {}),
+            modelResolution,
+            ...(thinkingResolution.level ? { thinkingLevel: thinkingResolution.level } : {}),
             envelope: resolution.envelope,
           });
           if (!outcome.started) {

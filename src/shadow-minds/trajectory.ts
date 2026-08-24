@@ -91,8 +91,6 @@ interface LooseEntry {
     isError?: unknown;
   };
   summary?: string;
-  /** Attached by the builder: tool-call ids that already have results. */
-  resultIds?: Set<string>;
 }
 
 function textParts(content: unknown): string[] {
@@ -179,7 +177,11 @@ function collectToolCalls(entries: readonly LooseEntry[]): Map<string, { name: s
 }
 
 /** Renders one visible branch entry as trajectory lines, or none. */
-function renderEntry(entry: LooseEntry, toolCalls: Map<string, { name: string; arguments?: Record<string, unknown> }>): { lines: string[]; clipped: boolean; summary: boolean } {
+function renderEntry(
+  entry: LooseEntry,
+  toolCalls: Map<string, { name: string; arguments?: Record<string, unknown> }>,
+  resultIds: ReadonlySet<string>,
+): { lines: string[]; clipped: boolean; summary: boolean } {
   if (entry.type === "compaction" || entry.type === "branch_summary") {
     const raw = typeof entry.summary === "string" ? sanitizeDisplayLine(entry.summary).replace(/\s+/g, " ").trim() : "";
     if (!raw) return { lines: [], clipped: false, summary: false };
@@ -216,7 +218,7 @@ function renderEntry(entry: LooseEntry, toolCalls: Map<string, { name: string; a
       // Calls whose results are not on the visible branch yet still surface
       // as requests; paired calls are represented by their result line.
       if (part.type === "toolCall" && typeof part.name === "string") {
-        if (typeof part.id !== "string" || !entry.resultIds?.has(part.id)) {
+        if (typeof part.id !== "string" || !resultIds.has(part.id)) {
           lines.push(`[${role}] requests ${sanitizeDisplayLine(part.name)}`);
         }
       }
@@ -244,53 +246,68 @@ export function buildTrajectory(entries: readonly unknown[], options: BuildTraje
   const loose = entries.filter((entry): entry is LooseEntry => Boolean(entry) && typeof entry === "object");
   const toolCalls = collectToolCalls(loose);
   const resultIds = collectResultIds(loose);
-  for (const entry of loose) entry.resultIds = resultIds;
+  const renderedEntries = loose.map((entry) => renderEntry(entry, toolCalls, resultIds));
 
   const evidenceLines = renderEvidence(options.evidence);
   const evidenceCost = evidenceLines.length > 0 ? evidenceLines.join("\n").length + 1 : 0;
-  const summaryBudget = Math.floor((SHADOW_TRAJECTORY_MAX_CHARS - evidenceCost) * SUMMARY_BUDGET_SHARE);
-
-  // Render once, then retain newest-first within each priority class:
-  // delivered evidence (already charged), compaction summaries, then the
-  // remaining visible history. Identical entries produce identical bytes.
-  const keptSummaries: Array<{ index: number; rendered: ReturnType<typeof renderEntry> }> = [];
-  const keptOthers: Array<{ index: number; rendered: ReturnType<typeof renderEntry> }> = [];
-  let summaryUsed = 0;
-  let otherUsed = 0;
+  let remaining = SHADOW_TRAJECTORY_MAX_CHARS - evidenceCost;
   let anyClipped = false;
   let droppedCount = 0;
-  for (let index = loose.length - 1; index >= 0; index -= 1) {
-    const rendered = renderEntry(loose[index]!, toolCalls);
-    if (rendered.lines.length === 0) continue;
-    // One separator character is charged per entry so the final join can
-    // never exceed the total bound.
+
+  const kept: Array<{ index: number; rendered: ReturnType<typeof renderEntry> }> = [];
+  const keep = (index: number, budget?: number): boolean => {
+    const rendered = renderedEntries[index]!;
+    if (rendered.lines.length === 0) return false;
     const cost = rendered.lines.join("\n").length + 1;
-    if (rendered.summary) {
-      if (summaryUsed + cost > summaryBudget) {
-        droppedCount += 1;
-        continue;
-      }
-      summaryUsed += cost;
-      keptSummaries.push({ index, rendered });
-    } else {
-      const remaining = SHADOW_TRAJECTORY_MAX_CHARS - evidenceCost - summaryUsed - otherUsed;
-      if (cost > remaining) {
-        droppedCount += 1;
-        continue;
-      }
-      otherUsed += cost;
-      keptOthers.push({ index, rendered });
-    }
+    if (cost > remaining || (budget !== undefined && cost > budget)) return false;
+    kept.push({ index, rendered });
+    remaining -= cost;
     anyClipped ||= rendered.clipped;
+    return true;
+  };
+
+  // Pin the latest visible user message as the current task before every other
+  // trajectory class. A long assistant/tool tail must never evict the task that
+  // gave that activity its authority and meaning.
+  let currentTaskIndex = -1;
+  for (let index = loose.length - 1; index >= 0; index -= 1) {
+    if (loose[index]?.type === "message" && loose[index]?.message?.role === "user" && renderedEntries[index]!.lines.length > 0) {
+      currentTaskIndex = index;
+      break;
+    }
+  }
+  if (currentTaskIndex >= 0 && !keep(currentTaskIndex)) droppedCount += 1;
+
+  // Summaries are the next pinned class, newest first, but may consume at most
+  // half of the post-evidence/post-task budget so recent concrete activity also
+  // remains available. Every keep still checks the single absolute total.
+  let summaryBudget = Math.floor(remaining * SUMMARY_BUDGET_SHARE);
+  for (let index = loose.length - 1; index >= 0; index -= 1) {
+    if (index === currentTaskIndex) continue;
+    const rendered = renderedEntries[index]!;
+    if (!rendered.summary || rendered.lines.length === 0) continue;
+    const cost = rendered.lines.join("\n").length + 1;
+    if (keep(index, summaryBudget)) summaryBudget -= cost;
+    else droppedCount += 1;
   }
 
-  const kept = [...keptSummaries, ...keptOthers]
+  // Fill the remaining budget with the newest visible history and tool
+  // activity. Output order is restored afterwards for deterministic replay.
+  for (let index = loose.length - 1; index >= 0; index -= 1) {
+    if (index === currentTaskIndex) continue;
+    const rendered = renderedEntries[index]!;
+    if (rendered.summary || rendered.lines.length === 0) continue;
+    if (!keep(index)) droppedCount += 1;
+  }
+
+  const lines = kept
     .sort((left, right) => left.index - right.index)
     .flatMap((entry) => entry.rendered.lines);
-  const text = [...kept, ...evidenceLines].join("\n");
+  const text = [...lines, ...evidenceLines].join("\n");
 
-  const totalMessages = loose.filter((entry) => entry.type === "message" || entry.type === "compaction").length;
-  const includedMessages = keptSummaries.length + keptOthers.length;
+  const totalMessages = loose.filter((entry) =>
+    entry.type === "message" || entry.type === "compaction" || entry.type === "branch_summary").length;
+  const includedMessages = kept.length;
   return {
     text,
     includedMessages,

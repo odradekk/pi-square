@@ -215,6 +215,29 @@ function assistantCall(parts) {
   assert.equal(trajectory.truncation, "dropped");
   assert.ok(trajectory.text.length < SHADOW_TRAJECTORY_MESSAGE_MAX_CHARS + 100);
 }
+{
+  // The latest visible user task is pinned even after a long assistant/tool tail.
+  const entries = [message("user", "CURRENT TASK UNIQUE MARKER")];
+  for (let index = 0; index < 260; index += 1) {
+    entries.push(message("assistant", `assistant activity ${index} ${"a".repeat(100)}`));
+    entries.push(toolResult(`c${index}`, "unknown_tool", [{ type: "text", text: "x".repeat(100) }]));
+  }
+  const trajectory = buildTrajectory(entries);
+  assert.ok(trajectory.text.includes("CURRENT TASK UNIQUE MARKER"), "the current task survives recent activity pressure");
+  assert.ok(trajectory.text.includes("assistant activity 259"), "recent visible history is retained beside the task");
+  assert.ok(trajectory.text.length <= SHADOW_TRAJECTORY_MAX_CHARS, "task pinning preserves the total bound");
+}
+
+{
+  // Trajectory construction is observational and never annotates parent entries.
+  const entries = [
+    assistantCall([toolCall("c1", "read", { path: "a.ts" })]),
+    toolResult("c1", "read", [{ type: "text", text: "body" }]),
+  ];
+  const before = structuredClone(entries);
+  buildTrajectory(entries);
+  assert.deepEqual(entries, before);
+}
 
 {
   // Identical entries produce identical bytes and metadata.

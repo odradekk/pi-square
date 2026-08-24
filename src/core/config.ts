@@ -142,7 +142,18 @@ const AnchoredEditingSchema = Type.Object({
   autoRead: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 
+const ShadowThinkingSchema = Type.Union([
+  Type.Literal("off"),
+  Type.Literal("minimal"),
+  Type.Literal("low"),
+  Type.Literal("medium"),
+  Type.Literal("high"),
+  Type.Literal("xhigh"),
+  Type.Literal("max"),
+]);
+
 const ShadowMindsDefaultsSchema = Type.Object({
+  thinking: Type.Optional(ShadowThinkingSchema),
   maxConcurrentRuns: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_CONCURRENCY_HARD_MAX })),
   maxAutomaticStartsPerTask: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_STARTS_PER_TASK_HARD_MAX })),
   runTimeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS })),
@@ -216,6 +227,8 @@ export interface AnchoredEditingConfig {
 
 /** Effective Shadow Minds runtime defaults; every value sits below its package hard cap. */
 export interface ShadowMindsDefaults {
+  /** Optional run-wide fallback between a definition override and the activating parent level. */
+  thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   maxConcurrentRuns: number;
   maxAutomaticStartsPerTask: number;
   runTimeoutSeconds: number;

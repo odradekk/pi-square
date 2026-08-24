@@ -35,7 +35,7 @@ import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
 import { buildShadowUserPrompt, canonicalSchemaJson, type ShadowTrajectory } from "./prompt";
 import type { ShadowModelResolution } from "./resolve";
-import { SUBMIT_SHADOW_RESULT_PARAMETERS } from "./result";
+import { SUBMIT_SHADOW_RESULT_DESCRIPTION, SUBMIT_SHADOW_RESULT_PARAMETERS } from "./result";
 import type { ShadowToolEnvelope } from "./tools";
 import {
   createShadowInbox,
@@ -293,7 +293,11 @@ export function createShadowRuntime(input: {
     const startedAt = deps.now();
     const toolNames = [...(envelope?.toolNames ?? [])];
     const toolSchemaHash = envelope?.schemaHash
-      ?? cohortHash(canonicalSchemaJson([{ name: SUBMIT_SHADOW_RESULT_TOOL, parameters: SUBMIT_SHADOW_RESULT_PARAMETERS }]));
+      ?? cohortHash(canonicalSchemaJson([{
+        name: SUBMIT_SHADOW_RESULT_TOOL,
+        description: SUBMIT_SHADOW_RESULT_DESCRIPTION,
+        parameters: SUBMIT_SHADOW_RESULT_PARAMETERS,
+      }]));
     const view: ShadowRunView = {
       id: deps.makeRunId?.() ?? `run-${(++runSequence).toString(36)}`,
       shadowId: definition.id,

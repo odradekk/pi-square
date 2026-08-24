@@ -537,6 +537,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     assert.deepEqual(created[1].tools, ["read", "grep", "find", "ls", "codegraph", "pdf_search", "submit_shadow_result"]);
     assert.deepEqual(created[1].customTools.map((tool) => tool.name), ["codegraph", "pdf_search", "submit_shadow_result"]);
     assert.ok(created[2].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
+    assert.equal(created[2].thinkingLevel, undefined, "without a definition or config default the parent omission remains unset");
     assert.ok(created[2].system.includes("Live core policy."), "the parent core is captured at run start");
     assert.ok(created[2].system.includes("Prefer tables."), "append text joins the parent core");
     assert.ok(created[2].system.includes("Live project rule."), "trusted project rules are captured at run start");

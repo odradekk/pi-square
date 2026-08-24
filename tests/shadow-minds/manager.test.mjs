@@ -702,7 +702,7 @@ function makeRuntimeService(initial) {
   const service = makeRuntimeService({ runs: [], results: [] });
   const done = [];
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: true, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults, thinking: "medium" } } },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -719,12 +719,14 @@ function makeRuntimeService(initial) {
   assert.ok(review.includes("Start session-synthesizer manual run?"), "the run review opens");
   assert.ok(review.includes("Check open questions only."), "the note is reviewed");
   assert.ok(review.includes("submit_shadow_result only"), "the review names the single tool");
+  assert.ok(review.includes("Thinking: medium"), "the effective configuration thinking default is reviewed");
   manager.handleInput("\r");
   assert.equal(done.length, 1, "confirming closes the manager first");
   assert.equal(service.state.runCalls.length, 1);
   assert.deepEqual(service.state.runCalls[0], {
     shadowId: "session-synthesizer",
     definitionFingerprint: shadowDefinitionContextFingerprint(synthesizer.layers),
+    defaultThinking: "medium",
     timeoutSeconds: DEFAULT_CONFIG.shadowMinds.defaults.runTimeoutSeconds,
     maxTurns: DEFAULT_CONFIG.shadowMinds.defaults.maxModelTurnsPerRun,
     maxToolCalls: DEFAULT_CONFIG.shadowMinds.defaults.maxToolCallsPerRun,

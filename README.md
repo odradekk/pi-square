@@ -215,10 +215,12 @@ What works today:
   against the effective schema with field-level retry errors, a valid
   submission terminates the run, and the validated result lands in the
   session inbox. Exact `provider/model-id` (or `*`) parent-model filters,
-  explicit model failures, cross-provider visibility, and the ordered
-  thinking-level fallback apply to every run, and each run records
-  prompt/tool/trajectory cache-cohort hashes plus per-request usage and
-  time-to-first-token.
+  explicit missing or unauthenticated model failures, and cross-provider
+  visibility apply to every run. Thinking selection uses the first exact level
+  supported by the chosen model in definition → effective configuration default
+  → activating parent order, and fails rather than silently clamping when none
+  is supported. Each run records prompt/tool/trajectory cache-cohort hashes plus
+  per-request usage and time-to-first-token.
   The manager shows running state, supports cancellation, and lets you
   inspect, mark read, dismiss, or delete results. The runtime freezes its
   configuration and definition at start; timeout is enforced by a fixed
@@ -240,8 +242,10 @@ What works today:
   `shadowMinds.enabled` master switch and share its concurrency budget.
 - A strict `shadowMinds` section in agent and project pi-square configuration:
   the agent-level `enabled` master switch (a project can never re-enable it)
-  and runtime `defaults` that always stay below package hard caps. An invalid
-  section fails closed to the disabled defaults.
+  and runtime `defaults` that always stay below package hard caps. Defaults may
+  also set an optional `thinking` fallback (`off | minimal | low | medium | high |
+  xhigh | max`); when omitted, runs continue to the activating parent's level.
+  An invalid section fails closed to the disabled defaults.
 
 Definition files are ordinary Markdown with a strict bounded frontmatter
 subset; invalid definitions are diagnosed and excluded individually while

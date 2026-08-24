@@ -28,16 +28,19 @@ const {
 // ── Ordered thinking-level fallback ─────────────────────────────────
 
 {
-  // Shadow value wins over the activating parent value.
-  assert.equal(resolveShadowThinkingLevel("high", "low"), "high");
-  // No Shadow value falls back to the parent value unchanged.
-  assert.equal(resolveShadowThinkingLevel(undefined, "low"), "low");
-  assert.equal(resolveShadowThinkingLevel("off", undefined), "off");
-  assert.equal(resolveShadowThinkingLevel(undefined, undefined), undefined);
-  // An unsupported Shadow value never shadows a usable parent value.
-  assert.equal(resolveShadowThinkingLevel("ultra", "low"), "low");
-  // An unsupported parent value is dropped, not passed through.
-  assert.equal(resolveShadowThinkingLevel(undefined, "turbo"), undefined);
+  const model = { reasoning: true, thinkingLevelMap: { high: "high", medium: "medium", low: "low", xhigh: null } };
+  // Shadow value wins over the effective configuration default and parent.
+  assert.deepEqual(resolveShadowThinkingLevel("high", "medium", "low", model), { level: "high" });
+  // An unsupported Shadow value falls through to the supported configuration default.
+  assert.deepEqual(resolveShadowThinkingLevel("xhigh", "medium", "low", model), { level: "medium" });
+  // An unsupported config value falls through to the supported parent value.
+  assert.deepEqual(resolveShadowThinkingLevel(undefined, "xhigh", "low", model), { level: "low" });
+  // No candidate lets Pi choose its ordinary model default.
+  assert.deepEqual(resolveShadowThinkingLevel(undefined, undefined, undefined, model), {});
+  // If candidates exist but none are supported, the run fails rather than clamping silently.
+  assert.match(resolveShadowThinkingLevel("xhigh", undefined, undefined, model).error, /does not support/i);
+  // A non-reasoning model supports only off, so a later off candidate remains usable.
+  assert.deepEqual(resolveShadowThinkingLevel("high", "off", undefined, { reasoning: false }), { level: "off" });
 }
 
 // ── Explicit model resolution (moved from the session wiring) ───────
@@ -64,10 +67,27 @@ function ctx(overrides = {}) {
 
 {
   // An explicit model resolves through the registry, cross-provider included.
-  const explicit = resolveShadowModel("other/cross-model", ctx());
+  const explicit = resolveShadowModel("other/cross-model", ctx({
+    modelRegistry: {
+      find: (provider, id) => ({ provider, id, contextWindow: 100_000 }),
+      hasConfiguredAuth: () => true,
+    },
+  }));
   assert.equal(explicit.label, "other/cross-model");
   assert.equal(explicit.error, undefined);
   assert.deepEqual(explicit.model, { provider: "other", id: "cross-model", contextWindow: 100_000 });
+}
+
+{
+  // An explicit model without configured authentication fails before a child is created.
+  const unauthenticated = resolveShadowModel("other/cross-model", ctx({
+    modelRegistry: {
+      find: (provider, id) => ({ provider, id }),
+      hasConfiguredAuth: () => false,
+    },
+  }));
+  assert.equal(unauthenticated.model, undefined);
+  assert.match(unauthenticated.error, /no configured authentication/i);
 }
 
 {
