@@ -289,7 +289,10 @@ function fakePi() {
       () => {},
       declinedServices,
     );
+    // Run manually is the first action; the real TUI keybindings map the
+    // down-arrow escape sequence, so navigate explicitly to Enable.
     declinedManager.handleInput("\r");
+    declinedManager.handleInput("\x1b[B");
     declinedManager.handleInput("\r");
     declinedManager.handleInput("\r");
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -311,6 +314,7 @@ function fakePi() {
       freshServices,
     );
     racedManager.handleInput("\r");
+    racedManager.handleInput("\x1b[B");
     racedManager.handleInput("\r");
     racedManager.handleInput("\r");
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -417,13 +421,16 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
         },
         async runSession(input) {
           ran.push(input);
-          await input.session.customTools[0].execute(
-            "c1",
-            { payload: JSON.stringify({ decisions: [{ title: "Adopt the bounded parser", rationale: "It fits the contract." }], progress: "Parser trial passed.", open_questions: ["Which cache cohort?"] }) },
-            undefined,
-            undefined,
-            ctx,
-          );
+          const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+          if (submit) {
+            await submit.execute(
+              "c1",
+              { payload: JSON.stringify({ decisions: [{ title: "Adopt the bounded parser", rationale: "It fits the contract." }], progress: "Parser trial passed.", open_questions: ["Which cache cohort?"] }) },
+              undefined,
+              undefined,
+              ctx,
+            );
+          }
           return {
             status: "completed", prompted: true, timedOut: false,
             finalText: "", model: "acme/parent-model",
@@ -450,28 +457,89 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     assert.equal(refused.ok, false);
     assert.ok(refused.message.includes("no longer available"));
 
-    const toolRefused = services.runtime.runManual({ shadowId: "project-grounding" });
-    assert.equal(toolRefused.ok, false, "omitted-tools definitions are outside the #155 manual-trial scope");
-    assert.ok(toolRefused.message.includes("tools: []"));
+    // Agent-scope trial definitions for the #156 envelope contract.
+    const agentShadowDir = join(dir, "agent", "shadow-minds");
+    mkdirSync(agentShadowDir, { recursive: true });
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(agentShadowDir, "filtered-role.md"), [
+      "---",
+      "promptVersion: 1",
+      "id: filtered-role",
+      "name: Filtered role",
+      "parentModels: [other/model-x]",
+      "tools: [read]",
+      "---",
+      "Filtered body.",
+      "",
+    ].join("\n"));
+    writeFileSync(join(agentShadowDir, "required-missing.md"), [
+      "---",
+      "promptVersion: 1",
+      "id: required-missing",
+      "name: Required missing",
+      "tools: [read, bash]",
+      "requiredTools: [bash]",
+      "---",
+      "Body.",
+      "",
+    ].join("\n"));
+    writeFileSync(join(agentShadowDir, "warning-role.md"), [
+      "---",
+      "promptVersion: 1",
+      "id: warning-role",
+      "name: Warning role",
+      "tools: [read, ssh]",
+      "---",
+      "Body.",
+      "",
+    ].join("\n"));
+
+    // The parent-model filter refuses a mismatched parent model exactly.
+    const filtered = services.runtime.runManual({ shadowId: "filtered-role" });
+    assert.equal(filtered.ok, false, "a filtered parent model refuses the run");
+    assert.ok(filtered.message.includes("other/model-x"), filtered.message);
+    assert.ok(filtered.message.includes("acme/parent-model"), filtered.message);
+
+    // A required excluded tool fails before the child session is created.
+    const requiredMissing = services.runtime.runManual({ shadowId: "required-missing" });
+    assert.equal(requiredMissing.ok, false, "missing required tools fail before prompting");
+    assert.ok(requiredMissing.message.includes("Required Shadow tools are unavailable: bash"), requiredMissing.message);
+
+    // Missing optional tools warn but the run still starts.
+    notifications.length = 0;
+    const warned = services.runtime.runManual({ shadowId: "warning-role" });
+    assert.equal(warned.ok, true, warned.message);
+    assert.ok(notifications.some((entry) => entry.message.includes("'ssh'") && entry.message.includes("excluded")));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // An evidence-grounded definition starts with its canonical envelope.
+    const grounded = services.runtime.runManual({ shadowId: "project-grounding" });
+    assert.equal(grounded.ok, true, grounded.message);
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     const started = services.runtime.runManual({ shadowId: "session-synthesizer", note: "Trial run." });
     assert.equal(started.ok, true, started.message);
     assert.ok(notifications.some((entry) => entry.message.includes("started manual run of session-synthesizer")));
 
-    assert.equal(created.length, 1);
-    assert.ok(created[0].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
-    assert.ok(created[0].system.includes("Live core policy."), "the parent core is captured at run start");
-    assert.ok(created[0].system.includes("Prefer tables."), "append text joins the parent core");
-    assert.ok(created[0].system.includes("Live project rule."), "trusted project rules are captured at run start");
-    assert.deepEqual(created[0].tools, ["submit_shadow_result"]);
-    assert.equal(created[0].model.provider, "acme");
-    assert.equal(created[0].model.id, "parent-model");
+    assert.equal(created.length, 3);
+    // warning-role and project-grounding ran first; their tool envelopes
+    // carry the canonical evidence names with the submit tool last.
+    assert.deepEqual(created[0].tools, ["read", "submit_shadow_result"]);
+    assert.deepEqual(created[1].tools, ["read", "grep", "find", "ls", "codegraph", "pdf_search", "submit_shadow_result"]);
+    assert.deepEqual(created[1].customTools.map((tool) => tool.name), ["codegraph", "pdf_search", "submit_shadow_result"]);
+    assert.ok(created[2].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
+    assert.ok(created[2].system.includes("Live core policy."), "the parent core is captured at run start");
+    assert.ok(created[2].system.includes("Prefer tables."), "append text joins the parent core");
+    assert.ok(created[2].system.includes("Live project rule."), "trusted project rules are captured at run start");
+    assert.deepEqual(created[2].tools, ["submit_shadow_result"], "the no-tool definition keeps its single-tool envelope");
+    assert.equal(created[2].model.provider, "acme");
+    assert.equal(created[2].model.id, "parent-model");
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(ran[0].prompt.includes("Investigate the flaky parser test."), "the visible branch becomes the trajectory");
-    assert.ok(ran[0].prompt.includes("I will inspect the tokenizer."), "assistant text is retained");
-    assert.ok(ran[0].prompt.includes("Trial run."), "the manual note is embedded");
-    assert.ok(!ran[0].prompt.includes("Live core policy."), "SYSTEM material stays out of the USER prompt");
+    assert.ok(ran[2].prompt.includes("Investigate the flaky parser test."), "the visible branch becomes the trajectory");
+    assert.ok(ran[2].prompt.includes("I will inspect the tokenizer."), "assistant text is retained");
+    assert.ok(ran[2].prompt.includes("Trial run."), "the manual note is embedded");
+    assert.ok(!ran[2].prompt.includes("Live core policy."), "SYSTEM material stays out of the USER prompt");
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     const snapshot = state.runtime.snapshot();

@@ -12,7 +12,7 @@
  * a result, and a run without one is silent.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createExtensionRuntime,
   DefaultResourceLoader,
@@ -32,7 +32,9 @@ import {
 } from "../subagents/child-session-executor";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
-import { buildShadowUserPrompt, type ShadowTrajectory } from "./prompt";
+import { buildShadowUserPrompt, canonicalSchemaJson, type ShadowTrajectory } from "./prompt";
+import { SUBMIT_SHADOW_RESULT_PARAMETERS } from "./result";
+import type { ShadowToolEnvelope } from "./tools";
 import {
   createShadowInbox,
   createSubmitShadowResultTool,
@@ -45,6 +47,14 @@ export const SHADOW_MANUAL_NOTE_MAX_CHARS = 8_000;
 /** Terminal-run history retained for manager observation. */
 const RUN_HISTORY_MAX = 50;
 const RUN_MESSAGE_MAX_CHARS = 200;
+/** Cohort hash prefix length; full schemas never leave the run record. */
+const COHORT_HASH_CHARS = 16;
+/** Per-request metrics retained per run; the turn budget stays far below. */
+const REQUEST_METRICS_MAX = 64;
+
+function cohortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, COHORT_HASH_CHARS);
+}
 
 export type ShadowRunPhase =
   | "running"
@@ -55,6 +65,17 @@ export type ShadowRunPhase =
   | "max_turns"
   | "max_tool_calls"
   | "error";
+
+/** One model request's bounded usage and timing when the provider reports it. */
+export interface ShadowRequestMetric {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  /** Time from request start to the first assistant message start. */
+  ttftMs?: number;
+}
 
 export interface ShadowRunView {
   id: string;
@@ -70,6 +91,16 @@ export interface ShadowRunView {
   message?: string;
   usage?: ChildSessionUsage;
   resultId?: string;
+  /** Canonical evidence tool names; the submit tool is implied last. */
+  toolNames?: string[];
+  /** Bounded warnings for requested tools unavailable at run start. */
+  toolWarnings?: string[];
+  /** Stable prompt/tool/trajectory cache-cohort hashes. */
+  systemHash?: string;
+  toolSchemaHash?: string;
+  trajectoryHash?: string;
+  /** Per-request usage and TTFT, bounded by the turn budget. */
+  requests?: ShadowRequestMetric[];
 }
 
 export interface ShadowModelResolution {
@@ -89,6 +120,11 @@ export interface ShadowManualRunRequest {
   cwd: string;
   modelResolution?: ShadowModelResolution;
   thinkingLevel?: string;
+  /**
+   * Resolved evidence-tool envelope in canonical order. Absent means the
+   * no-tool trial; `submit_shadow_result` is always appended last.
+   */
+  envelope?: ShadowToolEnvelope;
 }
 
 export interface ShadowRuntimeSnapshot {
@@ -258,7 +294,11 @@ export function createShadowRuntime(input: {
 
     const { definition: requestDefinition } = request;
     const definition = structuredClone(requestDefinition);
+    const envelope = request.envelope;
     const startedAt = deps.now();
+    const toolNames = [...(envelope?.toolNames ?? [])];
+    const toolSchemaHash = envelope?.schemaHash
+      ?? cohortHash(canonicalSchemaJson([{ name: SUBMIT_SHADOW_RESULT_TOOL, parameters: SUBMIT_SHADOW_RESULT_PARAMETERS }]));
     const view: ShadowRunView = {
       id: deps.makeRunId?.() ?? `run-${(++runSequence).toString(36)}`,
       shadowId: definition.id,
@@ -268,6 +308,11 @@ export function createShadowRuntime(input: {
       startedAt,
       ...(note ? { note } : {}),
       ...(request.modelResolution?.label ? { model: request.modelResolution.label } : {}),
+      toolNames,
+      ...(envelope && envelope.warnings.length > 0 ? { toolWarnings: envelope.warnings } : {}),
+      systemHash: cohortHash(request.system),
+      toolSchemaHash,
+      trajectoryHash: cohortHash(`${request.trajectory.text}\0${request.trajectory.truncation}`),
     };
 
     let abortReason: "cancelled" | "timeout" | "max_turns" | "max_tool_calls" | undefined;
@@ -320,10 +365,42 @@ export function createShadowRuntime(input: {
         },
       });
 
+      // Per-request usage and time-to-first-token: one request begins at each
+      // turn start and completes at the next assistant message end. All
+      // timing flows through the injected clock seam.
+      const requests: ShadowRequestMetric[] = [];
+      let currentRequest: ShadowRequestMetric | undefined;
+      let requestStartedAt: number | undefined;
+
       const onEvent = (event: any) => {
         if (event?.type === "turn_start") {
           if (!submitted && !abortReason && usage.turns >= maxTurns) {
             forceAbort("max_turns");
+          }
+          currentRequest = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+          requestStartedAt = deps.now();
+          return;
+        }
+        if (event?.type === "message_start" && event.message?.role === "assistant") {
+          if (currentRequest && currentRequest.ttftMs === undefined && requestStartedAt !== undefined) {
+            currentRequest.ttftMs = Math.max(0, deps.now() - requestStartedAt);
+          }
+          return;
+        }
+        if (event?.type === "message_end" && event.message?.role === "assistant") {
+          const reported = event.message?.usage;
+          if (currentRequest && reported && typeof reported === "object") {
+            currentRequest.input += Number(reported.input ?? 0) || 0;
+            currentRequest.output += Number(reported.output ?? 0) || 0;
+            currentRequest.cacheRead += Number(reported.cacheRead ?? 0) || 0;
+            currentRequest.cacheWrite += Number(reported.cacheWrite ?? 0) || 0;
+            const cost = typeof reported.cost === "object"
+              ? Number(reported.cost?.total ?? 0) || 0
+              : Number(reported.cost ?? 0) || 0;
+            currentRequest.cost += cost;
+            if (requests.length < REQUEST_METRICS_MAX) requests.push(currentRequest);
+            currentRequest = undefined;
+            requestStartedAt = undefined;
           }
           return;
         }
@@ -349,8 +426,8 @@ export function createShadowRuntime(input: {
           system: request.system,
           model: request.modelResolution?.model,
           ...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
-          tools: [SUBMIT_SHADOW_RESULT_TOOL],
-          customTools: [tool],
+          tools: [...toolNames, SUBMIT_SHADOW_RESULT_TOOL],
+          customTools: [...(envelope?.customTools ?? []), tool],
         });
         let creationTimer: NodeJS.Timeout | undefined;
         let onCreationAbort: (() => void) | undefined;
@@ -434,6 +511,7 @@ export function createShadowRuntime(input: {
       if (outcome.model) view.model = outcome.model;
       if (message) view.message = message;
       if (resultId) view.resultId = resultId;
+      if (requests.length > 0) view.requests = requests;
 
       const activeIndex = active.indexOf(run);
       if (activeIndex >= 0) active.splice(activeIndex, 1);

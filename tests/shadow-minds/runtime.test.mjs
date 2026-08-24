@@ -95,7 +95,7 @@ function baseRequest(overrides = {}) {
   return {
     definition: definition(),
     system: "SHADOW SYSTEM",
-    trajectory: { text: "[user] hello", includedMessages: 1, totalMessages: 1, truncated: false },
+    trajectory: { text: "[user] hello", includedMessages: 1, totalMessages: 1, truncated: false, truncation: "none" },
     cwd: "/repo",
     ...overrides,
   };
@@ -529,6 +529,87 @@ function baseRequest(overrides = {}) {
   assert.deepEqual(loader.getAppendSystemPrompt(), []);
   assert.deepEqual(loader.getAppendSystemPromptSources(), []);
   assert.equal(loader.getExtensions().extensions.length, 0);
+}
+
+// ── evidence-tool envelope wiring (#156) ──────────────────────────
+
+{
+  const fake = makeFake();
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const evidenceTool = { name: "codegraph", parameters: { type: "object" }, execute: async () => ({}) };
+  const run = runtime.startManualRun(baseRequest({
+    envelope: {
+      toolNames: ["read", "codegraph"],
+      customTools: [evidenceTool],
+      schemaHash: "0123456789abcdef",
+      warnings: ["Tool 'bash' is not in the Shadow-safe catalog and was excluded."],
+    },
+  }));
+  assert.equal(run.started, true);
+  await run.done;
+  const created = fake.created[0];
+  // Canonical evidence names first, submit tool always last.
+  assert.deepEqual(created.tools, ["read", "codegraph", SUBMIT_SHADOW_RESULT_TOOL]);
+  // Extension definitions precede the per-run submit tool.
+  assert.deepEqual(created.customTools.map((tool) => tool.name), ["codegraph", SUBMIT_SHADOW_RESULT_TOOL]);
+  const view = runtime.snapshot().runs[0];
+  assert.deepEqual(view.toolNames, ["read", "codegraph"]);
+  assert.equal(view.toolSchemaHash, "0123456789abcdef");
+  assert.deepEqual(view.toolWarnings, ["Tool 'bash' is not in the Shadow-safe catalog and was excluded."]);
+  assert.match(view.systemHash, /^[0-9a-f]{16}$/);
+  assert.match(view.trajectoryHash, /^[0-9a-f]{16}$/);
+}
+
+{
+  // Without an envelope the no-tool trial keeps its single-tool cohort hash.
+  const fake = makeFake();
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const run = runtime.startManualRun(baseRequest());
+  await run.done;
+  assert.deepEqual(fake.created[0].tools, [SUBMIT_SHADOW_RESULT_TOOL]);
+  assert.match(runtime.snapshot().runs[0].toolSchemaHash, /^[0-9a-f]{16}$/);
+}
+
+{
+  // The trajectory hash includes the truncation mode.
+  const fake = makeFake();
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  await runtime.startManualRun(baseRequest({
+    trajectory: { text: "[user] hello", includedMessages: 1, totalMessages: 1, truncated: true, truncation: "dropped" },
+  })).done;
+  const [dropped, full] = runtime.snapshot().runs;
+  assert.notEqual(dropped.trajectoryHash, full.trajectoryHash);
+}
+
+// ── per-request usage and TTFT ────────────────────────────────────
+
+{
+  const fake = makeFake({ script: async (input) => {
+    input.onEvent({ type: "turn_start" });
+    fake.advance(120);
+    input.onEvent({ type: "message_start", message: { role: "assistant" } });
+    fake.advance(480);
+    input.onEvent({ type: "message_end", message: { role: "assistant", usage: { input: 700, output: 80, cacheRead: 12, cacheWrite: 4, cost: { total: 0.02 } } } });
+    return COMPLETED_NO_SUBMISSION;
+  } });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  const view = runtime.snapshot().runs[0];
+  assert.deepEqual(view.requests, [
+    { input: 700, output: 80, cacheRead: 12, cacheWrite: 4, cost: 0.02, ttftMs: 120 },
+  ]);
+}
+
+{
+  // A run without assistant completions reports no request metrics.
+  const fake = makeFake({ script: async (input) => {
+    input.onEvent({ type: "turn_start" });
+    return { ...COMPLETED_NO_SUBMISSION, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 } };
+  } });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  assert.equal(runtime.snapshot().runs[0].requests, undefined);
 }
 
 console.log("shadow-minds runtime tests: OK");

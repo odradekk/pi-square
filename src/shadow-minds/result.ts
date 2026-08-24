@@ -27,6 +27,12 @@ const SubmitParams = Type.Object({
   }),
 }, { additionalProperties: false });
 
+/**
+ * The fixed model-callable parameters of `submit_shadow_result`. Exported so
+ * the Shadow tool-envelope hash covers the complete final schema cohort.
+ */
+export const SUBMIT_SHADOW_RESULT_PARAMETERS = SubmitParams;
+
 export interface SubmitShadowResultHandlers {
   schema: ShadowOutputSchema;
   /** Refuses an invocation before parsing or accepting its payload. */

@@ -82,7 +82,7 @@ export function buildShadowSystem(input: ShadowSystemInput): string {
 }
 
 /** Deterministic JSON: object keys sorted recursively, arrays keep order. */
-export function canonicalSchemaJson(schema: ShadowOutputSchema): string {
+export function canonicalSchemaJson(schema: unknown): string {
   const canonicalize = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonicalize);
     if (value !== null && typeof value === "object") {
@@ -103,6 +103,8 @@ export interface ShadowTrajectory {
   includedMessages: number;
   totalMessages: number;
   truncated: boolean;
+  /** Deterministic truncation mode; part of the trajectory cache hash. */
+  truncation: "none" | "dropped";
 }
 
 export interface ShadowUserPromptInput {

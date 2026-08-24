@@ -7,7 +7,8 @@
  * write is reviewed in a scrollable candidate view first, then approved
  * through the session FIFO confirmation coordinator after the manager
  * closes itself, and executed by the safe overlay writer. Package templates
- * stay read-only. Runtime services add manual no-tool trials with a bounded
+ * stay read-only. Runtime services add manual trials across the Shadow-safe
+ * read-only evidence catalog (the no-tool trial included) with a bounded
  * one-time note, live run observation with cancellation, and result-inbox
  * inspection (read, dismiss, delete). The view follows the shared unframed
  * operational grammar: one-cell status rail, label-led rows, muted borders,
@@ -918,14 +919,12 @@ export class ShadowManager implements Component, Focusable {
         ? undefined
         : "Package templates are read-only; edits create overlays.",
       items: [
-        ...(isNoToolTrial(selected)
-          ? [{
-              id: "run-manually",
-              label: "Run manually",
-              detail: `no-tool trial · ${runBoundLabel(runBounds(selected, this.data.config?.defaults))}`,
-              onSelect: () => this.runManually(selected),
-            }]
-          : []),
+        {
+          id: "run-manually",
+          label: "Run manually",
+          detail: `${toolsLabel(selected)} · ${runBoundLabel(runBounds(selected, this.data.config?.defaults))}`,
+          onSelect: () => this.runManually(selected),
+        },
         {
           id: "toggle-enabled",
           label: selected.enabled ? "Disable" : "Enable",
@@ -983,7 +982,7 @@ export class ShadowManager implements Component, Focusable {
           title: `Start ${definition.id} manual run?`,
           lines: [
             `Definition: ${definition.name} (${definition.id})`,
-            `Tools: none — submit_shadow_result only`,
+            `Tools: ${toolsLabel(definition)}`,
             `Bounds: ${runBoundLabel(bounds)}`,
             `Evidence: the current parent trajectory, reference only`,
             ...(note ? ["", "MANUAL NOTE", note] : []),
@@ -1473,14 +1472,17 @@ function definitionLabel(definition: EffectiveShadowDefinition): string {
 }
 
 /** A manual trial exists only for the explicit empty tool list (#155). */
-function isNoToolTrial(definition: EffectiveShadowDefinition): boolean {
-  return definition.tools !== undefined && definition.tools.length === 0;
-}
-
 interface ManualRunBounds {
   timeoutSeconds: number;
   maxTurns: number;
   maxToolCalls: number;
+}
+
+/** Bounded run-review label for one definition's declared tool envelope. */
+function toolsLabel(definition: EffectiveShadowDefinition): string {
+  if (definition.tools === undefined) return "default local evidence set + submit";
+  if (definition.tools.length === 0) return "none — submit_shadow_result only";
+  return `${definition.tools.join(", ")} + submit`;
 }
 
 function runBounds(definition: EffectiveShadowDefinition, defaults?: ShadowMindsDefaults): ManualRunBounds {

@@ -193,26 +193,47 @@ What works today:
 - `/shadow <request>` asks the parent agent for configuration help: a bounded
   Shadow Config Guide is delivered before the unchanged request, and only the
   user request triggers a turn. No definition is written automatically.
-- Manual no-tool trials: a definition with the explicit empty tool list (such
-  as Session synthesizer) offers **Run manually** in the `/shadow` manager.
-  An optional bounded one-time note applies to that run only. The trial
-  executes as a fresh, non-resumable child session whose SYSTEM is the
-  versioned Shadow governance plus a parent-task snapshot — the custom system
-  core, trusted project rules, and canonical working directory, frozen from
-  the parent's prompt options at run start — and whose USER message is
-  the reference-only parent trajectory, the Shadow responsibility, the
-  canonical output schema, and the note. The child receives exactly one
-  tool, `submit_shadow_result`; its payload is validated against the
-  effective schema with field-level retry errors, a valid submission
-  terminates the run, and the validated result lands in the session inbox.
+- Manual trials: every definition offers **Run manually** in the `/shadow`
+  manager, evidence-grounded definitions included. An optional bounded
+  one-time note applies to that run only. The trial executes as a fresh,
+  non-resumable child session whose SYSTEM is the versioned Shadow governance
+  plus a parent-task snapshot — the custom system core, trusted project
+  rules, and canonical working directory, frozen from the parent's prompt
+  options at run start — and whose USER message is the reference-only parent
+  trajectory, the Shadow responsibility, the canonical output schema, and
+  the note. The child's evidence tools come from the approved strictly
+  read-only Shadow-safe catalog — local `read`, `grep`, `find`, `ls`,
+  `codegraph` (explore/status), `pdf_search`, plus the public `search`,
+  `fetch`, `libs`, `docs` remote tools when a definition lists them — built
+  from Pi public factories and child-safe pi-square factories, never from
+  parent registry overrides; omitted `tools` select the default local
+  evidence set, `tools: []` keeps the no-tool trial, and required tools must
+  be a subset of the requested set (a missing optional tool drops with a
+  warning, a missing required tool fails before the run prompts). Final
+  tools use canonical ordering plus a stable full-schema hash, and
+  `submit_shadow_result` is always appended last; its payload is validated
+  against the effective schema with field-level retry errors, a valid
+  submission terminates the run, and the validated result lands in the
+  session inbox. Exact `provider/model-id` (or `*`) parent-model filters,
+  explicit model failures, cross-provider visibility, and the ordered
+  thinking-level fallback apply to every run, and each run records
+  prompt/tool/trajectory cache-cohort hashes plus per-request usage and
+  time-to-first-token.
   The manager shows running state, supports cancellation, and lets you
   inspect, mark read, dismiss, or delete results. The runtime freezes its
   configuration and definition at start; timeout is enforced by a fixed
   deadline and the child executor, model turns at the pre-model `turn_start` boundary,
   and tool calls at Pi’s pre-validation `tool_execution_start` boundary, with a second check before payload acceptance. Session
   replacement clears the in-memory inbox and rejects late submissions from the
-  old child. Trajectory, prompt authority, notes, errors, and summaries remove
-  terminal controls and redact common credential forms. Timeouts, cancellations,
+  old child. The trajectory follows the parent's currently visible branch:
+  reasoning is removed, compaction summaries are retained, known tools reduce
+  to bounded allowed-field summaries with mandatory credential cleaning
+  (unknown tools expose only name, outcome, and scale — never raw arguments
+  or bodies), only delivered Shadow evidence is included, and oversized
+  trajectories truncate deterministically with a visible mode while retaining
+  the current task, summaries, and recent history. Prompt authority, notes,
+  errors, and summaries remove terminal controls and redact common credential
+  forms. Timeouts, cancellations,
   bounded outcomes, and model or auth failures are observable lifecycle data and
   never become results. Manual trials require the
   `shadowMinds.enabled` master switch and share its concurrency budget.
