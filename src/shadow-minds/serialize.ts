@@ -112,14 +112,20 @@ function assertValid(fields: ShadowDefinitionFields): void {
   if (typeof fields.id !== "string" || !ID_PATTERN.test(fields.id)) {
     throw new Error(`Shadow definition id must match ${ID_PATTERN} (got '${fields.id}').`);
   }
-  if (typeof fields.name !== "string" || fields.name.length < 1 || fields.name.length > SHADOW_NAME_MAX_CHARS) {
-    throw new Error(`Shadow definition name must be a string between 1 and ${SHADOW_NAME_MAX_CHARS} characters.`);
+  // Name and body are optional per layer: an overlay may inherit them from a
+  // lower layer. Effective completeness is enforced by the write path's
+  // full-candidate validation, so a body-less overlay above no package layer
+  // can never reach disk through the manager.
+  if (fields.name !== undefined && (typeof fields.name !== "string" || fields.name.length < 1 || fields.name.length > SHADOW_NAME_MAX_CHARS)) {
+    throw new Error(`Shadow definition name must be a string between 1 and ${SHADOW_NAME_MAX_CHARS} characters when present.`);
   }
-  if (typeof fields.body !== "string" || fields.body.trim() === "") {
-    throw new Error("Shadow definition body must be a non-empty string.");
-  }
-  if (fields.body.length > SHADOW_BODY_MAX_CHARS) {
-    throw new Error(`Shadow definition body exceeds ${SHADOW_BODY_MAX_CHARS} characters.`);
+  if (fields.body !== undefined) {
+    if (typeof fields.body !== "string" || fields.body.trim() === "") {
+      throw new Error("Shadow definition body must be a non-empty string when present.");
+    }
+    if (fields.body.length > SHADOW_BODY_MAX_CHARS) {
+      throw new Error(`Shadow definition body exceeds ${SHADOW_BODY_MAX_CHARS} characters.`);
+    }
   }
   if (fields.priority !== undefined && (!Number.isInteger(fields.priority) || fields.priority < SHADOW_PRIORITY_MIN || fields.priority > SHADOW_PRIORITY_MAX)) {
     throw new Error(`Shadow definition priority must be an integer between ${SHADOW_PRIORITY_MIN} and ${SHADOW_PRIORITY_MAX}.`);
@@ -213,5 +219,6 @@ export function serializeShadowDefinition(fields: ShadowDefinitionFields): strin
         break;
     }
   }
+  if (fields.body === undefined) return `---\n${lines.join("\n")}\n---\n`;
   return `---\n${lines.join("\n")}\n---\n\n${fields.body}\n`;
 }

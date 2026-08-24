@@ -116,6 +116,7 @@ roundTrip({
 {
   assert.throws(() => serializeShadowDefinition({ id: "has space", name: "x", body: "b" }), /id/);
   assert.throws(() => serializeShadowDefinition({ id: "ok", name: "x", body: "" }), /body/);
+  assert.doesNotThrow(() => serializeShadowDefinition({ id: "ok", name: "x" }), "a body-less overlay layer serializes");
   assert.throws(() => serializeShadowDefinition({ id: "ok", name: "x".repeat(121), body: "b" }), /name/);
   assert.throws(
     () => serializeShadowDefinition({ id: "ok", name: "x", body: "b", triggers: ["nonsense"] }),

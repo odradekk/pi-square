@@ -308,19 +308,27 @@ function mergeLayers(
   return { definition: effective, errors: [] };
 }
 
-export function discoverShadowDefinitions(
-  cwd: string,
-  options: { projectTrusted: boolean },
-): ShadowDefinitionRegistry {
+interface ShadowScopeEntry {
+  dir: string | null;
+  scope: ShadowDefinitionScope;
+  projectRoot?: string;
+}
+
+interface ShadowScopeCollection {
+  scopes: ShadowScopeEntry[];
+  diagnostics: DiagnosticMessage[];
+}
+
+function collectShadowScopes(cwd: string, projectTrusted: boolean): ShadowScopeCollection {
   const diagnostics: DiagnosticMessage[] = [];
-  const scopes: { dir: string | null; scope: ShadowDefinitionScope; projectRoot?: string }[] = [
+  const scopes: ShadowScopeEntry[] = [
     { dir: getPackagePath("shadow-minds"), scope: "package" },
     { dir: getAgentPath("shadow-minds"), scope: "agent" },
   ];
   const projectLocation = findNearestProjectShadowDir(cwd);
   if (projectLocation?.error) {
     diagnostics.push(diagnostic("warning", projectLocation.error));
-  } else if (projectLocation && !options.projectTrusted) {
+  } else if (projectLocation && !projectTrusted) {
     diagnostics.push(diagnostic(
       "warning",
       `Shadow definitions in ${projectLocation.dir} are ignored because the project is not trusted`,
@@ -328,6 +336,16 @@ export function discoverShadowDefinitions(
   } else if (projectLocation) {
     scopes.push({ dir: projectLocation.dir, scope: "project", projectRoot: projectLocation.projectRoot });
   }
+  return { scopes, diagnostics };
+}
+
+export function discoverShadowDefinitions(
+  cwd: string,
+  options: { projectTrusted: boolean },
+): ShadowDefinitionRegistry {
+  const collected = collectShadowScopes(cwd, options.projectTrusted);
+  const diagnostics = collected.diagnostics;
+  const scopes = collected.scopes;
 
   // Load every layer, grouped by effective ID and scope. A scope with more
   // than one file claiming an ID invalidates that ID and reports every source.
@@ -403,6 +421,88 @@ export function discoverShadowDefinitions(
   definitions.sort((a, b) => a.id.localeCompare(b.id));
   invalid.sort((a, b) => a.id.localeCompare(b.id));
   return { definitions, invalid, diagnostics };
+}
+
+/**
+ * Composes one candidate layer into the current discovery state and merges
+ * the effective definition for its ID (#154). The candidate replaces every
+ * same-scope layer for the ID at `filePath`; layers from other scopes and
+ * same-scope files claiming the same ID through other file names keep their
+ * discovery semantics — including fail-closed treatment of broken layers and
+ * same-scope duplicates.
+ */
+export function previewShadowDefinition(
+  cwd: string,
+  options: {
+    projectTrusted: boolean;
+    scope: "agent" | "project";
+    filePath: string;
+    content: string;
+  },
+): { definition?: EffectiveShadowDefinition; errors: string[] } {
+  const parsed = parseShadowDefinitionFile(options.filePath, options.content);
+  if (!parsed.definition) return { errors: parsed.errors };
+  const id = stemOf(options.filePath);
+  const { scopes } = collectShadowScopes(cwd, options.projectTrusted);
+  const errors: string[] = [];
+  const buckets: { scope: ShadowDefinitionScope; layers: (LoadedLayer & { parsed: ParsedShadowDefinition })[] }[] = [];
+  for (const { dir, scope, projectRoot } of scopes) {
+    if (!dir) continue;
+    const claiming = loadLayersFromDir(dir, scope, projectRoot).filter(
+      (layer) => layer.filePath !== options.filePath && stemOf(layer.filePath) === id,
+    );
+    if (scope !== options.scope) {
+      for (const layer of claiming) {
+        if (!layer.parsed) {
+          errors.push(...layer.errors);
+          continue;
+        }
+        buckets.push({ scope, layers: [layer as LoadedLayer & { parsed: ParsedShadowDefinition }] });
+      }
+      continue;
+    }
+    const others = claiming.filter((layer) => layer.parsed);
+    if (claiming.length !== others.length) {
+      // A broken same-scope file keeps the ID failed closed until repaired.
+      for (const layer of claiming) {
+        if (!layer.parsed) errors.push(...layer.errors);
+      }
+    }
+    const bucket: typeof buckets[number] = {
+      scope,
+      layers: others.map((layer) => layer as LoadedLayer & { parsed: ParsedShadowDefinition }),
+    };
+    buckets.push(bucket);
+  }
+  const candidateBucket = buckets.find((bucket) => bucket.scope === options.scope);
+  const candidate: LoadedLayer & { parsed: ParsedShadowDefinition } = {
+    scope: options.scope,
+    filePath: options.filePath,
+    parsed: parsed.definition,
+    errors: [],
+  };
+  if (candidateBucket) candidateBucket.layers.push(candidate);
+  else buckets.push({ scope: options.scope, layers: [candidate] });
+
+  const duplicates = buckets.filter((bucket) => bucket.layers.length > 1);
+  if (duplicates.length > 0) {
+    const sources = duplicates.flatMap((bucket) => bucket.layers.map((layer) => layer.filePath));
+    errors.push(`${id}: duplicate definition files claim the same ID in one scope (${sources.join(", ")})`);
+  }
+  if (errors.length > 0) return { errors };
+
+  const ordered = (["package", "agent", "project"] as const)
+    .flatMap((scope) => buckets.find((bucket) => bucket.scope === scope)?.layers ?? []);
+  return mergeLayers(id, ordered);
+}
+
+/**
+ * The nearest discovered project Shadow location, for write targeting (#154).
+ * Writes follow discovery: an existing ancestor `.pi/shadow-minds` is the
+ * canonical overlay target for the current workspace.
+ */
+export function shadowProjectScopeLocation(cwd: string): ProjectShadowLocation | null {
+  return findNearestProjectShadowDir(cwd);
 }
 
 /** Canonical scope directory for definition overlays; #154 writes here. */
