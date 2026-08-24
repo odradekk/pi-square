@@ -1,26 +1,38 @@
 /**
- * Read-only `/shadow` manager view (odradekk/pi-square#149, slice #153).
+ * `/shadow` manager view (odradekk/pi-square#149, slices #153–#154).
  *
- * Opens a focus-preserving, non-overlay TUI view that lists every effective
- * Shadow definition with its layer provenance, marks hidden and invalid state,
- * and shows the registry diagnostics — including excluded untrusted project
- * layers. It creates no model calls, sends no messages, and writes nothing;
- * editing arrives with #154. The view follows the shared unframed operational
- * grammar: one-cell status rail, label-led rows, muted borders, no emoji.
+ * A focus-preserving, non-overlay TUI view that inspects every effective
+ * Shadow definition with its layer provenance and, when write services are
+ * supplied, creates and edits agent and trusted-project overlays. Every
+ * write is reviewed in a scrollable candidate view first, then approved
+ * through the session FIFO confirmation coordinator after the manager
+ * closes itself, and executed by the safe overlay writer. Package templates
+ * stay read-only. The view follows the shared unframed operational grammar:
+ * one-cell status rail, label-led rows, muted borders, no emoji.
  */
 
 import {
+  getSelectListTheme,
   keyHint,
   type ExtensionCommandContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import { Editor, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
 import type { ShadowMindsDefaults } from "../core/config";
 import type { EffectiveShadowDefinition, ShadowDefinitionRegistry } from "./definitions";
+import { MISSING_OVERLAY_FINGERPRINT } from "./overlays";
+import type { ShadowDefinitionFields, ShadowTrigger } from "./parser";
+import { newShadowDefinitionDraft } from "./serialize";
 
 const LIST_WIDTH = 34;
 const BODY_PREVIEW_LINES = 8;
 const DIAGNOSTIC_LINES = 4;
+const MAX_REVIEW_CONTENT = 4_000;
+const SHADOW_TRIGGERS: readonly ShadowTrigger[] = ["tool_turn", "failure", "mutation", "completion"];
+const DELIVERIES = ["steer", "wake", "notify"] as const;
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+type WritableScope = "agent" | "project";
 
 /** Snapshot the view renders; refresh comes from the owning feature state. */
 export interface ShadowManagerSnapshot {
@@ -30,6 +42,38 @@ export interface ShadowManagerSnapshot {
   projectTrusted: boolean;
   /** Effective feature configuration; absent when unknown at open time. */
   config?: { enabled: boolean; defaults: ShadowMindsDefaults };
+}
+
+/** Result of one persistent overlay operation, surfaced outside the manager. */
+export interface ShadowWriteOutcome {
+  ok: boolean;
+  message: string;
+}
+
+/** Bounded approval request routed through the FIFO confirmation coordinator. */
+export interface ShadowApprovalRequest {
+  title: string;
+  lines: string[];
+  destructive?: boolean;
+}
+
+export interface ShadowManagerServices {
+  refresh(): ShadowManagerSnapshot;
+  /** Maps an on-disk overlay path to its writable scope, when it is one. */
+  scopeOf(filePath: string): WritableScope | undefined;
+  /** Canonical overlay path plus review fingerprint for one scope and ID. */
+  overlaySnapshot(scope: WritableScope, id: string): Promise<{ filePath: string; fingerprint: string }>;
+  /** In-memory candidate: serialized layer, canonical path, effective merge. */
+  preview(scope: WritableScope, fields: ShadowDefinitionFields): {
+    content: string;
+    filePath: string;
+    definition?: EffectiveShadowDefinition;
+    errors: string[];
+  };
+  /** FIFO-coordinated native confirmation; the manager has closed itself. */
+  approve(request: ShadowApprovalRequest): Promise<boolean>;
+  save(scope: WritableScope, fields: ShadowDefinitionFields, reviewFingerprint: string): Promise<ShadowWriteOutcome>;
+  deleteOverlay(scope: WritableScope, id: string, reviewFingerprint: string): Promise<ShadowWriteOutcome>;
 }
 
 export function snapshot(
@@ -55,17 +99,114 @@ function clip(text: string, max: number): string {
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
 }
 
+interface ChoiceItem {
+  id: string;
+  label: string;
+  detail?: string;
+  onSelect(): void;
+}
+
+interface ChoiceView {
+  kind: "choice";
+  eyebrow: string;
+  title: string;
+  description?: string;
+  items: ChoiceItem[];
+  index: number;
+}
+
+interface EditorView {
+  kind: "editor";
+  eyebrow: string;
+  title: string;
+  description?: string;
+  editor: Editor;
+  submitLabel: string;
+  validate(value: string): string | undefined;
+  onSubmit(value: string): void;
+  error?: string;
+}
+
+interface ReviewView {
+  kind: "review";
+  eyebrow: string;
+  title: string;
+  lines: string[];
+  confirmLabel: string;
+  destructive?: boolean;
+  scroll: number;
+  onConfirm(): void;
+}
+
+type ManagerView = { kind: "browse" } | ChoiceView | EditorView | ReviewView;
+
+interface InvalidEntry {
+  id: string;
+  invalid: ShadowDefinitionRegistry["invalid"][number];
+}
+
+/** Editable overlay fields with their labels, in manager menu order. */
+const EDIT_FIELDS = [
+  "name",
+  "body",
+  "enabled",
+  "hidden",
+  "priority",
+  "triggers",
+  "delivery",
+  "completionGate",
+  "model",
+  "thinking",
+  "timeoutSeconds",
+  "maxTurns",
+  "maxToolCalls",
+  "tools",
+  "requiredTools",
+  "parentModels",
+  "debug",
+  "triggerInstructions",
+  "outputSchema",
+] as const;
+type EditField = (typeof EDIT_FIELDS)[number];
+
+const FIELD_LABELS: Record<EditField, string> = {
+  name: "name",
+  body: "body",
+  enabled: "enabled",
+  hidden: "hidden",
+  priority: "priority",
+  triggers: "triggers",
+  delivery: "delivery",
+  completionGate: "completionGate",
+  model: "model",
+  thinking: "thinking",
+  timeoutSeconds: "timeoutSeconds",
+  maxTurns: "maxTurns",
+  maxToolCalls: "maxToolCalls",
+  tools: "tools",
+  requiredTools: "requiredTools",
+  parentModels: "parentModels",
+  debug: "debug",
+  triggerInstructions: "triggerInstructions",
+  outputSchema: "outputSchema",
+};
+
 export class ShadowManager implements Component, Focusable {
   private _focused = false;
   private index = 0;
-  private readonly entries: (EffectiveShadowDefinition | ShadowDefinitionSnapshotEntryInvalid)[];
+  private readonly entries: (EffectiveShadowDefinition | InvalidEntry)[];
+  private view: ManagerView = { kind: "browse" };
+  private history: ManagerView[] = [];
+  private flash?: { kind: "success" | "error"; text: string };
+  private finished = false;
 
   constructor(
-    private readonly data: ShadowManagerSnapshot,
+    private data: ShadowManagerSnapshot,
     private readonly tui: TUI,
     private readonly theme: any,
     private readonly keybindings: KeybindingsManager,
     private readonly done: () => void,
+    private readonly services?: ShadowManagerServices,
   ) {
     this.entries = [
       ...data.definitions,
@@ -79,13 +220,18 @@ export class ShadowManager implements Component, Focusable {
 
   set focused(value: boolean) {
     this._focused = value;
+    if (this.view.kind === "editor") this.view.editor.focused = value;
+  }
+
+  invalidate(): void {
+    // Stateless view: nothing caches between renders.
   }
 
   private count(): number {
     return this.entries.length;
   }
 
-  private selected(): EffectiveShadowDefinition | ShadowDefinitionSnapshotEntryInvalid | undefined {
+  private selected(): EffectiveShadowDefinition | InvalidEntry | undefined {
     return this.entries[this.index];
   }
 
@@ -95,23 +241,605 @@ export class ShadowManager implements Component, Focusable {
     this.index = (this.index + delta + count) % count;
     this.tui.requestRender();
   }
+
   private finish(): void {
+    if (this.finished) return;
+    this.finished = true;
     this.done();
   }
 
-  invalidate(): void {
-    // Stateless view: nothing caches between renders.
+  private push(view: ManagerView): void {
+    this.history.push(this.view);
+    this.view = view;
+    if (view.kind === "editor") view.editor.focused = this._focused;
+    this.flash = undefined;
+    this.tui.requestRender();
   }
 
-  handleInput(data: string): void {
-    if (this.keybindings.matches(data, "tui.select.down")) this.move(1);
-    else if (this.keybindings.matches(data, "tui.select.up")) this.move(-1);
-    else if (this.keybindings.matches(data, "tui.select.cancel")) this.finish();
-    else if (data === "q") this.finish();
+  private back(): void {
+    const previous = this.history.pop();
+    if (!previous) {
+      this.finish();
+      return;
+    }
+    this.view = previous;
+    if (previous.kind === "editor") previous.editor.focused = this._focused;
+    this.flash = undefined;
+    this.tui.requestRender();
   }
+
+  private errorFlash(text: string): void {
+    this.flash = { kind: "error", text };
+    this.tui.requestRender();
+  }
+
+  private openChoice(input: Omit<ChoiceView, "kind" | "index">): void {
+    this.push({ kind: "choice", index: 0, ...input });
+  }
+
+  private openEditor(input: {
+    eyebrow: string;
+    title: string;
+    description?: string;
+    initial?: string;
+    submitLabel: string;
+    validate?: (value: string) => string | undefined;
+    onSubmit(value: string): void;
+  }): void {
+    const editor = new Editor(this.tui, {
+      borderColor: (text) => this.theme.fg("border", text),
+      selectList: getSelectListTheme(),
+    }, { paddingX: 0, autocompleteMaxVisible: 0 });
+    editor.setText(input.initial ?? "");
+    const view: EditorView = {
+      kind: "editor",
+      eyebrow: input.eyebrow,
+      title: input.title,
+      description: input.description,
+      editor,
+      submitLabel: input.submitLabel,
+      validate: input.validate ?? (() => undefined),
+      onSubmit: input.onSubmit,
+    };
+    editor.onChange = () => {
+      view.error = undefined;
+      this.tui.requestRender();
+    };
+    editor.onSubmit = (value) => {
+      const error = view.validate(value);
+      if (error) {
+        view.error = error;
+        this.tui.requestRender();
+        return;
+      }
+      view.onSubmit(value);
+    };
+    this.push(view);
+  }
+
+  private openReview(input: Omit<ReviewView, "kind" | "scroll">): void {
+    this.push({ kind: "review", scroll: 0, ...input });
+  }
+
+  // ── Write flows ─────────────────────────────────────────────────────
+
+  /** Closes the manager, then routes the approval and the write outward. */
+  private async commit(
+    approval: ShadowApprovalRequest,
+    action: () => Promise<ShadowWriteOutcome>,
+  ): Promise<void> {
+    this.finish();
+    const approved = await this.services?.approve(approval);
+    if (approved === false) return;
+    await action();
+  }
+
+  private chooseScope(title: string, description: string, onSelect: (scope: WritableScope) => void): void {
+    const items: ChoiceItem[] = [
+      {
+        id: "project",
+        label: "Project",
+        detail: this.data.projectTrusted
+          ? "Write to the discovered .pi/shadow-minds directory"
+          : "unavailable — the project is not trusted",
+        onSelect: () => onSelect("project"),
+      },
+      {
+        id: "agent",
+        label: "Agent",
+        detail: "Write to the user-level Shadow directory",
+        onSelect: () => onSelect("agent"),
+      },
+    ];
+    if (!this.data.projectTrusted) items.shift();
+    this.openChoice({ eyebrow: "OVERLAYS / SCOPE", title, description, items });
+  }
+
+  /** Fields of the existing same-scope layer, or a minimal base overlay. */
+  private layerFields(definition: EffectiveShadowDefinition, scope: WritableScope): ShadowDefinitionFields {
+    const existing = definition.layers.find((layer) => layer.scope === scope);
+    if (existing) return structuredClone(existing.fields);
+    return { id: definition.id };
+  }
+
+  private reviewSave(
+    before: EffectiveShadowDefinition | undefined,
+    scope: WritableScope,
+    fields: ShadowDefinitionFields,
+  ): void {
+    if (!this.services) {
+      this.errorFlash("Overlay writes are unavailable in this session.");
+      return;
+    }
+    const preview = this.services.preview(scope, fields);
+    if (preview.errors.length > 0 || !preview.definition) {
+      this.errorFlash(preview.errors.join(" ") || "The effective definition would be invalid.");
+      return;
+    }
+    const previewDefinition = preview.definition;
+    const change = effectiveChange(before, previewDefinition);
+    const body = [
+      `Path: ${preview.filePath}`,
+      "",
+      "LAYER MARKDOWN",
+      clip(preview.content.trim(), MAX_REVIEW_CONTENT),
+      "",
+      "EFFECTIVE CHANGE",
+      ...change,
+    ];
+    this.openReview({
+      eyebrow: "OVERLAYS / REVIEW",
+      title: `Save ${fields.id} ${scope} overlay?`,
+      lines: body,
+      confirmLabel: "save overlay",
+      onConfirm: () => {
+        void this.commit(
+          {
+            title: `Save ${scope} Shadow overlay`,
+            lines: [
+              `Path: ${preview.filePath}`,
+              `Definition: ${previewDefinition.id}`,
+              ...change.slice(0, 6),
+            ],
+          },
+          async () => {
+            const snapshot = await this.services!.overlaySnapshot(scope, fields.id);
+            return this.services!.save(scope, fields, snapshot.fingerprint);
+          },
+        );
+      },
+    });
+  }
+
+  private setFieldValue(
+    definition: EffectiveShadowDefinition,
+    scope: WritableScope,
+    field: EditField,
+    fields: ShadowDefinitionFields,
+    value: unknown,
+  ): void {
+    if (value === undefined) delete (fields as unknown as Record<string, unknown>)[field];
+    else (fields as unknown as Record<string, unknown>)[field] = value;
+    this.reviewSave(definition, scope, fields);
+  }
+
+  private editFieldValue(
+    definition: EffectiveShadowDefinition,
+    scope: WritableScope,
+    field: EditField,
+    fields: ShadowDefinitionFields,
+  ): void {
+    const current = (fields as unknown as Record<string, unknown>)[field];
+    if (field === "delivery") {
+      this.openChoice({
+        eyebrow: "OVERLAYS / VALUE",
+        title: `Set ${field}`,
+        items: DELIVERIES.map((delivery) => ({
+          id: delivery,
+          label: delivery,
+          onSelect: () => this.setFieldValue(definition, scope, field, fields, delivery),
+        })),
+      });
+      return;
+    }
+    if (field === "thinking") {
+      this.openChoice({
+        eyebrow: "OVERLAYS / VALUE",
+        title: `Set ${field}`,
+        items: THINKING_LEVELS.map((level) => ({
+          id: level,
+          label: level,
+          onSelect: () => this.setFieldValue(definition, scope, field, fields, level),
+        })),
+      });
+      return;
+    }
+    if (field === "triggerInstructions") {
+      this.editTriggerInstruction(definition, scope, fields);
+      return;
+    }
+    if (field === "outputSchema") {
+      this.openChoice({
+        eyebrow: "OVERLAYS / VALUE",
+        title: "Set outputSchema",
+        description: "Schemas are replaced atomically; the manager offers inherit or the default summary schema.",
+        items: [
+          {
+            id: "inherit",
+            label: "Inherit lower layer",
+            detail: "Remove outputSchema from this overlay",
+            onSelect: () => this.setFieldValue(definition, scope, field, fields, undefined),
+          },
+          {
+            id: "default",
+            label: "Restore default summary schema",
+            detail: "Write an explicit null",
+            onSelect: () => this.setFieldValue(definition, scope, field, fields, null),
+          },
+        ],
+      });
+      return;
+    }
+    const isBoolean = ["enabled", "hidden", "completionGate", "debug"].includes(field);
+    if (isBoolean) {
+      this.openChoice({
+        eyebrow: "OVERLAYS / VALUE",
+        title: `Set ${field}`,
+        items: [true, false].map((value) => ({
+          id: String(value),
+          label: String(value),
+          onSelect: () => this.setFieldValue(definition, scope, field, fields, value),
+        })),
+      });
+      return;
+    }
+    const isArray = ["triggers", "tools", "requiredTools", "parentModels"].includes(field);
+    const initial = isArray
+      ? ((current as string[] | undefined) ?? (field === "triggers" ? definition.triggers : (definition as unknown as Record<string, unknown>)[field] as string[] | undefined) ?? []).join("\n")
+      : typeof current === "string"
+        ? current
+        : current === undefined || current === null
+          ? ""
+          : String(current);
+    this.openEditor({
+      eyebrow: "OVERLAYS / VALUE",
+      title: `Set ${field}`,
+      description: isArray
+        ? field === "triggers"
+          ? `One trigger per line. Allowed: ${SHADOW_TRIGGERS.join(", ")}.`
+          : "One entry per line. An empty value produces an empty list."
+        : field === "body"
+          ? "The responsibility prompt. Non-empty."
+          : "Empty inherits the lower layer.",
+      initial,
+      submitLabel: "review change",
+      validate: (value) => {
+        if (isArray) {
+          const entries = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+          if (field === "triggers" && entries.some((entry) => !SHADOW_TRIGGERS.includes(entry as ShadowTrigger))) {
+            return `Triggers must be among ${SHADOW_TRIGGERS.join(", ")}.`;
+          }
+          return undefined;
+        }
+        if (field === "priority" || field === "timeoutSeconds" || field === "maxTurns" || field === "maxToolCalls") {
+          if (value.trim() === "") return undefined;
+          if (!/^-?\d+$/.test(value.trim())) return "Enter an integer.";
+          return undefined;
+        }
+        if (field === "body" && value.trim() === "") return "The body must be non-empty.";
+        return undefined;
+      },
+      onSubmit: (value) => {
+        if (isArray) {
+          const entries = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+          this.setFieldValue(definition, scope, field, fields, entries);
+          return;
+        }
+        if (field === "priority" || field === "timeoutSeconds" || field === "maxTurns" || field === "maxToolCalls") {
+          this.setFieldValue(definition, scope, field, fields, value.trim() === "" ? undefined : Number.parseInt(value.trim(), 10));
+          return;
+        }
+        this.setFieldValue(definition, scope, field, fields, value.trim() === "" ? undefined : value.trim());
+      },
+    });
+  }
+
+  private editTriggerInstruction(
+    definition: EffectiveShadowDefinition,
+    scope: WritableScope,
+    fields: ShadowDefinitionFields,
+  ): void {
+    const map = { ...(fields.triggerInstructions ?? {}) };
+    this.openChoice({
+      eyebrow: "OVERLAYS / VALUE",
+      title: "triggerInstructions",
+      description: "Instructions merge per trigger key; an explicit null removes one key.",
+      items: SHADOW_TRIGGERS.map((trigger) => {
+        const value = map[trigger];
+        const inherited = definition.triggerInstructions[trigger];
+        return {
+          id: trigger,
+          label: trigger,
+          detail: value === null
+            ? "explicit null (removes the key)"
+            : typeof value === "string"
+              ? clip(value, 80)
+              : inherited
+                ? `inherited: ${clip(inherited, 60)}`
+                : "unset",
+          onSelect: () => {
+            this.openEditor({
+              eyebrow: "OVERLAYS / VALUE",
+              title: `triggerInstructions.${trigger}`,
+              description: "Empty inherits; the literal null removes the key for this trigger.",
+              initial: typeof value === "string" ? value : "",
+              submitLabel: "review change",
+              onSubmit: (edited) => {
+                const trimmed = edited.trim();
+                if (trimmed === "") delete map[trigger];
+                else if (trimmed === "null") map[trigger] = null;
+                else map[trigger] = trimmed;
+                if (Object.keys(map).length === 0) this.setFieldValue(definition, scope, "triggerInstructions", fields, undefined);
+                else this.setFieldValue(definition, scope, "triggerInstructions", fields, { ...map });
+              },
+            });
+          },
+        };
+      }),
+    });
+  }
+
+  private chooseFieldMode(
+    definition: EffectiveShadowDefinition,
+    scope: WritableScope,
+    field: EditField,
+  ): void {
+    const fields = this.layerFields(definition, scope);
+    this.openChoice({
+      eyebrow: "OVERLAYS / OVERLAY",
+      title: `${definition.id} · ${FIELD_LABELS[field]}`,
+      description: "Inherit omits the field from this overlay; set defines a value here.",
+      items: [
+        {
+          id: "inherit",
+          label: "Inherit lower layer",
+          detail: "Remove this field from the overlay",
+          onSelect: () => this.setFieldValue(definition, scope, field, fields, undefined),
+        },
+        {
+          id: "set",
+          label: "Set value",
+          detail: "Define a value in this overlay",
+          onSelect: () => this.editFieldValue(definition, scope, field, fields),
+        },
+      ],
+    });
+  }
+
+  private editDefinition(definition: EffectiveShadowDefinition): void {
+    this.chooseScope(`Edit ${definition.id}`, "Choose the overlay scope to edit.", (scope) => {
+      this.openChoice({
+        eyebrow: "OVERLAYS / FIELD",
+        title: `${definition.id} · ${scope}`,
+        description: "Choose one effective field to modify.",
+        items: EDIT_FIELDS.map((field) => ({
+          id: field,
+          label: FIELD_LABELS[field],
+          detail: `${displayFieldValue(definition, field)} · ${definition.fieldSources[field]?.scope ?? "default"}`,
+          onSelect: () => this.chooseFieldMode(definition, scope, field),
+        })),
+      });
+    });
+  }
+
+  private toggleField(definition: EffectiveShadowDefinition, field: "enabled" | "hidden"): void {
+    const next = !definition[field];
+    this.chooseScope(`${next ? "Enable" : "Disable"} ${definition.id}`, `The overlay sets ${field}: ${next}.`, (scope) => {
+      this.reviewSave(definition, scope, { ...this.layerFields(definition, scope), [field]: next });
+    });
+  }
+
+  private createDefinition(): void {
+    if (!this.services) {
+      this.errorFlash("Overlay writes are unavailable in this session.");
+      return;
+    }
+    this.chooseScope("Create Shadow definition", "New definitions default to disabled with no automatic triggers.", (scope) => {
+      this.openEditor({
+        eyebrow: "OVERLAYS / NEW",
+        title: "Definition id",
+        description: "Stable id; the overlay file is <id>.md. Letters, digits, dot, underscore, hyphen.",
+        initial: "",
+        submitLabel: "continue",
+        validate: (value) => {
+          const id = value.trim();
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) return "The id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}.";
+          return undefined;
+        },
+        onSubmit: (idValue) => {
+          const id = idValue.trim();
+          this.openEditor({
+            eyebrow: "OVERLAYS / NEW",
+            title: `${id} · name`,
+            description: "Human-readable role name. Empty uses the id.",
+            initial: "",
+            submitLabel: "continue",
+            onSubmit: (nameValue) => {
+              const name = nameValue.trim() || id;
+              this.openEditor({
+                eyebrow: "OVERLAYS / NEW",
+                title: `${id} · responsibility body`,
+                description: "The Markdown responsibility prompt.",
+                initial: "",
+                submitLabel: "review definition",
+                validate: (value) => (value.trim() ? undefined : "A non-empty body is required."),
+                onSubmit: (bodyValue) => {
+                  void (async () => {
+                    const snapshot = await this.services!.overlaySnapshot(scope, id);
+                    if (snapshot.fingerprint !== MISSING_OVERLAY_FINGERPRINT) {
+                      this.errorFlash(`An overlay for '${id}' already exists in the ${scope} scope; edit it instead.`);
+                      return;
+                    }
+                    this.reviewSave(undefined, scope, newShadowDefinitionDraft(id, name, bodyValue.trim()));
+                  })();
+                },
+              });
+            },
+          });
+        },
+      });
+    });
+  }
+
+  private deleteOverlay(): void {
+    const selected = this.selected();
+    if (!selected || !this.services) {
+      if (!this.services) this.errorFlash("Overlay writes are unavailable in this session.");
+      return;
+    }
+    const sources = "invalid" in selected
+      ? selected.invalid.sources
+      : selected.layers.filter((layer) => layer.scope === "agent" || layer.scope === "project").map((layer) => layer.filePath);
+    if (sources.length === 0) {
+      this.errorFlash("Package templates are read-only. Use hide to overlay instead.");
+      return;
+    }
+    this.openChoice({
+      eyebrow: "OVERLAYS / DELETE",
+      title: `Delete ${selected.id} overlay`,
+      description: "Only agent and project overlays can be deleted.",
+      items: sources.flatMap((filePath) => {
+        const scope = this.services!.scopeOf(filePath);
+        if (!scope) return [];
+        return [{
+          id: filePath,
+          label: `${scope} overlay`,
+          detail: filePath,
+          onSelect: () => {
+            const target = scope;
+            this.openReview({
+              eyebrow: "OVERLAYS / DELETE / REVIEW",
+              title: `Delete ${target} overlay?`,
+              lines: [
+                filePath,
+                "",
+                "invalid" in selected
+                  ? "The broken layer is removed; the ID can be restored by writing a valid overlay."
+                  : "The effective definition falls back to the remaining layers.",
+              ],
+              confirmLabel: "delete overlay",
+              destructive: true,
+              onConfirm: () => {
+                void this.commit(
+                  {
+                    title: `Delete ${target} Shadow overlay`,
+                    lines: [`Path: ${filePath}`, `Definition: ${selected.id}`],
+                    destructive: true,
+                  },
+                  async () => {
+                    const snapshot = await this.services!.overlaySnapshot(target, selected.id);
+                    return this.services!.deleteOverlay(target, selected.id, snapshot.fingerprint);
+                  },
+                );
+              },
+            });
+          },
+        }];
+      }),
+    });
+  }
+
+  private activate(): void {
+    const selected = this.selected();
+    if (!selected) return;
+    if ("invalid" in selected) {
+      this.deleteOverlay();
+      return;
+    }
+    this.openChoice({
+      eyebrow: "OVERLAYS / ACTIONS",
+      title: `${selected.id} · ${selected.name}`,
+      description: selected.layers.some((layer) => layer.scope !== "package")
+        ? undefined
+        : "Package templates are read-only; edits create overlays.",
+      items: [
+        {
+          id: "toggle-enabled",
+          label: selected.enabled ? "Disable" : "Enable",
+          detail: `enabled: ${selected.enabled}`,
+          onSelect: () => this.toggleField(selected, "enabled"),
+        },
+        {
+          id: "toggle-hidden",
+          label: selected.hidden ? "Unhide" : "Hide",
+          detail: `hidden: ${selected.hidden}`,
+          onSelect: () => this.toggleField(selected, "hidden"),
+        },
+        {
+          id: "edit",
+          label: "Edit fields",
+          detail: "Overlay one field at a time",
+          onSelect: () => this.editDefinition(selected),
+        },
+        {
+          id: "delete",
+          label: "Delete overlay",
+          detail: "Remove an agent or project layer",
+          onSelect: () => this.deleteOverlay(),
+        },
+      ],
+    });
+  }
+
+  // ── Input ────────────────────────────────────────────────────────────
+
+  handleInput(data: string): void {
+    if (this.finished) return;
+    if (this.view.kind === "editor") {
+      if (this.keybindings.matches(data, "tui.select.cancel")) this.back();
+      else this.view.editor.handleInput(data);
+      this.tui.requestRender();
+      return;
+    }
+    if (this.keybindings.matches(data, "tui.select.cancel")) {
+      this.back();
+      return;
+    }
+    if (this.view.kind === "choice") {
+      if (this.keybindings.matches(data, "tui.select.up")) {
+        this.view.index = (this.view.index - 1 + this.view.items.length) % this.view.items.length;
+      } else if (this.keybindings.matches(data, "tui.select.down")) {
+        this.view.index = (this.view.index + 1) % this.view.items.length;
+      } else if (this.keybindings.matches(data, "tui.select.confirm")) {
+        this.view.items[this.view.index]?.onSelect();
+      }
+      this.tui.requestRender();
+      return;
+    }
+    if (this.view.kind === "review") {
+      if (this.keybindings.matches(data, "tui.select.up")) {
+        this.view.scroll = Math.max(0, this.view.scroll - 1);
+      } else if (this.keybindings.matches(data, "tui.select.down")) {
+        this.view.scroll += 1;
+      } else if (this.keybindings.matches(data, "tui.select.confirm")) {
+        this.view.onConfirm();
+      }
+      this.tui.requestRender();
+      return;
+    }
+
+    if (this.keybindings.matches(data, "tui.select.up")) return this.move(-1);
+    if (this.keybindings.matches(data, "tui.select.down")) return this.move(1);
+    if (this.keybindings.matches(data, "tui.select.confirm")) return this.activate();
+    if (matchesKey(data, "n")) return this.createDefinition();
+    if (matchesKey(data, "q")) return this.finish();
+  }
+
+  // ── Rendering ────────────────────────────────────────────────────────
 
   render(terminalWidth: number): string[] {
     const width = Math.max(1, terminalWidth);
+    if (this.view.kind !== "browse") return this.renderSubView(this.view, width);
     const lines: string[] = [];
     const identity = `${this.theme.fg("accent", "●")} ${this.theme.fg("toolTitle", "Shadows")}`;
     if (this.data.config) {
@@ -161,12 +889,68 @@ export class ShadowManager implements Component, Focusable {
     }
 
     lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
+    if (this.flash) {
+      const color = this.flash.kind === "error" ? "error" : "success";
+      const marker = this.flash.kind === "error" ? "✗" : "✓";
+      lines.push(fit(`${this.theme.fg(color, marker)} ${this.theme.fg(color, this.flash.text)}`, width));
+    }
     lines.push(
       fit(
-        `${keyHint("tui.select.up", "↑/↓")} select · ${keyHint("tui.select.cancel", "esc")} close`,
+        `${keyHint("tui.select.up", "↑/↓")} select · ${keyHint("tui.select.confirm", "enter")} actions · n new · ${keyHint("tui.select.cancel", "esc")} close`,
         width,
       ),
     );
+    return lines;
+  }
+
+  private renderSubView(view: ChoiceView | EditorView | ReviewView, width: number): string[] {
+    const lines: string[] = [];
+    const eyebrow = view.eyebrow;
+    const identity = `${this.theme.fg("accent", "●")} ${this.theme.fg("toolTitle", "Shadows")}`;
+    lines.push(fit(`${identity}  ${this.theme.fg("dim", eyebrow)}`, width));
+    lines.push(fit(this.theme.bold(this.theme.fg("text", view.title)), width));
+    lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
+    if (view.kind === "choice") {
+      if (view.description) lines.push(fit(this.theme.fg("dim", view.description), width), "");
+      for (const [position, item] of view.items.entries()) {
+        const marker = position === view.index ? this.theme.fg("accent", "›") : " ";
+        const label = position === view.index ? this.theme.bold(item.label) : item.label;
+        const detail = item.detail ? this.theme.fg("dim", `  ${clip(item.detail, Math.max(10, width - 6))}`) : "";
+        lines.push(fit(`${marker} ${this.theme.fg("text", label)}${detail}`, width));
+      }
+      lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
+      if (this.flash) {
+        const flashColor = this.flash.kind === "error" ? "error" : "success";
+        const flashMarker = this.flash.kind === "error" ? "✗" : "✓";
+        lines.push(fit(`${this.theme.fg(flashColor, flashMarker)} ${this.theme.fg(flashColor, this.flash.text)}`, width));
+      }
+      lines.push(fit(this.theme.fg("dim", `${keyHint("tui.select.confirm", "choose")} · ${keyHint("tui.select.cancel", "back")}`), width));
+      return lines;
+    }
+    if (view.kind === "editor") {
+      if (view.description) lines.push(fit(this.theme.fg("dim", view.description), width));
+      lines.push(fit(`${this.theme.fg("muted", "INPUT")} ${this.theme.fg("borderMuted", "─".repeat(Math.max(0, width - 6)))}`, width));
+      for (const line of view.editor.render(width)) lines.push(fit(line, width));
+      if (view.error) lines.push(fit(this.theme.fg("error", view.error), width));
+      lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
+      if (this.flash) {
+        const flashColor = this.flash.kind === "error" ? "error" : "success";
+        const flashMarker = this.flash.kind === "error" ? "✗" : "✓";
+        lines.push(fit(`${this.theme.fg(flashColor, flashMarker)} ${this.theme.fg(flashColor, this.flash.text)}`, width));
+      }
+      lines.push(fit(this.theme.fg("dim", `${keyHint("tui.select.confirm", view.submitLabel)} · ${keyHint("tui.select.cancel", "back")}`), width));
+      return lines;
+    }
+    const wrapped = view.lines.flatMap((line) => line.split("\n").map((part) => fit(part, width)));
+    const color = view.destructive ? "warning" : "text";
+    for (const line of wrapped) lines.push(this.theme.fg(color, line));
+    lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
+      if (this.flash) {
+        const flashColor = this.flash.kind === "error" ? "error" : "success";
+        const flashMarker = this.flash.kind === "error" ? "✗" : "✓";
+        lines.push(fit(`${this.theme.fg(flashColor, flashMarker)} ${this.theme.fg(flashColor, this.flash.text)}`, width));
+      }
+    lines.push(fit(this.theme.fg("dim", `${keyHint("tui.select.confirm", view.confirmLabel)} · ${keyHint("tui.select.cancel", "back")}`), width));
     return lines;
   }
 
@@ -257,11 +1041,6 @@ export class ShadowManager implements Component, Focusable {
   }
 }
 
-interface ShadowDefinitionSnapshotEntryInvalid {
-  id: string;
-  invalid: ShadowDefinitionRegistry["invalid"][number];
-}
-
 function definitionLabel(definition: EffectiveShadowDefinition): string {
   return `${definition.name} (${definition.id})`;
 }
@@ -288,11 +1067,73 @@ function plainLength(line: string): number {
   return visibleWidth(line);
 }
 
+function displayFieldValue(definition: EffectiveShadowDefinition, field: EditField): string {
+  if (field === "triggerInstructions") {
+    const keys = Object.keys(definition.triggerInstructions);
+    return keys.length > 0 ? keys.join(",") : "(default)";
+  }
+  const value = (definition as unknown as Record<string, unknown>)[field];
+  if (value === undefined) return "(default)";
+  if (value === null) return "default schema";
+  if (Array.isArray(value)) return value.length === 0 ? "[]" : value.join(",");
+  if (typeof value === "string") return clip(value, 40);
+  return String(value);
+}
+
+/** One line per changed effective field between two merges. */
+function effectiveChange(
+  before: EffectiveShadowDefinition | undefined,
+  after: EffectiveShadowDefinition,
+): string[] {
+  const rows: string[] = [];
+  const keys = [
+    "name",
+    "enabled",
+    "hidden",
+    "priority",
+    "triggers",
+    "delivery",
+    "completionGate",
+    "model",
+    "thinking",
+    "timeoutSeconds",
+    "maxTurns",
+    "maxToolCalls",
+    "tools",
+    "requiredTools",
+    "parentModels",
+    "debug",
+  ] as const;
+  for (const key of keys) {
+    const previous = before ? (before as unknown as Record<string, unknown>)[key] : undefined;
+    const next = (after as unknown as Record<string, unknown>)[key];
+    const same = Array.isArray(previous) && Array.isArray(next)
+      ? previous.join(",") === next.join(",")
+      : JSON.stringify(previous) === JSON.stringify(next);
+    if (!same) {
+      rows.push(`${key}: ${shortValue(previous)} → ${shortValue(next)}`);
+    }
+  }
+  const previousBody = before ? clip(before.body, 60) : "(none)";
+  const nextBody = clip(after.body, 60);
+  if (previousBody !== nextBody) rows.push(`body: ${previousBody} → ${nextBody}`);
+  if (rows.length === 0) rows.push("no effective field changes");
+  return rows;
+}
+
+function shortValue(value: unknown): string {
+  if (value === undefined) return "(default)";
+  if (Array.isArray(value)) return value.length === 0 ? "[]" : value.join(",");
+  if (typeof value === "string") return clip(value, 40);
+  return String(value);
+}
+
 export async function openShadowManager(
   ctx: ExtensionCommandContext,
   data: ShadowManagerSnapshot,
+  services?: ShadowManagerServices,
 ): Promise<void> {
   await ctx.ui.custom<void>((tui, theme, keybindings, done) => (
-    new ShadowManager(data, tui, theme, keybindings, done)
+    new ShadowManager(data, tui, theme, keybindings, done, services)
   ), { overlay: false });
 }
