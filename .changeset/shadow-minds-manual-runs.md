@@ -1,0 +1,5 @@
+---
+"@odradekk/pi-square": minor
+---
+
+Shadow Minds manual trials: a definition with the explicit empty tool list (such as Session synthesizer) can now be run manually from the `/shadow` manager with an optional bounded one-time note. The trial runs as a fresh, non-resumable child session with the versioned Shadow SYSTEM (task-frozen parent core, trusted project rules, canonical working directory), a reference-only bounded parent trajectory, the canonical output schema, and the note, plus exactly one tool — `submit_shadow_result` with a fixed strict schema. Payloads are validated against the effective schema with field-level retry errors; a valid submission terminates the run and lands a validated result in the session inbox, which the manager can inspect, mark read, dismiss, or delete while runs show live state with cancellation. Timeout, turn, and tool-call budgets are enforced at the session event boundary, and operational outcomes never become cognitive payloads. Manual trials require the `shadowMinds.enabled` master switch and share its concurrency budget.

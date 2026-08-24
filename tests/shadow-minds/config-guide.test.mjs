@@ -434,16 +434,14 @@ function fakePi() {
 
     // Open the parent session so runtime notifications have a UI context.
     await harness.handlers.get("session_start")({}, ctx);
+    assert.equal(harness.handlers.has("before_agent_start"), false, "prompt composition keeps its single-owner contract");
 
-    // Freeze the task snapshot from before_agent_start, then drift the live
-    // options: the run must compose from the frozen authority.
-    await harness.handlers.get("before_agent_start")({
-      systemPromptOptions: {
-        customPrompt: "Frozen core policy.",
-        contextFiles: [{ path: "/repo/AGENTS.md", content: "Frozen project rule." }],
-      },
-    }, { cwd: project });
-    ctx.getSystemPromptOptions = () => ({ customPrompt: "Drifted policy." });
+    // A manual run freezes authority from the parent's current prompt options.
+    ctx.getSystemPromptOptions = () => ({
+      customPrompt: "Live core policy.",
+      appendSystemPrompt: "Prefer tables.",
+      contextFiles: [{ path: "/repo/AGENTS.md", content: "Live project rule." }],
+    });
 
     const refused = services.runtime.runManual({ shadowId: "missing-role" });
     assert.equal(refused.ok, false);
@@ -459,9 +457,9 @@ function fakePi() {
 
     assert.equal(created.length, 1);
     assert.ok(created[0].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
-    assert.ok(created[0].system.includes("Frozen core policy."), "the frozen parent core is used, not the drifted one");
-    assert.ok(created[0].system.includes("Frozen project rule."), "the frozen project rules are used");
-    assert.ok(!created[0].system.includes("Drifted policy."), "live drift never enters the run");
+    assert.ok(created[0].system.includes("Live core policy."), "the parent core is captured at run start");
+    assert.ok(created[0].system.includes("Prefer tables."), "append text joins the parent core");
+    assert.ok(created[0].system.includes("Live project rule."), "trusted project rules are captured at run start");
     assert.deepEqual(created[0].tools, ["submit_shadow_result"]);
     assert.equal(created[0].model.provider, "acme");
     assert.equal(created[0].model.id, "parent-model");
@@ -470,7 +468,7 @@ function fakePi() {
     assert.ok(ran[0].prompt.includes("Investigate the flaky parser test."), "the visible branch becomes the trajectory");
     assert.ok(ran[0].prompt.includes("I will inspect the tokenizer."), "assistant text is retained");
     assert.ok(ran[0].prompt.includes("Trial run."), "the manual note is embedded");
-    assert.ok(!ran[0].prompt.includes("Frozen core policy."), "SYSTEM material stays out of the USER prompt");
+    assert.ok(!ran[0].prompt.includes("Live core policy."), "SYSTEM material stays out of the USER prompt");
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     const snapshot = state.runtime.snapshot();

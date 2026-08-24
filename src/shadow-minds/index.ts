@@ -6,10 +6,10 @@
  * the `/shadow` manager with its safe overlay write services, and provides
  * the parameterized `/shadow <request>` Config Guide flow. The session
  * runtime executes manual no-tool trials through the shared one-time
- * child-session executor seam: it freezes the parent core, trusted project
- * rules, and canonical working directory once per parent task, and every
- * manual run composes the versioned Shadow SYSTEM and reference-only
- * trajectory from that snapshot. Manager approvals route through the
+ * child-session executor seam: every run freezes the parent core, trusted
+ * project rules, and canonical working directory from the parent's current
+ * prompt options at activation, and composes the versioned Shadow SYSTEM and
+ * reference-only trajectory from that snapshot. Manager approvals route through the
  * session FIFO confirmation coordinator; every persistent write executes
  * through the safe overlay writer. The runtime performs model calls only
  * for explicitly started manual trials while the master switch is on.
@@ -326,7 +326,6 @@ export default function registerShadowMinds(
   config?: () => PiSquareConfig,
   runtimeDeps?: ShadowRuntimeDeps,
 ): ShadowMindsState {
-  let taskSnapshot: ShadowTaskSnapshot | undefined;
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
@@ -337,15 +336,13 @@ export default function registerShadowMinds(
       ...(runtimeDeps ? { deps: runtimeDeps } : {}),
     }),
     captureTaskSnapshot(): ShadowTaskSnapshot {
-      if (taskSnapshot) return taskSnapshot;
       const options = (ctx as ExtensionCommandContext | undefined)?.getSystemPromptOptions?.();
       const parentCore = parentCoreFromOptions(options);
-      taskSnapshot = {
+      return {
         ...(parentCore ? { parentCore } : {}),
         projectRules: rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles),
         cwd: ctx?.cwd ?? state.cwd,
       };
-      return taskSnapshot;
     },
     refresh(cwd: string, projectTrusted: boolean): void {
       state.cwd = cwd;
@@ -383,22 +380,10 @@ export default function registerShadowMinds(
     },
   });
 
-  // Freeze the parent core, trusted project rules, and canonical working
-  // directory once per real user task; every manual run composes from this
-  // snapshot so a running loop never sees authority change mid-task.
-  pi.on("before_agent_start", async (event) => {
-    taskSnapshot = {
-      ...(parentCoreFromOptions(event?.systemPromptOptions) ? { parentCore: parentCoreFromOptions(event?.systemPromptOptions)! } : {}),
-      projectRules: rulesFromContextFiles((event?.systemPromptOptions as { contextFiles?: unknown } | undefined)?.contextFiles),
-      cwd: ctx?.cwd ?? state.cwd,
-    };
-  });
-
   // The shared session coordinator is reset by the extension entry on
   // session start and shutdown; a private default stays unreset here.
   pi.on("session_start", async (_event, sessionCtx) => {
     ctx = sessionCtx;
-    taskSnapshot = undefined;
     state.runtime.reset("Parent Pi session changed");
     state.refresh(sessionCtx.cwd, sessionCtx.isProjectTrusted());
     if (sessionCtx.hasUI && state.registry.diagnostics.length > 0) {
@@ -411,7 +396,6 @@ export default function registerShadowMinds(
 
   pi.on("session_shutdown", async () => {
     state.runtime.reset("Parent Pi session shutdown");
-    taskSnapshot = undefined;
     ctx = undefined;
   });
 
