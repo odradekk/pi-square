@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -20,11 +20,12 @@ const {
 
 let registerShadowMinds;
 let __testables;
-const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
 const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
   join(packageRoot, "src", "shadow-minds", "serialize.ts"),
 );
+const { DEFAULT_CONFIG, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
 const { MISSING_OVERLAY_FINGERPRINT } = await load(join(packageRoot, "src", "shadow-minds", "overlays.ts"));
 
 const PLAIN = /\x1b\[[0-9;]*m/g;
@@ -353,12 +354,13 @@ function fakePi() {
   }
 }
 
+const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
+
 // ── Manual-run service wiring (#155) ────────────────────────────────
 
 {
   const { DEFAULT_CONFIG: DEFAULT_CONFIG_TEMPLATE } = await load(join(packageRoot, "src", "core", "config.ts"));
   const { SHADOW_GOVERNANCE } = await load(join(packageRoot, "src", "shadow-minds", "prompt.ts"));
-  const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
   const { DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
 
   const dir = mkdtempSync(join(tmpdir(), "shadow-runtime-e2e-"));
@@ -492,6 +494,150 @@ function fakePi() {
       notifications.some((entry) => entry.message.includes("result in the /shadow inbox")),
       "a submitted run announces its inbox result",
     );
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+
+
+
+{
+  // A manager review may outlive its guarded command context. Activation must
+  // fail closed instead of throwing from Pi's stale-context getters.
+  const harness = fakePi();
+  const state = registerShadowMinds(harness.pi, undefined, () => ({
+    ...DEFAULT_CONFIG,
+    shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } },
+  }), {
+    now: () => 1,
+    async createSession() { throw new Error("must not create"); },
+    async runSession() { throw new Error("must not run"); },
+  });
+  const staleCtx = {
+    cwd: packageRoot,
+    hasUI: true,
+    ui: { notify() {}, confirm: async () => true, custom: async () => {} },
+    isProjectTrusted() { throw new Error("stale extension context"); },
+  };
+  const service = __testables.makeServices(state, staleCtx, new ConfirmationCoordinator());
+  const refused = service.runtime.runManual({ shadowId: "session-synthesizer" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.message, /no longer active/);
+}
+
+
+{
+  // Manager-reviewed definitions and limits cannot drift before activation.
+  let liveConfig = { ...DEFAULT_CONFIG, shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } } };
+  let created = 0;
+  const harness = fakePi();
+  const state = registerShadowMinds(harness.pi, undefined, () => liveConfig, {
+    now: () => 1,
+    async createSession() { created += 1; return { session: {} }; },
+    async runSession() { throw new Error("must not run"); },
+  });
+  const ctx = {
+    cwd: packageRoot,
+    hasUI: true,
+    ui: { notify() {}, confirm: async () => true, custom: async () => {} },
+    isProjectTrusted: () => true,
+    model: { provider: "p", id: "m" },
+    modelRegistry: { find: () => undefined },
+    sessionManager: { getBranch: () => [], getLeafId: () => undefined },
+    getSystemPromptOptions: () => ({ cwd: packageRoot }),
+  };
+  state.refresh(packageRoot, true);
+  const definition = state.registry.definitions.find((entry) => entry.id === "session-synthesizer");
+  const service = __testables.makeServices(state, ctx, new ConfirmationCoordinator());
+  liveConfig = {
+    ...liveConfig,
+    shadowMinds: {
+      ...liveConfig.shadowMinds,
+      defaults: { ...liveConfig.shadowMinds.defaults, runTimeoutSeconds: liveConfig.shadowMinds.defaults.runTimeoutSeconds + 1 },
+    },
+  };
+  const refused = service.runtime.runManual({
+    shadowId: definition.id,
+    definitionFingerprint: shadowDefinitionContextFingerprint(definition.layers),
+    timeoutSeconds: DEFAULT_CONFIG.shadowMinds.defaults.runTimeoutSeconds,
+    maxTurns: DEFAULT_CONFIG.shadowMinds.defaults.maxModelTurnsPerRun,
+    maxToolCalls: DEFAULT_CONFIG.shadowMinds.defaults.maxToolCallsPerRun,
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.message, /changed since review/);
+  assert.equal(created, 0);
+}
+
+// ── Manual authority uses canonical cwd, trust, and an explicit model ─
+
+{
+  const { DEFAULT_CONFIG: TEMPLATE, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+  const dir = mkdtempSync(join(tmpdir(), "shadow-authority-"));
+  const realProject = join(dir, "real-project");
+  const linkedProject = join(dir, "linked-project");
+  mkdirSync(realProject, { recursive: true });
+  symlinkSync(realProject, linkedProject, "dir");
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  mkdirSync(join(dir, "agent"), { recursive: true });
+  try {
+    const harness = fakePi();
+    const created = [];
+    const runtimeDeps = {
+      now: () => 1,
+      async createSession(input) {
+        created.push(input);
+        return { session: { customTools: input.customTools } };
+      },
+      async runSession() {
+        return {
+          status: "completed", prompted: true, timedOut: false, finalText: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          streamingCompleted: true, messages: [],
+        };
+      },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      runtimeDeps,
+    );
+    const baseCtx = {
+      cwd: linkedProject,
+      hasUI: true,
+      ui: { custom: async () => {}, notify() {}, confirm: async () => true },
+      modelRegistry: { find: () => undefined },
+      sessionManager: { getBranch: () => [], getLeafId: () => undefined },
+      getSystemPromptOptions: () => ({
+        customPrompt: "Parent core.",
+        contextFiles: [{ path: join(realProject, "AGENTS.md"), content: "PROJECT-SECRET-RULE" }],
+      }),
+    };
+
+    const untrustedCtx = { ...baseCtx, model: { provider: "p", id: "m" }, isProjectTrusted: () => false };
+    state.refresh(linkedProject, false);
+    const untrusted = __testables.makeServices(state, untrustedCtx, new ConfirmationCoordinator());
+    const started = untrusted.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(created[0].cwd, realpathSync(linkedProject), "the child cwd is canonicalized");
+    assert.doesNotMatch(created[0].system, /PROJECT-SECRET-RULE/, "untrusted project rules do not enter the Shadow SYSTEM");
+
+    const noModelCtx = { ...baseCtx, model: undefined, isProjectTrusted: () => true };
+    state.refresh(linkedProject, true);
+    const noModel = __testables.makeServices(state, noModelCtx, new ConfirmationCoordinator());
+    const refused = noModel.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(refused.ok, false);
+    assert.match(refused.message, /No parent model/);
+    assert.equal(created.length, 1, "no child is created when no parent model is selected");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;

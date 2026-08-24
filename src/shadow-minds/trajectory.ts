@@ -11,6 +11,7 @@
  * slice (#156) and will replace this serializer's internals.
  */
 
+import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { ShadowTrajectory } from "./prompt";
 
 export const SHADOW_TRAJECTORY_MAX_CHARS = 24_000;
@@ -41,13 +42,14 @@ function textParts(content: unknown): string[] {
 }
 
 function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+  const sanitized = sanitizeDisplayText(text);
+  return sanitized.length <= max ? sanitized : `${sanitized.slice(0, max - 1)}…`;
 }
 
 /** Renders one visible branch entry as trajectory lines, or none. */
 function renderEntry(entry: LooseEntry): { lines: string[]; clipped: boolean } {
   if (entry.type === "compaction") {
-    const raw = typeof entry.summary === "string" ? entry.summary.replace(/\s+/g, " ").trim() : "";
+    const raw = typeof entry.summary === "string" ? sanitizeDisplayLine(entry.summary).replace(/\s+/g, " ").trim() : "";
     if (!raw) return { lines: [], clipped: false };
     const clippedSummary = clip(raw, SHADOW_TRAJECTORY_MESSAGE_MAX_CHARS);
     return { lines: [`[summary] ${clippedSummary}`], clipped: clippedSummary !== raw };
@@ -59,8 +61,9 @@ function renderEntry(entry: LooseEntry): { lines: string[]; clipped: boolean } {
   // Pi 0.84.2 toolResult messages carry toolName and isError at the message
   // top level; the content is plain text/image parts and is never exposed.
   if (role === "toolResult") {
-    const toolName = entry.message.toolName;
-    if (typeof toolName !== "string") return { lines: [], clipped: false };
+    const rawToolName = entry.message.toolName;
+    if (typeof rawToolName !== "string") return { lines: [], clipped: false };
+    const toolName = sanitizeDisplayLine(rawToolName);
     return {
       lines: [`tool ${toolName} ${entry.message.isError ? "error" : "ok"}`],
       clipped: false,
@@ -73,7 +76,7 @@ function renderEntry(entry: LooseEntry): { lines: string[]; clipped: boolean } {
     const raw = Array.isArray(content) ? (content.filter((part) => part && typeof part === "object") as LoosePart[]) : [];
     for (const part of raw) {
       if (part.type === "toolCall" && typeof part.name === "string") {
-        lines.push(`[${role}] requests ${part.name}`);
+        lines.push(`[${role}] requests ${sanitizeDisplayLine(part.name)}`);
       }
     }
     const text = textParts(content).join("\n").trim();

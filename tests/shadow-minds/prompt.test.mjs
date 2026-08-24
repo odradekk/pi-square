@@ -9,6 +9,7 @@ const {
   SHADOW_GOVERNANCE,
   SHADOW_GOVERNANCE_VERSION,
   SHADOW_PROMPT_CONTRACT_VERSION,
+  SHADOW_AUTHORITY_MAX_CHARS,
   buildShadowSystem,
   buildShadowUserPrompt,
   canonicalSchemaJson,
@@ -86,6 +87,19 @@ function baseDefinition(overrides = {}) {
   assert.ok(lowered.includes("read-only"), "the governance states the read-only boundary");
 }
 
+
+{
+  const system = buildShadowSystem({
+    cwd: "/repo",
+    parentCore: "c".repeat(SHADOW_AUTHORITY_MAX_CHARS + 500),
+    projectRules: [{ path: "/repo/AGENTS.md", content: "r".repeat(10_000) }],
+  });
+  const authority = system.slice(SHADOW_GOVERNANCE.length);
+  assert.ok(authority.length <= SHADOW_AUTHORITY_MAX_CHARS + 100, "the authority suffix has an absolute local bound");
+  assert.ok(system.includes("…"), "authority truncation is visible");
+  assert.doesNotMatch(system, /r{100}/, "parent core has priority over later project rules");
+}
+
 // ── canonical schema JSON ──────────────────────────────────────────
 
 {
@@ -144,6 +158,26 @@ function baseDefinition(overrides = {}) {
     !user.includes("Check the answer against the repo."),
     "trigger-specific instructions are bound to automatic triggers and stay out of manual runs",
   );
+}
+
+
+
+{
+  const system = buildShadowSystem({
+    cwd: "/repo",
+    parentCore: "Authorization: Bearer SYSTEMSECRET",
+    projectRules: [{ path: "/repo/api_key=PATHSECRET/AGENTS.md", content: "password=RULESECRET" }],
+  });
+  assert.doesNotMatch(system, /SYSTEMSECRET|PATHSECRET|RULESECRET/);
+  assert.match(system, /\[REDACTED\]/);
+  const user = buildShadowUserPrompt({
+    trajectory: { text: "[user] safe", includedMessages: 1, totalMessages: 1, truncated: false },
+    definition: baseDefinition({ body: "api_key=BODYSECRET" }),
+    schema: DEFAULT_OUTPUT_SCHEMA,
+    note: "Bearer NOTESECRET",
+  });
+  assert.doesNotMatch(user, /BODYSECRET|NOTESECRET/);
+  assert.match(user, /\[REDACTED\]/);
 }
 
 console.log("shadow-minds prompt tests: OK");

@@ -11,21 +11,26 @@
  * recoverable persistent inbox arrives with #157.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ChildSessionUsage } from "../subagents/child-session-executor";
-import { validateShadowPayload, type ShadowOutputSchema } from "./parser";
+import { SHADOW_PAYLOAD_MAX_CHARS, validateShadowPayload, type ShadowOutputSchema } from "./parser";
 
 export const SUBMIT_SHADOW_RESULT_TOOL = "submit_shadow_result";
 
 const SubmitParams = Type.Object({
   payload: Type.String({
+    maxLength: SHADOW_PAYLOAD_MAX_CHARS,
     description: "The Shadow result as a JSON string matching the output schema shown in the user message.",
   }),
 }, { additionalProperties: false });
 
 export interface SubmitShadowResultHandlers {
   schema: ShadowOutputSchema;
+  /** Refuses an invocation before parsing or accepting its payload. */
+  beforeExecute?: () => string | undefined;
   /** Called exactly once per run with the parsed, schema-valid payload. */
   onAccepted(payload: unknown): void;
 }
@@ -37,20 +42,45 @@ export interface SubmitShadowResultHandlers {
  * at the tool-batch boundary through the native `terminate` hint.
  */
 export function createSubmitShadowResultTool(handlers: SubmitShadowResultHandlers): ToolDefinition<typeof SubmitParams, { status: string }> {
+  let accepted = false;
   return {
     name: SUBMIT_SHADOW_RESULT_TOOL,
     label: "Submit Shadow result",
     description: "Submit the final Shadow result. The payload must be a JSON string matching the output schema. A valid submission completes the run; an invalid one returns the exact fields to fix.",
+    executionMode: "sequential",
     parameters: SubmitParams,
     async execute(_toolCallId, params) {
+      if (accepted) {
+        return {
+          content: [{ type: "text" as const, text: "A Shadow result was already accepted for this run." }],
+          details: { status: "already_accepted" },
+          isError: true,
+          terminate: true,
+        };
+      }
+      const refusal = handlers.beforeExecute?.();
+      if (refusal) {
+        return {
+          content: [{ type: "text" as const, text: refusal }],
+          details: { status: "budget_exceeded" },
+          isError: true,
+        };
+      }
+      if (params.payload.length > SHADOW_PAYLOAD_MAX_CHARS) {
+        return {
+          content: [{ type: "text" as const, text: `The payload exceeds ${SHADOW_PAYLOAD_MAX_CHARS.toLocaleString("en-US")} characters. Shorten it and submit again.` }],
+          details: { status: "payload_too_large" },
+          isError: true,
+        };
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(params.payload);
-      } catch (error) {
+      } catch {
         return {
           content: [{
             type: "text" as const,
-            text: `The payload is not valid JSON (${error instanceof Error ? error.message : String(error)}). Fix the payload string and submit again.`,
+            text: "The payload is not valid JSON. Fix the payload string and submit again.",
           }],
           details: { status: "invalid_json" },
           isError: true,
@@ -72,6 +102,7 @@ export function createSubmitShadowResultTool(handlers: SubmitShadowResultHandler
         };
       }
 
+      accepted = true;
       handlers.onAccepted(parsed);
       return {
         content: [{ type: "text" as const, text: "Shadow result accepted. This run is complete." }],
@@ -83,6 +114,21 @@ export function createSubmitShadowResultTool(handlers: SubmitShadowResultHandler
 }
 
 export const SHADOW_RESULT_SUMMARY_MAX_CHARS = 300;
+
+export function canonicalPayloadJson(payload: unknown, spacing?: number): string {
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(
+        Object.keys(value as Record<string, unknown>)
+          .sort()
+          .map((key) => [key, canonicalize((value as Record<string, unknown>)[key])]),
+      );
+    }
+    return value;
+  };
+  return JSON.stringify(canonicalize(payload), null, spacing) ?? "";
+}
 
 /**
  * Deterministic one-line summary: the first top-level string among
@@ -102,12 +148,12 @@ export function summarizeShadowResult(payload: unknown): string {
   }
   const source = preferred ?? (() => {
     try {
-      return JSON.stringify(payload) ?? "";
+      return canonicalPayloadJson(payload);
     } catch {
       return "[unserializable payload]";
     }
   })();
-  const normalized = source.replace(/\s+/g, " ").trim();
+  const normalized = sanitizeDisplayLine(source).replace(/\s+/g, " ").trim();
   return normalized.length <= SHADOW_RESULT_SUMMARY_MAX_CHARS
     ? normalized
     : `${normalized.slice(0, SHADOW_RESULT_SUMMARY_MAX_CHARS - 1)}…`;
@@ -150,6 +196,7 @@ export interface ShadowInbox {
   markRead(id: string): boolean;
   dismiss(id: string): boolean;
   delete(id: string): boolean;
+  clear(): void;
 }
 
 /**
@@ -159,9 +206,13 @@ export interface ShadowInbox {
  * persistent retention order (#157).
  */
 export function createShadowInbox(options?: { maxResults?: number; makeId?: () => string }): ShadowInbox {
-  const maxResults = Math.max(1, options?.maxResults ?? SHADOW_INBOX_DEFAULT_MAX_RESULTS);
-  const makeId = options?.makeId ?? (() => `shr-${Math.random().toString(36).slice(2, 10)}`);
+  const maxResults = Math.min(
+    SHADOW_INBOX_DEFAULT_MAX_RESULTS,
+    Math.max(1, Math.trunc(options?.maxResults ?? SHADOW_INBOX_DEFAULT_MAX_RESULTS)),
+  );
+  const makeId = options?.makeId ?? (() => `shr-${randomUUID()}`);
   const entries: ShadowResultEntity[] = [];
+  const clone = <T>(value: T): T => structuredClone(value);
 
   const evictIfNeeded = () => {
     while (entries.length > maxResults) {
@@ -182,7 +233,7 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
         shadowName: input.shadowName,
         trigger: "manual",
         ...(input.note?.trim() ? { note: input.note.trim() } : {}),
-        payload: input.payload,
+        payload: clone(input.payload),
         summary: summarizeShadowResult(input.payload),
         delivery: "notified",
         attention: "unread",
@@ -195,7 +246,7 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
       return entity;
     },
     list() {
-      return entries.map((entry) => ({ ...entry }));
+      return entries.map((entry) => clone(entry));
     },
     markRead(id) {
       const entry = entries.find((item) => item.id === id);
@@ -214,6 +265,9 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
       if (index === -1) return false;
       entries.splice(index, 1);
       return true;
+    },
+    clear() {
+      entries.length = 0;
     },
   };
 }

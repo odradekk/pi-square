@@ -12,6 +12,7 @@
  * a result, and a run without one is silent.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   createExtensionRuntime,
   DefaultResourceLoader,
@@ -29,6 +30,7 @@ import {
   type OneTimeChildSessionOutcome,
   type OneTimeChildSessionRunInput,
 } from "../subagents/child-session-executor";
+import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
 import { buildShadowUserPrompt, type ShadowTrajectory } from "./prompt";
 import {
@@ -106,6 +108,8 @@ export interface ShadowChildSessionInput {
 
 export interface ShadowRuntimeDeps {
   now(): number;
+  makeRunId?(): string;
+  makeResultId?(): string;
   createSession(input: ShadowChildSessionInput): Promise<OneTimeChildSessionHandle>;
   runSession(input: OneTimeChildSessionRunInput): Promise<OneTimeChildSessionOutcome>;
 }
@@ -159,6 +163,8 @@ function shadowChildSettings() {
 export function createShadowRuntimeDeps(): ShadowRuntimeDeps {
   return {
     now: () => Date.now(),
+    makeRunId: () => `run-${randomUUID()}`,
+    makeResultId: () => `shr-${randomUUID()}`,
     async createSession(input) {
       return await createOneTimeChildSession({
         cwd: input.cwd,
@@ -179,7 +185,7 @@ export function createShadowRuntimeDeps(): ShadowRuntimeDeps {
 
 interface ActiveRun {
   view: ShadowRunView;
-  cancel(): void;
+  cancel(force?: boolean): void;
   /** Set when the session scope ended before the run settled. */
   detached?: boolean;
 }
@@ -189,7 +195,7 @@ export type ManualRunStart =
   | { started: true; runId: string; done: Promise<ShadowRunView> };
 
 function boundedMessage(value: unknown): string {
-  const text = value instanceof Error ? value.message : String(value ?? "");
+  const text = sanitizeDisplayLine(value instanceof Error ? value.message : String(value ?? ""));
   return text.length <= RUN_MESSAGE_MAX_CHARS ? text : `${text.slice(0, RUN_MESSAGE_MAX_CHARS - 1)}…`;
 }
 
@@ -204,7 +210,12 @@ export function createShadowRuntime(input: {
   deps?: ShadowRuntimeDeps;
 }) {
   const deps = input.deps ?? createShadowRuntimeDeps();
-  const inbox = createShadowInbox();
+  let runSequence = 0;
+  let resultSequence = 0;
+  const inbox = createShadowInbox({
+    makeId: deps.makeResultId ?? (() => `shr-${(++resultSequence).toString(36)}`),
+  });
+  let sessionEpoch = 0;
   const active: ActiveRun[] = [];
   const history: ShadowRunView[] = [];
   const subscribers = new Set<() => void>();
@@ -220,14 +231,15 @@ export function createShadowRuntime(input: {
   };
 
   function startManualRun(request: ShadowManualRunRequest): ManualRunStart {
-    const effective = input.config();
+    const effective = structuredClone(input.config());
+    const runEpoch = sessionEpoch;
     if (!effective.enabled) {
       return {
         started: false,
         reason: "Shadow Minds is disabled by the master switch (agent config shadowMinds.enabled).",
       };
     }
-    const note = request.note?.trim();
+    const note = sanitizeDisplayText(request.note).trim();
     if (note && note.length > SHADOW_MANUAL_NOTE_MAX_CHARS) {
       return {
         started: false,
@@ -244,60 +256,81 @@ export function createShadowRuntime(input: {
       };
     }
 
-    const { definition } = request;
+    const { definition: requestDefinition } = request;
+    const definition = structuredClone(requestDefinition);
+    const startedAt = deps.now();
     const view: ShadowRunView = {
-      id: `run-${deps.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      id: deps.makeRunId?.() ?? `run-${(++runSequence).toString(36)}`,
       shadowId: definition.id,
       shadowName: definition.name,
       trigger: "manual",
       phase: "running",
-      startedAt: deps.now(),
+      startedAt,
       ...(note ? { note } : {}),
       ...(request.modelResolution?.label ? { model: request.modelResolution.label } : {}),
     };
 
-    let abortReason: "cancelled" | "max_turns" | "max_tool_calls" | undefined;
+    let abortReason: "cancelled" | "timeout" | "max_turns" | "max_tool_calls" | undefined;
     let submitted: { payload: unknown; at: number } | undefined;
     const controller = new AbortController();
     const usage = createChildSessionUsage();
+    const forceAbort = (reason: "cancelled" | "timeout" | "max_turns" | "max_tool_calls") => {
+      abortReason ??= reason;
+      controller.abort();
+    };
     const run: ActiveRun = {
       view,
-      cancel() {
-        if (abortReason || submitted) return;
-        abortReason = "cancelled";
-        controller.abort();
+      cancel(force = false) {
+        if (submitted && !force) return;
+        forceAbort("cancelled");
       },
     };
     active.push(run);
     notify();
 
     const done = (async (): Promise<ShadowRunView> => {
-      const defaults = input.config().defaults;
+      const defaults = effective.defaults;
       const timeoutMs = (definition.timeoutSeconds ?? defaults.runTimeoutSeconds) * 1000;
       const maxTurns = definition.maxTurns ?? defaults.maxModelTurnsPerRun;
       const maxToolCalls = definition.maxToolCalls ?? defaults.maxToolCallsPerRun;
+      const deadlineAt = startedAt + timeoutMs;
       let toolCalls = 0;
 
       const tool = createSubmitShadowResultTool({
         schema: definition.outputSchema,
+        beforeExecute() {
+          if (runEpoch !== sessionEpoch || run.detached || controller.signal.aborted) {
+            return "This Shadow run is no longer active; the result was not accepted.";
+          }
+          if (deps.now() >= deadlineAt) {
+            forceAbort("timeout");
+            return "The Shadow run deadline has passed; this submission was not accepted.";
+          }
+          if (toolCalls > maxToolCalls) {
+            forceAbort("max_tool_calls");
+            return `The Shadow tool-call budget of ${maxToolCalls} has been exhausted; this submission was not accepted.`;
+          }
+          return undefined;
+        },
         onAccepted(payload) {
-          submitted ??= { payload, at: deps.now() };
+          if (runEpoch === sessionEpoch && !run.detached && !controller.signal.aborted) {
+            submitted ??= { payload, at: deps.now() };
+            controller.abort();
+          }
         },
       });
 
       const onEvent = (event: any) => {
-        if (event?.type === "message_start" && event.message?.role === "assistant") {
+        if (event?.type === "turn_start") {
           if (!submitted && !abortReason && usage.turns >= maxTurns) {
-            abortReason = "max_turns";
-            controller.abort();
+            forceAbort("max_turns");
           }
           return;
         }
         if (event?.type === "tool_execution_start") {
           toolCalls += 1;
           if (!submitted && !abortReason && toolCalls > maxToolCalls) {
-            abortReason = "max_tool_calls";
-            controller.abort();
+            forceAbort("max_tool_calls");
           }
         }
       };
@@ -311,7 +344,7 @@ export function createShadowRuntime(input: {
 
       let outcome: OneTimeChildSessionOutcome;
       try {
-        const created = await deps.createSession({
+        const creation = deps.createSession({
           cwd: request.cwd,
           system: request.system,
           model: request.modelResolution?.model,
@@ -319,11 +352,35 @@ export function createShadowRuntime(input: {
           tools: [SUBMIT_SHADOW_RESULT_TOOL],
           customTools: [tool],
         });
+        let creationTimer: NodeJS.Timeout | undefined;
+        let onCreationAbort: (() => void) | undefined;
+        const creationStop = new Promise<never>((_resolve, reject) => {
+          const stop = (message: string) => reject(new Error(message));
+          onCreationAbort = () => stop("Shadow child session creation aborted");
+          controller.signal.addEventListener("abort", onCreationAbort, { once: true });
+          creationTimer = setTimeout(() => {
+            forceAbort("timeout");
+            stop("Shadow child session creation timed out");
+          }, timeoutMs);
+          creationTimer.unref?.();
+        });
+        let created: OneTimeChildSessionHandle;
+        try {
+          created = await Promise.race([creation, creationStop]);
+        } catch (error) {
+          void creation.then((late) => late.session?.dispose?.()).catch(() => {});
+          throw error;
+        } finally {
+          if (creationTimer) clearTimeout(creationTimer);
+          if (onCreationAbort) controller.signal.removeEventListener("abort", onCreationAbort);
+        }
+        const remainingTimeoutMs = deadlineAt - deps.now();
+        if (remainingTimeoutMs <= 0) forceAbort("timeout");
         outcome = await deps.runSession({
           session: created.session,
           prompt,
           signal: controller.signal,
-          timeoutMs,
+          timeoutMs: Math.max(1, remainingTimeoutMs),
           onEvent,
           usage,
         });
@@ -342,10 +399,12 @@ export function createShadowRuntime(input: {
 
       let phase: ShadowRunPhase;
       let message: string | undefined;
-      if (submitted) {
-        phase = "submitted";
+      if (runEpoch !== sessionEpoch || run.detached) {
+        phase = "cancelled";
       } else if (abortReason) {
         phase = abortReason;
+      } else if (submitted) {
+        phase = "submitted";
       } else if (outcome.status === "timeout") {
         phase = "timeout";
       } else if (outcome.status === "error" || outcome.terminalAssistantError) {
@@ -356,7 +415,7 @@ export function createShadowRuntime(input: {
       }
 
       let resultId: string | undefined;
-      if (submitted) {
+      if (phase === "submitted" && submitted && runEpoch === sessionEpoch && !run.detached) {
         const entity = inbox.add({
           shadowId: definition.id,
           shadowName: definition.name,
@@ -376,7 +435,8 @@ export function createShadowRuntime(input: {
       if (message) view.message = message;
       if (resultId) view.resultId = resultId;
 
-      active.splice(active.indexOf(run), 1);
+      const activeIndex = active.indexOf(run);
+      if (activeIndex >= 0) active.splice(activeIndex, 1);
       if (!run.detached) {
         history.unshift({ ...view });
         if (history.length > RUN_HISTORY_MAX) history.length = RUN_HISTORY_MAX;
@@ -397,7 +457,7 @@ export function createShadowRuntime(input: {
 
   function snapshot(): ShadowRuntimeSnapshot {
     return {
-      runs: [...active.map((run) => ({ ...run.view })), ...history.map((run) => ({ ...run }))],
+      runs: [...active.map((run) => structuredClone(run.view)), ...history.map((run) => structuredClone(run))],
       results: inbox.list(),
     };
   }
@@ -427,11 +487,16 @@ export function createShadowRuntime(input: {
     },
     /** Aborts every active run and clears session-scoped state. */
     reset(_reason: string) {
-      for (const run of active) {
+      sessionEpoch += 1;
+      runSequence = 0;
+      resultSequence = 0;
+      const staleRuns = active.splice(0);
+      for (const run of staleRuns) {
         run.detached = true;
-        run.cancel();
+        run.cancel(true);
       }
       history.length = 0;
+      inbox.clear();
       notify();
     },
   };

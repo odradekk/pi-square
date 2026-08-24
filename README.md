@@ -206,10 +206,15 @@ What works today:
   effective schema with field-level retry errors, a valid submission
   terminates the run, and the validated result lands in the session inbox.
   The manager shows running state, supports cancellation, and lets you
-  inspect, mark read, dismiss, or delete results. Timeout, model-turn, and
-  tool-call budgets are enforced at the session event boundary; timeouts,
-  cancellations, bounded outcomes, and model or auth failures are observable
-  lifecycle data and never become results. Manual trials require the
+  inspect, mark read, dismiss, or delete results. The runtime freezes its
+  configuration and definition at start; timeout is enforced by a fixed
+  deadline and the child executor, model turns at the pre-model `turn_start` boundary,
+  and tool calls at Pi’s pre-validation `tool_execution_start` boundary, with a second check before payload acceptance. Session
+  replacement clears the in-memory inbox and rejects late submissions from the
+  old child. Trajectory, prompt authority, notes, errors, and summaries remove
+  terminal controls and redact common credential forms. Timeouts, cancellations,
+  bounded outcomes, and model or auth failures are observable lifecycle data and
+  never become results. Manual trials require the
   `shadowMinds.enabled` master switch and share its concurrency budget.
 - A strict `shadowMinds` section in agent and project pi-square configuration:
   the agent-level `enabled` master switch (a project can never re-enable it)

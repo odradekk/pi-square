@@ -44,9 +44,9 @@ function definition(overrides = {}) {
 
 function config(overrides = {}) {
   return {
-    enabled: true,
-    defaults: { ...DEFAULT_SHADOW_MINDS, ...overrides.defaults },
     ...overrides,
+    enabled: overrides.enabled ?? true,
+    defaults: { ...DEFAULT_SHADOW_MINDS, ...(overrides.defaults ?? {}) },
   };
 }
 
@@ -203,8 +203,10 @@ function baseRequest(overrides = {}) {
       const tool = input.session.customTools[0];
       const rejected = await tool.execute("c1", { payload: JSON.stringify({ summary: 7 }) }, undefined, undefined, {});
       assert.equal(rejected.isError, true);
-      await tool.execute("c2", { payload: JSON.stringify({ summary: "Corrected." }) }, undefined, undefined, {});
-      return { ...COMPLETED_NO_SUBMISSION, usage: { ...COMPLETED_NO_SUBMISSION.usage, turns: 2 } };
+      const accepted = await tool.execute("c2", { payload: JSON.stringify({ summary: "Corrected." }) }, undefined, undefined, {});
+      assert.equal(accepted.terminate, true);
+      assert.equal(input.signal.aborted, true, "a valid submission stops the child even when its tool batch also contained a rejection");
+      return { ...COMPLETED_NO_SUBMISSION, status: "aborted", usage: { ...COMPLETED_NO_SUBMISSION.usage, turns: 2 } };
     },
   });
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
@@ -258,7 +260,7 @@ function baseRequest(overrides = {}) {
   const fake = makeFake({
     script: async (input) => {
       input.usage.turns = DEFAULT_SHADOW_MINDS.maxModelTurnsPerRun;
-      input.onEvent?.({ type: "message_start", message: { role: "assistant" } });
+      input.onEvent?.({ type: "turn_start" });
       assert.equal(input.signal.aborted, true, "the over-budget turn aborts the session");
       return { ...COMPLETED_NO_SUBMISSION, status: "aborted" };
     },
@@ -269,12 +271,26 @@ function baseRequest(overrides = {}) {
 }
 
 {
-  // max tool calls: the call over the budget aborts before executing.
+  // max tool calls: the call over the budget is refused by the real tool
+  // wrapper before a valid payload can be accepted.
   const fake = makeFake({
     script: async (input) => {
-      for (let index = 0; index < DEFAULT_SHADOW_MINDS.maxToolCallsPerRun + 1; index += 1) {
+      const tool = input.session.customTools[0];
+      for (let index = 0; index < DEFAULT_SHADOW_MINDS.maxToolCallsPerRun; index += 1) {
         input.onEvent?.({ type: "tool_execution_start", toolCallId: `c${index}`, toolName: SUBMIT_SHADOW_RESULT_TOOL });
+        const rejected = await tool.execute(`c${index}`, { payload: "not-json" }, undefined, undefined, {});
+        assert.equal(rejected.isError, true);
       }
+      input.onEvent?.({ type: "tool_execution_start", toolCallId: "over-budget", toolName: SUBMIT_SHADOW_RESULT_TOOL });
+      const overBudget = await tool.execute(
+        "over-budget",
+        { payload: JSON.stringify({ summary: "must not be accepted" }) },
+        undefined,
+        undefined,
+        {},
+      );
+      assert.equal(overBudget.isError, true);
+      assert.equal(overBudget.details.status, "budget_exceeded");
       assert.equal(input.signal.aborted, true);
       return { ...COMPLETED_NO_SUBMISSION, status: "aborted" };
     },
@@ -282,6 +298,7 @@ function baseRequest(overrides = {}) {
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
   const terminal = await runtime.startManualRun(baseRequest()).done;
   assert.equal(terminal.phase, "max_tool_calls");
+  assert.equal(runtime.snapshot().results.length, 0, "the over-budget valid submission creates no result");
 }
 
 {
@@ -329,6 +346,174 @@ function baseRequest(overrides = {}) {
   assert.equal(runtime.deleteResult(deleted), true);
   assert.equal(runtime.snapshot().results.some((entry) => entry.id === deleted), false);
   assert.equal(runtime.markResultRead("missing"), false);
+  const external = runtime.snapshot();
+  external.runs[0].phase = "error";
+  if (external.runs[0].usage) external.runs[0].usage.turns = 999;
+  assert.notEqual(runtime.snapshot().runs[0].phase, "error", "run snapshots cannot mutate internal history");
+  assert.notEqual(runtime.snapshot().runs[0].usage?.turns, 999);
+}
+
+
+
+
+{
+  // Session creation time is part of the frozen run deadline. If creation
+  // consumes it, the child executor receives an already-aborted signal and
+  // must not prompt the model.
+  const fake = makeFake();
+  const originalCreate = fake.deps.createSession;
+  fake.deps.createSession = async (input) => {
+    fake.advance(31_000);
+    return await originalCreate(input);
+  };
+  fake.deps.runSession = async (input) => {
+    assert.equal(input.signal.aborted, true);
+    assert.equal(input.timeoutMs, 1);
+    return { ...COMPLETED_NO_SUBMISSION, status: "aborted", prompted: false };
+  };
+  const runtime = createShadowRuntime({ config: () => config({ defaults: { runTimeoutSeconds: 30 } }), deps: fake.deps });
+  const terminal = await runtime.startManualRun(baseRequest()).done;
+  assert.equal(terminal.phase, "timeout");
+}
+
+
+{
+  // Cancellation also preempts a hanging child-session creation and disposes
+  // a handle that resolves after the run already settled.
+  let releaseCreation;
+  let disposed = 0;
+  const fake = makeFake();
+  fake.deps.createSession = async () => await new Promise((resolve) => { releaseCreation = resolve; });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const started = runtime.startManualRun(baseRequest());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(runtime.cancelRun(started.runId).ok, true);
+  const terminal = await started.done;
+  assert.equal(terminal.phase, "cancelled");
+  releaseCreation({ session: { dispose() { disposed += 1; } } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(disposed, 1, "the late-created session is disposed exactly once");
+}
+
+// ── Deadline and teardown precedence ────────────────────────────────
+
+{
+  // A valid submission arriving after the frozen deadline is rejected even
+  // before the executor's timer callback gets a chance to run.
+  const fake = makeFake({
+    script: async (input) => {
+      fake.advance(31_000);
+      const tool = input.session.customTools[0];
+      const late = await tool.execute("late", { payload: JSON.stringify({ summary: "late" }) }, undefined, undefined, {});
+      assert.equal(late.isError, true);
+      assert.equal(late.details.status, "budget_exceeded");
+      return { ...COMPLETED_NO_SUBMISSION, status: "aborted" };
+    },
+  });
+  const runtime = createShadowRuntime({ config: () => config({ defaults: { runTimeoutSeconds: 30 } }), deps: fake.deps });
+  const terminal = await runtime.startManualRun(baseRequest()).done;
+  assert.equal(terminal.phase, "timeout");
+  assert.equal(runtime.snapshot().results.length, 0);
+}
+
+{
+  // Session teardown force-aborts even after the result tool accepted a
+  // payload, so a previous-session result cannot land after reset.
+  let release;
+  let accepted;
+  const fake = makeFake({
+    script: async (input) => {
+      const tool = input.session.customTools[0];
+      accepted = await tool.execute("accepted", { payload: JSON.stringify({ summary: "old" }) }, undefined, undefined, {});
+      return await new Promise((resolve) => { release = resolve; });
+    },
+  });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const started = runtime.startManualRun(baseRequest());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(accepted.terminate, true);
+  runtime.reset("new session");
+  release({ ...COMPLETED_NO_SUBMISSION, status: "aborted" });
+  const terminal = await started.done;
+  assert.equal(terminal.phase, "cancelled");
+  assert.equal(runtime.snapshot().results.length, 0);
+}
+
+// ── Session isolation and frozen authorization ─────────────────────
+
+{
+  // Existing inbox state is session-scoped and cleared on reset.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "old session" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  assert.equal(runtime.snapshot().results.length, 1);
+  runtime.reset("new session");
+  assert.deepEqual(runtime.snapshot(), { runs: [], results: [] });
+}
+
+{
+  // A late result tool call from the previous epoch is refused and cannot
+  // write into the new session inbox.
+  let release;
+  let oldTool;
+  const fake = makeFake({
+    script: async (input) => {
+      oldTool = input.session.customTools[0];
+      return await new Promise((resolve) => { release = resolve; });
+    },
+  });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const started = runtime.startManualRun(baseRequest());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  runtime.reset("new session");
+  const late = await oldTool.execute("late", { payload: JSON.stringify({ summary: "late" }) }, undefined, undefined, {});
+  assert.equal(late.isError, true);
+  assert.equal(late.details.status, "budget_exceeded");
+  release({ ...COMPLETED_NO_SUBMISSION, status: "aborted" });
+  await started.done;
+  assert.equal(runtime.snapshot().results.length, 0);
+}
+
+{
+  // Config defaults and the effective definition are frozen at the accepted
+  // start boundary; later mutation cannot loosen an in-flight run.
+  let current = config({ defaults: { maxToolCallsPerRun: 1, runTimeoutSeconds: 30 } });
+  const request = baseRequest();
+  const fake = makeFake({
+    script: async (input) => {
+      const tool = input.session.customTools[0];
+      input.onEvent?.({ type: "tool_execution_start", toolCallId: "first", toolName: SUBMIT_SHADOW_RESULT_TOOL });
+      const first = await tool.execute("first", { payload: "not-json" }, undefined, undefined, {});
+      assert.equal(first.isError, true);
+      input.onEvent?.({ type: "tool_execution_start", toolCallId: "second", toolName: SUBMIT_SHADOW_RESULT_TOOL });
+      const second = await tool.execute("second", { payload: JSON.stringify({ summary: "late valid" }) }, undefined, undefined, {});
+      assert.equal(second.details.status, "budget_exceeded");
+      return { ...COMPLETED_NO_SUBMISSION, status: "aborted" };
+    },
+  });
+  const runtime = createShadowRuntime({ config: () => current, deps: fake.deps });
+  const started = runtime.startManualRun(request);
+  current = config({ defaults: { maxToolCallsPerRun: 100, runTimeoutSeconds: 500 } });
+  request.definition.maxToolCalls = 100;
+  const terminal = await started.done;
+  assert.equal(fake.ran[0].timeoutMs, 30_000);
+  assert.equal(terminal.phase, "max_tool_calls");
+  assert.equal(runtime.snapshot().results.length, 0);
+}
+
+{
+  // Deterministic injected IDs are used exactly; default IDs are a bounded
+  // session-local sequence and restart only after the session resets.
+  let runId = 0;
+  let resultId = 0;
+  const fake = makeFake({ submit: JSON.stringify({ summary: "id" }) });
+  fake.deps.makeRunId = () => `custom-run-${++runId}`;
+  fake.deps.makeResultId = () => `custom-result-${++resultId}`;
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const first = runtime.startManualRun(baseRequest());
+  await first.done;
+  assert.equal(first.runId, "custom-run-1");
+  assert.equal(runtime.snapshot().results[0].id, "custom-result-1");
 }
 
 // ── frozen child resource loader ───────────────────────────────────

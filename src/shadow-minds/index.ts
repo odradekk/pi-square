@@ -15,6 +15,7 @@
  * for explicitly started manual trials while the master switch is on.
  */
 
+import { realpathSync } from "node:fs";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -34,6 +35,7 @@ import {
   discoverShadowDefinitions,
   previewShadowDefinition,
   previewShadowDefinitionDeletion,
+  shadowDefinitionContextFingerprint,
   shadowDefinitionScopeDir,
   type ShadowDefinitionRegistry,
 } from "./definitions";
@@ -76,6 +78,7 @@ interface ShadowTaskSnapshot {
   parentCore?: string;
   projectRules: ShadowProjectRule[];
   cwd: string;
+  error?: string;
 }
 
 function rulesFromContextFiles(files: unknown): ShadowProjectRule[] {
@@ -104,8 +107,9 @@ function resolveShadowModel(spec: string | undefined, ctx: ExtensionCommandConte
 } {
   const trimmed = spec?.trim();
   if (!trimmed) {
+    if (!ctx.model) return { error: "No parent model is selected for this Shadow run." };
     const label = formatModel(ctx.model);
-    return { ...(ctx.model ? { model: ctx.model } : {}), ...(label ? { label } : {}) };
+    return { model: ctx.model, ...(label ? { label } : {}) };
   }
   const slash = trimmed.indexOf("/");
   if (slash <= 0 || slash === trimmed.length - 1) {
@@ -157,36 +161,63 @@ function makeServices(
     runtime: {
       snapshot: () => runtime.snapshot(),
       runManual(input) {
-        state.refresh(ctx.cwd, ctx.isProjectTrusted());
-        const definition = state.registry.definitions.find((entry) => entry.id === input.shadowId);
-        if (!definition) {
-          return { ok: false, message: `Shadow definition '${input.shadowId}' is no longer available.` };
-        }
-        if (definition.tools?.length !== 0) {
-          return { ok: false, message: "Manual runs currently support only definitions with the explicit empty tool list (tools: [])." };
-        }
-        const snapshot = state.captureTaskSnapshot(ctx);
-        const outcome = runtime.startManualRun({
-          definition,
-          ...(input.note ? { note: input.note } : {}),
-          system: buildShadowSystem({
-            ...(snapshot.parentCore ? { parentCore: snapshot.parentCore } : {}),
-            projectRules: snapshot.projectRules,
+        try {
+          const liveConfig = state.managerSnapshot().config ?? DEFAULT_CONFIG.shadowMinds;
+          state.refresh(ctx.cwd, ctx.isProjectTrusted());
+          const definition = state.registry.definitions.find((entry) => entry.id === input.shadowId);
+          if (!definition) {
+            return { ok: false, message: `Shadow definition '${input.shadowId}' is no longer available.` };
+          }
+          if (definition.tools?.length !== 0) {
+            return { ok: false, message: "Manual runs currently support only definitions with the explicit empty tool list (tools: [])." };
+          }
+          const liveFingerprint = shadowDefinitionContextFingerprint(definition.layers);
+          const expectedBounds = {
+            timeoutSeconds: definition.timeoutSeconds ?? liveConfig.defaults.runTimeoutSeconds,
+            maxTurns: definition.maxTurns ?? liveConfig.defaults.maxModelTurnsPerRun,
+            maxToolCalls: definition.maxToolCalls ?? liveConfig.defaults.maxToolCallsPerRun,
+          };
+          const carriesReview = input.definitionFingerprint !== undefined
+            || input.timeoutSeconds !== undefined
+            || input.maxTurns !== undefined
+            || input.maxToolCalls !== undefined;
+          if (carriesReview && (
+            liveFingerprint !== input.definitionFingerprint
+            || expectedBounds.timeoutSeconds !== input.timeoutSeconds
+            || expectedBounds.maxTurns !== input.maxTurns
+            || expectedBounds.maxToolCalls !== input.maxToolCalls
+          )) {
+            return { ok: false, message: "The Shadow definition or run limits changed since review; reopen /shadow and review the current run." };
+          }
+          const snapshot = state.captureTaskSnapshot(ctx);
+          if (snapshot.error) {
+            ctx.ui.notify(`shadow-minds: ${notifyText(snapshot.error)}`, "warning");
+            return { ok: false, message: snapshot.error };
+          }
+          const outcome = runtime.startManualRun({
+            definition,
+            ...(input.note ? { note: input.note } : {}),
+            system: buildShadowSystem({
+              ...(snapshot.parentCore ? { parentCore: snapshot.parentCore } : {}),
+              projectRules: snapshot.projectRules,
+              cwd: snapshot.cwd,
+            }),
+            trajectory: captureTrajectory(ctx),
             cwd: snapshot.cwd,
-          }),
-          trajectory: captureTrajectory(ctx),
-          cwd: snapshot.cwd,
-          modelResolution: resolveShadowModel(definition.model, ctx),
-          ...(definition.thinking ?? ctx.thinkingLevel
-            ? { thinkingLevel: definition.thinking ?? ctx.thinkingLevel }
-            : {}),
-        });
-        if (!outcome.started) {
-          ctx.ui.notify(`shadow-minds: ${outcome.reason}`, "warning");
-          return { ok: false, message: outcome.reason };
+            modelResolution: resolveShadowModel(definition.model, ctx),
+            ...(definition.thinking ?? ctx.thinkingLevel
+              ? { thinkingLevel: definition.thinking ?? ctx.thinkingLevel }
+              : {}),
+          });
+          if (!outcome.started) {
+            ctx.ui.notify(`shadow-minds: ${outcome.reason}`, "warning");
+            return { ok: false, message: outcome.reason };
+          }
+          ctx.ui.notify(`shadow-minds: started manual run of ${definition.id}`, "info");
+          return { ok: true, message: `Started manual run of ${definition.id}.` };
+        } catch (error) {
+          return { ok: false, message: notifyText(`The Shadow run context is no longer active: ${error instanceof Error ? error.message : String(error)}`) };
         }
-        ctx.ui.notify(`shadow-minds: started manual run of ${definition.id}`, "info");
-        return { ok: true, message: `Started manual run of ${definition.id}.` };
       },
       cancelRun(runId) {
         return runtime.cancelRun(runId);
@@ -341,10 +372,23 @@ export default function registerShadowMinds(
       // command context that opened the manager is the capture source.
       const options = commandCtx.getSystemPromptOptions?.();
       const parentCore = parentCoreFromOptions(options);
+      let cwd: string;
+      try {
+        cwd = realpathSync.native(commandCtx.cwd ?? state.cwd);
+      } catch (error) {
+        return {
+          ...(parentCore ? { parentCore } : {}),
+          projectRules: [],
+          cwd: commandCtx.cwd ?? state.cwd,
+          error: `The Shadow working directory cannot be canonicalized: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
       return {
         ...(parentCore ? { parentCore } : {}),
-        projectRules: rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles),
-        cwd: commandCtx.cwd ?? state.cwd,
+        projectRules: commandCtx.isProjectTrusted()
+          ? rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles)
+          : [],
+        cwd,
       };
     },
     refresh(cwd: string, projectTrusted: boolean): void {
@@ -359,6 +403,7 @@ export default function registerShadowMinds(
   };
 
   let ctx: ExtensionContext | undefined;
+  const seenPhases = new Map<string, string>();
   pi.registerMessageRenderer(SHADOW_CONFIG_GUIDE_TYPE, renderShadowConfigGuide);
 
   pi.registerCommand("shadow", {
@@ -388,6 +433,7 @@ export default function registerShadowMinds(
   pi.on("session_start", async (_event, sessionCtx) => {
     ctx = sessionCtx;
     state.runtime.reset("Parent Pi session changed");
+    seenPhases.clear();
     state.refresh(sessionCtx.cwd, sessionCtx.isProjectTrusted());
     if (sessionCtx.hasUI && state.registry.diagnostics.length > 0) {
       const suffix = state.registry.diagnostics.length > 1
@@ -399,6 +445,7 @@ export default function registerShadowMinds(
 
   pi.on("session_shutdown", async () => {
     state.runtime.reset("Parent Pi session shutdown");
+    seenPhases.clear();
     ctx = undefined;
   });
 
@@ -406,7 +453,6 @@ export default function registerShadowMinds(
   // operational failures never become cognitive payloads.
   // Every non-running phase is terminal, so a phase change away from running
   // notifies once; entries for runs that left the history are pruned.
-  const seenPhases = new Map<string, string>();
   state.runtime.subscribe(() => {
     const sessionCtx = ctx;
     if (!sessionCtx?.hasUI) return;

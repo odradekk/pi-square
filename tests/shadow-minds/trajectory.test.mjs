@@ -107,4 +107,16 @@ function message(role, content, extra = {}) {
   assert.ok(trajectory.text.includes("hello"));
 }
 
+
+
+{
+  const trajectory = buildTrajectory([
+    message("user", "Authorization: Bearer TOPSECRET api_key=ABC"),
+    message("assistant", "password=hunter2"),
+    { type: "compaction", summary: "refresh_token=REFRESH" },
+  ]);
+  assert.doesNotMatch(trajectory.text, /TOPSECRET|ABC|hunter2|REFRESH/);
+  assert.match(trajectory.text, /\[REDACTED\]/, "trajectory text uses the shared credential sanitizer");
+}
+
 console.log("shadow-minds trajectory tests: OK");

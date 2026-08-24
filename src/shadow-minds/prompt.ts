@@ -11,12 +11,13 @@
  * one-time note.
  */
 
+import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
 import type { ShadowOutputSchema } from "./parser";
 
 export const SHADOW_GOVERNANCE_VERSION = 1 as const;
 export const SHADOW_PROMPT_CONTRACT_VERSION = 1 as const;
-
+export const SHADOW_AUTHORITY_MAX_CHARS = 24_000;
 export const SHADOW_GOVERNANCE = `You are a Shadow Mind: a bounded, read-only cognitive observer running in an isolated one-time child session of a Pi coding agent.
 
 Governance:
@@ -43,7 +44,7 @@ export interface ShadowSystemInput {
 }
 
 function section(label: string, value: string | undefined): string | undefined {
-  const normalized = value?.trim();
+  const normalized = sanitizeDisplayText(value).trim();
   return normalized ? `<${label}>\n${normalized}\n</${label}>` : undefined;
 }
 
@@ -52,12 +53,29 @@ function section(label: string, value: string | undefined): string | undefined {
  * produce identical bytes so later cache-cohort work can hash it directly.
  */
 export function buildShadowSystem(input: ShadowSystemInput): string {
-  const rules = (input.projectRules ?? [])
-    .filter((rule) => typeof rule?.path === "string" && typeof rule?.content === "string" && rule.content.trim())
-    .map((rule) => `# ${rule.path}\n${rule.content.trim()}`);
+  const parentCore = sanitizeDisplayText(input.parentCore).trim();
+  let budget = SHADOW_AUTHORITY_MAX_CHARS;
+  const boundedCore = parentCore.length <= budget ? parentCore : `${parentCore.slice(0, budget - 1)}…`;
+  budget -= boundedCore.length;
+
+  const rules: string[] = [];
+  for (const rule of input.projectRules ?? []) {
+    if (typeof rule?.path !== "string" || typeof rule?.content !== "string" || !rule.content.trim()) continue;
+    const rendered = `# ${sanitizeDisplayLine(rule.path)}\n${sanitizeDisplayText(rule.content).trim()}`;
+    const separator = rules.length > 0 ? 2 : 0;
+    if (rendered.length + separator <= budget) {
+      rules.push(rendered);
+      budget -= rendered.length + separator;
+      continue;
+    }
+    if (budget > separator + 1) rules.push(`${rendered.slice(0, budget - separator - 1)}…`);
+    budget = 0;
+    break;
+  }
+
   const parts = [
     SHADOW_GOVERNANCE,
-    section("parent_system_core", input.parentCore),
+    section("parent_system_core", boundedCore),
     section("project_rules", rules.length > 0 ? rules.join("\n\n") : undefined),
   ].filter((value): value is string => Boolean(value));
   return parts.join("\n\n");
@@ -124,10 +142,10 @@ export function buildShadowUserPrompt(input: ShadowUserPromptInput): string {
   sections.push(
     [
       "[Shadow definition]",
-      `id: ${input.definition.id}`,
-      `name: ${input.definition.name}`,
+      `id: ${sanitizeDisplayLine(input.definition.id)}`,
+      `name: ${sanitizeDisplayLine(input.definition.name)}`,
       "<responsibility>",
-      input.definition.body.trim(),
+      sanitizeDisplayText(input.definition.body).trim(),
       "</responsibility>",
     ].join("\n"),
   );
@@ -140,7 +158,7 @@ export function buildShadowUserPrompt(input: ShadowUserPromptInput): string {
     ].join("\n"),
   );
 
-  const note = input.note?.trim();
+  const note = sanitizeDisplayText(input.note).trim();
   if (note) {
     sections.push(`[Manual note]\n${note}`);
   }

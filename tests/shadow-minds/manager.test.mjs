@@ -683,6 +683,8 @@ function makeRuntimeService(initial) {
 {
   // Full flow: note → review → confirm closes the manager and starts the run.
   const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
+  assert.ok(synthesizer);
   const service = makeRuntimeService({ runs: [], results: [] });
   const done = [];
   const manager = new ShadowManager(
@@ -705,7 +707,15 @@ function makeRuntimeService(initial) {
   assert.ok(review.includes("submit_shadow_result only"), "the review names the single tool");
   manager.handleInput("\r");
   assert.equal(done.length, 1, "confirming closes the manager first");
-  assert.deepEqual(service.state.runCalls, [{ shadowId: "session-synthesizer", note: "Check open questions only." }], "the run starts with the reviewed note");
+  assert.equal(service.state.runCalls.length, 1);
+  assert.deepEqual(service.state.runCalls[0], {
+    shadowId: "session-synthesizer",
+    definitionFingerprint: shadowDefinitionContextFingerprint(synthesizer.layers),
+    timeoutSeconds: DEFAULT_CONFIG.shadowMinds.defaults.runTimeoutSeconds,
+    maxTurns: DEFAULT_CONFIG.shadowMinds.defaults.maxModelTurnsPerRun,
+    maxToolCalls: DEFAULT_CONFIG.shadowMinds.defaults.maxToolCallsPerRun,
+    note: "Check open questions only.",
+  }, "the run starts with the exact reviewed definition and bounds");
 }
 
 {

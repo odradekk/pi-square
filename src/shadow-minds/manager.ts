@@ -37,7 +37,7 @@ import {
   type ShadowOutputSchema,
   type ShadowTrigger,
 } from "./parser";
-import type { ShadowResultEntity } from "./result";
+import { canonicalPayloadJson, type ShadowResultEntity } from "./result";
 import { SHADOW_MANUAL_NOTE_MAX_CHARS, type ShadowRunView, type ShadowRuntimeSnapshot } from "./runtime";
 import { newShadowDefinitionDraft } from "./serialize";
 
@@ -75,7 +75,14 @@ export interface ShadowApprovalRequest {
 export interface ShadowRuntimeServices {
   snapshot(): ShadowRuntimeSnapshot;
   /** Starts one manual run for an effective definition; never throws. */
-  runManual(input: { shadowId: string; note?: string }): { ok: boolean; message: string };
+  runManual(input: {
+    shadowId: string;
+    note?: string;
+    definitionFingerprint?: string;
+    timeoutSeconds?: number;
+    maxTurns?: number;
+    maxToolCalls?: number;
+  }): { ok: boolean; message: string };
   cancelRun(runId: string): { ok: boolean; message?: string };
   markResultRead(id: string): boolean;
   dismissResult(id: string): boolean;
@@ -915,7 +922,7 @@ export class ShadowManager implements Component, Focusable {
           ? [{
               id: "run-manually",
               label: "Run manually",
-              detail: `no-tool trial · ${runBoundLabel(selected, this.data.config?.defaults)}`,
+              detail: `no-tool trial · ${runBoundLabel(runBounds(selected, this.data.config?.defaults))}`,
               onSelect: () => this.runManually(selected),
             }]
           : []),
@@ -969,13 +976,15 @@ export class ShadowManager implements Component, Focusable {
         : undefined),
       onSubmit: (noteValue) => {
         const note = noteValue.trim();
+        const bounds = runBounds(definition, this.data.config?.defaults);
+        const definitionFingerprint = shadowDefinitionContextFingerprint(definition.layers);
         this.openReview({
           eyebrow: "RUN / REVIEW",
           title: `Start ${definition.id} manual run?`,
           lines: [
             `Definition: ${definition.name} (${definition.id})`,
             `Tools: none — submit_shadow_result only`,
-            `Bounds: ${runBoundLabel(definition, this.data.config?.defaults)}`,
+            `Bounds: ${runBoundLabel(bounds)}`,
             `Evidence: the current parent trajectory, reference only`,
             ...(note ? ["", "MANUAL NOTE", note] : []),
           ],
@@ -984,6 +993,8 @@ export class ShadowManager implements Component, Focusable {
             this.finish();
             const outcome = this.services?.runtime?.runManual({
               shadowId: definition.id,
+              definitionFingerprint,
+              ...bounds,
               ...(note ? { note } : {}),
             });
             // The manager has closed itself; the owning service reports the
@@ -1029,8 +1040,8 @@ export class ShadowManager implements Component, Focusable {
     if (!runtime) return [];
     return runtime.snapshot().runs.slice(0, 12).map((run) => ({
       id: run.id,
-      label: `${run.shadowName} (${run.shadowId})`,
-      detail: runDetailLabel(run),
+      label: `${sanitizeDisplayLine(run.shadowName)} (${sanitizeDisplayLine(run.shadowId)})`,
+      detail: sanitizeDisplayLine(runDetailLabel(run)),
       onSelect: () => this.openRunDetail(run.id),
     }));
   }
@@ -1076,8 +1087,8 @@ export class ShadowManager implements Component, Focusable {
     });
     this.openChoice({
       eyebrow: "RUNS / DETAIL",
-      title: `${run.shadowName} · ${run.phase}`,
-      description: runDetailLabel(run),
+      title: `${sanitizeDisplayLine(run.shadowName)} · ${run.phase}`,
+      description: sanitizeDisplayLine(runDetailLabel(run)),
       items: items.length > 0 ? items : [{ id: "empty", label: "No actions for a settled run without a result.", onSelect: () => {} }],
     });
   }
@@ -1087,8 +1098,8 @@ export class ShadowManager implements Component, Focusable {
     if (!runtime) return [];
     return runtime.snapshot().results.slice(0, 20).map((result) => ({
       id: result.id,
-      label: result.summary || result.shadowName,
-      detail: `${result.shadowId} · ${result.attention} · ${result.delivery}`,
+      label: sanitizeDisplayLine(result.summary || result.shadowName),
+      detail: `${sanitizeDisplayLine(result.shadowId)} · ${result.attention} · ${result.delivery}`,
       onSelect: () => this.openResultActions(result.id),
     }));
   }
@@ -1120,8 +1131,8 @@ export class ShadowManager implements Component, Focusable {
     };
     this.openChoice({
       eyebrow: "INBOX / RESULT",
-      title: result.summary || result.shadowName,
-      description: `${result.shadowName} (${result.shadowId}) · ${result.attention} · ${result.delivery}`,
+      title: sanitizeDisplayLine(result.summary || result.shadowName),
+      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${result.attention} · ${result.delivery}`,
       items: [
         {
           id: "payload",
@@ -1154,7 +1165,7 @@ export class ShadowManager implements Component, Focusable {
   private openResultPayload(result: ShadowResultEntity): void {
     let payloadText: string;
     try {
-      payloadText = JSON.stringify(result.payload, null, 2) ?? "(null)";
+      payloadText = canonicalPayloadJson(result.payload, 2) || "(null)";
     } catch {
       payloadText = "(unserializable payload)";
     }
@@ -1466,11 +1477,22 @@ function isNoToolTrial(definition: EffectiveShadowDefinition): boolean {
   return definition.tools !== undefined && definition.tools.length === 0;
 }
 
-function runBoundLabel(definition: EffectiveShadowDefinition, defaults?: ShadowMindsDefaults): string {
-  const timeout = definition.timeoutSeconds ?? defaults?.runTimeoutSeconds ?? DEFAULT_SHADOW_MINDS.runTimeoutSeconds;
-  const turns = definition.maxTurns ?? defaults?.maxModelTurnsPerRun ?? DEFAULT_SHADOW_MINDS.maxModelTurnsPerRun;
-  const toolCalls = definition.maxToolCalls ?? defaults?.maxToolCallsPerRun ?? DEFAULT_SHADOW_MINDS.maxToolCallsPerRun;
-  return `timeout ${timeout}s · max ${turns} turns · max ${toolCalls} tool calls`;
+interface ManualRunBounds {
+  timeoutSeconds: number;
+  maxTurns: number;
+  maxToolCalls: number;
+}
+
+function runBounds(definition: EffectiveShadowDefinition, defaults?: ShadowMindsDefaults): ManualRunBounds {
+  return {
+    timeoutSeconds: definition.timeoutSeconds ?? defaults?.runTimeoutSeconds ?? DEFAULT_SHADOW_MINDS.runTimeoutSeconds,
+    maxTurns: definition.maxTurns ?? defaults?.maxModelTurnsPerRun ?? DEFAULT_SHADOW_MINDS.maxModelTurnsPerRun,
+    maxToolCalls: definition.maxToolCalls ?? defaults?.maxToolCallsPerRun ?? DEFAULT_SHADOW_MINDS.maxToolCallsPerRun,
+  };
+}
+
+function runBoundLabel(bounds: ManualRunBounds): string {
+  return `timeout ${bounds.timeoutSeconds}s · max ${bounds.maxTurns} turns · max ${bounds.maxToolCalls} tool calls`;
 }
 
 function runDetailLabel(run: ShadowRunView): string {

@@ -9,6 +9,7 @@ const {
   SUBMIT_SHADOW_RESULT_TOOL,
   createSubmitShadowResultTool,
   summarizeShadowResult,
+  canonicalPayloadJson,
   createShadowInbox,
   SHADOW_RESULT_SUMMARY_MAX_CHARS,
 } = await load(join(packageRoot, "src", "shadow-minds", "result.ts"));
@@ -37,6 +38,7 @@ async function execute(tool, payload) {
   assert.equal(schema.type, "object", "the top level is a strict object");
   assert.deepEqual(Object.keys(schema.properties), ["payload"], "payload is the only property");
   assert.equal(schema.properties.payload.type, "string");
+  assert.equal(schema.properties.payload.maxLength, 24_000, "the fixed tool schema bounds the encoded payload string");
   assert.deepEqual(schema.required, ["payload"], "payload is required");
   assert.equal(schema.additionalProperties, false, "no additional properties");
   assert.ok(!Array.isArray(schema.anyOf) && schema.anyOf === undefined, "no top-level unions");
@@ -99,6 +101,19 @@ async function execute(tool, payload) {
   assert.deepEqual(accepted, [{ summary: "One clear finding." }]);
 }
 
+
+{
+  const accepted = [];
+  const tool = makeTool(DEFAULT_OUTPUT_SCHEMA, accepted);
+  const first = await execute(tool, JSON.stringify({ summary: "first" }));
+  const second = await execute(tool, JSON.stringify({ summary: "second" }));
+  assert.equal(first.terminate, true);
+  assert.equal(second.isError, true);
+  assert.equal(second.details.status, "already_accepted");
+  assert.equal(second.terminate, true);
+  assert.deepEqual(accepted, [{ summary: "first" }], "only the first valid submission is accepted");
+}
+
 // ── deterministic summaries ────────────────────────────────────────
 
 {
@@ -111,6 +126,14 @@ async function execute(tool, payload) {
   assert.ok(fallback.startsWith("{"), "otherwise canonical JSON is used");
   assert.ok(summarizeShadowResult({ summary: "y".repeat(400) }).length <= SHADOW_RESULT_SUMMARY_MAX_CHARS);
   assert.equal(SHADOW_RESULT_SUMMARY_MAX_CHARS, 300);
+}
+
+
+{
+  const left = { z: 1, nested: { b: 2, a: 1 } };
+  const right = { nested: { a: 1, b: 2 }, z: 1 };
+  assert.equal(canonicalPayloadJson(left), canonicalPayloadJson(right));
+  assert.equal(summarizeShadowResult(left), summarizeShadowResult(right), "fallback summaries are canonical across key order");
 }
 
 // ── in-memory inbox ────────────────────────────────────────────────
@@ -149,6 +172,34 @@ async function execute(tool, payload) {
   assert.ok(!ids.includes(old1.id), "the oldest read result was evicted first");
   assert.ok(ids.includes(old3.id), "a newer dismissed result survives over an older read one");
   assert.equal(inbox.list().length, 3);
+}
+
+
+
+{
+  const summary = summarizeShadowResult({ summary: "Authorization: Bearer RESULTSECRET api_key=SECOND" });
+  assert.doesNotMatch(summary, /RESULTSECRET|SECOND/);
+  assert.match(summary, /\[REDACTED\]/);
+  const inbox = createShadowInbox({ makeId: () => "fixed-result" });
+  inbox.add({ shadowId: "x", shadowName: "X", payload: { summary: "x" }, createdAt: 1 });
+  assert.equal(inbox.list()[0].id, "fixed-result");
+  inbox.clear();
+  assert.deepEqual(inbox.list(), []);
+}
+
+
+{
+  const payload = { nested: { value: "original" } };
+  const inbox = createShadowInbox({ maxResults: 1_000, makeId: () => "clone" });
+  inbox.add({ shadowId: "x", shadowName: "X", payload, createdAt: 1 });
+  payload.nested.value = "mutated input";
+  const listed = inbox.list();
+  listed[0].payload.nested.value = "mutated output";
+  assert.equal(inbox.list()[0].payload.nested.value, "original", "inbox payloads are immutable across input and list boundaries");
+  for (let index = 0; index < 150; index += 1) {
+    inbox.add({ shadowId: `s${index}`, shadowName: "S", payload: { summary: String(index) }, createdAt: index + 2 });
+  }
+  assert.equal(inbox.list().length, 100, "the count hard cap cannot be raised by callers");
 }
 
 console.log("shadow-minds result tests: OK");
