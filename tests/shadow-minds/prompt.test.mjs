@@ -79,12 +79,14 @@ function baseDefinition(overrides = {}) {
 }
 
 {
-  assert.equal(SHADOW_GOVERNANCE_VERSION, 1);
+  assert.equal(SHADOW_GOVERNANCE_VERSION, 2);
   assert.equal(SHADOW_PROMPT_CONTRACT_VERSION, 1);
   const lowered = SHADOW_GOVERNANCE.toLowerCase();
   assert.ok(lowered.includes("submit_shadow_result"), "the governance names the terminating tool");
   assert.ok(lowered.includes("reference"), "the governance frames the trajectory as reference-only");
   assert.ok(lowered.includes("read-only"), "the governance states the read-only boundary");
+  assert.ok(lowered.includes("approved read-only tools"), "the governance authorizes the resolved evidence envelope");
+  assert.doesNotMatch(lowered, /do not attempt workspace access/, "the governance must not prohibit approved local evidence tools");
 }
 
 

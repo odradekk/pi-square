@@ -7,7 +7,8 @@
  * write is reviewed in a scrollable candidate view first, then approved
  * through the session FIFO confirmation coordinator after the manager
  * closes itself, and executed by the safe overlay writer. Package templates
- * stay read-only. Runtime services add manual no-tool trials with a bounded
+ * stay read-only. Runtime services add manual trials across the Shadow-safe
+ * read-only evidence catalog (the no-tool trial included) with a bounded
  * one-time note, live run observation with cancellation, and result-inbox
  * inspection (read, dismiss, delete). The view follows the shared unframed
  * operational grammar: one-cell status rail, label-led rows, muted borders,
@@ -79,6 +80,7 @@ export interface ShadowRuntimeServices {
     shadowId: string;
     note?: string;
     definitionFingerprint?: string;
+    defaultThinking?: string;
     timeoutSeconds?: number;
     maxTurns?: number;
     maxToolCalls?: number;
@@ -918,14 +920,12 @@ export class ShadowManager implements Component, Focusable {
         ? undefined
         : "Package templates are read-only; edits create overlays.",
       items: [
-        ...(isNoToolTrial(selected)
-          ? [{
-              id: "run-manually",
-              label: "Run manually",
-              detail: `no-tool trial · ${runBoundLabel(runBounds(selected, this.data.config?.defaults))}`,
-              onSelect: () => this.runManually(selected),
-            }]
-          : []),
+        {
+          id: "run-manually",
+          label: "Run manually",
+          detail: `${toolsLabel(selected)} · ${runBoundLabel(runBounds(selected, this.data.config?.defaults))}`,
+          onSelect: () => this.runManually(selected),
+        },
         {
           id: "toggle-enabled",
           label: selected.enabled ? "Disable" : "Enable",
@@ -983,8 +983,9 @@ export class ShadowManager implements Component, Focusable {
           title: `Start ${definition.id} manual run?`,
           lines: [
             `Definition: ${definition.name} (${definition.id})`,
-            `Tools: none — submit_shadow_result only`,
+            `Tools: ${toolsLabel(definition)}`,
             `Bounds: ${runBoundLabel(bounds)}`,
+            `Thinking: ${definition.thinking ?? this.data.config?.defaults.thinking ?? "inherit parent"}`,
             `Evidence: the current parent trajectory, reference only`,
             ...(note ? ["", "MANUAL NOTE", note] : []),
           ],
@@ -994,6 +995,7 @@ export class ShadowManager implements Component, Focusable {
             const outcome = this.services?.runtime?.runManual({
               shadowId: definition.id,
               definitionFingerprint,
+              ...(this.data.config?.defaults.thinking ? { defaultThinking: this.data.config.defaults.thinking } : {}),
               ...bounds,
               ...(note ? { note } : {}),
             });
@@ -1089,7 +1091,23 @@ export class ShadowManager implements Component, Focusable {
       eyebrow: "RUNS / DETAIL",
       title: `${sanitizeDisplayLine(run.shadowName)} · ${run.phase}`,
       description: sanitizeDisplayLine(runDetailLabel(run)),
-      items: items.length > 0 ? items : [{ id: "empty", label: "No actions for a settled run without a result.", onSelect: () => {} }],
+      items: [
+        ...(items.length > 0 ? items : [{ id: "empty" as const, label: "No actions for a settled run without a result.", onSelect: () => {} }]),
+        {
+          id: "run-facts",
+          label: "Facts",
+          detail: runFactsDetail(run),
+          onSelect: () => {
+            this.openReview({
+              eyebrow: "RUNS / FACTS",
+              title: `${run.shadowId} run facts`,
+              lines: runFactsLines(run),
+              confirmLabel: "back",
+              onConfirm: () => this.back(),
+            });
+          },
+        },
+      ],
     });
   }
 
@@ -1472,15 +1490,18 @@ function definitionLabel(definition: EffectiveShadowDefinition): string {
   return `${definition.name} (${definition.id})`;
 }
 
-/** A manual trial exists only for the explicit empty tool list (#155). */
-function isNoToolTrial(definition: EffectiveShadowDefinition): boolean {
-  return definition.tools !== undefined && definition.tools.length === 0;
-}
-
+/** Reviewed run bounds for one manual trial. */
 interface ManualRunBounds {
   timeoutSeconds: number;
   maxTurns: number;
   maxToolCalls: number;
+}
+
+/** Bounded run-review label for one definition's declared tool envelope. */
+function toolsLabel(definition: EffectiveShadowDefinition): string {
+  if (definition.tools === undefined) return "default local evidence set + submit";
+  if (definition.tools.length === 0) return "none — submit_shadow_result only";
+  return `${definition.tools.join(", ")} + submit`;
 }
 
 function runBounds(definition: EffectiveShadowDefinition, defaults?: ShadowMindsDefaults): ManualRunBounds {
@@ -1495,8 +1516,47 @@ function runBoundLabel(bounds: ManualRunBounds): string {
   return `timeout ${bounds.timeoutSeconds}s · max ${bounds.maxTurns} turns · max ${bounds.maxToolCalls} tool calls`;
 }
 
+/** One-line muted summary of the frozen run facts. */
+function runFactsDetail(run: ShadowRunView): string {
+  const parts = [
+    `tools ${run.toolNames && run.toolNames.length > 0 ? run.toolNames.length + 1 : 1}`,
+    run.trajectoryTruncated ? "truncated trajectory" : "full trajectory",
+  ];
+  return parts.join(" · ");
+}
+
+/** Bounded review lines for the frozen envelope, cohorts, and metrics. */
+function runFactsLines(run: ShadowRunView): string[] {
+  const lines: string[] = [];
+  const tools = run.toolNames && run.toolNames.length > 0
+    ? `${run.toolNames.join(", ")} + submit_shadow_result`
+    : "submit_shadow_result only";
+  lines.push(`Tools: ${tools}`);
+  if (run.toolWarnings && run.toolWarnings.length > 0) {
+    lines.push("", "TOOL WARNINGS");
+    lines.push(...run.toolWarnings.map((warning) => sanitizeDisplayLine(warning)));
+  }
+  lines.push("", "CACHE COHORTS");
+  lines.push(`system: ${run.systemHash ?? "—"}`);
+  lines.push(`tools: ${run.toolSchemaHash ?? "—"}`);
+  lines.push(`trajectory: ${run.trajectoryHash ?? "—"}${run.trajectoryTruncated ? " (truncated: dropped)" : ""}`);
+  if (run.requests && run.requests.length > 0) {
+    lines.push("", "REQUESTS");
+    run.requests.forEach((request, index) => {
+      const ttft = request.ttftMs !== undefined ? ` · ttft ${request.ttftMs}ms` : "";
+      lines.push(`${index + 1}. in ${request.input} · out ${request.output} · cache r ${request.cacheRead}/w ${request.cacheWrite} · cost ${request.cost}${ttft}`);
+    });
+  }
+  return lines;
+}
+
 function runDetailLabel(run: ShadowRunView): string {
-  const base = `${run.phase} · ${run.shadowId}`;
+  const qualifiers: string[] = [];
+  if (run.trajectoryTruncated) qualifiers.push("trajectory truncated");
+  if (run.toolWarnings && run.toolWarnings.length > 0) qualifiers.push(`${run.toolWarnings.length} tool warning${run.toolWarnings.length === 1 ? "" : "s"}`);
+  if (run.requests && run.requests.length > 0) qualifiers.push(`${run.requests.length} request${run.requests.length === 1 ? "" : "s"}`);
+  const suffix = qualifiers.length > 0 ? ` · ${qualifiers.join(", ")}` : "";
+  const base = `${run.phase} · ${run.shadowId}${suffix}`;
   if (run.phase === "running") return base;
   const duration = run.endedAt !== undefined ? ` · ${Math.round((run.endedAt - run.startedAt) / 100) / 10}s` : "";
   return `${base}${duration}${run.message ? ` — ${run.message}` : ""}`;

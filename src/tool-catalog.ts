@@ -64,4 +64,27 @@ export function createChildTools(
   return { definitions, errors };
 }
 
+/**
+ * Shadow-safe extension tool subset (odradekk/pi-square#156): the strictly
+ * read-only evidence tools a Shadow child session may receive. Authenticated
+ * GitHub, platform shells, and every side-effect capability stay delegated-
+ * and-Shadow-excluded; Shadow policy additionally enforces this list before
+ * names ever reach `createChildTools`.
+ */
+export const SHADOW_SAFE_EXTENSION_TOOLS = [
+  "codegraph",
+  "pdf_search",
+  "search",
+  "fetch",
+  "libs",
+  "docs",
+] as const;
+
+/** Resolves Shadow-safe extension tools from the child-safe factories only. */
+export function createShadowSafeExtensionTools(names: readonly string[]): ToolDefinition[] {
+  const allowed = new Set<string>(SHADOW_SAFE_EXTENSION_TOOLS);
+  const requested = [...new Set(names)];
+  return createChildTools(requested.filter((name) => allowed.has(name))).definitions;
+}
+
 export const childToolNames = extensionToolNamesForPlatform();

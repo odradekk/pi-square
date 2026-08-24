@@ -327,6 +327,9 @@ function render(manager, width = 100) {
   manager.handleInput("\r");
   let lines = render(manager);
   assert.ok(lines.some((line) => line.includes("Enable")), "the actions menu offers enable for a disabled definition");
+  assert.ok(lines.some((line) => line.includes("Run manually")), "every definition offers a manual run");
+  // Run manually is the first action; Enable is the second.
+  manager.handleInput("down");
   manager.handleInput("\r");
   lines = render(manager);
   assert.ok(lines.join("\n").includes("OVERLAYS / SCOPE"), "scope selection follows");
@@ -362,6 +365,7 @@ function render(manager, width = 100) {
   );
   approveResult = false;
   declined.handleInput("\r");
+  declined.handleInput("down");
   declined.handleInput("\r");
   declined.handleInput("\r");
   declined.handleInput("\r");
@@ -379,6 +383,8 @@ function render(manager, width = 100) {
   );
   previewErrors = ["project-grounding: required tool 'shell' is outside the final tool set"];
   invalidCandidate.handleInput("\r");
+  // Run manually is the first action; Enable (which previews) is the second.
+  invalidCandidate.handleInput("down");
   invalidCandidate.handleInput("\r");
   invalidCandidate.handleInput("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -409,6 +415,7 @@ function render(manager, width = 100) {
     services,
   );
   untrusted.handleInput("\r");
+  untrusted.handleInput("down");
   untrusted.handleInput("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
   lines = render(untrusted);
@@ -548,6 +555,7 @@ function render(manager, width = 100) {
   schemaManager.handleInput("\r"); // actions
   schemaManager.handleInput("down");
   schemaManager.handleInput("down");
+  schemaManager.handleInput("down");
   schemaManager.handleInput("\r"); // edit
   schemaManager.handleInput("\r"); // project
   for (let index = 0; index < 18; index += 1) schemaManager.handleInput("down");
@@ -585,6 +593,7 @@ function render(manager, width = 100) {
     makeTui(), makeTheme(), makeKeybindings(), () => {}, deleteServices,
   );
   deleteManager.handleInput("\r");
+  deleteManager.handleInput("down");
   deleteManager.handleInput("down");
   deleteManager.handleInput("down");
   deleteManager.handleInput("down");
@@ -646,11 +655,12 @@ function makeRuntimeService(initial) {
 }
 
 {
-  // Run manually appears only for the explicit no-tool definition.
+  // Every definition offers a manual run; the label carries its tool declaration.
   const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
   const synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
   const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
   assert.ok(synthesizer.tools?.length === 0, "sanity: session-synthesizer declares the empty tool list");
+  assert.ok(grounding.tools && grounding.tools.length > 0, "sanity: project-grounding declares evidence tools");
 
   const service = makeRuntimeService({ runs: [], results: [] });
   const withRun = new ShadowManager(
@@ -664,7 +674,9 @@ function makeRuntimeService(initial) {
   let index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) withRun.handleInput("down");
   withRun.handleInput("\r");
-  assert.ok(render(withRun).some((line) => line.includes("Run manually")), "the no-tool definition offers a manual run");
+  const noToolLines = render(withRun);
+  assert.ok(noToolLines.some((line) => line.includes("Run manually")), "the no-tool definition offers a manual run");
+  assert.ok(noToolLines.some((line) => line.includes("none — submit_shadow_result only")), "the no-tool label names the single tool");
 
   const withoutRun = new ShadowManager(
     { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
@@ -672,12 +684,14 @@ function makeRuntimeService(initial) {
     makeTheme(),
     makeKeybindings(),
     () => {},
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
   );
   index = registry.definitions.findIndex((definition) => definition.id === "project-grounding");
   for (let step = 0; step < index; step += 1) withoutRun.handleInput("down");
   withoutRun.handleInput("\r");
-  assert.ok(!render(withoutRun).some((line) => line.includes("Run manually")), "evidence-tool definitions do not offer the #155 trial");
-  assert.equal(grounding.id, "project-grounding");
+  const evidenceLines = render(withoutRun);
+  assert.ok(evidenceLines.some((line) => line.includes("Run manually")), "evidence-tool definitions offer a manual run too");
+  assert.ok(evidenceLines.some((line) => line.includes("read, grep, find, ls, codegraph, pdf_search + submit")), "the evidence label names the declared catalog tools");
 }
 
 {
@@ -688,7 +702,7 @@ function makeRuntimeService(initial) {
   const service = makeRuntimeService({ runs: [], results: [] });
   const done = [];
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: true, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults, thinking: "medium" } } },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -705,12 +719,14 @@ function makeRuntimeService(initial) {
   assert.ok(review.includes("Start session-synthesizer manual run?"), "the run review opens");
   assert.ok(review.includes("Check open questions only."), "the note is reviewed");
   assert.ok(review.includes("submit_shadow_result only"), "the review names the single tool");
+  assert.ok(review.includes("Thinking: medium"), "the effective configuration thinking default is reviewed");
   manager.handleInput("\r");
   assert.equal(done.length, 1, "confirming closes the manager first");
   assert.equal(service.state.runCalls.length, 1);
   assert.deepEqual(service.state.runCalls[0], {
     shadowId: "session-synthesizer",
     definitionFingerprint: shadowDefinitionContextFingerprint(synthesizer.layers),
+    defaultThinking: "medium",
     timeoutSeconds: DEFAULT_CONFIG.shadowMinds.defaults.runTimeoutSeconds,
     maxTurns: DEFAULT_CONFIG.shadowMinds.defaults.maxModelTurnsPerRun,
     maxToolCalls: DEFAULT_CONFIG.shadowMinds.defaults.maxToolCallsPerRun,
@@ -749,6 +765,9 @@ function makeRuntimeService(initial) {
   const settledRun = {
     id: "run-2", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
     trigger: "manual", phase: "submitted", startedAt: 1_000, endedAt: 2_000, resultId: "shr-1",
+    systemHash: "aaaaaaaaaaaaaaaa", toolSchemaHash: "bbbbbbbbbbbbbbbb", trajectoryHash: "cccccccccccccccc",
+    trajectoryTruncated: true,
+    requests: [{ input: 700, output: 80, cacheRead: 12, cacheWrite: 4, cost: 0.02, ttftMs: 120 }],
   };
   const result = {
     id: "shr-1", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
@@ -788,6 +807,18 @@ function makeRuntimeService(initial) {
   service.emit();
   manager.handleInput("down");
   manager.handleInput("\r");
+  // Run facts: the frozen envelope, qualifiers, cohorts, and metrics render.
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("run facts"), "the facts view opens from the run detail");
+  assert.ok(lines.includes("system: aaaaaaaaaaaaaaaa"), "the system cohort hash renders");
+  assert.ok(lines.includes("(truncated: dropped)"), "the truncation qualifier renders");
+  assert.ok(lines.includes("1. in 700 · out 80"), "per-request metrics render");
+  manager.handleInput("\r");
+  manager.handleInput("up");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("View result"), "back returns to the run detail actions");
   manager.handleInput("\r");
   lines = render(manager).join("\n");
   assert.ok(lines.includes("Two decisions remain open."), "the result summary renders");

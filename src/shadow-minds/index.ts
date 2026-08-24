@@ -58,9 +58,11 @@ import {
   buildShadowSystem,
   type ShadowProjectRule,
 } from "./prompt";
+import { matchesParentModelFilter, resolveShadowModel, resolveShadowThinkingLevel } from "./resolve";
 import { createShadowRuntime, type ShadowRuntime, type ShadowRuntimeDeps } from "./runtime";
 import { serializeShadowDefinition } from "./serialize";
-import { buildTrajectory } from "./trajectory";
+import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
+import { resolveShadowTools } from "./tools";
 
 export interface ShadowMindsState {
   registry: ShadowDefinitionRegistry;
@@ -100,34 +102,31 @@ function parentCoreFromOptions(options: unknown): string | undefined {
 }
 
 /** Resolves the run model: an explicit Shadow model or the activating parent model. */
-function resolveShadowModel(spec: string | undefined, ctx: ExtensionCommandContext): {
-  model?: any;
-  label?: string;
-  error?: string;
-} {
-  const trimmed = spec?.trim();
-  if (!trimmed) {
-    if (!ctx.model) return { error: "No parent model is selected for this Shadow run." };
-    const label = formatModel(ctx.model);
-    return { model: ctx.model, ...(label ? { label } : {}) };
+function captureTrajectory(ctx: ExtensionCommandContext, evidence: readonly ShadowTrajectoryEvidence[] = []) {
+  try {
+    // The compaction-aware context projection: `buildContextEntries` follows
+    // the current leaf and omits entries the latest compaction replaced, so
+    // the trajectory matches what the parent model actually sees. The plain
+    // branch remains the fallback for surfaces without the projection.
+    const manager = ctx.sessionManager;
+    const branch = manager?.buildContextEntries?.() ?? manager?.getBranch?.(manager.getLeafId?.() ?? undefined);
+    return buildTrajectory(Array.isArray(branch) ? branch : [], { evidence });
+  } catch {
+    return buildTrajectory([], { evidence });
   }
-  const slash = trimmed.indexOf("/");
-  if (slash <= 0 || slash === trimmed.length - 1) {
-    return { error: `Invalid model '${trimmed}'. Expected provider/model.` };
-  }
-  const model = ctx.modelRegistry?.find?.(trimmed.slice(0, slash).trim(), trimmed.slice(slash + 1).trim());
-  if (!model) return { error: `Unknown Shadow model '${trimmed}'.` };
-  return { model, label: formatModel(model) ?? trimmed };
 }
 
-function captureTrajectory(ctx: ExtensionCommandContext) {
-  try {
-    const leafId = ctx.sessionManager?.getLeafId?.() ?? undefined;
-    const branch = ctx.sessionManager?.getBranch?.(leafId);
-    return buildTrajectory(Array.isArray(branch) ? branch : []);
-  } catch {
-    return buildTrajectory([]);
-  }
+/** Delivered Shadow results as trajectory evidence; notified results stay out. */
+function deliveredEvidence(runtime: ShadowRuntime): ShadowTrajectoryEvidence[] {
+  return runtime.snapshot().results
+    .filter((result) => result.delivery === "delivered")
+    .map((result) => ({
+      shadowId: result.shadowId,
+      shadowName: result.shadowName,
+      summary: result.summary,
+      deliveredAt: result.createdAt,
+      delivery: result.delivery,
+    }));
 }
 
 const MAX_NOTIFY_CHARS = 400;
@@ -168,9 +167,6 @@ function makeServices(
           if (!definition) {
             return { ok: false, message: `Shadow definition '${input.shadowId}' is no longer available.` };
           }
-          if (definition.tools?.length !== 0) {
-            return { ok: false, message: "Manual runs currently support only definitions with the explicit empty tool list (tools: [])." };
-          }
           const liveFingerprint = shadowDefinitionContextFingerprint(definition.layers);
           const expectedBounds = {
             timeoutSeconds: definition.timeoutSeconds ?? liveConfig.defaults.runTimeoutSeconds,
@@ -178,11 +174,13 @@ function makeServices(
             maxToolCalls: definition.maxToolCalls ?? liveConfig.defaults.maxToolCallsPerRun,
           };
           const carriesReview = input.definitionFingerprint !== undefined
+            || input.defaultThinking !== undefined
             || input.timeoutSeconds !== undefined
             || input.maxTurns !== undefined
             || input.maxToolCalls !== undefined;
           if (carriesReview && (
             liveFingerprint !== input.definitionFingerprint
+            || liveConfig.defaults.thinking !== input.defaultThinking
             || expectedBounds.timeoutSeconds !== input.timeoutSeconds
             || expectedBounds.maxTurns !== input.maxTurns
             || expectedBounds.maxToolCalls !== input.maxToolCalls
@@ -194,6 +192,45 @@ function makeServices(
             ctx.ui.notify(`shadow-minds: ${notifyText(snapshot.error)}`, "warning");
             return { ok: false, message: snapshot.error };
           }
+          // Exact parent-model filter: a filtered Shadow refuses to run
+          // beside a non-matching parent model rather than silently differing
+          // from its automatic activation contract.
+          const parentLabel = formatModel(ctx.model);
+          if (!matchesParentModelFilter(definition.parentModels, parentLabel)) {
+            const message = `Shadow '${definition.id}' is filtered to parent models ${definition.parentModels!.join(", ")}${parentLabel ? `; the parent model is ${parentLabel}` : ""}.`;
+            ctx.ui.notify(`shadow-minds: ${notifyText(message)}`, "warning");
+            return { ok: false, message };
+          }
+          // Resolve the strictly read-only evidence envelope before anything
+          // is prompted: missing optional tools warn, missing required tools
+          // fail the run before the child session is ever created.
+          const resolution = resolveShadowTools({
+            ...(definition.tools !== undefined ? { tools: definition.tools } : {}),
+            ...(definition.requiredTools && definition.requiredTools.length > 0 ? { requiredTools: definition.requiredTools } : {}),
+            cwd: snapshot.cwd,
+          });
+          if (!resolution.ok) {
+            ctx.ui.notify(`shadow-minds: ${notifyText(resolution.error)}`, "warning");
+            return { ok: false, message: resolution.error };
+          }
+          for (const warning of resolution.envelope.warnings) {
+            ctx.ui.notify(`shadow-minds: ${notifyText(warning)}`, "warning");
+          }
+          const modelResolution = resolveShadowModel(definition.model, ctx);
+          if (modelResolution.error) {
+            ctx.ui.notify(`shadow-minds: ${notifyText(modelResolution.error)}`, "warning");
+            return { ok: false, message: modelResolution.error };
+          }
+          const thinkingResolution = resolveShadowThinkingLevel(
+            definition.thinking,
+            liveConfig.defaults.thinking,
+            ctx.thinkingLevel,
+            modelResolution.model,
+          );
+          if (thinkingResolution.error) {
+            ctx.ui.notify(`shadow-minds: ${notifyText(thinkingResolution.error)}`, "warning");
+            return { ok: false, message: thinkingResolution.error };
+          }
           const outcome = runtime.startManualRun({
             definition,
             ...(input.note ? { note: input.note } : {}),
@@ -202,12 +239,11 @@ function makeServices(
               projectRules: snapshot.projectRules,
               cwd: snapshot.cwd,
             }),
-            trajectory: captureTrajectory(ctx),
+            trajectory: captureTrajectory(ctx, deliveredEvidence(runtime)),
             cwd: snapshot.cwd,
-            modelResolution: resolveShadowModel(definition.model, ctx),
-            ...(definition.thinking ?? ctx.thinkingLevel
-              ? { thinkingLevel: definition.thinking ?? ctx.thinkingLevel }
-              : {}),
+            modelResolution,
+            ...(thinkingResolution.level ? { thinkingLevel: thinkingResolution.level } : {}),
+            envelope: resolution.envelope,
           });
           if (!outcome.started) {
             ctx.ui.notify(`shadow-minds: ${outcome.reason}`, "warning");

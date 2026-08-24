@@ -530,7 +530,9 @@ try {
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({ version: 2, banner: { enabled: true } }));
   const shadowDefaults = loadConfig(projectDir).config.shadowMinds;
   assert.equal(shadowDefaults.enabled, false, "shadowMinds must be disabled by default");
-  assert.deepEqual({ ...shadowDefaults.defaults }, {
+  assert.equal(shadowDefaults.defaults.thinking, undefined, "the optional Shadow thinking default inherits the parent when unset");
+  const { thinking: _defaultThinking, ...numericShadowDefaults } = shadowDefaults.defaults;
+  assert.deepEqual(numericShadowDefaults, {
     maxConcurrentRuns: 2,
     maxAutomaticStartsPerTask: 8,
     runTimeoutSeconds: 120,
@@ -545,18 +547,19 @@ try {
     version: 2,
     shadowMinds: {
       enabled: true,
-      defaults: { maxConcurrentRuns: 3, runTimeoutSeconds: 90 },
+      defaults: { maxConcurrentRuns: 3, runTimeoutSeconds: 90, thinking: "medium" },
     },
   }));
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
     version: 2,
-    shadowMinds: { defaults: { runTimeoutSeconds: 45, maxQueuedShadowIds: 64 } },
+    shadowMinds: { defaults: { runTimeoutSeconds: 45, maxQueuedShadowIds: 64, thinking: "high" } },
   }));
   const shadowLayered = loadConfig(projectDir).config.shadowMinds;
   assert.equal(shadowLayered.enabled, true, "the agent master switch enables shadowMinds");
   assert.equal(shadowLayered.defaults.maxConcurrentRuns, 3, "agent defaults apply when the project omits the field");
   assert.equal(shadowLayered.defaults.runTimeoutSeconds, 45, "project defaults override agent defaults per field under the caps");
   assert.equal(shadowLayered.defaults.maxQueuedShadowIds, 64);
+  assert.equal(shadowLayered.defaults.thinking, "high", "project defaults override the agent thinking default");
   assert.equal(shadowLayered.defaults.maxModelTurnsPerRun, 8, "unmentioned defaults stay at package values");
 
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
@@ -594,6 +597,13 @@ try {
   }));
   assert.ok(loadConfig(projectDir).diagnostics.some((d) => /config ignored/.test(d.message)), "unknown shadowMinds.defaults fields reject the layer");
 
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: { defaults: { thinking: "turbo" } },
+  }));
+  const invalidThinking = loadConfig(projectDir);
+  assert.equal(invalidThinking.config.shadowMinds.enabled, false, "an invalid thinking default fails closed");
+  assert.ok(invalidThinking.diagnostics.some((d) => /config ignored/.test(d.message)), "invalid thinking defaults reject the layer");
   writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
     version: 2,
     shadowMinds: { enabled: true, defaults: { completionGateWindowSeconds: 31 } },
