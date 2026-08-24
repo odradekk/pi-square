@@ -240,7 +240,7 @@ function baseRequest(overrides = {}) {
   const terminal = await runtime.startManualRun(baseRequest()).done;
   assert.equal(terminal.phase, "error");
   assert.ok(terminal.message.includes("401"), "model/auth failure is observable");
-  assert.ok(terminal.message.length <= 400, "the failure message stays bounded");
+  assert.ok(terminal.message.length <= 200, "the failure message stays bounded to the run-message cap");
   assert.equal(runtime.snapshot().results.length, 0, "an infrastructure failure never becomes a cognitive payload");
 }
 

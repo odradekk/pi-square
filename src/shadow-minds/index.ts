@@ -65,8 +65,8 @@ export interface ShadowMindsState {
   cwd: string;
   projectTrusted: boolean;
   runtime: ShadowRuntime;
-  /** The frozen task snapshot, captured live when no turn has started yet. */
-  captureTaskSnapshot(): ShadowTaskSnapshot;
+  /** The frozen task snapshot, captured from one command context. */
+  captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot;
   refresh(cwd: string, projectTrusted: boolean): void;
   managerSnapshot(): ShadowManagerSnapshot;
 }
@@ -165,7 +165,7 @@ function makeServices(
         if (definition.tools?.length !== 0) {
           return { ok: false, message: "Manual runs currently support only definitions with the explicit empty tool list (tools: [])." };
         }
-        const snapshot = state.captureTaskSnapshot();
+        const snapshot = state.captureTaskSnapshot(ctx);
         const outcome = runtime.startManualRun({
           definition,
           ...(input.note ? { note: input.note } : {}),
@@ -335,13 +335,16 @@ export default function registerShadowMinds(
       config: effectiveConfig,
       ...(runtimeDeps ? { deps: runtimeDeps } : {}),
     }),
-    captureTaskSnapshot(): ShadowTaskSnapshot {
-      const options = (ctx as ExtensionCommandContext | undefined)?.getSystemPromptOptions?.();
+    captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot {
+      // `getSystemPromptOptions` exists only on command contexts in Pi
+      // 0.84.2 — the session-start event context never carries it — so the
+      // command context that opened the manager is the capture source.
+      const options = commandCtx.getSystemPromptOptions?.();
       const parentCore = parentCoreFromOptions(options);
       return {
         ...(parentCore ? { parentCore } : {}),
         projectRules: rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles),
-        cwd: ctx?.cwd ?? state.cwd,
+        cwd: commandCtx.cwd ?? state.cwd,
       };
     },
     refresh(cwd: string, projectTrusted: boolean): void {
@@ -401,16 +404,21 @@ export default function registerShadowMinds(
 
   // Terminal manual-run outcomes surface as bounded session notifications;
   // operational failures never become cognitive payloads.
-  const terminalPhases = new Set(["submitted", "silent", "cancelled", "timeout", "max_turns", "max_tool_calls", "error"]);
+  // Every non-running phase is terminal, so a phase change away from running
+  // notifies once; entries for runs that left the history are pruned.
   const seenPhases = new Map<string, string>();
   state.runtime.subscribe(() => {
     const sessionCtx = ctx;
     if (!sessionCtx?.hasUI) return;
-    for (const run of state.runtime.snapshot().runs) {
+    const runs = state.runtime.snapshot().runs;
+    const liveIds = new Set(runs.map((run) => run.id));
+    for (const stale of seenPhases.keys()) {
+      if (!liveIds.has(stale)) seenPhases.delete(stale);
+    }
+    for (const run of runs) {
       const previous = seenPhases.get(run.id);
       seenPhases.set(run.id, run.phase);
       if (previous === run.phase || run.phase === "running") continue;
-      if (!terminalPhases.has(run.phase)) continue;
       const outcomeMessage = run.phase === "submitted"
         ? `shadow-minds: ${run.shadowId} finished — result in the /shadow inbox`
         : `shadow-minds: ${run.shadowId} run ended (${run.phase}${run.message ? `: ${run.message}` : ""})`;

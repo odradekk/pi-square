@@ -9,8 +9,8 @@ const { buildTrajectory, SHADOW_TRAJECTORY_MAX_CHARS, SHADOW_TRAJECTORY_MESSAGE_
   join(packageRoot, "src", "shadow-minds", "trajectory.ts"),
 );
 
-function message(role, content) {
-  return { type: "message", message: { role, content } };
+function message(role, content, extra = {}) {
+  return { type: "message", message: { role, content, ...extra } };
 }
 
 // ── text retention and thinking removal ────────────────────────────
@@ -19,7 +19,7 @@ function message(role, content) {
   const entries = [
     message("user", "Fix the login bug."),
     message("assistant", [{ type: "thinking", thinking: "private chain of thought" }, { type: "text", text: "I will inspect auth." }]),
-    message("toolResult", [{ type: "tool_result", toolName: "read", output: "file body", isError: false }]),
+    message("toolResult", [{ type: "text", text: "file body" }], { toolName: "read", isError: false }),
   ];
   const trajectory = buildTrajectory(entries);
   assert.ok(trajectory.text.includes("[user] Fix the login bug."), "user text is retained");
@@ -35,7 +35,7 @@ function message(role, content) {
 {
   // A tool error is observable without its body.
   const trajectory = buildTrajectory([
-    message("toolResult", [{ type: "tool_result", toolName: "bash", output: "npm ERR! secret-token", isError: true }]),
+    message("toolResult", [{ type: "text", text: "npm ERR! secret-token" }], { toolName: "bash", isError: true }),
   ]);
   assert.ok(trajectory.text.includes("tool bash error"), "a failing tool is marked error");
   assert.ok(!trajectory.text.includes("secret-token"), "the failing body stays out");
@@ -43,8 +43,9 @@ function message(role, content) {
 
 {
   // Assistant-requested tools appear as a request line without arguments.
+  // Real Pi shape: assistant tool calls are content parts of type "toolCall".
   const trajectory = buildTrajectory([
-    message("assistant", [{ type: "tool_call", name: "grep", arguments: { pattern: "secret" } }]),
+    message("assistant", [{ type: "toolCall", id: "c1", name: "grep", arguments: { pattern: "secret" } }]),
   ]);
   assert.ok(trajectory.text.includes("[assistant] requests grep"), "the tool request is summarized by name");
   assert.ok(!trajectory.text.includes("secret"), "raw tool arguments are never exposed");
@@ -66,7 +67,7 @@ function message(role, content) {
 {
   const entries = [
     message("user", "same input"),
-    message("toolResult", [{ type: "tool_result", toolName: "read", output: "x" }]),
+    message("toolResult", [{ type: "text", text: "x" }], { toolName: "read", isError: false }),
   ];
   assert.equal(buildTrajectory(entries).text, buildTrajectory(entries).text, "identical entries produce identical bytes");
 }

@@ -21,7 +21,7 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Editor, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
-import type { ShadowMindsDefaults } from "../core/config";
+import { DEFAULT_SHADOW_MINDS, type ShadowMindsDefaults } from "../core/config";
 import type { FileIdentity } from "../core/safe-write";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import { shadowDefinitionContextFingerprint } from "./definitions";
@@ -1467,16 +1467,16 @@ function isNoToolTrial(definition: EffectiveShadowDefinition): boolean {
 }
 
 function runBoundLabel(definition: EffectiveShadowDefinition, defaults?: ShadowMindsDefaults): string {
-  const timeout = definition.timeoutSeconds ?? defaults?.runTimeoutSeconds ?? 120;
-  const turns = definition.maxTurns ?? defaults?.maxModelTurnsPerRun ?? 8;
-  const toolCalls = definition.maxToolCalls ?? defaults?.maxToolCallsPerRun ?? 16;
+  const timeout = definition.timeoutSeconds ?? defaults?.runTimeoutSeconds ?? DEFAULT_SHADOW_MINDS.runTimeoutSeconds;
+  const turns = definition.maxTurns ?? defaults?.maxModelTurnsPerRun ?? DEFAULT_SHADOW_MINDS.maxModelTurnsPerRun;
+  const toolCalls = definition.maxToolCalls ?? defaults?.maxToolCallsPerRun ?? DEFAULT_SHADOW_MINDS.maxToolCallsPerRun;
   return `timeout ${timeout}s · max ${turns} turns · max ${toolCalls} tool calls`;
 }
 
 function runDetailLabel(run: ShadowRunView): string {
   const base = `${run.phase} · ${run.shadowId}`;
   if (run.phase === "running") return base;
-  const duration = run.endedAt !== undefined ? ` · ${(run.endedAt - run.startedAt) / 1000}s` : "";
+  const duration = run.endedAt !== undefined ? ` · ${Math.round((run.endedAt - run.startedAt) / 100) / 10}s` : "";
   return `${base}${duration}${run.message ? ` — ${run.message}` : ""}`;
 }
 

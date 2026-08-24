@@ -1,5 +1,5 @@
 /**
- * Session-scoped Shadow runtime (odradeck/pi-square#155).
+ * Session-scoped Shadow runtime (odradekk/pi-square#155).
  *
  * Owns the manual-run lifecycle: start refusal (master switch, concurrency
  * slots, note bound, model resolution), one fresh non-resumable child
@@ -246,7 +246,7 @@ export function createShadowRuntime(input: {
 
     const { definition } = request;
     const view: ShadowRunView = {
-      id: `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `run-${deps.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       shadowId: definition.id,
       shadowName: definition.name,
       trigger: "manual",

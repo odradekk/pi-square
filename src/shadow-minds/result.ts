@@ -14,7 +14,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ChildSessionUsage } from "../subagents/child-session-executor";
-import { SHADOW_PAYLOAD_MAX_CHARS, validateShadowPayload, type ShadowOutputSchema } from "./parser";
+import { validateShadowPayload, type ShadowOutputSchema } from "./parser";
 
 export const SUBMIT_SHADOW_RESULT_TOOL = "submit_shadow_result";
 
@@ -217,5 +217,3 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
     },
   };
 }
-
-export { SHADOW_PAYLOAD_MAX_CHARS };

@@ -1,5 +1,5 @@
 /**
- * Deterministic bounded parent trajectory (odradeck/pi-square#155).
+ * Deterministic bounded parent trajectory (odradekk/pi-square#155).
  *
  * V1 manual-run trajectory: the parent Agent's currently visible branch as
  * reference-only text. Parent reasoning/thinking is removed, tool activity
@@ -27,7 +27,7 @@ interface LoosePart {
 
 interface LooseEntry {
   type?: string;
-  message?: { role?: string; content?: unknown };
+  message?: { role?: string; content?: unknown; toolName?: unknown; isError?: unknown };
   summary?: string;
 }
 
@@ -56,22 +56,24 @@ function renderEntry(entry: LooseEntry): { lines: string[]; clipped: boolean } {
   const role = entry.message.role;
   const content = entry.message.content;
 
+  // Pi 0.84.2 toolResult messages carry toolName and isError at the message
+  // top level; the content is plain text/image parts and is never exposed.
   if (role === "toolResult") {
-    const parts = Array.isArray(content) ? (content.filter((part) => part && typeof part === "object") as LoosePart[]) : [];
+    const toolName = entry.message.toolName;
+    if (typeof toolName !== "string") return { lines: [], clipped: false };
     return {
-      lines: parts
-        .filter((part) => part.type === "tool_result" && typeof (part.toolName ?? part.name) === "string")
-        .map((part) => `tool ${String(part.toolName ?? part.name)} ${part.isError ? "error" : "ok"}`),
+      lines: [`tool ${toolName} ${entry.message.isError ? "error" : "ok"}`],
       clipped: false,
     };
   }
 
   if (role === "user" || role === "assistant") {
     const lines: string[] = [];
+    // Assistant tool calls are content parts of type "toolCall" with a name.
     const raw = Array.isArray(content) ? (content.filter((part) => part && typeof part === "object") as LoosePart[]) : [];
     for (const part of raw) {
-      if (part.type === "tool_call" && typeof (part.name ?? part.toolName) === "string") {
-        lines.push(`[${role}] requests ${String(part.name ?? part.toolName)}`);
+      if (part.type === "toolCall" && typeof part.name === "string") {
+        lines.push(`[${role}] requests ${part.name}`);
       }
     }
     const text = textParts(content).join("\n").trim();

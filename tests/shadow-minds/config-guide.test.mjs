@@ -376,10 +376,22 @@ function fakePi() {
       { type: "message", message: { role: "user", content: "Investigate the flaky parser test." } },
       { type: "message", message: { role: "assistant", content: [{ type: "text", text: "I will inspect the tokenizer." }] } },
     ];
-    const ctx = {
+    // The session-start event context is a base Pi context: it carries no
+    // getSystemPromptOptions. Only the command context exposes it, so the
+    // capture path must go through the command context that opened the
+    // manager — exactly as in production.
+    const sessionCtx = {
       cwd: project,
       hasUI: true,
       isProjectTrusted: () => true,
+      ui: {
+        custom: async () => {},
+        confirm: async () => true,
+        notify(message, level) { notifications.push({ message, level }); },
+      },
+    };
+    const ctx = {
+      ...sessionCtx,
       model: { provider: "acme", id: "parent-model" },
       modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 200_000 }) },
       sessionManager: {
@@ -387,15 +399,10 @@ function fakePi() {
         getBranch: () => branchEntries,
       },
       getSystemPromptOptions: () => ({
-        customPrompt: "Answer concisely.",
-        appendSystemPrompt: "Prefer examples.",
-        contextFiles: [{ path: "/repo/AGENTS.md", content: "Run npm test before claiming done." }],
+        customPrompt: "Live core policy.",
+        appendSystemPrompt: "Prefer tables.",
+        contextFiles: [{ path: "/repo/AGENTS.md", content: "Live project rule." }],
       }),
-      ui: {
-        custom: async () => {},
-        confirm: async () => true,
-        notify(message, level) { notifications.push({ message, level }); },
-      },
     };
 
     const created = [];
@@ -432,16 +439,10 @@ function fakePi() {
     const confirmations = new ConfirmationCoordinator();
     const services = __testables.makeServices(state, ctx, confirmations);
 
-    // Open the parent session so runtime notifications have a UI context.
-    await harness.handlers.get("session_start")({}, ctx);
+    // Open the parent session with the base context; runtime notifications
+    // have a UI surface and the capture cannot use this context.
+    await harness.handlers.get("session_start")({}, sessionCtx);
     assert.equal(harness.handlers.has("before_agent_start"), false, "prompt composition keeps its single-owner contract");
-
-    // A manual run freezes authority from the parent's current prompt options.
-    ctx.getSystemPromptOptions = () => ({
-      customPrompt: "Live core policy.",
-      appendSystemPrompt: "Prefer tables.",
-      contextFiles: [{ path: "/repo/AGENTS.md", content: "Live project rule." }],
-    });
 
     const refused = services.runtime.runManual({ shadowId: "missing-role" });
     assert.equal(refused.ok, false);

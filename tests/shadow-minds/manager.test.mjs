@@ -596,7 +596,6 @@ function render(manager, width = 100) {
   assert.match(deletionReview, /EFFECTIVE CHANGE[\s\S]*enabled: true → false/);
 }
 
-console.log("shadow-minds manager tests: OK");
 
 // ── Manual-run and inbox flows with runtime services ───────────────
 
@@ -798,3 +797,5 @@ function makeRuntimeService(initial) {
   manager.handleInput("\r");
   assert.deepEqual(service.state.deletions, ["shr-1"], "delete removes the result through the runtime");
 }
+
+console.log("shadow-minds manager tests: OK");
