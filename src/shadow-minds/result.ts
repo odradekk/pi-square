@@ -16,7 +16,13 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ChildSessionUsage } from "../subagents/child-session-executor";
-import { SHADOW_PAYLOAD_MAX_CHARS, validateShadowPayload, type ShadowOutputSchema } from "./parser";
+import {
+  SHADOW_PAYLOAD_MAX_CHARS,
+  validateShadowPayload,
+  type ShadowDelivery,
+  type ShadowOutputSchema,
+  type ShadowTrigger,
+} from "./parser";
 
 export const SUBMIT_SHADOW_RESULT_TOOL = "submit_shadow_result";
 export const SUBMIT_SHADOW_RESULT_DESCRIPTION = "Submit the final Shadow result. The payload must be a JSON string matching the output schema. A valid submission completes the run; an invalid one returns the exact fields to fix.";
@@ -168,7 +174,26 @@ export function summarizeShadowResult(payload: unknown): string {
 export type ShadowResultDelivery = "notified" | "pending" | "delivered";
 export type ShadowResultAttention = "unread" | "read" | "dismissed";
 
-export interface ShadowResultEntity {
+/** Task identity of the activation that produced a result (scheduling fills it). */
+export interface ShadowTaskIdentity {
+  epoch: number;
+  parentEntryId?: string;
+}
+
+/** Bounded provenance and contract metadata every result records (#157). */
+export interface ShadowResultMetadata {
+  /** Hash of the effective definition source that produced the result. */
+  definitionHash?: string;
+  /** Hash of the effective output schema the payload validated against. */
+  schemaHash?: string;
+  /** The definition's configured delivery policy at run time. */
+  configuredDelivery?: ShadowDelivery;
+  /** Trigger reasons of the activation; manual runs record `manual`. */
+  triggers?: ShadowTrigger[];
+  taskIdentity?: ShadowTaskIdentity;
+}
+
+export interface ShadowResultEntity extends ShadowResultMetadata {
   id: string;
   shadowId: string;
   shadowName: string;
@@ -183,10 +208,10 @@ export interface ShadowResultEntity {
   usage?: ChildSessionUsage;
 }
 
-/** Default in-memory retention; the persistent inbox (#157) keeps the same bound. */
+/** Default in-memory retention; the persistent inbox keeps the same bound. */
 export const SHADOW_INBOX_DEFAULT_MAX_RESULTS = 100;
 
-export interface ShadowInboxAddInput {
+export interface ShadowInboxAddInput extends ShadowResultMetadata {
   shadowId: string;
   shadowName: string;
   payload: unknown;
@@ -197,19 +222,35 @@ export interface ShadowInboxAddInput {
 }
 
 export interface ShadowInbox {
+  /** Whether the inbox survives the parent session (persistent partition). */
+  readonly persistent: boolean;
   add(input: ShadowInboxAddInput): ShadowResultEntity;
   list(): ShadowResultEntity[];
+  /**
+   * Atomic `notified → pending` delivery transition; the confirmed-delivery
+   * slice drives it through to `delivered`. Refused for any other state.
+   */
+  send(id: string): boolean;
   markRead(id: string): boolean;
   dismiss(id: string): boolean;
   delete(id: string): boolean;
   clear(): void;
 }
 
+/** Retention order: oldest resolved (read, dismissed, or delivered) first. */
+export function evictionCandidate(entries: readonly ShadowResultEntity[]): ShadowResultEntity | undefined {
+  return [...entries]
+    .filter((entry) => entry.attention !== "unread" || entry.delivery === "delivered")
+    .sort((a, b) => a.createdAt - b.createdAt)[0]
+    ?? [...entries].sort((a, b) => a.createdAt - b.createdAt)[0];
+}
+
 /**
  * Session-scoped in-memory result inbox. Newest first; every state
- * transition is observable and unknown IDs are refused. Retention evicts
- * the oldest read or dismissed entries before unread ones, matching the
- * persistent retention order (#157).
+ * transition is observable and unknown IDs are refused. `send` performs the
+ * atomic `notified → pending` delivery transition. Retention evicts the
+ * oldest resolved (read, dismissed, or delivered) entries before unread
+ * notified ones, matching the persistent retention order.
  */
 export function createShadowInbox(options?: { maxResults?: number; makeId?: () => string }): ShadowInbox {
   const maxResults = Math.min(
@@ -222,16 +263,14 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
 
   const evictIfNeeded = () => {
     while (entries.length > maxResults) {
-      const candidate = [...entries]
-        .filter((entry) => entry.attention !== "unread")
-        .sort((a, b) => a.createdAt - b.createdAt)[0]
-        ?? [...entries].sort((a, b) => a.createdAt - b.createdAt)[0];
+      const candidate = evictionCandidate(entries);
       if (!candidate) return;
       entries.splice(entries.indexOf(candidate), 1);
     }
   };
 
   return {
+    persistent: false,
     add(input) {
       const entity: ShadowResultEntity = {
         id: makeId(),
@@ -246,6 +285,11 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
         createdAt: input.createdAt,
         ...(input.model ? { model: input.model } : {}),
         ...(input.usage ? { usage: input.usage } : {}),
+        ...(input.definitionHash ? { definitionHash: input.definitionHash } : {}),
+        ...(input.schemaHash ? { schemaHash: input.schemaHash } : {}),
+        ...(input.configuredDelivery ? { configuredDelivery: input.configuredDelivery } : {}),
+        ...(input.triggers ? { triggers: [...input.triggers] } : {}),
+        ...(input.taskIdentity ? { taskIdentity: clone(input.taskIdentity) } : {}),
       };
       entries.unshift(entity);
       evictIfNeeded();
@@ -253,6 +297,12 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
     },
     list() {
       return entries.map((entry) => clone(entry));
+    },
+    send(id) {
+      const entry = entries.find((item) => item.id === id);
+      if (!entry || entry.delivery !== "notified") return false;
+      entry.delivery = "pending";
+      return true;
     },
     markRead(id) {
       const entry = entries.find((item) => item.id === id);

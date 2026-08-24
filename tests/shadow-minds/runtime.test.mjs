@@ -638,4 +638,63 @@ function baseRequest(overrides = {}) {
   assert.equal(runtime.snapshot().runs[0].requests, undefined);
 }
 
+// ── persistent inbox and debug wiring (#157) ─────────────────────
+
+{
+  // An injected persistent inbox survives runtime resets; the memory
+  // fallback is wiped by the same reset.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "persisted finding" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  assert.equal(runtime.snapshot().results.length, 1);
+  runtime.reset("session switch");
+  assert.equal(runtime.snapshot().results.length, 0, "the in-memory inbox is wiped");
+
+  const { createShadowInbox } = await load(join(packageRoot, "src", "shadow-minds", "result.ts"));
+  const persistent = createShadowInbox();
+  Object.defineProperty(persistent, "persistent", { value: true });
+  const second = createShadowRuntime({ config: () => config(), deps: makeFake({ submit: JSON.stringify({ summary: "kept" }) }).deps, inbox: persistent });
+  await second.startManualRun(baseRequest()).done;
+  assert.equal(second.snapshot().results.length, 1);
+  second.reset("session switch");
+  assert.equal(second.snapshot().results.length, 1, "a persistent inbox survives the reset");
+}
+
+{
+  // A debug definition persists its child session and finalizes the log.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "debugged" }) });
+  const debugCalls = [];
+  fake.deps.finalizeDebug = (input) => debugCalls.push(input);
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const run = runtime.startManualRun(baseRequest({
+    definition: definition({ debug: true }),
+    debug: { sessionDir: "/sessions/alpha", sessionId: "sess-9" },
+  }));
+  await run.done;
+  assert.ok(fake.created[0].debugDir?.includes("/sessions/alpha"), "the child receives the debug directory");
+  assert.ok(fake.created[0].debugDir?.includes("run-"), "the debug directory is keyed by run id");
+  assert.equal(debugCalls.length, 1);
+  assert.equal(debugCalls[0].phase, "submitted");
+  assert.equal(debugCalls[0].shadowId, "session-synthesizer");
+  assert.ok(Number.isFinite(debugCalls[0].endedAt));
+}
+
+{
+  // A non-debug definition never receives a debug directory.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "normal" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  assert.equal(fake.created[0].debugDir, undefined);
+}
+
+{
+  // Result entities record provenance metadata.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "provenance" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  const entity = runtime.snapshot().results[0];
+  assert.equal(entity.configuredDelivery, "notify");
+  assert.match(entity.schemaHash, /^[0-9a-f]{16}$/);
+}
+
 console.log("shadow-minds runtime tests: OK");
