@@ -18,6 +18,7 @@ import type {
 import { ConfirmationCoordinator } from "../core/confirmation";
 import type { PiSquareConfig } from "../core/config";
 import { getAgentPath } from "../core/paths";
+import { isAbsolute, relative, resolve } from "node:path";
 import {
   buildShadowConfigGuide,
   renderShadowConfigGuide,
@@ -84,18 +85,15 @@ function makeServices(
       return state.managerSnapshot();
     },
     scopeOf(filePath: string): "agent" | "project" | undefined {
-      const candidates = [
-        { scope: "agent" as const, dir: getAgentPath("shadow-minds") },
-        { scope: "project" as const, dir: shadowDefinitionScopeDir("project", ctx.cwd) },
-      ];
-      for (const candidate of candidates) {
-        try {
-          if (filePath === shadowOverlayFilePath(candidate.scope, ctx.cwd, filePath.split(/[\\/]/).pop()?.replace(/\.md$/i, "") ?? "")) {
-            return candidate.scope;
-          }
-        } catch {
-          // Scope resolution is best-effort mapping for menu labels.
-        }
+      const within = (dir: string): boolean => {
+        const rel = relative(resolve(dir), resolve(filePath));
+        return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+      };
+      if (within(getAgentPath("shadow-minds"))) return "agent";
+      try {
+        if (within(shadowDefinitionScopeDir("project", ctx.cwd))) return "project";
+      } catch {
+        // Project scope resolution is unavailable; only the agent scope maps.
       }
       return undefined;
     },
@@ -145,7 +143,7 @@ function makeServices(
         return { ok: true, message: `Saved ${fields.id} ${scope} overlay.` };
       } catch (error) {
         const outcome = outcomeOf(error, "saving the overlay failed");
-        ctx.ui.notify(`shadow-minds: ${outcome.message}`, outcome.ok ? "info" : "warning");
+        ctx.ui.notify(`shadow-minds: ${outcome.message}`, "warning");
         return outcome;
       }
     },
@@ -166,14 +164,18 @@ function makeServices(
         return { ok: true, message };
       } catch (error) {
         const outcome = outcomeOf(error, "deleting the overlay failed");
-        ctx.ui.notify(`shadow-minds: ${outcome.message}`, outcome.ok ? "info" : "warning");
+        ctx.ui.notify(`shadow-minds: ${outcome.message}`, "warning");
         return outcome;
       }
     },
   };
 }
 
-export default function registerShadowMinds(pi: ExtensionAPI, config?: () => PiSquareConfig): ShadowMindsState {
+export default function registerShadowMinds(
+  pi: ExtensionAPI,
+  confirmations: ConfirmationCoordinator = new ConfirmationCoordinator(),
+  config?: () => PiSquareConfig,
+): ShadowMindsState {
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
     cwd: process.cwd(),
@@ -188,8 +190,6 @@ export default function registerShadowMinds(pi: ExtensionAPI, config?: () => PiS
       return snapshot(state.registry, state.projectTrusted, effective);
     },
   };
-
-  const confirmations = new ConfirmationCoordinator();
 
   pi.registerMessageRenderer(SHADOW_CONFIG_GUIDE_TYPE, renderShadowConfigGuide);
 
@@ -214,8 +214,9 @@ export default function registerShadowMinds(pi: ExtensionAPI, config?: () => PiS
     },
   });
 
+  // The shared session coordinator is reset by the extension entry on
+  // session start and shutdown; a private default stays unreset here.
   pi.on("session_start", async (_event, ctx) => {
-    confirmations.reset("Shadow Minds session start");
     state.refresh(ctx.cwd, ctx.isProjectTrusted());
     if (ctx.hasUI && state.registry.diagnostics.length > 0) {
       const suffix = state.registry.diagnostics.length > 1

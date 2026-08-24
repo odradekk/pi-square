@@ -25,10 +25,9 @@ import {
   unlinkIfSameNode,
   type SafeWriteTiming,
 } from "../core/safe-write";
-import { isWithinWorkspace } from "../core/paths";
-import { getAgentPath } from "../core/paths";
+import { getAgentPath, isWithinWorkspace } from "../core/paths";
 import { previewShadowDefinition, shadowProjectScopeLocation } from "./definitions";
-import { SHADOW_ID_MAX_CHARS } from "./parser";
+import { SHADOW_ID_PATTERN } from "./parser";
 import type { ShadowDefinitionFields } from "./parser";
 import { serializeShadowDefinition } from "./serialize";
 
@@ -76,8 +75,6 @@ interface OverlayScopePaths {
   readonly lockPath: string;
 }
 
-const ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
-
 function canonicalExistingDirectory(path: string, label: string): string {
   let canonical: string;
   try {
@@ -101,8 +98,8 @@ function resolveOverlayPaths(
   cwd: string,
   id: string,
 ): OverlayScopePaths {
-  if (!ID_PATTERN.test(id)) {
-    throw failShadow("SHADOW_CANDIDATE_INVALID", `Shadow definition id must match ${ID_PATTERN} (got '${id}').`);
+  if (!SHADOW_ID_PATTERN.test(id)) {
+    throw failShadow("SHADOW_CANDIDATE_INVALID", `Shadow definition id must match ${SHADOW_ID_PATTERN} (got '${id}').`);
   }
   if (scope === "agent") {
     const base = canonicalExistingDirectory(getAgentPath(), "agent directory");

@@ -57,10 +57,13 @@ export const SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX = 32;
 export const SHADOW_TRIGGERS = ["tool_turn", "failure", "mutation", "completion"] as const;
 export type ShadowTrigger = (typeof SHADOW_TRIGGERS)[number];
 
-export type ShadowDelivery = "steer" | "wake" | "notify";
-export type ShadowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export const SHADOW_DELIVERIES = ["steer", "wake", "notify"] as const;
+export type ShadowDelivery = (typeof SHADOW_DELIVERIES)[number];
+export const SHADOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ShadowThinkingLevel = (typeof SHADOW_THINKING_LEVELS)[number];
 
-const SHADOW_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
+/** The single shared ID pattern; writers and the manager reuse it. */
+export const SHADOW_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
 const SHADOW_TOOL_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const SHADOW_MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 // ── Output schema subset ─────────────────────────────────────────────
@@ -862,10 +865,10 @@ function normalizeDefinitionFields(
 
   const delivery = frontmatter.delivery;
   if (delivery !== undefined) {
-    if (delivery !== "steer" && delivery !== "wake" && delivery !== "notify") {
+    if (typeof delivery !== "string" || !SHADOW_DELIVERIES.includes(delivery as ShadowDelivery)) {
       errors.push(`${source}: delivery must be steer, wake, or notify`);
     } else {
-      fields.delivery = delivery;
+      fields.delivery = delivery as ShadowDelivery;
     }
   }
 
@@ -894,7 +897,7 @@ function normalizeDefinitionFields(
 
   const thinking = frontmatter.thinking;
   if (thinking !== undefined) {
-    const levels: ShadowThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+    const levels = SHADOW_THINKING_LEVELS;
     if (typeof thinking !== "string" || !levels.includes(thinking as ShadowThinkingLevel)) {
       errors.push(`${source}: thinking must be one of ${levels.join(", ")}`);
     } else {

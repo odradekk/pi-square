@@ -21,16 +21,20 @@ import { Editor, matchesKey, truncateToWidth, visibleWidth, type Component, type
 import type { ShadowMindsDefaults } from "../core/config";
 import type { EffectiveShadowDefinition, ShadowDefinitionRegistry } from "./definitions";
 import { MISSING_OVERLAY_FINGERPRINT } from "./overlays";
-import type { ShadowDefinitionFields, ShadowTrigger } from "./parser";
+import {
+  SHADOW_DELIVERIES,
+  SHADOW_ID_PATTERN,
+  SHADOW_THINKING_LEVELS,
+  SHADOW_TRIGGERS,
+  type ShadowDefinitionFields,
+  type ShadowTrigger,
+} from "./parser";
 import { newShadowDefinitionDraft } from "./serialize";
 
 const LIST_WIDTH = 34;
 const BODY_PREVIEW_LINES = 8;
 const DIAGNOSTIC_LINES = 4;
 const MAX_REVIEW_CONTENT = 4_000;
-const SHADOW_TRIGGERS: readonly ShadowTrigger[] = ["tool_turn", "failure", "mutation", "completion"];
-const DELIVERIES = ["steer", "wake", "notify"] as const;
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 type WritableScope = "agent" | "project";
 
@@ -224,7 +228,7 @@ export class ShadowManager implements Component, Focusable {
   }
 
   invalidate(): void {
-    // Stateless view: nothing caches between renders.
+    if (this.view.kind === "editor") this.view.editor.invalidate();
   }
 
   private count(): number {
@@ -362,11 +366,11 @@ export class ShadowManager implements Component, Focusable {
     return { id: definition.id };
   }
 
-  private reviewSave(
+  private async reviewSave(
     before: EffectiveShadowDefinition | undefined,
     scope: WritableScope,
     fields: ShadowDefinitionFields,
-  ): void {
+  ): Promise<void> {
     if (!this.services) {
       this.errorFlash("Overlay writes are unavailable in this session.");
       return;
@@ -376,6 +380,10 @@ export class ShadowManager implements Component, Focusable {
       this.errorFlash(preview.errors.join(" ") || "The effective definition would be invalid.");
       return;
     }
+    // Capture the review fingerprint when the review opens. The committed
+    // write CAS-checks against it, so an external change during the review
+    // window is refused instead of silently overwritten (#154 AC4).
+    const review = await this.services.overlaySnapshot(scope, fields.id);
     const previewDefinition = preview.definition;
     const change = effectiveChange(before, previewDefinition);
     const body = [
@@ -402,10 +410,7 @@ export class ShadowManager implements Component, Focusable {
               ...change.slice(0, 6),
             ],
           },
-          async () => {
-            const snapshot = await this.services!.overlaySnapshot(scope, fields.id);
-            return this.services!.save(scope, fields, snapshot.fingerprint);
-          },
+          async () => this.services!.save(scope, fields, review.fingerprint),
         );
       },
     });
@@ -420,7 +425,7 @@ export class ShadowManager implements Component, Focusable {
   ): void {
     if (value === undefined) delete (fields as unknown as Record<string, unknown>)[field];
     else (fields as unknown as Record<string, unknown>)[field] = value;
-    this.reviewSave(definition, scope, fields);
+    void this.reviewSave(definition, scope, fields);
   }
 
   private editFieldValue(
@@ -434,7 +439,7 @@ export class ShadowManager implements Component, Focusable {
       this.openChoice({
         eyebrow: "OVERLAYS / VALUE",
         title: `Set ${field}`,
-        items: DELIVERIES.map((delivery) => ({
+        items: SHADOW_DELIVERIES.map((delivery) => ({
           id: delivery,
           label: delivery,
           onSelect: () => this.setFieldValue(definition, scope, field, fields, delivery),
@@ -446,7 +451,7 @@ export class ShadowManager implements Component, Focusable {
       this.openChoice({
         eyebrow: "OVERLAYS / VALUE",
         title: `Set ${field}`,
-        items: THINKING_LEVELS.map((level) => ({
+        items: SHADOW_THINKING_LEVELS.map((level) => ({
           id: level,
           label: level,
           onSelect: () => this.setFieldValue(definition, scope, field, fields, level),
@@ -635,7 +640,7 @@ export class ShadowManager implements Component, Focusable {
   private toggleField(definition: EffectiveShadowDefinition, field: "enabled" | "hidden"): void {
     const next = !definition[field];
     this.chooseScope(`${next ? "Enable" : "Disable"} ${definition.id}`, `The overlay sets ${field}: ${next}.`, (scope) => {
-      this.reviewSave(definition, scope, { ...this.layerFields(definition, scope), [field]: next });
+      void this.reviewSave(definition, scope, { ...this.layerFields(definition, scope), [field]: next });
     });
   }
 
@@ -653,7 +658,7 @@ export class ShadowManager implements Component, Focusable {
         submitLabel: "continue",
         validate: (value) => {
           const id = value.trim();
-          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) return "The id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}.";
+          if (!SHADOW_ID_PATTERN.test(id)) return `The id must match ${SHADOW_ID_PATTERN}.`;
           return undefined;
         },
         onSubmit: (idValue) => {
@@ -675,12 +680,12 @@ export class ShadowManager implements Component, Focusable {
                 validate: (value) => (value.trim() ? undefined : "A non-empty body is required."),
                 onSubmit: (bodyValue) => {
                   void (async () => {
-                    const snapshot = await this.services!.overlaySnapshot(scope, id);
-                    if (snapshot.fingerprint !== MISSING_OVERLAY_FINGERPRINT) {
+                    const existing = await this.services!.overlaySnapshot(scope, id);
+                    if (existing.fingerprint !== MISSING_OVERLAY_FINGERPRINT) {
                       this.errorFlash(`An overlay for '${id}' already exists in the ${scope} scope; edit it instead.`);
                       return;
                     }
-                    this.reviewSave(undefined, scope, newShadowDefinitionDraft(id, name, bodyValue.trim()));
+                    await this.reviewSave(undefined, scope, newShadowDefinitionDraft(id, name, bodyValue.trim()));
                   })();
                 },
               });
@@ -717,7 +722,9 @@ export class ShadowManager implements Component, Focusable {
           detail: filePath,
           onSelect: () => {
             const target = scope;
-            this.openReview({
+            void (async () => {
+              const review = await this.services!.overlaySnapshot(target, selected.id);
+              this.openReview({
               eyebrow: "OVERLAYS / DELETE / REVIEW",
               title: `Delete ${target} overlay?`,
               lines: [
@@ -736,13 +743,11 @@ export class ShadowManager implements Component, Focusable {
                     lines: [`Path: ${filePath}`, `Definition: ${selected.id}`],
                     destructive: true,
                   },
-                  async () => {
-                    const snapshot = await this.services!.overlaySnapshot(target, selected.id);
-                    return this.services!.deleteOverlay(target, selected.id, snapshot.fingerprint);
-                  },
+                  async () => this.services!.deleteOverlay(target, selected.id, review.fingerprint),
                 );
               },
             });
+            })();
           },
         }];
       }),
@@ -903,6 +908,12 @@ export class ShadowManager implements Component, Focusable {
     return lines;
   }
 
+  /** Terminal rows available to a sub-view body, mirroring the manager budget. */
+  private renderBudget(): number {
+    const rows = Number(this.tui.terminal?.rows) || 24;
+    return Math.max(6, rows - 6);
+  }
+
   private renderSubView(view: ChoiceView | EditorView | ReviewView, width: number): string[] {
     const lines: string[] = [];
     const eyebrow = view.eyebrow;
@@ -942,8 +953,18 @@ export class ShadowManager implements Component, Focusable {
       return lines;
     }
     const wrapped = view.lines.flatMap((line) => line.split("\n").map((part) => fit(part, width)));
+    const bodyBudget = Math.max(3, this.renderBudget() - 4);
+    const maxScroll = Math.max(0, wrapped.length - bodyBudget);
+    view.scroll = Math.min(view.scroll, maxScroll);
+    const visible = wrapped.slice(view.scroll, view.scroll + bodyBudget);
+    if (view.scroll > 0 && visible.length > 0) {
+      visible[0] = this.theme.fg("dim", `… ${view.scroll} earlier lines`);
+    }
+    if (view.scroll + bodyBudget < wrapped.length && visible.length > 0) {
+      visible[visible.length - 1] = this.theme.fg("dim", `… ${wrapped.length - view.scroll - bodyBudget} later lines`);
+    }
     const color = view.destructive ? "warning" : "text";
-    for (const line of wrapped) lines.push(this.theme.fg(color, line));
+    for (const line of visible) lines.push(this.theme.fg(color, line));
     lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
       if (this.flash) {
         const flashColor = this.flash.kind === "error" ? "error" : "success";
@@ -1117,6 +1138,14 @@ function effectiveChange(
   const previousBody = before ? clip(before.body, 60) : "(none)";
   const nextBody = clip(after.body, 60);
   if (previousBody !== nextBody) rows.push(`body: ${previousBody} → ${nextBody}`);
+  const instructionKeys = (definition: EffectiveShadowDefinition) => Object.keys(definition.triggerInstructions).sort().join(",");
+  if (instructionKeys(before ?? after) !== instructionKeys(after)) {
+    rows.push(`triggerInstructions: ${before ? instructionKeys(before) || "(none)" : "(none)"} → ${instructionKeys(after) || "(none)"}`);
+  }
+  const schemaChanged = JSON.stringify(before?.outputSchema) !== JSON.stringify(after.outputSchema);
+  if (before !== undefined && schemaChanged) {
+    rows.push("outputSchema: replaced");
+  }
   if (rows.length === 0) rows.push("no effective field changes");
   return rows;
 }

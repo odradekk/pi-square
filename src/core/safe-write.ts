@@ -240,12 +240,12 @@ export async function releaseFileLock(
   codes: SafeWriteIdentityCodes,
 ): Promise<void> {
   const current = await regularFileIdentity(fail, lockPath, "lock path", codes);
-  if (!current || !sameNodeIdentity(current, handle.identity)) return;
+  if (!current || !sameFileIdentity(current, handle.identity)) return;
   const content = await readBoundedLock(lockPath, current);
   if (content === undefined) return;
   const payload = parseLockPayload(content);
   const finalIdentity = await regularFileIdentity(fail, lockPath, "lock path", codes);
-  if (!payload || payload.token !== handle.token || !finalIdentity || !sameNodeIdentity(current, finalIdentity)) return;
+  if (!payload || payload.token !== handle.token || !finalIdentity || !sameFileIdentity(current, finalIdentity)) return;
   await unlinkIfSameNode(fail, lockPath, finalIdentity, codes);
 }
 

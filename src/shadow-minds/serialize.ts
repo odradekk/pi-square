@@ -11,7 +11,7 @@
 
 import {
   SHADOW_BODY_MAX_CHARS,
-  SHADOW_ID_MAX_CHARS,
+  SHADOW_ID_PATTERN,
   SHADOW_NAME_MAX_CHARS,
   SHADOW_PRIORITY_MAX,
   SHADOW_PRIORITY_MIN,
@@ -24,8 +24,6 @@ import {
   type ShadowOutputSchema,
   type ShadowTrigger,
 } from "./parser";
-
-const ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
 
 /** Fixed canonical field order for serialized layers. */
 const FIELD_ORDER = [
@@ -109,8 +107,8 @@ function schemaLines(schema: ShadowOutputSchema, indent: string): string[] {
 }
 
 function assertValid(fields: ShadowDefinitionFields): void {
-  if (typeof fields.id !== "string" || !ID_PATTERN.test(fields.id)) {
-    throw new Error(`Shadow definition id must match ${ID_PATTERN} (got '${fields.id}').`);
+  if (typeof fields.id !== "string" || !SHADOW_ID_PATTERN.test(fields.id)) {
+    throw new Error(`Shadow definition id must match ${SHADOW_ID_PATTERN} (got '${fields.id}').`);
   }
   // Name and body are optional per layer: an overlay may inherit them from a
   // lower layer. Effective completeness is enforced by the write path's

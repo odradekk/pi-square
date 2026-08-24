@@ -252,13 +252,54 @@ function fakePi() {
     assert.match(staleResult.message, /changed since it was reviewed/);
     assert.ok(notifications.some((entry) => entry.message.includes("changed since it was reviewed")));
 
-    // Declined approvals write nothing.
+    // A decline routed through the manager approval writes nothing.
     confirms.length = 0;
-    const declinedCtx = { ...ctx, ui: { ...ctx.ui, confirm: async () => false } };
+    const declinedCtx = { ...ctx, ui: { ...ctx.ui, confirm: async (title, message, opts) => { confirms.push({ title, message, signal: Boolean(opts?.signal) }); return false; } } };
     const declinedServices = __testables.makeServices(state, declinedCtx, confirmations);
-    const declined = await declinedServices.save("project", { id: "e2e-role", enabled: true }, (await services.overlaySnapshot("project", "e2e-role")).fingerprint);
-    assert.equal(declined.ok, false, "a declined approval surfaces a refused outcome");
-    assert.ok(readFileSync(written, "utf8").includes("enabled: false"), "nothing changed on disk");
+    state.refresh(project, true);
+    const declinedManager = new ShadowManager(
+      state.managerSnapshot(),
+      { requestRender() {}, terminal: { rows: 24, columns: 100 } },
+      { fg: (_t, x) => x, bold: (x) => x },
+      new KeybindingsManager(TUI_KEYBINDINGS),
+      () => {},
+      declinedServices,
+    );
+    declinedManager.handleInput("\r");
+    declinedManager.handleInput("\r");
+    declinedManager.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    declinedManager.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(confirms.length, 1, "the approval was requested");
+    assert.ok(readFileSync(written, "utf8").includes("enabled: false"), "a declined approval changed nothing on disk");
+
+    // AC4 regression: an external change during the review window is refused.
+    const freshCtx = { ...ctx, ui: { ...ctx.ui, confirm: async () => true } };
+    const freshServices = __testables.makeServices(state, freshCtx, new ConfirmationCoordinator());
+    state.refresh(project, true);
+    const racedManager = new ShadowManager(
+      state.managerSnapshot(),
+      { requestRender() {}, terminal: { rows: 24, columns: 100 } },
+      { fg: (_t, x) => x, bold: (x) => x },
+      new KeybindingsManager(TUI_KEYBINDINGS),
+      () => {},
+      freshServices,
+    );
+    racedManager.handleInput("\r");
+    racedManager.handleInput("\r");
+    racedManager.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const raceView = racedManager.render(100).join("\n");
+    assert.ok(raceView.includes("LAYER MARKDOWN"), "the review opened (fingerprint captured at open)");
+    const externalFingerprint = (await services.overlaySnapshot("project", "e2e-role")).fingerprint;
+    const { writeFileSync: writeExternally } = await import("node:fs");
+    writeExternally(written, readFileSync(written, "utf8").replace("enabled: false", "enabled: false\nname: \"Externally renamed\""), "utf8");
+    racedManager.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(readFileSync(written, "utf8").includes("Externally renamed"), "the external version survives the raced approval");
+    assert.ok(notifications.some((entry) => entry.message.includes("changed since it was reviewed")), "the raced write is refused with the stale-review outcome");
+    assert.notEqual((await services.overlaySnapshot("project", "e2e-role")).fingerprint, externalFingerprint, "sanity: the file really changed externally");
 
     // Deletion through the reviewed fingerprint.
     const snapshot = await services.overlaySnapshot("project", "e2e-role");

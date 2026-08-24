@@ -326,6 +326,7 @@ function render(manager, width = 100) {
   lines = render(manager);
   assert.ok(lines.join("\n").includes("OVERLAYS / SCOPE"), "scope selection follows");
   manager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
   lines = render(manager);
   assert.ok(lines.join("\n").includes("LAYER MARKDOWN"), "the review shows the candidate layer");
   assert.ok(lines.join("\n").includes("EFFECTIVE CHANGE"), "the review shows the effective change");
@@ -373,6 +374,7 @@ function render(manager, width = 100) {
   invalidCandidate.handleInput("\r");
   invalidCandidate.handleInput("\r");
   invalidCandidate.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
   lines = render(invalidCandidate);
   assert.ok(lines.join("\n").includes("outside the final tool set"), "preview errors surface in the flash row");
   assert.ok(!lines.join("\n").includes("LAYER MARKDOWN"), "no review opens for an invalid candidate");
@@ -401,6 +403,7 @@ function render(manager, width = 100) {
   );
   untrusted.handleInput("\r");
   untrusted.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
   lines = render(untrusted);
   assert.ok(!lines.join("\n").includes("Project"), "the project scope is hidden when untrusted");
   assert.ok(lines.join("\n").includes("Agent"), "the agent scope remains");
