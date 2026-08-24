@@ -223,6 +223,14 @@ parseErr(file("promptVersion: 1\nid: probe\nname: Probe\noutputSchema:\n  type: 
   assert.equal(cleared.fields.outputSchema, null, "explicit null restores the default schema marker");
 }
 {
+  // Exactly six schema nodes on one path (root plus four nested objects plus
+  // a scalar leaf) stay valid; a seventh is rejected below.
+  const sixLevelLines = ["outputSchema:", "  type: object", "  additionalProperties: false", "  properties:", "    a0:", "      type: object", "      additionalProperties: false", "      properties:"];
+  for (let i = 1; i <= 3; i += 1) {
+    sixLevelLines.push(`${" ".repeat(4 + 4 * i)}a${i}:`, `${" ".repeat(6 + 4 * i)}type: object`, `${" ".repeat(6 + 4 * i)}additionalProperties: false`, `${" ".repeat(6 + 4 * i)}properties:`);
+  }
+  sixLevelLines.push(`${" ".repeat(20)}leaf:`, `${" ".repeat(22)}type: string`);
+  parseOk(file(`promptVersion: 1\nid: probe\nname: Probe\n${sixLevelLines.join("\n")}\n`, ""));
   const depthLines = ["outputSchema:", "  type: object", "  additionalProperties: false", "  properties:", "    a0:", "      type: object", "      additionalProperties: false", "      properties:"];
   for (let i = 1; i <= 5; i += 1) {
     depthLines.push(`${" ".repeat(4 + 4 * i)}a${i}:`, `${" ".repeat(6 + 4 * i)}type: object`, `${" ".repeat(6 + 4 * i)}additionalProperties: false`, `${" ".repeat(6 + 4 * i)}properties:`);

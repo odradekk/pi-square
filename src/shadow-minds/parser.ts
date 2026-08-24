@@ -16,6 +16,11 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+  SHADOW_MINDS_MODEL_TURNS_HARD_MAX,
+  SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS,
+  SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
+} from "../core/config";
 
 // ── Bounds ───────────────────────────────────────────────────────────
 
@@ -57,7 +62,6 @@ export type ShadowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" 
 const SHADOW_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
 const SHADOW_TOOL_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const SHADOW_MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
-
 // ── Output schema subset ─────────────────────────────────────────────
 
 export type ShadowOutputSchema =
@@ -115,7 +119,7 @@ function validateSchemaNode(value: unknown, path: string, depth: number, errors:
     errors.push(`${path || "root"}: schema must be an object`);
     return;
   }
-  if (depth > SHADOW_SCHEMA_MAX_DEPTH) {
+  if (depth >= SHADOW_SCHEMA_MAX_DEPTH) {
     errors.push(`${path || "root"}: output schema exceeds depth ${SHADOW_SCHEMA_MAX_DEPTH}`);
     return;
   }
@@ -430,10 +434,6 @@ function parseYamlSubset(source: string, lines: string[]): { value?: { [key: str
       errors.push(`${source}: line ${index + 2}: comments are not supported`);
       continue;
     }
-    if (raw.length - text.length !== indentMatch || raw.slice(0, indentMatch) !== " ".repeat(indentMatch)) {
-      errors.push(`${source}: line ${index + 2}: indentation must use spaces only`);
-      continue;
-    }
     prepared.push({ indent: indentMatch, text, number: index + 2 });
   }
   if (errors.length > 0) return { errors };
@@ -461,7 +461,9 @@ function parseBlock(
   depth: number,
   errors: string[],
 ): { [key: string]: YamlValue } | undefined {
-  if (depth > 8) {
+  // Bound map nesting generously above what a maximum-depth output schema
+  // needs (schema depth six consumes roughly twice that in YAML map levels).
+  if (depth > 16) {
     errors.push(`${source}: line ${lines[start]!.number}: nesting exceeds the supported depth`);
     return undefined;
   }
@@ -518,7 +520,7 @@ function parseBlock(
       index += 1;
       continue;
     }
-    if (rest === "|" || rest === ">" || rest.startsWith("|") || rest.startsWith(">")) {
+    if (rest.startsWith("|") || rest.startsWith(">")) {
       errors.push(`${source}: line ${line.number}: block scalars are not supported`);
       return undefined;
     }
@@ -534,10 +536,6 @@ function parseBlock(
       errors.push(`${source}: line ${line.number}: tags are not supported`);
       return undefined;
     }
-    if (key === "<<") {
-      errors.push(`${source}: line ${line.number}: merge keys are not supported`);
-      return undefined;
-    }
     if (rest.startsWith("[")) {
       const list = parseFlowList(rest);
       if (typeof list === "string") {
@@ -549,8 +547,9 @@ function parseBlock(
       continue;
     }
     const scalar = parseScalar(rest);
-    if (typeof scalar === "string" && scalar.startsWith("__yaml_error__:")) {
-      errors.push(`${source}: line ${line.number}: ${scalar.slice("__yaml_error__:".length)}`);
+    const scalarFailure = asScalarError(scalar);
+    if (scalarFailure !== undefined) {
+      errors.push(`${source}: line ${line.number}: ${scalarFailure}`);
       return undefined;
     }
     map[key] = scalar;
@@ -576,8 +575,9 @@ function parseListBlock(
       return undefined;
     }
     const scalar = parseScalar(line.text.slice(2).trim());
-    if (typeof scalar === "string" && scalar.startsWith("__yaml_error__:")) {
-      errors.push(`${source}: line ${line.number}: ${scalar.slice("__yaml_error__:".length)}`);
+    const scalarFailure = asScalarError(scalar);
+    if (scalarFailure !== undefined) {
+      errors.push(`${source}: line ${line.number}: ${scalarFailure}`);
       return undefined;
     }
     items.push(scalar);
@@ -599,9 +599,8 @@ function parseFlowList(text: string): YamlValue[] | string {
   const items: YamlValue[] = [];
   for (const part of splitFlowItems(inner)) {
     const scalar = parseScalar(part.trim());
-    if (typeof scalar === "string" && scalar.startsWith("__yaml_error__:")) {
-      return scalar.slice("__yaml_error__:".length);
-    }
+    const scalarFailure = asScalarError(scalar);
+    if (scalarFailure !== undefined) return scalarFailure;
     items.push(scalar);
   }
   return items;
@@ -633,10 +632,24 @@ function splitFlowItems(text: string): string[] {
   return parts.map((part) => part.trim()).filter((part) => part !== "");
 }
 
+const YAML_ERROR_PREFIX = "__yaml_error__:";
+
+/** Wraps an error a scalar parser wants to return instead of throwing. */
+function scalarError(message: string): string {
+  return `${YAML_ERROR_PREFIX}${message}`;
+}
+
+/** Reads the error a scalar parser wrapped into its result. */
+function asScalarError(value: YamlValue): string | undefined {
+  return typeof value === "string" && value.startsWith(YAML_ERROR_PREFIX)
+    ? value.slice(YAML_ERROR_PREFIX.length)
+    : undefined;
+}
+
 function parseScalar(text: string): YamlValue {
   if (text === "") return null;
   if (text.startsWith('"')) {
-    if (!text.endsWith('"') || text.length < 2) return "__yaml_error__: unterminated double-quoted scalar";
+    if (!text.endsWith('"') || text.length < 2) return scalarError("unterminated double-quoted scalar");
     const inner = text.slice(1, -1);
     if (inner.includes("\\")) {
       const unescaped = inner.replace(/\\(.)/g, (full, escape: string) => {
@@ -647,21 +660,21 @@ function parseScalar(text: string): YamlValue {
         return full;
       });
       if (/\\(?!["\\ntr])/.test(inner.replace(/\\(["\\ntr])/g, ""))) {
-        return "__yaml_error__: unsupported escape in double-quoted scalar";
+        return scalarError("unsupported escape in double-quoted scalar");
       }
       return unescaped;
     }
     return inner;
   }
   if (text.startsWith("'")) {
-    if (!text.endsWith("'") || text.length < 2) return "__yaml_error__: unterminated single-quoted scalar";
+    if (!text.endsWith("'") || text.length < 2) return scalarError("unterminated single-quoted scalar");
     return text.slice(1, -1).replace(/''/g, "'");
   }
   if (text.startsWith("{") || text.startsWith("[") || text.startsWith("&") || text.startsWith("*") || text.startsWith("!")) {
-    return "__yaml_error__: only scalar values and one-line flow lists are supported";
+    return scalarError("only scalar values and one-line flow lists are supported");
   }
-  if (text.includes("#")) return "__yaml_error__: comments are not supported";
-  if (text.includes(": ")) return "__yaml_error__: plain scalars cannot contain ': '";
+  if (text.includes("#")) return scalarError("comments are not supported");
+  if (text.includes(": ")) return scalarError("plain scalars cannot contain ': '");
   if (text === "null" || text === "~") return null;
   if (text === "true") return true;
   if (text === "false") return false;
@@ -825,24 +838,24 @@ function normalizeDefinitionFields(
 
   const timeoutSeconds = frontmatter.timeoutSeconds;
   if (timeoutSeconds !== undefined) {
-    if (typeof timeoutSeconds !== "number" || !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 600) {
-      errors.push(`${source}: timeoutSeconds must be an integer between 1 and 600`);
+    if (typeof timeoutSeconds !== "number" || !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS) {
+      errors.push(`${source}: timeoutSeconds must be an integer between 1 and ${SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS}`);
     } else {
       fields.timeoutSeconds = timeoutSeconds;
     }
   }
   const maxTurns = frontmatter.maxTurns;
   if (maxTurns !== undefined) {
-    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 32) {
-      errors.push(`${source}: maxTurns must be an integer between 1 and 32`);
+    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > SHADOW_MINDS_MODEL_TURNS_HARD_MAX) {
+      errors.push(`${source}: maxTurns must be an integer between 1 and ${SHADOW_MINDS_MODEL_TURNS_HARD_MAX}`);
     } else {
       fields.maxTurns = maxTurns;
     }
   }
   const maxToolCalls = frontmatter.maxToolCalls;
   if (maxToolCalls !== undefined) {
-    if (typeof maxToolCalls !== "number" || !Number.isInteger(maxToolCalls) || maxToolCalls < 1 || maxToolCalls > 128) {
-      errors.push(`${source}: maxToolCalls must be an integer between 1 and 128`);
+    if (typeof maxToolCalls !== "number" || !Number.isInteger(maxToolCalls) || maxToolCalls < 1 || maxToolCalls > SHADOW_MINDS_TOOL_CALLS_HARD_MAX) {
+      errors.push(`${source}: maxToolCalls must be an integer between 1 and ${SHADOW_MINDS_TOOL_CALLS_HARD_MAX}`);
     } else {
       fields.maxToolCalls = maxToolCalls;
     }
