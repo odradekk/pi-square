@@ -187,12 +187,13 @@ test("a result the parent never received is delivered again after the parent set
   assert.equal(probe.sent.length, 2, "confirmation stops the re-delivery");
 });
 
-test("an interrupted turn holds results until the parent starts the next turn", () => {
+test("an interrupted turn holds results in Pi's turn-end-before-agent-end order", () => {
   const probe = harness({ idle: false });
   enqueue(probe.controller, "run-interrupted");
+  probe.controller.handleTurnEnd({ stopReason: "aborted" });
   probe.controller.handleAgentEnd([{ stopReason: "aborted" }]);
   probe.controller.handleAgentSettled();
-  assert.equal(probe.sent.length, 0, "an interruption never starts a new turn");
+  assert.equal(probe.sent.length, 0, "an aborted turn never re-queues a steering message");
   assert.equal(probe.controller.pendingCount(), 1);
 
   probe.setIdle(true);
@@ -200,7 +201,7 @@ test("an interrupted turn holds results until the parent starts the next turn", 
   assert.equal(probe.sent.length, 0, "the parent keeps its silence while interrupted");
 
   probe.controller.handleAgentStart();
-  probe.controller.handleTurnEnd();
+  probe.controller.handleTurnEnd({ stopReason: "endTurn" });
   assert.equal(probe.sent.length, 1);
   assert.deepEqual(
     probe.last().message.details.results.map((result) => result.id),

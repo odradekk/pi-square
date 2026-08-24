@@ -105,8 +105,8 @@ export default function registerSubagents(
     delivery.handleAgentStart();
   });
 
-  pi.on("turn_end", () => {
-    delivery.handleTurnEnd();
+  pi.on("turn_end", (event) => {
+    delivery.handleTurnEnd(event.message);
   });
 
   pi.on("agent_end", (event) => {
