@@ -1,0 +1,950 @@
+/**
+ * Strict bounded Markdown/frontmatter parser for Shadow definitions
+ * (odradekk/pi-square#149, slice #153).
+ *
+ * A definition is one Markdown file: a YAML frontmatter block between two
+ * `---` delimiter lines followed by the responsibility body. This module
+ * parses a deliberately tiny YAML subset — plain, single- and double-quoted
+ * scalars, nested maps by fixed two-space indentation, flow lists of
+ * scalars — and rejects everything else (anchors, aliases, tags, merge keys,
+ * complex keys, block scalars, comments, tabs, duplicate keys). No runtime
+ * dependency is added and no general YAML is supported.
+ *
+ * The output schema subset is a bounded JSON Schema dialect: object roots
+ * only, `additionalProperties: false` on every object, no `$ref`, no
+ * composition, no pattern properties, depth/property/count/string bounds.
+ */
+
+import { createHash } from "node:crypto";
+
+// ── Bounds ───────────────────────────────────────────────────────────
+
+/** Whole definition file bound. */
+export const SHADOW_FILE_MAX_BYTES = 64 * 1024;
+/** Markdown responsibility body bound. */
+export const SHADOW_BODY_MAX_CHARS = 24_000;
+/** One trigger-specific instruction bound. */
+export const SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS = 8_000;
+/** Entries allowed in `tools` and `requiredTools`. */
+export const SHADOW_TOOLS_MAX = 16;
+/** Fixed automatic trigger enum values. */
+export const SHADOW_TRIGGERS_MAX = 4;
+/** Parent-model filter entries. */
+export const SHADOW_PARENT_MODELS_MAX = 32;
+export const SHADOW_ID_MAX_CHARS = 64;
+export const SHADOW_NAME_MAX_CHARS = 120;
+export const SHADOW_PRIORITY_MIN = -1_000;
+export const SHADOW_PRIORITY_MAX = 1_000;
+/** Maximum nesting of one output schema. */
+export const SHADOW_SCHEMA_MAX_DEPTH = 6;
+/** Total properties across one output schema. */
+export const SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES = 64;
+/** Properties on one object schema. */
+export const SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT = 32;
+/** `maxItems` a schema may declare. */
+export const SHADOW_SCHEMA_MAX_ITEMS = 64;
+/** `maxLength` a schema may declare. */
+export const SHADOW_SCHEMA_STRING_MAX_LENGTH = 12_000;
+/** Encoded result payload bound enforced at validation time. */
+export const SHADOW_PAYLOAD_MAX_CHARS = 24_000;
+
+export const SHADOW_TRIGGERS = ["tool_turn", "failure", "mutation", "completion"] as const;
+export type ShadowTrigger = (typeof SHADOW_TRIGGERS)[number];
+
+export type ShadowDelivery = "steer" | "wake" | "notify";
+export type ShadowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+const SHADOW_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
+const SHADOW_TOOL_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const SHADOW_MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+
+// ── Output schema subset ─────────────────────────────────────────────
+
+export type ShadowOutputSchema =
+  | { type: "string" | "number" | "integer" | "boolean" | "null"; enum?: unknown[]; minLength?: number; maxLength?: number; minimum?: number; maximum?: number }
+  | { type: "array"; items?: ShadowOutputSchema; enum?: unknown[]; minItems?: number; maxItems?: number }
+  | {
+      type: "object";
+      properties?: Record<string, ShadowOutputSchema>;
+      required?: string[];
+      additionalProperties: false;
+      enum?: unknown[];
+    };
+
+export const DEFAULT_OUTPUT_SCHEMA: ShadowOutputSchema = Object.freeze({
+  type: "object",
+  properties: Object.freeze({
+    summary: Object.freeze({
+      type: "string",
+      minLength: 1,
+      maxLength: SHADOW_SCHEMA_STRING_MAX_LENGTH,
+    }),
+  }),
+  required: Object.freeze(["summary"]) as unknown as string[],
+  additionalProperties: false,
+}) as ShadowOutputSchema;
+
+const SCALAR_TYPES = new Set(["string", "number", "integer", "boolean", "null"]);
+const ARRAY_ITEM_ONLY_KEYS = new Set(["items"]);
+const OBJECT_ONLY_KEYS = new Set(["properties", "required", "additionalProperties"]);
+const COMMON_KEYS = new Set(["type", "enum", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems"]);
+
+/**
+ * Validates a candidate output schema against the bounded subset. Returns one
+ * message per violation; an empty array means the schema is accepted.
+ */
+export function validateOutputSchema(value: unknown): string[] {
+  const errors: string[] = [];
+  const context = { properties: 0 };
+  validateSchemaNode(value, "", 0, errors, context);
+  if (!isObjectSchema(value)) {
+    errors.push("output schema root must be an object schema");
+  }
+  if (context.properties > SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES) {
+    errors.push(`output schema exceeds ${SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES} total properties (${context.properties})`);
+  }
+  return errors;
+}
+
+function isObjectSchema(value: unknown): value is Extract<ShadowOutputSchema, { type: "object" }> {
+  return isPlainObject(value) && (value as { type?: unknown }).type === "object";
+}
+
+function validateSchemaNode(value: unknown, path: string, depth: number, errors: string[], context: { properties: number }): void {
+  if (!isPlainObject(value)) {
+    errors.push(`${path || "root"}: schema must be an object`);
+    return;
+  }
+  if (depth > SHADOW_SCHEMA_MAX_DEPTH) {
+    errors.push(`${path || "root"}: output schema exceeds depth ${SHADOW_SCHEMA_MAX_DEPTH}`);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  const type = record.type;
+  if (typeof type !== "string" || !(SCALAR_TYPES.has(type) || type === "array" || type === "object")) {
+    errors.push(`${path || "root"}: unsupported type ${JSON.stringify(type)}`);
+    return;
+  }
+  for (const key of Object.keys(record)) {
+    if (!COMMON_KEYS.has(key) && !OBJECT_ONLY_KEYS.has(key) && !ARRAY_ITEM_ONLY_KEYS.has(key)) {
+      errors.push(`${path || "root"}: unsupported keyword '${key}'`);
+    }
+  }
+  if ("$ref" in record) errors.push(`${path || "root"}: $ref is not supported`);
+  for (const keyword of ["allOf", "anyOf", "oneOf", "not", "patternProperties", "propertyNames", "if", "then", "else"]) {
+    if (keyword in record) errors.push(`${path || "root"}: ${keyword} is not supported`);
+  }
+  if (type !== "object" && ("properties" in record || "required" in record || "additionalProperties" in record)) {
+    errors.push(`${path || "root"}: properties/required/additionalProperties apply only to object schemas`);
+  }
+  if (type !== "array" && "items" in record) {
+    errors.push(`${path || "root"}: items applies only to array schemas`);
+  }
+  if (type === "object" && record.additionalProperties !== false) {
+    errors.push(`${path || "root"}: every object schema must set additionalProperties: false`);
+  }
+  validateNumberKeyword(record, "minLength", path, errors);
+  validateNumberKeyword(record, "maxLength", path, errors, SHADOW_SCHEMA_STRING_MAX_LENGTH, "maxLength");
+  validateNumberKeyword(record, "minimum", path, errors);
+  validateNumberKeyword(record, "maximum", path, errors);
+  validateNumberKeyword(record, "minItems", path, errors);
+  validateNumberKeyword(record, "maxItems", path, errors, SHADOW_SCHEMA_MAX_ITEMS, "maxItems");
+  if (record.enum !== undefined) {
+    if (!Array.isArray(record.enum) || record.enum.length === 0 || record.enum.length > SHADOW_SCHEMA_MAX_ITEMS) {
+      errors.push(`${path || "root"}: enum must list between 1 and ${SHADOW_SCHEMA_MAX_ITEMS} values`);
+    } else if (!record.enum.every((entry) => typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean" || entry === null)) {
+      errors.push(`${path || "root"}: enum values must be scalars`);
+    }
+  }
+  if (type === "object") {
+    const properties = record.properties;
+    if (properties !== undefined) {
+      if (!isPlainObject(properties)) {
+        errors.push(`${path || "root"}: properties must be an object`);
+      } else {
+        const keys = Object.keys(properties);
+        if (keys.length > SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT) {
+          errors.push(`${path || "root"}: object schemas allow at most ${SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT} properties (${keys.length})`);
+        }
+        context.properties += keys.length;
+        for (const key of keys) {
+          validateSchemaNode(properties[key], path ? `${path}/${key}` : key, depth + 1, errors, context);
+        }
+      }
+    }
+    const required = record.required;
+    if (required !== undefined) {
+      if (!Array.isArray(required) || !required.every((entry) => typeof entry === "string")) {
+        errors.push(`${path || "root"}: required must be a list of property names`);
+      } else if (isPlainObject(properties)) {
+        for (const name of required) {
+          if (!Object.hasOwn(properties, name)) {
+            errors.push(`${path || "root"}: required property '${name}' is not declared in properties`);
+          }
+        }
+      }
+    }
+  }
+  if (type === "array" && record.items !== undefined) {
+    if (Array.isArray(record.items)) {
+      errors.push(`${path || "root"}: tuple items are not supported; use one items schema`);
+    } else {
+      validateSchemaNode(record.items, path ? `${path}/*` : "*", depth + 1, errors, context);
+    }
+  }
+}
+
+function validateNumberKeyword(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+  errors: string[],
+  max?: number,
+  label?: string,
+): void {
+  const value = record[key];
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    errors.push(`${path || "root"}: ${key} must be a non-negative integer`);
+  } else if (max !== undefined && value > max) {
+    errors.push(`${path || "root"}: ${label ?? key} exceeds the maximum of ${max}`);
+  }
+}
+
+/**
+ * Validates a decoded result payload against a validated output schema.
+ * Returns one bounded, field-level message per violation.
+ */
+export function validateShadowPayload(schema: ShadowOutputSchema, payload: unknown): string[] {
+  const encoded = JSON.stringify(payload);
+  if (typeof encoded !== "string" || encoded.length > SHADOW_PAYLOAD_MAX_CHARS) {
+    return [`payload exceeds the encoded bound of ${SHADOW_PAYLOAD_MAX_CHARS.toLocaleString("en-US")} characters`];
+  }
+  const errors: string[] = [];
+  validatePayloadNode(schema, payload, "", errors);
+  return errors;
+}
+
+function validatePayloadNode(schema: ShadowOutputSchema, payload: unknown, path: string, errors: string[]): void {
+  const label = path || "payload";
+  if (schema.enum !== undefined && !schema.enum.some((entry) => deepEqual(payload, entry))) {
+    errors.push(`${label}: value must be one of ${JSON.stringify(schema.enum)}`);
+    return;
+  }
+  switch (schema.type) {
+    case "string":
+      if (typeof payload !== "string") {
+        errors.push(`${label}: expected string`);
+        return;
+      }
+      if (schema.minLength !== undefined && payload.length < schema.minLength) {
+        errors.push(`${label}: shorter than minLength ${schema.minLength}`);
+      }
+      if (schema.maxLength !== undefined && payload.length > schema.maxLength) {
+        errors.push(`${label}: longer than maxLength ${schema.maxLength}`);
+      }
+      return;
+    case "integer":
+      if (typeof payload !== "number" || !Number.isInteger(payload)) {
+        errors.push(`${label}: expected integer`);
+        return;
+      }
+      break;
+    case "number":
+      if (typeof payload !== "number" || !Number.isFinite(payload)) {
+        errors.push(`${label}: expected number`);
+        return;
+      }
+      break;
+    case "boolean":
+      if (typeof payload !== "boolean") {
+        errors.push(`${label}: expected boolean`);
+        return;
+      }
+      return;
+    case "null":
+      if (payload !== null) {
+        errors.push(`${label}: expected null`);
+      }
+      return;
+    case "array": {
+      if (!Array.isArray(payload)) {
+        errors.push(`${label}: expected array`);
+        return;
+      }
+      if (schema.minItems !== undefined && payload.length < schema.minItems) {
+        errors.push(`${label}: fewer than minItems ${schema.minItems}`);
+      }
+      if (schema.maxItems !== undefined && payload.length > schema.maxItems) {
+        errors.push(`${label}: more than maxItems ${schema.maxItems}`);
+      }
+      if (schema.items) {
+        for (let index = 0; index < payload.length; index += 1) {
+          validatePayloadNode(schema.items, payload[index], `${path}[${index}]`, errors);
+        }
+      }
+      return;
+    }
+    case "object": {
+      if (!isPlainObject(payload)) {
+        errors.push(`${label}: expected object`);
+        return;
+      }
+      for (const key of Object.keys(payload)) {
+        if (!schema.properties || !Object.hasOwn(schema.properties, key)) {
+          errors.push(`${path ? `${path}/` : ""}${key}: additional property is not allowed`);
+        }
+      }
+      for (const name of schema.required ?? []) {
+        if (!Object.hasOwn(payload, name)) {
+          errors.push(`${path ? `${path}/` : ""}${name}: required property is missing`);
+        }
+      }
+      for (const [key, child] of Object.entries(schema.properties ?? {})) {
+        if (Object.hasOwn(payload, key)) {
+          validatePayloadNode(child, payload[key], path ? `${path}/${key}` : key, errors);
+        }
+      }
+      return;
+    }
+  }
+  if (schema.type === "integer" || schema.type === "number") {
+    if (schema.minimum !== undefined && payload < schema.minimum) {
+      errors.push(`${label}: below minimum ${schema.minimum}`);
+    }
+    if (schema.maximum !== undefined && payload > schema.maximum) {
+      errors.push(`${label}: above maximum ${schema.maximum}`);
+    }
+  }
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((entry, index) => deepEqual(entry, b[index]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    return Object.keys(a).length === Object.keys(b).length
+      && Object.entries(a).every(([key, value]) => deepEqual(value, (b as Record<string, unknown>)[key]));
+  }
+  return false;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// ── Definition fields ────────────────────────────────────────────────
+
+/** Frontmatter fields of one definition layer; absent means inherit. */
+export interface ShadowDefinitionFields {
+  id: string;
+  name: string;
+  enabled?: boolean;
+  hidden?: boolean;
+  priority?: number;
+  triggers?: ShadowTrigger[];
+  /** Per-trigger instructions; `null` clears that trigger key. */
+  triggerInstructions?: Partial<Record<ShadowTrigger, string | null>>;
+  delivery?: ShadowDelivery;
+  completionGate?: boolean;
+  /** Exact `provider/model-id` references or `*`; absent means all models. */
+  parentModels?: string[];
+  model?: string;
+  thinking?: ShadowThinkingLevel;
+  timeoutSeconds?: number;
+  maxTurns?: number;
+  maxToolCalls?: number;
+  tools?: string[];
+  requiredTools?: string[];
+  debug?: boolean;
+  /** Absent inherits; `null` restores the default schema. */
+  outputSchema?: ShadowOutputSchema | null;
+  /** Raw Markdown body; an empty body inherits the lower layer. */
+  body?: string;
+}
+
+export interface ParsedShadowDefinition {
+  fields: ShadowDefinitionFields;
+  contentHash: string;
+}
+
+export function parseShadowDefinitionFile(
+  source: string,
+  content: string,
+): { definition?: ParsedShadowDefinition; errors: string[] } {
+  const byteLength = Buffer.byteLength(content, "utf8");
+  if (byteLength > SHADOW_FILE_MAX_BYTES) {
+    return { errors: [`${source}: file exceeds the ${SHADOW_FILE_MAX_BYTES / 1024} KiB bound (${byteLength} bytes)`] };
+  }
+  const lines = content.split(/\r?\n/);
+  if (lines[0] !== "---") {
+    return { errors: [`${source}: definition must open with a '---' frontmatter delimiter`] };
+  }
+  let closing = -1;
+  for (let index = 1; index < lines.length; index += 1) {
+    if (lines[index] === "---") {
+      closing = index;
+      break;
+    }
+  }
+  if (closing === -1) {
+    return { errors: [`${source}: frontmatter is missing its closing '---' delimiter`] };
+  }
+  const parsed = parseYamlSubset(source, lines.slice(1, closing));
+  if (parsed.errors.length > 0) return { errors: parsed.errors };
+  const normalized = normalizeDefinitionFields(source, parsed.value, lines.slice(closing + 1).join("\n"));
+  if (normalized.errors.length > 0) return { errors: normalized.errors };
+  return {
+    definition: {
+      fields: normalized.fields!,
+      contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+    },
+    errors: [],
+  };
+}
+
+// ── Bounded YAML subset ──────────────────────────────────────────────
+
+type YamlValue = string | number | boolean | null | YamlValue[] | { [key: string]: YamlValue };
+
+interface YamlLine {
+  indent: number;
+  text: string;
+  number: number;
+}
+
+function parseYamlSubset(source: string, lines: string[]): { value?: { [key: string]: YamlValue }; errors: string[] } {
+  const errors: string[] = [];
+  const prepared: YamlLine[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index]!;
+    if (raw.includes("\t")) {
+      errors.push(`${source}: line ${index + 2}: tabs are not supported`);
+      continue;
+    }
+    const indentMatch = /^ */.exec(raw)![0].length;
+    const text = raw.slice(indentMatch);
+    if (text === "") continue;
+    if (text.startsWith("#")) {
+      errors.push(`${source}: line ${index + 2}: comments are not supported`);
+      continue;
+    }
+    if (raw.length - text.length !== indentMatch || raw.slice(0, indentMatch) !== " ".repeat(indentMatch)) {
+      errors.push(`${source}: line ${index + 2}: indentation must use spaces only`);
+      continue;
+    }
+    prepared.push({ indent: indentMatch, text, number: index + 2 });
+  }
+  if (errors.length > 0) return { errors };
+  if (prepared.length === 0) return { value: {}, errors: [] };
+  if (prepared[0]!.indent !== 0) {
+    return { errors: [`${source}: line ${prepared[0]!.number}: frontmatter must start at column zero`] };
+  }
+  const value = parseBlock(source, prepared, 0, prepared[0]!.indent, 0, errors);
+  if (errors.length > 0 || value === undefined) return { errors: errors.length > 0 ? errors : [`${source}: frontmatter is empty`] };
+  return { value: value as { [key: string]: YamlValue }, errors: [] };
+}
+
+const KEY_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+
+/**
+ * Parses consecutive map entries at `indent` starting from `start`. Returns
+ * the parsed map and the index of the first unconsumed line, or undefined on
+ * structural error (errors are pushed by the callee).
+ */
+function parseBlock(
+  source: string,
+  lines: YamlLine[],
+  start: number,
+  indent: number,
+  depth: number,
+  errors: string[],
+): { [key: string]: YamlValue } | undefined {
+  if (depth > 8) {
+    errors.push(`${source}: line ${lines[start]!.number}: nesting exceeds the supported depth`);
+    return undefined;
+  }
+  const map: { [key: string]: YamlValue } = {};
+  let index = start;
+  while (index < lines.length) {
+    const line = lines[index]!;
+    if (line.indent < indent) break;
+    if (line.indent > indent) {
+      errors.push(`${source}: line ${line.number}: unexpected indentation`);
+      return undefined;
+    }
+    if (line.text.startsWith("<<:")) {
+      errors.push(`${source}: line ${line.number}: merge keys are not supported`);
+      return undefined;
+    }
+    const match = /^([^:\s]+):(.*)$/.exec(line.text);
+    if (!match || !KEY_PATTERN.test(match[1]!)) {
+      errors.push(`${source}: line ${line.number}: unsupported or complex key '${line.text.slice(0, 40)}'`);
+      return undefined;
+    }
+    const key = match[1]!;
+    if (Object.hasOwn(map, key)) {
+      errors.push(`${source}: line ${line.number}: duplicate key '${key}'`);
+      return undefined;
+    }
+    const rest = match[2]!.trim();
+    if (rest === "{}") {
+      map[key] = {};
+      index += 1;
+      continue;
+    }
+    if (rest === "") {
+      const child = lines[index + 1];
+      if (child && child.indent === indent + 2 && child.text.startsWith("- ")) {
+        const list = parseListBlock(source, lines, index + 1, child.indent, errors);
+        if (list === undefined) return undefined;
+        map[key] = list.value;
+        index = list.next;
+        continue;
+      }
+      if (child && child.indent > indent) {
+        if (child.indent !== indent + 2) {
+          errors.push(`${source}: line ${child.number}: nested blocks must indent exactly two spaces`);
+          return undefined;
+        }
+        const childMap = parseBlock(source, lines, index + 1, child.indent, depth + 1, errors);
+        if (childMap === undefined) return undefined;
+        map[key] = childMap;
+        index = blockEnd(lines, index + 1, child.indent);
+        continue;
+      }
+      map[key] = null;
+      index += 1;
+      continue;
+    }
+    if (rest === "|" || rest === ">" || rest.startsWith("|") || rest.startsWith(">")) {
+      errors.push(`${source}: line ${line.number}: block scalars are not supported`);
+      return undefined;
+    }
+    if (rest.startsWith("&")) {
+      errors.push(`${source}: line ${line.number}: anchors are not supported`);
+      return undefined;
+    }
+    if (rest.startsWith("*")) {
+      errors.push(`${source}: line ${line.number}: aliases are not supported`);
+      return undefined;
+    }
+    if (rest.startsWith("!")) {
+      errors.push(`${source}: line ${line.number}: tags are not supported`);
+      return undefined;
+    }
+    if (key === "<<") {
+      errors.push(`${source}: line ${line.number}: merge keys are not supported`);
+      return undefined;
+    }
+    if (rest.startsWith("[")) {
+      const list = parseFlowList(rest);
+      if (typeof list === "string") {
+        errors.push(`${source}: line ${line.number}: ${list}`);
+        return undefined;
+      }
+      map[key] = list;
+      index += 1;
+      continue;
+    }
+    const scalar = parseScalar(rest);
+    if (typeof scalar === "string" && scalar.startsWith("__yaml_error__:")) {
+      errors.push(`${source}: line ${line.number}: ${scalar.slice("__yaml_error__:".length)}`);
+      return undefined;
+    }
+    map[key] = scalar;
+    index += 1;
+  }
+  return map;
+}
+
+function parseListBlock(
+  source: string,
+  lines: YamlLine[],
+  start: number,
+  indent: number,
+  errors: string[],
+): { value: YamlValue[]; next: number } | undefined {
+  const items: YamlValue[] = [];
+  let index = start;
+  while (index < lines.length) {
+    const line = lines[index]!;
+    if (line.indent < indent) break;
+    if (line.indent !== indent || !line.text.startsWith("- ")) {
+      errors.push(`${source}: line ${line.number}: list items must be scalars on '- ' lines`);
+      return undefined;
+    }
+    const scalar = parseScalar(line.text.slice(2).trim());
+    if (typeof scalar === "string" && scalar.startsWith("__yaml_error__:")) {
+      errors.push(`${source}: line ${line.number}: ${scalar.slice("__yaml_error__:".length)}`);
+      return undefined;
+    }
+    items.push(scalar);
+    index += 1;
+  }
+  return { value: items, next: index };
+}
+
+function blockEnd(lines: YamlLine[], start: number, indent: number): number {
+  let index = start;
+  while (index < lines.length && lines[index]!.indent >= indent) index += 1;
+  return index;
+}
+
+function parseFlowList(text: string): YamlValue[] | string {
+  if (!text.endsWith("]")) return "flow lists must close on one line";
+  const inner = text.slice(1, -1).trim();
+  if (inner === "") return [];
+  const items: YamlValue[] = [];
+  for (const part of splitFlowItems(inner)) {
+    const scalar = parseScalar(part.trim());
+    if (typeof scalar === "string" && scalar.startsWith("__yaml_error__:")) {
+      return scalar.slice("__yaml_error__:".length);
+    }
+    items.push(scalar);
+  }
+  return items;
+}
+
+function splitFlowItems(text: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  for (const character of text) {
+    if (quote) {
+      current += character;
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === ",") {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter((part) => part !== "");
+}
+
+function parseScalar(text: string): YamlValue {
+  if (text === "") return null;
+  if (text.startsWith('"')) {
+    if (!text.endsWith('"') || text.length < 2) return "__yaml_error__: unterminated double-quoted scalar";
+    const inner = text.slice(1, -1);
+    if (inner.includes("\\")) {
+      const unescaped = inner.replace(/\\(.)/g, (full, escape: string) => {
+        if (escape === "n") return "\n";
+        if (escape === "t") return "\t";
+        if (escape === "r") return "\r";
+        if (escape === '"' || escape === "\\") return escape;
+        return full;
+      });
+      if (/\\(?!["\\ntr])/.test(inner.replace(/\\(["\\ntr])/g, ""))) {
+        return "__yaml_error__: unsupported escape in double-quoted scalar";
+      }
+      return unescaped;
+    }
+    return inner;
+  }
+  if (text.startsWith("'")) {
+    if (!text.endsWith("'") || text.length < 2) return "__yaml_error__: unterminated single-quoted scalar";
+    return text.slice(1, -1).replace(/''/g, "'");
+  }
+  if (text.startsWith("{") || text.startsWith("[") || text.startsWith("&") || text.startsWith("*") || text.startsWith("!")) {
+    return "__yaml_error__: only scalar values and one-line flow lists are supported";
+  }
+  if (text.includes("#")) return "__yaml_error__: comments are not supported";
+  if (text.includes(": ")) return "__yaml_error__: plain scalars cannot contain ': '";
+  if (text === "null" || text === "~") return null;
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^-?\d+$/.test(text)) return Number.parseInt(text, 10);
+  if (/^-?\d+\.\d+$/.test(text)) return Number.parseFloat(text);
+  return text;
+}
+
+// ── Field normalization ──────────────────────────────────────────────
+
+const KNOWN_FIELDS = new Set([
+  "promptVersion",
+  "id",
+  "name",
+  "enabled",
+  "hidden",
+  "priority",
+  "triggers",
+  "triggerInstructions",
+  "delivery",
+  "completionGate",
+  "parentModels",
+  "model",
+  "thinking",
+  "timeoutSeconds",
+  "maxTurns",
+  "maxToolCalls",
+  "tools",
+  "requiredTools",
+  "debug",
+  "outputSchema",
+]);
+
+function normalizeDefinitionFields(
+  source: string,
+  frontmatter: { [key: string]: YamlValue } | undefined,
+  body: string,
+): { fields?: ShadowDefinitionFields; errors: string[] } {
+  const errors: string[] = [];
+  const fail = (message: string): { errors: string[] } => ({ errors: [`${source}: ${message}`] });
+  if (!frontmatter) return fail("frontmatter is missing");
+  for (const key of Object.keys(frontmatter)) {
+    if (!KNOWN_FIELDS.has(key)) return fail(`unknown field '${key}'`);
+  }
+  if (frontmatter.promptVersion !== 1) {
+    return fail(`promptVersion must be 1 (got ${JSON.stringify(frontmatter.promptVersion) ?? "null"})`);
+  }
+  const id = expectString(source, frontmatter, "id", errors, 1, SHADOW_ID_MAX_CHARS);
+  const name = expectString(source, frontmatter, "name", errors, 1, SHADOW_NAME_MAX_CHARS);
+  const fileStem = source.replace(/\.md$/i, "").split(/[\\/]/).pop()!;
+  if (id !== undefined && !SHADOW_ID_PATTERN.test(id)) {
+    errors.push(`${source}: id must match [A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}`);
+  } else if (id !== undefined && id !== fileStem) {
+    errors.push(`${source}: id '${id}' must equal the Markdown filename stem '${fileStem}'`);
+  }
+  const fields: ShadowDefinitionFields = { id: id ?? fileStem, name: name ?? "" };
+
+  assignBoolean(source, frontmatter, "enabled", fields, errors);
+  assignBoolean(source, frontmatter, "hidden", fields, errors);
+  assignBoolean(source, frontmatter, "completionGate", fields, errors);
+  assignBoolean(source, frontmatter, "debug", fields, errors);
+
+  const priority = frontmatter.priority;
+  if (priority !== undefined) {
+    if (typeof priority !== "number" || !Number.isInteger(priority) || priority < SHADOW_PRIORITY_MIN || priority > SHADOW_PRIORITY_MAX) {
+      errors.push(`${source}: priority must be an integer between ${SHADOW_PRIORITY_MIN} and ${SHADOW_PRIORITY_MAX}`);
+    } else {
+      fields.priority = priority;
+    }
+  }
+
+  const triggers = frontmatter.triggers;
+  if (triggers !== undefined) {
+    const list = expectStringList(source, "triggers", triggers, errors, SHADOW_TRIGGERS_MAX);
+    if (list) {
+      const known = list.filter((entry): entry is ShadowTrigger => (SHADOW_TRIGGERS as readonly string[]).includes(entry));
+      if (known.length !== list.length) {
+        const unknown = list.filter((entry) => !(SHADOW_TRIGGERS as readonly string[]).includes(entry));
+        errors.push(`${source}: triggers entries must be one of ${SHADOW_TRIGGERS.join(", ")} (unknown '${unknown.join("', '")}')`);
+      }
+      if (new Set(list).size !== list.length) {
+        errors.push(`${source}: duplicate trigger in triggers`);
+      }
+      if (list.length > SHADOW_TRIGGERS_MAX) {
+        errors.push(`${source}: triggers allows at most ${SHADOW_TRIGGERS_MAX} entries`);
+      }
+      if (errors.length === 0) fields.triggers = list as ShadowTrigger[];
+    }
+  }
+
+  const instructions = frontmatter.triggerInstructions;
+  if (instructions !== undefined) {
+    if (!isPlainObject(instructions)) {
+      errors.push(`${source}: triggerInstructions must be a map of trigger key to instruction`);
+    } else {
+      const merged: Partial<Record<ShadowTrigger, string | null>> = {};
+      for (const [key, value] of Object.entries(instructions)) {
+        if (!(SHADOW_TRIGGERS as readonly string[]).includes(key)) {
+          errors.push(`${source}: unknown triggerInstructions key '${key}'`);
+          continue;
+        }
+        if (value === null) {
+          merged[key as ShadowTrigger] = null;
+          continue;
+        }
+        if (typeof value !== "string" || value.length === 0) {
+          errors.push(`${source}: triggerInstructions.${key} must be a non-empty string or null`);
+          continue;
+        }
+        if (value.length > SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS) {
+          errors.push(`${source}: triggerInstructions.${key} exceeds ${SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS.toLocaleString("en-US")} characters (${value.length.toLocaleString("en-US")})`);
+          continue;
+        }
+        merged[key as ShadowTrigger] = value;
+      }
+      if (errors.length === 0) fields.triggerInstructions = merged;
+    }
+  }
+
+  const delivery = frontmatter.delivery;
+  if (delivery !== undefined) {
+    if (delivery !== "steer" && delivery !== "wake" && delivery !== "notify") {
+      errors.push(`${source}: delivery must be steer, wake, or notify`);
+    } else {
+      fields.delivery = delivery;
+    }
+  }
+
+  const parentModels = frontmatter.parentModels;
+  if (parentModels !== undefined) {
+    const list = expectStringList(source, "parentModels", parentModels, errors, SHADOW_PARENT_MODELS_MAX);
+    if (list) {
+      if (new Set(list).size !== list.length) {
+        errors.push(`${source}: duplicate parentModels entry`);
+      }
+      if (!list.every((entry) => entry === "*" || (entry.length <= 200 && SHADOW_MODEL_REFERENCE.test(entry)))) {
+        errors.push(`${source}: parentModels entries must be exact 'provider/model-id' references or '*'`);
+      }
+      if (errors.length === 0) fields.parentModels = list;
+    }
+  }
+
+  const model = frontmatter.model;
+  if (model !== undefined) {
+    if (typeof model !== "string" || !SHADOW_MODEL_REFERENCE.test(model)) {
+      errors.push(`${source}: model must be an exact 'provider/model-id' reference`);
+    } else {
+      fields.model = model;
+    }
+  }
+
+  const thinking = frontmatter.thinking;
+  if (thinking !== undefined) {
+    const levels: ShadowThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+    if (typeof thinking !== "string" || !levels.includes(thinking as ShadowThinkingLevel)) {
+      errors.push(`${source}: thinking must be one of ${levels.join(", ")}`);
+    } else {
+      fields.thinking = thinking as ShadowThinkingLevel;
+    }
+  }
+
+  const timeoutSeconds = frontmatter.timeoutSeconds;
+  if (timeoutSeconds !== undefined) {
+    if (typeof timeoutSeconds !== "number" || !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 600) {
+      errors.push(`${source}: timeoutSeconds must be an integer between 1 and 600`);
+    } else {
+      fields.timeoutSeconds = timeoutSeconds;
+    }
+  }
+  const maxTurns = frontmatter.maxTurns;
+  if (maxTurns !== undefined) {
+    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 32) {
+      errors.push(`${source}: maxTurns must be an integer between 1 and 32`);
+    } else {
+      fields.maxTurns = maxTurns;
+    }
+  }
+  const maxToolCalls = frontmatter.maxToolCalls;
+  if (maxToolCalls !== undefined) {
+    if (typeof maxToolCalls !== "number" || !Number.isInteger(maxToolCalls) || maxToolCalls < 1 || maxToolCalls > 128) {
+      errors.push(`${source}: maxToolCalls must be an integer between 1 and 128`);
+    } else {
+      fields.maxToolCalls = maxToolCalls;
+    }
+  }
+
+  const tools = frontmatter.tools;
+  if (tools !== undefined) {
+    const list = expectStringList(source, "tools", tools, errors, SHADOW_TOOLS_MAX);
+    if (list) {
+      if (new Set(list).size !== list.length) errors.push(`${source}: duplicate tools entry`);
+      if (!list.every((entry) => SHADOW_TOOL_PATTERN.test(entry))) {
+        errors.push(`${source}: tools entries must be lowercase snake-case tool names`);
+      }
+      if (errors.length === 0) fields.tools = list;
+    }
+  }
+  const requiredTools = frontmatter.requiredTools;
+  if (requiredTools !== undefined) {
+    const list = expectStringList(source, "requiredTools", requiredTools, errors, SHADOW_TOOLS_MAX);
+    if (list) {
+      if (new Set(list).size !== list.length) errors.push(`${source}: duplicate requiredTools entry`);
+      if (!list.every((entry) => SHADOW_TOOL_PATTERN.test(entry))) {
+        errors.push(`${source}: requiredTools entries must be lowercase snake-case tool names`);
+      }
+      if (errors.length === 0) fields.requiredTools = list;
+    }
+  }
+
+  const outputSchema = frontmatter.outputSchema;
+  if (outputSchema !== undefined) {
+    if (outputSchema === null) {
+      fields.outputSchema = null;
+    } else {
+      const schemaErrors = validateOutputSchema(outputSchema);
+      if (schemaErrors.length > 0) {
+        errors.push(...schemaErrors.map((entry) => `${source}: ${entry}`));
+      } else {
+        fields.outputSchema = outputSchema as ShadowOutputSchema;
+      }
+    }
+  }
+
+  if (body.length > SHADOW_BODY_MAX_CHARS) {
+    errors.push(`${source}: body exceeds ${SHADOW_BODY_MAX_CHARS.toLocaleString("en-US")} characters (${body.length.toLocaleString("en-US")})`);
+  }
+  fields.body = body;
+
+  if (errors.length > 0) return { errors };
+  if (!fields.name) {
+    errors.push(`${source}: name is required`);
+    return { errors };
+  }
+  return { fields, errors: [] };
+}
+
+function expectString(
+  source: string,
+  frontmatter: { [key: string]: YamlValue },
+  key: string,
+  errors: string[],
+  min: number,
+  max: number,
+): string | undefined {
+  const value = frontmatter[key];
+  if (typeof value !== "string" || value.length < min || value.length > max) {
+    errors.push(`${source}: ${key} must be a string between ${min} and ${max} characters`);
+    return undefined;
+  }
+  return value;
+}
+
+function expectStringList(
+  source: string,
+  key: string,
+  value: YamlValue,
+  errors: string[],
+  max: number,
+): string[] | undefined {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    errors.push(`${source}: ${key} must be a list of strings`);
+    return undefined;
+  }
+  const list = value as string[];
+  if (list.length > max) {
+    errors.push(`${source}: ${key} allows at most ${max} entries (${list.length})`);
+    return undefined;
+  }
+  return list;
+}
+
+function assignBoolean(
+  source: string,
+  frontmatter: { [key: string]: YamlValue },
+  key: "enabled" | "hidden" | "completionGate" | "debug",
+  fields: ShadowDefinitionFields,
+  errors: string[],
+): void {
+  const value = frontmatter[key];
+  if (value === undefined) return;
+  if (typeof value !== "boolean") {
+    errors.push(`${source}: ${key} must be a boolean`);
+    return;
+  }
+  fields[key] = value;
+}

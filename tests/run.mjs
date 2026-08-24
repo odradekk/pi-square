@@ -102,6 +102,10 @@ const suites = [
     .filter((name) => name.endsWith(".test.mjs"))
     .sort()
     .map((name) => `subagents/${name}`),
+  ...readdirSync(join(testsDir, "shadow-minds"))
+    .filter((name) => name.endsWith(".test.mjs"))
+    .sort()
+    .map((name) => `shadow-minds/${name}`),
 ];
 
 let failures = 0;
