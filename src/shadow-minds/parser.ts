@@ -441,7 +441,11 @@ export function parseShadowDefinitionFile(
   }
   const parsed = parseYamlSubset(source, lines.slice(1, closing));
   if (parsed.errors.length > 0) return { errors: parsed.errors };
-  const normalized = normalizeDefinitionFields(source, parsed.value, lines.slice(closing + 1).join("\n"));
+  // The body is canonicalized to its edge-trimmed Markdown form: leading and
+  // trailing blank lines are insignificant in a responsibility prompt, and one
+  // canonical shape keeps serializer round-trips exact.
+  const rawBody = lines.slice(closing + 1).join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+  const normalized = normalizeDefinitionFields(source, parsed.value, rawBody);
   if (normalized.errors.length > 0) return { errors: normalized.errors };
   return {
     definition: {
@@ -756,6 +760,18 @@ const KNOWN_FIELDS = new Set([
   "outputSchema",
 ]);
 
+function plainSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => plainSchema(entry));
+  if (value !== null && typeof value === "object") {
+    const copy: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      copy[key] = plainSchema(entry);
+    }
+    return copy;
+  }
+  return value;
+}
+
 function normalizeDefinitionFields(
   source: string,
   frontmatter: { [key: string]: YamlValue } | undefined,
@@ -943,7 +959,10 @@ function normalizeDefinitionFields(
       if (schemaErrors.length > 0) {
         errors.push(...schemaErrors.map((entry) => `${source}: ${entry}`));
       } else {
-        fields.outputSchema = outputSchema as ShadowOutputSchema;
+        // Deep-copy the validated schema into plain-prototype objects so a
+        // parsed schema is an ordinary value: deep-equality against authored
+        // schemas works and null-prototype maps never escape the parser.
+        fields.outputSchema = plainSchema(outputSchema) as ShadowOutputSchema;
       }
     }
   }
