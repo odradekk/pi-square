@@ -821,10 +821,13 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     assert.ok(!("payload" in reference.data), "the reference never duplicates the payload");
     assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "alpha-1", "results", `${resultId}.json`)));
 
-    // Reopening the same session keeps the result; the memory path warns.
+    // Reopening the same session keeps the result and never re-appends its
+    // transcript reference: the persisted `referenced` mark survives.
     const referencesBefore = harness.entries.filter((entry) => entry.type === "pi-square.shadow-result").length;
+    assert.equal(referencesBefore, 1, "exactly one reference entry was appended");
     await harness.handlers.get("session_start")({}, sessionCtx);
     assert.equal(state.runtime.snapshot().results.length, 1, "results survive a session reopen");
+    assert.equal(state.runtime.snapshot().results[0].referenced, true, "the reference mark reloads");
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(
       harness.entries.filter((entry) => entry.type === "pi-square.shadow-result").length,

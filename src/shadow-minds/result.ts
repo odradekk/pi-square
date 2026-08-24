@@ -206,6 +206,8 @@ export interface ShadowResultEntity extends ShadowResultMetadata {
   createdAt: number;
   model?: string;
   usage?: ChildSessionUsage;
+  /** Set once the parent transcript carries this result's bounded reference. */
+  referenced?: boolean;
 }
 
 /** Default in-memory retention; the persistent inbox keeps the same bound. */
@@ -234,6 +236,11 @@ export interface ShadowInbox {
   markRead(id: string): boolean;
   dismiss(id: string): boolean;
   delete(id: string): boolean;
+  /**
+   * Persists that the parent transcript already carries this result's
+   * bounded reference entry, so a reopen does not append it again.
+   */
+  markReferenced?(id: string): boolean;
   clear(): void;
 }
 

@@ -19,9 +19,12 @@ const {
   listShadowDebugRuns,
 } = await load(join(packageRoot, "src", "shadow-minds", "inbox-store.ts"));
 
+const roots = [];
+
 /** Pi 0.84.2 layout: one shared per-cwd directory of flat session files. */
 function makeSessionRoot(sessionId = "sess-1") {
   const root = mkdtempSync(join(tmpdir(), `shadow-inbox-${process.pid}-`));
+  roots.push(root);
   const sessionDir = join(root, "sessions");
   mkdirSync(sessionDir, { recursive: true });
   writeFileSync(join(sessionDir, `2026-01-01T00-00-00-000Z_${sessionId}.jsonl`), "{}\n", "utf8");
@@ -292,5 +295,31 @@ function addResult(inbox, index, overrides = {}) {
   // A missing sessions root reconciles as a no-op.
   assert.deepEqual(reconcileShadowPartitions(join(tmpdir(), `missing-${Date.now()}`)), { removed: [] });
 }
+
+{
+  // A persisted reference mark survives reopening: the restored entity
+  // reports referenced and markReferenced refuses to repeat it.
+  const { sessionDir } = makeSessionRoot();
+  const first = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const entity = addResult(first, 1);
+  assert.equal(first.markReferenced(entity.id), true);
+  assert.equal(first.markReferenced(entity.id), false, "the mark is idempotent");
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  assert.equal(reopened.list()[0].referenced, true, "the mark survives reopening");
+  assert.equal(reopened.markReferenced(entity.id), false);
+}
+
+{
+  // Crash-residue debug directories outside the index are swept away.
+  const { sessionDir } = makeSessionRoot();
+  const residue = shadowDebugRunDir(sessionDir, "sess-1", "run-crashed");
+  mkdirSync(residue, { recursive: true });
+  writeFileSync(join(residue, "session.jsonl"), JSON.stringify({ type: "message", text: "token=sk-unchecked" }), "utf8");
+  const outcome = sweepShadowDebugRetention(sessionDir, "sess-1");
+  assert.ok(!existsSync(residue), "unsanitized crash residue is removed");
+  assert.ok(outcome.removed.includes("run-crashed"));
+}
+
+for (const root of roots) rmSync(root, { recursive: true, force: true });
 
 console.log("shadow-minds inbox-store tests: OK");

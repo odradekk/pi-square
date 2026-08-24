@@ -565,7 +565,9 @@ export function createShadowRuntime(input: {
         history.unshift({ ...view });
         if (history.length > RUN_HISTORY_MAX) history.length = RUN_HISTORY_MAX;
       }
-      if (request.debug && !run.detached) {
+      if (request.debug) {
+        // Detached runs finalize too: an unsanitized debug log must never
+        // linger outside the retention sweep, whatever ended the run.
         try {
           deps.finalizeDebug?.({
             sessionDir: request.debug.sessionDir,

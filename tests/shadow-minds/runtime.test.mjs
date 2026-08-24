@@ -680,6 +680,26 @@ function baseRequest(overrides = {}) {
 }
 
 {
+  // A detached run still finalizes its debug log for sanitization.
+  const finalizeCalls = [];
+  let currentRuntime;
+  const fake = makeFake({ script: () => new Promise((resolve) => {
+    // Detach by resetting the session epoch mid-run.
+    currentRuntime.reset("session switch");
+    resolve(COMPLETED_NO_SUBMISSION);
+  }) });
+  fake.deps.finalizeDebug = (input) => finalizeCalls.push(input);
+  currentRuntime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const run = currentRuntime.startManualRun(baseRequest({
+    definition: definition({ debug: true }),
+    debug: { sessionDir: "/sessions/alpha", sessionId: "sess-9" },
+  }));
+  await run.done;
+  assert.equal(currentRuntime.snapshot().runs.length, 0, "detached runs leave no history");
+  assert.equal(finalizeCalls.length, 1, "detached runs still finalize debug logs");
+}
+
+{
   // A non-debug definition never receives a debug directory.
   const fake = makeFake({ submit: JSON.stringify({ summary: "normal" }) });
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });

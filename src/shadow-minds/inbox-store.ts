@@ -51,7 +51,7 @@ const INDEX_SUMMARY_MAX_CHARS = 160;
 const INDEX_EVENTS_MAX = 32;
 const INDEX_SCAN_MAX_FILES = 512;
 const ID_MAX_CHARS = 128;
-const RECONCILE_MAX_SESSION_DIRS = 1_000;
+const RECONCILE_MAX_PARTITIONS = 1_000;
 
 export interface ShadowInboxEvictionEvent {
   kind: "evicted";
@@ -67,6 +67,7 @@ interface StoredIndexEntry {
   attention: ShadowResultAttention;
   bytes: number;
   summary: string;
+  referenced?: boolean;
 }
 
 interface StoredIndex {
@@ -137,6 +138,7 @@ function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined
     if (!Array.isArray(record.triggers) || record.triggers.length > 4) return undefined;
     if (!record.triggers.every((trigger) => SHADOW_TRIGGERS.includes(trigger as never))) return undefined;
   }
+  if (record.referenced !== undefined && typeof record.referenced !== "boolean") return undefined;
   if (record.taskIdentity !== undefined) {
     const identity = record.taskIdentity as Record<string, unknown>;
     if (!identity || typeof identity !== "object" || !Number.isInteger(identity.epoch) || (identity.epoch as number) < 0) return undefined;
@@ -164,6 +166,7 @@ function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined
     ...(record.taskIdentity !== undefined
       ? { taskIdentity: structuredClone(record.taskIdentity) as ShadowResultEntity["taskIdentity"] }
       : {}),
+    ...(record.referenced === true ? { referenced: true } : {}),
   };
 }
 
@@ -184,6 +187,7 @@ function validatePersistedIndex(value: unknown): StoredIndex | undefined {
     if (item.attention !== "unread" && item.attention !== "read" && item.attention !== "dismissed") return undefined;
     if (!Number.isInteger(item.bytes) || (item.bytes as number) < 0) return undefined;
     if (!isBoundedString(item.summary, INDEX_SUMMARY_MAX_CHARS)) return undefined;
+    if (item.referenced !== undefined && typeof item.referenced !== "boolean") return undefined;
     results.push({
       id: item.id,
       createdAt: item.createdAt as number,
@@ -191,6 +195,7 @@ function validatePersistedIndex(value: unknown): StoredIndex | undefined {
       attention: item.attention as ShadowResultAttention,
       bytes: item.bytes as number,
       summary: item.summary as string,
+      ...(item.referenced === true ? { referenced: true } : {}),
     });
   }
   const events: ShadowInboxEvictionEvent[] = [];
@@ -330,6 +335,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
         attention: entry.entity.attention,
         bytes: entry.bytes,
         summary: entry.entity.summary.slice(0, INDEX_SUMMARY_MAX_CHARS),
+        ...(entry.entity.referenced ? { referenced: true } : {}),
       })),
       events: events.slice(-INDEX_EVENTS_MAX),
     };
@@ -345,6 +351,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       // Best-effort removal; the entity is already out of the index.
     }
     events.push({ kind: "evicted", id, at: now(), reason });
+    if (events.length > INDEX_EVENTS_MAX * 2) events.splice(0, events.length - INDEX_EVENTS_MAX);
     if (entry) diagnostics.push(`Result ${id} was evicted (${reason}).`);
   };
 
@@ -382,6 +389,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
         for (const entry of parsed.results) {
           const loadedEntity = loadEntityFile(entry.id);
           if (!loadedEntity) continue;
+          if (entry.referenced) loadedEntity.entity.referenced = true;
           loaded.set(loadedEntity.entity.id, loadedEntity);
         }
       }
@@ -482,12 +490,20 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeIndex();
       return true;
     },
+    markReferenced(id: string): boolean {
+      const entry = loaded.get(id);
+      if (!entry || entry.entity.referenced) return false;
+      entry.entity.referenced = true;
+      writeEntity(entry);
+      writeIndex();
+      return true;
+    },
     clear(): void {
       // The partition is the authoritative record and deliberately survives
       // session-scoped resets; per-session clearing removes nothing.
     },
     events(): ShadowInboxEvictionEvent[] {
-      return [...events];
+      return events.slice(-INDEX_EVENTS_MAX);
     },
     diagnostics(): string[] {
       return [...diagnostics];
@@ -667,6 +683,30 @@ export function sweepShadowDebugRetention(
   const index = readDebugIndex(partition);
   const runs = [...index.runs];
 
+  // Crash residue: run directories the index never adopted were never
+  // sanitized, so they are removed rather than trusted.
+  const indexedIds = new Set(runs.map((run) => run.runId));
+  const debugRoot = join(partition, "debug");
+  if (existsSync(debugRoot)) {
+    let directories: string[] = [];
+    try {
+      directories = readdirSync(debugRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch {
+      directories = [];
+    }
+    for (const name of directories.slice(0, DEBUG_INDEX_MAX_RUNS)) {
+      if (indexedIds.has(name)) continue;
+      try {
+        rmSync(join(debugRoot, name), { recursive: true, force: true });
+        removed.push(name);
+      } catch {
+        // Retried on the next sweep.
+      }
+    }
+  }
+
   const dropRun = (run: DebugIndexRun): void => {
     try {
       rmSync(shadowDebugRunDir(sessionDir, sessionId, run.runId), { recursive: true, force: true });
@@ -741,7 +781,7 @@ export function reconcileShadowPartitions(sessionDir: string, keepSessionId?: st
   } catch {
     return { removed };
   }
-  for (const sub of subEntries.slice(0, RECONCILE_MAX_SESSION_DIRS)) {
+  for (const sub of subEntries.slice(0, RECONCILE_MAX_PARTITIONS)) {
     if (!sub.isDirectory()) continue;
     if (keepSessionId !== undefined && sub.name === keepSessionId) continue;
     const survives = [...sessionFiles].some((name) => name === `${sub.name}.jsonl` || name.endsWith(`_${sub.name}.jsonl`));

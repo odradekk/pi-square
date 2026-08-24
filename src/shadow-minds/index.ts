@@ -402,11 +402,15 @@ export default function registerShadowMinds(
   runtimeDeps?: ShadowRuntimeDeps,
 ): ShadowMindsState {
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
-  const makeRuntime = (inbox?: ShadowInbox): ShadowRuntime => createShadowRuntime({
-    config: effectiveConfig,
-    ...(runtimeDeps ? { deps: runtimeDeps } : {}),
-    ...(inbox ? { inbox } : {}),
-  });
+  let currentInbox: ShadowInbox | undefined;
+  const makeRuntime = (inbox?: ShadowInbox): ShadowRuntime => {
+    currentInbox = inbox;
+    return createShadowRuntime({
+      config: effectiveConfig,
+      ...(runtimeDeps ? { deps: runtimeDeps } : {}),
+      ...(inbox ? { inbox } : {}),
+    });
+  };
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
     cwd: process.cwd(),
@@ -548,14 +552,17 @@ export default function registerShadowMinds(
   let unsubscribeRuntime: (() => void) | undefined;
   const bindRuntimeNotifications = (): void => {
     unsubscribeRuntime?.();
-    // Fresh per-runtime instance: a reopened session does not re-append
-    // reference entries for results it already recorded.
+    // Results carry a persisted `referenced` flag, so a reopened session
+    // does not re-append transcript references it already recorded; the
+    // in-memory set only guards duplicate notifications within this
+    // runtime instance. A crash between the append and the persisted mark
+    // can re-append one bounded entry at the next open.
     const seenResults = new Set<string>();
     unsubscribeRuntime = state.runtime.subscribe(() => {
       const sessionCtx = ctx;
       const results = state.runtime.snapshot().results;
       for (const result of results) {
-        if (seenResults.has(result.id)) continue;
+        if (seenResults.has(result.id) || result.referenced) continue;
         seenResults.add(result.id);
         if (!effectiveConfig().enabled) continue;
         try {
@@ -566,6 +573,7 @@ export default function registerShadowMinds(
             summary: result.summary.slice(0, 160),
             createdAt: result.createdAt,
           });
+          currentInbox?.markReferenced?.(result.id);
         } catch {
           // A session that cannot record the reference keeps the result in
           // the inbox; the entry is observability, not authority.
