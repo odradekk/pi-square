@@ -596,4 +596,216 @@ function render(manager, width = 100) {
   assert.match(deletionReview, /EFFECTIVE CHANGE[\s\S]*enabled: true → false/);
 }
 
+
+// ── Manual-run and inbox flows with runtime services ───────────────
+
+function makeRuntimeService(initial) {
+  const state = {
+    snapshotData: initial,
+    runCalls: [],
+    cancels: [],
+    reads: [],
+    dismissals: [],
+    deletions: [],
+    listeners: new Set(),
+  };
+  return {
+    state,
+    runtime: {
+      snapshot: () => state.snapshotData,
+      runManual(input) {
+        state.runCalls.push(input);
+        return { ok: true, message: "started" };
+      },
+      cancelRun(runId) {
+        state.cancels.push(runId);
+        return { ok: true };
+      },
+      markResultRead(id) {
+        state.reads.push(id);
+        return true;
+      },
+      dismissResult(id) {
+        state.dismissals.push(id);
+        return true;
+      },
+      deleteResult(id) {
+        state.deletions.push(id);
+        state.snapshotData = { ...state.snapshotData, results: state.snapshotData.results.filter((entry) => entry.id !== id) };
+        return true;
+      },
+      subscribe(listener) {
+        state.listeners.add(listener);
+        return () => state.listeners.delete(listener);
+      },
+    },
+    emit() {
+      for (const listener of state.listeners) listener();
+    },
+  };
+}
+
+{
+  // Run manually appears only for the explicit no-tool definition.
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
+  const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
+  assert.ok(synthesizer.tools?.length === 0, "sanity: session-synthesizer declares the empty tool list");
+
+  const service = makeRuntimeService({ runs: [], results: [] });
+  const withRun = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+  );
+  let index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
+  for (let step = 0; step < index; step += 1) withRun.handleInput("down");
+  withRun.handleInput("\r");
+  assert.ok(render(withRun).some((line) => line.includes("Run manually")), "the no-tool definition offers a manual run");
+
+  const withoutRun = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+  );
+  index = registry.definitions.findIndex((definition) => definition.id === "project-grounding");
+  for (let step = 0; step < index; step += 1) withoutRun.handleInput("down");
+  withoutRun.handleInput("\r");
+  assert.ok(!render(withoutRun).some((line) => line.includes("Run manually")), "evidence-tool definitions do not offer the #155 trial");
+  assert.equal(grounding.id, "project-grounding");
+}
+
+{
+  // Full flow: note → review → confirm closes the manager and starts the run.
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
+  assert.ok(synthesizer);
+  const service = makeRuntimeService({ runs: [], results: [] });
+  const done = [];
+  const manager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: true, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => done.push(1),
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+  );
+  const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
+  for (let step = 0; step < index; step += 1) manager.handleInput("down");
+  manager.handleInput("\r");
+  manager.handleInput("\r");
+  for (const character of "Check open questions only.") manager.handleInput(character);
+  manager.handleInput("\r");
+  const review = render(manager).join("\n");
+  assert.ok(review.includes("Start session-synthesizer manual run?"), "the run review opens");
+  assert.ok(review.includes("Check open questions only."), "the note is reviewed");
+  assert.ok(review.includes("submit_shadow_result only"), "the review names the single tool");
+  manager.handleInput("\r");
+  assert.equal(done.length, 1, "confirming closes the manager first");
+  assert.equal(service.state.runCalls.length, 1);
+  assert.deepEqual(service.state.runCalls[0], {
+    shadowId: "session-synthesizer",
+    definitionFingerprint: shadowDefinitionContextFingerprint(synthesizer.layers),
+    timeoutSeconds: DEFAULT_CONFIG.shadowMinds.defaults.runTimeoutSeconds,
+    maxTurns: DEFAULT_CONFIG.shadowMinds.defaults.maxModelTurnsPerRun,
+    maxToolCalls: DEFAULT_CONFIG.shadowMinds.defaults.maxToolCallsPerRun,
+    note: "Check open questions only.",
+  }, "the run starts with the exact reviewed definition and bounds");
+}
+
+{
+  // The master switch refuses the trial inside the manager.
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const service = makeRuntimeService({ runs: [], results: [] });
+  const manager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: false, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+  );
+  const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
+  for (let step = 0; step < index; step += 1) manager.handleInput("down");
+  manager.handleInput("\r");
+  manager.handleInput("\r");
+  const lines = render(manager).join("\n");
+  assert.ok(lines.includes("master switch"), "the refusal names the master switch");
+  assert.equal(service.state.runCalls.length, 0);
+}
+
+{
+  // Runs entry: live refresh, cancellation, result inspection, and actions.
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const runningRun = {
+    id: "run-1", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
+    trigger: "manual", phase: "running", startedAt: 1_000, note: "trial",
+  };
+  const settledRun = {
+    id: "run-2", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
+    trigger: "manual", phase: "submitted", startedAt: 1_000, endedAt: 2_000, resultId: "shr-1",
+  };
+  const result = {
+    id: "shr-1", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
+    trigger: "manual", payload: { summary: "Two decisions remain open." }, summary: "Two decisions remain open.",
+    delivery: "notified", attention: "unread", createdAt: 2_000,
+  };
+  const service = makeRuntimeService({ runs: [runningRun, settledRun], results: [result] });
+  const manager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+  );
+
+  manager.handleInput("r");
+  let lines = render(manager).join("\n");
+  assert.ok(lines.includes("Runs") && lines.includes("Inbox"), "the runs entry lists both sections");
+  assert.ok(lines.includes("1 running · 1 settled"), "run counts render");
+
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Session synthesizer (session-synthesizer)"), "runs list renders");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Cancel run"), "a running run offers cancellation");
+  manager.handleInput("\r");
+  assert.deepEqual(service.state.cancels, ["run-1"], "cancellation reaches the runtime");
+
+  // Settled run: view result opens the inbox entry.
+  manager.handleInput("escape");
+  service.state.snapshotData = {
+    runs: [{ ...runningRun, phase: "cancelled", endedAt: 1_500 }, settledRun],
+    results: [result],
+  };
+  service.emit();
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Two decisions remain open."), "the result summary renders");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Two decisions remain open."), "the payload view renders the submitted JSON");
+  assert.ok(lines.includes('"summary": "Two decisions remain open."'), "canonical JSON payload is visible");
+  manager.handleInput("\r");
+  // Back on the result actions: mark read, dismiss, delete.
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Mark read") && lines.includes("Dismiss") && lines.includes("Delete"), "attention actions are offered");
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  assert.deepEqual(service.state.reads, ["shr-1"], "mark read reaches the runtime");
+  manager.handleInput("down");
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  assert.deepEqual(service.state.deletions, ["shr-1"], "delete removes the result through the runtime");
+}
+
 console.log("shadow-minds manager tests: OK");

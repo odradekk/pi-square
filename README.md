@@ -188,11 +188,34 @@ What works today:
   symlink and file identity, locking, review fingerprint CAS, complete
   effective-candidate validation, permission preservation, and atomic rename;
   a stale or concurrent change refuses the write without losing either
-  version. Package templates stay read-only. The manager itself creates no
-  model calls.
+  version. Package templates stay read-only; definition writes alone create
+  no model calls.
 - `/shadow <request>` asks the parent agent for configuration help: a bounded
   Shadow Config Guide is delivered before the unchanged request, and only the
   user request triggers a turn. No definition is written automatically.
+- Manual no-tool trials: a definition with the explicit empty tool list (such
+  as Session synthesizer) offers **Run manually** in the `/shadow` manager.
+  An optional bounded one-time note applies to that run only. The trial
+  executes as a fresh, non-resumable child session whose SYSTEM is the
+  versioned Shadow governance plus a parent-task snapshot — the custom system
+  core, trusted project rules, and canonical working directory, frozen from
+  the parent's prompt options at run start — and whose USER message is
+  the reference-only parent trajectory, the Shadow responsibility, the
+  canonical output schema, and the note. The child receives exactly one
+  tool, `submit_shadow_result`; its payload is validated against the
+  effective schema with field-level retry errors, a valid submission
+  terminates the run, and the validated result lands in the session inbox.
+  The manager shows running state, supports cancellation, and lets you
+  inspect, mark read, dismiss, or delete results. The runtime freezes its
+  configuration and definition at start; timeout is enforced by a fixed
+  deadline and the child executor, model turns at the pre-model `turn_start` boundary,
+  and tool calls at Pi’s pre-validation `tool_execution_start` boundary, with a second check before payload acceptance. Session
+  replacement clears the in-memory inbox and rejects late submissions from the
+  old child. Trajectory, prompt authority, notes, errors, and summaries remove
+  terminal controls and redact common credential forms. Timeouts, cancellations,
+  bounded outcomes, and model or auth failures are observable lifecycle data and
+  never become results. Manual trials require the
+  `shadowMinds.enabled` master switch and share its concurrency budget.
 - A strict `shadowMinds` section in agent and project pi-square configuration:
   the agent-level `enabled` master switch (a project can never re-enable it)
   and runtime `defaults` that always stay below package hard caps. An invalid
@@ -200,8 +223,9 @@ What works today:
 
 Definition files are ordinary Markdown with a strict bounded frontmatter
 subset; invalid definitions are diagnosed and excluded individually while
-valid ones remain inspectable. Scheduling, execution, and result delivery
-arrive with the later slices of #149.
+valid ones remain inspectable. Automatic trigger scheduling, evidence tool
+envelopes, result delivery, and the persistent recoverable inbox arrive with
+the later slices of #149.
 
 ## Persistent SSH shell
 

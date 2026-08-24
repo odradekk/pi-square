@@ -1,5 +1,5 @@
 /**
- * `/shadow` manager view (odradekk/pi-square#149, slices #153–#154).
+ * `/shadow` manager view (odradekk/pi-square#149, slices #153–#155).
  *
  * A focus-preserving, non-overlay TUI view that inspects every effective
  * Shadow definition with its layer provenance and, when write services are
@@ -7,8 +7,11 @@
  * write is reviewed in a scrollable candidate view first, then approved
  * through the session FIFO confirmation coordinator after the manager
  * closes itself, and executed by the safe overlay writer. Package templates
- * stay read-only. The view follows the shared unframed operational grammar:
- * one-cell status rail, label-led rows, muted borders, no emoji.
+ * stay read-only. Runtime services add manual no-tool trials with a bounded
+ * one-time note, live run observation with cancellation, and result-inbox
+ * inspection (read, dismiss, delete). The view follows the shared unframed
+ * operational grammar: one-cell status rail, label-led rows, muted borders,
+ * no emoji.
  */
 
 import {
@@ -18,7 +21,7 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Editor, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
-import type { ShadowMindsDefaults } from "../core/config";
+import { DEFAULT_SHADOW_MINDS, type ShadowMindsDefaults } from "../core/config";
 import type { FileIdentity } from "../core/safe-write";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import { shadowDefinitionContextFingerprint } from "./definitions";
@@ -34,11 +37,14 @@ import {
   type ShadowOutputSchema,
   type ShadowTrigger,
 } from "./parser";
+import { canonicalPayloadJson, type ShadowResultEntity } from "./result";
+import { SHADOW_MANUAL_NOTE_MAX_CHARS, type ShadowRunView, type ShadowRuntimeSnapshot } from "./runtime";
 import { newShadowDefinitionDraft } from "./serialize";
 
 const LIST_WIDTH = 34;
 const BODY_PREVIEW_LINES = 8;
 const DIAGNOSTIC_LINES = 4;
+const RESULT_PAYLOAD_PREVIEW_CHARS = 2_000;
 
 type WritableScope = "agent" | "project";
 
@@ -65,7 +71,27 @@ export interface ShadowApprovalRequest {
   destructive?: boolean;
 }
 
+/** Session runtime operations surfaced in the manager (#155). */
+export interface ShadowRuntimeServices {
+  snapshot(): ShadowRuntimeSnapshot;
+  /** Starts one manual run for an effective definition; never throws. */
+  runManual(input: {
+    shadowId: string;
+    note?: string;
+    definitionFingerprint?: string;
+    timeoutSeconds?: number;
+    maxTurns?: number;
+    maxToolCalls?: number;
+  }): { ok: boolean; message: string };
+  cancelRun(runId: string): { ok: boolean; message?: string };
+  markResultRead(id: string): boolean;
+  dismissResult(id: string): boolean;
+  deleteResult(id: string): boolean;
+  subscribe(listener: () => void): () => void;
+}
+
 export interface ShadowManagerServices {
+  runtime?: ShadowRuntimeServices;
   refresh(): ShadowManagerSnapshot;
   /** Maps an on-disk overlay path to its writable scope, when it is one. */
   scopeOf(filePath: string): WritableScope | undefined;
@@ -148,6 +174,8 @@ interface ChoiceView {
   description?: string;
   items: ChoiceItem[];
   index: number;
+  /** Live-rebuild scope: runtime state changes refresh the item list. */
+  refresh?: "runs" | "inbox";
 }
 
 interface EditorView {
@@ -234,6 +262,7 @@ export class ShadowManager implements Component, Focusable {
   private history: ManagerView[] = [];
   private flash?: { kind: "success" | "error"; text: string };
   private finished = false;
+  private readonly unsubscribeRuntime?: () => void;
 
   constructor(
     private data: ShadowManagerSnapshot,
@@ -247,6 +276,10 @@ export class ShadowManager implements Component, Focusable {
       ...data.definitions,
       ...data.invalid.map((entry) => ({ id: entry.id, invalid: entry })),
     ];
+    this.unsubscribeRuntime = services?.runtime?.subscribe(() => {
+      this.refreshRuntimeViews();
+      this.tui.requestRender();
+    });
   }
 
   get focused(): boolean {
@@ -280,6 +313,7 @@ export class ShadowManager implements Component, Focusable {
   private finish(): void {
     if (this.finished) return;
     this.finished = true;
+    this.unsubscribeRuntime?.();
     this.done();
   }
 
@@ -884,6 +918,14 @@ export class ShadowManager implements Component, Focusable {
         ? undefined
         : "Package templates are read-only; edits create overlays.",
       items: [
+        ...(isNoToolTrial(selected)
+          ? [{
+              id: "run-manually",
+              label: "Run manually",
+              detail: `no-tool trial · ${runBoundLabel(runBounds(selected, this.data.config?.defaults))}`,
+              onSelect: () => this.runManually(selected),
+            }]
+          : []),
         {
           id: "toggle-enabled",
           label: selected.enabled ? "Disable" : "Enable",
@@ -910,6 +952,252 @@ export class ShadowManager implements Component, Focusable {
         },
       ],
     });
+  }
+
+  // ── Manual runs and inbox ────────────────────────────────────────────
+
+  private runManually(definition: EffectiveShadowDefinition): void {
+    const runtime = this.services?.runtime;
+    if (!runtime) {
+      this.errorFlash("Manual runs are unavailable in this session.");
+      return;
+    }
+    if (this.data.config && !this.data.config.enabled) {
+      this.errorFlash("Shadow Minds is disabled by the master switch; enable it in agent config to run trials.");
+      return;
+    }
+    this.openEditor({
+      eyebrow: "RUN / NOTE",
+      title: `Run ${definition.id} manually`,
+      description: `Optional one-time note for this run only (at most ${SHADOW_MANUAL_NOTE_MAX_CHARS.toLocaleString("en-US")} characters). Empty runs without a note.`,
+      submitLabel: "review run",
+      validate: (value) => (value.length > SHADOW_MANUAL_NOTE_MAX_CHARS
+        ? `The note must stay within ${SHADOW_MANUAL_NOTE_MAX_CHARS.toLocaleString("en-US")} characters.`
+        : undefined),
+      onSubmit: (noteValue) => {
+        const note = noteValue.trim();
+        const bounds = runBounds(definition, this.data.config?.defaults);
+        const definitionFingerprint = shadowDefinitionContextFingerprint(definition.layers);
+        this.openReview({
+          eyebrow: "RUN / REVIEW",
+          title: `Start ${definition.id} manual run?`,
+          lines: [
+            `Definition: ${definition.name} (${definition.id})`,
+            `Tools: none — submit_shadow_result only`,
+            `Bounds: ${runBoundLabel(bounds)}`,
+            `Evidence: the current parent trajectory, reference only`,
+            ...(note ? ["", "MANUAL NOTE", note] : []),
+          ],
+          confirmLabel: "start run",
+          onConfirm: () => {
+            this.finish();
+            const outcome = this.services?.runtime?.runManual({
+              shadowId: definition.id,
+              definitionFingerprint,
+              ...bounds,
+              ...(note ? { note } : {}),
+            });
+            // The manager has closed itself; the owning service reports the
+            // outcome through the session notify surface.
+            void outcome;
+          },
+        });
+      },
+    });
+  }
+
+  private openRunsEntry(): void {
+    if (!this.services?.runtime) {
+      this.errorFlash("Manual runs are unavailable in this session.");
+      return;
+    }
+    const snapshot = this.services.runtime.snapshot();
+    const running = snapshot.runs.filter((run) => run.phase === "running").length;
+    const unread = snapshot.results.filter((result) => result.attention === "unread").length;
+    this.openChoice({
+      eyebrow: "RUNS / INBOX",
+      title: "Shadow runs and results",
+      description: "Manual trials, their terminal outcomes, and the session result inbox.",
+      items: [
+        {
+          id: "runs",
+          label: "Runs",
+          detail: `${running} running · ${snapshot.runs.length - running} settled`,
+          onSelect: () => this.openRunsList(),
+        },
+        {
+          id: "inbox",
+          label: "Inbox",
+          detail: `${snapshot.results.length} results · ${unread} unread`,
+          onSelect: () => this.openInboxList(),
+        },
+      ],
+    });
+  }
+
+  private buildRunItems(): ChoiceItem[] {
+    const runtime = this.services?.runtime;
+    if (!runtime) return [];
+    return runtime.snapshot().runs.slice(0, 12).map((run) => ({
+      id: run.id,
+      label: `${sanitizeDisplayLine(run.shadowName)} (${sanitizeDisplayLine(run.shadowId)})`,
+      detail: sanitizeDisplayLine(runDetailLabel(run)),
+      onSelect: () => this.openRunDetail(run.id),
+    }));
+  }
+
+  private openRunsList(): void {
+    const items = this.buildRunItems();
+    this.openChoice({
+      eyebrow: "RUNS / LIST",
+      title: items.length > 0 ? "Select a run" : "No runs yet",
+      description: items.length > 0 ? undefined : "Start one from a definition's actions menu.",
+      items: items.length > 0 ? items : [{ id: "empty", label: "(none)", onSelect: () => {} }],
+      refresh: "runs",
+    });
+  }
+
+  private openRunDetail(runId: string): void {
+    const runtime = this.services?.runtime;
+    const run = runtime?.snapshot().runs.find((entry) => entry.id === runId);
+    if (!runtime || !run) {
+      this.errorFlash("That run is no longer available.");
+      return;
+    }
+    const items: ChoiceItem[] = [];
+    if (run.phase === "running") {
+      items.push({
+        id: "cancel",
+        label: "Cancel run",
+        detail: "Abort this manual trial",
+        onSelect: () => {
+          const outcome = this.services!.runtime!.cancelRun(runId);
+          if (outcome.ok) this.flash = { kind: "success", text: "Cancellation requested." };
+          else this.errorFlash(outcome.message ?? "That run is no longer active.");
+          this.refreshRuntimeViews();
+          this.tui.requestRender();
+        },
+      });
+    }
+    if (run.resultId) items.push({
+      id: "result",
+      label: "View result",
+      detail: "Open the inbox entry this run produced",
+      onSelect: () => this.openResultActions(run.resultId!),
+    });
+    this.openChoice({
+      eyebrow: "RUNS / DETAIL",
+      title: `${sanitizeDisplayLine(run.shadowName)} · ${run.phase}`,
+      description: sanitizeDisplayLine(runDetailLabel(run)),
+      items: items.length > 0 ? items : [{ id: "empty", label: "No actions for a settled run without a result.", onSelect: () => {} }],
+    });
+  }
+
+  private buildInboxItems(): ChoiceItem[] {
+    const runtime = this.services?.runtime;
+    if (!runtime) return [];
+    return runtime.snapshot().results.slice(0, 20).map((result) => ({
+      id: result.id,
+      label: sanitizeDisplayLine(result.summary || result.shadowName),
+      detail: `${sanitizeDisplayLine(result.shadowId)} · ${result.attention} · ${result.delivery}`,
+      onSelect: () => this.openResultActions(result.id),
+    }));
+  }
+
+  private openInboxList(): void {
+    const items = this.buildInboxItems();
+    this.openChoice({
+      eyebrow: "INBOX / LIST",
+      title: items.length > 0 ? "Select a result" : "Inbox is empty",
+      description: items.length > 0 ? undefined : "A schema-valid manual submission lands here.",
+      items: items.length > 0 ? items : [{ id: "empty", label: "(none)", onSelect: () => {} }],
+      refresh: "inbox",
+    });
+  }
+
+  private openResultActions(resultId: string): void {
+    const runtime = this.services?.runtime;
+    const result = runtime?.snapshot().results.find((entry) => entry.id === resultId);
+    if (!runtime || !result) {
+      this.errorFlash("That result is no longer available.");
+      return;
+    }
+    const act = (action: () => boolean, success: string) => {
+      const ok = action();
+      if (ok) this.flash = { kind: "success", text: success };
+      else this.errorFlash("That result is no longer available.");
+      this.refreshRuntimeViews();
+      this.tui.requestRender();
+    };
+    this.openChoice({
+      eyebrow: "INBOX / RESULT",
+      title: sanitizeDisplayLine(result.summary || result.shadowName),
+      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${result.attention} · ${result.delivery}`,
+      items: [
+        {
+          id: "payload",
+          label: "View payload",
+          detail: "The validated submitted JSON",
+          onSelect: () => this.openResultPayload(result),
+        },
+        {
+          id: "read",
+          label: "Mark read",
+          detail: "Keep the result, clear the unread marker",
+          onSelect: () => act(() => this.services!.runtime!.markResultRead(resultId), "Marked read."),
+        },
+        {
+          id: "dismiss",
+          label: "Dismiss",
+          detail: "Collapse it from the unread view; the payload stays until deleted",
+          onSelect: () => act(() => this.services!.runtime!.dismissResult(resultId), "Dismissed."),
+        },
+        {
+          id: "delete",
+          label: "Delete",
+          detail: "Remove the result from this session inbox",
+          onSelect: () => act(() => this.services!.runtime!.deleteResult(resultId), "Deleted."),
+        },
+      ],
+    });
+  }
+
+  private openResultPayload(result: ShadowResultEntity): void {
+    let payloadText: string;
+    try {
+      payloadText = canonicalPayloadJson(result.payload, 2) || "(null)";
+    } catch {
+      payloadText = "(unserializable payload)";
+    }
+    const bounded = payloadText.length > RESULT_PAYLOAD_PREVIEW_CHARS
+      ? `${payloadText.slice(0, RESULT_PAYLOAD_PREVIEW_CHARS)}\n… truncated`
+      : payloadText;
+    this.openReview({
+      eyebrow: "INBOX / PAYLOAD",
+      title: `${result.shadowId} result`,
+      lines: [
+        `Submitted: ${new Date(result.createdAt).toISOString()}`,
+        ...(result.model ? [`Model: ${result.model}`] : []),
+        ...(result.usage ? [`Usage: ${result.usage.turns} turns · ${result.usage.input}/${result.usage.output} tokens`] : []),
+        "",
+        "PAYLOAD",
+        ...bounded.split("\n"),
+      ],
+      confirmLabel: "done",
+      onConfirm: () => this.back(),
+    });
+  }
+
+  /** Rebuilds live run/inbox item lists after runtime state changes. */
+  private refreshRuntimeViews(): void {
+    const views = [this.view, ...this.history];
+    for (const view of views) {
+      if (view.kind !== "choice" || !view.refresh) continue;
+      if (view.refresh === "runs") view.items = this.buildRunItems();
+      else view.items = this.buildInboxItems();
+      if (view.items.length === 0) view.items = [{ id: "empty", label: "(none)", onSelect: () => {} }];
+      view.index = Math.min(view.index, Math.max(0, view.items.length - 1));
+    }
   }
 
   // ── Input ────────────────────────────────────────────────────────────
@@ -953,6 +1241,7 @@ export class ShadowManager implements Component, Focusable {
     if (this.keybindings.matches(data, "tui.select.down")) return this.move(1);
     if (this.keybindings.matches(data, "tui.select.confirm")) return this.activate();
     if (matchesKey(data, "n")) return this.createDefinition();
+    if (matchesKey(data, "r") && this.services?.runtime) return this.openRunsEntry();
     if (matchesKey(data, "q")) return this.finish();
   }
 
@@ -1015,9 +1304,10 @@ export class ShadowManager implements Component, Focusable {
       const marker = this.flash.kind === "error" ? "✗" : "✓";
       lines.push(fit(`${this.theme.fg(color, marker)} ${this.theme.fg(color, this.flash.text)}`, width));
     }
+    const runtimeHint = this.services?.runtime ? " · r runs" : "";
     lines.push(
       fit(
-        `${keyHint("tui.select.up", "↑/↓")} select · ${keyHint("tui.select.confirm", "enter")} actions · n new · ${keyHint("tui.select.cancel", "esc")} close`,
+        `${keyHint("tui.select.up", "↑/↓")} select · ${keyHint("tui.select.confirm", "enter")} actions · n new${runtimeHint} · ${keyHint("tui.select.cancel", "esc")} close`,
         width,
       ),
     );
@@ -1180,6 +1470,36 @@ export class ShadowManager implements Component, Focusable {
 
 function definitionLabel(definition: EffectiveShadowDefinition): string {
   return `${definition.name} (${definition.id})`;
+}
+
+/** A manual trial exists only for the explicit empty tool list (#155). */
+function isNoToolTrial(definition: EffectiveShadowDefinition): boolean {
+  return definition.tools !== undefined && definition.tools.length === 0;
+}
+
+interface ManualRunBounds {
+  timeoutSeconds: number;
+  maxTurns: number;
+  maxToolCalls: number;
+}
+
+function runBounds(definition: EffectiveShadowDefinition, defaults?: ShadowMindsDefaults): ManualRunBounds {
+  return {
+    timeoutSeconds: definition.timeoutSeconds ?? defaults?.runTimeoutSeconds ?? DEFAULT_SHADOW_MINDS.runTimeoutSeconds,
+    maxTurns: definition.maxTurns ?? defaults?.maxModelTurnsPerRun ?? DEFAULT_SHADOW_MINDS.maxModelTurnsPerRun,
+    maxToolCalls: definition.maxToolCalls ?? defaults?.maxToolCallsPerRun ?? DEFAULT_SHADOW_MINDS.maxToolCallsPerRun,
+  };
+}
+
+function runBoundLabel(bounds: ManualRunBounds): string {
+  return `timeout ${bounds.timeoutSeconds}s · max ${bounds.maxTurns} turns · max ${bounds.maxToolCalls} tool calls`;
+}
+
+function runDetailLabel(run: ShadowRunView): string {
+  const base = `${run.phase} · ${run.shadowId}`;
+  if (run.phase === "running") return base;
+  const duration = run.endedAt !== undefined ? ` · ${Math.round((run.endedAt - run.startedAt) / 100) / 10}s` : "";
+  return `${base}${duration}${run.message ? ` — ${run.message}` : ""}`;
 }
 
 function toolLabel(definition: EffectiveShadowDefinition): string {

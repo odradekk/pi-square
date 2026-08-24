@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -20,11 +20,12 @@ const {
 
 let registerShadowMinds;
 let __testables;
-const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
 const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
   join(packageRoot, "src", "shadow-minds", "serialize.ts"),
 );
+const { DEFAULT_CONFIG, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
 const { MISSING_OVERLAY_FINGERPRINT } = await load(join(packageRoot, "src", "shadow-minds", "overlays.ts"));
 
 const PLAIN = /\x1b\[[0-9;]*m/g;
@@ -127,16 +128,18 @@ function fakePi() {
   const commands = new Map();
   const renderers = new Map();
   const events = [];
+  const handlers = new Map();
   return {
     commands,
     renderers,
     events,
+    handlers,
     pi: {
       registerCommand(name, definition) { commands.set(name, definition); },
       registerMessageRenderer(name, renderer) { renderers.set(name, renderer); },
       sendMessage(message, options) { events.push(["guide", message, options]); },
       sendUserMessage(message, options) { events.push(["user", message, options]); },
-      on() {},
+      on(event, handler) { handlers.set(event, handler); },
     },
   };
 }
@@ -342,6 +345,299 @@ function fakePi() {
       confirmations.run(undefined, async () => { running.push("b-start"); await new Promise((r) => setTimeout(r, 0)); running.push("b-end"); return true; }),
     ]);
     assert.deepEqual(running, ["a-start", "a-end", "b-start", "b-end"], "confirmations never interleave");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
+
+// ── Manual-run service wiring (#155) ────────────────────────────────
+
+{
+  const { DEFAULT_CONFIG: DEFAULT_CONFIG_TEMPLATE } = await load(join(packageRoot, "src", "core", "config.ts"));
+  const { SHADOW_GOVERNANCE } = await load(join(packageRoot, "src", "shadow-minds", "prompt.ts"));
+  const { DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+
+  const dir = mkdtempSync(join(tmpdir(), "shadow-runtime-e2e-"));
+  const project = join(dir, "project");
+  mkdirSync(project, { recursive: true });
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  mkdirSync(join(dir, "agent"), { recursive: true });
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const notifications = [];
+    const branchEntries = [
+      { type: "message", message: { role: "user", content: "Investigate the flaky parser test." } },
+      { type: "message", message: { role: "assistant", content: [{ type: "text", text: "I will inspect the tokenizer." }] } },
+    ];
+    // The session-start event context is a base Pi context: it carries no
+    // getSystemPromptOptions. Only the command context exposes it, so the
+    // capture path must go through the command context that opened the
+    // manager — exactly as in production.
+    const sessionCtx = {
+      cwd: project,
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: {
+        custom: async () => {},
+        confirm: async () => true,
+        notify(message, level) { notifications.push({ message, level }); },
+      },
+    };
+    const ctx = {
+      ...sessionCtx,
+      model: { provider: "acme", id: "parent-model" },
+      modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 200_000 }) },
+      sessionManager: {
+        getLeafId: () => "leaf-1",
+        getBranch: () => branchEntries,
+      },
+      getSystemPromptOptions: () => ({
+        customPrompt: "Live core policy.",
+        appendSystemPrompt: "Prefer tables.",
+        contextFiles: [{ path: "/repo/AGENTS.md", content: "Live project rule." }],
+      }),
+    };
+
+    const created = [];
+    const ran = [];
+    const runtimeDeps = {
+      now: () => 1_000,
+        async createSession(input) {
+          created.push(input);
+          return { session: { customTools: input.customTools } };
+        },
+        async runSession(input) {
+          ran.push(input);
+          await input.session.customTools[0].execute(
+            "c1",
+            { payload: JSON.stringify({ decisions: [{ title: "Adopt the bounded parser", rationale: "It fits the contract." }], progress: "Parser trial passed.", open_questions: ["Which cache cohort?"] }) },
+            undefined,
+            undefined,
+            ctx,
+          );
+          return {
+            status: "completed", prompted: true, timedOut: false,
+            finalText: "", model: "acme/parent-model",
+            usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+            streamingCompleted: true, messages: [],
+          };
+        },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_CONFIG_TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      runtimeDeps,
+    );
+    const confirmations = new ConfirmationCoordinator();
+    const services = __testables.makeServices(state, ctx, confirmations);
+
+    // Open the parent session with the base context; runtime notifications
+    // have a UI surface and the capture cannot use this context.
+    await harness.handlers.get("session_start")({}, sessionCtx);
+    assert.equal(harness.handlers.has("before_agent_start"), false, "prompt composition keeps its single-owner contract");
+
+    const refused = services.runtime.runManual({ shadowId: "missing-role" });
+    assert.equal(refused.ok, false);
+    assert.ok(refused.message.includes("no longer available"));
+
+    const toolRefused = services.runtime.runManual({ shadowId: "project-grounding" });
+    assert.equal(toolRefused.ok, false, "omitted-tools definitions are outside the #155 manual-trial scope");
+    assert.ok(toolRefused.message.includes("tools: []"));
+
+    const started = services.runtime.runManual({ shadowId: "session-synthesizer", note: "Trial run." });
+    assert.equal(started.ok, true, started.message);
+    assert.ok(notifications.some((entry) => entry.message.includes("started manual run of session-synthesizer")));
+
+    assert.equal(created.length, 1);
+    assert.ok(created[0].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
+    assert.ok(created[0].system.includes("Live core policy."), "the parent core is captured at run start");
+    assert.ok(created[0].system.includes("Prefer tables."), "append text joins the parent core");
+    assert.ok(created[0].system.includes("Live project rule."), "trusted project rules are captured at run start");
+    assert.deepEqual(created[0].tools, ["submit_shadow_result"]);
+    assert.equal(created[0].model.provider, "acme");
+    assert.equal(created[0].model.id, "parent-model");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(ran[0].prompt.includes("Investigate the flaky parser test."), "the visible branch becomes the trajectory");
+    assert.ok(ran[0].prompt.includes("I will inspect the tokenizer."), "assistant text is retained");
+    assert.ok(ran[0].prompt.includes("Trial run."), "the manual note is embedded");
+    assert.ok(!ran[0].prompt.includes("Live core policy."), "SYSTEM material stays out of the USER prompt");
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const snapshot = state.runtime.snapshot();
+    assert.equal(snapshot.runs[0].phase, "submitted");
+    assert.equal(snapshot.results.length, 1);
+    assert.deepEqual(snapshot.results[0].payload, {
+      decisions: [{ title: "Adopt the bounded parser", rationale: "It fits the contract." }],
+      progress: "Parser trial passed.",
+      open_questions: ["Which cache cohort?"],
+    });
+    assert.ok(
+      snapshot.results[0].summary.startsWith('{"decisions":'),
+      "a payload without summary/title/message falls back to the bounded canonical JSON prefix",
+    );
+    assert.ok(snapshot.results[0].summary.length <= 300);
+
+    // Terminal notification for the UI session.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(
+      notifications.some((entry) => entry.message.includes("result in the /shadow inbox")),
+      "a submitted run announces its inbox result",
+    );
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+
+
+
+{
+  // A manager review may outlive its guarded command context. Activation must
+  // fail closed instead of throwing from Pi's stale-context getters.
+  const harness = fakePi();
+  const state = registerShadowMinds(harness.pi, undefined, () => ({
+    ...DEFAULT_CONFIG,
+    shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } },
+  }), {
+    now: () => 1,
+    async createSession() { throw new Error("must not create"); },
+    async runSession() { throw new Error("must not run"); },
+  });
+  const staleCtx = {
+    cwd: packageRoot,
+    hasUI: true,
+    ui: { notify() {}, confirm: async () => true, custom: async () => {} },
+    isProjectTrusted() { throw new Error("stale extension context"); },
+  };
+  const service = __testables.makeServices(state, staleCtx, new ConfirmationCoordinator());
+  const refused = service.runtime.runManual({ shadowId: "session-synthesizer" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.message, /no longer active/);
+}
+
+
+{
+  // Manager-reviewed definitions and limits cannot drift before activation.
+  let liveConfig = { ...DEFAULT_CONFIG, shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } } };
+  let created = 0;
+  const harness = fakePi();
+  const state = registerShadowMinds(harness.pi, undefined, () => liveConfig, {
+    now: () => 1,
+    async createSession() { created += 1; return { session: {} }; },
+    async runSession() { throw new Error("must not run"); },
+  });
+  const ctx = {
+    cwd: packageRoot,
+    hasUI: true,
+    ui: { notify() {}, confirm: async () => true, custom: async () => {} },
+    isProjectTrusted: () => true,
+    model: { provider: "p", id: "m" },
+    modelRegistry: { find: () => undefined },
+    sessionManager: { getBranch: () => [], getLeafId: () => undefined },
+    getSystemPromptOptions: () => ({ cwd: packageRoot }),
+  };
+  state.refresh(packageRoot, true);
+  const definition = state.registry.definitions.find((entry) => entry.id === "session-synthesizer");
+  const service = __testables.makeServices(state, ctx, new ConfirmationCoordinator());
+  liveConfig = {
+    ...liveConfig,
+    shadowMinds: {
+      ...liveConfig.shadowMinds,
+      defaults: { ...liveConfig.shadowMinds.defaults, runTimeoutSeconds: liveConfig.shadowMinds.defaults.runTimeoutSeconds + 1 },
+    },
+  };
+  const refused = service.runtime.runManual({
+    shadowId: definition.id,
+    definitionFingerprint: shadowDefinitionContextFingerprint(definition.layers),
+    timeoutSeconds: DEFAULT_CONFIG.shadowMinds.defaults.runTimeoutSeconds,
+    maxTurns: DEFAULT_CONFIG.shadowMinds.defaults.maxModelTurnsPerRun,
+    maxToolCalls: DEFAULT_CONFIG.shadowMinds.defaults.maxToolCallsPerRun,
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.message, /changed since review/);
+  assert.equal(created, 0);
+}
+
+// ── Manual authority uses canonical cwd, trust, and an explicit model ─
+
+{
+  const { DEFAULT_CONFIG: TEMPLATE, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+  const dir = mkdtempSync(join(tmpdir(), "shadow-authority-"));
+  const realProject = join(dir, "real-project");
+  const linkedProject = join(dir, "linked-project");
+  mkdirSync(realProject, { recursive: true });
+  symlinkSync(realProject, linkedProject, "dir");
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  mkdirSync(join(dir, "agent"), { recursive: true });
+  try {
+    const harness = fakePi();
+    const created = [];
+    const runtimeDeps = {
+      now: () => 1,
+      async createSession(input) {
+        created.push(input);
+        return { session: { customTools: input.customTools } };
+      },
+      async runSession() {
+        return {
+          status: "completed", prompted: true, timedOut: false, finalText: "",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          streamingCompleted: true, messages: [],
+        };
+      },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      runtimeDeps,
+    );
+    const baseCtx = {
+      cwd: linkedProject,
+      hasUI: true,
+      ui: { custom: async () => {}, notify() {}, confirm: async () => true },
+      modelRegistry: { find: () => undefined },
+      sessionManager: { getBranch: () => [], getLeafId: () => undefined },
+      getSystemPromptOptions: () => ({
+        customPrompt: "Parent core.",
+        contextFiles: [{ path: join(realProject, "AGENTS.md"), content: "PROJECT-SECRET-RULE" }],
+      }),
+    };
+
+    const untrustedCtx = { ...baseCtx, model: { provider: "p", id: "m" }, isProjectTrusted: () => false };
+    state.refresh(linkedProject, false);
+    const untrusted = __testables.makeServices(state, untrustedCtx, new ConfirmationCoordinator());
+    const started = untrusted.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(created[0].cwd, realpathSync(linkedProject), "the child cwd is canonicalized");
+    assert.doesNotMatch(created[0].system, /PROJECT-SECRET-RULE/, "untrusted project rules do not enter the Shadow SYSTEM");
+
+    const noModelCtx = { ...baseCtx, model: undefined, isProjectTrusted: () => true };
+    state.refresh(linkedProject, true);
+    const noModel = __testables.makeServices(state, noModelCtx, new ConfirmationCoordinator());
+    const refused = noModel.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(refused.ok, false);
+    assert.match(refused.message, /No parent model/);
+    assert.equal(created.length, 1, "no child is created when no parent model is selected");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
