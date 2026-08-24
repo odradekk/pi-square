@@ -124,7 +124,7 @@ function loadLayersFromDir(dir: string, scope: ShadowDefinitionScope): LoadedLay
   }
   const layers: LoadedLayer[] = [];
   for (const name of entries) {
-    if (!name.endsWith(".md")) continue;
+    if (!/\.md$/i.test(name)) continue;
     const filePath = join(dir, name);
     try {
       if (!statSync(filePath).isFile()) continue;
@@ -144,7 +144,7 @@ function loadLayersFromDir(dir: string, scope: ShadowDefinitionScope): LoadedLay
 
 function stemOf(filePath: string): string {
   const base = filePath.split(/[\\/]/).pop() ?? filePath;
-  return base.replace(/\.md$/, "");
+  return base.replace(/\.md$/i, "");
 }
 
 function sourceOf(layer: LoadedLayer & { parsed: ParsedShadowDefinition }): ShadowDefinitionSource {
@@ -224,8 +224,10 @@ function mergeLayers(
     fieldSources.outputSchema = sourceOf(layer);
   }
 
-  // The body is atomic: a provided (non-empty) body replaces the lower layer;
-  // an omitted body inherits; an explicitly empty effective body is invalid.
+  // The body is atomic: a provided (non-empty) body replaces the lower layer
+  // and an omitted body inherits; clearing a body is not a supported overlay
+  // operation, so the effective body is empty exactly when no layer provides
+  // one, and that case invalidates the Shadow below.
   let body = "";
   for (const layer of layers) {
     const value = layer.parsed.fields.body ?? "";
@@ -338,6 +340,10 @@ export function discoverShadowDefinitions(
 
   const definitions: EffectiveShadowDefinition[] = [];
   for (const [id, buckets] of byId) {
+    // Fail closed per ID: a layer that failed to parse invalidates the whole
+    // effective ID, so a broken edit can never silently continue the behavior
+    // of the surviving lower layers (epic story 22).
+    if (erroredById.has(id)) continue;
     const conflictingScopes = buckets.filter((bucket) => bucket.layers.length > 1);
     if (conflictingScopes.length > 0) {
       const sources = conflictingScopes.flatMap((bucket) => bucket.layers.map((layer) => layer.filePath));

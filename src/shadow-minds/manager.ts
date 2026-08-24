@@ -14,7 +14,8 @@ import {
   type ExtensionCommandContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import type { ShadowMindsDefaults } from "../core/config";
 import type { EffectiveShadowDefinition, ShadowDefinitionRegistry } from "./definitions";
 
 const LIST_WIDTH = 34;
@@ -27,36 +28,26 @@ export interface ShadowManagerSnapshot {
   invalid: ShadowDefinitionRegistry["invalid"];
   diagnostics: ShadowDefinitionRegistry["diagnostics"];
   projectTrusted: boolean;
+  /** Effective feature configuration; absent when unknown at open time. */
+  config?: { enabled: boolean; defaults: ShadowMindsDefaults };
 }
 
-export function snapshot(registry: ShadowDefinitionRegistry, projectTrusted: boolean): ShadowManagerSnapshot {
+export function snapshot(
+  registry: ShadowDefinitionRegistry,
+  projectTrusted: boolean,
+  config?: { enabled: boolean; defaults: ShadowMindsDefaults },
+): ShadowManagerSnapshot {
   return {
     definitions: registry.definitions,
     invalid: registry.invalid,
     diagnostics: registry.diagnostics,
     projectTrusted,
+    ...(config ? { config } : {}),
   };
 }
 
 function fit(line: string, width: number): string {
-  const limit = Math.max(1, width);
-  // ANSI-aware bounding without pulling the display runtime into this module.
-  const visible = line.replace(/\x1b\[[0-9;]*m/g, "");
-  if (visible.length <= limit) return line;
-  let kept = 0;
-  let cut = 0;
-  for (let index = 0; index < line.length && kept < limit - 1; index += 1) {
-    const isEscape = line[index] === "\x1b";
-    if (isEscape) {
-      const end = line.indexOf("m", index);
-      cut = end === -1 ? line.length : end + 1;
-      index = cut - 1;
-      continue;
-    }
-    cut = index + 1;
-    kept += 1;
-  }
-  return `${line.slice(0, cut)}…`;
+  return truncateToWidth(line, Math.max(1, width), "…", true);
 }
 
 function clip(text: string, max: number): string {
@@ -123,10 +114,20 @@ export class ShadowManager implements Component, Focusable {
     const width = Math.max(40, terminalWidth);
     const lines: string[] = [];
     const identity = `${this.theme.fg("accent", "●")} ${this.theme.fg("toolTitle", "Shadows")}`;
-    const state = this.data.definitions.every((definition) => !definition.enabled)
-      ? this.theme.fg("dim", "disabled by default")
-      : this.theme.fg("dim", `${this.data.definitions.filter((definition) => definition.enabled).length} enabled`);
-    lines.push(fit(`${identity}  ${state}`, width));
+    if (this.data.config) {
+      const config = this.data.config;
+      if (!config.enabled) {
+        lines.push(fit(`${identity}  ${this.theme.fg("dim", "disabled by master switch")}`, width));
+      } else {
+        lines.push(fit(`${identity}  ${this.theme.fg("dim", "enabled")}`, width));
+      }
+      lines.push(fit(this.theme.fg("muted", `CONFIG: ${configSummary(config)}`), width));
+    } else {
+      const state = this.data.definitions.every((definition) => !definition.enabled)
+        ? this.theme.fg("dim", "disabled by default")
+        : this.theme.fg("dim", `${this.data.definitions.filter((definition) => definition.enabled).length} enabled`);
+      lines.push(fit(`${identity}  ${state}`, width));
+    }
     lines.push(fit(this.theme.fg("dim", "DEFINITIONS"), width));
     lines.push(fit(this.theme.fg("borderMuted", "─".repeat(width)), width));
 
@@ -175,7 +176,7 @@ export class ShadowManager implements Component, Focusable {
           : entry.enabled
             ? this.theme.fg("success", "●")
             : this.theme.fg("dim", "○");
-      return fit(`${marker} ${badge} ${label}`, width + 8);
+      return fit(`${marker} ${badge} ${label}`, width);
     });
   }
 
@@ -224,7 +225,8 @@ export class ShadowManager implements Component, Focusable {
     }
     rows.push(this.theme.fg("dim", "LAYERS:"));
     for (const layer of definition.layers) {
-      rows.push(fit(this.theme.fg("muted", `  ${layer.scope}: ${layer.filePath}`), width));
+      const fileName = layer.filePath.split(/[\\/]/).pop() ?? layer.filePath;
+      rows.push(fit(this.theme.fg("muted", `  ${layer.scope}: ${fileName} (${layer.contentHash.slice(0, 8)})`), width));
     }
     rows.push(this.theme.fg("dim", "BODY:"));
     const bodyLines = definition.body.replace(/\r/g, "").split("\n").filter((line) => line.trim() !== "").slice(0, BODY_PREVIEW_LINES);
@@ -261,8 +263,20 @@ function toolLabel(definition: EffectiveShadowDefinition): string {
   return definition.tools.join(", ");
 }
 
+function configSummary(config: { enabled: boolean; defaults: ShadowMindsDefaults }): string {
+  const d = config.defaults;
+  return [
+    `concurrency ${d.maxConcurrentRuns}`,
+    `timeout ${d.runTimeoutSeconds}s`,
+    `turns ${d.maxModelTurnsPerRun}`,
+    `tool calls ${d.maxToolCallsPerRun}`,
+    `starts/task ${d.maxAutomaticStartsPerTask}`,
+    `gate window ${d.completionGateWindowSeconds}s`,
+  ].join(" · ");
+}
+
 function plainLength(line: string): number {
-  return line.replace(/\x1b\[[0-9;]*m/g, "").length;
+  return visibleWidth(line);
 }
 
 export async function openShadowManager(

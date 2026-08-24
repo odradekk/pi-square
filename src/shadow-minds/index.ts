@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { PiSquareConfig } from "../core/config";
 import { discoverShadowDefinitions, type ShadowDefinitionRegistry } from "./definitions";
 import { openShadowManager, snapshot, type ShadowManagerSnapshot } from "./manager";
 
@@ -19,7 +20,7 @@ export interface ShadowMindsState {
   managerSnapshot(): ShadowManagerSnapshot;
 }
 
-export default function registerShadowMinds(pi: ExtensionAPI): ShadowMindsState {
+export default function registerShadowMinds(pi: ExtensionAPI, config?: () => PiSquareConfig): ShadowMindsState {
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
     cwd: process.cwd(),
@@ -30,7 +31,8 @@ export default function registerShadowMinds(pi: ExtensionAPI): ShadowMindsState 
       state.registry = discoverShadowDefinitions(cwd, { projectTrusted });
     },
     managerSnapshot(): ShadowManagerSnapshot {
-      return snapshot(state.registry, state.projectTrusted);
+      const effective = config?.().shadowMinds;
+      return snapshot(state.registry, state.projectTrusted, effective);
     },
   };
 

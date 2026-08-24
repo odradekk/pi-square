@@ -272,6 +272,38 @@ await withRoot(async (dir, project) => {
   assert.equal(registry.diagnostics.length, registry.invalid.length, "every invalid definition carries a diagnostic");
 });
 
+// ── A broken layer invalidates the whole effective ID ────────────────
+
+await withRoot(async (dir, project) => {
+  write(
+    join(dir, "agent", "shadow-minds", "project-grounding.md"),
+    "---\npromptVersion: 1\nid: project-grounding\nname: Broken overlay\nunknown: field\n---\n\nAgent body.\n",
+  );
+  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  assert.ok(
+    !registry.definitions.some((definition) => definition.id === "project-grounding"),
+    "a broken overlay must not silently continue the package behavior for the same ID",
+  );
+  const invalid = registry.invalid.find((entry) => entry.id === "project-grounding");
+  assert.ok(invalid, "the broken ID is reported as invalid");
+  assert.ok(invalid.errors.some((message) => /unknown field 'unknown'/.test(message)));
+  assert.ok(
+    registry.definitions.some((definition) => definition.id === "completion-check"),
+    "unrelated IDs stay effective",
+  );
+});
+
+// ── Uppercase .MD files are discovered like lowercase ones ───────────
+
+await withRoot(async (dir, project) => {
+  write(
+    join(dir, "agent", "shadow-minds", "caps.MD"),
+    "---\npromptVersion: 1\nid: caps\nname: Caps\n---\n\nBody.\n",
+  );
+  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  assert.ok(registry.definitions.some((definition) => definition.id === "caps"), "a .MD file parses and merges");
+});
+
 // ── Body inheritance from the package layer ──────────────────────────
 
 await withRoot(async (dir, project) => {

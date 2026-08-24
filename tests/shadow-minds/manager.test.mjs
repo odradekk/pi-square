@@ -75,10 +75,50 @@ function render(manager, width = 100) {
   manager.handleInput("down");
   const grounded = render(manager).join("\n");
   assert.ok(grounded.includes("TRIGGERS: tool_turn, completion"), "the selected definition shows its effective triggers");
-  assert.ok(grounded.includes("LAYERS:") && grounded.includes("package: /"), "layer sources render with scope and file path");
+  assert.ok(
+    grounded.includes("LAYERS:") && /package: project-grounding\.md \([0-9a-f]{8}\)/.test(grounded),
+    "layer sources render with scope, file name, and hash",
+  );
   assert.ok(grounded.includes("BODY:"), "the responsibility body has a bounded preview");
   const narrowed = render(manager, 60);
   assert.ok(narrowed.every((line) => line.replace(PLAIN, "").length <= 60), "every line stays inside the terminal width");
+}
+
+// ── The effective configuration is inspectable in the view ───────────
+
+{
+  const tui = makeTui();
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: false });
+  const manager = new ShadowManager(
+    {
+      definitions: registry.definitions,
+      invalid: [],
+      diagnostics: [],
+      projectTrusted: true,
+      config: {
+        enabled: true,
+        defaults: {
+          maxConcurrentRuns: 2,
+          maxAutomaticStartsPerTask: 8,
+          runTimeoutSeconds: 120,
+          maxModelTurnsPerRun: 8,
+          maxToolCallsPerRun: 16,
+          completionGateWindowSeconds: 10,
+          headlessDrainSeconds: 30,
+          maxQueuedShadowIds: 32,
+        },
+      },
+    },
+    tui,
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+  );
+  const lines = render(manager);
+  assert.ok((lines[0] ?? "").includes("enabled"), "the master-switch state is visible");
+  assert.ok(lines.some((line) => line.includes("CONFIG: concurrency 2")), "effective defaults render");
+  assert.ok(lines.some((line) => line.includes("gate window 10s")), "the gate window default renders");
+  assert.ok(/package: [^\n]*\([0-9a-f]{8}\)/.test(lines.join("\n")), "layer sources show a content-hash prefix");
 }
 
 // ── Invalid entries render with state and sources ────────────────────
