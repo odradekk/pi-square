@@ -124,4 +124,19 @@ roundTrip({
   );
 }
 
+// Schema property names stay inside the canonical YAML-safe key subset.
+assert.throws(
+  () => serializeShadowDefinition({
+    id: "schema-key",
+    name: "Schema key",
+    body: "Body.",
+    outputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { "not yaml safe": { type: "string" } },
+    },
+  }),
+  /YAML-safe schema key subset/,
+);
+
 console.log("shadow-minds serializer tests: OK");

@@ -17,8 +17,11 @@ import {
   type ExtensionCommandContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Editor, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import { Editor, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
 import type { ShadowMindsDefaults } from "../core/config";
+import type { FileIdentity } from "../core/safe-write";
+import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
+import { shadowDefinitionContextFingerprint } from "./definitions";
 import type { EffectiveShadowDefinition, ShadowDefinitionRegistry } from "./definitions";
 import { MISSING_OVERLAY_FINGERPRINT } from "./overlays";
 import {
@@ -26,7 +29,9 @@ import {
   SHADOW_ID_PATTERN,
   SHADOW_THINKING_LEVELS,
   SHADOW_TRIGGERS,
+  validateOutputSchema,
   type ShadowDefinitionFields,
+  type ShadowOutputSchema,
   type ShadowTrigger,
 } from "./parser";
 import { newShadowDefinitionDraft } from "./serialize";
@@ -34,7 +39,6 @@ import { newShadowDefinitionDraft } from "./serialize";
 const LIST_WIDTH = 34;
 const BODY_PREVIEW_LINES = 8;
 const DIAGNOSTIC_LINES = 4;
-const MAX_REVIEW_CONTENT = 4_000;
 
 type WritableScope = "agent" | "project";
 
@@ -66,18 +70,45 @@ export interface ShadowManagerServices {
   /** Maps an on-disk overlay path to its writable scope, when it is one. */
   scopeOf(filePath: string): WritableScope | undefined;
   /** Canonical overlay path plus review fingerprint for one scope and ID. */
-  overlaySnapshot(scope: WritableScope, id: string): Promise<{ filePath: string; fingerprint: string }>;
+  overlaySnapshot(scope: WritableScope, id: string, filePath?: string): Promise<{
+    filePath: string;
+    fingerprint: string;
+    contextFingerprint: string;
+    identity?: FileIdentity;
+    content: string;
+  }>;
   /** In-memory candidate: serialized layer, canonical path, effective merge. */
-  preview(scope: WritableScope, fields: ShadowDefinitionFields): {
+  preview(scope: WritableScope, fields: ShadowDefinitionFields, expectedContextFingerprint?: string, filePath?: string): {
     content: string;
     filePath: string;
     definition?: EffectiveShadowDefinition;
     errors: string[];
+    contextFingerprint?: string;
+  };
+  /** Effective merge after deleting the exact reviewed layer. */
+  previewDelete(scope: WritableScope, id: string, filePath: string, expectedContextFingerprint?: string): {
+    definition?: EffectiveShadowDefinition;
+    errors: string[];
+    contextFingerprint?: string;
   };
   /** FIFO-coordinated native confirmation; the manager has closed itself. */
   approve(request: ShadowApprovalRequest): Promise<boolean>;
-  save(scope: WritableScope, fields: ShadowDefinitionFields, reviewFingerprint: string): Promise<ShadowWriteOutcome>;
-  deleteOverlay(scope: WritableScope, id: string, reviewFingerprint: string): Promise<ShadowWriteOutcome>;
+  save(
+    scope: WritableScope,
+    fields: ShadowDefinitionFields,
+    reviewFilePath: string,
+    reviewFingerprint: string,
+    reviewContextFingerprint: string,
+    reviewIdentity?: FileIdentity,
+  ): Promise<ShadowWriteOutcome>;
+  deleteOverlay(
+    scope: WritableScope,
+    id: string,
+    filePath: string,
+    reviewFingerprint: string,
+    reviewContextFingerprint: string,
+    reviewIdentity?: FileIdentity,
+  ): Promise<ShadowWriteOutcome>;
 }
 
 export function snapshot(
@@ -99,7 +130,7 @@ function fit(line: string, width: number): string {
 }
 
 function clip(text: string, max: number): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
+  const normalized = sanitizeDisplayLine(text).replace(/\s+/g, " ").trim();
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
 }
 
@@ -333,9 +364,19 @@ export class ShadowManager implements Component, Focusable {
     action: () => Promise<ShadowWriteOutcome>,
   ): Promise<void> {
     this.finish();
-    const approved = await this.services?.approve(approval);
-    if (approved === false) return;
-    await action();
+    let approved = false;
+    try {
+      approved = await this.services?.approve(approval) ?? false;
+    } catch {
+      return;
+    }
+    if (!approved) return;
+    try {
+      await action();
+    } catch {
+      // Production services convert write failures into bounded outcomes. A
+      // custom service must not create an unhandled rejection after close.
+    }
   }
 
   private chooseScope(title: string, description: string, onSelect: (scope: WritableScope) => void): void {
@@ -370,27 +411,42 @@ export class ShadowManager implements Component, Focusable {
     before: EffectiveShadowDefinition | undefined,
     scope: WritableScope,
     fields: ShadowDefinitionFields,
+    capturedReview?: {
+      filePath: string;
+      fingerprint: string;
+      contextFingerprint: string;
+      identity?: FileIdentity;
+      content: string;
+    },
   ): Promise<void> {
     if (!this.services) {
       this.errorFlash("Overlay writes are unavailable in this session.");
       return;
     }
-    const preview = this.services.preview(scope, fields);
-    if (preview.errors.length > 0 || !preview.definition) {
-      this.errorFlash(preview.errors.join(" ") || "The effective definition would be invalid.");
+    // Bind the review to the exact layer and complete ID context that was
+    // visible when the manager opened. A later edit to any contributing layer
+    // is stale rather than silently adopted into this candidate.
+    const existingLayer = before?.layers.find((layer) => layer.scope === scope);
+    const review = capturedReview ?? await this.services.overlaySnapshot(scope, fields.id, existingLayer?.filePath);
+    const expectedContextFingerprint = before
+      ? shadowDefinitionContextFingerprint(before.layers)
+      : review.contextFingerprint;
+    if (review.contextFingerprint !== expectedContextFingerprint) {
+      this.errorFlash("The Shadow definition changed since the manager opened; reopen /shadow and review the current layers.");
       return;
     }
-    // Capture the review fingerprint when the review opens. The committed
-    // write CAS-checks against it, so an external change during the review
-    // window is refused instead of silently overwritten (#154 AC4).
-    const review = await this.services.overlaySnapshot(scope, fields.id);
+    const preview = this.services.preview(scope, fields, expectedContextFingerprint, review.filePath);
+    if (preview.errors.length > 0 || !preview.definition || preview.contextFingerprint !== review.contextFingerprint) {
+      this.errorFlash(preview.errors.join(" ") || "The Shadow definition changed; reopen /shadow and review the current layers.");
+      return;
+    }
     const previewDefinition = preview.definition;
     const change = effectiveChange(before, previewDefinition);
     const body = [
       `Path: ${preview.filePath}`,
       "",
       "LAYER MARKDOWN",
-      clip(preview.content.trim(), MAX_REVIEW_CONTENT),
+      ...preview.content.trimEnd().split("\n"),
       "",
       "EFFECTIVE CHANGE",
       ...change,
@@ -410,7 +466,14 @@ export class ShadowManager implements Component, Focusable {
               ...change.slice(0, 6),
             ],
           },
-          async () => this.services!.save(scope, fields, review.fingerprint),
+          async () => this.services!.save(
+            scope,
+            fields,
+            review.filePath,
+            review.fingerprint,
+            review.contextFingerprint,
+            review.identity,
+          ),
         );
       },
     });
@@ -467,7 +530,7 @@ export class ShadowManager implements Component, Focusable {
       this.openChoice({
         eyebrow: "OVERLAYS / VALUE",
         title: "Set outputSchema",
-        description: "Schemas are replaced atomically; the manager offers inherit or the default summary schema.",
+        description: "Schemas are replaced atomically; choose inherit, the default summary schema, or author the bounded JSON object schema.",
         items: [
           {
             id: "inherit",
@@ -480,6 +543,33 @@ export class ShadowManager implements Component, Focusable {
             label: "Restore default summary schema",
             detail: "Write an explicit null",
             onSelect: () => this.setFieldValue(definition, scope, field, fields, null),
+          },
+          {
+            id: "custom",
+            label: "Set custom schema",
+            detail: "Enter a bounded JSON object schema",
+            onSelect: () => this.openEditor({
+              eyebrow: "OVERLAYS / VALUE",
+              title: "outputSchema JSON",
+              description: "Object root only; every object must set additionalProperties: false.",
+              initial: JSON.stringify(definition.outputSchema, null, 2),
+              submitLabel: "review change",
+              validate: (value) => {
+                try {
+                  const parsed = JSON.parse(value) as unknown;
+                  return validateOutputSchema(parsed).join(" ") || undefined;
+                } catch (error) {
+                  return `Invalid JSON: ${error instanceof Error ? error.message : String(error)}`;
+                }
+              },
+              onSubmit: (value) => this.setFieldValue(
+                definition,
+                scope,
+                field,
+                fields,
+                JSON.parse(value) as ShadowOutputSchema,
+              ),
+            }),
           },
         ],
       });
@@ -659,6 +749,7 @@ export class ShadowManager implements Component, Focusable {
         validate: (value) => {
           const id = value.trim();
           if (!SHADOW_ID_PATTERN.test(id)) return `The id must match ${SHADOW_ID_PATTERN}.`;
+          if (this.entries.some((entry) => entry.id === id)) return `Shadow definition '${id}' already exists; edit or repair it instead.`;
           return undefined;
         },
         onSubmit: (idValue) => {
@@ -685,7 +776,7 @@ export class ShadowManager implements Component, Focusable {
                       this.errorFlash(`An overlay for '${id}' already exists in the ${scope} scope; edit it instead.`);
                       return;
                     }
-                    await this.reviewSave(undefined, scope, newShadowDefinitionDraft(id, name, bodyValue.trim()));
+                    await this.reviewSave(undefined, scope, newShadowDefinitionDraft(id, name, bodyValue.trim()), existing);
                   })();
                 },
               });
@@ -723,30 +814,55 @@ export class ShadowManager implements Component, Focusable {
           onSelect: () => {
             const target = scope;
             void (async () => {
-              const review = await this.services!.overlaySnapshot(target, selected.id);
+              const review = await this.services!.overlaySnapshot(target, selected.id, filePath);
+              const expectedContextFingerprint = "invalid" in selected
+                ? review.contextFingerprint
+                : shadowDefinitionContextFingerprint(selected.layers);
+              if (review.contextFingerprint !== expectedContextFingerprint) {
+                this.errorFlash("The Shadow definition changed since the manager opened; reopen /shadow and review the current layers.");
+                return;
+              }
+              const deletion = this.services!.previewDelete(target, selected.id, review.filePath, expectedContextFingerprint);
+              if (deletion.errors.length > 0 || deletion.contextFingerprint !== review.contextFingerprint) {
+                this.errorFlash(deletion.errors.join(" ") || "The Shadow definition changed; reopen /shadow and review the current layers.");
+                return;
+              }
+              const before = "invalid" in selected ? undefined : selected;
+              const change = deletion.definition
+                ? effectiveChange(before, deletion.definition)
+                : ["definition: present → removed"];
               this.openReview({
-              eyebrow: "OVERLAYS / DELETE / REVIEW",
-              title: `Delete ${target} overlay?`,
-              lines: [
-                filePath,
-                "",
-                "invalid" in selected
-                  ? "The broken layer is removed; the ID can be restored by writing a valid overlay."
-                  : "The effective definition falls back to the remaining layers.",
-              ],
-              confirmLabel: "delete overlay",
-              destructive: true,
-              onConfirm: () => {
-                void this.commit(
-                  {
-                    title: `Delete ${target} Shadow overlay`,
-                    lines: [`Path: ${filePath}`, `Definition: ${selected.id}`],
-                    destructive: true,
-                  },
-                  async () => this.services!.deleteOverlay(target, selected.id, review.fingerprint),
-                );
-              },
-            });
+                eyebrow: "OVERLAYS / DELETE / REVIEW",
+                title: `Delete ${target} overlay?`,
+                lines: [
+                  `Path: ${review.filePath}`,
+                  "",
+                  "LAYER MARKDOWN",
+                  ...review.content.trimEnd().split("\n"),
+                  "",
+                  "EFFECTIVE CHANGE",
+                  ...change,
+                ],
+                confirmLabel: "delete overlay",
+                destructive: true,
+                onConfirm: () => {
+                  void this.commit(
+                    {
+                      title: `Delete ${target} Shadow overlay`,
+                      lines: [`Path: ${review.filePath}`, `Definition: ${selected.id}`, ...change.slice(0, 6)],
+                      destructive: true,
+                    },
+                    async () => this.services!.deleteOverlay(
+                      target,
+                      selected.id,
+                      review.filePath,
+                      review.fingerprint,
+                      review.contextFingerprint,
+                      review.identity,
+                    ),
+                  );
+                },
+              });
             })();
           },
         }];
@@ -952,7 +1068,7 @@ export class ShadowManager implements Component, Focusable {
       lines.push(fit(this.theme.fg("dim", `${keyHint("tui.select.confirm", view.submitLabel)} · ${keyHint("tui.select.cancel", "back")}`), width));
       return lines;
     }
-    const wrapped = view.lines.flatMap((line) => line.split("\n").map((part) => fit(part, width)));
+    const wrapped = view.lines.flatMap((line) => wrapTextWithAnsi(sanitizeDisplayText(line), Math.max(1, width)));
     const bodyBudget = Math.max(3, this.renderBudget() - 4);
     const maxScroll = Math.max(0, wrapped.length - bodyBudget);
     view.scroll = Math.min(view.scroll, maxScroll);
@@ -1135,16 +1251,16 @@ function effectiveChange(
       rows.push(`${key}: ${shortValue(previous)} → ${shortValue(next)}`);
     }
   }
-  const previousBody = before ? clip(before.body, 60) : "(none)";
-  const nextBody = clip(after.body, 60);
-  if (previousBody !== nextBody) rows.push(`body: ${previousBody} → ${nextBody}`);
-  const instructionKeys = (definition: EffectiveShadowDefinition) => Object.keys(definition.triggerInstructions).sort().join(",");
-  if (instructionKeys(before ?? after) !== instructionKeys(after)) {
-    rows.push(`triggerInstructions: ${before ? instructionKeys(before) || "(none)" : "(none)"} → ${instructionKeys(after) || "(none)"}`);
+  const previousBody = before?.body;
+  if (previousBody !== after.body) rows.push(`body: ${shortValue(previousBody ?? "(none)")} → ${shortValue(after.body)}`);
+  const previousInstructions = before?.triggerInstructions ?? {};
+  const nextInstructions = after.triggerInstructions;
+  if (JSON.stringify(previousInstructions) !== JSON.stringify(nextInstructions)) {
+    rows.push(`triggerInstructions: ${shortValue(previousInstructions)} → ${shortValue(nextInstructions)}`);
   }
   const schemaChanged = JSON.stringify(before?.outputSchema) !== JSON.stringify(after.outputSchema);
-  if (before !== undefined && schemaChanged) {
-    rows.push("outputSchema: replaced");
+  if (schemaChanged) {
+    rows.push(`outputSchema: ${before ? "replaced" : "(none) → defined"}`);
   }
   if (rows.length === 0) rows.push("no effective field changes");
   return rows;
@@ -1153,7 +1269,8 @@ function effectiveChange(
 function shortValue(value: unknown): string {
   if (value === undefined) return "(default)";
   if (Array.isArray(value)) return value.length === 0 ? "[]" : value.join(",");
-  if (typeof value === "string") return clip(value, 40);
+  if (typeof value === "string") return clip(value, 80);
+  if (value !== null && typeof value === "object") return clip(JSON.stringify(value), 120);
   return String(value);
 }
 

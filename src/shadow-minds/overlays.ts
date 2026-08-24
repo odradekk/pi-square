@@ -14,8 +14,8 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
-import { mkdir, readFile, rename, unlink } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { mkdir, readFile, rename } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   acquireFileLock,
   createAtomicTempFile,
@@ -23,10 +23,15 @@ import {
   releaseFileLock,
   sameFileIdentity,
   unlinkIfSameNode,
+  type FileIdentity,
   type SafeWriteTiming,
 } from "../core/safe-write";
 import { getAgentPath, isWithinWorkspace } from "../core/paths";
-import { previewShadowDefinition, shadowProjectScopeLocation } from "./definitions";
+import {
+  previewShadowDefinition,
+  previewShadowDefinitionDeletion,
+  shadowProjectScopeLocation,
+} from "./definitions";
 import { SHADOW_ID_PATTERN } from "./parser";
 import type { ShadowDefinitionFields } from "./parser";
 import { serializeShadowDefinition } from "./serialize";
@@ -97,33 +102,42 @@ function resolveOverlayPaths(
   scope: ShadowOverlayScope,
   cwd: string,
   id: string,
+  requestedFilePath?: string,
 ): OverlayScopePaths {
   if (!SHADOW_ID_PATTERN.test(id)) {
     throw failShadow("SHADOW_CANDIDATE_INVALID", `Shadow definition id must match ${SHADOW_ID_PATTERN} (got '${id}').`);
   }
+  let base: string;
+  let segments: readonly string[];
+  let root: string;
   if (scope === "agent") {
-    const base = canonicalExistingDirectory(getAgentPath(), "agent directory");
-    const segments = ["shadow-minds"];
-    const root = join(base, ...segments);
-    const filePath = join(root, `${id}.md`);
-    return { base, segments, root, filePath, lockPath: filePath + LOCK_SUFFIX };
+    base = canonicalExistingDirectory(getAgentPath(), "agent directory");
+    segments = ["shadow-minds"];
+    root = join(base, ...segments);
+  } else {
+    const walked = shadowProjectScopeLocation(cwd);
+    if (walked?.error) throw failShadow("SHADOW_SCOPE_INVALID", walked.error);
+    const projectRoot = walked ? walked.projectRoot : canonicalExistingDirectory(cwd, "project directory");
+    const dir = walked ? walked.dir : join(projectRoot, ".pi", "shadow-minds");
+    const relativeDir = relative(projectRoot, dir);
+    if (relativeDir.startsWith(`..${sep}`) || relativeDir === ".." || isAbsolute(relativeDir) || !isWithinWorkspace(projectRoot, dir)) {
+      throw failShadow("SHADOW_SCOPE_ESCAPED", "Shadow overlay path escapes the project workspace");
+    }
+    base = projectRoot;
+    segments = relativeDir === "" ? [] : relativeDir.split(sep);
+    root = dir;
   }
-  const walked = shadowProjectScopeLocation(cwd);
-  if (walked?.error) {
-    throw failShadow("SHADOW_SCOPE_INVALID", walked.error);
+
+  let filePath = join(root, `${id}.md`);
+  if (requestedFilePath !== undefined) {
+    const requested = resolve(requestedFilePath);
+    const stem = basename(requested).replace(/\.md$/i, "");
+    if (dirname(requested) !== resolve(root) || !/\.md$/i.test(basename(requested)) || stem !== id) {
+      throw failShadow("SHADOW_SCOPE_INVALID", "the selected overlay path is not the canonical writable file for this scope and ID");
+    }
+    filePath = requested;
   }
-  // Writes follow discovery: an existing ancestor `.pi/shadow-minds` is the
-  // canonical target, otherwise the workspace-local default is created. The
-  // base for containment checks is the location's own project root, so a
-  // canonical overlay path can never escape the workspace that reviews it.
-  const projectRoot = walked ? walked.projectRoot : canonicalExistingDirectory(cwd, "project directory");
-  const dir = walked ? walked.dir : join(projectRoot, ".pi", "shadow-minds");
-  const relativeDir = relative(projectRoot, dir);
-  if (relativeDir.startsWith(`..${sep}`) || relativeDir === ".." || isAbsolute(relativeDir) || !isWithinWorkspace(projectRoot, dir)) {
-    throw failShadow("SHADOW_SCOPE_ESCAPED", "Shadow overlay path escapes the project workspace");
-  }
-  const segments = relativeDir === "" ? [] : relativeDir.split(sep);
-  return { base: projectRoot, segments, root: dir, filePath: join(dir, `${id}.md`), lockPath: join(dir, `${id}.md`) + LOCK_SUFFIX };
+  return { base, segments, root, filePath, lockPath: filePath + LOCK_SUFFIX };
 }
 
 function assertOverlayPathSafe(paths: OverlayScopePaths): void {
@@ -196,20 +210,42 @@ export function shadowOverlayFilePath(
   return paths.filePath;
 }
 
+export interface ShadowOverlaySnapshot {
+  filePath: string;
+  fingerprint: string;
+  contextFingerprint: string;
+  identity?: FileIdentity;
+  content: string;
+}
+
 /**
- * Reviews-ready state for one overlay: its canonical path plus the
- * fingerprint of the exact current content (empty string when absent).
+ * Review-ready state for one overlay. A supplied `filePath` must be the exact
+ * canonical writable path for the requested scope and ID; this prevents an
+ * invalid-source path from being silently remapped to a sibling file.
  */
 export async function readShadowOverlaySnapshot(
   scope: ShadowOverlayScope,
   cwd: string,
   id: string,
-  context: { projectTrusted: boolean },
-): Promise<{ filePath: string; fingerprint: string }> {
+  context: { projectTrusted: boolean; filePath?: string },
+): Promise<ShadowOverlaySnapshot> {
   assertProjectWritable(scope, context.projectTrusted);
-  const paths = resolveOverlayPaths(scope, cwd, id);
+  const paths = resolveOverlayPaths(scope, cwd, id, context.filePath);
   assertOverlayPathSafe(paths);
-  return { filePath: paths.filePath, fingerprint: fingerprintContent(await readOverlayContent(paths.filePath)) };
+  const content = await readOverlayContent(paths.filePath);
+  const identity = await regularFileIdentity(failShadow, paths.filePath, "overlay file", SHADOW_IDENTITY_CODES);
+  const preview = previewShadowDefinitionDeletion(cwd, {
+    projectTrusted: context.projectTrusted,
+    scope,
+    filePath: paths.filePath,
+  });
+  return {
+    filePath: paths.filePath,
+    fingerprint: fingerprintContent(content),
+    contextFingerprint: preview.contextFingerprint,
+    ...(identity ? { identity } : {}),
+    content,
+  };
 }
 
 export async function writeShadowOverlay(
@@ -219,11 +255,14 @@ export async function writeShadowOverlay(
     scope: ShadowOverlayScope;
     fields: ShadowDefinitionFields;
     reviewFingerprint: string;
+    reviewContextFingerprint: string;
+    reviewFilePath?: string;
+    reviewIdentity?: FileIdentity;
   },
   testHooks: ShadowOverlayTestHooks = {},
 ): Promise<{ filePath: string; content: string }> {
   assertProjectWritable(input.scope, input.projectTrusted);
-  const paths = resolveOverlayPaths(input.scope, input.cwd, input.fields.id);
+  const paths = resolveOverlayPaths(input.scope, input.cwd, input.fields.id, input.reviewFilePath);
   assertOverlayPathSafe(paths);
   await mkdir(paths.root, { recursive: true });
   assertOverlayPathSafe(paths);
@@ -256,6 +295,13 @@ export async function writeShadowOverlay(
         "overlay changed since review; review the current file and try again",
       );
     }
+    const reviewedIdentity = await regularFileIdentity(failShadow, paths.filePath, "overlay file", SHADOW_IDENTITY_CODES);
+    const identityMatches = input.reviewIdentity
+      ? Boolean(reviewedIdentity && sameFileIdentity(input.reviewIdentity, reviewedIdentity))
+      : reviewedIdentity === undefined;
+    if (!identityMatches) {
+      throw failShadow("SHADOW_STALE_REVIEW", "overlay file identity changed since review; review the current file and try again");
+    }
 
     let content: string;
     try {
@@ -268,18 +314,22 @@ export async function writeShadowOverlay(
     }
 
     // Complete effective-candidate validation: the serialized layer must
-    // reparse and merge into a valid effective definition under the current
-    // on-disk state of every other layer.
+    // reparse and merge into a valid effective definition under exactly the
+    // same package/agent/project context that the manager reviewed.
     const preview = previewShadowDefinition(input.cwd, {
       projectTrusted: input.projectTrusted,
       scope: input.scope,
       filePath: paths.filePath,
       content,
+      expectedContextFingerprint: input.reviewContextFingerprint,
     });
     if (preview.errors.length > 0 || !preview.definition) {
+      const contextChanged = preview.contextFingerprint !== input.reviewContextFingerprint;
       throw failShadow(
-        "SHADOW_CANDIDATE_INVALID",
-        `the effective definition is invalid: ${preview.errors.join(" ")}`,
+        contextChanged ? "SHADOW_STALE_REVIEW" : "SHADOW_CANDIDATE_INVALID",
+        contextChanged
+          ? "Shadow definition layers changed since review; review the current definition and try again"
+          : `the effective definition is invalid: ${preview.errors.join(" ")}`,
       );
     }
 
@@ -305,7 +355,26 @@ export async function writeShadowOverlay(
         "overlay changed while the reviewed update was being prepared",
       );
     }
-
+    const latestIdentity = await regularFileIdentity(failShadow, paths.filePath, "overlay file", SHADOW_IDENTITY_CODES);
+    const latestIdentityMatches = input.reviewIdentity
+      ? Boolean(latestIdentity && sameFileIdentity(input.reviewIdentity, latestIdentity))
+      : latestIdentity === undefined;
+    if (!latestIdentityMatches) {
+      throw failShadow("SHADOW_STALE_REVIEW", "overlay file identity changed while the reviewed update was being prepared");
+    }
+    const finalPreview = previewShadowDefinition(input.cwd, {
+      projectTrusted: input.projectTrusted,
+      scope: input.scope,
+      filePath: paths.filePath,
+      content,
+      expectedContextFingerprint: input.reviewContextFingerprint,
+    });
+    if (finalPreview.contextFingerprint !== input.reviewContextFingerprint) {
+      throw failShadow("SHADOW_STALE_REVIEW", "Shadow definition layers changed while the reviewed update was being prepared");
+    }
+    if (finalPreview.errors.length > 0 || !finalPreview.definition) {
+      throw failShadow("SHADOW_CANDIDATE_INVALID", `the effective definition became invalid: ${finalPreview.errors.join(" ")}`);
+    }
     const currentTempIdentity = await regularFileIdentity(failShadow, tempPath, "temporary overlay", SHADOW_IDENTITY_CODES);
     if (!currentTempIdentity || !sameFileIdentity(tempIdentity, currentTempIdentity)) {
       throw failShadow("SHADOW_TEMP_CHANGED", "temporary overlay identity changed before rename");
@@ -341,16 +410,38 @@ export async function deleteShadowOverlay(
     scope: ShadowOverlayScope;
     id: string;
     reviewFingerprint: string;
+    reviewContextFingerprint: string;
+    reviewIdentity?: FileIdentity;
+    filePath?: string;
   },
   testHooks: ShadowOverlayTestHooks = {},
 ): Promise<{ removed: boolean; filePath: string }> {
   assertProjectWritable(input.scope, input.projectTrusted);
-  const paths = resolveOverlayPaths(input.scope, input.cwd, input.id);
+  const paths = resolveOverlayPaths(input.scope, input.cwd, input.id, input.filePath);
   assertOverlayPathSafe(paths);
 
   const identity = await regularFileIdentity(failShadow, paths.filePath, "overlay file", SHADOW_IDENTITY_CODES);
-  if (!identity) return { removed: false, filePath: paths.filePath };
-
+  const identityMatches = input.reviewIdentity
+    ? Boolean(identity && sameFileIdentity(input.reviewIdentity, identity))
+    : identity === undefined;
+  if (!identityMatches) {
+    throw failShadow("SHADOW_STALE_REVIEW", "overlay file identity changed since review; review the current file and try again");
+  }
+  if (!identity) {
+    if (input.reviewFingerprint !== MISSING_OVERLAY_FINGERPRINT) {
+      throw failShadow("SHADOW_STALE_REVIEW", "overlay was removed since review; review the current definition and try again");
+    }
+    const preview = previewShadowDefinitionDeletion(input.cwd, {
+      projectTrusted: input.projectTrusted,
+      scope: input.scope,
+      filePath: paths.filePath,
+      expectedContextFingerprint: input.reviewContextFingerprint,
+    });
+    if (preview.contextFingerprint !== input.reviewContextFingerprint) {
+      throw failShadow("SHADOW_STALE_REVIEW", "Shadow definition layers changed since review; review the current definition and try again");
+    }
+    return { removed: false, filePath: paths.filePath };
+  }
   await mkdir(paths.root, { recursive: true });
   const token = randomBytes(16).toString("hex");
   const lock = await acquireFileLock({
@@ -377,11 +468,40 @@ export async function deleteShadowOverlay(
         "overlay changed since review; review the current file and try again",
       );
     }
-    try {
-      await unlink(paths.filePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { removed: false, filePath: paths.filePath };
-      throw error;
+    const preview = previewShadowDefinitionDeletion(input.cwd, {
+      projectTrusted: input.projectTrusted,
+      scope: input.scope,
+      filePath: paths.filePath,
+      expectedContextFingerprint: input.reviewContextFingerprint,
+    });
+    if (preview.contextFingerprint !== input.reviewContextFingerprint) {
+      throw failShadow(
+        "SHADOW_STALE_REVIEW",
+        "Shadow definition layers changed since review; review the current definition and try again",
+      );
+    }
+    if (preview.errors.length > 0) {
+      throw failShadow("SHADOW_CANDIDATE_INVALID", `the effective definition after deletion is invalid: ${preview.errors.join(" ")}`);
+    }
+    await testHooks.beforeRename?.();
+    const finalPreview = previewShadowDefinitionDeletion(input.cwd, {
+      projectTrusted: input.projectTrusted,
+      scope: input.scope,
+      filePath: paths.filePath,
+      expectedContextFingerprint: input.reviewContextFingerprint,
+    });
+    if (finalPreview.contextFingerprint !== input.reviewContextFingerprint) {
+      throw failShadow("SHADOW_STALE_REVIEW", "Shadow definition layers changed before deletion; review the current definition and try again");
+    }
+    if (finalPreview.errors.length > 0) {
+      throw failShadow("SHADOW_CANDIDATE_INVALID", `the effective definition after deletion became invalid: ${finalPreview.errors.join(" ")}`);
+    }
+    const currentIdentity = await regularFileIdentity(failShadow, paths.filePath, "overlay file", SHADOW_IDENTITY_CODES);
+    if (!currentIdentity || !sameFileIdentity(identity, currentIdentity)) {
+      throw failShadow("SHADOW_STALE_REVIEW", "overlay identity changed since review; review the current file and try again");
+    }
+    if (!await unlinkIfSameNode(failShadow, paths.filePath, currentIdentity, SHADOW_IDENTITY_CODES)) {
+      throw failShadow("SHADOW_STALE_REVIEW", "overlay changed before deletion; review the current file and try again");
     }
     return { removed: true, filePath: paths.filePath };
   } finally {

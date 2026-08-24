@@ -14,6 +14,7 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { sanitizeDisplayText } from "../display/sanitize";
 import type { ShadowDefinitionRegistry } from "./definitions";
 
 export const SHADOW_CONFIG_GUIDE_TYPE = "pi-square.shadow-config-guide";
@@ -34,11 +35,9 @@ export interface ShadowConfigGuideMessage {
   details: ShadowConfigGuideDetails;
 }
 
-/** Strips control sequences so registry text cannot smuggle formatting. */
+/** Applies the shared VT/control and credential redaction boundary. */
 function sanitize(value: unknown): string {
-  return String(value ?? "")
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  return sanitizeDisplayText(value);
 }
 
 function clip(value: unknown, max: number): string {

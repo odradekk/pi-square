@@ -59,6 +59,18 @@ function render(component, width = 100) {
   assert.ok(metadata.every((entry) => entry.layers.length <= 3), "layer provenance is bounded");
 }
 
+// Registry-derived metadata uses the shared VT and credential sanitizer.
+{
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: false });
+  const poisoned = structuredClone(registry);
+  poisoned.definitions[0].name = "safe\x1b]8;;https://evil.example\x07link\x1b]8;;\x07 Authorization: Bearer topsecret";
+  poisoned.definitions[0].layers[0].filePath = "/tmp/api_key=topsecret/project-grounding.md";
+  const guide = buildShadowConfigGuide(poisoned, packageRoot);
+  assert.doesNotMatch(guide.content, /topsecret|evil\.example/);
+  assert.match(guide.content, /\[REDACTED\]/);
+}
+
+
 // ── The guide budget trims large registries ─────────────────────────
 
 {
@@ -134,7 +146,8 @@ function fakePi() {
   ({ default: registerShadowMinds } = await load(join(packageRoot, "src", "shadow-minds", "index.ts")));
   registerShadowMinds(harness.pi);
   const handler = harness.commands.get("shadow").handler;
-  await handler("create a grounding role for tests", { cwd: packageRoot, hasUI: false, isProjectTrusted: () => false });
+  const request = "  create a grounding role for tests  ";
+  await handler(request, { cwd: packageRoot, hasUI: false, isProjectTrusted: () => false });
   assert.equal(harness.renderers.has("pi-square.shadow-config-guide"), true, "the guide renderer is registered");
   assert.deepEqual(harness.events.map((event) => event[0]), ["guide", "user"], "guide first, user request second");
   assert.equal(harness.events[0][1].customType, "pi-square.shadow-config-guide");
@@ -142,7 +155,7 @@ function fakePi() {
   assert.doesNotMatch(harness.events[0][1].content, /create a grounding role for tests/, "the request is not embedded in the guide");
   assert.equal(harness.events[0][2].deliverAs, "followUp");
   assert.equal(harness.events[0][2].triggerTurn, undefined, "the guide itself does not trigger a turn");
-  assert.equal(harness.events[1][1], "create a grounding role for tests");
+  assert.equal(harness.events[1][1], request, "the native user request is forwarded byte-for-byte");
   assert.equal(harness.events[1][2].deliverAs, "followUp");
 }
 
@@ -247,7 +260,15 @@ function fakePi() {
     assert.ok(state.registry.definitions.some((definition) => definition.id === "e2e-role"), "the registry refreshed after the write");
 
     // A stale write is refused and reported for re-review.
-    const staleResult = await services.save("project", { id: "e2e-role", enabled: true }, MISSING_OVERLAY_FINGERPRINT);
+    const currentReview = await services.overlaySnapshot("project", "e2e-role");
+    const staleResult = await services.save(
+      "project",
+      { id: "e2e-role", enabled: true },
+      currentReview.filePath,
+      MISSING_OVERLAY_FINGERPRINT,
+      currentReview.contextFingerprint,
+      currentReview.identity,
+    );
     assert.equal(staleResult.ok, false);
     assert.match(staleResult.message, /changed since it was reviewed/);
     assert.ok(notifications.some((entry) => entry.message.includes("changed since it was reviewed")));
@@ -303,7 +324,14 @@ function fakePi() {
 
     // Deletion through the reviewed fingerprint.
     const snapshot = await services.overlaySnapshot("project", "e2e-role");
-    const deleted = await services.deleteOverlay("project", "e2e-role", snapshot.fingerprint);
+    const deleted = await services.deleteOverlay(
+      "project",
+      "e2e-role",
+      snapshot.filePath,
+      snapshot.fingerprint,
+      snapshot.contextFingerprint,
+      snapshot.identity,
+    );
     assert.equal(deleted.ok, true);
     assert.ok(!existsSync(written), "the reviewed overlay is deleted");
 

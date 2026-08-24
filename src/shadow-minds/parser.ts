@@ -187,6 +187,10 @@ function validateSchemaNode(value: unknown, path: string, depth: number, errors:
         }
         context.properties += keys.length;
         for (const key of keys) {
+          if (!KEY_PATTERN.test(key) || key === "__proto__" || key === "prototype" || key === "constructor") {
+            errors.push(`${path || "root"}: property name '${key}' is outside the supported YAML-safe schema key subset`);
+            continue;
+          }
           validateSchemaNode(properties[key], path ? `${path}/${key}` : key, depth + 1, errors, context);
         }
       }

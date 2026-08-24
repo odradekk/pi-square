@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { ConfirmationCoordinator } from "../core/confirmation";
 import type { PiSquareConfig } from "../core/config";
+import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import { getAgentPath } from "../core/paths";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
@@ -27,6 +28,7 @@ import {
 import {
   discoverShadowDefinitions,
   previewShadowDefinition,
+  previewShadowDefinitionDeletion,
   shadowDefinitionScopeDir,
   type ShadowDefinitionRegistry,
 } from "./definitions";
@@ -57,7 +59,8 @@ export interface ShadowMindsState {
 const MAX_NOTIFY_CHARS = 400;
 
 function notifyText(message: string): string {
-  return message.length <= MAX_NOTIFY_CHARS ? message : `${message.slice(0, MAX_NOTIFY_CHARS - 1)}…`;
+  const sanitized = sanitizeDisplayLine(message);
+  return sanitized.length <= MAX_NOTIFY_CHARS ? sanitized : `${sanitized.slice(0, MAX_NOTIFY_CHARS - 1)}…`;
 }
 
 function outcomeOf(error: unknown, fallbackPrefix: string) {
@@ -97,20 +100,30 @@ function makeServices(
       }
       return undefined;
     },
-    async overlaySnapshot(scope, id) {
-      return readShadowOverlaySnapshot(scope, ctx.cwd, id, { projectTrusted: ctx.isProjectTrusted() });
+    async overlaySnapshot(scope, id, filePath) {
+      return readShadowOverlaySnapshot(scope, ctx.cwd, id, {
+        projectTrusted: ctx.isProjectTrusted(),
+        filePath,
+      });
     },
-    preview(scope, fields) {
+    preview(scope, fields, expectedContextFingerprint, reviewedFilePath) {
       try {
         const content = serializeShadowDefinition(fields);
-        const filePath = shadowOverlayFilePath(scope, ctx.cwd, fields.id);
+        const filePath = reviewedFilePath ?? shadowOverlayFilePath(scope, ctx.cwd, fields.id);
         const preview = previewShadowDefinition(ctx.cwd, {
           projectTrusted: ctx.isProjectTrusted(),
           scope,
           filePath,
           content,
+          expectedContextFingerprint,
         });
-        return { content, filePath, definition: preview.definition, errors: preview.errors };
+        return {
+          content,
+          filePath,
+          definition: preview.definition,
+          errors: preview.errors,
+          contextFingerprint: preview.contextFingerprint,
+        };
       } catch (error) {
         return {
           content: "",
@@ -119,24 +132,44 @@ function makeServices(
         };
       }
     },
+    previewDelete(scope, _id, filePath, expectedContextFingerprint) {
+      try {
+        const preview = previewShadowDefinitionDeletion(ctx.cwd, {
+          projectTrusted: ctx.isProjectTrusted(),
+          scope,
+          filePath,
+          expectedContextFingerprint,
+        });
+        return {
+          definition: preview.definition,
+          errors: preview.errors,
+          contextFingerprint: preview.contextFingerprint,
+        };
+      } catch (error) {
+        return { errors: [error instanceof Error ? error.message : String(error)] };
+      }
+    },
     async approve(request: ShadowApprovalRequest): Promise<boolean> {
       if (!ctx.hasUI) return false;
       return confirmations.run(undefined, (signal) => ctx.ui.confirm(
-        request.title,
-        [...request.lines, "", request.destructive
+        sanitizeDisplayLine(request.title),
+        sanitizeDisplayText([...request.lines, "", request.destructive
           ? "This permanently changes Shadow definition files on disk."
-          : "Declining performs no write."].join("\n"),
+          : "Declining performs no write."].join("\n")),
         { signal },
       ));
     },
-    async save(scope, fields, reviewFingerprint) {
+    async save(scope, fields, reviewFilePath, reviewFingerprint, reviewContextFingerprint, reviewIdentity) {
       try {
         const result = await writeShadowOverlay({
           cwd: ctx.cwd,
           projectTrusted: ctx.isProjectTrusted(),
           scope,
           fields,
+          reviewFilePath,
           reviewFingerprint,
+          reviewContextFingerprint,
+          reviewIdentity,
         });
         state.refresh(ctx.cwd, ctx.isProjectTrusted());
         ctx.ui.notify(`shadow-minds: saved ${fields.id} ${scope} overlay (${result.filePath})`, "info");
@@ -147,14 +180,17 @@ function makeServices(
         return outcome;
       }
     },
-    async deleteOverlay(scope, id, reviewFingerprint) {
+    async deleteOverlay(scope, id, filePath, reviewFingerprint, reviewContextFingerprint, reviewIdentity) {
       try {
         const result = await deleteShadowOverlay({
           cwd: ctx.cwd,
           projectTrusted: ctx.isProjectTrusted(),
           scope,
           id,
+          filePath,
           reviewFingerprint,
+          reviewContextFingerprint,
+          reviewIdentity,
         });
         state.refresh(ctx.cwd, ctx.isProjectTrusted());
         const message = result.removed
@@ -196,7 +232,8 @@ export default function registerShadowMinds(
   pi.registerCommand("shadow", {
     description: "Manage layered Shadow definitions and overlays, or ask Pi to help configure one.",
     handler: async (args, ctx) => {
-      const request = String(args ?? "").trim();
+      const rawRequest = String(args ?? "");
+      const request = rawRequest.trim();
       state.refresh(ctx.cwd, ctx.isProjectTrusted());
       if (request) {
         const guide = buildShadowConfigGuide(state.registry, ctx.cwd);
@@ -206,7 +243,7 @@ export default function registerShadowMinds(
           display: true,
           details: guide.details,
         }, { deliverAs: "followUp" });
-        pi.sendUserMessage(request, { deliverAs: "followUp" });
+        pi.sendUserMessage(rawRequest, { deliverAs: "followUp" });
         return;
       }
       if (!ctx.hasUI) return;

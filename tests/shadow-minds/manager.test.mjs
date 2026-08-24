@@ -12,7 +12,8 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
-const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { serializeShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "serialize.ts"));
 const { DEFAULT_CONFIG } = await load(join(packageRoot, "src", "core", "config.ts"));
 
 const PLAIN = /\x1b\[[0-9;]*m/g;
@@ -276,8 +277,10 @@ function render(manager, width = 100) {
     overlaySnapshot: async (scope, id) => ({
       filePath: `/scope/${scope}/${id}.md`,
       fingerprint: `fp-${scope}-${id}`,
+      contextFingerprint: shadowDefinitionContextFingerprint(definitions.find((definition) => definition.id === id)?.layers ?? []),
+      content: serializeShadowDefinition({ id, enabled: false }),
     }),
-    preview: (scope, fields) => {
+    preview: (scope, fields, contextFingerprint) => {
       const content = serializeShadowDefinition(fields);
       if (previewErrors.length > 0) return { content, filePath: `/scope/${scope}/${fields.id}.md`, errors: previewErrors };
       return {
@@ -292,14 +295,16 @@ function render(manager, width = 100) {
           layers: [],
         },
         errors: [],
+        contextFingerprint,
       };
     },
+    previewDelete: (_scope, _id, _filePath, contextFingerprint) => ({ definition: grounding, errors: [], contextFingerprint }),
     approve: async (request) => {
       calls.approve.push(request);
       return approveResult;
     },
-    save: async (scope, fields, fingerprint) => {
-      calls.save.push({ scope, fields, fingerprint });
+    save: async (scope, fields, filePath, fingerprint, contextFingerprint) => {
+      calls.save.push({ scope, fields, filePath, fingerprint, contextFingerprint });
       return { ok: true, message: "saved" };
     },
     deleteOverlay: async (scope, id, fingerprint) => {
@@ -341,7 +346,9 @@ function render(manager, width = 100) {
   assert.equal(calls.save.length, 1, "an approved review saves exactly once");
   assert.equal(calls.save[0].scope, "project");
   assert.equal(calls.save[0].fields.enabled, true);
+  assert.equal(calls.save[0].filePath, "/scope/project/alternative-explorer.md");
   assert.equal(calls.save[0].fingerprint, "fp-project-alternative-explorer");
+  assert.equal(calls.save[0].contextFingerprint, shadowDefinitionContextFingerprint(definitions[0].layers));
   assert.equal(calls.deleteOverlay.length, 0);
 
   // Declined approval writes nothing.
@@ -485,4 +492,108 @@ function render(manager, width = 100) {
   assert.equal(saved.debug, false);
   assert.equal(saved.outputSchema, undefined, "the default summary schema stays inherited");
 }
+
+
+// ── Reviews expose complete content, delete fallback, and schema editing ─
+
+{
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
+  const contextFingerprint = shadowDefinitionContextFingerprint(grounding.layers);
+  const longBody = `${"x".repeat(5000)}TAIL-SENTINEL`;
+  let saves = 0;
+  const longServices = {
+    refresh: () => ({ definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true }),
+    scopeOf: () => "project",
+    overlaySnapshot: async (_scope, id) => ({
+      filePath: `/scope/project/${id}.md`,
+      fingerprint: "fp",
+      contextFingerprint,
+      content: serializeShadowDefinition({ id, enabled: false }),
+    }),
+    preview: (_scope, fields, expected) => ({
+      content: serializeShadowDefinition(fields),
+      filePath: `/scope/project/${fields.id}.md`,
+      definition: { ...grounding, body: fields.body ?? grounding.body },
+      errors: [],
+      contextFingerprint: expected,
+    }),
+    previewDelete: (_scope, _id, _path, expected) => ({ definition: grounding, errors: [], contextFingerprint: expected }),
+    approve: async () => { throw new Error("session changed"); },
+    save: async () => { saves += 1; return { ok: true, message: "saved" }; },
+    deleteOverlay: async () => ({ ok: true, message: "deleted" }),
+  };
+  const manager = new ShadowManager(
+    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    { requestRender() {}, terminal: { rows: 20, columns: 80 } },
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    longServices,
+  );
+  await manager.reviewSave(grounding, "project", { id: grounding.id, body: longBody });
+  assert.equal(manager.view.kind, "review");
+  assert.ok(manager.view.lines.join("\n").includes("TAIL-SENTINEL"), "the complete candidate is retained in review state");
+  for (let index = 0; index < 100; index += 1) manager.handleInput("down");
+  assert.ok(render(manager, 80).join("\n").includes("TAIL-SENTINEL"), "the wrapped review can scroll to a long line's tail");
+  manager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(saves, 0, "an aborted or failed confirmation performs no write");
+
+  // The outputSchema field offers a custom bounded JSON editor.
+  const schemaManager = new ShadowManager(
+    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {}, longServices,
+  );
+  schemaManager.handleInput("\r"); // actions
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("\r"); // edit
+  schemaManager.handleInput("\r"); // project
+  for (let index = 0; index < 18; index += 1) schemaManager.handleInput("down");
+  schemaManager.handleInput("\r"); // outputSchema field
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("\r"); // set
+  assert.ok(render(schemaManager).join("\n").includes("Set custom schema"));
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("\r");
+  assert.ok(render(schemaManager).join("\n").includes("outputSchema JSON"), "custom schema editing is reachable");
+
+  // Delete review includes the exact layer Markdown and effective fallback.
+  const projectLayer = {
+    scope: "project",
+    filePath: "/scope/project/project-grounding.md",
+    contentHash: "a".repeat(64),
+    fields: { id: grounding.id, enabled: true },
+  };
+  const layered = { ...grounding, enabled: true, layers: [...grounding.layers, projectLayer] };
+  const layeredContext = shadowDefinitionContextFingerprint(layered.layers);
+  const deleteServices = {
+    ...longServices,
+    scopeOf: () => "project",
+    overlaySnapshot: async () => ({
+      filePath: projectLayer.filePath,
+      fingerprint: "delete-fp",
+      contextFingerprint: layeredContext,
+      content: serializeShadowDefinition(projectLayer.fields),
+    }),
+    previewDelete: (_scope, _id, _path, expected) => ({ definition: grounding, errors: [], contextFingerprint: expected }),
+  };
+  const deleteManager = new ShadowManager(
+    { definitions: [layered], invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {}, deleteServices,
+  );
+  deleteManager.handleInput("\r");
+  deleteManager.handleInput("down");
+  deleteManager.handleInput("down");
+  deleteManager.handleInput("down");
+  deleteManager.handleInput("\r");
+  deleteManager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const deletionReview = deleteManager.view.lines.join("\n");
+  assert.match(deletionReview, /LAYER MARKDOWN[\s\S]*enabled: true/);
+  assert.match(deletionReview, /EFFECTIVE CHANGE[\s\S]*enabled: true → false/);
+}
+
 console.log("shadow-minds manager tests: OK");

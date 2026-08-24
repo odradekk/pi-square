@@ -11,7 +11,7 @@ const {
   ShadowOverlayError,
   deleteShadowOverlay,
   readShadowOverlaySnapshot,
-  writeShadowOverlay,
+  writeShadowOverlay: rawWriteShadowOverlay,
 } = await load(join(packageRoot, "src", "shadow-minds", "overlays.ts"));
 const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
@@ -51,7 +51,32 @@ function rejectsWrite(promise, code) {
     (error) => error instanceof ShadowOverlayError && error.code === code,
   );
 }
+async function writeShadowOverlay(input, hooks) {
+  let reviewContextFingerprint = input.reviewContextFingerprint;
+  let reviewIdentity = input.reviewIdentity;
+  if (reviewContextFingerprint === undefined || reviewIdentity === undefined) {
+    const review = await readShadowOverlaySnapshot(input.scope, input.cwd, input.fields.id, {
+      projectTrusted: input.projectTrusted,
+    });
+    reviewContextFingerprint ??= review.contextFingerprint;
+    reviewIdentity ??= review.identity;
+  }
+  return rawWriteShadowOverlay({ ...input, reviewContextFingerprint, reviewIdentity }, hooks);
+}
 
+async function reviewedDelete(input, hooks) {
+  let reviewContextFingerprint = input.reviewContextFingerprint;
+  let reviewIdentity = input.reviewIdentity;
+  if (reviewContextFingerprint === undefined || reviewIdentity === undefined) {
+    const review = await readShadowOverlaySnapshot(input.scope, input.cwd, input.id, {
+      projectTrusted: input.projectTrusted,
+      filePath: input.filePath,
+    });
+    reviewContextFingerprint ??= review.contextFingerprint;
+    reviewIdentity ??= review.identity;
+  }
+  return deleteShadowOverlay({ ...input, reviewContextFingerprint, reviewIdentity }, hooks);
+}
 // ── Write a new project overlay, then discover it merged over the template ──
 
 await withRoot(async (dir, project) => {
@@ -384,7 +409,7 @@ await withRoot(async (_dir, project) => {
   });
   const filePath = join(project, ".pi", "shadow-minds", "gone.md");
   let snapshot = await readShadowOverlaySnapshot("project", project, "gone", { projectTrusted: true });
-  const removed = await deleteShadowOverlay({
+  const removed = await reviewedDelete({
     cwd: project,
     projectTrusted: true,
     scope: "project",
@@ -396,7 +421,7 @@ await withRoot(async (_dir, project) => {
   assert.ok(!existsSync(`${filePath}.lock`), "the lock is released after deletion");
   // Deleting an already-missing overlay is a completed no-op.
   snapshot = await readShadowOverlaySnapshot("project", project, "gone", { projectTrusted: true });
-  const again = await deleteShadowOverlay({
+  const again = await reviewedDelete({
     cwd: project,
     projectTrusted: true,
     scope: "project",
@@ -414,7 +439,7 @@ await withRoot(async (_dir, project) => {
   });
   write(filePath, serializeShadowDefinition({ ...fields, body: "Changed." }));
   await rejectsWrite(
-    deleteShadowOverlay({
+    reviewedDelete({
       cwd: project,
       projectTrusted: true,
       scope: "project",
@@ -431,7 +456,7 @@ await withRoot(async (_dir, project) => {
 await withRoot(async (_dir, project) => {
   mkdirSync(project, { recursive: true });
   await rejectsWrite(
-    deleteShadowOverlay({
+    reviewedDelete({
       cwd: project,
       projectTrusted: false,
       scope: "project",
@@ -440,6 +465,164 @@ await withRoot(async (_dir, project) => {
     }),
     "SHADOW_PROJECT_UNTRUSTED",
   );
+});
+
+
+// ── Same-content inode replacement is stale by file identity ─────────
+
+await withRoot(async (_dir, project) => {
+  mkdirSync(project, { recursive: true });
+  const fields = newShadowDefinitionDraft("identity", "Identity", "Body.");
+  await writeShadowOverlay({ cwd: project, projectTrusted: true, scope: "project", fields, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
+  const reviewed = await readShadowOverlaySnapshot("project", project, "identity", { projectTrusted: true });
+  const replacement = `${reviewed.filePath}.replacement`;
+  writeFileSync(replacement, reviewed.content, "utf8");
+  const { renameSync } = await import("node:fs");
+  renameSync(replacement, reviewed.filePath);
+  await rejectsWrite(
+    rawWriteShadowOverlay({
+      cwd: project,
+      projectTrusted: true,
+      scope: "project",
+      fields: { ...fields, enabled: true },
+      reviewFingerprint: reviewed.fingerprint,
+      reviewContextFingerprint: reviewed.contextFingerprint,
+      reviewIdentity: reviewed.identity,
+    }),
+    "SHADOW_STALE_REVIEW",
+  );
+  const onDisk = await (await import("node:fs/promises")).readFile(reviewed.filePath, "utf8");
+  assert.equal(onDisk, reviewed.content, "the same-content replacement survives the stale write");
+});
+
+// ── A contributing lower-layer change invalidates the reviewed context ─
+
+await withRoot(async (dir, project) => {
+  mkdirSync(project, { recursive: true });
+  const agentPath = join(dir, "agent", "shadow-minds", "project-grounding.md");
+  write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 1 }));
+  const reviewed = await readShadowOverlaySnapshot("project", project, "project-grounding", { projectTrusted: true });
+  write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 2 }));
+  await rejectsWrite(
+    rawWriteShadowOverlay({
+      cwd: project,
+      projectTrusted: true,
+      scope: "project",
+      fields: { id: "project-grounding", enabled: true },
+      reviewFingerprint: reviewed.fingerprint,
+      reviewContextFingerprint: reviewed.contextFingerprint,
+      reviewIdentity: reviewed.identity,
+    }),
+    "SHADOW_STALE_REVIEW",
+  );
+  assert.ok(!existsSync(reviewed.filePath), "the stale project candidate is not created");
+});
+
+// ── Delete uses identity-safe unlink and exact canonical file targeting ─
+
+await withRoot(async (_dir, project) => {
+  mkdirSync(project, { recursive: true });
+  const fields = newShadowDefinitionDraft("delete-identity", "Delete identity", "Body.");
+  await writeShadowOverlay({ cwd: project, projectTrusted: true, scope: "project", fields, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
+  const reviewed = await readShadowOverlaySnapshot("project", project, "delete-identity", { projectTrusted: true });
+  const replacement = `${reviewed.filePath}.replacement`;
+  writeFileSync(replacement, reviewed.content, "utf8");
+  const { renameSync } = await import("node:fs");
+  renameSync(replacement, reviewed.filePath);
+  await rejectsWrite(
+    deleteShadowOverlay({
+      cwd: project,
+      projectTrusted: true,
+      scope: "project",
+      id: "delete-identity",
+      filePath: reviewed.filePath,
+      reviewFingerprint: reviewed.fingerprint,
+      reviewContextFingerprint: reviewed.contextFingerprint,
+      reviewIdentity: reviewed.identity,
+    }),
+    "SHADOW_STALE_REVIEW",
+  );
+  assert.ok(existsSync(reviewed.filePath), "the replacement inode survives the stale delete");
+});
+
+
+
+// ── Context changes during write/delete are detected before mutation ─
+
+await withRoot(async (dir, project) => {
+  mkdirSync(project, { recursive: true });
+  const agentPath = join(dir, "agent", "shadow-minds", "project-grounding.md");
+  write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 1 }));
+  const reviewed = await readShadowOverlaySnapshot("project", project, "project-grounding", { projectTrusted: true });
+  await rejectsWrite(
+    rawWriteShadowOverlay({
+      cwd: project,
+      projectTrusted: true,
+      scope: "project",
+      fields: { id: "project-grounding", enabled: true },
+      reviewFingerprint: reviewed.fingerprint,
+      reviewContextFingerprint: reviewed.contextFingerprint,
+      reviewIdentity: reviewed.identity,
+    }, {
+      beforeRename: () => write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 2 })),
+    }),
+    "SHADOW_STALE_REVIEW",
+  );
+  assert.ok(!existsSync(reviewed.filePath), "the project candidate is not renamed after a late context change");
+
+  const deletable = newShadowDefinitionDraft("late-delete", "Late delete", "Body.");
+  await writeShadowOverlay({ cwd: project, projectTrusted: true, scope: "project", fields: deletable, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
+  const deleteReview = await readShadowOverlaySnapshot("project", project, "late-delete", { projectTrusted: true });
+  const agentDeletePath = join(dir, "agent", "shadow-minds", "late-delete.md");
+  await rejectsWrite(
+    deleteShadowOverlay({
+      cwd: project,
+      projectTrusted: true,
+      scope: "project",
+      id: "late-delete",
+      filePath: deleteReview.filePath,
+      reviewFingerprint: deleteReview.fingerprint,
+      reviewContextFingerprint: deleteReview.contextFingerprint,
+      reviewIdentity: deleteReview.identity,
+    }, {
+      beforeRename: () => write(agentDeletePath, serializeShadowDefinition(newShadowDefinitionDraft("late-delete", "Changed lower", "Lower."))),
+    }),
+    "SHADOW_STALE_REVIEW",
+  );
+  assert.ok(existsSync(deleteReview.filePath), "the target survives a late context change before delete");
+});
+
+// ── Existing uppercase .MD overlays retain their exact discovered path ─
+
+await withRoot(async (_dir, project) => {
+  mkdirSync(project, { recursive: true });
+  const upperPath = join(project, ".pi", "shadow-minds", "upper.MD");
+  write(upperPath, serializeShadowDefinition(newShadowDefinitionDraft("upper", "Upper", "Body.")));
+  const reviewed = await readShadowOverlaySnapshot("project", project, "upper", { projectTrusted: true, filePath: upperPath });
+  await rawWriteShadowOverlay({
+    cwd: project,
+    projectTrusted: true,
+    scope: "project",
+    fields: { ...newShadowDefinitionDraft("upper", "Upper", "Body."), enabled: true },
+    reviewFilePath: reviewed.filePath,
+    reviewFingerprint: reviewed.fingerprint,
+    reviewContextFingerprint: reviewed.contextFingerprint,
+    reviewIdentity: reviewed.identity,
+  });
+  assert.ok(existsSync(upperPath), "the existing uppercase overlay path is updated in place");
+  assert.ok(!existsSync(join(project, ".pi", "shadow-minds", "upper.md")), "no duplicate lowercase overlay is created");
+  const refreshed = await readShadowOverlaySnapshot("project", project, "upper", { projectTrusted: true, filePath: upperPath });
+  await deleteShadowOverlay({
+    cwd: project,
+    projectTrusted: true,
+    scope: "project",
+    id: "upper",
+    filePath: refreshed.filePath,
+    reviewFingerprint: refreshed.fingerprint,
+    reviewContextFingerprint: refreshed.contextFingerprint,
+    reviewIdentity: refreshed.identity,
+  });
+  assert.ok(!existsSync(upperPath), "the exact uppercase overlay is deleted");
 });
 
 console.log("shadow-minds overlay writer tests: OK");

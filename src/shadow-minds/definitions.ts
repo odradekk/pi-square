@@ -16,6 +16,7 @@
  * and agent definitions remain available in the same registry.
  */
 
+import { createHash } from "node:crypto";
 import { realpathSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isWithinWorkspace } from "../core/paths";
@@ -423,13 +424,104 @@ export function discoverShadowDefinitions(
   return { definitions, invalid, diagnostics };
 }
 
+function fingerprintLayerDescriptors(layers: readonly {
+  scope: ShadowDefinitionScope;
+  filePath: string;
+  contentHash?: string;
+  errors?: readonly string[];
+}[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(layers.map((layer) => ({
+      scope: layer.scope,
+      filePath: layer.filePath,
+      contentHash: layer.contentHash,
+      errors: layer.errors ?? [],
+    }))))
+    .digest("hex");
+}
+
+function contextFingerprint(layers: readonly LoadedLayer[]): string {
+  return fingerprintLayerDescriptors(layers.map((layer) => ({
+    scope: layer.scope,
+    filePath: layer.filePath,
+    contentHash: layer.parsed?.contentHash,
+    errors: layer.errors,
+  })));
+}
+
+/** Stable hash of the valid layer context carried by one manager snapshot. */
+export function shadowDefinitionContextFingerprint(layers: readonly ShadowDefinitionLayer[]): string {
+  return fingerprintLayerDescriptors(layers);
+}
+
+
+function previewShadowLayers(
+  cwd: string,
+  options: {
+    projectTrusted: boolean;
+    scope: "agent" | "project";
+    filePath: string;
+    content?: string;
+    remove?: boolean;
+    expectedContextFingerprint?: string;
+  },
+): { definition?: EffectiveShadowDefinition; errors: string[]; contextFingerprint: string } {
+  const id = stemOf(options.filePath);
+  const { scopes } = collectShadowScopes(cwd, options.projectTrusted);
+  const loaded: LoadedLayer[] = [];
+  for (const { dir, scope, projectRoot } of scopes) {
+    if (!dir) continue;
+    loaded.push(...loadLayersFromDir(dir, scope, projectRoot).filter((layer) => stemOf(layer.filePath) === id));
+  }
+  const currentContextFingerprint = contextFingerprint(loaded);
+  if (options.expectedContextFingerprint !== undefined && currentContextFingerprint !== options.expectedContextFingerprint) {
+    return {
+      errors: ["Shadow definition context changed since review; reopen /shadow and review the current layers."],
+      contextFingerprint: currentContextFingerprint,
+    };
+  }
+
+  const errors: string[] = [];
+  const buckets: { scope: ShadowDefinitionScope; layers: (LoadedLayer & { parsed: ParsedShadowDefinition })[] }[] = [];
+  for (const scope of ["package", "agent", "project"] as const) {
+    const claiming = loaded.filter((layer) => layer.scope === scope && layer.filePath !== options.filePath);
+    for (const layer of claiming) {
+      if (!layer.parsed) errors.push(...layer.errors);
+    }
+    const parsed = claiming.filter((layer): layer is LoadedLayer & { parsed: ParsedShadowDefinition } => Boolean(layer.parsed));
+    if (parsed.length > 0) buckets.push({ scope, layers: parsed });
+  }
+
+  if (!options.remove) {
+    const parsed = parseShadowDefinitionFile(options.filePath, options.content ?? "");
+    if (!parsed.definition) return { errors: parsed.errors, contextFingerprint: currentContextFingerprint };
+    const candidateBucket = buckets.find((bucket) => bucket.scope === options.scope);
+    const candidate: LoadedLayer & { parsed: ParsedShadowDefinition } = {
+      scope: options.scope,
+      filePath: options.filePath,
+      parsed: parsed.definition,
+      errors: [],
+    };
+    if (candidateBucket) candidateBucket.layers.push(candidate);
+    else buckets.push({ scope: options.scope, layers: [candidate] });
+  }
+
+  const duplicates = buckets.filter((bucket) => bucket.layers.length > 1);
+  if (duplicates.length > 0) {
+    const sources = duplicates.flatMap((bucket) => bucket.layers.map((layer) => layer.filePath));
+    errors.push(`${id}: duplicate definition files claim the same ID in one scope (${sources.join(", ")})`);
+  }
+  if (errors.length > 0) return { errors, contextFingerprint: currentContextFingerprint };
+
+  const ordered = (["package", "agent", "project"] as const)
+    .flatMap((scope) => buckets.find((bucket) => bucket.scope === scope)?.layers ?? []);
+  if (ordered.length === 0) return { errors: [], contextFingerprint: currentContextFingerprint };
+  return { ...mergeLayers(id, ordered), contextFingerprint: currentContextFingerprint };
+}
+
 /**
  * Composes one candidate layer into the current discovery state and merges
- * the effective definition for its ID (#154). The candidate replaces every
- * same-scope layer for the ID at `filePath`; layers from other scopes and
- * same-scope files claiming the same ID through other file names keep their
- * discovery semantics — including fail-closed treatment of broken layers and
- * same-scope duplicates.
+ * the effective definition for its ID (#154).
  */
 export function previewShadowDefinition(
   cwd: string,
@@ -438,62 +530,23 @@ export function previewShadowDefinition(
     scope: "agent" | "project";
     filePath: string;
     content: string;
+    expectedContextFingerprint?: string;
   },
-): { definition?: EffectiveShadowDefinition; errors: string[] } {
-  const parsed = parseShadowDefinitionFile(options.filePath, options.content);
-  if (!parsed.definition) return { errors: parsed.errors };
-  const id = stemOf(options.filePath);
-  const { scopes } = collectShadowScopes(cwd, options.projectTrusted);
-  const errors: string[] = [];
-  const buckets: { scope: ShadowDefinitionScope; layers: (LoadedLayer & { parsed: ParsedShadowDefinition })[] }[] = [];
-  for (const { dir, scope, projectRoot } of scopes) {
-    if (!dir) continue;
-    const claiming = loadLayersFromDir(dir, scope, projectRoot).filter(
-      (layer) => layer.filePath !== options.filePath && stemOf(layer.filePath) === id,
-    );
-    if (scope !== options.scope) {
-      for (const layer of claiming) {
-        if (!layer.parsed) {
-          errors.push(...layer.errors);
-          continue;
-        }
-        buckets.push({ scope, layers: [layer as LoadedLayer & { parsed: ParsedShadowDefinition }] });
-      }
-      continue;
-    }
-    const others = claiming.filter((layer) => layer.parsed);
-    if (claiming.length !== others.length) {
-      // A broken same-scope file keeps the ID failed closed until repaired.
-      for (const layer of claiming) {
-        if (!layer.parsed) errors.push(...layer.errors);
-      }
-    }
-    const bucket: typeof buckets[number] = {
-      scope,
-      layers: others.map((layer) => layer as LoadedLayer & { parsed: ParsedShadowDefinition }),
-    };
-    buckets.push(bucket);
-  }
-  const candidateBucket = buckets.find((bucket) => bucket.scope === options.scope);
-  const candidate: LoadedLayer & { parsed: ParsedShadowDefinition } = {
-    scope: options.scope,
-    filePath: options.filePath,
-    parsed: parsed.definition,
-    errors: [],
-  };
-  if (candidateBucket) candidateBucket.layers.push(candidate);
-  else buckets.push({ scope: options.scope, layers: [candidate] });
+): { definition?: EffectiveShadowDefinition; errors: string[]; contextFingerprint: string } {
+  return previewShadowLayers(cwd, options);
+}
 
-  const duplicates = buckets.filter((bucket) => bucket.layers.length > 1);
-  if (duplicates.length > 0) {
-    const sources = duplicates.flatMap((bucket) => bucket.layers.map((layer) => layer.filePath));
-    errors.push(`${id}: duplicate definition files claim the same ID in one scope (${sources.join(", ")})`);
-  }
-  if (errors.length > 0) return { errors };
-
-  const ordered = (["package", "agent", "project"] as const)
-    .flatMap((scope) => buckets.find((bucket) => bucket.scope === scope)?.layers ?? []);
-  return mergeLayers(id, ordered);
+/** Preview the effective definition after removing one exact overlay layer. */
+export function previewShadowDefinitionDeletion(
+  cwd: string,
+  options: {
+    projectTrusted: boolean;
+    scope: "agent" | "project";
+    filePath: string;
+    expectedContextFingerprint?: string;
+  },
+): { definition?: EffectiveShadowDefinition; errors: string[]; contextFingerprint: string } {
+  return previewShadowLayers(cwd, { ...options, remove: true });
 }
 
 /**
