@@ -7,7 +7,7 @@ if (!Array.isArray(packs) || packs.length !== 1) {
 }
 
 const pack = packs[0];
-const allowedRoots = new Set(["src", "subagents", "themes"]);
+const allowedRoots = new Set(["shadow-minds", "src", "subagents", "themes"]);
 const allowedFiles = new Set([
   "CHANGELOG.md",
   "LICENSE",
@@ -22,6 +22,12 @@ const requiredFiles = [
   "package.json",
   "src/index.ts",
   "src/display-api.ts",
+  "shadow-minds/alternative-explorer.md",
+  "shadow-minds/architecture-lens.md",
+  "shadow-minds/completion-check.md",
+  "shadow-minds/project-grounding.md",
+  "shadow-minds/research-scout.md",
+  "shadow-minds/session-synthesizer.md",
   "subagents/crawler.yaml",
   "subagents/example_profile.yaml",
   "subagents/explorer.yaml",

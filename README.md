@@ -162,6 +162,35 @@ The activity view, the manager, and the subagent status row summarize a child's 
 
 `/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses the same unframed operational status rail and label-led rule as other pi-square surfaces; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands.
 
+## Shadow Minds (experimental, disabled by default)
+
+Shadow Minds are persistent, read-only cognitive roles that observe a session at
+deterministic boundaries. The feature is under construction
+(odradekk/pi-square#149) and ships disabled: installing or upgrading pi-square
+never creates Shadow model calls.
+
+What works today:
+
+- Six disabled package templates — Project grounding, Architecture lens,
+  Completion check, Alternative explorer, Research scout, and Session
+  synthesizer — shipped read-only in `shadow-minds/`.
+- Layered definitions: package templates, agent overlays under
+  `~/.pi/agent/shadow-minds`, and trusted-project overlays under
+  `.pi/shadow-minds` merge by stable ID, with per-field provenance,
+  trigger-instruction key merge, atomic output-schema replacement, and Markdown
+  body replacement versus inheritance.
+- A read-only `/shadow` manager that inspects effective fields, layer sources,
+  hidden and invalid state, and diagnostics. It creates no model calls.
+- A strict `shadowMinds` section in agent and project pi-square configuration:
+  the agent-level `enabled` master switch (a project can never re-enable it)
+  and runtime `defaults` that always stay below package hard caps. An invalid
+  section fails closed to the disabled defaults.
+
+Definition files are ordinary Markdown with a strict bounded frontmatter
+subset; invalid definitions are diagnosed and excluded individually while
+valid ones remain inspectable. Scheduling, execution, and result delivery
+arrive with the later slices of #149.
+
 ## Persistent SSH shell
 
 The parent session exposes one `ssh` tool for bounded persistent remote POSIX shells. `connect` selects an agent-configured profile and allowlisted target, verifies its pinned OpenSSH SHA-256 host fingerprint, authenticates with an SSH agent or private-key file, and returns a session ID. `command` preserves the same remote shell's working directory, exported environment, and other shell state across calls. A session permits one foreground command at a time; `read`, `input`, `secret_input`, and `interrupt` continue a command that exceeds the bounded wait or pauses for input, while `close` and `list` manage the current connection set. Commands that invoke `exec` or `exit` can intentionally terminate that persistent shell, so avoid them when later calls must reuse the session or receive its completion marker.

@@ -26,6 +26,7 @@
   ],
   "files": [
     "src",
+    "shadow-minds",
     "subagents",
     "themes",
     "CHANGELOG.md",

@@ -153,7 +153,7 @@ try {
   assert.ok(childToolNames.includes("github"), "github must be opt-in for child sessions");
   assert.deepEqual(createChildTools(["github"]).definitions.map((definition) => definition.name), ["github"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
-  assert.deepEqual([...commands.keys()].sort(), ["context", "display", "prompt-manager", "subagent"]);
+  assert.deepEqual([...commands.keys()].sort(), ["context", "display", "prompt-manager", "shadow", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
   assert.deepEqual([...shortcuts.keys()], ["alt+i"]);
   assert.deepEqual([...renderers.keys()], [
