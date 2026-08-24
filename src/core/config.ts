@@ -23,6 +23,20 @@ export const SSH_GLOBAL_SESSION_HARD_MAX = 16;
 export const SSH_PROFILE_SESSION_HARD_MAX = 8;
 export const SSH_IDLE_TIMEOUT_HARD_MAX_MINUTES = 24 * 60;
 
+// ── Shadow Minds hard caps (odradekk/pi-square#149) ──────────────────
+
+export const SHADOW_MINDS_CONCURRENCY_HARD_MAX = 8;
+export const SHADOW_MINDS_STARTS_PER_TASK_HARD_MAX = 64;
+export const SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS = 600;
+export const SHADOW_MINDS_MODEL_TURNS_HARD_MAX = 32;
+export const SHADOW_MINDS_TOOL_CALLS_HARD_MAX = 128;
+/** Highest completion-gate window a configuration layer may request. */
+export const SHADOW_MINDS_COMPLETION_WINDOW_CONFIGURABLE_MAX_SECONDS = 30;
+/** Absolute package ceiling for the completion window, above the configurable cap. */
+export const SHADOW_MINDS_COMPLETION_WINDOW_HARD_MAX_SECONDS = 60;
+export const SHADOW_MINDS_HEADLESS_DRAIN_HARD_MAX_SECONDS = 300;
+export const SHADOW_MINDS_QUEUED_IDS_HARD_MAX = 128;
+
 // ── Display schemas (shared by agent and project layers) ────────────
 
 const DisplayOverlaySchema = Type.Object({
@@ -128,13 +142,39 @@ const AnchoredEditingSchema = Type.Object({
   autoRead: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
 
+const ShadowMindsDefaultsSchema = Type.Object({
+  maxConcurrentRuns: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_CONCURRENCY_HARD_MAX })),
+  maxAutomaticStartsPerTask: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_STARTS_PER_TASK_HARD_MAX })),
+  runTimeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS })),
+  maxModelTurnsPerRun: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_MODEL_TURNS_HARD_MAX })),
+  maxToolCallsPerRun: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_TOOL_CALLS_HARD_MAX })),
+  completionGateWindowSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_COMPLETION_WINDOW_CONFIGURABLE_MAX_SECONDS })),
+  headlessDrainSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_HEADLESS_DRAIN_HARD_MAX_SECONDS })),
+  maxQueuedShadowIds: Type.Optional(Type.Integer({ minimum: 1, maximum: SHADOW_MINDS_QUEUED_IDS_HARD_MAX })),
+}, { additionalProperties: false });
+
+/** Agent layer: the master switch plus runtime defaults. */
+const ShadowMindsAgentSchema = Type.Object({
+  enabled: Type.Optional(Type.Boolean()),
+  defaults: Type.Optional(ShadowMindsDefaultsSchema),
+}, { additionalProperties: false });
+
+/** Project layer: runtime defaults only; `enabled` is agent-only and rejected here atomically. */
+const ShadowMindsProjectSchema = Type.Object({
+  defaults: Type.Optional(ShadowMindsDefaultsSchema),
+}, { additionalProperties: false });
+
 const AgentConfigLayerSchema = Type.Object({
   ...CommonLayerProperties,
   ssh: Type.Optional(SshLayerSchema),
   anchoredEditing: Type.Optional(AnchoredEditingSchema),
+  shadowMinds: Type.Optional(ShadowMindsAgentSchema),
 }, { additionalProperties: false });
 
-const ProjectConfigLayerSchema = Type.Object(CommonLayerProperties, { additionalProperties: false });
+const ProjectConfigLayerSchema = Type.Object({
+  ...CommonLayerProperties,
+  shadowMinds: Type.Optional(ShadowMindsProjectSchema),
+}, { additionalProperties: false });
 
 type AgentConfigLayer = Static<typeof AgentConfigLayerSchema>;
 type ProjectConfigLayer = Static<typeof ProjectConfigLayerSchema>;
@@ -174,6 +214,35 @@ export interface AnchoredEditingConfig {
   autoRead: boolean;
 }
 
+/** Effective Shadow Minds runtime defaults; every value sits below its package hard cap. */
+export interface ShadowMindsDefaults {
+  maxConcurrentRuns: number;
+  maxAutomaticStartsPerTask: number;
+  runTimeoutSeconds: number;
+  maxModelTurnsPerRun: number;
+  maxToolCallsPerRun: number;
+  completionGateWindowSeconds: number;
+  headlessDrainSeconds: number;
+  maxQueuedShadowIds: number;
+}
+
+export interface ShadowMindsConfig {
+  /** Absolute agent-level master switch; a project can never re-enable it. */
+  enabled: boolean;
+  defaults: ShadowMindsDefaults;
+}
+
+export const DEFAULT_SHADOW_MINDS: Readonly<ShadowMindsDefaults> = Object.freeze({
+  maxConcurrentRuns: 2,
+  maxAutomaticStartsPerTask: 8,
+  runTimeoutSeconds: 120,
+  maxModelTurnsPerRun: 8,
+  maxToolCallsPerRun: 16,
+  completionGateWindowSeconds: 10,
+  headlessDrainSeconds: 30,
+  maxQueuedShadowIds: 32,
+});
+
 // ── Display effective config ────────────────────────────────────────
 
 export interface DisplayLayerSource {
@@ -194,6 +263,7 @@ export interface PiSquareConfig {
   };
   ssh: SshConfig;
   anchoredEditing: AnchoredEditingConfig;
+  shadowMinds: ShadowMindsConfig;
   display: DisplayEffectiveConfig;
 }
 
@@ -202,6 +272,10 @@ export const DEFAULT_CONFIG: Readonly<PiSquareConfig> = Object.freeze({
   banner: Object.freeze({ enabled: true }),
   ssh: Object.freeze({ maxSessions: 8, profiles: Object.freeze([]) }) as unknown as SshConfig,
   anchoredEditing: Object.freeze({ enabled: true, autoRead: true }),
+  shadowMinds: Object.freeze({
+    enabled: false,
+    defaults: DEFAULT_SHADOW_MINDS,
+  }) as ShadowMindsConfig,
   display: Object.freeze({ motion: DEFAULT_DISPLAY_MOTION }) as DisplayEffectiveConfig,
 });
 
@@ -394,6 +468,10 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
           enabled: agentLayer.value.anchoredEditing?.enabled ?? config.anchoredEditing.enabled,
           autoRead: agentLayer.value.anchoredEditing?.autoRead ?? config.anchoredEditing.autoRead,
         },
+        shadowMinds: {
+          enabled: agentLayer.value.shadowMinds?.enabled ?? config.shadowMinds.enabled,
+          defaults: { ...config.shadowMinds.defaults, ...agentLayer.value.shadowMinds?.defaults },
+        },
       };
       agentDisplay = agentLayer.value.display;
       sources.push(agentPath);
@@ -410,6 +488,13 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
         diagnostics.push(footerModeDiagnostic(projectPath));
       }
       config = mergeCommonLayer(config, projectLayer.value as ProjectConfigLayer);
+      config = {
+        ...config,
+        shadowMinds: {
+          enabled: config.shadowMinds.enabled,
+          defaults: { ...config.shadowMinds.defaults, ...projectLayer.value.shadowMinds?.defaults },
+        },
+      };
       projectDisplay = projectLayer.value.display;
       sources.push(projectPath);
     }

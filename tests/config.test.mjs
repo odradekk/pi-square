@@ -524,6 +524,87 @@ try {
     rmSync(wProjectDir, { recursive: true, force: true });
   }
 
+  // ── Shadow Minds (V2 shadowMinds section) ───────────────────────────
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({ version: 2, banner: { enabled: true } }));
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({ version: 2, banner: { enabled: true } }));
+  const shadowDefaults = loadConfig(projectDir).config.shadowMinds;
+  assert.equal(shadowDefaults.enabled, false, "shadowMinds must be disabled by default");
+  assert.deepEqual({ ...shadowDefaults.defaults }, {
+    maxConcurrentRuns: 2,
+    maxAutomaticStartsPerTask: 8,
+    runTimeoutSeconds: 120,
+    maxModelTurnsPerRun: 8,
+    maxToolCallsPerRun: 16,
+    completionGateWindowSeconds: 10,
+    headlessDrainSeconds: 30,
+    maxQueuedShadowIds: 32,
+  }, "effective shadowMinds defaults must match the documented default runtime values");
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: {
+      enabled: true,
+      defaults: { maxConcurrentRuns: 3, runTimeoutSeconds: 90 },
+    },
+  }));
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: { defaults: { runTimeoutSeconds: 45, maxQueuedShadowIds: 64 } },
+  }));
+  const shadowLayered = loadConfig(projectDir).config.shadowMinds;
+  assert.equal(shadowLayered.enabled, true, "the agent master switch enables shadowMinds");
+  assert.equal(shadowLayered.defaults.maxConcurrentRuns, 3, "agent defaults apply when the project omits the field");
+  assert.equal(shadowLayered.defaults.runTimeoutSeconds, 45, "project defaults override agent defaults per field under the caps");
+  assert.equal(shadowLayered.defaults.maxQueuedShadowIds, 64);
+  assert.equal(shadowLayered.defaults.maxModelTurnsPerRun, 8, "unmentioned defaults stay at package values");
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: { enabled: true },
+  }));
+  const shadowProjectSwitch = loadConfig(projectDir);
+  assert.equal(
+    shadowProjectSwitch.config.shadowMinds.enabled, true,
+    "a project cannot set the agent-only master switch — the whole project layer is rejected and the agent value survives",
+  );
+  assert.ok(
+    shadowProjectSwitch.diagnostics.some((d) => /config ignored/.test(d.message)),
+    "a project layer containing shadowMinds.enabled must be rejected atomically with a diagnostic",
+  );
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: { defaults: { runTimeoutSeconds: 601 } },
+  }));
+  const shadowOverCap = loadConfig(projectDir);
+  assert.equal(shadowOverCap.config.shadowMinds.defaults.runTimeoutSeconds, 90, "a value above the package hard cap rejects the layer and keeps the agent value");
+  assert.ok(shadowOverCap.diagnostics.some((d) => /config ignored/.test(d.message)));
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: { defaults: { maxConcurrentRuns: 0 } },
+  }));
+  assert.ok(loadConfig(projectDir).diagnostics.some((d) => /config ignored/.test(d.message)), "values below the minimum reject the layer");
+
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: { defaults: { unknown: true } },
+  }));
+  assert.ok(loadConfig(projectDir).diagnostics.some((d) => /config ignored/.test(d.message)), "unknown shadowMinds.defaults fields reject the layer");
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    shadowMinds: { enabled: true, defaults: { completionGateWindowSeconds: 31 } },
+  }));
+  const shadowAgentFailClosed = loadConfig(projectDir);
+  assert.equal(shadowAgentFailClosed.config.shadowMinds.enabled, false, "an invalid agent shadowMinds section fails closed to disabled defaults");
+  assert.equal(shadowAgentFailClosed.config.shadowMinds.defaults.completionGateWindowSeconds, 10);
+  assert.ok(shadowAgentFailClosed.diagnostics.some((d) => /config ignored/.test(d.message)));
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({ version: 2, banner: { enabled: true } }));
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({ version: 2, banner: { enabled: true } }));
+
   console.log("config tests: OK");
 } finally {
   if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
