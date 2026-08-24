@@ -127,16 +127,18 @@ function fakePi() {
   const commands = new Map();
   const renderers = new Map();
   const events = [];
+  const handlers = new Map();
   return {
     commands,
     renderers,
     events,
+    handlers,
     pi: {
       registerCommand(name, definition) { commands.set(name, definition); },
       registerMessageRenderer(name, renderer) { renderers.set(name, renderer); },
       sendMessage(message, options) { events.push(["guide", message, options]); },
       sendUserMessage(message, options) { events.push(["user", message, options]); },
-      on() {},
+      on(event, handler) { handlers.set(event, handler); },
     },
   };
 }
@@ -342,6 +344,155 @@ function fakePi() {
       confirmations.run(undefined, async () => { running.push("b-start"); await new Promise((r) => setTimeout(r, 0)); running.push("b-end"); return true; }),
     ]);
     assert.deepEqual(running, ["a-start", "a-end", "b-start", "b-end"], "confirmations never interleave");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── Manual-run service wiring (#155) ────────────────────────────────
+
+{
+  const { DEFAULT_CONFIG: DEFAULT_CONFIG_TEMPLATE } = await load(join(packageRoot, "src", "core", "config.ts"));
+  const { SHADOW_GOVERNANCE } = await load(join(packageRoot, "src", "shadow-minds", "prompt.ts"));
+  const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
+  const { DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+
+  const dir = mkdtempSync(join(tmpdir(), "shadow-runtime-e2e-"));
+  const project = join(dir, "project");
+  mkdirSync(project, { recursive: true });
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  mkdirSync(join(dir, "agent"), { recursive: true });
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const notifications = [];
+    const branchEntries = [
+      { type: "message", message: { role: "user", content: "Investigate the flaky parser test." } },
+      { type: "message", message: { role: "assistant", content: [{ type: "text", text: "I will inspect the tokenizer." }] } },
+    ];
+    const ctx = {
+      cwd: project,
+      hasUI: true,
+      isProjectTrusted: () => true,
+      model: { provider: "acme", id: "parent-model" },
+      modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 200_000 }) },
+      sessionManager: {
+        getLeafId: () => "leaf-1",
+        getBranch: () => branchEntries,
+      },
+      getSystemPromptOptions: () => ({
+        customPrompt: "Answer concisely.",
+        appendSystemPrompt: "Prefer examples.",
+        contextFiles: [{ path: "/repo/AGENTS.md", content: "Run npm test before claiming done." }],
+      }),
+      ui: {
+        custom: async () => {},
+        confirm: async () => true,
+        notify(message, level) { notifications.push({ message, level }); },
+      },
+    };
+
+    const created = [];
+    const ran = [];
+    const runtimeDeps = {
+      now: () => 1_000,
+        async createSession(input) {
+          created.push(input);
+          return { session: { customTools: input.customTools } };
+        },
+        async runSession(input) {
+          ran.push(input);
+          await input.session.customTools[0].execute(
+            "c1",
+            { payload: JSON.stringify({ decisions: [{ title: "Adopt the bounded parser", rationale: "It fits the contract." }], progress: "Parser trial passed.", open_questions: ["Which cache cohort?"] }) },
+            undefined,
+            undefined,
+            ctx,
+          );
+          return {
+            status: "completed", prompted: true, timedOut: false,
+            finalText: "", model: "acme/parent-model",
+            usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+            streamingCompleted: true, messages: [],
+          };
+        },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_CONFIG_TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      runtimeDeps,
+    );
+    const confirmations = new ConfirmationCoordinator();
+    const services = __testables.makeServices(state, ctx, confirmations);
+
+    // Open the parent session so runtime notifications have a UI context.
+    await harness.handlers.get("session_start")({}, ctx);
+
+    // Freeze the task snapshot from before_agent_start, then drift the live
+    // options: the run must compose from the frozen authority.
+    await harness.handlers.get("before_agent_start")({
+      systemPromptOptions: {
+        customPrompt: "Frozen core policy.",
+        contextFiles: [{ path: "/repo/AGENTS.md", content: "Frozen project rule." }],
+      },
+    }, { cwd: project });
+    ctx.getSystemPromptOptions = () => ({ customPrompt: "Drifted policy." });
+
+    const refused = services.runtime.runManual({ shadowId: "missing-role" });
+    assert.equal(refused.ok, false);
+    assert.ok(refused.message.includes("no longer available"));
+
+    const toolRefused = services.runtime.runManual({ shadowId: "project-grounding" });
+    assert.equal(toolRefused.ok, false, "omitted-tools definitions are outside the #155 manual-trial scope");
+    assert.ok(toolRefused.message.includes("tools: []"));
+
+    const started = services.runtime.runManual({ shadowId: "session-synthesizer", note: "Trial run." });
+    assert.equal(started.ok, true, started.message);
+    assert.ok(notifications.some((entry) => entry.message.includes("started manual run of session-synthesizer")));
+
+    assert.equal(created.length, 1);
+    assert.ok(created[0].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
+    assert.ok(created[0].system.includes("Frozen core policy."), "the frozen parent core is used, not the drifted one");
+    assert.ok(created[0].system.includes("Frozen project rule."), "the frozen project rules are used");
+    assert.ok(!created[0].system.includes("Drifted policy."), "live drift never enters the run");
+    assert.deepEqual(created[0].tools, ["submit_shadow_result"]);
+    assert.equal(created[0].model.provider, "acme");
+    assert.equal(created[0].model.id, "parent-model");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(ran[0].prompt.includes("Investigate the flaky parser test."), "the visible branch becomes the trajectory");
+    assert.ok(ran[0].prompt.includes("I will inspect the tokenizer."), "assistant text is retained");
+    assert.ok(ran[0].prompt.includes("Trial run."), "the manual note is embedded");
+    assert.ok(!ran[0].prompt.includes("Frozen core policy."), "SYSTEM material stays out of the USER prompt");
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const snapshot = state.runtime.snapshot();
+    assert.equal(snapshot.runs[0].phase, "submitted");
+    assert.equal(snapshot.results.length, 1);
+    assert.deepEqual(snapshot.results[0].payload, {
+      decisions: [{ title: "Adopt the bounded parser", rationale: "It fits the contract." }],
+      progress: "Parser trial passed.",
+      open_questions: ["Which cache cohort?"],
+    });
+    assert.ok(
+      snapshot.results[0].summary.startsWith('{"decisions":'),
+      "a payload without summary/title/message falls back to the bounded canonical JSON prefix",
+    );
+    assert.ok(snapshot.results[0].summary.length <= 300);
+
+    // Terminal notification for the UI session.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(
+      notifications.some((entry) => entry.message.includes("result in the /shadow inbox")),
+      "a submitted run announces its inbox result",
+    );
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
