@@ -16,6 +16,7 @@ import registerNotifications from "./notifications";
 import registerPdfSearch from "./pdf-search";
 import registerPromptManager from "./prompt-manager";
 import registerShellTools from "./shell";
+import registerShadowMinds from "./shadow-minds";
 import registerSshTool from "./ssh";
 import registerSubagents from "./subagents";
 import registerTodo from "./todo";
@@ -66,6 +67,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerWebTools(pi, confirmations, () => display.runtime);
   registerGitHub(pi, () => display.runtime);
   const subagents = registerSubagents(pi, () => display.runtime, () => display.config);
+  registerShadowMinds(pi);
   registerFooter(pi);
   registerShellTools(pi, {}, () => display.runtime);
   registerSshTool(pi, () => display.config, confirmations, () => display.runtime);
