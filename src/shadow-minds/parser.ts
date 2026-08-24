@@ -57,10 +57,13 @@ export const SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX = 32;
 export const SHADOW_TRIGGERS = ["tool_turn", "failure", "mutation", "completion"] as const;
 export type ShadowTrigger = (typeof SHADOW_TRIGGERS)[number];
 
-export type ShadowDelivery = "steer" | "wake" | "notify";
-export type ShadowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export const SHADOW_DELIVERIES = ["steer", "wake", "notify"] as const;
+export type ShadowDelivery = (typeof SHADOW_DELIVERIES)[number];
+export const SHADOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ShadowThinkingLevel = (typeof SHADOW_THINKING_LEVELS)[number];
 
-const SHADOW_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
+/** The single shared ID pattern; writers and the manager reuse it. */
+export const SHADOW_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
 const SHADOW_TOOL_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const SHADOW_MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 // ── Output schema subset ─────────────────────────────────────────────
@@ -184,6 +187,10 @@ function validateSchemaNode(value: unknown, path: string, depth: number, errors:
         }
         context.properties += keys.length;
         for (const key of keys) {
+          if (!KEY_PATTERN.test(key) || key === "__proto__" || key === "prototype" || key === "constructor") {
+            errors.push(`${path || "root"}: property name '${key}' is outside the supported YAML-safe schema key subset`);
+            continue;
+          }
           validateSchemaNode(properties[key], path ? `${path}/${key}` : key, depth + 1, errors, context);
         }
       }
@@ -441,7 +448,11 @@ export function parseShadowDefinitionFile(
   }
   const parsed = parseYamlSubset(source, lines.slice(1, closing));
   if (parsed.errors.length > 0) return { errors: parsed.errors };
-  const normalized = normalizeDefinitionFields(source, parsed.value, lines.slice(closing + 1).join("\n"));
+  // The body is canonicalized to its edge-trimmed Markdown form: leading and
+  // trailing blank lines are insignificant in a responsibility prompt, and one
+  // canonical shape keeps serializer round-trips exact.
+  const rawBody = lines.slice(closing + 1).join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+  const normalized = normalizeDefinitionFields(source, parsed.value, rawBody);
   if (normalized.errors.length > 0) return { errors: normalized.errors };
   return {
     definition: {
@@ -756,6 +767,18 @@ const KNOWN_FIELDS = new Set([
   "outputSchema",
 ]);
 
+function plainSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => plainSchema(entry));
+  if (value !== null && typeof value === "object") {
+    const copy: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      copy[key] = plainSchema(entry);
+    }
+    return copy;
+  }
+  return value;
+}
+
 function normalizeDefinitionFields(
   source: string,
   frontmatter: { [key: string]: YamlValue } | undefined,
@@ -846,10 +869,10 @@ function normalizeDefinitionFields(
 
   const delivery = frontmatter.delivery;
   if (delivery !== undefined) {
-    if (delivery !== "steer" && delivery !== "wake" && delivery !== "notify") {
+    if (typeof delivery !== "string" || !SHADOW_DELIVERIES.includes(delivery as ShadowDelivery)) {
       errors.push(`${source}: delivery must be steer, wake, or notify`);
     } else {
-      fields.delivery = delivery;
+      fields.delivery = delivery as ShadowDelivery;
     }
   }
 
@@ -878,7 +901,7 @@ function normalizeDefinitionFields(
 
   const thinking = frontmatter.thinking;
   if (thinking !== undefined) {
-    const levels: ShadowThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+    const levels = SHADOW_THINKING_LEVELS;
     if (typeof thinking !== "string" || !levels.includes(thinking as ShadowThinkingLevel)) {
       errors.push(`${source}: thinking must be one of ${levels.join(", ")}`);
     } else {
@@ -943,7 +966,10 @@ function normalizeDefinitionFields(
       if (schemaErrors.length > 0) {
         errors.push(...schemaErrors.map((entry) => `${source}: ${entry}`));
       } else {
-        fields.outputSchema = outputSchema as ShadowOutputSchema;
+        // Deep-copy the validated schema into plain-prototype objects so a
+        // parsed schema is an ordinary value: deep-equality against authored
+        // schemas works and null-prototype maps never escape the parser.
+        fields.outputSchema = plainSchema(outputSchema) as ShadowOutputSchema;
       }
     }
   }

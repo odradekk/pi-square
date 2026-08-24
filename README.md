@@ -179,8 +179,20 @@ What works today:
   `.pi/shadow-minds` merge by stable ID, with per-field provenance,
   trigger-instruction key merge, atomic output-schema replacement, and Markdown
   body replacement versus inheritance.
-- A read-only `/shadow` manager that inspects effective fields, layer sources,
-  hidden and invalid state, and diagnostics. It creates no model calls.
+- A `/shadow` manager that inspects effective fields, layer sources, hidden
+  and invalid state, and diagnostics, and safely edits agent and
+  trusted-project overlays: create, edit single fields, enable, disable,
+  hide, and delete, each with a full candidate review — the layer Markdown
+  plus the effective behavior change — confirmed through the session
+  confirmation coordinator. Writes enforce canonical scope, project trust,
+  symlink and file identity, locking, review fingerprint CAS, complete
+  effective-candidate validation, permission preservation, and atomic rename;
+  a stale or concurrent change refuses the write without losing either
+  version. Package templates stay read-only. The manager itself creates no
+  model calls.
+- `/shadow <request>` asks the parent agent for configuration help: a bounded
+  Shadow Config Guide is delivered before the unchanged request, and only the
+  user request triggers a turn. No definition is written automatically.
 - A strict `shadowMinds` section in agent and project pi-square configuration:
   the agent-level `enabled` master switch (a project can never re-enable it)
   and runtime `defaults` that always stay below package hard caps. An invalid

@@ -150,7 +150,7 @@ await withRoot(async (dir, project) => {
   assert.equal(grounding.fieldSources.name.scope, "project");
   assert.equal(grounding.fieldSources.enabled.scope, "agent");
   assert.equal(grounding.fieldSources["triggerInstructions.completion"].scope, "project");
-  assert.equal(grounding.body, "Agent-local body for grounding.\n", "the highest provided body replaces the package body");
+  assert.equal(grounding.body, "Agent-local body for grounding.", "the highest provided body replaces the package body (edge-trimmed)");
   assert.equal(grounding.fieldSources.body.scope, "agent");
   assert.equal(grounding.layers.length, 3, "package + agent + project layers all contribute");
   assert.equal(grounding.layers[0].scope, "package");

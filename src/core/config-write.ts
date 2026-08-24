@@ -1,14 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
-import { constants as fsConstants, lstatSync, realpathSync, type Stats } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  unlink,
-} from "node:fs/promises";
+import { lstatSync, realpathSync } from "node:fs";
+import { mkdir, readFile, rename } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+  acquireFileLock,
+  createAtomicTempFile,
+  regularFileIdentity,
+  releaseFileLock,
+  sameFileIdentity,
+  unlinkIfSameNode,
+  type FileIdentity,
+} from "./safe-write";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
   DisplayMigrationError,
@@ -19,10 +21,6 @@ import {
 import type { DisplayLayerConfig } from "../display/types";
 import { validateConfigLayer } from "./config";
 
-const LOCK_RETRY_COUNT = 10;
-const LOCK_RETRY_DELAY_MS = 20;
-const LOCK_STALE_MS = 30_000;
-const LOCK_MAX_BYTES = 1_024;
 const CONFIG_FILENAME = "pi-square.json";
 const LOCK_SUFFIX = ".lock";
 const DEFAULT_FILE_MODE = 0o600;
@@ -73,30 +71,25 @@ export class DisplayConfigWriteError extends Error {
   }
 }
 
+const failDisplay = (code: string, message: string): DisplayConfigWriteError =>
+  new DisplayConfigWriteError(message, code);
+
+const DISPLAY_IDENTITY_CODES = {
+  escaped: "DISPLAY_SCOPE_ESCAPED",
+  invalid: "DISPLAY_SCOPE_INVALID",
+} as const;
+
+const DISPLAY_LOCK_CODES = {
+  ...DISPLAY_IDENTITY_CODES,
+  timeout: "DISPLAY_LOCK_TIMEOUT",
+} as const;
+
 interface ScopePaths {
   readonly base: string;
   readonly segments: readonly string[];
   readonly root: string;
   readonly configPath: string;
   readonly lockPath: string;
-}
-
-interface FileIdentity {
-  readonly dev: bigint | number;
-  readonly ino: bigint | number;
-  readonly birthtimeMs: number;
-  readonly mtimeMs: number;
-  readonly size: number;
-}
-
-interface LockPayload {
-  readonly token: string;
-  readonly created: number;
-}
-
-interface LockHandle {
-  readonly token: string;
-  readonly identity: FileIdentity;
 }
 
 function canonicalExistingDirectory(path: string, label: string): string {
@@ -282,158 +275,6 @@ export async function readConfigFingerprint(configPath: string): Promise<string>
   }
 }
 
-function identityOf(stats: Stats): FileIdentity {
-  return {
-    dev: stats.dev,
-    ino: stats.ino,
-    birthtimeMs: stats.birthtimeMs,
-    mtimeMs: stats.mtimeMs,
-    size: stats.size,
-  };
-}
-
-function sameNode(left: FileIdentity, right: FileIdentity): boolean {
-  return left.dev === right.dev
-    && left.ino === right.ino
-    && left.birthtimeMs === right.birthtimeMs;
-}
-
-function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
-  return sameNode(left, right) && left.mtimeMs === right.mtimeMs && left.size === right.size;
-}
-
-async function pathIdentity(path: string): Promise<FileIdentity | undefined> {
-  try {
-    const stats = await lstat(path, { bigint: false });
-    if (stats.isSymbolicLink()) {
-      throw new DisplayConfigWriteError(`lock path '${path}' is a symlink`, "DISPLAY_SCOPE_ESCAPED");
-    }
-    if (!stats.isFile()) {
-      throw new DisplayConfigWriteError(`lock path '${path}' is not a regular file`, "DISPLAY_SCOPE_INVALID");
-    }
-    return identityOf(stats);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-async function unlinkSameNode(path: string, expected: FileIdentity): Promise<boolean> {
-  const current = await pathIdentity(path);
-  if (!current || !sameNode(current, expected)) return false;
-  try {
-    await unlink(path);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-async function tryCreateLock(lockPath: string, token: string, now: number): Promise<LockHandle | undefined> {
-  let file: Awaited<ReturnType<typeof open>> | undefined;
-  let createdIdentity: FileIdentity | undefined;
-  try {
-    file = await open(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
-    createdIdentity = identityOf(await file.stat());
-    await file.writeFile(JSON.stringify({ token, created: now } satisfies LockPayload), "utf8");
-    await file.sync();
-    const identity = identityOf(await file.stat());
-    await file.close();
-    file = undefined;
-    return { token, identity };
-  } catch (error) {
-    try {
-      await file?.close();
-    } catch {
-      // Preserve the primary error; identity-based cleanup below handles the path.
-    }
-    if (createdIdentity) await unlinkSameNode(lockPath, createdIdentity);
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
-    throw error;
-  }
-}
-
-function parseLockPayload(content: string): LockPayload | undefined {
-  try {
-    const value = JSON.parse(content) as Partial<LockPayload>;
-    if (
-      typeof value.token !== "string"
-      || value.token.length === 0
-      || value.token.length > 128
-      || typeof value.created !== "number"
-      || !Number.isFinite(value.created)
-      || value.created < 0
-    ) return undefined;
-    return { token: value.token, created: value.created };
-  } catch {
-    return undefined;
-  }
-}
-
-async function readBoundedLock(lockPath: string, identity: FileIdentity): Promise<string | undefined> {
-  if (identity.size > LOCK_MAX_BYTES) return undefined;
-  try {
-    return await readFile(lockPath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-async function tryReclaimStaleLock(lockPath: string, token: string, now: number): Promise<LockHandle | undefined> {
-  const firstIdentity = await pathIdentity(lockPath);
-  if (!firstIdentity) return undefined;
-
-  const firstContent = await readBoundedLock(lockPath, firstIdentity);
-  if (firstContent === undefined) return undefined;
-  const payload = parseLockPayload(firstContent);
-  const claimedCreated = payload?.created ?? firstIdentity.mtimeMs;
-  if (now - Math.max(claimedCreated, firstIdentity.mtimeMs) < LOCK_STALE_MS) return undefined;
-
-  const secondIdentity = await pathIdentity(lockPath);
-  if (!secondIdentity || !sameIdentity(firstIdentity, secondIdentity)) return undefined;
-  const secondContent = await readBoundedLock(lockPath, secondIdentity);
-  if (secondContent === undefined || secondContent !== firstContent) return undefined;
-  const finalIdentity = await pathIdentity(lockPath);
-  if (!finalIdentity || !sameIdentity(secondIdentity, finalIdentity)) return undefined;
-
-  if (!await unlinkSameNode(lockPath, finalIdentity)) return undefined;
-  return tryCreateLock(lockPath, token, now);
-}
-
-async function acquireLock(
-  lockPath: string,
-  token: string,
-  hooks: DisplayConfigWriterTestHooks,
-): Promise<LockHandle | undefined> {
-  const now = hooks.now ?? Date.now;
-  const wait = hooks.sleep ?? ((milliseconds: number) => new Promise<void>((resolveSleep) => {
-    setTimeout(resolveSleep, milliseconds);
-  }));
-
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
-    const timestamp = now();
-    const created = await tryCreateLock(lockPath, token, timestamp);
-    if (created) return created;
-    const reclaimed = await tryReclaimStaleLock(lockPath, token, timestamp);
-    if (reclaimed) return reclaimed;
-    if (attempt < LOCK_RETRY_COUNT - 1) await wait(LOCK_RETRY_DELAY_MS);
-  }
-  return undefined;
-}
-
-async function releaseLock(lockPath: string, handle: LockHandle): Promise<void> {
-  const current = await pathIdentity(lockPath);
-  if (!current || !sameIdentity(current, handle.identity)) return;
-  const content = await readBoundedLock(lockPath, current);
-  if (content === undefined) return;
-  const payload = parseLockPayload(content);
-  const finalIdentity = await pathIdentity(lockPath);
-  if (!payload || payload.token !== handle.token || !finalIdentity || !sameIdentity(current, finalIdentity)) return;
-  await unlinkSameNode(lockPath, finalIdentity);
-}
-
 function applyDisplayReview(
   current: Record<string, unknown>,
   review: DisplayConfigReview,
@@ -448,39 +289,6 @@ function applyDisplayReview(
   if (Object.keys(nextFooter).length === 0) delete candidate.footer;
   else candidate.footer = nextFooter;
   return candidate;
-}
-
-async function createTempFile(
-  tempPath: string,
-  content: string,
-  mode: number,
-): Promise<FileIdentity> {
-  const file = await open(tempPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, mode);
-  let initialIdentity: FileIdentity | undefined;
-  let closed = false;
-  try {
-    initialIdentity = identityOf(await file.stat());
-    await file.writeFile(content, "utf8");
-    await file.sync();
-    await file.chmod(mode);
-    const identity = identityOf(await file.stat());
-    await file.close();
-    closed = true;
-    return identity;
-  } catch (error) {
-    if (!closed) {
-      try {
-        await file.close();
-      } catch {
-        // Preserve the write error; cleanup still checks the created file identity.
-      }
-      closed = true;
-    }
-    if (initialIdentity) await unlinkSameNode(tempPath, initialIdentity);
-    throw error;
-  } finally {
-    if (!closed) await file.close();
-  }
 }
 
 export async function writeDisplayConfig(
@@ -502,7 +310,13 @@ export async function writeDisplayConfig(
   assertScopePathSafe(paths);
 
   const token = randomBytes(16).toString("hex");
-  const lock = await acquireLock(paths.lockPath, token, testHooks);
+  const lock = await acquireFileLock({
+    lockPath: paths.lockPath,
+    token,
+    fail: failDisplay,
+    codes: DISPLAY_LOCK_CODES,
+    timing: testHooks,
+  });
   if (!lock) {
     throw new DisplayConfigWriteError(
       `could not acquire display config lock '${paths.lockPath}' after retries`,
@@ -563,7 +377,7 @@ export async function writeDisplayConfig(
     }
 
     tempPath = join(paths.root, `${CONFIG_FILENAME}.${token}.tmp`);
-    tempIdentity = await createTempFile(tempPath, `${JSON.stringify(candidate, null, 2)}\n`, mode);
+    tempIdentity = await createAtomicTempFile(failDisplay, DISPLAY_IDENTITY_CODES, tempPath, `${JSON.stringify(candidate, null, 2)}\n`, mode);
     await testHooks.beforeRename?.();
     assertScopePathSafe(paths);
 
@@ -580,8 +394,8 @@ export async function writeDisplayConfig(
       );
     }
 
-    const currentTempIdentity = await pathIdentity(tempPath);
-    if (!currentTempIdentity || !sameIdentity(tempIdentity, currentTempIdentity)) {
+    const currentTempIdentity = await regularFileIdentity(failDisplay, tempPath, "temporary config", DISPLAY_IDENTITY_CODES);
+    if (!currentTempIdentity || !sameFileIdentity(tempIdentity, currentTempIdentity)) {
       throw new DisplayConfigWriteError("temporary config identity changed before rename", "DISPLAY_TEMP_CHANGED");
     }
 
@@ -599,9 +413,11 @@ export async function writeDisplayConfig(
     return { path: paths.configPath };
   } finally {
     try {
-      if (tempPath && tempIdentity) await unlinkSameNode(tempPath, tempIdentity);
+      if (tempPath && tempIdentity) {
+        await unlinkIfSameNode(failDisplay, tempPath, tempIdentity, DISPLAY_IDENTITY_CODES);
+      }
     } finally {
-      await releaseLock(paths.lockPath, lock);
+      await releaseFileLock(failDisplay, paths.lockPath, lock, DISPLAY_IDENTITY_CODES);
     }
   }
 }

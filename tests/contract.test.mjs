@@ -159,6 +159,7 @@ try {
   assert.deepEqual([...renderers.keys()], [
     "pi-square.subagent-notification",
     "pi-square.subagent-config-guide",
+    "pi-square.shadow-config-guide",
   ]);
   assert.equal(events.get("before_agent_start")?.length, 1, "prompt composition must use one handler");
   assert.deepEqual(

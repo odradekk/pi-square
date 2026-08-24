@@ -12,7 +12,8 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
-const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { serializeShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "serialize.ts"));
 const { DEFAULT_CONFIG } = await load(join(packageRoot, "src", "core", "config.ts"));
 
 const PLAIN = /\x1b\[[0-9;]*m/g;
@@ -25,7 +26,7 @@ function makeTheme() {
 }
 
 function makeTui() {
-  return { requestRenderCount: 0, requestRender() { this.requestRenderCount += 1; } };
+  return { requestRenderCount: 0, requestRender() { this.requestRenderCount += 1; }, terminal: { rows: 24, columns: 100 } };
 }
 
 function makeKeybindings() {
@@ -33,6 +34,7 @@ function makeKeybindings() {
     ["tui.select.down", "down"],
     ["tui.select.up", "up"],
     ["tui.select.cancel", "escape"],
+    ["tui.select.confirm", "\r"],
   ]);
   return { matches: (data, action) => map.get(action) === data };
 }
@@ -176,7 +178,7 @@ function render(manager, width = 100) {
   manager.handleInput("escape");
   assert.equal(closed, 1, "cancel closes the view exactly once");
   manager.handleInput("q");
-  assert.equal(closed, 2, "q closes the view too");
+  assert.equal(closed, 1, "closing is idempotent — later inputs cannot double-close");
 }
 
 // ── Registration performs no model calls in any branch ───────────────
@@ -191,8 +193,10 @@ function render(manager, width = 100) {
     const sent = [];
     const registered = new Map();
     const handlers = new Map();
+    const renderers = new Map();
     const pi = {
       registerCommand: (name, definition) => registered.set(name, definition),
+      registerMessageRenderer: (name, renderer) => renderers.set(name, renderer),
       on: (event, handler) => handlers.set(event, handler),
       sendMessage: (message) => sent.push(message),
       sendUserMessage: (message) => sent.push(message),
@@ -203,6 +207,7 @@ function render(manager, width = 100) {
 
     assert.deepEqual([...registered.keys()], ["shadow"]);
     assert.equal(registered.get("shadow").description.length > 0, true);
+    assert.ok(renderers.has("pi-square.shadow-config-guide"), "the config guide renderer is registered");
 
     // No UI: the handler must not open anything nor send anything.
     let opened = 0;
@@ -210,6 +215,7 @@ function render(manager, width = 100) {
       hasUI: false,
       ui: { custom: async () => { opened += 1; } },
       cwd: tmp,
+      isProjectTrusted: () => false,
     });
     assert.equal(opened, 0, "a headless session opens no view");
     assert.deepEqual(sent, [], "the command never sends messages");
@@ -219,6 +225,7 @@ function render(manager, width = 100) {
       hasUI: true,
       ui: { custom: async () => { opened += 1; } },
       cwd: tmp,
+      isProjectTrusted: () => false,
     });
     assert.equal(opened, 1, "a TUI session opens the read-only view");
     assert.deepEqual(sent, [], "the read-only view creates no model calls");
@@ -248,6 +255,345 @@ function render(manager, width = 100) {
     else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+
+// ── Write flows with mock services ───────────────────────────────────
+
+{
+  const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
+    join(packageRoot, "src", "shadow-minds", "serialize.ts"),
+  );
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const definitions = registry.definitions;
+  const grounding = definitions.find((definition) => definition.id === "project-grounding");
+
+  const calls = { approve: [], save: [], deleteOverlay: [] };
+  let approveResult = true;
+  let previewErrors = [];
+  const services = {
+    refresh: () => ({ definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+    scopeOf: (filePath) => (filePath.includes("agent") ? "agent" : "project"),
+    overlaySnapshot: async (scope, id) => ({
+      filePath: `/scope/${scope}/${id}.md`,
+      fingerprint: `fp-${scope}-${id}`,
+      contextFingerprint: shadowDefinitionContextFingerprint(definitions.find((definition) => definition.id === id)?.layers ?? []),
+      content: serializeShadowDefinition({ id, enabled: false }),
+    }),
+    preview: (scope, fields, contextFingerprint) => {
+      const content = serializeShadowDefinition(fields);
+      if (previewErrors.length > 0) return { content, filePath: `/scope/${scope}/${fields.id}.md`, errors: previewErrors };
+      return {
+        content,
+        filePath: `/scope/${scope}/${fields.id}.md`,
+        definition: {
+          ...grounding,
+          id: fields.id,
+          enabled: fields.enabled ?? grounding.enabled,
+          name: fields.name ?? grounding.name,
+          body: fields.body ?? grounding.body,
+          layers: [],
+        },
+        errors: [],
+        contextFingerprint,
+      };
+    },
+    previewDelete: (_scope, _id, _filePath, contextFingerprint) => ({ definition: grounding, errors: [], contextFingerprint }),
+    approve: async (request) => {
+      calls.approve.push(request);
+      return approveResult;
+    },
+    save: async (scope, fields, filePath, fingerprint, contextFingerprint) => {
+      calls.save.push({ scope, fields, filePath, fingerprint, contextFingerprint });
+      return { ok: true, message: "saved" };
+    },
+    deleteOverlay: async (scope, id, fingerprint) => {
+      calls.deleteOverlay.push({ scope, id, fingerprint });
+      return { ok: true, message: "deleted" };
+    },
+  };
+
+  const done = [];
+  const manager = new ShadowManager(
+    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => done.push(1),
+    services,
+  );
+
+  // Enable flow: actions → Enable → project scope → review → confirm.
+  manager.handleInput("\r");
+  let lines = render(manager);
+  assert.ok(lines.some((line) => line.includes("Enable")), "the actions menu offers enable for a disabled definition");
+  manager.handleInput("\r");
+  lines = render(manager);
+  assert.ok(lines.join("\n").includes("OVERLAYS / SCOPE"), "scope selection follows");
+  manager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  lines = render(manager);
+  assert.ok(lines.join("\n").includes("LAYER MARKDOWN"), "the review shows the candidate layer");
+  assert.ok(lines.join("\n").includes("EFFECTIVE CHANGE"), "the review shows the effective change");
+  assert.ok(lines.join("\n").includes("enabled: false → true"), "the enabled flip renders as an effective change");
+  assert.ok(lines.join("\n").includes("save overlay"), "the confirm label renders");
+  assert.equal(calls.approve.length, 0, "no approval before the confirm key");
+  manager.handleInput("\r");
+  assert.equal(done.length, 1, "confirming closes the manager first");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.approve.length, 1, "the approval runs through the coordinator service");
+  assert.equal(calls.approve[0].title.includes("project"), true, "the approval names the scope");
+  assert.equal(calls.save.length, 1, "an approved review saves exactly once");
+  assert.equal(calls.save[0].scope, "project");
+  assert.equal(calls.save[0].fields.enabled, true);
+  assert.equal(calls.save[0].filePath, "/scope/project/alternative-explorer.md");
+  assert.equal(calls.save[0].fingerprint, "fp-project-alternative-explorer");
+  assert.equal(calls.save[0].contextFingerprint, shadowDefinitionContextFingerprint(definitions[0].layers));
+  assert.equal(calls.deleteOverlay.length, 0);
+
+  // Declined approval writes nothing.
+  const declined = new ShadowManager(
+    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    services,
+  );
+  approveResult = false;
+  declined.handleInput("\r");
+  declined.handleInput("\r");
+  declined.handleInput("\r");
+  declined.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.save.length, 1, "a declined approval saves nothing");
+
+  // An invalid candidate flashes instead of opening a review.
+  const invalidCandidate = new ShadowManager(
+    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    services,
+  );
+  previewErrors = ["project-grounding: required tool 'shell' is outside the final tool set"];
+  invalidCandidate.handleInput("\r");
+  invalidCandidate.handleInput("\r");
+  invalidCandidate.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  lines = render(invalidCandidate);
+  assert.ok(lines.join("\n").includes("outside the final tool set"), "preview errors surface in the flash row");
+  assert.ok(!lines.join("\n").includes("LAYER MARKDOWN"), "no review opens for an invalid candidate");
+  previewErrors = [];
+
+  // Without services, writes are unavailable.
+  const readonlyManager = new ShadowManager(
+    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+  );
+  readonlyManager.handleInput("n");
+  lines = render(readonlyManager);
+  assert.ok(lines.join("\n").includes("unavailable"), "create without services flashes unavailability");
+
+  // Untrusted projects only offer the agent scope.
+  const untrusted = new ShadowManager(
+    { definitions, invalid: [], diagnostics: [], projectTrusted: false },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    services,
+  );
+  untrusted.handleInput("\r");
+  untrusted.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  lines = render(untrusted);
+  assert.ok(!lines.join("\n").includes("Project"), "the project scope is hidden when untrusted");
+  assert.ok(lines.join("\n").includes("Agent"), "the agent scope remains");
+}
+
+// ── Create flow walks id → name → body and reviews the draft ─────────
+
+{
+  const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
+    join(packageRoot, "src", "shadow-minds", "serialize.ts"),
+  );
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const calls = { approve: [], save: [] };
+  const { MISSING_OVERLAY_FINGERPRINT: missing } = await load(
+    join(packageRoot, "src", "shadow-minds", "overlays.ts"),
+  );
+  const services = {
+    refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+    scopeOf: () => "project",
+    overlaySnapshot: async () => ({ filePath: "/scope/project/new-role.md", fingerprint: missing }),
+    preview: (scope, fields) => ({
+      content: serializeShadowDefinition(fields),
+      filePath: `/scope/${scope}/${fields.id}.md`,
+      definition: { ...registry.definitions[0], id: fields.id, name: fields.name, body: fields.body, layers: [] },
+      errors: [],
+    }),
+    approve: async (request) => {
+      calls.approve.push(request);
+      return true;
+    },
+    save: async (scope, fields) => {
+      calls.save.push({ scope, fields });
+      return { ok: true, message: "saved" };
+    },
+    deleteOverlay: async () => ({ ok: true, message: "deleted" }),
+  };
+  const manager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    services,
+  );
+  manager.handleInput("n");
+  let lines = render(manager);
+  assert.ok(lines.join("\n").includes("SCOPE"), "create starts at the scope choice");
+  manager.handleInput("\r");
+  lines = render(manager);
+  assert.ok(lines.some((line) => line.includes("Definition id")), "the id editor opens");
+  for (const character of "my 7 role") manager.handleInput(character);
+  manager.handleInput("\r");
+  lines = render(manager);
+  assert.ok(lines.join("\n").includes("must match"), "an invalid id is refused");
+  manager.handleInput("escape");
+  manager.handleInput("\r");
+  for (const character of "my-role") manager.handleInput(character);
+  manager.handleInput("\r");
+  lines = render(manager);
+  assert.ok(lines.some((line) => line.includes("name")), "the name editor follows");
+  for (const character of "My role") manager.handleInput(character);
+  manager.handleInput("\r");
+  lines = render(manager);
+  assert.ok(lines.some((line) => line.includes("responsibility body")), "the body editor follows");
+  for (const character of "Own this responsibility.") manager.handleInput(character);
+  manager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  lines = render(manager);
+  assert.ok(lines.join("\n").includes("LAYER MARKDOWN"), "the draft reaches the review");
+  manager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.save.length, 1, "the draft saves after approval");
+  const saved = calls.save[0].fields;
+  assert.equal(saved.id, "my-role");
+  assert.equal(saved.name, "My role");
+  assert.equal(saved.enabled, false, "new definitions default to disabled");
+  assert.deepEqual(saved.triggers, []);
+  assert.equal(saved.delivery, "steer");
+  assert.equal(saved.debug, false);
+  assert.equal(saved.outputSchema, undefined, "the default summary schema stays inherited");
+}
+
+
+// ── Reviews expose complete content, delete fallback, and schema editing ─
+
+{
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
+  const contextFingerprint = shadowDefinitionContextFingerprint(grounding.layers);
+  const longBody = `${"x".repeat(5000)}TAIL-SENTINEL`;
+  let saves = 0;
+  const longServices = {
+    refresh: () => ({ definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true }),
+    scopeOf: () => "project",
+    overlaySnapshot: async (_scope, id) => ({
+      filePath: `/scope/project/${id}.md`,
+      fingerprint: "fp",
+      contextFingerprint,
+      content: serializeShadowDefinition({ id, enabled: false }),
+    }),
+    preview: (_scope, fields, expected) => ({
+      content: serializeShadowDefinition(fields),
+      filePath: `/scope/project/${fields.id}.md`,
+      definition: { ...grounding, body: fields.body ?? grounding.body },
+      errors: [],
+      contextFingerprint: expected,
+    }),
+    previewDelete: (_scope, _id, _path, expected) => ({ definition: grounding, errors: [], contextFingerprint: expected }),
+    approve: async () => { throw new Error("session changed"); },
+    save: async () => { saves += 1; return { ok: true, message: "saved" }; },
+    deleteOverlay: async () => ({ ok: true, message: "deleted" }),
+  };
+  const manager = new ShadowManager(
+    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    { requestRender() {}, terminal: { rows: 20, columns: 80 } },
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+    longServices,
+  );
+  await manager.reviewSave(grounding, "project", { id: grounding.id, body: longBody });
+  assert.equal(manager.view.kind, "review");
+  assert.ok(manager.view.lines.join("\n").includes("TAIL-SENTINEL"), "the complete candidate is retained in review state");
+  for (let index = 0; index < 100; index += 1) manager.handleInput("down");
+  assert.ok(render(manager, 80).join("\n").includes("TAIL-SENTINEL"), "the wrapped review can scroll to a long line's tail");
+  manager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(saves, 0, "an aborted or failed confirmation performs no write");
+
+  // The outputSchema field offers a custom bounded JSON editor.
+  const schemaManager = new ShadowManager(
+    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {}, longServices,
+  );
+  schemaManager.handleInput("\r"); // actions
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("\r"); // edit
+  schemaManager.handleInput("\r"); // project
+  for (let index = 0; index < 18; index += 1) schemaManager.handleInput("down");
+  schemaManager.handleInput("\r"); // outputSchema field
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("\r"); // set
+  assert.ok(render(schemaManager).join("\n").includes("Set custom schema"));
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("down");
+  schemaManager.handleInput("\r");
+  assert.ok(render(schemaManager).join("\n").includes("outputSchema JSON"), "custom schema editing is reachable");
+
+  // Delete review includes the exact layer Markdown and effective fallback.
+  const projectLayer = {
+    scope: "project",
+    filePath: "/scope/project/project-grounding.md",
+    contentHash: "a".repeat(64),
+    fields: { id: grounding.id, enabled: true },
+  };
+  const layered = { ...grounding, enabled: true, layers: [...grounding.layers, projectLayer] };
+  const layeredContext = shadowDefinitionContextFingerprint(layered.layers);
+  const deleteServices = {
+    ...longServices,
+    scopeOf: () => "project",
+    overlaySnapshot: async () => ({
+      filePath: projectLayer.filePath,
+      fingerprint: "delete-fp",
+      contextFingerprint: layeredContext,
+      content: serializeShadowDefinition(projectLayer.fields),
+    }),
+    previewDelete: (_scope, _id, _path, expected) => ({ definition: grounding, errors: [], contextFingerprint: expected }),
+  };
+  const deleteManager = new ShadowManager(
+    { definitions: [layered], invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {}, deleteServices,
+  );
+  deleteManager.handleInput("\r");
+  deleteManager.handleInput("down");
+  deleteManager.handleInput("down");
+  deleteManager.handleInput("down");
+  deleteManager.handleInput("\r");
+  deleteManager.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const deletionReview = deleteManager.view.lines.join("\n");
+  assert.match(deletionReview, /LAYER MARKDOWN[\s\S]*enabled: true/);
+  assert.match(deletionReview, /EFFECTIVE CHANGE[\s\S]*enabled: true → false/);
 }
 
 console.log("shadow-minds manager tests: OK");
