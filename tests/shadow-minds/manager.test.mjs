@@ -119,8 +119,10 @@ function render(manager, width = 100) {
   );
   const lines = render(manager);
   assert.ok((lines[0] ?? "").includes("enabled"), "the master-switch state is visible");
-  assert.ok(lines.some((line) => line.includes("CONFIG: concurrency 2")), "effective defaults render");
-  assert.ok(lines.some((line) => line.includes("gate window 10s")), "the gate window default renders");
+  assert.ok(lines.some((line) => line.includes("CONFIG: runs 2")), "effective defaults render");
+  const configLine = lines.find((line) => line.includes("CONFIG:"));
+  assert.ok(configLine?.includes("gate 10s"), "the gate default renders");
+  assert.ok(configLine?.includes("queue 32"), "the queued-ID default renders");
   assert.ok(/package: [^\n]*\([0-9a-f]{8}\)/.test(lines.join("\n")), "layer sources show a content-hash prefix");
 }
 

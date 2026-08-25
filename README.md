@@ -284,8 +284,8 @@ What works today:
   `completion` fires at agent end. Dispatch arbitrates deterministically by
   task generation, trigger priority (completion, failure, mutation, tool
   turn), Shadow priority, then ID, under the configured concurrency,
-  per-task automatic-start, and queued-ID bounds — clipped IDs and budget
-  drops are recorded and visible. A new task can preempt the oldest
+  per-task automatic-start, and queued-ID bounds — clipped IDs, budget
+  drops, and interruption notes are visible in the `/shadow` runs list. A new task can preempt the oldest
   previous-task automatic run (a distinct `superseded` outcome) but never a
   manual run; a manual start may in turn supersede an automatic run for a
   busy slot. Old-task undelivered results are forced to `notify` delivery, a
@@ -293,7 +293,8 @@ What works today:
   and session pause (from the `/shadow` runs list) cancels automatic runs,
   blocks new automatic work, permits manual trials, and never replays paused
   events on resume. A bounded conditional footer status shows running,
-  queued, unread, and paused counts. Automatic runs share the manual guards
+  queued, and unread counts plus a paused marker (visible even while
+  otherwise idle). Automatic runs share the manual guards
   (parent-model filter, read-only envelope, model and thinking resolution)
   and freeze the parent core, trusted project rules, and working directory
   once per real user task from that run's prompt options.

@@ -79,7 +79,7 @@ import {
 import { serializeShadowDefinition } from "./serialize";
 import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
-import type { ShadowInbox } from "./result";
+import { createShadowInbox, type ShadowInbox } from "./result";
 
 /** Parent-session custom entry type for one bounded result reference. */
 export const SHADOW_RESULT_ENTRY_TYPE = "pi-square.shadow-result";
@@ -519,17 +519,19 @@ export default function registerShadowMinds(
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
   let currentInbox: ShadowInbox | undefined;
   const makeRuntime = (inbox?: ShadowInbox): ShadowRuntime => {
-    currentInbox = inbox;
+    // An explicit inbox is always tracked so old-task downgrades reach the
+    // in-memory fallback of non-persisted sessions too.
+    currentInbox = inbox ?? createShadowInbox({});
     return createShadowRuntime({
       config: effectiveConfig,
       ...(runtimeDeps ? { deps: runtimeDeps } : {}),
-      ...(inbox ? { inbox } : {}),
+      inbox: currentInbox,
       currentTaskEpoch: () => state.scheduler.snapshot().taskEpoch,
     });
   };
 
   const makeScheduler = (): ShadowScheduler => {
-    return createShadowScheduler({
+    const scheduler = createShadowScheduler({
       now: () => Date.now(),
       config: effectiveConfig,
       definitions: () => state.registry.definitions,
@@ -544,7 +546,7 @@ export default function registerShadowMinds(
           trigger: activation.reasons[0]?.trigger,
           taskEpoch: activation.taskEpoch,
           triggerReasons: activation.reasons,
-          snapshot: state.taskSnapshot,
+          snapshot: taskSnapshots.get(activation.taskEpoch) ?? state.taskSnapshot,
           trajectory: activation.checkpoint as ReturnType<typeof captureTrajectory> | undefined,
         });
         if (outcome.started) return { outcome: "started" };
@@ -552,6 +554,7 @@ export default function registerShadowMinds(
         return { outcome: "failed", reason: outcome.reason ?? "The automatic run did not start." };
       },
       preemptOldestAutomatic: (currentEpoch) => state.runtime.preemptOldestAutomatic(currentEpoch),
+      hasActiveRun: (shadowId) => state.runtime.hasActiveRun(shadowId),
       cancelTaskRuns: (epoch) => state.runtime.cancelTaskRuns(epoch),
       cancelAutomaticRuns: (reason) => state.runtime.cancelAutomaticRuns(reason),
       forceNotifyOldResults(beforeEpoch) {
@@ -565,6 +568,19 @@ export default function registerShadowMinds(
         return downgraded;
       },
     });
+    // Pause state is user-visible: both entry points (manager service and
+    // any future direct call) refresh the conditional status.
+    return {
+      ...scheduler,
+      pause() {
+        scheduler.pause();
+        refreshStatus();
+      },
+      resume() {
+        scheduler.resume();
+        refreshStatus();
+      },
+    };
   };
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
@@ -620,12 +636,13 @@ export default function registerShadowMinds(
     const running = snapshot.runs.filter((run) => run.phase === "running").length;
     const queued = state.scheduler.snapshot().pending.length;
     const unread = snapshot.results.filter((result) => result.attention === "unread").length;
-    if (running === 0 && queued === 0 && unread === 0) return undefined;
+    const paused = state.scheduler.snapshot().paused;
+    if (running === 0 && queued === 0 && unread === 0 && !paused) return undefined;
     const parts: string[] = [];
     if (running > 0) parts.push(`${running} running`);
     if (queued > 0) parts.push(`${queued} queued`);
     if (unread > 0) parts.push(`${unread} unread`);
-    if (state.scheduler.snapshot().paused) parts.push("paused");
+    if (paused) parts.push("paused");
     return `Shadow: ${parts.join(" · ")}`;
   };
 
@@ -683,6 +700,7 @@ export default function registerShadowMinds(
     refreshStatus();
   });
 
+  const taskSnapshots = createTaskSnapshotStore();
   pi.on("before_agent_start", async (event, sessionCtx) => {
     const realUserTask = snapshotDirty;
     if (snapshotDirty) {
@@ -692,6 +710,7 @@ export default function registerShadowMinds(
         sessionCtx?.cwd ?? state.cwd,
         Boolean(sessionCtx?.isProjectTrusted?.()),
       );
+      taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
     }
     state.scheduler.handleRunStart(realUserTask);
   });
@@ -709,8 +728,16 @@ export default function registerShadowMinds(
     state.scheduler.observeToolEnd(String(event?.toolName ?? ""), Boolean(event?.isError), args);
   });
 
-  pi.on("turn_end", (_event, sessionCtx) => {
+  pi.on("turn_end", (event, sessionCtx) => {
     if (!sessionCtx) return;
+    // A turn that ended through user interruption drops its observations
+    // instead of dispatching: Pi emits turn_end before agent_end on abort,
+    // and an aborted quality command is not a failure trigger.
+    if ((event?.message as { stopReason?: unknown } | undefined)?.stopReason === "aborted") {
+      state.scheduler.handleTurnAbort();
+      refreshStatus();
+      return;
+    }
     let checkpoint: ReturnType<typeof captureTrajectory> | undefined;
     if (state.scheduler.shouldCapture()) {
       try {
@@ -873,4 +900,22 @@ export default function registerShadowMinds(
   return state;
 }
 
-export const __testables = { makeServices };
+/** Bounded per-task-epoch snapshot store: late dispatch composes with the authority frozen for that task. */
+export function createTaskSnapshotStore() {
+  const store = new Map<number, ShadowTaskSnapshot>();
+  return {
+    record(epoch: number, snapshot: ShadowTaskSnapshot): void {
+      store.set(epoch, snapshot);
+      while (store.size > 4) {
+        const oldest = [...store.keys()].sort((a, b) => a - b)[0];
+        if (oldest === undefined) break;
+        store.delete(oldest);
+      }
+    },
+    get(epoch: number): ShadowTaskSnapshot | undefined {
+      return store.get(epoch);
+    },
+  };
+}
+
+export const __testables = { makeServices, createTaskSnapshotStore };

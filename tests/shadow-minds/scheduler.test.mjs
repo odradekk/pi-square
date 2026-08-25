@@ -104,6 +104,7 @@ function makeHarness(options = {}) {
     cancelledTaskRuns: [],
     cancelledAutomatic: 0,
     forcedNotifyBefore: [],
+    activeShadows: new Set(options.activeShadows ?? []),
     clock: 1000,
   };
   const scheduler = createShadowScheduler({
@@ -123,6 +124,9 @@ function makeHarness(options = {}) {
       state.preemptions.push(currentEpoch);
       if (options.preemptFails) return { ok: false };
       return { ok: true, runId: "run-old" };
+    },
+    hasActiveRun(shadowId) {
+      return state.activeShadows.has(shadowId);
     },
     cancelTaskRuns(epoch) {
       state.cancelledTaskRuns.push(epoch);
@@ -307,6 +311,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
       return { outcome: "started", runId: `run-${startCount}` };
     },
     preemptOldestAutomatic: () => ({ ok: false }),
+    hasActiveRun: () => false,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -351,6 +356,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
       return { outcome: "started" };
     },
     preemptOldestAutomatic: () => ({ ok: false }),
+    hasActiveRun: () => false,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -468,6 +474,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
       return busyDefs.has(input.definition.id) ? { outcome: "busy" } : { outcome: "started" };
     },
     preemptOldestAutomatic: () => ({ ok: false }),
+    hasActiveRun: () => false,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -493,6 +500,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
     now: () => preempting.state.clock,
     config: () => preempting.state.config,
     definitions: () => preempting.state.definitions,
+    hasActiveRun: () => false,
     start(input) {
       preempting.state.starts.push(input);
       if (first) {
@@ -529,12 +537,14 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
     now: () => harness.state.clock,
     config: () => harness.state.config,
     definitions: () => harness.state.definitions,
+    hasActiveRun: () => false,
     start: () => ({ outcome: "busy" }),
     preemptOldestAutomatic(currentEpoch) {
       harness.state.preemptions.push(currentEpoch);
       // Same-epoch contention: no older-task automatic run exists to preempt.
       return { ok: false };
     },
+    hasActiveRun: () => false,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -633,6 +643,44 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
   assert.equal(snapshot.taskEpoch, 1);
   assert.equal(snapshot.pending.length, 0);
   assert.equal(snapshot.toolGeneration, 0);
+}
+
+// ── Spec review regressions ────────────────────────────────────────
+
+{
+  // An aborted turn drops its observations: no failure dispatch, no leak
+  // into the next task.
+  const { state, scheduler } = makeHarness({ definitions: [definition({ triggers: ["failure"] })] });
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.observeToolStart("bash", { command: "npm test" });
+  scheduler.observeToolEnd("bash", true, { command: "npm test" });
+  scheduler.handleTurnAbort();
+  scheduler.handleAgentEnd({ interrupted: true, checkpoint: {} });
+  assert.equal(state.starts.length, 0, "an aborted quality command never dispatches");
+
+  // Even a later non-interrupted turn in a new task sees nothing stale.
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.observeToolStart("read", {});
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 0, "aborted-turn reasons never leak into the next task");
+}
+
+{
+  // One activation per Shadow: while a run is active, new activity stays
+  // queued with the latest checkpoint and dispatches only after settle.
+  const { state, scheduler } = makeHarness({
+    definitions: [definition({ id: "ground", triggers: ["tool_turn"] })],
+    activeShadows: ["ground"],
+  });
+  runRealUserTurn({ state, scheduler }, [{ tool: "read", args: {} }]);
+  assert.equal(state.starts.length, 0, "no duplicate concurrent run starts");
+  assert.equal(scheduler.snapshot().pending.length, 1, "the activation stays pending");
+
+  state.activeShadows.clear();
+  scheduler.handleRunSettled();
+  assert.equal(state.starts.length, 1, "the latest checkpoint dispatches after the run settles");
 }
 
 console.log("shadow-minds scheduler tests: OK");

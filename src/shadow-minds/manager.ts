@@ -1086,7 +1086,35 @@ export class ShadowManager implements Component, Focusable {
         ),
         onSelect: () => {},
       }));
-      items.unshift(...pauseItems, ...pending);
+      // Enforcement events stay visible: clipped queue entries, exhausted
+      // budgets, preemptions, and interruption/pause diagnostics.
+      const schedSnap = scheduler.snapshot();
+      const diagnostics: ChoiceItem[] = [];
+      if (schedSnap.diagnostics.length > 0 || schedSnap.clippedIds.length > 0) {
+        diagnostics.push({
+          id: "scheduling-diagnostics",
+          label: "Scheduling notes",
+          detail: `${schedSnap.diagnostics.length} note${schedSnap.diagnostics.length === 1 ? "" : "s"} · ${schedSnap.clippedIds.length} clipped`,
+          onSelect: () => {
+            this.openReview({
+              eyebrow: "RUNS / SCHEDULING",
+              title: "Scheduling notes",
+              lines: [
+                ...(schedSnap.diagnostics.length > 0
+                  ? ["NOTES", ...schedSnap.diagnostics.slice(-8).map((line) => sanitizeDisplayLine(line))]
+                  : []),
+                ...(schedSnap.clippedIds.length > 0
+                  ? ["", "CLIPPED QUEUE ENTRIES", ...schedSnap.clippedIds.slice(-8).map((id) => sanitizeDisplayLine(id))]
+                  : []),
+                ...schedSnap.automaticStartsByTask.map((entry) => `Task ${entry.epoch}: ${entry.starts} automatic starts`),
+              ],
+              confirmLabel: "back",
+              onConfirm: () => this.back(),
+            });
+          },
+        });
+      }
+      items.unshift(...pauseItems, ...pending, ...diagnostics);
     }
     this.openChoice({
       eyebrow: "RUNS / LIST",
@@ -1627,12 +1655,13 @@ function toolLabel(definition: EffectiveShadowDefinition): string {
 function configSummary(config: { enabled: boolean; defaults: ShadowMindsDefaults }): string {
   const d = config.defaults;
   return [
-    `concurrency ${d.maxConcurrentRuns}`,
+    `runs ${d.maxConcurrentRuns}`,
     `timeout ${d.runTimeoutSeconds}s`,
     `turns ${d.maxModelTurnsPerRun}`,
-    `tool calls ${d.maxToolCallsPerRun}`,
-    `starts/task ${d.maxAutomaticStartsPerTask}`,
-    `gate window ${d.completionGateWindowSeconds}s`,
+    `tools ${d.maxToolCallsPerRun}`,
+    `starts ${d.maxAutomaticStartsPerTask}`,
+    `queue ${d.maxQueuedShadowIds}`,
+    `gate ${d.completionGateWindowSeconds}s`,
   ].join(" · ");
 }
 

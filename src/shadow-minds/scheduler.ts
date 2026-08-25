@@ -236,6 +236,8 @@ export interface ShadowSchedulerDeps {
   definitions(): readonly EffectiveShadowDefinition[];
   /** Starts one automatic run through the session runtime. */
   start(input: ShadowSchedulerStartInput): ShadowSchedulerStartOutcome;
+  /** Whether one Shadow already has a running activation (manual or automatic). */
+  hasActiveRun(shadowId: string): boolean;
   /**
    * Frees one slot by superseding the oldest automatic run from an older
    * task epoch; manual runs are never eligible.
@@ -270,6 +272,12 @@ export interface ShadowScheduler {
   observeToolEnd(toolName: string, isError: boolean, args: unknown): void;
   /** Coalesces the turn's observations into pending activations and dispatches. */
   handleTurnEnd(checkpoint: unknown): void;
+  /**
+   * A turn that ended through user interruption: its observations are
+   * dropped — an aborted quality command is not a failure trigger and its
+   * reasons must never leak into a later task.
+   */
+  handleTurnAbort(): void;
   /** Completion trigger for the settled real-user run; interruption cancels. */
   handleAgentEnd(input: { interrupted: boolean; checkpoint: unknown }): void;
   /** A run settled: a concurrency slot may have freed. */
@@ -403,6 +411,10 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
         recordDiagnostic(`Shadow '${activation.shadowId}' is no longer eligible; its pending activation was dropped.`);
         continue;
       }
+      // One activation per Shadow at a time: while a run (manual or
+      // automatic) is active, the pending snapshot stays queued and keeps
+      // the latest checkpoint until the run settles.
+      if (deps.hasActiveRun(activation.shadowId)) continue;
       const started = deps.start({
         definition,
         taskEpoch: activation.taskEpoch,
@@ -540,6 +552,12 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
       turn = { reasons: [], generation: 0 };
       dispatch();
     },
+    handleTurnAbort() {
+      // An aborted turn's observations are dropped, never dispatched: an
+      // aborted quality command is not a failure trigger, and stale reasons
+      // must never leak into a later task.
+      turn = { reasons: [], generation: 0 };
+    },
     handleAgentEnd({ interrupted, checkpoint }) {
       if (interrupted) {
         // User interruption cancels all current-task Shadow work, manual
@@ -549,6 +567,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
           if (activation.taskEpoch === taskEpoch) pending.delete(id);
         }
         if (cancelled > 0) recordDiagnostic(`User interruption cancelled ${cancelled} current-task run${cancelled === 1 ? "" : "s"}.`);
+        turn = { reasons: [], generation: 0 };
         realUserRunActive = false;
         return;
       }

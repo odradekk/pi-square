@@ -732,6 +732,11 @@ export function createShadowRuntime(input: {
     return cancelled;
   }
 
+  /** Whether one Shadow already has a running activation. */
+  function hasActiveRun(shadowId: string): boolean {
+    return active.some((entry) => entry.view.shadowId === shadowId);
+  }
+
   function cancelRun(runId: string): { ok: boolean; message?: string } {
     const run = active.find((entry) => entry.view.id === runId);
     if (!run) return { ok: false, message: "That Shadow run is no longer active." };
@@ -752,6 +757,7 @@ export function createShadowRuntime(input: {
     startAutomaticRun,
     cancelRun,
     preemptOldestAutomatic: supersedeOldestAutomatic,
+    hasActiveRun,
     cancelTaskRuns,
     cancelAutomaticRuns,
     snapshot,
