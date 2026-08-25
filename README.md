@@ -231,22 +231,26 @@ What works today:
   the session restores its results and each result also leaves one bounded
   reference entry (never the payload) in the parent transcript. Result
   entities record the Shadow identity and definition-source hash, trigger,
-  configured delivery, schema hash, payload, usage, lifecycle data, and
-  independent delivery (`notified | pending | delivered`) and attention
+  configured delivery, hash-bound validation schema and payload, aggregate and
+  per-request cache/usage/TTFT data, tool-call count, lifecycle/truncation
+  qualifiers, and independent delivery (`notified | pending | delivered`) and attention
   (`unread | read | dismissed`) states; Send to agent, read, dismiss, and
   delete are distinct atomic transitions. Retention keeps at most 100
   results and 16 MiB, evicting the oldest resolved entries before unread
-  notified ones and recording visible eviction events. Corrupt result files
-  are quarantined, a corrupt index rebuilds from a bounded validated scan,
-  and no disk content is ever surfaced without validation. Non-persisted
+  notified ones and recording eviction events in the manager. Corrupt result
+  files are quarantined; every disk load checks bounded regular files, the
+  hash-bound effective schema, payload, and deterministic summary; a corrupt or
+  stale index rebuilds from a bounded validated scan, and no disk content is
+  surfaced without validation. Non-persisted
   sessions fall back to a visible in-memory inbox, and a partition whose
   session file was deleted (Pi stores sessions as flat files in the shared
   per-project sessions directory) is removed by the session-start
   reconciliation. Debug-enabled
-  definitions additionally store one sanitized native child-session JSONL
-  per run in the partition with bounded metadata, capped at 20 logs per
-  Shadow and 128 MiB total (a log too large to sanitize is dropped rather
-  than kept), and debug stays off by default.
+  definitions additionally store one native child-session JSONL per run in the
+  partition only after every string key/value has passed credential cleaning and
+  the sanitized log has been atomically replaced. Startup removes unindexed
+  crash residue; retention is capped at 20 logs per Shadow and 128 MiB total, and
+  a log too large or unsafe to sanitize is dropped. Debug stays off by default.
 
   The runtime freezes its
   configuration and definition at start; timeout is enforced by a fixed

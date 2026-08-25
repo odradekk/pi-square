@@ -101,6 +101,26 @@ function baseRequest(overrides = {}) {
   };
 }
 
+{
+  // A persistent inbox write failure becomes an observable bounded run error;
+  // it never rejects done or leaves the active slot occupied.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "accepted before persistence" }) });
+  const failingInbox = {
+    persistent: true,
+    add() { throw new Error("disk full Authorization: Bearer SECRET"); },
+    list: () => [], send: () => false, markRead: () => false, dismiss: () => false, delete: () => false, clear() {},
+  };
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps, inbox: failingInbox });
+  const terminal = await runtime.startManualRun(baseRequest()).done;
+  assert.equal(terminal.phase, "error");
+  assert.match(terminal.message, /disk full/);
+  assert.doesNotMatch(terminal.message, /SECRET/);
+  assert.equal(runtime.snapshot().results.length, 0);
+  const next = runtime.startManualRun(baseRequest({ definition: definition({ id: "next" }) }));
+  assert.equal(next.started, true, "the failed persistence path releases its active slot");
+  await next.done;
+}
+
 // ── start refusals ─────────────────────────────────────────────────
 
 {
@@ -448,7 +468,7 @@ function baseRequest(overrides = {}) {
   await runtime.startManualRun(baseRequest()).done;
   assert.equal(runtime.snapshot().results.length, 1);
   runtime.reset("new session");
-  assert.deepEqual(runtime.snapshot(), { runs: [], results: [] });
+  assert.deepEqual(runtime.snapshot(), { runs: [], results: [], evictionEvents: [] });
 }
 
 {
@@ -648,7 +668,7 @@ function baseRequest(overrides = {}) {
   await runtime.startManualRun(baseRequest()).done;
   assert.equal(runtime.snapshot().results.length, 1);
   runtime.reset("session switch");
-  assert.equal(runtime.snapshot().results.length, 0, "the in-memory inbox is wiped");
+  assert.deepEqual(runtime.snapshot(), { runs: [], results: [], evictionEvents: [] });
 
   const { createShadowInbox } = await load(join(packageRoot, "src", "shadow-minds", "result.ts"));
   const persistent = createShadowInbox();

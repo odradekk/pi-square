@@ -147,6 +147,7 @@ export interface ShadowManualRunRequest {
 export interface ShadowRuntimeSnapshot {
   runs: ShadowRunView[];
   results: ShadowResultEntity[];
+  evictionEvents: Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
 }
 
 /** Child-session creation input for the runtime seam; the system rides on the loader. */
@@ -536,19 +537,29 @@ export function createShadowRuntime(input: {
 
       let resultId: string | undefined;
       if (phase === "submitted" && submitted && runEpoch === sessionEpoch && !run.detached) {
-        const entity = inbox.add({
-          shadowId: definition.id,
-          shadowName: definition.name,
-          payload: submitted.payload,
-          ...(note ? { note } : {}),
-          createdAt: submitted.at,
-          ...(outcome.model ? { model: outcome.model } : {}),
-          usage: outcome.usage,
-          ...(definitionHash ? { definitionHash } : {}),
-          schemaHash,
-          configuredDelivery: definition.delivery,
-        });
-        resultId = entity.id;
+        try {
+          const entity = inbox.add({
+            shadowId: definition.id,
+            shadowName: definition.name,
+            payload: submitted.payload,
+            ...(note ? { note } : {}),
+            createdAt: submitted.at,
+            ...(outcome.model ? { model: outcome.model } : {}),
+            usage: outcome.usage,
+            ...(definitionHash ? { definitionHash } : {}),
+            schemaHash,
+            validationSchema: structuredClone(definition.outputSchema),
+            configuredDelivery: definition.delivery,
+            lifecycle: "submitted",
+            toolCalls,
+            trajectoryTruncated: request.trajectory.truncation !== "none",
+            ...(requests.length > 0 ? { requests: structuredClone(requests) } : {}),
+          });
+          resultId = entity.id;
+        } catch (error) {
+          phase = "error";
+          message = boundedMessage(error);
+        }
       }
 
       view.phase = phase;
@@ -600,6 +611,7 @@ export function createShadowRuntime(input: {
     return {
       runs: [...active.map((run) => structuredClone(run.view)), ...history.map((run) => structuredClone(run))],
       results: inbox.list(),
+      evictionEvents: inbox.events?.().map((event) => structuredClone(event)) ?? [],
     };
   }
 

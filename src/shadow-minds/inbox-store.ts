@@ -14,18 +14,24 @@
  * atomic `send` delivery transition the confirmed-delivery slice drives.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
-  readdirSync,
+  openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { canonicalSchemaJson } from "./prompt";
 import {
   SHADOW_INBOX_DEFAULT_MAX_RESULTS,
   evictionCandidate,
@@ -38,7 +44,14 @@ import {
 } from "./result";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { sanitizeDisplayText } from "../display/sanitize";
-import { SHADOW_DELIVERIES, SHADOW_PAYLOAD_MAX_CHARS, SHADOW_TRIGGERS } from "./parser";
+import {
+  SHADOW_DELIVERIES,
+  SHADOW_PAYLOAD_MAX_CHARS,
+  SHADOW_TRIGGERS,
+  validateOutputSchema,
+  validateShadowPayload,
+  type ShadowOutputSchema,
+} from "./parser";
 
 /** Hidden partition directory beneath the parent session directory. */
 export const SHADOW_PARTITION_DIR = ".pi-square-shadow";
@@ -50,6 +63,9 @@ export const SHADOW_INBOX_MAX_BYTES_HARD = 16 * 1024 * 1024;
 const INDEX_SUMMARY_MAX_CHARS = 160;
 const INDEX_EVENTS_MAX = 32;
 const INDEX_SCAN_MAX_FILES = 512;
+const RESULT_ENTITY_MAX_BYTES = 256 * 1024;
+const RESULT_INDEX_MAX_BYTES = 256 * 1024;
+const DEBUG_INDEX_MAX_BYTES = 256 * 1024;
 const ID_MAX_CHARS = 128;
 const RECONCILE_MAX_PARTITIONS = 1_000;
 
@@ -80,19 +96,66 @@ interface StoredIndex {
   events: ShadowInboxEvictionEvent[];
 }
 
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+function requireSafePathSegment(value: string, label: string): string {
+  if (!SAFE_PATH_SEGMENT.test(value)) throw new Error(`Shadow ${label} must be one safe path segment.`);
+  return value;
+}
+
 /** Resolves one session's Shadow partition path. */
 export function shadowPartitionPath(sessionDir: string, sessionId: string): string {
-  return join(resolve(sessionDir), SHADOW_PARTITION_DIR, sessionId);
+  return join(resolve(sessionDir), SHADOW_PARTITION_DIR, requireSafePathSegment(sessionId, "session id"));
+}
+
+function atomicWriteText(path: string, content: string): void {
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const fd = openSync(tmp, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+  try {
+    writeFileSync(fd, content, "utf8");
+    fsyncSync(fd);
+  } catch (error) {
+    closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw error;
+  }
+  closeSync(fd);
+  try {
+    renameSync(tmp, path);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
 }
 
 function atomicWriteJson(path: string, value: unknown): void {
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
-  renameSync(tmp, path);
+  atomicWriteText(path, JSON.stringify(value, null, 2));
+}
+function requireRegularFile(path: string): boolean {
+  try {
+    const stats = lstatSync(path);
+    return stats.isFile() && !stats.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function requireSafeDirectory(path: string): void {
+  if (!existsSync(path)) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    return;
+  }
+  const stats = lstatSync(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Shadow storage path '${path}' must be a real directory.`);
+  }
 }
 
 function isBoundedString(value: unknown, max: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= max;
+}
+function schemaHashOf(schema: ShadowOutputSchema): string {
+  return createHash("sha256").update(canonicalSchemaJson(schema)).digest("hex").slice(0, 16);
 }
 
 function isFiniteNonNegative(value: unknown): value is number {
@@ -112,7 +175,7 @@ function isUsage(value: unknown): boolean {
  * bounded; a value that fails any check marks the file corrupt. Returns the
  * typed entity or undefined.
  */
-function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined {
+function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { validationSchema: ShadowOutputSchema } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
   if (record.version !== 1) return undefined;
@@ -122,10 +185,14 @@ function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined
   if (record.trigger !== "manual") return undefined;
   if (record.note !== undefined && !isBoundedString(record.note, 8_000)) return undefined;
   if (record.payload === null || typeof record.payload !== "object" || Array.isArray(record.payload)) return undefined;
-  // The payload re-validates the same canonical bound enforced at write
-  // time, so tampered oversized payloads quarantine instead of surfacing.
+  const validationSchema = record.validationSchema;
+  if (validateOutputSchema(validationSchema).length > 0) return undefined;
+  if (!isBoundedString(record.schemaHash, 128) || record.schemaHash !== schemaHashOf(validationSchema as ShadowOutputSchema)) return undefined;
+  if (validateShadowPayload(validationSchema as ShadowOutputSchema, record.payload).length > 0) return undefined;
+  // Keep the encoded hard bound as defense in depth even though payload
+  // validation applies it too.
   if (JSON.stringify(record.payload).length > SHADOW_PAYLOAD_MAX_CHARS) return undefined;
-  if (!isBoundedString(record.summary, 300)) return undefined;
+  if (!isBoundedString(record.summary, 300) || record.summary !== summarizeShadowResult(record.payload)) return undefined;
   if (record.delivery !== "notified" && record.delivery !== "pending" && record.delivery !== "delivered") return undefined;
   if (record.attention !== "unread" && record.attention !== "read" && record.attention !== "dismissed") return undefined;
   if (!isFiniteNonNegative(record.createdAt)) return undefined;
@@ -133,6 +200,18 @@ function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined
   if (record.usage !== undefined && !isUsage(record.usage)) return undefined;
   if (record.definitionHash !== undefined && !isBoundedString(record.definitionHash, 128)) return undefined;
   if (record.schemaHash !== undefined && !isBoundedString(record.schemaHash, 128)) return undefined;
+  if (record.lifecycle !== undefined && record.lifecycle !== "submitted") return undefined;
+  if (record.toolCalls !== undefined && (!Number.isInteger(record.toolCalls) || (record.toolCalls as number) < 0 || (record.toolCalls as number) > 128)) return undefined;
+  if (record.trajectoryTruncated !== undefined && typeof record.trajectoryTruncated !== "boolean") return undefined;
+  if (record.requests !== undefined) {
+    if (!Array.isArray(record.requests) || record.requests.length > 64) return undefined;
+    for (const metric of record.requests) {
+      if (!metric || typeof metric !== "object" || Array.isArray(metric)) return undefined;
+      const item = metric as Record<string, unknown>;
+      if (!["input", "output", "cacheRead", "cacheWrite", "cost"].every((key) => isFiniteNonNegative(item[key]))) return undefined;
+      if (item.ttftMs !== undefined && !isFiniteNonNegative(item.ttftMs)) return undefined;
+    }
+  }
   if (record.configuredDelivery !== undefined && !SHADOW_DELIVERIES.includes(record.configuredDelivery as never)) return undefined;
   if (record.triggers !== undefined) {
     if (!Array.isArray(record.triggers) || record.triggers.length > 4) return undefined;
@@ -145,6 +224,7 @@ function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined
     if (identity.parentEntryId !== undefined && !isBoundedString(identity.parentEntryId, 64)) return undefined;
   }
   return {
+    validationSchema: structuredClone(validationSchema) as ShadowOutputSchema,
     id: record.id,
     shadowId: record.shadowId,
     shadowName: record.shadowName,
@@ -159,6 +239,10 @@ function validatePersistedEntity(value: unknown): ShadowResultEntity | undefined
     ...(record.usage !== undefined ? { usage: structuredClone(record.usage) as ShadowResultEntity["usage"] } : {}),
     ...(typeof record.definitionHash === "string" ? { definitionHash: record.definitionHash } : {}),
     ...(typeof record.schemaHash === "string" ? { schemaHash: record.schemaHash } : {}),
+    ...(record.lifecycle === "submitted" ? { lifecycle: "submitted" as const } : {}),
+    ...(typeof record.toolCalls === "number" ? { toolCalls: record.toolCalls } : {}),
+    ...(typeof record.trajectoryTruncated === "boolean" ? { trajectoryTruncated: record.trajectoryTruncated } : {}),
+    ...(Array.isArray(record.requests) ? { requests: structuredClone(record.requests) as NonNullable<ShadowResultEntity["requests"]> } : {}),
     ...(typeof record.configuredDelivery === "string"
       ? { configuredDelivery: record.configuredDelivery as ShadowResultEntity["configuredDelivery"] }
       : {}),
@@ -220,6 +304,7 @@ function validatePersistedIndex(value: unknown): StoredIndex | undefined {
 
 interface LoadedEntity {
   entity: ShadowResultEntity;
+  validationSchema: ShadowOutputSchema;
   bytes: number;
 }
 
@@ -247,6 +332,7 @@ export interface PersistentShadowInboxOptions {
  */
 export function createPersistentShadowInbox(options: PersistentShadowInboxOptions): PersistentShadowInbox {
   const partition = shadowPartitionPath(options.sessionDir, options.sessionId);
+  const partitionRoot = join(resolve(options.sessionDir), SHADOW_PARTITION_DIR);
   const resultsDir = join(partition, "results");
   const quarantineDir = join(partition, "quarantine");
   const indexPath = join(partition, "index.json");
@@ -267,11 +353,11 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
 
   const clone = <T>(value: T): T => structuredClone(value);
 
-  const entityPath = (id: string): string => join(resultsDir, `${id}.json`);
+  const entityPath = (id: string): string => join(resultsDir, `${requireSafePathSegment(id, "result id")}.json`);
 
   const quarantine = (id: string, path: string, cause: string): void => {
     try {
-      mkdirSync(quarantineDir, { recursive: true });
+      requireSafeDirectory(quarantineDir);
       renameSync(path, join(quarantineDir, `${id}-${now().toString(36)}.json`));
       diagnostics.push(`Result ${id} was quarantined (${cause}).`);
     } catch {
@@ -286,10 +372,18 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
   };
 
   const loadEntityFile = (id: string): LoadedEntity | undefined => {
+    if (!SAFE_PATH_SEGMENT.test(id)) return undefined;
     const path = entityPath(id);
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) return undefined;
+    if (!requireRegularFile(path)) {
+      if (existsSync(path)) quarantine(id, path, "not a regular file");
+      return undefined;
+    }
     let raw: string;
     try {
+      if (lstatSync(path).size > RESULT_ENTITY_MAX_BYTES) {
+        quarantine(id, path, "file exceeds the entity byte bound");
+        return undefined;
+      }
       raw = readFileSync(path, "utf8");
     } catch {
       return undefined;
@@ -301,9 +395,14 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       quarantine(id, path, "invalid JSON");
       return undefined;
     }
-    const entity = validatePersistedEntity(parsed);
-    if (!entity) {
-      quarantine(id, path, "shape validation failed");
+    const validated = validatePersistedEntity(parsed);
+    if (!validated) {
+      quarantine(id, path, "shape or schema validation failed");
+      return undefined;
+    }
+    const { validationSchema, ...entity } = validated;
+    if (entity.id !== id) {
+      quarantine(id, path, "file name and entity id differ");
       return undefined;
     }
     let bytes = 0;
@@ -312,15 +411,20 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
     } catch {
       bytes = raw.length;
     }
-    return { entity, bytes };
+    return { entity, validationSchema, bytes };
   };
 
   const writeEntity = (entry: LoadedEntity): void => {
     mkdirSync(resultsDir, { recursive: true });
-    atomicWriteJson(entityPath(entry.entity.id), { version: 1, ...entry.entity });
+    atomicWriteJson(entityPath(entry.entity.id), {
+      version: 1,
+      ...entry.entity,
+      validationSchema: entry.validationSchema,
+    });
+    entry.bytes = statSync(entityPath(entry.entity.id)).size;
   };
 
-  const writeIndex = (): void => {
+  const writeIndex = (): boolean => {
     const ordered = [...loaded.values()].sort((a, b) => b.entity.createdAt - a.entity.createdAt);
     const index: StoredIndex = {
       version: 1,
@@ -339,27 +443,36 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       })),
       events: events.slice(-INDEX_EVENTS_MAX),
     };
-    atomicWriteJson(indexPath, index);
+    try {
+      atomicWriteJson(indexPath, index);
+      return true;
+    } catch (error) {
+      diagnostics.push(`The inbox index could not be updated (${error instanceof Error ? error.message : String(error)}); it will rebuild from validated entities.`);
+      return false;
+    }
   };
 
-  const removeEntity = (id: string, reason: "count" | "bytes"): void => {
+  const removeEntity = (id: string, reason: "count" | "bytes"): boolean => {
     const entry = loaded.get(id);
-    loaded.delete(id);
+    if (!entry) return false;
     try {
-      rmSync(entityPath(id), { force: true });
+      rmSync(entityPath(id));
     } catch {
-      // Best-effort removal; the entity is already out of the index.
+      diagnostics.push(`Result ${id} could not be evicted (${reason}); retention will retry.`);
+      return false;
     }
+    loaded.delete(id);
     events.push({ kind: "evicted", id, at: now(), reason });
     if (events.length > INDEX_EVENTS_MAX * 2) events.splice(0, events.length - INDEX_EVENTS_MAX);
-    if (entry) diagnostics.push(`Result ${id} was evicted (${reason}).`);
+    diagnostics.push(`Result ${id} was evicted (${reason}).`);
+    return true;
   };
 
   const enforceRetention = (): void => {
     while (loaded.size > maxResults) {
       const candidate = pickEviction();
       if (!candidate) break;
-      removeEntity(candidate, "count");
+      if (!removeEntity(candidate, "count")) break;
     }
     let totalBytes = 0;
     for (const entry of loaded.values()) totalBytes += entry.bytes;
@@ -367,8 +480,8 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       const candidate = pickEviction();
       if (!candidate) break;
       const entry = loaded.get(candidate)!;
+      if (!removeEntity(candidate, "bytes")) break;
       totalBytes -= entry.bytes;
-      removeEntity(candidate, "bytes");
     }
   };
 
@@ -378,18 +491,19 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
   };
 
   // ── Load ──
-  mkdirSync(resultsDir, { recursive: true });
+  requireSafeDirectory(partitionRoot);
+  requireSafeDirectory(partition);
+  requireSafeDirectory(resultsDir);
   let indexValid = false;
-  if (existsSync(indexPath)) {
+  if (existsSync(indexPath) && requireRegularFile(indexPath) && lstatSync(indexPath).size <= RESULT_INDEX_MAX_BYTES) {
     try {
       const parsed = validatePersistedIndex(JSON.parse(readFileSync(indexPath, "utf8")));
-      if (parsed) {
+      if (parsed && parsed.sessionId === options.sessionId) {
         indexValid = true;
         events.push(...parsed.events.slice(-INDEX_EVENTS_MAX));
         for (const entry of parsed.results) {
           const loadedEntity = loadEntityFile(entry.id);
           if (!loadedEntity) continue;
-          if (entry.referenced) loadedEntity.entity.referenced = true;
           loaded.set(loadedEntity.entity.id, loadedEntity);
         }
       }
@@ -397,20 +511,25 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       indexValid = false;
     }
   }
+  // Always reconcile the valid index with a bounded validated directory scan.
+  // This recovers an authoritative entity written just before a process crash
+  // prevented the subsequent index update. A corrupt/missing index is diagnosed
+  // as a rebuild; a valid index remains the source of persisted events/reference
+  // hints while unindexed valid entities are adopted.
   if (!indexValid) {
-    // Rebuild from a bounded validated scan of the results directory.
     diagnostics.push("The inbox index was missing or corrupt and was rebuilt from a validated scan.");
-    let names: string[] = [];
-    try {
-      names = readdirSync(resultsDir).filter((name) => name.endsWith(".json"));
-    } catch {
-      names = [];
-    }
-    for (const name of names.slice(0, INDEX_SCAN_MAX_FILES)) {
-      const id = name.slice(0, -".json".length);
-      const loadedEntity = loadEntityFile(id);
-      if (loadedEntity) loaded.set(loadedEntity.entity.id, loadedEntity);
-    }
+  }
+  let names: string[] = [];
+  try {
+    names = readdirSync(resultsDir).filter((name) => name.endsWith(".json")).sort();
+  } catch {
+    names = [];
+  }
+  for (const name of names.slice(0, INDEX_SCAN_MAX_FILES)) {
+    const id = name.slice(0, -".json".length);
+    if (loaded.has(id)) continue;
+    const loadedEntity = loadEntityFile(id);
+    if (loadedEntity) loaded.set(loadedEntity.entity.id, loadedEntity);
   }
   enforceRetention();
   writeIndex();
@@ -418,6 +537,14 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
   return {
     persistent: true,
     add(input: ShadowInboxAddInput): ShadowResultEntity {
+      const validationSchema = input.validationSchema;
+      if (validateOutputSchema(validationSchema).length > 0 || validateShadowPayload(validationSchema as ShadowOutputSchema, input.payload).length > 0) {
+        throw new Error("Shadow result payload or validation schema is invalid.");
+      }
+      const expectedSchemaHash = schemaHashOf(validationSchema as ShadowOutputSchema);
+      if (input.schemaHash !== undefined && input.schemaHash !== expectedSchemaHash) {
+        throw new Error("Shadow result schema hash does not match its validation schema.");
+      }
       const entity: ShadowResultEntity = {
         id: makeId(),
         shadowId: input.shadowId,
@@ -432,19 +559,22 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
         ...(input.model ? { model: input.model } : {}),
         ...(input.usage ? { usage: clone(input.usage) } : {}),
         ...(input.definitionHash ? { definitionHash: input.definitionHash } : {}),
-        ...(input.schemaHash ? { schemaHash: input.schemaHash } : {}),
+        schemaHash: expectedSchemaHash,
+        ...(input.lifecycle ? { lifecycle: input.lifecycle } : {}),
+        ...(input.toolCalls !== undefined ? { toolCalls: input.toolCalls } : {}),
+        ...(input.trajectoryTruncated !== undefined ? { trajectoryTruncated: input.trajectoryTruncated } : {}),
+        ...(input.requests ? { requests: clone(input.requests) } : {}),
         ...(input.configuredDelivery ? { configuredDelivery: input.configuredDelivery } : {}),
         ...(input.triggers ? { triggers: [...input.triggers] } : {}),
         ...(input.taskIdentity ? { taskIdentity: clone(input.taskIdentity) } : {}),
       };
-      writeEntity({ entity, bytes: 0 });
-      let bytes = 0;
-      try {
-        bytes = statSync(entityPath(entity.id)).size;
-      } catch {
-        bytes = JSON.stringify(entity).length;
-      }
-      loaded.set(entity.id, { entity, bytes });
+      const loadedEntry: LoadedEntity = {
+        entity,
+        validationSchema: structuredClone(validationSchema) as ShadowOutputSchema,
+        bytes: 0,
+      };
+      writeEntity(loadedEntry);
+      loaded.set(entity.id, loadedEntry);
       enforceRetention();
       writeIndex();
       return clone(entity);
@@ -457,44 +587,51 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
     send(id: string): boolean {
       const entry = loaded.get(id);
       if (!entry || entry.entity.delivery !== "notified") return false;
-      entry.entity.delivery = "pending";
-      writeEntity(entry);
+      const next = clone(entry);
+      next.entity.delivery = "pending";
+      writeEntity(next);
+      loaded.set(id, next);
       writeIndex();
       return true;
     },
     markRead(id: string): boolean {
       const entry = loaded.get(id);
       if (!entry) return false;
-      entry.entity.attention = "read";
-      writeEntity(entry);
+      const next = clone(entry);
+      next.entity.attention = "read";
+      writeEntity(next);
+      loaded.set(id, next);
       writeIndex();
       return true;
     },
     dismiss(id: string): boolean {
       const entry = loaded.get(id);
       if (!entry) return false;
-      entry.entity.attention = "dismissed";
-      writeEntity(entry);
+      const next = clone(entry);
+      next.entity.attention = "dismissed";
+      writeEntity(next);
+      loaded.set(id, next);
       writeIndex();
       return true;
     },
     delete(id: string): boolean {
-      const entry = loaded.get(id);
-      if (!entry) return false;
-      loaded.delete(id);
+      if (!loaded.has(id)) return false;
       try {
-        rmSync(entityPath(id), { force: true });
+        rmSync(entityPath(id));
       } catch {
-        // Best-effort; the index no longer references it.
+        return false;
       }
+      loaded.delete(id);
       writeIndex();
       return true;
     },
     markReferenced(id: string): boolean {
       const entry = loaded.get(id);
       if (!entry || entry.entity.referenced) return false;
-      entry.entity.referenced = true;
-      writeEntity(entry);
+      const next = clone(entry);
+      next.entity.referenced = true;
+      writeEntity(next);
+      loaded.set(id, next);
       writeIndex();
       return true;
     },
@@ -538,7 +675,11 @@ interface DebugIndex {
 
 /** Resolves one debug run's directory inside the partition. */
 export function shadowDebugRunDir(sessionDir: string, sessionId: string, runId: string): string {
-  return join(shadowPartitionPath(sessionDir, sessionId), "debug", runId);
+  return join(
+    shadowPartitionPath(sessionDir, sessionId),
+    "debug",
+    requireSafePathSegment(runId, "run id"),
+  );
 }
 
 /**
@@ -557,15 +698,24 @@ function debugIndexPath(partition: string): string {
 
 function readDebugIndex(partition: string): DebugIndex {
   try {
-    const parsed = JSON.parse(readFileSync(debugIndexPath(partition), "utf8"));
+    const path = debugIndexPath(partition);
+    if (!requireRegularFile(path) || lstatSync(path).size > DEBUG_INDEX_MAX_BYTES) return { version: 1, runs: [] };
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (parsed && typeof parsed === "object" && Array.isArray(parsed.runs)) {
       const runs = parsed.runs.filter((run: unknown) =>
         run && typeof run === "object"
         && typeof (run as DebugIndexRun).runId === "string"
+        && SAFE_PATH_SEGMENT.test((run as DebugIndexRun).runId)
         && typeof (run as DebugIndexRun).shadowId === "string"
+        && (run as DebugIndexRun).shadowId.length > 0
+        && (run as DebugIndexRun).shadowId.length <= 64
         && typeof (run as DebugIndexRun).phase === "string"
+        && (run as DebugIndexRun).phase.length > 0
+        && (run as DebugIndexRun).phase.length <= 32
         && Number.isFinite((run as DebugIndexRun).startedAt)
-        && Number.isFinite((run as DebugIndexRun).endedAt));
+        && Number.isFinite((run as DebugIndexRun).endedAt)
+        && Number.isInteger((run as DebugIndexRun).bytes)
+        && (run as DebugIndexRun).bytes >= 0);
       return { version: 1, runs: runs.slice(0, DEBUG_INDEX_MAX_RUNS) };
     }
   } catch {
@@ -584,12 +734,13 @@ function sanitizeDebugValue(value: unknown): unknown {
   if (typeof value === "string") return sanitizeText(value);
   if (Array.isArray(value)) return value.map(sanitizeDebugValue);
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.keys(value as Record<string, unknown>).map((key) => [
-        key,
-        sanitizeDebugValue((value as Record<string, unknown>)[key]),
-      ]),
-    );
+    const output: Record<string, unknown> = Object.create(null);
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      const safeKey = sanitizeText(key).slice(0, 256);
+      if (!safeKey || safeKey === "__proto__" || safeKey === "prototype" || safeKey === "constructor") continue;
+      output[safeKey] = sanitizeDebugValue((value as Record<string, unknown>)[key]);
+    }
+    return output;
   }
   return value;
 }
@@ -613,15 +764,18 @@ export function finalizeShadowDebugRun(
   const sessionFile = join(runDir, "session.jsonl");
   let bytes = 0;
   try {
-    const raw = readFileSync(sessionFile, "utf8");
-    if (raw.length > DEBUG_SANITIZE_MAX_BYTES) {
-      // A log too large to sanitize cannot be vouched credential-free, so
-      // it is dropped rather than retained unsanitized.
-      rmSync(sessionFile, { force: true });
+    if (!requireRegularFile(sessionFile)) {
       rmSync(runDir, { recursive: true, force: true });
       return;
     }
-    // Sanitize in place through a temporary sibling and atomic rename.
+    const size = lstatSync(sessionFile).size;
+    if (size > DEBUG_SANITIZE_MAX_BYTES) {
+      // A log too large to sanitize cannot be vouched credential-free, so
+      // it is dropped rather than retained unsanitized.
+      rmSync(runDir, { recursive: true, force: true });
+      return;
+    }
+    const raw = readFileSync(sessionFile, "utf8");
     const sanitized = raw
       .split("\n")
       .filter((line) => line.trim())
@@ -633,22 +787,23 @@ export function finalizeShadowDebugRun(
         }
       })
       .join("\n") + "\n";
-    const tmp = `${sessionFile}.tmp`;
-    writeFileSync(tmp, sanitized, "utf8");
-    renameSync(tmp, sessionFile);
-  } catch {
-    // No session file: the run produced no debug history.
-  }
-  try {
+    atomicWriteText(sessionFile, sanitized);
     bytes = statSync(sessionFile).size;
   } catch {
-    bytes = 0;
+    // A debug history that cannot be fully sanitized and atomically replaced is
+    // never retained or indexed.
+    try {
+      rmSync(runDir, { recursive: true, force: true });
+    } catch {
+      // The next session-start/debug sweep retries residue removal.
+    }
+    return;
   }
   const index = readDebugIndex(partition);
   index.runs = index.runs.filter((run) => run.runId !== meta.runId);
   index.runs.push({
-    runId: meta.runId,
-    shadowId: meta.shadowId.slice(0, 64),
+    runId: requireSafePathSegment(meta.runId, "run id"),
+    shadowId: requireSafePathSegment(meta.shadowId.slice(0, 64), "Shadow id"),
     startedAt: meta.startedAt,
     endedAt: meta.endedAt,
     phase: meta.phase.slice(0, 32),
@@ -675,6 +830,12 @@ export function sweepShadowDebugRetention(
   bounds?: { maxTotalBytes?: number },
 ): { removed: string[] } {
   const partition = shadowPartitionPath(sessionDir, sessionId);
+  try {
+    const partitionStats = lstatSync(partition);
+    if (!partitionStats.isDirectory() || partitionStats.isSymbolicLink()) return { removed: [] };
+  } catch {
+    return { removed: [] };
+  }
   const maxTotalBytes = Math.min(
     SHADOW_DEBUG_MAX_TOTAL_BYTES,
     Math.max(1, Math.trunc(bounds?.maxTotalBytes ?? SHADOW_DEBUG_MAX_TOTAL_BYTES)),
@@ -767,6 +928,12 @@ export function reconcileShadowPartitions(sessionDir: string, keepSessionId?: st
   const partitionRoot = join(root, SHADOW_PARTITION_DIR);
   const removed: string[] = [];
   if (!existsSync(partitionRoot)) return { removed };
+  try {
+    const rootStats = lstatSync(partitionRoot);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return { removed };
+  } catch {
+    return { removed };
+  }
   let subEntries;
   try {
     subEntries = readdirSync(partitionRoot, { withFileTypes: true });
@@ -781,11 +948,14 @@ export function reconcileShadowPartitions(sessionDir: string, keepSessionId?: st
   } catch {
     return { removed };
   }
-  for (const sub of subEntries.slice(0, RECONCILE_MAX_PARTITIONS)) {
-    if (!sub.isDirectory()) continue;
+  let orphanCandidates = 0;
+  for (const sub of subEntries) {
+    if (!sub.isDirectory() || !SAFE_PATH_SEGMENT.test(sub.name)) continue;
     if (keepSessionId !== undefined && sub.name === keepSessionId) continue;
     const survives = [...sessionFiles].some((name) => name === `${sub.name}.jsonl` || name.endsWith(`_${sub.name}.jsonl`));
     if (survives) continue;
+    orphanCandidates += 1;
+    if (orphanCandidates > RECONCILE_MAX_PARTITIONS) break;
     const subPath = join(partitionRoot, sub.name);
     try {
       rmSync(subPath, { recursive: true, force: true });

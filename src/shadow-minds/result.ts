@@ -188,9 +188,24 @@ export interface ShadowResultMetadata {
   schemaHash?: string;
   /** The definition's configured delivery policy at run time. */
   configuredDelivery?: ShadowDelivery;
-  /** Trigger reasons of the activation; manual runs record `manual`. */
+  /** Trigger reasons of the activation; automatic scheduling fills these. */
   triggers?: ShadowTrigger[];
   taskIdentity?: ShadowTaskIdentity;
+  /** Terminal lifecycle for a persisted cognitive result. */
+  lifecycle?: "submitted";
+  /** Number of child tool executions observed before submission. */
+  toolCalls?: number;
+  /** Whether deterministic trajectory truncation qualified this result. */
+  trajectoryTruncated?: boolean;
+  /** Bounded per-request usage and TTFT records. */
+  requests?: Array<{
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+    ttftMs?: number;
+  }>;
 }
 
 export interface ShadowResultEntity extends ShadowResultMetadata {
@@ -214,6 +229,8 @@ export interface ShadowResultEntity extends ShadowResultMetadata {
 export const SHADOW_INBOX_DEFAULT_MAX_RESULTS = 100;
 
 export interface ShadowInboxAddInput extends ShadowResultMetadata {
+  /** Effective validated schema persisted only as the disk re-validation contract. */
+  validationSchema?: ShadowOutputSchema;
   shadowId: string;
   shadowName: string;
   payload: unknown;
@@ -241,6 +258,8 @@ export interface ShadowInbox {
    * bounded reference entry, so a reopen does not append it again.
    */
   markReferenced?(id: string): boolean;
+  /** Bounded retention events when the backing store records them. */
+  events?(): Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
   clear(): void;
 }
 

@@ -59,7 +59,11 @@ import {
   type ShadowProjectRule,
 } from "./prompt";
 import { matchesParentModelFilter, resolveShadowModel, resolveShadowThinkingLevel } from "./resolve";
-import { createPersistentShadowInbox, reconcileShadowPartitions } from "./inbox-store";
+import {
+  createPersistentShadowInbox,
+  reconcileShadowPartitions,
+  sweepShadowDebugRetention,
+} from "./inbox-store";
 import { createShadowRuntime, type ShadowRuntime, type ShadowRuntimeDeps } from "./runtime";
 import { serializeShadowDefinition } from "./serialize";
 import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
@@ -505,6 +509,7 @@ export default function registerShadowMinds(
         );
       }
       try {
+        sweepShadowDebugRetention(sessionDir, sessionId);
         const persistentInbox = createPersistentShadowInbox({ sessionDir, sessionId });
         inbox = persistentInbox;
         for (const diagnostic of persistentInbox.diagnostics().slice(0, 3)) {
@@ -563,7 +568,6 @@ export default function registerShadowMinds(
       const results = state.runtime.snapshot().results;
       for (const result of results) {
         if (seenResults.has(result.id) || result.referenced) continue;
-        seenResults.add(result.id);
         if (!effectiveConfig().enabled) continue;
         try {
           pi.appendEntry(SHADOW_RESULT_ENTRY_TYPE, {
@@ -573,6 +577,7 @@ export default function registerShadowMinds(
             summary: result.summary.slice(0, 160),
             createdAt: result.createdAt,
           });
+          seenResults.add(result.id);
           currentInbox?.markReferenced?.(result.id);
         } catch {
           // A session that cannot record the reference keeps the result in

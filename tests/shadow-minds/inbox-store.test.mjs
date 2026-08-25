@@ -36,6 +36,12 @@ function addResult(inbox, index, overrides = {}) {
     shadowId: "session-synthesizer",
     shadowName: "Session synthesizer",
     payload: { summary: `finding ${index}` },
+    validationSchema: {
+      type: "object",
+      properties: { summary: { type: "string" } },
+      required: ["summary"],
+      additionalProperties: false,
+    },
     createdAt: 1_000 + index,
     ...overrides,
   });
@@ -46,7 +52,14 @@ function addResult(inbox, index, overrides = {}) {
 {
   const { sessionDir } = makeSessionRoot();
   const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1", now: () => 5_000 });
-  const entity = addResult(inbox, 1, { definitionHash: "abc123", schemaHash: "def456", configuredDelivery: "notify" });
+  const entity = addResult(inbox, 1, {
+    definitionHash: "abc123",
+    configuredDelivery: "notify",
+    lifecycle: "submitted",
+    toolCalls: 3,
+    trajectoryTruncated: true,
+    requests: [{ input: 10, output: 2, cacheRead: 4, cacheWrite: 1, cost: 0.01, ttftMs: 25 }],
+  });
 
   const partition = shadowPartitionPath(sessionDir, "sess-1");
   assert.ok(existsSync(partition), "the partition is created under the session directory");
@@ -59,8 +72,12 @@ function addResult(inbox, index, overrides = {}) {
   assert.equal(onDisk.delivery, "notified");
   assert.equal(onDisk.attention, "unread");
   assert.equal(onDisk.definitionHash, "abc123");
-  assert.equal(onDisk.schemaHash, "def456");
+  assert.match(onDisk.schemaHash, /^[0-9a-f]{16}$/);
   assert.equal(onDisk.configuredDelivery, "notify");
+  assert.equal(onDisk.lifecycle, "submitted");
+  assert.equal(onDisk.toolCalls, 3);
+  assert.equal(onDisk.trajectoryTruncated, true);
+  assert.deepEqual(onDisk.requests, [{ input: 10, output: 2, cacheRead: 4, cacheWrite: 1, cost: 0.01, ttftMs: 25 }]);
   assert.ok(!existsSync(join(partition, "results", `${entity.id}.json.tmp`)), "no temp files remain");
 
   const index = JSON.parse(readFileSync(join(partition, "index.json"), "utf8"));
@@ -84,6 +101,7 @@ function addResult(inbox, index, overrides = {}) {
   assert.equal(reloaded[0].id, entity.id);
   assert.equal(reloaded[0].attention, "read", "attention transitions persist");
   assert.deepEqual(reloaded[0].payload, { summary: "finding 1" });
+  assert.equal(reloaded[0].schemaHash.length, 16, "the validation schema remains hash-bound after reopen");
 }
 
 {
@@ -203,6 +221,76 @@ function addResult(inbox, index, overrides = {}) {
   const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
   assert.equal(reopened.list().length, 0, "tampered summaries do not surface unvalidated");
 }
+{
+  // A payload changed on disk must re-validate against the persisted effective
+  // output schema even when its size and stored summary remain valid.
+  const { sessionDir } = makeSessionRoot();
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const entity = addResult(inbox, 1, {
+    validationSchema: {
+      type: "object",
+      properties: { summary: { type: "string" } },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+  });
+  const entityPath = join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${entity.id}.json`);
+  const tampered = JSON.parse(readFileSync(entityPath, "utf8"));
+  tampered.payload = { injected: "bounded but outside the original schema" };
+  tampered.validationSchema = {
+    type: "object",
+    properties: { injected: { type: "string" } },
+    required: ["injected"],
+    additionalProperties: false,
+  };
+  writeFileSync(entityPath, JSON.stringify(tampered), "utf8");
+
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  assert.equal(reopened.list().length, 0, "schema-invalid tampered payloads never surface");
+  assert.ok(existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "quarantine")));
+}
+
+{
+  // A valid entity written before an index update (for example a process crash)
+  // is recovered by the next bounded validated scan even when index.json is valid.
+  const { sessionDir } = makeSessionRoot();
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const indexed = addResult(inbox, 1);
+  const partition = shadowPartitionPath(sessionDir, "sess-1");
+  const unindexed = JSON.parse(readFileSync(join(partition, "results", `${indexed.id}.json`), "utf8"));
+  unindexed.id = "shr-crash-recovered";
+  unindexed.createdAt = indexed.createdAt + 1;
+  unindexed.payload = { summary: "recovered after crash" };
+  unindexed.summary = "recovered after crash";
+  writeFileSync(join(partition, "results", "shr-crash-recovered.json"), JSON.stringify(unindexed), "utf8");
+
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  assert.deepEqual(reopened.list().map((entry) => entry.id), ["shr-crash-recovered", indexed.id]);
+}
+
+{
+  // Every caller-controlled filesystem key is one safe path segment.
+  const { sessionDir } = makeSessionRoot();
+  assert.throws(() => shadowPartitionPath(sessionDir, "../../escape"), /session id/i);
+  assert.throws(() => createPersistentShadowInbox({ sessionDir, sessionId: "safe", makeId: () => "../escape" }).add({
+    shadowId: "x", shadowName: "X", payload: { summary: "x" }, createdAt: 1,
+    validationSchema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false },
+  }), /result id/i);
+  assert.throws(() => shadowDebugRunDir(sessionDir, "safe", "../escape"), /run id/i);
+}
+
+{
+  // Existing symlinked storage nodes are refused rather than followed.
+  const root = mkdtempSync(join(tmpdir(), `shadow-symlink-${process.pid}-`));
+  roots.push(root);
+  const sessionDir = join(root, "sessions");
+  const outside = join(root, "outside");
+  mkdirSync(join(sessionDir, SHADOW_PARTITION_DIR), { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  const { symlinkSync } = await import("node:fs");
+  symlinkSync(outside, shadowPartitionPath(sessionDir, "sess-link"));
+  assert.throws(() => createPersistentShadowInbox({ sessionDir, sessionId: "sess-link" }), /real directory/i);
+}
 
 {
   // A corrupt index is rebuilt from a bounded validated scan.
@@ -310,14 +398,27 @@ function addResult(inbox, index, overrides = {}) {
 }
 
 {
-  // Crash-residue debug directories outside the index are swept away.
+  // Crash-residue debug directories outside the index are swept away, including
+  // credential-like content in both JSON keys and values.
   const { sessionDir } = makeSessionRoot();
   const residue = shadowDebugRunDir(sessionDir, "sess-1", "run-crashed");
   mkdirSync(residue, { recursive: true });
-  writeFileSync(join(residue, "session.jsonl"), JSON.stringify({ type: "message", text: "token=sk-unchecked" }), "utf8");
+  writeFileSync(join(residue, "session.jsonl"), JSON.stringify({ "Authorization: Bearer KEYSECRET": "token=sk-unchecked" }), "utf8");
   const outcome = sweepShadowDebugRetention(sessionDir, "sess-1");
   assert.ok(!existsSync(residue), "unsanitized crash residue is removed");
   assert.ok(outcome.removed.includes("run-crashed"));
+}
+
+{
+  // Finalized debug logs sanitize credential-like object keys as well as values.
+  const { sessionDir } = makeSessionRoot();
+  const runDir = shadowDebugRunDir(sessionDir, "sess-1", "run-keys");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "session.jsonl"), JSON.stringify({ "Authorization: Bearer KEYSECRET": "api_key=VALUESECRET" }), "utf8");
+  finalizeShadowDebugRun(sessionDir, "sess-1", { runId: "run-keys", shadowId: "lens", startedAt: 1, endedAt: 2, phase: "silent" });
+  const sanitized = readFileSync(join(runDir, "session.jsonl"), "utf8");
+  assert.doesNotMatch(sanitized, /KEYSECRET|VALUESECRET/);
+  assert.match(sanitized, /\[REDACTED\]/);
 }
 
 for (const root of roots) rmSync(root, { recursive: true, force: true });

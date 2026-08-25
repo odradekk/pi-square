@@ -774,7 +774,11 @@ function makeRuntimeService(initial) {
     trigger: "manual", payload: { summary: "Two decisions remain open." }, summary: "Two decisions remain open.",
     delivery: "notified", attention: "unread", createdAt: 2_000,
   };
-  const service = makeRuntimeService({ runs: [runningRun, settledRun], results: [result] });
+  const service = makeRuntimeService({
+    runs: [runningRun, settledRun],
+    results: [result],
+    evictionEvents: [{ kind: "evicted", id: "shr-old", at: 1_500, reason: "count" }],
+  });
   const manager = new ShadowManager(
     { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
     makeTui(),
@@ -788,7 +792,7 @@ function makeRuntimeService(initial) {
   let lines = render(manager).join("\n");
   assert.ok(lines.includes("Runs") && lines.includes("Inbox"), "the runs entry lists both sections");
   assert.ok(lines.includes("1 running · 1 settled"), "run counts render");
-
+  assert.ok(lines.includes("1 eviction events"), "retention events are visible from the inbox summary");
   manager.handleInput("\r");
   lines = render(manager).join("\n");
   assert.ok(lines.includes("Session synthesizer (session-synthesizer)"), "runs list renders");
@@ -837,6 +841,27 @@ function makeRuntimeService(initial) {
   manager.handleInput("down");
   manager.handleInput("\r");
   assert.deepEqual(service.state.deletions, ["shr-1"], "delete removes the result through the runtime");
+}
+
+{
+  // Persisted retention events render in the inbox rather than remaining an
+  // internal store-only audit surface.
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const service = makeRuntimeService({
+    runs: [], results: [],
+    evictionEvents: [{ kind: "evicted", id: "shr-old", at: 1_500, reason: "bytes" }],
+  });
+  const manager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {},
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+  );
+  manager.handleInput("r");
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  const lines = render(manager).join("\n");
+  assert.ok(lines.includes("Evicted result shr-old"));
+  assert.ok(lines.includes("bytes retention"));
 }
 
 console.log("shadow-minds manager tests: OK");
