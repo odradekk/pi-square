@@ -38,6 +38,14 @@ function render(component, width = 100) {
   return component.render(width).map((line) => stripVTControlCharacters(String(line).replace(PLAIN, "")));
 }
 
+async function waitFor(predicate, message, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail(message);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+}
+
 // ── Guide content contract ───────────────────────────────────────────
 
 {
@@ -251,12 +259,15 @@ function fakePi() {
     const review = manager.render(100).join("\n");
     assert.ok(review.includes("LAYER MARKDOWN"), "the draft reaches the review");
     manager.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(
+      () => done.length === 1 && confirms.length === 1 && existsSync(join(project, ".pi", "shadow-minds", "e2e-role.md")),
+      "the approved draft did not finish its coordinated write",
+    );
     assert.equal(done.length, 1, "the manager closed itself for the approval");
     assert.equal(confirms.length, 1, "one coordinator-routed confirmation");
     assert.ok(confirms[0].signal, "the confirmation receives the coordinator abort signal");
     assert.ok(confirms[0].title.includes("project"), "the confirmation names the scope");
-    const { readFileSync, existsSync } = await import("node:fs");
+    const { readFileSync } = await import("node:fs");
     const written = join(project, ".pi", "shadow-minds", "e2e-role.md");
     assert.ok(existsSync(written), "the approved draft landed on disk");
     const onDisk = readFileSync(written, "utf8");
