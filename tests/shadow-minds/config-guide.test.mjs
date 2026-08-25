@@ -1598,4 +1598,374 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
   }
 }
 
+// ── Completion gate wiring (#160) ──────────────────────────────────
+
+function writeGateDefinition(dir, id, name, extra = []) {
+  writeFileSync(join(dir, `${id}.md`), [
+    "---",
+    "promptVersion: 1",
+    `id: ${id}`,
+    `name: ${name}`,
+    "enabled: true",
+    "triggers: [completion]",
+    "delivery: wake",
+    "completionGate: true",
+    "tools: []",
+    ...extra,
+    "---",
+    "Review the finished answer.",
+    "",
+  ].join("\n"));
+}
+
+/** Resolvable release for held completion runs: `control.release.resolve()`. */
+function makeGateControl(holds) {
+  let resolve;
+  const promise = new Promise((res) => { resolve = res; });
+  return { clock: 1_000, holds, release: { promise, resolve } };
+}
+
+function gateEventCtx(project, sinks, mode = "tui") {
+  return {
+    cwd: project,
+    hasUI: true,
+    mode,
+    isProjectTrusted: () => true,
+    ui: {
+      custom: async () => {},
+      confirm: async () => true,
+      notify(message, level) { sinks.notifications.push({ message, level }); },
+      setStatus(key, text) { sinks.statusCalls.push({ key, text }); },
+    },
+    model: { provider: "acme", id: "parent-model" },
+    modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 200_000 }) },
+    sessionManager: {
+      getSessionDir: () => "",
+      getSessionFile: () => undefined,
+      getSessionId: () => "sess-gate",
+      getLeafId: () => "leaf-1",
+      getBranch: () => [],
+      buildContextEntries: () => [],
+    },
+  };
+}
+
+function gateRuntimeDeps(sinks, control) {
+  return {
+    now: () => control.clock,
+    async createSession(input) {
+      return { session: { customTools: input.customTools } };
+    },
+    async runSession(input) {
+      if (control.holds > 0) {
+        control.holds -= 1;
+        // Held runs wait for an explicit release or a cancellation abort.
+        await Promise.race([
+          control.release.promise,
+          new Promise((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true })),
+        ]);
+        if (input.signal.aborted) {
+          return { status: "aborted", prompted: true, timedOut: false, finalText: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, streamingCompleted: false, messages: [] };
+        }
+      }
+      const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+      if (submit) {
+        await submit.execute("c1", { payload: JSON.stringify({ summary: "answer review finding" }) }, undefined, undefined, sinks.eventCtx);
+      }
+      return { status: "completed", prompted: true, timedOut: false, finalText: "", model: "acme/parent-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 }, streamingCompleted: true, messages: [] };
+    },
+  };
+}
+
+function driveRealUserRun(harness, eventCtx, project, text = "finish it") {
+  harness.handlers.get("input")({ type: "input", text, source: "interactive" });
+  return harness.handlers.get("before_agent_start")(
+    { type: "before_agent_start", prompt: text, systemPromptOptions: { cwd: project } },
+    eventCtx,
+  );
+}
+
+const previousAgentDir160 = process.env.PI_AGENT_DIR;
+const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
+
+{
+  // Answer-after-review: the gate holds the subsystem settle after the
+  // answer rendered; the completion run finishes inside the window; the
+  // close forwards the settle and the result delivers with its normal
+  // wake policy — framing and delivery untouched by the gate.
+  const dir = mkdtempSync(join(tmpdir(), "shadow-gate-review-"));
+  const project = join(dir, "project");
+  const agentShadowDir = join(dir, "agent", "shadow-minds");
+  mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+  mkdirSync(project, { recursive: true });
+  writeGateDefinition(agentShadowDir, "gate-lens", "Gate lens");
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = gateEventCtx(project, sinks);
+    sinks.eventCtx = eventCtx;
+    const control = makeGateControl(1);
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      gateRuntimeDeps(sinks, control),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    // Text-only real-user run: no tool events at all.
+    await driveRealUserRun(harness, eventCtx, project);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: { stopReason: "end_turn" }, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    assert.equal(state.gate?.open, true, "the completion run holds the gate open");
+    assert.equal(state.runtime.snapshot().results.length, 0, "no result yet: the run is held");
+    // The answer has rendered (turn_end, agent_end fired); the settle is held.
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    assert.equal(shadowDeliveries(harness).length, 0, "the held settle delivers nothing");
+    // Release the completion run inside the window: it submits, the gate
+    // closes completed, and the forwarded settle delivers the wake result.
+    const held = state.runtime.snapshot().runs.find((run) => run.phase === "running");
+    assert.ok(held, "the completion run is running inside the window");
+    control.release.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(state.gate?.open, false, "the gate closed once the completion work drained");
+    const deliveries = shadowDeliveries(harness);
+    assert.equal(deliveries.length, 1, "the close forwards the settle and delivers");
+    assert.equal(deliveries[0][2].triggerTurn, true, "delivery policy is untouched by the gate");
+    assert.match(deliveries[0][1].content, /\[Shadow advisory\]/, "the framing is unchanged");
+    await harness.handlers.get("message_start")({ type: "message_start", message: deliveries[0][1] }, eventCtx);
+    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered");
+    assert.equal(state.runtime.snapshot().results[0].configuredDelivery, "wake", "the gate never changes delivery implicitly");
+  } finally {
+    if (previousAgentDir160 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir160;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Deadline: unstarted completion pending items cancel at the window end,
+  // started runs continue, and the settle forwards for the normal path.
+  const dir = mkdtempSync(join(tmpdir(), "shadow-gate-deadline-"));
+  const project = join(dir, "project");
+  mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+  mkdirSync(project, { recursive: true });
+  writeGateDefinition(join(dir, "agent", "shadow-minds"), "gate-a", "Gate A");
+  writeGateDefinition(join(dir, "agent", "shadow-minds"), "gate-b", "Gate B");
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = gateEventCtx(project, sinks);
+    sinks.eventCtx = eventCtx;
+    const control = makeGateControl(1);
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({
+        ...DEFAULT_SHADOW_MINDS_BASE(),
+        shadowMinds: {
+          enabled: true,
+          defaults: { ...DEFAULT_SHADOW_MINDS, maxConcurrentRuns: 1, completionGateWindowSeconds: 1 },
+        },
+      }),
+      gateRuntimeDeps(sinks, control),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    await driveRealUserRun(harness, eventCtx, project);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    assert.equal(state.gate?.open, true);
+    assert.equal(state.scheduler.pendingCompletions().length, 1, "the busy slot leaves one completion unstarted");
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    // The one-second window elapses: the unstarted item cancels.
+    await new Promise((resolve) => setTimeout(resolve, 1_400));
+    assert.equal(state.gate?.open, false, "the deadline closed the gate");
+    assert.equal(state.scheduler.pendingCompletions().length, 0, "the unstarted completion was cancelled");
+    assert.ok(sinks.notifications.some((entry) => /completion gate closed \(deadline\)/.test(entry.message)), "the cancellation is visible");
+    // The started run continues past the deadline and delivers normally.
+    const held = state.runtime.snapshot().runs.find((run) => run.phase === "running");
+    assert.ok(held, "the started completion run continues");
+    control.release.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(state.runtime.snapshot().results.length, 1, "the started run still produced its result");
+  } finally {
+    if (previousAgentDir160 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir160;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // User abort: the gate closes aborted, pending completions cancel with
+  // the current-task runs, and nothing delivers.
+  const dir = mkdtempSync(join(tmpdir(), "shadow-gate-abort-"));
+  const project = join(dir, "project");
+  mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+  mkdirSync(project, { recursive: true });
+  writeGateDefinition(join(dir, "agent", "shadow-minds"), "gate-x", "Gate X");
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = gateEventCtx(project, sinks);
+    sinks.eventCtx = eventCtx;
+    const control = makeGateControl(1);
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      gateRuntimeDeps(sinks, control),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    await driveRealUserRun(harness, eventCtx, project);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    assert.equal(state.gate?.open, true);
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    // The next run is aborted by the user: the gate and its work cancel.
+    harness.handlers.get("input")({ type: "input", text: "more", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "more", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: { stopReason: "aborted" }, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [{ role: "assistant", stopReason: "aborted" }] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(state.gate?.open, false, "the gate closed at the new task boundary");
+    assert.equal(shadowDeliveries(harness).length, 0, "an aborted task delivers nothing");
+    // The old task's started completion run continues (only current-task runs
+    // cancel on abort); its late result lands inbox-only through the stale
+    // notify downgrade — never an automatic delivery.
+    control.release.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const late = state.runtime.snapshot().results[0];
+    assert.ok(late, "the continued run still produced its result");
+    assert.equal(late.configuredDelivery, "notify", "a stale-task result downgrades to notify");
+    assert.equal(late.delivery, "notified", "the late result stays inbox-only");
+    assert.equal(shadowDeliveries(harness).length, 0, "nothing delivers after the abort");
+  } finally {
+    if (previousAgentDir160 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir160;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Extension-origin continuations never trigger completions.
+  const dir = mkdtempSync(join(tmpdir(), "shadow-gate-ext-"));
+  const project = join(dir, "project");
+  mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+  mkdirSync(project, { recursive: true });
+  writeGateDefinition(join(dir, "agent", "shadow-minds"), "gate-ext", "Gate Ext");
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = gateEventCtx(project, sinks);
+    sinks.eventCtx = eventCtx;
+    const control = makeGateControl(0);
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      gateRuntimeDeps(sinks, control),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    harness.handlers.get("input")({ type: "input", text: "extension continuation", source: "extension" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "extension continuation", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    assert.equal(state.gate?.open, false, "an extension continuation never opens the gate");
+    assert.equal(state.runtime.snapshot().results.length, 0, "no completion run started");
+    assert.equal(state.runtime.snapshot().runs.length, 0, "no activation was dispatched");
+  } finally {
+    if (previousAgentDir160 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir160;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Print/JSON quit: the bounded headless drain waits for the started
+  // completion run, persists, and delivers quietly — no turn is started.
+  const dir = mkdtempSync(join(tmpdir(), "shadow-gate-drain-"));
+  const project = join(dir, "project");
+  mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+  mkdirSync(project, { recursive: true });
+  writeGateDefinition(join(dir, "agent", "shadow-minds"), "gate-drain", "Gate Drain");
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const sessionDir = join(dir, "sessions");
+    const sessionFile = join(sessionDir, "2026-08-25T00-00-00-000Z_sess-drain.jsonl");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(sessionFile, "{}\n", "utf8");
+    const eventCtx = {
+      ...gateEventCtx(project, sinks, "print"),
+      sessionManager: {
+        getSessionDir: () => sessionDir,
+        getSessionFile: () => sessionFile,
+        getSessionId: () => "sess-drain",
+        getLeafId: () => "leaf-1",
+        getBranch: () => [],
+        buildContextEntries: () => [],
+      },
+    };
+    sinks.eventCtx = eventCtx;
+    const control = makeGateControl(1);
+    // Real Pi appends a quiet custom message and emits its message_start
+    // synchronously during sendMessage — before the shutdown handler can
+    // reset the delivery machine. Mirror that ordering here.
+    const rawSend = harness.pi.sendMessage.bind(harness.pi);
+    harness.pi.sendMessage = (message, options) => {
+      rawSend(message, options);
+      if (message?.customType === "pi-square.shadow-notification") {
+        harness.handlers.get("message_start")?.({ type: "message_start", message }, eventCtx);
+      }
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({
+        ...DEFAULT_SHADOW_MINDS_BASE(),
+        shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS, headlessDrainSeconds: 1 } },
+      }),
+      gateRuntimeDeps(sinks, control),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    await driveRealUserRun(harness, eventCtx, project);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    assert.equal(state.gate?.open, true);
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    // The quit begins while the completion run is still held: the drain
+    // waits, the run finishes and persists inside the window, and the
+    // delivery flush is quiet.
+    const shutdown = harness.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    control.release.resolve();
+    await shutdown;
+    const deliveries = shadowDeliveries(harness);
+    assert.equal(deliveries.length, 1, "the drain delivered the persisted result");
+    assert.equal(deliveries[0][2].triggerTurn, false, "a headless drain never starts a turn");
+    assert.match(deliveries[0][1].content, /\[Shadow advisory\]/);
+    // The result persisted to the partition; transcript observation confirms
+    // the quiet delivery on the surviving inbox.
+    assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "sess-drain")), "the drain persisted the partition");
+    await harness.handlers.get("message_start")({ type: "message_start", message: deliveries[0][1] }, eventCtx);
+    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered", "transcript observation confirms the quiet delivery");
+  } finally {
+    if (previousAgentDir160 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir160;
+    if (previousCodingAgentDir160 === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir160;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log("shadow-minds config guide tests: OK");

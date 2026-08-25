@@ -298,6 +298,19 @@ What works today:
   (parent-model filter, read-only envelope, model and thinking resolution)
   and freeze the parent core, trusted project rules, and working directory
   once per real user task from that run's prompt options.
+- A definition subscribed to `completion` may declare `completionGate: true`
+  (valid only with that trigger): when its run ends, Shadow Minds holds only
+  its own settled handling for the configured `completionGateWindowSeconds`
+  (capped) after the answer has already rendered — the assistant message is
+  never delayed or altered. Valid gate results queue at the gate close, the
+  earliest safe continuation boundary, under their normal delivery policy
+  while other gate runs continue independently. At the deadline started runs
+  continue and unstarted completion items cancel visibly; late or stale
+  results use the normal notify downgrade. A new user task, pause, abort,
+  session switch, or shutdown cancels the applicable work with no
+  cross-session delivery, and a print/JSON quit drains started runs for the
+  bounded `headlessDrainSeconds`, persists, and delivers quietly without
+  starting a turn before cancelling at the deadline.
 - Valid results deliver to the parent model only through the definition's
   fixed policy, always as source-attributed advisory evidence that
   supplements — never replaces — the system prompt, tools, and user

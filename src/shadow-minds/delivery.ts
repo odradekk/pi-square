@@ -50,6 +50,11 @@ export interface ShadowDeliveryTiming {
   currentTaskEpoch: number;
   /** True while a parent agent run is between start and settle. */
   parentRunning: boolean;
+  /**
+   * Headless drain (#160): deliveries append to the transcript without
+   * triggering a model turn, so a print/JSON quit never starts new work.
+   */
+  quiet?: boolean;
 }
 
 /** A policy entry the gate decides for: `notify` never reaches the gate. */
@@ -289,9 +294,11 @@ export function createShadowDeliveryController(options: {
           if (entry.value.kind === "result") options.getRuntime()?.sendResultForDelivery(entry.id);
         }
         sequence += 1;
-        const sendOptions = timing.parentRunning
-          ? { triggerTurn: true as const, deliverAs: "steer" as const }
-          : { triggerTurn: true as const };
+        const sendOptions = timing.quiet
+          ? { triggerTurn: false as const }
+          : timing.parentRunning
+            ? { triggerTurn: true as const, deliverAs: "steer" as const }
+            : { triggerTurn: true as const };
         options.pi.sendMessage(
           {
             customType: SHADOW_NOTIFICATION_TYPE,
@@ -325,7 +332,9 @@ export function createShadowDeliveryController(options: {
     // Advisory results and infrastructure failure summaries never coalesce:
     // they carry different framing and would not fit one message.
     batchKey: (value) => value.kind,
-    isIdle: () => !options.timing().parentRunning,
+    // A headless drain defers every flush to its single settle point: an
+    // immediate enqueue flush followed by the settle would duplicate.
+    isIdle: () => !options.timing().parentRunning && !options.timing().quiet,
     onPendingChange: options.onPendingChange,
   });
 

@@ -82,6 +82,7 @@ import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
 import { createShadowInbox, type ShadowInbox } from "./result";
 import { createShadowDeliveryController, type ShadowDeliveryController } from "./delivery";
+import { createCompletionGate, type ShadowCompletionGate } from "./gate";
 
 /** Parent-session custom entry type for one bounded result reference. */
 export const SHADOW_RESULT_ENTRY_TYPE = "pi-square.shadow-result";
@@ -95,6 +96,8 @@ export interface ShadowMindsState {
   scheduler: ShadowScheduler;
   /** Confirmed delivery of Shadow results as advisory evidence (#159). */
   delivery?: ShadowDeliveryController;
+  /** Bounded answer-after-review completion gate (#160). */
+  gate?: ShadowCompletionGate;
   /** Current parent-run sequence used to bind manual activation provenance. */
   currentParentRun(): number;
   /** Frozen per-task snapshot used by every automatic activation of the task. */
@@ -619,6 +622,7 @@ export default function registerShadowMinds(
     return {
       ...scheduler,
       pause() {
+        state.gate?.close("paused");
         scheduler.pause();
         refreshStatus();
       },
@@ -670,6 +674,35 @@ export default function registerShadowMinds(
       return snapshot(state.registry, state.projectTrusted, effective);
     },
   };
+  // ── Bounded completion gate (#160) ─────────────────────────────────
+  // The gate never delays the parent answer: it only holds this extension's
+  // settled handling for a bounded window after the answer has rendered.
+  state.gate = createCompletionGate({
+    now: () => Date.now(),
+    config: effectiveConfig,
+    definitions: () => state.registry.definitions,
+    scheduler: {
+      pendingCompletions: () => state.scheduler.pendingCompletions(),
+      cancelPendingCompletions: () => state.scheduler.cancelPendingCompletions(),
+    },
+    hasRunningCompletionRuns: () => state.runtime.snapshot().runs.some(
+      (run) => run.phase === "running" && run.trigger === "completion",
+    ),
+    forwardSettle: (_at) => {
+      if (!settleHeld) return;
+      settleHeld = false;
+      state.delivery?.handleAgentSettled();
+      refreshStatus();
+    },
+    onClose: (reason, cancelled) => {
+      if (cancelled > 0 && ctx?.hasUI) {
+        ctx.ui.notify(
+          notifyText(`shadow-minds: completion gate closed (${reason}); ${cancelled} queued completion run${cancelled === 1 ? "" : "s"} cancelled`),
+          "info",
+        );
+      }
+    },
+  });
 
   let ctx: ExtensionContext | undefined;
   const seenPhases = new Map<string, string>();
@@ -747,6 +780,10 @@ export default function registerShadowMinds(
   let parentRunSeq = 0;
   let parentRunActive = false;
   let parentRunPrepared = false;
+  // Completion-gate state: the subsystem settle is held while the gate is
+  // open, and a headless drain makes every delivery quiet (no new turn).
+  let settleHeld = false;
+  let draining = false;
   state.delivery = createShadowDeliveryController({
     pi,
     getRuntime: () => state.runtime,
@@ -754,6 +791,7 @@ export default function registerShadowMinds(
       currentRun: parentRunSeq,
       currentTaskEpoch: state.scheduler.snapshot().taskEpoch,
       parentRunning: parentRunActive,
+      ...(draining ? { quiet: true } : {}),
     }),
     onDegrade: (count) => {
       if (!ctx?.hasUI) return;
@@ -794,6 +832,9 @@ export default function registerShadowMinds(
     pendingIdleInput = undefined;
     const realUserTask = source === "real";
     if (source) state.scheduler.handleInput(realUserTask ? "interactive" : "extension");
+    // A new real-user task ends any held gate window: its unstarted
+    // completions cancel and resolve through the stale-task downgrade.
+    if (realUserTask) state.gate?.close("new-task");
     state.taskSnapshot = taskSnapshotFromOptions(
       event?.systemPromptOptions,
       sessionCtx?.cwd ?? state.cwd,
@@ -824,6 +865,14 @@ export default function registerShadowMinds(
 
   pi.on("agent_settled", () => {
     parentRunActive = false;
+    // The completion gate (#160) holds the subsystem settle for its bounded
+    // window: the parent answer has already rendered; only this extension's
+    // settled handling waits. The close forwards the settle exactly once.
+    if (state.gate?.open) {
+      settleHeld = true;
+      refreshStatus();
+      return;
+    }
     state.delivery?.handleAgentSettled();
   });
 
@@ -906,6 +955,8 @@ export default function registerShadowMinds(
     }
     state.scheduler.handleAgentEnd({ interrupted, checkpoint });
     state.delivery?.handleAgentEnd(event?.messages);
+    if (interrupted) state.gate?.close("aborted");
+    else state.gate?.maybeOpen();
     refreshStatus();
     streamingInputDesynchronized = false;
     queuedSteeringSources.length = 0;
@@ -965,9 +1016,12 @@ export default function registerShadowMinds(
     state.runtime = makeRuntime(inbox);
     state.scheduler = makeScheduler();
     state.delivery?.reset();
+    state.gate?.reset();
     parentRunSeq = 0;
     parentRunActive = false;
     parentRunPrepared = false;
+    settleHeld = false;
+    draining = false;
     // A result left pending by a lost session never resumes automatically:
     // it returns inbox-only with notify policy and waits for an explicit send.
     const recoveredDeliveries = inbox?.recoverPendingDelivery?.() ?? 0;
@@ -996,10 +1050,46 @@ export default function registerShadowMinds(
     }
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event) => {
+    // Session replacement and interactive quit cancel the applicable gate
+    // and Shadow work; there is no continuation to drain into.
+    state.gate?.close("session");
+    // Print/JSON quits are headless: Pi awaits this handler before the
+    // process exits, so started completion runs get one bounded drain
+    // window to finish, persist, and deliver quietly — no turn is started.
+    const headless = ctx?.mode === "print" || ctx?.mode === "json";
+    if (headless && effectiveConfig().enabled) {
+      const seconds = Math.min(
+        Math.max(1, effectiveConfig().defaults.headlessDrainSeconds),
+        300,
+      );
+      const deadline = Date.now() + seconds * 1_000;
+      draining = true;
+      try {
+        while (Date.now() < deadline
+          && state.runtime.snapshot().runs.some((run) => run.phase === "running")) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        // One single settle point: the drained close cancels unstarted
+        // completions and forwards a held settle; anything still owed
+        // flushes here — quietly, with transcript confirmation.
+        state.gate?.close("drained");
+        if (settleHeld) {
+          settleHeld = false;
+          state.delivery?.handleAgentSettled();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      } finally {
+        draining = false;
+        settleHeld = false;
+      }
+    }
     state.runtime.reset("Parent Pi session shutdown");
     state.scheduler.reset();
     state.delivery?.reset();
+    state.gate?.reset();
+    settleHeld = false;
+    draining = false;
     seenPhases.clear();
     statusContext?.ui.setStatus?.(SHADOW_STATUS_KEY, undefined);
     statusContext = undefined;
@@ -1028,6 +1118,8 @@ export default function registerShadowMinds(
       const sessionCtx = ctx;
       // A settled run may have freed a concurrency slot for queued work.
       state.scheduler.handleRunSettled();
+      // Every gate-subscribed completion draining closes the gate early.
+      state.gate?.notifyActivity();
       refreshStatus();
       const results = state.runtime.snapshot().results;
       for (const result of results) {

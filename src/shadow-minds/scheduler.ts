@@ -289,6 +289,16 @@ export interface ShadowScheduler {
   /** A run settled: a concurrency slot may have freed. */
   handleRunSettled(): void;
   /**
+   * Shadow IDs holding a pending, not-yet-started completion activation
+   * (completion-gate support, #160).
+   */
+  pendingCompletions(): string[];
+  /**
+   * Cancels every pending completion activation — started completion runs
+   * continue — and returns how many were cancelled.
+   */
+  cancelPendingCompletions(): number;
+  /**
    * Whether the next turn/agent boundary may consume a trajectory
    * checkpoint: capture is skipped otherwise so a disabled or extension-
    * continuation turn never pays the rendering cost.
@@ -635,6 +645,21 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
     },
     handleRunSettled() {
       dispatch();
+    },
+    pendingCompletions() {
+      return [...pending.values()]
+        .filter((activation) => activation.bestTrigger === "completion")
+        .map((activation) => activation.shadowId);
+    },
+    cancelPendingCompletions() {
+      let cancelled = 0;
+      for (const [id, activation] of [...pending.entries()]) {
+        if (activation.bestTrigger !== "completion") continue;
+        pending.delete(id);
+        cancelled += 1;
+      }
+      if (cancelled > 0) recordDiagnostic(`Completion gate cancelled ${cancelled} unstarted completion activation${cancelled === 1 ? "" : "s"}.`);
+      return cancelled;
     },
     shouldCapture() {
       return realUserRunActive && !paused;
