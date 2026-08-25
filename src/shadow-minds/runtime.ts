@@ -61,6 +61,29 @@ function cohortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, COHORT_HASH_CHARS);
 }
 
+/** Cohort hash for callers that hold raw authority text (index wiring). */
+export function shadowCohortHash(value: string): string {
+  return cohortHash(value);
+}
+
+/**
+ * Safe model projection for the model cohort hash: only string identity
+ * fields, so credentials, headers, and endpoint configuration never enter
+ * the hashed bytes.
+ */
+function modelCohortProjection(request: ShadowManualRunRequest): Record<string, string> {
+  const model = request.modelResolution?.model;
+  if (!model || typeof model !== "object") {
+    return { label: request.modelResolution?.label ?? "(inherited)" };
+  }
+  const record = model as Record<string, unknown>;
+  return {
+    ...(typeof record.provider === "string" ? { provider: record.provider } : {}),
+    ...(typeof record.id === "string" ? { id: record.id } : {}),
+    ...(typeof record.api === "string" ? { api: record.api } : {}),
+  };
+}
+
 /** Bounded definition-source hash recorded with every result entity. */
 function definitionHashOf(definition: EffectiveShadowDefinition): string | undefined {
   const layers = definition.layers;
@@ -96,8 +119,45 @@ export interface ShadowRequestMetric {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  /** One-based turn ordinal this request belongs to. */
+  turn: number;
+  /** Tool executions attributed to the request that issued them. */
+  toolCalls: number;
   /** Time from request start to the first assistant message start. */
   ttftMs?: number;
+  /**
+   * Present only when the provider report carried cache fields: an
+   * unreported (or unsupported) cache value stays absent, never a zero.
+   */
+  cacheReported?: boolean;
+}
+
+/**
+ * Stable cache-cohort hashes for one run: hash prefixes only, never prompt
+ * text. Grouping axes (model, SYSTEM, tool schema) reflect the prefix a
+ * provider may reuse; the rest record what else varied between runs.
+ */
+export interface ShadowCohortHashes {
+  /** Safe provider/adapter/model projection of the resolved run model. */
+  model: string;
+  thinking: string;
+  toolSchema: string;
+  system: string;
+  cwd: string;
+  trajectory: string;
+  trajectoryCheckpoint: string;
+  truncation: string;
+  parentCore?: string;
+  projectRules?: string;
+}
+
+/**
+ * Authority hashes computed where the raw text is visible (the frozen task
+ * snapshot); the runtime stores only these prefixes, never the prompt text.
+ */
+export interface ShadowAuthorityCohort {
+  parentCoreHash?: string;
+  projectRulesHash?: string;
 }
 
 export interface ShadowRunView {
@@ -124,10 +184,8 @@ export interface ShadowRunView {
   toolNames?: string[];
   /** Bounded warnings for requested tools unavailable at run start. */
   toolWarnings?: string[];
-  /** Stable prompt/tool/trajectory cache-cohort hashes. */
-  systemHash?: string;
-  toolSchemaHash?: string;
-  trajectoryHash?: string;
+  /** Stable cache-cohort hashes; hash prefixes only, never prompt text. */
+  cohorts?: ShadowCohortHashes;
   /** Whether the frozen trajectory was deterministically truncated. */
   trajectoryTruncated?: boolean;
   /** Per-request usage and TTFT, bounded by the turn budget. */
@@ -158,6 +216,8 @@ export interface ShadowManualRunRequest {
    * no-tool trial; `submit_shadow_result` is always appended last.
    */
   envelope?: ShadowToolEnvelope;
+  /** Authority cohort hashes; see `ShadowAuthorityCohort`. */
+  authorityCohort?: ShadowAuthorityCohort;
   /**
    * Debug partition for a debug-enabled definition: the child session
    * persists native JSONL there and the settled run is sanitized, indexed,
@@ -415,6 +475,18 @@ export function createShadowRuntime(input: {
         description: SUBMIT_SHADOW_RESULT_DESCRIPTION,
         parameters: SUBMIT_SHADOW_RESULT_PARAMETERS,
       }]));
+    const cohorts: ShadowCohortHashes = {
+      model: cohortHash(canonicalSchemaJson(modelCohortProjection(request))),
+      thinking: cohortHash(request.thinkingLevel ?? "(inherited)"),
+      toolSchema: toolSchemaHash,
+      system: cohortHash(request.system),
+      cwd: cohortHash(request.cwd),
+      trajectory: cohortHash(`${request.trajectory.text}\0${request.trajectory.truncation}`),
+      trajectoryCheckpoint: cohortHash(canonicalSchemaJson(request.trajectory)),
+      truncation: cohortHash(request.trajectory.truncation),
+      ...(request.authorityCohort?.parentCoreHash !== undefined ? { parentCore: request.authorityCohort.parentCoreHash } : {}),
+      ...(request.authorityCohort?.projectRulesHash !== undefined ? { projectRules: request.authorityCohort.projectRulesHash } : {}),
+    };
     const view: ShadowRunView = {
       id: deps.makeRunId?.() ?? `run-${(++runSequence).toString(36)}`,
       shadowId: definition.id,
@@ -432,9 +504,7 @@ export function createShadowRuntime(input: {
       ...(request.modelResolution?.label ? { model: request.modelResolution.label } : {}),
       toolNames,
       ...(envelope && envelope.warnings.length > 0 ? { toolWarnings: envelope.warnings } : {}),
-      systemHash: cohortHash(request.system),
-      toolSchemaHash,
-      trajectoryHash: cohortHash(`${request.trajectory.text}\0${request.trajectory.truncation}`),
+      cohorts,
       ...(request.trajectory.truncation !== "none" ? { trajectoryTruncated: true } : {}),
     };
 
@@ -502,13 +572,18 @@ export function createShadowRuntime(input: {
       const requests: ShadowRequestMetric[] = [];
       let currentRequest: ShadowRequestMetric | undefined;
       let requestStartedAt: number | undefined;
+      let turnOrdinal = 0;
+      // The request that last closed: tool executions between requests
+      // belong to the request that issued them.
+      let lastRequest: ShadowRequestMetric | undefined;
 
       const onEvent = (event: any) => {
         if (event?.type === "turn_start") {
           if (!submitted && !abortReason && usage.turns >= maxTurns) {
             forceAbort("max_turns");
           }
-          currentRequest = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+          turnOrdinal += 1;
+          currentRequest = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turn: turnOrdinal, toolCalls: 0 };
           requestStartedAt = deps.now();
           return;
         }
@@ -521,10 +596,20 @@ export function createShadowRuntime(input: {
         if (event?.type === "message_end" && event.message?.role === "assistant") {
           // The request finalizes at its assistant message end whether or not
           // the provider attached usage; a missing report lands as zeros so
-          // the request count and TTFT stay observable.
+          // the request count and TTFT stay observable. Cache values are the
+          // exception: a report without cache fields marks the request
+          // unreported so an unsupported adapter never reads as a zero.
           if (currentRequest) {
             addUsageValues(currentRequest, event.message?.usage);
+            const report = event.message?.usage;
+            if (
+              report && typeof report === "object"
+              && (typeof report.cacheRead === "number" || typeof report.cacheWrite === "number")
+            ) {
+              currentRequest.cacheReported = true;
+            }
             if (requests.length < REQUEST_METRICS_MAX) requests.push(currentRequest);
+            lastRequest = currentRequest;
             currentRequest = undefined;
             requestStartedAt = undefined;
           }
@@ -532,6 +617,8 @@ export function createShadowRuntime(input: {
         }
         if (event?.type === "tool_execution_start") {
           toolCalls += 1;
+          const owner = currentRequest ?? lastRequest;
+          if (owner) owner.toolCalls += 1;
           if (!submitted && !abortReason && toolCalls > maxToolCalls) {
             forceAbort("max_tool_calls");
           }

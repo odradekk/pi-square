@@ -574,10 +574,10 @@ function baseRequest(overrides = {}) {
   assert.deepEqual(created.customTools.map((tool) => tool.name), ["codegraph", SUBMIT_SHADOW_RESULT_TOOL]);
   const view = runtime.snapshot().runs[0];
   assert.deepEqual(view.toolNames, ["read", "codegraph"]);
-  assert.equal(view.toolSchemaHash, "0123456789abcdef");
+  assert.equal(view.cohorts.toolSchema, "0123456789abcdef");
   assert.deepEqual(view.toolWarnings, ["Tool 'bash' is not in the Shadow-safe catalog and was excluded."]);
-  assert.match(view.systemHash, /^[0-9a-f]{16}$/);
-  assert.match(view.trajectoryHash, /^[0-9a-f]{16}$/);
+  assert.match(view.cohorts.system, /^[0-9a-f]{16}$/);
+  assert.match(view.cohorts.trajectory, /^[0-9a-f]{16}$/);
 }
 
 {
@@ -587,7 +587,7 @@ function baseRequest(overrides = {}) {
   const run = runtime.startManualRun(baseRequest());
   await run.done;
   assert.deepEqual(fake.created[0].tools, [SUBMIT_SHADOW_RESULT_TOOL]);
-  assert.match(runtime.snapshot().runs[0].toolSchemaHash, /^[0-9a-f]{16}$/);
+  assert.match(runtime.snapshot().runs[0].cohorts.toolSchema, /^[0-9a-f]{16}$/);
 }
 
 {
@@ -599,7 +599,7 @@ function baseRequest(overrides = {}) {
     trajectory: { text: "[user] hello", includedMessages: 1, totalMessages: 1, truncated: true, truncation: "dropped" },
   })).done;
   const [dropped, full] = runtime.snapshot().runs;
-  assert.notEqual(dropped.trajectoryHash, full.trajectoryHash);
+  assert.notEqual(dropped.cohorts.trajectory, full.cohorts.trajectory);
 }
 
 // ── per-request usage and TTFT ────────────────────────────────────
@@ -617,7 +617,7 @@ function baseRequest(overrides = {}) {
   await runtime.startManualRun(baseRequest()).done;
   const view = runtime.snapshot().runs[0];
   assert.deepEqual(view.requests, [
-    { input: 700, output: 80, cacheRead: 12, cacheWrite: 4, cost: 0.02, ttftMs: 120 },
+    { input: 700, output: 80, cacheRead: 12, cacheWrite: 4, cost: 0.02, turn: 1, toolCalls: 0, ttftMs: 120, cacheReported: true },
   ]);
 }
 
@@ -633,7 +633,7 @@ function baseRequest(overrides = {}) {
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
   await runtime.startManualRun(baseRequest()).done;
   assert.deepEqual(runtime.snapshot().runs[0].requests, [
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, ttftMs: 90 },
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turn: 1, toolCalls: 0, ttftMs: 90 },
   ]);
 }
 
