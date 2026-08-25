@@ -353,4 +353,43 @@ function makeHarness(options = {}) {
   assert.equal(controller.pendingCount(), 0, "reset clears the pending set");
 }
 
+// ── Review regressions: mixed batches, capacity, reconcile ─────────
+
+{
+  // A deferred result and an explicit failure summary never share one
+  // message: the kinds batch separately, each with its own framing.
+  const { controller, sent } = makeHarness();
+  controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
+  controller.sendErrorSummary({ id: "run-9", shadowId: "ground", shadowName: "Ground", phase: "error", message: "boom" });
+  assert.equal(sent.length, 0, "the busy parent defers both entries");
+  controller.handleTurnEnd({});
+  assert.equal(sent.length, 1, "the boundary delivers one kind");
+  const first = sent[0].message.content;
+  controller.handleTurnEnd({});
+  assert.equal(sent.length, 2, "the next boundary delivers the other kind");
+  const kinds = [first, sent[1].message.content].sort();
+  assert.match(kinds[0], /^\[Shadow advisory\]/, "the result keeps advisory framing");
+  assert.match(kinds[1], /^\[Shadow run failure summary\]/, "the failure keeps its own framing");
+  for (const batch of [sent[0], sent[1]]) {
+    assert.ok(batch.message.content.length < 60_000, "each message stays bounded");
+  }
+}
+
+{
+  // Pending-cap guard: beyond fifty unconfirmed entries, the oldest
+  // degrades visibly instead of being silently dropped with a stranded
+  // "sending" inbox row.
+  const { controller, sent, runtimeOps } = makeHarness();
+  for (let n = 1; n <= 51; n += 1) {
+    controller.enqueueResult(makeResult({ id: `shr-${n}`, configuredDelivery: "wake", payload: { summary: `F${n}.` } }));
+  }
+  assert.equal(controller.pendingCount(), 50, "the pending set holds at most fifty");
+  assert.deepEqual(runtimeOps.degraded, ["shr-1"], "the oldest entry degrades visibly");
+  const views = { shr1Degraded: runtimeOps.degraded.length };
+  controller.handleTurnEnd({});
+  assert.equal(sent.length, 1, "the capacity guard never blocks delivery");
+  assert.match(sent[0].message.content, /\[Shadow advisory: 6 results\]/);
+  assert.equal(views.shr1Degraded, 1);
+}
+
 console.log("shadow-minds delivery tests: OK");

@@ -1573,6 +1573,18 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     assert.equal(recovered.delivery, "notified", "the lost delivery returns inbox-only");
     assert.equal(recovered.configuredDelivery, "notify", "the recovered result adopts notify policy");
     assert.equal(shadowDeliveries(harness).length, 1, "no second delivery happens after recovery");
+    // A runtime notification after reopen (for example a read marker) must
+    // not re-enqueue the restored result into the delivery machine.
+    state.runtime.markResultRead(resultId);
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    assert.equal(shadowDeliveries(harness).length, 1, "a restored result never auto-delivers after reopen");
+    assert.equal(state.runtime.snapshot().results[0].delivery, "notified");
+    // But an explicit send from the reopened inbox still works.
+    const services = __testables.makeServices(state, eventCtx, new ConfirmationCoordinator());
+    assert.equal(services.delivery?.sendResultToAgent(resultId)?.ok, true);
+    assert.equal(shadowDeliveries(harness).length, 2, "an explicit send still delivers after reopen");
+    await harness.handlers.get("message_start")({ type: "message_start", message: shadowDeliveries(harness).at(-1)[1] }, eventCtx);
+    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered", "the explicit send confirms after reopen");
   } finally {
     if (previousAgentDir159 === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir159;

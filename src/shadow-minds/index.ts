@@ -731,8 +731,11 @@ export default function registerShadowMinds(
   let streamingInputDesynchronized = false;
   let skipInitialUserMessage = false;
   // Parent-run timing for delivery policies: one run spans its
-  // before_agent_start boundary through agent_settled, and queued steering
-  // or follow-up continuations stay inside the same run.
+  // before_agent_start boundary through agent_settled. Queued steering or
+  // follow-up continuations of a still-streaming run stay inside that run;
+  // a triggerTurn delivery (a wake follow-up) starts its own run, which
+  // emits agent_start but never input or before_agent_start, so it can
+  // neither open a task epoch nor re-trigger Shadows.
   let parentRunSeq = 0;
   let parentRunActive = false;
   state.delivery = createShadowDeliveryController({
@@ -999,7 +1002,9 @@ export default function registerShadowMinds(
     // runtime instance. A crash between the append and the persisted mark
     // can re-append one bounded entry at the next open.
     const seenResults = new Set<string>();
-    const seenDelivery = new Set<string>();
+    // Results restored from a reopened partition never auto-deliver: only
+    // results created inside this session enter the delivery machine.
+    const seenDelivery = new Set<string>(state.runtime.snapshot().results.map((result) => result.id));
     unsubscribeRuntime = state.runtime.subscribe(() => {
       const sessionCtx = ctx;
       // A settled run may have freed a concurrency slot for queued work.

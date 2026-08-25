@@ -21,12 +21,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  clipWithHeadTail,
   createConfirmedDeliveryCore,
   DEFAULT_MAX_BATCH_RESULTS,
   DEFAULT_MAX_PENDING_RESULTS,
   type ConfirmedDeliveryBatchEntry,
 } from "../subagents/confirmed-delivery";
-import { budgetResultText } from "../subagents/delivery";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ShadowDelivery } from "./parser";
 import { canonicalPayloadJson, type ShadowResultEntity } from "./result";
@@ -126,7 +126,7 @@ function resultPayloadText(result: ShadowResultEntity): string {
   } catch {
     payloadText = "(unserializable payload)";
   }
-  return budgetResultText(payloadText, MAX_RESULT_CHARS);
+  return clipWithHeadTail(payloadText, MAX_RESULT_CHARS);
 }
 
 function resultLines(entry: ConfirmedDeliveryBatchEntry<ShadowDeliveryValue>): string[] {
@@ -167,7 +167,7 @@ export function buildShadowDeliveryContent(
         "Advisory notice: this Shadow run failed before producing a cognitive result. Infrastructure diagnostics stay in /shadow.",
         "",
         "Error:",
-        budgetResultText(value.message ?? "(no message)", ERROR_SUMMARY_MAX_CHARS),
+        clipWithHeadTail(value.message ?? "(no message)", ERROR_SUMMARY_MAX_CHARS),
       );
     }
     return lines.join("\n");
@@ -307,9 +307,19 @@ export function createShadowDeliveryController(options: {
       }
     },
     confirmIds: shadowNotificationResultIds,
+    // Advisory results and infrastructure failure summaries never coalesce:
+    // they carry different framing and would not fit one message.
+    batchKey: (value) => value.kind,
     isIdle: () => !options.timing().parentRunning,
     onPendingChange: options.onPendingChange,
   });
+
+  /** Degrades one entry back to the inbox and stops tracking it. */
+  const degradeEntry = (id: string, record: ShadowDeliveryRecord): void => {
+    core.remove(id);
+    records.delete(id);
+    if (record.value.kind === "result") options.getRuntime()?.degradeResultDelivery(id);
+  };
 
   /** Drops every entry the policy gate now refuses before the core selects a batch. */
   const sweep = (): void => {
@@ -318,9 +328,15 @@ export function createShadowDeliveryController(options: {
       const record = records.get(id);
       if (!record) continue;
       if (resolveDeliveryDecision(record, options.timing()).action !== "degrade") continue;
-      core.remove(id);
-      records.delete(id);
-      if (record.value.kind === "result") options.getRuntime()?.degradeResultDelivery(id);
+      degradeEntry(id, record);
+      degraded += 1;
+    }
+    // Reconcile any record the core silently evicted at the pending cap: the
+    // inbox must never keep showing a delivery that no longer exists.
+    const pending = new Set(core.pendingIds());
+    for (const [id, record] of [...records.entries()]) {
+      if (pending.has(id)) continue;
+      degradeEntry(id, record);
       degraded += 1;
     }
     if (degraded > 0) options.onDegrade?.(degraded);
@@ -328,6 +344,15 @@ export function createShadowDeliveryController(options: {
 
   const enqueue = (id: string, value: ShadowDeliveryValue): void => {
     sweep();
+    // Pre-empt the core's silent oldest-drop at the pending cap: the oldest
+    // entry degrades visibly instead of stranding its inbox row at "sending".
+    while (core.pendingCount() >= MAX_PENDING_RESULTS) {
+      const oldest = core.pendingIds()[0];
+      const record = oldest !== undefined ? records.get(oldest) : undefined;
+      if (!record) break;
+      degradeEntry(oldest, record);
+      options.onDegrade?.(1);
+    }
     records.set(id, { policy: value.policy, sourceRun: value.sourceRun, ...(value.taskEpoch !== undefined ? { taskEpoch: value.taskEpoch } : {}), value });
     core.enqueue({ id, value });
   };
