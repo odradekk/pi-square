@@ -197,4 +197,30 @@ function makeHarness(options = {}) {
   assert.deepEqual(state.settled, [1_000], "the drain forwards the settle for a final delivery attempt");
 }
 
+{
+  const { __testables } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
+  const runs = [
+    { phase: "running", trigger: "completion", shadowId: "ordinary" },
+    { phase: "submitted", trigger: "completion", shadowId: "gate" },
+  ];
+  assert.equal(
+    __testables.hasRunningGateCompletion(runs, new Set(["gate"])),
+    false,
+    "a non-gate completion run cannot hold another definition's gate open",
+  );
+  runs[1] = { phase: "running", trigger: "completion", shadowId: "gate" };
+  assert.equal(__testables.hasRunningGateCompletion(runs, new Set(["gate"])), true);
+
+  assert.deepEqual(
+    __testables.quietDeliveryIdsFromBranch({
+      getBranch: () => [
+        { type: "custom_message", customType: "other", details: { results: [{ id: "foreign" }] } },
+        { type: "custom_message", customType: "pi-square.shadow-notification", details: { results: [{ id: "shr-1" }, { id: "shr-2" }] } },
+      ],
+    }),
+    ["shr-1", "shr-2"],
+    "quiet confirmation reads only actual Shadow notification entries from the session branch",
+  );
+  assert.deepEqual(__testables.quietDeliveryIdsFromBranch(undefined), []);
+}
 console.log("shadow-minds gate tests: OK");

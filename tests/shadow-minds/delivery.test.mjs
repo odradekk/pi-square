@@ -420,12 +420,12 @@ function makeHarness(options = {}) {
   assert.equal(views.shr1Degraded, 1);
 }
 
-// ── Quiet headless self-confirmation (#160) ────────────────────────
+// ── Quiet headless transcript confirmation (#160) ───────────────────
 
 {
-  // A quiet append never reaches extension handlers as message_start, so
-  // the drain confirms its own successful sends: sent entries transition
-  // to delivered and leave the pending set without an observation.
+  // A quiet append never reaches extension handlers as message_start. The
+  // drain confirms only IDs it subsequently observes in persisted session
+  // entries; a fire-and-forget send call alone is not authoritative.
   const { controller, sent, runtimeOps } = makeHarness({
     timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
   });
@@ -434,13 +434,16 @@ function makeHarness(options = {}) {
   controller.handleAgentSettled();
   assert.equal(sent.length, 1, "the settle point flushes quietly");
   assert.equal(sent[0].sendOptions.triggerTurn, false, "a quiet send never starts a turn");
-  assert.equal(runtimeOps.markDelivered.length, 0, "nothing is confirmed before the drain confirms");
-  assert.equal(controller.confirmQuietDeliveries(), 1, "the drain confirms its quiet send");
+  assert.equal(runtimeOps.markDelivered.length, 0, "nothing is confirmed before transcript observation");
+  assert.equal(controller.confirmQuietDeliveries([]), 0, "an unobserved fire-and-forget send is never confirmed");
+  assert.equal(controller.pendingCount(), 1);
+  assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 1, "an observed persisted notification confirms the quiet send");
   assert.deepEqual(runtimeOps.markDelivered, ["shr-1"], "the inbox records the delivered state");
   assert.equal(controller.pendingCount(), 0);
-  assert.equal(controller.confirmQuietDeliveries(), 0, "the confirmation is single-shot");
+  assert.equal(controller.confirmQuietDeliveries(["shr-1"]), 0, "the confirmation is single-shot");
 
-  // A failed quiet send stays unconfirmed and pending for the retry path.
+  // A failed quiet send stays unconfirmed and pending for the retry path even
+  // if an unrelated branch entry names the same ID.
   const failing = makeHarness({
     failSendOnce: true,
     timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
@@ -448,8 +451,25 @@ function makeHarness(options = {}) {
   failing.controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
   failing.controller.handleAgentSettled();
   assert.equal(failing.sent.length, 0, "the quiet send failed");
-  assert.equal(failing.controller.confirmQuietDeliveries(), 0, "a failed send is never confirmed");
+  assert.equal(failing.controller.confirmQuietDeliveries(["shr-1"]), 0, "a failed send is never confirmed");
   assert.equal(failing.controller.pendingCount(), 1, "the result stays pending for the next safe moment");
 }
 
+{
+  const { controller, sent } = makeHarness({
+    timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
+  });
+  for (let n = 1; n <= 8; n += 1) {
+    controller.enqueueResult(makeResult({ id: `shr-${n}`, configuredDelivery: "wake", payload: { summary: `Finding ${n}` } }));
+  }
+  controller.handleAgentSettled();
+  assert.equal(sent.length, 1);
+  const firstIds = sent[0].message.details.results.map((entry) => entry.id);
+  assert.equal(controller.confirmQuietDeliveries(firstIds), 6);
+  controller.handleAgentSettled();
+  assert.equal(sent.length, 2, "a second quiet settle drains the remainder beyond the six-result batch cap");
+  const secondIds = sent[1].message.details.results.map((entry) => entry.id);
+  assert.equal(controller.confirmQuietDeliveries(secondIds), 2);
+  assert.equal(controller.pendingCount(), 0);
+}
 console.log("shadow-minds delivery tests: OK");

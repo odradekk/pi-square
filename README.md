@@ -310,8 +310,10 @@ What works today:
   session switch, or shutdown cancels the applicable work with no
   cross-session delivery, and a print/JSON quit (never a session switch, fork, new session, or
   resume) drains started runs for the bounded `headlessDrainSeconds`,
-  persists, and delivers quietly without starting a turn — the drain
-  confirms its own quiet sends after the flush — before cancelling at the
+  persists, and delivers quietly without starting a turn. Quiet delivery is
+  confirmed only from the matching custom-message entry actually present in
+  the persisted session branch; an unobserved append remains pending for
+  recovery instead of being declared delivered. The drain then cancels at the
   deadline.
 - Valid results deliver to the parent model only through the definition's
   fixed policy, always as source-attributed advisory evidence that

@@ -1912,7 +1912,9 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
         getSessionFile: () => sessionFile,
         getSessionId: () => "sess-drain",
         getLeafId: () => "leaf-1",
-        getBranch: () => [],
+        getBranch: () => harness.events
+          .filter((entry) => entry[0] === "guide" && entry[2]?.triggerTurn === false)
+          .map((entry) => ({ type: "custom_message", ...entry[1] })),
         buildContextEntries: () => [],
       },
     };

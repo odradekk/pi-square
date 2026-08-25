@@ -86,7 +86,12 @@ import { serializeShadowDefinition } from "./serialize";
 import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
 import { createShadowInbox, type ShadowInbox } from "./result";
-import { createShadowDeliveryController, type ShadowDeliveryController } from "./delivery";
+import {
+  createShadowDeliveryController,
+  MAX_PENDING_RESULTS,
+  shadowNotificationResultIds,
+  type ShadowDeliveryController,
+} from "./delivery";
 import { createCompletionGate, type ShadowCompletionGate } from "./gate";
 
 /** Parent-session custom entry type for one bounded result reference. */
@@ -186,6 +191,13 @@ function captureTrajectory(
   }
 }
 
+function hasRunningGateCompletion(
+  runs: readonly { phase: string; trigger?: string; shadowId: string }[],
+  gateIds: ReadonlySet<string>,
+): boolean {
+  return runs.some((run) => run.phase === "running" && run.trigger === "completion" && gateIds.has(run.shadowId));
+}
+
 /** Delivered Shadow results as trajectory evidence; notified results stay out. */
 function deliveredEvidence(runtime: ShadowRuntime): ShadowTrajectoryEvidence[] {
   return runtime.snapshot().results
@@ -197,6 +209,19 @@ function deliveredEvidence(runtime: ShadowRuntime): ShadowTrajectoryEvidence[] {
       deliveredAt: result.createdAt,
       delivery: result.delivery,
     }));
+}
+
+const QUIET_CONFIRM_BRANCH_ENTRIES_MAX = 128;
+
+/** IDs carried by actual persisted Shadow custom-message entries near the leaf. */
+function quietDeliveryIdsFromBranch(sessionManager: unknown): string[] {
+  const branch = (sessionManager as { getBranch?: () => unknown[] } | undefined)?.getBranch?.();
+  if (!Array.isArray(branch)) return [];
+  const ids = new Set<string>();
+  for (const entry of branch.slice(-QUIET_CONFIRM_BRANCH_ENTRIES_MAX)) {
+    for (const id of shadowNotificationResultIds(entry)) ids.add(id);
+  }
+  return [...ids];
 }
 
 const MAX_NOTIFY_CHARS = 400;
@@ -628,6 +653,7 @@ export default function registerShadowMinds(
       ...scheduler,
       pause() {
         state.gate?.close("paused");
+        settleHeld = false;
         scheduler.pause();
         refreshStatus();
       },
@@ -690,9 +716,7 @@ export default function registerShadowMinds(
       pendingCompletions: () => state.scheduler.pendingCompletions(),
       cancelPendingCompletions: () => state.scheduler.cancelPendingCompletions(),
     },
-    hasRunningCompletionRuns: () => state.runtime.snapshot().runs.some(
-      (run) => run.phase === "running" && run.trigger === "completion",
-    ),
+    hasRunningCompletionRuns: (gateIds) => hasRunningGateCompletion(state.runtime.snapshot().runs, gateIds),
     forwardSettle: (_at) => {
       if (!settleHeld) return;
       settleHeld = false;
@@ -839,7 +863,10 @@ export default function registerShadowMinds(
     if (source) state.scheduler.handleInput(realUserTask ? "interactive" : "extension");
     // A new real-user task ends any held gate window: its unstarted
     // completions cancel and resolve through the stale-task downgrade.
-    if (realUserTask) state.gate?.close("new-task");
+    if (realUserTask) {
+      state.gate?.close("new-task");
+      settleHeld = false;
+    }
     state.taskSnapshot = taskSnapshotFromOptions(
       event?.systemPromptOptions,
       sessionCtx?.cwd ?? state.cwd,
@@ -895,6 +922,10 @@ export default function registerShadowMinds(
     const source = queuedSteeringSources.shift() ?? queuedFollowUpSources.shift();
     if (!source) return;
     const realUserTask = source === "real";
+    if (realUserTask) {
+      state.gate?.close("new-task");
+      settleHeld = false;
+    }
     state.scheduler.handleInput(realUserTask ? "interactive" : "extension");
     // A queued continuation stays inside the same parent agent run, so it uses
     // the authority frozen by that run's before_agent_start boundary.
@@ -931,6 +962,8 @@ export default function registerShadowMinds(
     // instead of dispatching: Pi emits turn_end before agent_end on abort,
     // and an aborted quality command is not a failure trigger.
     if ((event?.message as { stopReason?: unknown } | undefined)?.stopReason === "aborted") {
+      state.gate?.close("aborted");
+      settleHeld = false;
       state.scheduler.handleTurnAbort();
       refreshStatus();
       return;
@@ -960,8 +993,10 @@ export default function registerShadowMinds(
     }
     state.scheduler.handleAgentEnd({ interrupted, checkpoint });
     state.delivery?.handleAgentEnd(event?.messages);
-    if (interrupted) state.gate?.close("aborted");
-    else state.gate?.maybeOpen();
+    if (interrupted) {
+      state.gate?.close("aborted");
+      settleHeld = false;
+    } else state.gate?.maybeOpen();
     refreshStatus();
     streamingInputDesynchronized = false;
     queuedSteeringSources.length = 0;
@@ -1079,17 +1114,20 @@ export default function registerShadowMinds(
           && state.runtime.snapshot().runs.some((run) => run.phase === "running")) {
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        // One single settle point: a held settle flushes here, quietly —
-        // the drain's sends append synchronously to the transcript, and a
-        // quiet append never reaches extension handlers as message_start
-        // (Pi 0.84.2 routes extension events through the agent stream), so
-        // the drain confirms its own successful sends immediately after.
-        if (settleHeld) {
-          settleHeld = false;
+        // Drain compatible batches one at a time. Each batch is confirmed only
+        // from an actual session entry; without confirmation, stop rather than
+        // resend in a hot loop. The iteration cap is the pending hard bound.
+        for (let batch = 0; batch < MAX_PENDING_RESULTS && Date.now() < deadline; batch += 1) {
+          const before = state.delivery?.pendingCount() ?? 0;
+          if (before === 0) break;
           state.delivery?.handleAgentSettled();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const confirmed = state.delivery?.confirmQuietDeliveries(
+            quietDeliveryIdsFromBranch(ctx?.sessionManager),
+          ) ?? 0;
+          if (confirmed === 0) break;
         }
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        state.delivery?.confirmQuietDeliveries();
+        settleHeld = false;
       } finally {
         draining = false;
         settleHeld = false;
@@ -1200,4 +1238,9 @@ export function createTaskSnapshotStore() {
   };
 }
 
-export const __testables = { makeServices, createTaskSnapshotStore };
+export const __testables = {
+  makeServices,
+  createTaskSnapshotStore,
+  hasRunningGateCompletion,
+  quietDeliveryIdsFromBranch,
+};
