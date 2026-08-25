@@ -770,6 +770,7 @@ function baseRequest(overrides = {}) {
   const outcome = runtime.startAutomaticRun(baseRequest({
     trigger: "mutation",
     taskEpoch: 4,
+    sourceRun: 7,
     triggerReasons: [{ trigger: "mutation", firstObservedAt: 1, lastObservedAt: 2, detail: "write a.ts" }],
   }));
   assert.equal(outcome.started, true, "the automatic run starts through the same seam");
@@ -777,9 +778,12 @@ function baseRequest(overrides = {}) {
   assert.equal(view.source, "automatic");
   assert.equal(view.trigger, "mutation");
   assert.equal(view.taskEpoch, 4);
+  assert.equal(view.sourceRun, 7);
   assert.ok(prompts[0].includes("[Trigger task — mutation]"), "the prompt carries the trigger task");
   assert.ok(prompts[0].includes("write a.ts"), "merged reasons appear in the prompt");
   assert.ok(!prompts[0].includes("[Manual note]"), "automatic runs carry no manual note");
+  const result = runtime.snapshot().results[0];
+  assert.equal(result.taskIdentity.sourceRun, 7, "the result freezes the triggering parent run for delivery policy");
 }
 
 {

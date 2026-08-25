@@ -453,7 +453,7 @@ for (const root of roots) rmSync(root, { recursive: true, force: true });
   const { sessionDir } = makeSessionRoot("sess-delivery");
   const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-delivery" });
   const schema = { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false };
-  const entity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "a" }, createdAt: 1, configuredDelivery: "steer", validationSchema: schema });
+  const entity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "a" }, createdAt: 1, configuredDelivery: "steer", taskIdentity: { epoch: 2, sourceRun: 5 }, validationSchema: schema });
   const wakeEntity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "b" }, createdAt: 2, configuredDelivery: "wake", validationSchema: schema });
   assert.equal(inbox.send(entity.id), true);
   assert.equal(inbox.markDelivered(entity.id), true, "a pending result confirms delivered");
@@ -466,6 +466,7 @@ for (const root of roots) rmSync(root, { recursive: true, force: true });
   const deliveredView = reopened.list().find((entry) => entry.id === entity.id);
   const degradedView = reopened.list().find((entry) => entry.id === wakeEntity.id);
   assert.equal(deliveredView.delivery, "delivered", "delivery confirmation survives reopening");
+  assert.equal(deliveredView.taskIdentity.sourceRun, 5, "the triggering parent run survives reopening");
   assert.equal(degradedView.delivery, "notified", "a degraded result stays inbox-only");
   assert.equal(degradedView.configuredDelivery, "notify");
 }

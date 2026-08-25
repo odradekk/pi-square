@@ -124,6 +124,14 @@ function makeResult(overrides = {}) {
 }
 
 {
+  const secretPayload = buildShadowDeliveryContent(
+    [{ id: "shr-secret", value: { kind: "result", result: makeResult({ payload: { summary: "Authorization: Bearer RESULTSECRET", api_key: "SECOND" } }) } }],
+    false,
+  );
+  assert.doesNotMatch(secretPayload, /RESULTSECRET|SECOND/, "model-facing result payloads pass the shared credential cleaner");
+  assert.match(secretPayload, /\[REDACTED\]/);
+}
+{
   const error = buildShadowDeliveryContent(
     [{ id: "shadow-err-run-1", value: { kind: "error-summary", shadowName: "Completion check", shadowId: "completion-check", runId: "run-1", phase: "error", message: "Model authentication failed after 2 attempts." } }],
     false,
@@ -375,6 +383,26 @@ function makeHarness(options = {}) {
   }
 }
 
+{
+  const { controller, sent, runtimeOps } = makeHarness({
+    timing: () => ({ currentRun: 2, currentTaskEpoch: 1, parentRunning: true }),
+  });
+  controller.enqueueResult(makeResult({ taskIdentity: { epoch: 1, sourceRun: 1 } }));
+  controller.handleTurnEnd({});
+  assert.equal(sent.length, 0, "a steer is bound to the run that triggered its activation, not the run in which it completed");
+  assert.deepEqual(runtimeOps.degraded, ["shr-1"]);
+}
+
+{
+  const { controller, sent, runtimeOps } = makeHarness({
+    timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false }),
+  });
+  controller.sendErrorSummary({ id: "run-cleanup", shadowId: "ground", shadowName: "Ground", phase: "error", message: "boom" });
+  const notification = sent[0].message;
+  controller.observeMessage(notification);
+  controller.handleAgentSettled();
+  assert.deepEqual(runtimeOps.degradeNotices, [], "a confirmed failure summary leaves no stale side record to reconcile");
+}
 {
   // Pending-cap guard: beyond fifty unconfirmed entries, the oldest
   // degrades visibly instead of being silently dropped with a stranded

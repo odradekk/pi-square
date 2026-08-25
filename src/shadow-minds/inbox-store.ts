@@ -225,6 +225,7 @@ function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { val
   if (record.taskIdentity !== undefined) {
     const identity = record.taskIdentity as Record<string, unknown>;
     if (!identity || typeof identity !== "object" || !Number.isInteger(identity.epoch) || (identity.epoch as number) < 0) return undefined;
+    if (identity.sourceRun !== undefined && (!Number.isInteger(identity.sourceRun) || (identity.sourceRun as number) < 0)) return undefined;
     if (identity.parentEntryId !== undefined && !isBoundedString(identity.parentEntryId, 64)) return undefined;
   }
   return {

@@ -27,7 +27,7 @@ import {
   DEFAULT_MAX_PENDING_RESULTS,
   type ConfirmedDeliveryBatchEntry,
 } from "../subagents/confirmed-delivery";
-import { sanitizeDisplayLine } from "../display/sanitize";
+import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { ShadowDelivery } from "./parser";
 import { canonicalPayloadJson, type ShadowResultEntity } from "./result";
 
@@ -119,10 +119,25 @@ function sourceLabel(result: ShadowResultEntity): string {
   return result.source === "automatic" ? "automatic" : "manual trial";
 }
 
+function sanitizePayloadValue(value: unknown, key?: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizePayloadValue(item));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+        sanitizeDisplayLine(entryKey),
+        sanitizePayloadValue(entryValue, entryKey),
+      ]),
+    );
+  }
+  if (typeof value !== "string") return value;
+  if (key && sanitizeDisplayText(`${key}=${value}`).includes("[REDACTED]")) return "[REDACTED]";
+  return sanitizeDisplayText(value);
+}
+
 function resultPayloadText(result: ShadowResultEntity): string {
   let payloadText: string;
   try {
-    payloadText = canonicalPayloadJson(result.payload) || "(null)";
+    payloadText = canonicalPayloadJson(sanitizePayloadValue(result.payload)) || "(null)";
   } catch {
     payloadText = "(unserializable payload)";
   }
@@ -167,7 +182,7 @@ export function buildShadowDeliveryContent(
         "Advisory notice: this Shadow run failed before producing a cognitive result. Infrastructure diagnostics stay in /shadow.",
         "",
         "Error:",
-        clipWithHeadTail(value.message ?? "(no message)", ERROR_SUMMARY_MAX_CHARS),
+        clipWithHeadTail(sanitizeDisplayText(value.message ?? "(no message)"), ERROR_SUMMARY_MAX_CHARS),
       );
     }
     return lines.join("\n");
@@ -365,7 +380,7 @@ export function createShadowDeliveryController(options: {
       enqueue(result.id, {
         kind: "result",
         policy,
-        sourceRun: options.timing().currentRun,
+        sourceRun: result.taskIdentity?.sourceRun ?? options.timing().currentRun,
         ...(result.taskIdentity?.epoch !== undefined ? { taskEpoch: result.taskIdentity.epoch } : {}),
         shadowId: result.shadowId,
         shadowName: result.shadowName,
@@ -408,9 +423,9 @@ export function createShadowDeliveryController(options: {
       core.observeMessage(message);
       for (const id of ids) {
         const record = records.get(id);
-        if (!record || record.value.kind !== "result") continue;
+        if (!record) continue;
         records.delete(id);
-        options.getRuntime()?.markResultDelivered(id);
+        if (record.value.kind === "result") options.getRuntime()?.markResultDelivered(id);
       }
     },
     handleTurnEnd: (message) => {

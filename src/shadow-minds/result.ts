@@ -180,6 +180,8 @@ export type ShadowResultSource = "manual" | "automatic";
 /** Task identity of the activation that produced a result (scheduling fills it). */
 export interface ShadowTaskIdentity {
   epoch: number;
+  /** Parent-run sequence in which the automatic activation was observed. */
+  sourceRun?: number;
   parentEntryId?: string;
 }
 

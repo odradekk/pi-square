@@ -95,6 +95,8 @@ export interface ShadowMindsState {
   scheduler: ShadowScheduler;
   /** Confirmed delivery of Shadow results as advisory evidence (#159). */
   delivery?: ShadowDeliveryController;
+  /** Current parent-run sequence used to bind manual activation provenance. */
+  currentParentRun(): number;
   /** Frozen per-task snapshot used by every automatic activation of the task. */
   taskSnapshot?: ShadowTaskSnapshot;
   /** Present when the parent session persists; Shadow results survive reopening. */
@@ -222,6 +224,7 @@ function composeShadowRun(input: {
   source: "manual" | "automatic";
   note?: string;
   taskEpoch?: number;
+  sourceRun?: number;
   trigger?: ShadowRunRequest["trigger"];
   triggerReasons?: ShadowRunRequest["triggerReasons"];
   /** Frozen automatic snapshot; manual trials capture fresh per run. */
@@ -283,6 +286,7 @@ function composeShadowRun(input: {
       ...(input.note ? { note: input.note } : {}),
       ...(input.trigger ? { trigger: input.trigger } : {}),
       ...(input.taskEpoch !== undefined ? { taskEpoch: input.taskEpoch } : {}),
+      ...(input.sourceRun !== undefined ? { sourceRun: input.sourceRun } : {}),
       ...(input.triggerReasons && input.triggerReasons.length > 0 ? { triggerReasons: input.triggerReasons } : {}),
       system: buildShadowSystem({
         ...(snapshot.parentCore ? { parentCore: snapshot.parentCore } : {}),
@@ -359,6 +363,7 @@ function makeServices(
             source: "manual",
             ...(input.note ? { note: input.note } : {}),
             taskEpoch: state.scheduler.snapshot().taskEpoch,
+            sourceRun: state.currentParentRun(),
             onWarning: (message) => ctx.ui.notify(`shadow-minds: ${notifyText(message)}`, "warning"),
           });
           if (!outcome.started) {
@@ -565,6 +570,7 @@ export default function registerShadowMinds(
   const makeScheduler = (): ShadowScheduler => {
     const scheduler = createShadowScheduler({
       now: () => Date.now(),
+      currentRun: () => parentRunSeq,
       config: effectiveConfig,
       definitions: () => state.registry.definitions,
       start(activation: ShadowSchedulerStartInput) {
@@ -584,6 +590,7 @@ export default function registerShadowMinds(
           source: "automatic",
           trigger: activation.reasons[0]?.trigger,
           taskEpoch: activation.taskEpoch,
+          sourceRun: activation.sourceRun,
           triggerReasons: activation.reasons,
           snapshot: taskSnapshot,
           trajectory: activation.checkpoint as ReturnType<typeof captureTrajectory> | undefined,
@@ -627,6 +634,7 @@ export default function registerShadowMinds(
     projectTrusted: false,
     runtime: makeRuntime(),
     scheduler: makeScheduler(),
+    currentParentRun: () => parentRunSeq,
     captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot {
       // `getSystemPromptOptions` exists only on command contexts in Pi
       // 0.84.2 — the session-start event context never carries it — so the
@@ -738,6 +746,7 @@ export default function registerShadowMinds(
   // neither open a task epoch nor re-trigger Shadows.
   let parentRunSeq = 0;
   let parentRunActive = false;
+  let parentRunPrepared = false;
   state.delivery = createShadowDeliveryController({
     pi,
     getRuntime: () => state.runtime,
@@ -796,11 +805,20 @@ export default function registerShadowMinds(
     skipInitialUserMessage = true;
     parentRunSeq += 1;
     parentRunActive = true;
+    parentRunPrepared = true;
     state.scheduler.handleRunStart(realUserTask);
     refreshStatus();
   });
 
   pi.on("agent_start", () => {
+    // Normal user runs were already identified at before_agent_start. A
+    // triggerTurn custom-message follow-up has no such boundary, so agent_start
+    // is its only authoritative run-start signal.
+    if (!parentRunPrepared) {
+      parentRunSeq += 1;
+      parentRunActive = true;
+    }
+    parentRunPrepared = false;
     state.delivery?.handleAgentStart();
   });
 
@@ -949,6 +967,7 @@ export default function registerShadowMinds(
     state.delivery?.reset();
     parentRunSeq = 0;
     parentRunActive = false;
+    parentRunPrepared = false;
     // A result left pending by a lost session never resumes automatically:
     // it returns inbox-only with notify policy and waits for an explicit send.
     const recoveredDeliveries = inbox?.recoverPendingDelivery?.() ?? 0;

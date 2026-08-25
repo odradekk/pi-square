@@ -1359,6 +1359,7 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     await harness.handlers.get("session_start")({}, eventCtx);
     harness.handlers.get("input")({ type: "input", text: "finish the feature", source: "interactive" });
     await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "finish the feature", systemPromptOptions: { cwd: join(dir, "project") } }, eventCtx);
+    harness.handlers.get("agent_start")({ type: "agent_start" }, eventCtx);
     harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: { stopReason: "tool_use" }, toolResults: [] }, eventCtx);
     await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1368,6 +1369,9 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     const deliveries = shadowDeliveries(harness);
     assert.equal(deliveries.length, 1, "the settled parent receives the wake result");
     assert.equal(deliveries[0][2].triggerTurn, true, "the wake starts a follow-up turn");
+    // Pi's triggerTurn path emits agent_start without input/before_agent_start.
+    harness.handlers.get("agent_start")({ type: "agent_start" }, eventCtx);
+    assert.equal(state.currentParentRun(), 2, "the wake follow-up is tracked as an active parent run");
     assert.match(deliveries[0][1].content, /\[Shadow advisory\]/, "the delivery is advisory-framed");
     assert.match(deliveries[0][1].content, /shadow: Wake sentinel \(wake-sentinel\)/, "the source is attributed");
     const resultId = state.runtime.snapshot().results[0].id;
