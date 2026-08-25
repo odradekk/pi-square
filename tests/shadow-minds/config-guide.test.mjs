@@ -1219,12 +1219,33 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     assert.ok(result, "the settled run produced a result");
     assert.notEqual(result.configuredDelivery, "notify");
     harness.handlers.get("input")({ type: "input", text: "next task", source: "interactive" });
+    assert.notEqual(
+      state.runtime.snapshot().results.find((entry) => entry.id === result.id).configuredDelivery,
+      "notify",
+      "input alone does not advance a task before Pi starts its agent run",
+    );
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "next task", systemPromptOptions: { cwd: project } }, eventCtx);
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(
       state.runtime.snapshot().results.find((entry) => entry.id === result.id).configuredDelivery,
       "notify",
       "old-task undelivered results downgrade in the in-memory inbox too",
     );
+
+    // Streaming user input has no before_agent_start boundary in Pi. It opens
+    // its task only when the queued user message is consumed by the agent loop.
+    // Consume the initial user message emitted by the preceding idle run.
+    harness.handlers.get("message_start")({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "next task" }] } });
+    const beforeQueuedEpoch = state.scheduler.snapshot().taskEpoch;
+    harness.handlers.get("input")({
+      type: "input",
+      text: "queued task",
+      source: "interactive",
+      streamingBehavior: "followUp",
+    });
+    assert.equal(state.scheduler.snapshot().taskEpoch, beforeQueuedEpoch);
+    harness.handlers.get("message_start")({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "queued task" }] } });
+    assert.equal(state.scheduler.snapshot().taskEpoch, beforeQueuedEpoch + 1, "the consumed queued user message opens the task epoch");
 
     // Paused session: the paused marker renders alongside any counts.
     state.scheduler.pause();

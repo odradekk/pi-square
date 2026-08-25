@@ -373,6 +373,14 @@ export function createShadowRuntime(input: {
     if (request.modelResolution?.error) {
       return { started: false, reason: request.modelResolution.error };
     }
+    const sameShadow = active.find((entry) => entry.view.shadowId === request.definition.id && !entry.superseding);
+    if (sameShadow) {
+      return {
+        started: false,
+        kind: "busy",
+        reason: `Shadow '${request.definition.id}' already has an active run; wait for it to settle before starting another.`,
+      };
+    }
     const occupiedSlots = active.filter((entry) => !entry.superseding).length;
     if (occupiedSlots >= effective.defaults.maxConcurrentRuns) {
       if (source === "manual") {
@@ -627,6 +635,8 @@ export function createShadowRuntime(input: {
             usage: outcome.usage,
             ...(definitionHash ? { definitionHash } : {}),
             schemaHash,
+            source,
+            ...(request.trigger ? { primaryTrigger: request.trigger } : {}),
             ...(request.triggerReasons && request.triggerReasons.length > 0
               ? { triggers: [...new Set(request.triggerReasons.map((reason) => reason.trigger))] }
               : {}),
@@ -732,9 +742,14 @@ export function createShadowRuntime(input: {
     return cancelled;
   }
 
-  /** Whether one Shadow already has a running activation. */
-  function hasActiveRun(shadowId: string): boolean {
-    return active.some((entry) => entry.view.shadowId === shadowId);
+  /** Active activation identity for scheduler arbitration. */
+  function activeRun(shadowId: string): { source: ShadowRunSource; taskEpoch?: number } | undefined {
+    const entry = active.find((candidate) => candidate.view.shadowId === shadowId && !candidate.superseding);
+    if (!entry) return undefined;
+    return {
+      source: entry.source,
+      ...(entry.taskEpoch !== undefined ? { taskEpoch: entry.taskEpoch } : {}),
+    };
   }
 
   function cancelRun(runId: string): { ok: boolean; message?: string } {
@@ -757,7 +772,7 @@ export function createShadowRuntime(input: {
     startAutomaticRun,
     cancelRun,
     preemptOldestAutomatic: supersedeOldestAutomatic,
-    hasActiveRun,
+    activeRun,
     cancelTaskRuns,
     cancelAutomaticRuns,
     snapshot,

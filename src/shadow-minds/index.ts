@@ -73,6 +73,7 @@ import {
 } from "./runtime";
 import {
   createShadowScheduler,
+  TASK_EPOCH_RETENTION_MAX,
   type ShadowScheduler,
   type ShadowSchedulerStartInput,
 } from "./scheduler";
@@ -191,7 +192,6 @@ function notifyText(message: string): string {
   const sanitized = sanitizeDisplayLine(message);
   return sanitized.length <= MAX_NOTIFY_CHARS ? sanitized : `${sanitized.slice(0, MAX_NOTIFY_CHARS - 1)}…`;
 }
-
 function outcomeOf(error: unknown, fallbackPrefix: string) {
   if (error instanceof ShadowOverlayError) {
     if (error.code === "SHADOW_STALE_REVIEW") {
@@ -538,6 +538,13 @@ export default function registerShadowMinds(
       start(activation: ShadowSchedulerStartInput) {
         const sessionCtx = ctx;
         if (!sessionCtx) return { outcome: "failed", reason: "No parent session context." };
+        const taskSnapshot = taskSnapshots.get(activation.taskEpoch);
+        if (!taskSnapshot) {
+          return {
+            outcome: "failed",
+            reason: `The frozen authority snapshot for task ${activation.taskEpoch} is no longer retained.`,
+          };
+        }
         const outcome = composeShadowRun({
           state,
           ctx: sessionCtx,
@@ -546,7 +553,7 @@ export default function registerShadowMinds(
           trigger: activation.reasons[0]?.trigger,
           taskEpoch: activation.taskEpoch,
           triggerReasons: activation.reasons,
-          snapshot: taskSnapshots.get(activation.taskEpoch) ?? state.taskSnapshot,
+          snapshot: taskSnapshot,
           trajectory: activation.checkpoint as ReturnType<typeof captureTrajectory> | undefined,
         });
         if (outcome.started) return { outcome: "started" };
@@ -554,7 +561,7 @@ export default function registerShadowMinds(
         return { outcome: "failed", reason: outcome.reason ?? "The automatic run did not start." };
       },
       preemptOldestAutomatic: (currentEpoch) => state.runtime.preemptOldestAutomatic(currentEpoch),
-      hasActiveRun: (shadowId) => state.runtime.hasActiveRun(shadowId),
+      activeRun: (shadowId) => state.runtime.activeRun(shadowId),
       cancelTaskRuns: (epoch) => state.runtime.cancelTaskRuns(epoch),
       cancelAutomaticRuns: (reason) => state.runtime.cancelAutomaticRuns(reason),
       forceNotifyOldResults(beforeEpoch) {
@@ -686,46 +693,94 @@ export default function registerShadowMinds(
   // distinguishes interactive/rpc user input from extension continuations,
   // and the before_agent_start options freeze the per-task authority
   // snapshot every automatic activation of that task shares.
-  let snapshotDirty = false;
-  const toolArgsById = new Map<string, unknown>();
+  let pendingIdleInput: "real" | "extension" | undefined;
+  const queuedSteeringSources: Array<"real" | "extension"> = [];
+  const queuedFollowUpSources: Array<"real" | "extension"> = [];
+  let streamingInputDesynchronized = false;
+  let skipInitialUserMessage = false;
+  const toolArgsById = new Map<string, { toolName: string; args: unknown }>();
   const TOOL_ARG_PAIRS_MAX = 64;
-
+  const STREAMING_INPUT_PAIRS_MAX = 64;
   pi.on("input", (event) => {
-    if (event?.source === "extension") {
-      state.scheduler.handleInput("extension");
+    const source = event?.source === "extension" ? "extension" : "real";
+    if (event?.streamingBehavior) {
+      // Pi queues streaming input without a new before_agent_start event and
+      // drains steering messages before follow-ups. Keep those identities
+      // separate so mixed real/extension inputs cannot misclassify.
+      const queue = event.streamingBehavior === "followUp" ? queuedFollowUpSources : queuedSteeringSources;
+      if (queue.length >= STREAMING_INPUT_PAIRS_MAX) {
+        streamingInputDesynchronized = true;
+        queuedSteeringSources.length = 0;
+        queuedFollowUpSources.length = 0;
+        return;
+      }
+      queue.push(source);
       return;
     }
-    snapshotDirty = true;
-    state.scheduler.handleInput(event?.source === "rpc" ? "rpc" : "interactive");
-    refreshStatus();
+    // Idle input is only committed at before_agent_start. Model/auth/preflight
+    // failures after input must not advance the task epoch.
+    pendingIdleInput = source;
   });
 
   const taskSnapshots = createTaskSnapshotStore();
   pi.on("before_agent_start", async (event, sessionCtx) => {
-    const realUserTask = snapshotDirty;
-    if (snapshotDirty) {
-      snapshotDirty = false;
-      state.taskSnapshot = taskSnapshotFromOptions(
-        event?.systemPromptOptions,
-        sessionCtx?.cwd ?? state.cwd,
-        Boolean(sessionCtx?.isProjectTrusted?.()),
-      );
+    const source = pendingIdleInput;
+    pendingIdleInput = undefined;
+    const realUserTask = source === "real";
+    if (source) state.scheduler.handleInput(realUserTask ? "interactive" : "extension");
+    state.taskSnapshot = taskSnapshotFromOptions(
+      event?.systemPromptOptions,
+      sessionCtx?.cwd ?? state.cwd,
+      Boolean(sessionCtx?.isProjectTrusted?.()),
+    );
+    if (realUserTask) {
+      taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
+    }
+    skipInitialUserMessage = true;
+    state.scheduler.handleRunStart(realUserTask);
+    refreshStatus();
+  });
+
+  pi.on("message_start", (event) => {
+    if (event?.message?.role !== "user") return;
+    if (skipInitialUserMessage) {
+      skipInitialUserMessage = false;
+      return;
+    }
+    if (streamingInputDesynchronized) {
+      state.scheduler.handleRunStart(false);
+      return;
+    }
+    const source = queuedSteeringSources.shift() ?? queuedFollowUpSources.shift();
+    if (!source) return;
+    const realUserTask = source === "real";
+    state.scheduler.handleInput(realUserTask ? "interactive" : "extension");
+    // A queued continuation stays inside the same parent agent run, so it uses
+    // the authority frozen by that run's before_agent_start boundary.
+    if (realUserTask && state.taskSnapshot) {
       taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
     }
     state.scheduler.handleRunStart(realUserTask);
+    refreshStatus();
   });
 
   pi.on("tool_execution_start", (event) => {
-    if (toolArgsById.size >= TOOL_ARG_PAIRS_MAX) toolArgsById.clear();
-    toolArgsById.set(String(event?.toolCallId ?? ""), event?.args);
-    state.scheduler.observeToolStart(String(event?.toolName ?? ""), event?.args);
+    const toolCallId = String(event?.toolCallId ?? "");
+    const toolName = String(event?.toolName ?? "");
+    if (toolCallId) {
+      if (toolArgsById.size >= TOOL_ARG_PAIRS_MAX) toolArgsById.clear();
+      toolArgsById.set(toolCallId, { toolName, args: event?.args });
+    }
+    state.scheduler.observeToolStart(toolName, event?.args);
   });
 
   pi.on("tool_execution_end", (event) => {
     const toolCallId = String(event?.toolCallId ?? "");
-    const args = toolArgsById.get(toolCallId);
-    toolArgsById.delete(toolCallId);
-    state.scheduler.observeToolEnd(String(event?.toolName ?? ""), Boolean(event?.isError), args);
+    const toolName = String(event?.toolName ?? "");
+    const paired = toolCallId ? toolArgsById.get(toolCallId) : undefined;
+    if (toolCallId) toolArgsById.delete(toolCallId);
+    const args = paired?.toolName === toolName ? paired.args : undefined;
+    state.scheduler.observeToolEnd(toolName, Boolean(event?.isError), args, event?.result);
   });
 
   pi.on("turn_end", (event, sessionCtx) => {
@@ -763,6 +818,10 @@ export default function registerShadowMinds(
     }
     state.scheduler.handleAgentEnd({ interrupted, checkpoint });
     refreshStatus();
+    streamingInputDesynchronized = false;
+    queuedSteeringSources.length = 0;
+    queuedFollowUpSources.length = 0;
+    skipInitialUserMessage = false;
   });
 
   // The shared session coordinator is reset by the extension entry on
@@ -816,8 +875,13 @@ export default function registerShadowMinds(
     }
     state.runtime = makeRuntime(inbox);
     state.scheduler = makeScheduler();
-    snapshotDirty = false;
+    pendingIdleInput = undefined;
+    queuedSteeringSources.length = 0;
+    queuedFollowUpSources.length = 0;
+    streamingInputDesynchronized = false;
+    skipInitialUserMessage = false;
     state.taskSnapshot = undefined;
+    taskSnapshots.clear();
     toolArgsById.clear();
     bindRuntimeNotifications();
     bindSchedulerStatus(sessionCtx);
@@ -906,7 +970,7 @@ export function createTaskSnapshotStore() {
   return {
     record(epoch: number, snapshot: ShadowTaskSnapshot): void {
       store.set(epoch, snapshot);
-      while (store.size > 4) {
+      while (store.size > TASK_EPOCH_RETENTION_MAX) {
         const oldest = [...store.keys()].sort((a, b) => a - b)[0];
         if (oldest === undefined) break;
         store.delete(oldest);
@@ -914,6 +978,9 @@ export function createTaskSnapshotStore() {
     },
     get(epoch: number): ShadowTaskSnapshot | undefined {
       return store.get(epoch);
+    },
+    clear(): void {
+      store.clear();
     },
   };
 }

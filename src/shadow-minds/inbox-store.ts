@@ -213,6 +213,10 @@ function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { val
     }
   }
   if (record.configuredDelivery !== undefined && !SHADOW_DELIVERIES.includes(record.configuredDelivery as never)) return undefined;
+  if (record.source !== undefined && record.source !== "manual" && record.source !== "automatic") return undefined;
+  if (record.primaryTrigger !== undefined && !SHADOW_TRIGGERS.includes(record.primaryTrigger as never)) return undefined;
+  if (record.source === "manual" && record.primaryTrigger !== undefined) return undefined;
+  if (record.source === "automatic" && record.primaryTrigger === undefined) return undefined;
   if (record.triggers !== undefined) {
     if (!Array.isArray(record.triggers) || record.triggers.length > 4) return undefined;
     if (!record.triggers.every((trigger) => SHADOW_TRIGGERS.includes(trigger as never))) return undefined;
@@ -245,6 +249,10 @@ function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { val
     ...(Array.isArray(record.requests) ? { requests: structuredClone(record.requests) as NonNullable<ShadowResultEntity["requests"]> } : {}),
     ...(typeof record.configuredDelivery === "string"
       ? { configuredDelivery: record.configuredDelivery as ShadowResultEntity["configuredDelivery"] }
+      : {}),
+    ...(record.source === "manual" || record.source === "automatic" ? { source: record.source } : {}),
+    ...(typeof record.primaryTrigger === "string"
+      ? { primaryTrigger: record.primaryTrigger as ShadowResultEntity["primaryTrigger"] }
       : {}),
     ...(Array.isArray(record.triggers) ? { triggers: [...record.triggers] as ShadowResultEntity["triggers"] } : {}),
     ...(record.taskIdentity !== undefined
@@ -565,6 +573,8 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
         ...(input.trajectoryTruncated !== undefined ? { trajectoryTruncated: input.trajectoryTruncated } : {}),
         ...(input.requests ? { requests: clone(input.requests) } : {}),
         ...(input.configuredDelivery ? { configuredDelivery: input.configuredDelivery } : {}),
+        ...(input.source ? { source: input.source } : {}),
+        ...(input.primaryTrigger ? { primaryTrigger: input.primaryTrigger } : {}),
         ...(input.triggers ? { triggers: [...input.triggers] } : {}),
         ...(input.taskIdentity ? { taskIdentity: clone(input.taskIdentity) } : {}),
       };

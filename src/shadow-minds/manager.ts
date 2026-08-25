@@ -162,6 +162,12 @@ export function snapshot(
   };
 }
 
+function resultSourceLabel(result: ShadowResultEntity): string {
+  return result.source === "automatic"
+    ? `automatic:${result.primaryTrigger ?? "trigger"}${result.taskIdentity ? ` task ${result.taskIdentity.epoch}` : ""}`
+    : "manual";
+}
+
 function fit(line: string, width: number): string {
   return truncateToWidth(line, Math.max(1, width), "…", true);
 }
@@ -1184,7 +1190,12 @@ export class ShadowManager implements Component, Focusable {
     const results = snapshot.results.slice(0, 20).map((result) => ({
       id: result.id,
       label: sanitizeDisplayLine(result.summary || result.shadowName),
-      detail: `${sanitizeDisplayLine(result.shadowId)} · ${result.attention} · ${result.delivery}`,
+      detail: [
+        sanitizeDisplayLine(result.shadowId),
+        resultSourceLabel(result),
+        result.attention,
+        result.delivery,
+      ].join(" · "),
       onSelect: () => this.openResultActions(result.id),
     }));
     const events = (snapshot.evictionEvents ?? []).slice(-5).reverse().map((event) => ({
@@ -1224,7 +1235,7 @@ export class ShadowManager implements Component, Focusable {
     this.openChoice({
       eyebrow: "INBOX / RESULT",
       title: sanitizeDisplayLine(result.summary || result.shadowName),
-      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${result.attention} · ${result.delivery}`,
+      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${resultSourceLabel(result)} · ${result.attention} · ${result.delivery}`,
       items: [
         {
           id: "payload",

@@ -55,6 +55,10 @@ function addResult(inbox, index, overrides = {}) {
   const entity = addResult(inbox, 1, {
     definitionHash: "abc123",
     configuredDelivery: "notify",
+    source: "automatic",
+    primaryTrigger: "failure",
+    triggers: ["failure", "tool_turn"],
+    taskIdentity: { epoch: 3 },
     lifecycle: "submitted",
     toolCalls: 3,
     trajectoryTruncated: true,
@@ -74,11 +78,19 @@ function addResult(inbox, index, overrides = {}) {
   assert.equal(onDisk.definitionHash, "abc123");
   assert.match(onDisk.schemaHash, /^[0-9a-f]{16}$/);
   assert.equal(onDisk.configuredDelivery, "notify");
+  assert.equal(onDisk.source, "automatic");
+  assert.equal(onDisk.primaryTrigger, "failure");
+  assert.deepEqual(onDisk.triggers, ["failure", "tool_turn"]);
+  assert.deepEqual(onDisk.taskIdentity, { epoch: 3 });
   assert.equal(onDisk.lifecycle, "submitted");
   assert.equal(onDisk.toolCalls, 3);
   assert.equal(onDisk.trajectoryTruncated, true);
   assert.deepEqual(onDisk.requests, [{ input: 10, output: 2, cacheRead: 4, cacheWrite: 1, cost: 0.01, ttftMs: 25 }]);
   assert.ok(!existsSync(join(partition, "results", `${entity.id}.json.tmp`)), "no temp files remain");
+  const reopenedEntity = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" }).list()[0];
+  assert.equal(reopenedEntity.source, "automatic");
+  assert.equal(reopenedEntity.primaryTrigger, "failure");
+  assert.deepEqual(reopenedEntity.taskIdentity, { epoch: 3 });
 
   const index = JSON.parse(readFileSync(join(partition, "index.json"), "utf8"));
   assert.equal(index.version, 1);

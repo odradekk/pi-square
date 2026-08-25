@@ -125,8 +125,8 @@ function makeHarness(options = {}) {
       if (options.preemptFails) return { ok: false };
       return { ok: true, runId: "run-old" };
     },
-    hasActiveRun(shadowId) {
-      return state.activeShadows.has(shadowId);
+    activeRun(shadowId) {
+      return state.activeShadows.has(shadowId) ? { source: "automatic", taskEpoch: 2 } : undefined;
     },
     cancelTaskRuns(epoch) {
       state.cancelledTaskRuns.push(epoch);
@@ -239,6 +239,25 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
 }
 
 {
+  // Anchored mutation refusals and noops are non-error tool outcomes, but they
+  // changed nothing and must not create a successful mutation trigger.
+  const { state, scheduler } = makeHarness({ definitions: [definition({ triggers: ["mutation"] })] });
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.observeToolStart("replace", { path: "a.ts" });
+  scheduler.observeToolEnd("replace", false, { path: "a.ts" }, { details: { status: "warning", errorCode: "E_RANGE_STALE" } });
+  scheduler.observeToolStart("replace", { path: "a.ts" });
+  scheduler.observeToolEnd("replace", false, { path: "a.ts" }, { details: { classification: "noop" } });
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 0, "refused/noop anchored edits do not trigger mutation Shadows");
+
+  scheduler.observeToolStart("replace", { path: "a.ts" });
+  scheduler.observeToolEnd("replace", false, { path: "a.ts" }, { details: { metrics: { classification: "applied" } } });
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 1, "an applied anchored edit triggers the subscribed Shadow");
+}
+
+{
   // Quality-command failure classification.
   const { state, scheduler } = makeHarness({ definitions: [definition({ triggers: ["failure"] })] });
   runRealUserTurn({ state, scheduler }, [
@@ -311,7 +330,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
       return { outcome: "started", runId: `run-${startCount}` };
     },
     preemptOldestAutomatic: () => ({ ok: false }),
-    hasActiveRun: () => false,
+    activeRun: () => undefined,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -356,7 +375,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
       return { outcome: "started" };
     },
     preemptOldestAutomatic: () => ({ ok: false }),
-    hasActiveRun: () => false,
+    activeRun: () => undefined,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -474,7 +493,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
       return busyDefs.has(input.definition.id) ? { outcome: "busy" } : { outcome: "started" };
     },
     preemptOldestAutomatic: () => ({ ok: false }),
-    hasActiveRun: () => false,
+    activeRun: () => undefined,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -489,6 +508,37 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
   assert.equal(snapshot.clippedIds.length, 2, "every clipped ID is recorded");
 }
 
+{
+  // Live config/definition drift is applied before dispatch: removed
+  // subscriptions drop pending work and a reduced queue limit clips by the
+  // newly effective rank rather than the enqueue-time snapshot.
+  const definitions = [
+    definition({ id: "a", triggers: ["tool_turn"], priority: 1 }),
+    definition({ id: "b", triggers: ["tool_turn"], priority: 2 }),
+  ];
+  const harness = makeHarness({ definitions });
+  let busy = true;
+  const scheduler = createShadowScheduler({
+    now: () => harness.state.clock,
+    config: () => harness.state.config,
+    definitions: () => harness.state.definitions,
+    activeRun: () => undefined,
+    start: () => busy ? { outcome: "busy" } : { outcome: "started" },
+    preemptOldestAutomatic: () => ({ ok: false }),
+    cancelTaskRuns: () => 0,
+    cancelAutomaticRuns: () => 0,
+    forceNotifyOldResults: () => 0,
+  });
+  runRealUserTurn({ state: harness.state, scheduler }, [{ tool: "read", args: {} }]);
+  assert.equal(scheduler.snapshot().pending.length, 2);
+  definitions[0].triggers = [];
+  harness.state.config.defaults.maxQueuedShadowIds = 1;
+  busy = false;
+  scheduler.handleRunSettled();
+  assert.equal(scheduler.snapshot().pending.length, 0);
+  assert.ok(scheduler.snapshot().diagnostics.some((line) => line.includes("a") && line.includes("subscribes")));
+}
+
 // ── AC6: new-task preemption; superseded handled by the runtime ──
 
 {
@@ -500,7 +550,7 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
     now: () => preempting.state.clock,
     config: () => preempting.state.config,
     definitions: () => preempting.state.definitions,
-    hasActiveRun: () => false,
+    activeRun: () => undefined,
     start(input) {
       preempting.state.starts.push(input);
       if (first) {
@@ -537,14 +587,14 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
     now: () => harness.state.clock,
     config: () => harness.state.config,
     definitions: () => harness.state.definitions,
-    hasActiveRun: () => false,
+    activeRun: () => undefined,
     start: () => ({ outcome: "busy" }),
     preemptOldestAutomatic(currentEpoch) {
       harness.state.preemptions.push(currentEpoch);
       // Same-epoch contention: no older-task automatic run exists to preempt.
       return { ok: false };
     },
-    hasActiveRun: () => false,
+    activeRun: () => undefined,
     cancelTaskRuns: () => 0,
     cancelAutomaticRuns: () => 0,
     forceNotifyOldResults: () => 0,
@@ -681,6 +731,69 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
   state.activeShadows.clear();
   scheduler.handleRunSettled();
   assert.equal(state.starts.length, 1, "the latest checkpoint dispatches after the run settles");
+}
+
+{
+  // A pending activation never combines a newer task's trajectory with an
+  // older task's epoch/authority. The newer task atomically replaces it.
+  const harness = makeHarness({
+    definitions: [definition({ id: "ground", triggers: ["tool_turn"] })],
+  });
+  const scheduler = createShadowScheduler({
+    now: () => harness.state.clock,
+    config: () => harness.state.config,
+    definitions: () => harness.state.definitions,
+    start: () => ({ outcome: "busy" }),
+    activeRun: () => undefined,
+    preemptOldestAutomatic: () => ({ ok: false }),
+    cancelTaskRuns: () => 0,
+    cancelAutomaticRuns: () => 0,
+    forceNotifyOldResults: () => 0,
+  });
+  runRealUserTurn({ state: harness.state, scheduler }, [{ tool: "read", args: {} }]);
+  harness.state.clock += 10;
+  runRealUserTurn({ state: harness.state, scheduler }, [{ tool: "grep", args: {} }]);
+  const [activation] = scheduler.snapshot().pending;
+  assert.equal(activation.taskEpoch, 3, "the pending activation belongs wholly to the newer task");
+  assert.deepEqual(activation.checkpoint, { marker: harness.state.clock });
+  assert.equal(activation.reasons[0].firstObservedAt, harness.state.clock, "old-task reasons are not merged across authority boundaries");
+}
+
+{
+  // A newer-task activation for the same Shadow stays queued while the older
+  // run is active; per-Shadow serialization is stronger than slot preemption.
+  const harness = makeHarness({ definitions: [definition({ id: "ground", triggers: ["tool_turn"] })] });
+  const scheduler = createShadowScheduler({
+    now: () => harness.state.clock,
+    config: () => harness.state.config,
+    definitions: () => harness.state.definitions,
+    activeRun: () => ({ source: "automatic", taskEpoch: 1 }),
+    start(input) { harness.state.starts.push(input); return { outcome: "started" }; },
+    preemptOldestAutomatic(epoch) { harness.state.preemptions.push(epoch); return { ok: true, runId: "run-old" }; },
+    cancelTaskRuns: () => 0,
+    cancelAutomaticRuns: () => 0,
+    forceNotifyOldResults: () => 0,
+  });
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.observeToolStart("read", {});
+  scheduler.handleTurnEnd({ task: 2 });
+  assert.deepEqual(harness.state.preemptions, [], "the same-Shadow active guard does not invoke slot preemption");
+  assert.equal(harness.state.starts.length, 0);
+  assert.equal(scheduler.snapshot().pending.length, 1);
+}
+
+{
+  // Per-task budget accounting is session-bounded rather than growing once
+  // for every user task in a long-lived parent session.
+  const { state, scheduler } = makeHarness({ definitions: [definition({ id: "ground", triggers: ["tool_turn"] })] });
+  for (let task = 0; task < 10; task += 1) {
+    runRealUserTurn({ state, scheduler }, [{ tool: "read", args: {} }]);
+    state.clock += 1;
+  }
+  const retained = scheduler.snapshot().automaticStartsByTask;
+  assert.equal(retained.length, 4, "only the bounded task-epoch window is retained");
+  assert.deepEqual(retained.map((entry) => entry.epoch), [11, 10, 9, 8]);
 }
 
 console.log("shadow-minds scheduler tests: OK");

@@ -215,7 +215,8 @@ export function subscribedDefinitions(
 const DIAGNOSTICS_MAX = 12;
 const CLIPPED_IDS_MAX = 16;
 const REASONS_PER_ACTIVATION_MAX = 4;
-
+/** Task epochs retained for authority snapshots, counters, and late pending work. */
+export const TASK_EPOCH_RETENTION_MAX = 4;
 export interface ShadowSchedulerStartInput {
   definition: EffectiveShadowDefinition;
   taskEpoch: number;
@@ -236,8 +237,8 @@ export interface ShadowSchedulerDeps {
   definitions(): readonly EffectiveShadowDefinition[];
   /** Starts one automatic run through the session runtime. */
   start(input: ShadowSchedulerStartInput): ShadowSchedulerStartOutcome;
-  /** Whether one Shadow already has a running activation (manual or automatic). */
-  hasActiveRun(shadowId: string): boolean;
+  /** Active activation for one Shadow, including source and task identity. */
+  activeRun(shadowId: string): { source: "manual" | "automatic"; taskEpoch?: number } | undefined;
   /**
    * Frees one slot by superseding the oldest automatic run from an older
    * task epoch; manual runs are never eligible.
@@ -269,7 +270,7 @@ export interface ShadowScheduler {
   /** One parent tool execution began: marks a dirty generation. */
   observeToolStart(toolName: string, args: unknown): void;
   /** One parent tool execution settled: mutation and failure observation. */
-  observeToolEnd(toolName: string, isError: boolean, args: unknown): void;
+  observeToolEnd(toolName: string, isError: boolean, args: unknown, result?: unknown): void;
   /** Coalesces the turn's observations into pending activations and dispatches. */
   handleTurnEnd(checkpoint: unknown): void;
   /**
@@ -333,6 +334,14 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
 
   const startsFor = (epoch: number): number => automaticStartsByTask.get(epoch) ?? 0;
 
+  const recordStart = (epoch: number): void => {
+    automaticStartsByTask.set(epoch, startsFor(epoch) + 1);
+    const oldestRetained = taskEpoch - TASK_EPOCH_RETENTION_MAX + 1;
+    for (const retainedEpoch of automaticStartsByTask.keys()) {
+      if (retainedEpoch < oldestRetained) automaticStartsByTask.delete(retainedEpoch);
+    }
+  };
+
   /** Enqueues or merges one activation; one pending snapshot per Shadow. */
   const enqueue = (input: {
     definition: EffectiveShadowDefinition;
@@ -343,7 +352,11 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
     checkpoint: unknown;
   }): void => {
     const existing = pending.get(input.definition.id);
-    const reasons = existing
+    // Reasons and authority never cross task boundaries. A newer task replaces
+    // the older pending snapshot atomically; within one task, observations
+    // merge and keep the latest trajectory checkpoint.
+    const sameTask = existing?.taskEpoch === taskEpoch;
+    const reasons = sameTask
       ? existing.reasons
       : ([] as ShadowTriggerReason[]);
     mergeTriggerReason(reasons, {
@@ -355,19 +368,24 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
     const ordered = orderReasons(reasons).slice(0, REASONS_PER_ACTIVATION_MAX);
     const activation: ShadowPendingActivation = {
       shadowId: input.definition.id,
-      taskEpoch: existing?.taskEpoch ?? taskEpoch,
+      taskEpoch,
       shadowPriority: input.definition.priority,
       bestTrigger: ordered[0]!.trigger,
       reasons: ordered,
       generation: input.generation,
       checkpoint: input.checkpoint,
-      enqueuedAt: existing?.enqueuedAt ?? input.at,
+      enqueuedAt: sameTask ? existing.enqueuedAt : input.at,
       lastObservedAt: input.at,
     };
     pending.set(input.definition.id, activation);
 
-    // Bounded queue: keep the highest-ranked items, record every clipped ID.
-    const limit = deps.config().defaults.maxQueuedShadowIds;
+    enforcePendingLimit(deps.config().defaults.maxQueuedShadowIds);
+  };
+
+  const rankedPending = (): ShadowPendingActivation[] =>
+    [...pending.values()].sort(compareActivations);
+
+  const enforcePendingLimit = (limit: number): void => {
     while (pending.size > limit) {
       const ranked = rankedPending();
       const lowest = ranked[ranked.length - 1]!;
@@ -376,9 +394,29 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
     }
   };
 
-  const rankedPending = (): ShadowPendingActivation[] =>
-    [...pending.values()].sort(compareActivations);
-
+  const reconcilePending = (
+    definitions: readonly EffectiveShadowDefinition[],
+    config: ShadowMindsConfig,
+  ): void => {
+    const byId = new Map(definitions.map((definition) => [definition.id, definition]));
+    for (const [id, activation] of [...pending]) {
+      const definition = byId.get(id);
+      if (!definition || !definition.enabled || definition.hidden) {
+        pending.delete(id);
+        recordDiagnostic(`Shadow '${id}' is no longer eligible; its pending activation was dropped.`);
+        continue;
+      }
+      activation.reasons = orderReasons(activation.reasons.filter((reason) => definition.triggers.includes(reason.trigger)));
+      if (activation.reasons.length === 0) {
+        pending.delete(id);
+        recordDiagnostic(`Shadow '${id}' no longer subscribes to its pending triggers; the activation was dropped.`);
+        continue;
+      }
+      activation.bestTrigger = activation.reasons[0]!.trigger;
+      activation.shadowPriority = definition.priority;
+    }
+    enforcePendingLimit(config.defaults.maxQueuedShadowIds);
+  };
   let dispatching = false;
 
   /** Starts pending activations in deterministic rank order. */
@@ -397,6 +435,8 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
   const dispatchOnce = (): void => {
     const config = deps.config();
     if (!config.enabled || paused) return;
+    const definitions = deps.definitions();
+    reconcilePending(definitions, config);
     for (const activation of rankedPending()) {
       if (startsFor(activation.taskEpoch) >= config.defaults.maxAutomaticStartsPerTask) {
         pending.delete(activation.shadowId);
@@ -405,16 +445,12 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
         );
         continue;
       }
-      const definition = deps.definitions().find((entry) => entry.id === activation.shadowId);
-      if (!definition || !definition.enabled || definition.hidden) {
-        pending.delete(activation.shadowId);
-        recordDiagnostic(`Shadow '${activation.shadowId}' is no longer eligible; its pending activation was dropped.`);
-        continue;
-      }
+      const definition = definitions.find((entry) => entry.id === activation.shadowId)!;
       // One activation per Shadow at a time: while a run (manual or
       // automatic) is active, the pending snapshot stays queued and keeps
-      // the latest checkpoint until the run settles.
-      if (deps.hasActiveRun(activation.shadowId)) continue;
+      // the latest checkpoint until that run settles. Slot preemption is a
+      // separate boundary and occurs only after an actual busy start.
+      if (deps.activeRun(activation.shadowId)) continue;
       const started = deps.start({
         definition,
         taskEpoch: activation.taskEpoch,
@@ -431,7 +467,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
           const toolTurn = activation.reasons.find((reason) => reason.trigger === "tool_turn");
           if (toolTurn) reviewedGenerations.set(activation.shadowId, toolTurn.generation ?? activation.generation);
         }
-        automaticStartsByTask.set(activation.taskEpoch, startsFor(activation.taskEpoch) + 1);
+        recordStart(activation.taskEpoch);
         continue;
       }
       if (started.outcome === "failed") {
@@ -439,7 +475,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
         recordDiagnostic(`Shadow '${activation.shadowId}' failed to start: ${started.reason}`);
         continue;
       }
-      // busy: a newer task may preempt an older-task automatic run.
+      // busy: a current-task activation may preempt an older-task automatic run.
       if (activation.taskEpoch < taskEpoch) continue;
       const preempted = deps.preemptOldestAutomatic(taskEpoch);
       if (!preempted.ok) continue;
@@ -454,7 +490,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
         pending.delete(activation.shadowId);
         const toolTurn = activation.reasons.find((reason) => reason.trigger === "tool_turn");
         if (toolTurn) reviewedGenerations.set(activation.shadowId, toolTurn.generation ?? activation.generation);
-        automaticStartsByTask.set(activation.taskEpoch, startsFor(activation.taskEpoch) + 1);
+        recordStart(activation.taskEpoch);
       } else if (retried.outcome === "failed") {
         pending.delete(activation.shadowId);
         recordDiagnostic(`Shadow '${activation.shadowId}' failed to start: ${retried.reason}`);
@@ -485,7 +521,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
       toolGeneration += 1;
       turn.generation = toolGeneration;
     },
-    observeToolEnd(toolName, isError, args) {
+    observeToolEnd(toolName, isError, args, result) {
       if (!realUserRunActive || paused) return;
       if (isError) {
         // Only declaratively classified quality commands that ended
@@ -504,7 +540,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
         return;
       }
       // A successful Pi or pi-square-owned mutation tool marks the reason.
-      if (!isMutationToolName(toolName)) return;
+      if (!isMutationToolName(toolName) || !mutationWasApplied(toolName, result)) return;
       mergeTriggerReason(turn.reasons, {
         trigger: "mutation",
         at: deps.now(),
@@ -636,6 +672,26 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
       turn = { reasons: [], generation: 0 };
     },
   };
+}
+
+/**
+ * Anchored mutations expose a declarative classification/status. A recoverable
+ * refusal or noop has `isError: false` but changed nothing, so only `applied`
+ * qualifies. Pi's built-in edit/write results lack that metadata and a
+ * non-error end remains their authoritative success signal.
+ */
+function mutationWasApplied(toolName: string, result: unknown): boolean {
+  if (toolName !== "replace" && toolName !== "revert") return true;
+  if (!result || typeof result !== "object") return false;
+  const details = (result as { details?: unknown }).details;
+  if (!details || typeof details !== "object") return false;
+  const record = details as Record<string, unknown>;
+  if (record.status === "warning") return false;
+  const classification = record.classification
+    ?? (record.metrics && typeof record.metrics === "object"
+      ? (record.metrics as Record<string, unknown>).classification
+      : undefined);
+  return classification === "applied";
 }
 
 function boundedArgString(args: unknown): string | undefined {

@@ -773,7 +773,8 @@ function makeRuntimeService(initial) {
   };
   const result = {
     id: "shr-1", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
-    trigger: "manual", payload: { summary: "Two decisions remain open." }, summary: "Two decisions remain open.",
+    trigger: "manual", source: "automatic", primaryTrigger: "failure", taskIdentity: { epoch: 3 },
+    payload: { summary: "Two decisions remain open." }, summary: "Two decisions remain open.",
     delivery: "notified", attention: "unread", createdAt: 2_000,
   };
   const service = makeRuntimeService({
@@ -828,6 +829,7 @@ function makeRuntimeService(initial) {
   manager.handleInput("\r");
   lines = render(manager).join("\n");
   assert.ok(lines.includes("Two decisions remain open."), "the result summary renders");
+  assert.ok(lines.includes("automatic:failure task 3"), "the inbox result exposes automatic trigger and task provenance");
   manager.handleInput("\r");
   lines = render(manager).join("\n");
   assert.ok(lines.includes("Two decisions remain open."), "the payload view renders the submitted JSON");
