@@ -40,6 +40,7 @@ import {
 } from "./parser";
 import { canonicalPayloadJson, type ShadowResultEntity } from "./result";
 import { SHADOW_MANUAL_NOTE_MAX_CHARS, type ShadowRunView, type ShadowRuntimeSnapshot } from "./runtime";
+import type { ShadowSchedulerSnapshot } from "./scheduler";
 import { newShadowDefinitionDraft } from "./serialize";
 
 const LIST_WIDTH = 34;
@@ -92,8 +93,16 @@ export interface ShadowRuntimeServices {
   subscribe(listener: () => void): () => void;
 }
 
+/** Deterministic scheduling controls and bounded visibility. */
+export interface ShadowSchedulerServices {
+  snapshot(): ShadowSchedulerSnapshot;
+  pause(): void;
+  resume(): void;
+}
+
 export interface ShadowManagerServices {
   runtime?: ShadowRuntimeServices;
+  scheduler?: ShadowSchedulerServices;
   refresh(): ShadowManagerSnapshot;
   /** Maps an on-disk overlay path to its writable scope, when it is one. */
   scopeOf(filePath: string): WritableScope | undefined;
@@ -151,6 +160,12 @@ export function snapshot(
     projectTrusted,
     ...(config ? { config } : {}),
   };
+}
+
+function resultSourceLabel(result: ShadowResultEntity): string {
+  return result.source === "automatic"
+    ? `automatic:${result.primaryTrigger ?? "trigger"}${result.taskIdentity ? ` task ${result.taskIdentity.epoch}` : ""}`
+    : "manual";
 }
 
 function fit(line: string, width: number): string {
@@ -1050,6 +1065,63 @@ export class ShadowManager implements Component, Focusable {
 
   private openRunsList(): void {
     const items = this.buildRunItems();
+    const scheduler = this.services?.scheduler;
+    const pauseItems: ChoiceItem[] = [];
+    if (scheduler) {
+      const paused = scheduler.snapshot().paused;
+      pauseItems.push({
+        id: paused ? "resume" : "pause",
+        label: paused ? "Resume automatic Shadows" : "Pause automatic Shadows",
+        detail: paused
+          ? "Automatic triggers resume; paused events are not replayed"
+          : "Cancel automatic runs and block new automatic work; manual trials stay available",
+        onSelect: () => {
+          if (paused) scheduler.resume();
+          else scheduler.pause();
+          this.flash = { kind: "success", text: paused ? "Automatic Shadows resumed." : "Automatic Shadows paused." };
+          this.refreshRuntimeViews();
+          this.openRunsList();
+          this.tui.requestRender();
+        },
+      });
+      const pending = scheduler.snapshot().pending.slice(0, 8).map((activation) => ({
+        id: `pending-${activation.shadowId}`,
+        label: `Queued: ${sanitizeDisplayLine(activation.shadowId)}`,
+        detail: sanitizeDisplayLine(
+          `${activation.bestTrigger} · task ${activation.taskEpoch} · ${activation.reasons.map((reason) => reason.trigger).join(", ")}`,
+        ),
+        onSelect: () => {},
+      }));
+      // Enforcement events stay visible: clipped queue entries, exhausted
+      // budgets, preemptions, and interruption/pause diagnostics.
+      const schedSnap = scheduler.snapshot();
+      const diagnostics: ChoiceItem[] = [];
+      if (schedSnap.diagnostics.length > 0 || schedSnap.clippedIds.length > 0) {
+        diagnostics.push({
+          id: "scheduling-diagnostics",
+          label: "Scheduling notes",
+          detail: `${schedSnap.diagnostics.length} note${schedSnap.diagnostics.length === 1 ? "" : "s"} · ${schedSnap.clippedIds.length} clipped`,
+          onSelect: () => {
+            this.openReview({
+              eyebrow: "RUNS / SCHEDULING",
+              title: "Scheduling notes",
+              lines: [
+                ...(schedSnap.diagnostics.length > 0
+                  ? ["NOTES", ...schedSnap.diagnostics.slice(-8).map((line) => sanitizeDisplayLine(line))]
+                  : []),
+                ...(schedSnap.clippedIds.length > 0
+                  ? ["", "CLIPPED QUEUE ENTRIES", ...schedSnap.clippedIds.slice(-8).map((id) => sanitizeDisplayLine(id))]
+                  : []),
+                ...schedSnap.automaticStartsByTask.map((entry) => `Task ${entry.epoch}: ${entry.starts} automatic starts`),
+              ],
+              confirmLabel: "back",
+              onConfirm: () => this.back(),
+            });
+          },
+        });
+      }
+      items.unshift(...pauseItems, ...pending, ...diagnostics);
+    }
     this.openChoice({
       eyebrow: "RUNS / LIST",
       title: items.length > 0 ? "Select a run" : "No runs yet",
@@ -1118,7 +1190,12 @@ export class ShadowManager implements Component, Focusable {
     const results = snapshot.results.slice(0, 20).map((result) => ({
       id: result.id,
       label: sanitizeDisplayLine(result.summary || result.shadowName),
-      detail: `${sanitizeDisplayLine(result.shadowId)} · ${result.attention} · ${result.delivery}`,
+      detail: [
+        sanitizeDisplayLine(result.shadowId),
+        resultSourceLabel(result),
+        result.attention,
+        result.delivery,
+      ].join(" · "),
       onSelect: () => this.openResultActions(result.id),
     }));
     const events = (snapshot.evictionEvents ?? []).slice(-5).reverse().map((event) => ({
@@ -1158,7 +1235,7 @@ export class ShadowManager implements Component, Focusable {
     this.openChoice({
       eyebrow: "INBOX / RESULT",
       title: sanitizeDisplayLine(result.summary || result.shadowName),
-      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${result.attention} · ${result.delivery}`,
+      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${resultSourceLabel(result)} · ${result.attention} · ${result.delivery}`,
       items: [
         {
           id: "payload",
@@ -1540,6 +1617,15 @@ function runFactsLines(run: ShadowRunView): string[] {
     ? `${run.toolNames.join(", ")} + submit_shadow_result`
     : "submit_shadow_result only";
   lines.push(`Tools: ${tools}`);
+  if (run.source === "automatic") {
+    lines.push(`Source: automatic · ${run.trigger ?? "trigger"}${run.taskEpoch !== undefined ? ` · task ${run.taskEpoch}` : ""}`);
+    for (const reason of run.triggerReasons ?? []) {
+      const detail = reason.detail !== undefined
+        ? reason.detail
+        : reason.trigger === "tool_turn" && reason.generation !== undefined ? `generation ${reason.generation}` : reason.trigger;
+      lines.push(`Reason: ${sanitizeDisplayLine(detail)}`);
+    }
+  }
   if (run.toolWarnings && run.toolWarnings.length > 0) {
     lines.push("", "TOOL WARNINGS");
     lines.push(...run.toolWarnings.map((warning) => sanitizeDisplayLine(warning)));
@@ -1560,6 +1646,7 @@ function runFactsLines(run: ShadowRunView): string[] {
 
 function runDetailLabel(run: ShadowRunView): string {
   const qualifiers: string[] = [];
+  if (run.source === "automatic") qualifiers.push(`automatic · ${run.trigger ?? "trigger"}${run.taskEpoch !== undefined ? ` · task ${run.taskEpoch}` : ""}`);
   if (run.trajectoryTruncated) qualifiers.push("trajectory truncated");
   if (run.toolWarnings && run.toolWarnings.length > 0) qualifiers.push(`${run.toolWarnings.length} tool warning${run.toolWarnings.length === 1 ? "" : "s"}`);
   if (run.requests && run.requests.length > 0) qualifiers.push(`${run.requests.length} request${run.requests.length === 1 ? "" : "s"}`);
@@ -1579,12 +1666,13 @@ function toolLabel(definition: EffectiveShadowDefinition): string {
 function configSummary(config: { enabled: boolean; defaults: ShadowMindsDefaults }): string {
   const d = config.defaults;
   return [
-    `concurrency ${d.maxConcurrentRuns}`,
+    `runs ${d.maxConcurrentRuns}`,
     `timeout ${d.runTimeoutSeconds}s`,
     `turns ${d.maxModelTurnsPerRun}`,
-    `tool calls ${d.maxToolCallsPerRun}`,
-    `starts/task ${d.maxAutomaticStartsPerTask}`,
-    `gate window ${d.completionGateWindowSeconds}s`,
+    `tools ${d.maxToolCallsPerRun}`,
+    `starts ${d.maxAutomaticStartsPerTask}`,
+    `queue ${d.maxQueuedShadowIds}`,
+    `gate ${d.completionGateWindowSeconds}s`,
   ].join(" · ");
 }
 

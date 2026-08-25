@@ -270,6 +270,34 @@ What works today:
   bounded outcomes, and model or auth failures are observable lifecycle data and
   never become results. Manual trials require the
   `shadowMinds.enabled` master switch and share its concurrency budget.
+
+- Deterministic automatic scheduling: only real-user parent runs (interactive
+  or rpc input) create trigger opportunities — extension continuations never
+  trigger Shadows recursively. A `tool_turn` subscription runs at most once
+  per reviewed activity generation, `mutation` recognizes only the successful
+  Pi and pi-square declarative mutation tools (`edit`, `write`, `replace`,
+  `revert`), and `failure` fires only for a declaratively classified quality
+  command (test, build, typecheck, smoke, package-check) that ended non-zero.
+  Mutation, failure, and tool-turn reasons from one parent turn coalesce into
+  one pending activation per Shadow that keeps the latest trajectory
+  checkpoint and every merged reason with first/last observation times;
+  `completion` fires at agent end. Dispatch arbitrates deterministically by
+  task generation, trigger priority (completion, failure, mutation, tool
+  turn), Shadow priority, then ID, under the configured concurrency,
+  per-task automatic-start, and queued-ID bounds — clipped IDs, budget
+  drops, and interruption notes are visible in the `/shadow` runs list. A new task can preempt the oldest
+  previous-task automatic run (a distinct `superseded` outcome) but never a
+  manual run; a manual start may in turn supersede an automatic run for a
+  busy slot. Old-task undelivered results are forced to `notify` delivery, a
+  user interruption cancels every current-task run and pending activation,
+  and session pause (from the `/shadow` runs list) cancels automatic runs,
+  blocks new automatic work, permits manual trials, and never replays paused
+  events on resume. A bounded conditional footer status shows running,
+  queued, and unread counts plus a paused marker (visible even while
+  otherwise idle). Automatic runs share the manual guards
+  (parent-model filter, read-only envelope, model and thinking resolution)
+  and freeze the parent core, trusted project rules, and working directory
+  once per real user task from that run's prompt options.
 - A strict `shadowMinds` section in agent and project pi-square configuration:
   the agent-level `enabled` master switch (a project can never re-enable it)
   and runtime `defaults` that always stay below package hard caps. Defaults may
@@ -279,9 +307,8 @@ What works today:
 
 Definition files are ordinary Markdown with a strict bounded frontmatter
 subset; invalid definitions are diagnosed and excluded individually while
-valid ones remain inspectable. Automatic trigger scheduling, evidence tool
-envelopes, result delivery, and the persistent recoverable inbox arrive with
-the later slices of #149.
+valid ones remain inspectable. Result delivery (steer, wake, notify, and
+Send to agent) arrives with the later slices of #149.
 
 ## Persistent SSH shell
 

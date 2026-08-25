@@ -754,4 +754,190 @@ function baseRequest(overrides = {}) {
   assert.match(entity.schemaHash, /^[0-9a-f]{16}$/);
 }
 
+// ── Automatic runs, preemption, interruption, pause, stale notify ──
+
+{
+  // Automatic runs carry source, trigger, epoch, and reasons; the prompt
+  // includes the bounded trigger task section.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "ok" }) });
+  const prompts = [];
+  const originalRun = fake.deps.runSession;
+  fake.deps.runSession = async (input) => {
+    prompts.push(input.prompt);
+    return await originalRun(input);
+  };
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const outcome = runtime.startAutomaticRun(baseRequest({
+    trigger: "mutation",
+    taskEpoch: 4,
+    triggerReasons: [{ trigger: "mutation", firstObservedAt: 1, lastObservedAt: 2, detail: "write a.ts" }],
+  }));
+  assert.equal(outcome.started, true, "the automatic run starts through the same seam");
+  const view = await outcome.done;
+  assert.equal(view.source, "automatic");
+  assert.equal(view.trigger, "mutation");
+  assert.equal(view.taskEpoch, 4);
+  assert.ok(prompts[0].includes("[Trigger task — mutation]"), "the prompt carries the trigger task");
+  assert.ok(prompts[0].includes("write a.ts"), "merged reasons appear in the prompt");
+  assert.ok(!prompts[0].includes("[Manual note]"), "automatic runs carry no manual note");
+}
+
+{
+  // Superseded is a distinct terminal outcome: a newer-task preemption
+  // aborts the oldest previous-task automatic run and it records superseded.
+  const fake = makeFake({ script: abortSettled() });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const first = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "old" }), trigger: "tool_turn", taskEpoch: 2 }));
+  assert.equal(first.started, true);
+  const second = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "current-a" }), trigger: "tool_turn", taskEpoch: 3 }));
+  assert.equal(second.started, true, "a newer task still gets a slot (default limit 2)");
+  const third = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "current-b" }), trigger: "tool_turn", taskEpoch: 3 }));
+  assert.equal(third.started, false, "the third start finds the concurrency limit");
+  assert.equal(third.kind, "busy");
+
+  const preempted = runtime.preemptOldestAutomatic(3);
+  assert.equal(preempted.ok, true, "the oldest previous-task automatic run is superseded");
+  const view = await first.done;
+  assert.equal(view.phase, "superseded", "superseded is observable, not cancelled");
+  const snapshot = runtime.snapshot();
+  assert.ok(snapshot.runs.some((run) => run.phase === "superseded"));
+
+  // A freed slot lets the queued newer task start.
+  const fourth = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "current-b" }), trigger: "tool_turn", taskEpoch: 3 }));
+  assert.equal(fourth.started, true, "the superseded slot is immediately reusable");
+  runtime.cancelRun(second.runId);
+  runtime.cancelRun(fourth.runId);
+  await Promise.all([second.done, fourth.done]);
+}
+
+{
+  // Runtime enforces one active activation per Shadow independently of the
+  // scheduler: duplicate automatic and manual starts both refuse until settle.
+  const fake = makeFake({ script: abortSettled() });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const automatic = runtime.startAutomaticRun(baseRequest({ trigger: "tool_turn", taskEpoch: 2 }));
+  assert.equal(automatic.started, true);
+  const duplicate = runtime.startAutomaticRun(baseRequest({ trigger: "tool_turn", taskEpoch: 3 }));
+  assert.equal(duplicate.started, false);
+  assert.equal(duplicate.kind, "busy");
+  const manual = runtime.startManualRun(baseRequest({ taskEpoch: 3 }));
+  assert.equal(manual.started, false, "same-Shadow manual work stays serialized rather than superseding by identity");
+  runtime.cancelRun(automatic.runId);
+  await automatic.done;
+}
+
+{
+  // Manual starts preempt the oldest automatic run when every slot is busy;
+  // manual runs are never superseded by automatic scheduling.
+  const fake = makeFake({ script: abortSettled() });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const auto = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "auto" }), trigger: "tool_turn", taskEpoch: 1 }));
+  assert.equal(auto.started, true);
+  const manualOne = runtime.startManualRun(baseRequest({ definition: definition({ id: "manual-a" }), taskEpoch: 1 }));
+  assert.equal(manualOne.started, true);
+  const manualTwo = runtime.startManualRun(baseRequest({ definition: definition({ id: "manual-b" }), taskEpoch: 1 }));
+  assert.equal(manualTwo.started, true, "a manual start supersedes an automatic run for a slot");
+  const autoView = await auto.done;
+  assert.equal(autoView.phase, "superseded", "the automatic run was superseded by the manual start");
+  runtime.cancelRun(manualOne.runId);
+  runtime.cancelRun(manualTwo.runId);
+  await Promise.all([manualOne.done, manualTwo.done]);
+
+  // All-manual contention refuses instead of superseding.
+  const fakeTwo = makeFake({ script: abortSettled() });
+  const runtimeTwo = createShadowRuntime({ config: () => config(), deps: fakeTwo.deps });
+  const busyOne = runtimeTwo.startManualRun(baseRequest({ definition: definition({ id: "manual-a" }) }));
+  const busyTwo = runtimeTwo.startManualRun(baseRequest({ definition: definition({ id: "manual-b" }) }));
+  assert.equal((busyOne.started && busyTwo.started), true);
+  const refused = runtimeTwo.startManualRun(baseRequest({ definition: definition({ id: "manual-c" }) }));
+  assert.equal(refused.started, false, "with only manual runs busy, the third manual start refuses");
+  const duplicate = runtimeTwo.startManualRun(baseRequest({ definition: definition({ id: "manual-a" }) }));
+  assert.equal(duplicate.started, false, "one Shadow never has two concurrent manual runs");
+  runtimeTwo.cancelRun(busyOne.runId);
+  runtimeTwo.cancelRun(busyTwo.runId);
+  await Promise.all([busyOne.done, busyTwo.done]);
+}
+
+{
+  // User interruption cancels every current-task run, manual included;
+  // previous-task runs survive.
+  const fake = makeFake({ script: abortSettled() });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const oldTask = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "old" }), trigger: "tool_turn", taskEpoch: 2 }));
+  const currentAuto = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "current-auto" }), trigger: "tool_turn", taskEpoch: 5 }));
+  const currentManual = runtime.startManualRun(baseRequest({ definition: definition({ id: "current-manual" }), taskEpoch: 5 }));
+  assert.equal((await Promise.all([oldTask.started, currentAuto.started, currentManual.started])).every(Boolean), true);
+  assert.equal(runtime.cancelTaskRuns(5), 2, "both current-task runs were cancelled");
+  const autoView = await currentAuto.done;
+  const manualView = await currentManual.done;
+  assert.equal(autoView.phase, "cancelled");
+  assert.equal(manualView.phase, "cancelled");
+  runtime.cancelRun(oldTask.runId);
+  const oldView = await oldTask.done;
+  assert.notEqual(oldView.phase, "cancelled");
+}
+
+{
+  // Session pause cancels every automatic run and stamps why; manual runs
+  // keep running and manual trials remain available afterwards.
+  const fake = makeFake({ script: abortSettled() });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const auto = runtime.startAutomaticRun(baseRequest({ definition: definition({ id: "auto" }), trigger: "tool_turn", taskEpoch: 1 }));
+  const manual = runtime.startManualRun(baseRequest({ definition: definition({ id: "manual" }), taskEpoch: 1 }));
+  assert.equal(runtime.cancelAutomaticRuns("Session paused"), 1);
+  const autoView = await auto.done;
+  assert.equal(autoView.phase, "cancelled");
+  assert.equal(autoView.message, "Session paused");
+  assert.equal(
+    runtime.snapshot().runs.find((run) => run.id === manual.runId).phase,
+    "running",
+    "pause never cancels manual trials",
+  );
+  runtime.cancelRun(manual.runId);
+  await manual.done;
+}
+
+{
+  // A run that outlives its task persists its result forced to notify.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "late" }) });
+  let epoch = 4;
+  const runtime = createShadowRuntime({
+    config: () => config(),
+    deps: fake.deps,
+    currentTaskEpoch: () => epoch,
+  });
+  const outcome = runtime.startAutomaticRun(baseRequest({
+    trigger: "tool_turn",
+    taskEpoch: 4,
+    triggerReasons: [{ trigger: "tool_turn", firstObservedAt: 1, lastObservedAt: 1, generation: 2 }],
+  }));
+  const gate = outcome.done;
+  epoch = 5; // A new task began before the old run submitted.
+  const view = await gate;
+  assert.equal(view.phase, "submitted");
+  const result = runtime.snapshot().results.find((entry) => entry.shadowId === view.shadowId);
+  assert.equal(result.configuredDelivery, "notify", "stale-task results are forced to notify");
+  assert.equal(result.source, "automatic");
+  assert.equal(result.primaryTrigger, "tool_turn");
+}
+
+{
+  // A current-task run keeps its configured delivery.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "now" }) });
+  let epoch = 4;
+  const runtime = createShadowRuntime({
+    config: () => config(),
+    deps: fake.deps,
+    currentTaskEpoch: () => epoch,
+  });
+  const outcome = runtime.startAutomaticRun(baseRequest({
+    trigger: "tool_turn",
+    taskEpoch: 4,
+    triggerReasons: [{ trigger: "tool_turn", firstObservedAt: 1, lastObservedAt: 1, generation: 2 }],
+  }));
+  const view = await outcome.done;
+  const result = runtime.snapshot().results.find((entry) => entry.shadowId === view.shadowId);
+  assert.equal(result.configuredDelivery, definition().delivery, "current-task delivery is untouched");
+}
+
 console.log("shadow-minds runtime tests: OK");

@@ -182,4 +182,36 @@ function baseDefinition(overrides = {}) {
   assert.match(user, /\[REDACTED\]/);
 }
 
+{
+  // Automatic trigger task section: reasons and the trigger instruction.
+  const prompt = buildShadowUserPrompt({
+    trajectory: { text: "[user] hi", includedMessages: 1, totalMessages: 1, truncated: false, truncation: "none" },
+    definition: { ...baseDefinition(), triggerInstructions: { mutation: "Focus on structure." } },
+    schema: baseDefinition().outputSchema,
+    triggerTask: {
+      trigger: "mutation",
+      reasons: [
+        { trigger: "mutation", detail: "write src/a.ts", firstObservedAt: 1, lastObservedAt: 2 },
+        { trigger: "tool_turn", generation: 4, firstObservedAt: 1, lastObservedAt: 2 },
+      ],
+      instruction: "Focus on structure.",
+    },
+  });
+  assert.ok(prompt.includes("[Trigger task — mutation]"), "the section names the trigger");
+  assert.ok(prompt.includes("- mutation: write src/a.ts"), "reason details render");
+  assert.ok(prompt.includes("- tool_turn: generation 4"), "tool-turn reasons render their generation");
+  assert.ok(prompt.includes("[Trigger instruction]"), "the configured instruction renders");
+  assert.ok(prompt.includes("Focus on structure."));
+  assert.ok(!prompt.includes("[Manual note]"), "no manual note section for automatic runs");
+
+  const manual = buildShadowUserPrompt({
+    trajectory: { text: "", includedMessages: 0, totalMessages: 0, truncated: false, truncation: "none" },
+    definition: baseDefinition(),
+    schema: baseDefinition().outputSchema,
+    note: "check this",
+  });
+  assert.ok(!manual.includes("[Trigger task"), "manual trials carry no trigger section");
+  assert.ok(manual.includes("[Manual note]"));
+}
+
 console.log("shadow-minds prompt tests: OK");

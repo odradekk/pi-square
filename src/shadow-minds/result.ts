@@ -174,6 +174,9 @@ export function summarizeShadowResult(payload: unknown): string {
 export type ShadowResultDelivery = "notified" | "pending" | "delivered";
 export type ShadowResultAttention = "unread" | "read" | "dismissed";
 
+/** How the activation that produced a result entered the runtime. */
+export type ShadowResultSource = "manual" | "automatic";
+
 /** Task identity of the activation that produced a result (scheduling fills it). */
 export interface ShadowTaskIdentity {
   epoch: number;
@@ -188,6 +191,10 @@ export interface ShadowResultMetadata {
   schemaHash?: string;
   /** The definition's configured delivery policy at run time. */
   configuredDelivery?: ShadowDelivery;
+  /** Manual trial or scheduler-dispatched activation. */
+  source?: ShadowResultSource;
+  /** Canonical highest-priority trigger for an automatic activation. */
+  primaryTrigger?: ShadowTrigger;
   /** Trigger reasons of the activation; automatic scheduling fills these. */
   triggers?: ShadowTrigger[];
   taskIdentity?: ShadowTaskIdentity;
@@ -212,6 +219,7 @@ export interface ShadowResultEntity extends ShadowResultMetadata {
   id: string;
   shadowId: string;
   shadowName: string;
+  /** Legacy compatibility field; `source` and `primaryTrigger` are authoritative. */
   trigger: "manual";
   note?: string;
   payload: unknown;
@@ -258,6 +266,11 @@ export interface ShadowInbox {
    * bounded reference entry, so a reopen does not append it again.
    */
   markReferenced?(id: string): boolean;
+  /**
+   * Downgrades one still-undelivered result's configured delivery to
+   * `notify`; a new parent task forces old-task results inbox-only.
+   */
+  forceNotify?(id: string): boolean;
   /** Bounded retention events when the backing store records them. */
   events?(): Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
   clear(): void;
@@ -314,6 +327,8 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
         ...(input.definitionHash ? { definitionHash: input.definitionHash } : {}),
         ...(input.schemaHash ? { schemaHash: input.schemaHash } : {}),
         ...(input.configuredDelivery ? { configuredDelivery: input.configuredDelivery } : {}),
+        ...(input.source ? { source: input.source } : {}),
+        ...(input.primaryTrigger ? { primaryTrigger: input.primaryTrigger } : {}),
         ...(input.triggers ? { triggers: [...input.triggers] } : {}),
         ...(input.taskIdentity ? { taskIdentity: clone(input.taskIdentity) } : {}),
       };
@@ -346,6 +361,12 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
       const index = entries.findIndex((item) => item.id === id);
       if (index === -1) return false;
       entries.splice(index, 1);
+      return true;
+    },
+    forceNotify(id) {
+      const entry = entries.find((item) => item.id === id);
+      if (!entry || entry.delivery !== "notified" || entry.configuredDelivery === "notify") return false;
+      entry.configuredDelivery = "notify";
       return true;
     },
     clear() {

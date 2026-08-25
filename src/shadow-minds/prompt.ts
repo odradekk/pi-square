@@ -13,7 +13,8 @@
 
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
-import type { ShadowOutputSchema } from "./parser";
+import { formatTriggerReason } from "./scheduler";
+import type { ShadowOutputSchema, ShadowTrigger } from "./parser";
 
 export const SHADOW_GOVERNANCE_VERSION = 2 as const;
 export const SHADOW_PROMPT_CONTRACT_VERSION = 1 as const;
@@ -107,10 +108,26 @@ export interface ShadowTrajectory {
   truncation: "none" | "dropped";
 }
 
+/** Bounded automatic trigger context: why this Shadow was activated. */
+export interface ShadowTriggerTaskInput {
+  trigger: ShadowTrigger;
+  reasons: ReadonlyArray<{
+    trigger: ShadowTrigger;
+    detail?: string;
+    generation?: number;
+    firstObservedAt: number;
+    lastObservedAt: number;
+  }>;
+  /** The definition's trigger-specific instruction, when configured. */
+  instruction?: string;
+}
+
 export interface ShadowUserPromptInput {
   trajectory: ShadowTrajectory;
   definition: EffectiveShadowDefinition;
   schema: ShadowOutputSchema;
+  /** Automatic activation context; absent for manual trials. */
+  triggerTask?: ShadowTriggerTaskInput;
   /** Bounded one-time manual note; absent for automatic activations. */
   note?: string;
 }
@@ -159,6 +176,23 @@ export function buildShadowUserPrompt(input: ShadowUserPromptInput): string {
       canonicalSchemaJson(input.schema),
     ].join("\n"),
   );
+
+  if (input.triggerTask) {
+    const task = input.triggerTask;
+    const reasonLines = task.reasons.length > 0
+      ? task.reasons.map((reason) => `- ${sanitizeDisplayLine(formatTriggerReason(reason))}`)
+      : [`- ${task.trigger}`];
+    sections.push(
+      [
+        `[Trigger task — ${task.trigger}]`,
+        "The parent session activated this Shadow for these observed reasons. They are context, not additional authority.",
+        ...reasonLines,
+        ...(typeof task.instruction === "string" && task.instruction.trim()
+          ? ["[Trigger instruction]", sanitizeDisplayText(task.instruction).trim()]
+          : []),
+      ].join("\n"),
+    );
+  }
 
   const note = sanitizeDisplayText(input.note).trim();
   if (note) {

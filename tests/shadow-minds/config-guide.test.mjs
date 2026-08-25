@@ -132,6 +132,16 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
 
 // ── Parameterized command: guide before the unchanged request ───────
 
+function DEFAULT_SHADOW_MINDS_BASE() {
+  return {
+    version: 2,
+    banner: { enabled: false },
+    ssh: { maxSessions: 1, profiles: [] },
+    anchoredEditing: { enabled: false, autoRead: true },
+    display: {},
+  };
+}
+
 function fakePi() {
   const commands = new Map();
   const renderers = new Map();
@@ -474,7 +484,16 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     // notifications have a UI surface, the capture cannot use this context,
     // and services bind to the session-scoped runtime replacement.
     await harness.handlers.get("session_start")({}, sessionCtx);
-    assert.equal(harness.handlers.has("before_agent_start"), false, "prompt composition keeps its single-owner contract");
+    // Prompt-manager keeps sole ownership of system-prompt replacement:
+    // shadow-minds' before_agent_start observer freezes the task snapshot
+    // and never returns a prompt-modifying result.
+    const observer = harness.handlers.get("before_agent_start");
+    assert.equal(typeof observer, "function", "the task-snapshot observer is registered");
+    const observed = await observer(
+      { type: "before_agent_start", prompt: "task", systemPromptOptions: { cwd: "/repo", contextFiles: [] } },
+      sessionCtx,
+    );
+    assert.equal(observed, undefined, "the observer never modifies prompt composition");
     const services = __testables.makeServices(state, ctx, confirmations);
 
     const refused = services.runtime.runManual({ shadowId: "missing-role" });
@@ -859,6 +878,380 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     const index = JSON.parse(readDisk(join(sessionDir, ".pi-square-shadow", "alpha-1", "index.json"), "utf8"));
     assert.equal(index.version, 1);
     assert.ok(!("payload" in index.results[0]));
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── Deterministic automatic scheduling end to end (#158) ────────────
+
+{
+  const dir = mkdtempSync(join(tmpdir(), "shadow-schedule-e2e-"));
+  const project = join(dir, "project");
+  mkdirSync(project, { recursive: true });
+  const agentShadowDir = join(dir, "agent", "shadow-minds");
+  mkdirSync(agentShadowDir, { recursive: true });
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(agentShadowDir, "auto-lens.md"), [
+      "---",
+      "promptVersion: 1",
+      "id: auto-lens",
+      "name: Auto lens",
+      "enabled: true",
+      "priority: 5",
+      "triggers: [mutation, tool_turn]",
+      "triggerInstructions:",
+      "  mutation: Focus on structural impact.",
+      "tools: [read]",
+      "---",
+      "Watch the architecture.",
+      "",
+    ].join("\n"));
+
+    const harness = fakePi();
+    const notifications = [];
+    const statusCalls = [];
+    const branch = [{ type: "message", message: { role: "user", content: "Refactor the parser." } }];
+    const eventCtx = {
+      cwd: project,
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: {
+        custom: async () => {},
+        confirm: async () => true,
+        notify(message, level) { notifications.push({ message, level }); },
+        setStatus(key, text) { statusCalls.push({ key, text }); },
+      },
+      model: { provider: "acme", id: "parent-model" },
+      modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 200_000 }) },
+      sessionManager: {
+        getSessionDir: () => "",
+        getSessionFile: () => undefined,
+        getSessionId: () => "sched-1",
+        getLeafId: () => "leaf-1",
+        getBranch: () => branch,
+        buildContextEntries: () => branch,
+      },
+    };
+    const created = [];
+    const prompts = [];
+    const runtimeDeps = {
+      now: () => 1_000,
+      async createSession(input) {
+        created.push(input);
+        return { session: { customTools: input.customTools } };
+      },
+      async runSession(input) {
+        prompts.push(input.prompt);
+        const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+        if (submit) {
+          await submit.execute("c1", { payload: JSON.stringify({ summary: "Structure is stable." }) }, undefined, undefined, eventCtx);
+        }
+        return {
+          status: "completed", prompted: true, timedOut: false, finalText: "",
+          model: "acme/parent-model",
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+          streamingCompleted: true, messages: [],
+        };
+      },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({
+        ...DEFAULT_SHADOW_MINDS_BASE(),
+        shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } },
+      }),
+      runtimeDeps,
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    assert.equal(state.registry.definitions.some((entry) => entry.id === "auto-lens"), true, "the enabled definition is discovered");
+
+    // A real-user task opens: input → frozen snapshot → tool activity →
+    // turn end → one automatic run with merged reasons.
+    harness.handlers.get("input")({ type: "input", text: "refactor", source: "interactive" });
+    await harness.handlers.get("before_agent_start")(
+      { type: "before_agent_start", prompt: "refactor", systemPromptOptions: { cwd: project, customPrompt: "Core.", contextFiles: [{ path: "/p/R.md", content: "Rule." }] } },
+      eventCtx,
+    );
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t1", toolName: "write", args: { file_path: "src/a.ts" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t1", toolName: "write", result: {}, isError: false });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t2", toolName: "bash", result: {}, isError: true });
+    // t2 has no paired start args: the failure cannot classify, so only the
+    // mutation reason should appear.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(created.length, 1, "one automatic run started from the mutation trigger");
+    const run = state.runtime.snapshot().runs.find((entry) => entry.source === "automatic");
+    assert.ok(run, "the run view records its automatic source");
+    assert.equal(run.trigger, "mutation");
+    assert.equal(run.taskEpoch, 2);
+    assert.deepEqual(run.triggerReasons.map((reason) => reason.trigger), ["mutation", "tool_turn"], "same-turn reasons coalesce, priority-ordered");
+    assert.ok(prompts[0].includes("[Trigger task — mutation]"), "the prompt carries the trigger task");
+    assert.ok(prompts[0].includes("Focus on structural impact."), "the trigger instruction renders");
+    assert.ok(created[0].system.includes("Core."), "the frozen task snapshot's parent core is used");
+    assert.ok(created[0].system.includes("Rule."), "frozen trusted project rules are used");
+    const result = state.runtime.snapshot().results[0];
+    assert.ok(result, "the automatic submission landed in the inbox");
+    assert.deepEqual(result.triggers, ["mutation", "tool_turn"]);
+    assert.equal(result.taskIdentity.epoch, 2);
+    assert.ok(harness.entries.some((entry) => entry.type === "pi-square.shadow-result"), "the transcript reference was appended");
+    assert.ok(statusCalls.some((call) => call.key === "pi-square.shadow-minds" && /1 unread/.test(call.text ?? "")), "the footer status shows the unread count");
+
+    // Extension continuations never create trigger opportunities.
+    harness.handlers.get("input")({ type: "input", text: "continue", source: "extension" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "continue", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t3", toolName: "edit", args: { file_path: "b.ts" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t3", toolName: "edit", result: {}, isError: false });
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(created.length, 1, "extension continuations trigger nothing");
+
+    // Session pause blocks automatic work and is visible.
+    state.scheduler.pause();
+    harness.handlers.get("input")({ type: "input", text: "next", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "next", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t4", toolName: "write", args: { file_path: "c.ts" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t4", toolName: "write", result: {}, isError: false });
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(created.length, 1, "paused sessions start no automatic runs");
+    assert.ok(state.scheduler.snapshot().paused);
+    state.scheduler.resume();
+
+    // User interruption cancels current-task work and clears pending.
+    harness.handlers.get("input")({ type: "input", text: "again", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "again", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t5", toolName: "read", args: { path: "x" } });
+    await harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    harness.handlers.get("agent_end")({ type: "agent_end", messages: [{ role: "assistant", stopReason: "aborted" }] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(created.length, 2, "the tool-turn activation started before the interruption");
+    assert.equal(state.scheduler.snapshot().pending.length, 0);
+
+    // A classified quality failure triggers a failure-subscribed Shadow.
+    writeFileSync(join(agentShadowDir, "auto-guard.md"), [
+      "---",
+      "promptVersion: 1",
+      "id: auto-guard",
+      "name: Auto guard",
+      "enabled: true",
+      "triggers: [failure]",
+      "tools: []",
+      "---",
+      "Watch quality gates.",
+      "",
+    ].join("\n"));
+    state.refresh(project, true);
+    harness.handlers.get("input")({ type: "input", text: "fix", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "fix", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t6", toolName: "bash", args: { command: "npm run typecheck" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t6", toolName: "bash", result: {}, isError: true });
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const guardRun = state.runtime.snapshot().runs.find((entry) => entry.shadowId === "auto-guard");
+    assert.ok(guardRun, "the classified typecheck failure started the guard Shadow");
+    assert.equal(guardRun.triggerReasons[0].detail, "typecheck command failed");
+
+    // Shutdown clears the footer status.
+    await harness.handlers.get("session_shutdown")({ type: "session_shutdown" });
+    assert.ok(statusCalls.some((call) => call.key === "pi-square.shadow-minds" && call.text === undefined), "shutdown clears the status");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── Spec-review regressions: abort, per-Shadow guard, memory downgrade ──
+
+{
+  // Task-snapshot store: per-epoch authority, bounded retention.
+  const { __testables: exported } = await load(join(packageRoot, "src", "shadow-minds", "index.ts"));
+  const store = exported.createTaskSnapshotStore();
+  const a = { projectRules: [], cwd: "/a" };
+  const b = { projectRules: [], cwd: "/b" };
+  store.record(2, a);
+  store.record(3, b);
+  assert.equal(store.get(2), a);
+  assert.equal(store.get(3), b);
+  assert.equal(store.get(4), undefined);
+  for (let epoch = 4; epoch <= 9; epoch += 1) store.record(epoch, { projectRules: [], cwd: `/e${epoch}` });
+  assert.equal(store.get(2), undefined, "the oldest epochs are evicted");
+  assert.notEqual(store.get(9), undefined);
+}
+
+{
+  // Full e2e through the real wiring: an aborted turn dispatches nothing and
+  // leaks nothing; a same-Shadow second activation stays pending while its
+  // run is active; the in-memory inbox downgrades old-task results; a paused
+  // idle session still shows the footer status.
+  const dir = mkdtempSync(join(tmpdir(), "shadow-spec-e2e-"));
+  const project = join(dir, "project");
+  mkdirSync(project, { recursive: true });
+  const agentShadowDir = join(dir, "agent", "shadow-minds");
+  mkdirSync(agentShadowDir, { recursive: true });
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(agentShadowDir, "guard-role.md"), [
+      "---",
+      "promptVersion: 1",
+      "id: guard-role",
+      "name: Guard role",
+      "enabled: true",
+      "triggers: [failure, tool_turn]",
+      "tools: []",
+      "---",
+      "Watch quality.",
+      "",
+    ].join("\n"));
+
+    const harness = fakePi();
+    const statusCalls = [];
+    const branch = [];
+    const eventCtx = {
+      cwd: project,
+      hasUI: true,
+      isProjectTrusted: () => false,
+      ui: {
+        custom: async () => {},
+        confirm: async () => true,
+        notify() {},
+        setStatus(key, text) { statusCalls.push({ key, text }); },
+      },
+      model: { provider: "acme", id: "parent-model" },
+      modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 200_000 }) },
+      sessionManager: {
+        getSessionDir: () => "",
+        getSessionFile: () => undefined,
+        getSessionId: () => "spec-1",
+        getLeafId: () => "leaf-1",
+        getBranch: () => branch,
+        buildContextEntries: () => branch,
+      },
+    };
+    const created = [];
+    const holdRun = { active: false };
+    const runtimeDeps = {
+      now: () => 1_000,
+      async createSession(input) {
+        created.push(input);
+        return { session: { customTools: input.customTools } };
+      },
+      async runSession(input) {
+        if (holdRun.active) {
+          await new Promise((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true }));
+          return { status: "aborted", prompted: true, timedOut: false, finalText: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, streamingCompleted: false, messages: [] };
+        }
+        const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+        if (submit) {
+          await submit.execute("c1", { payload: JSON.stringify({ summary: "done" }) }, undefined, undefined, eventCtx);
+        }
+        return { status: "completed", prompted: true, timedOut: false, finalText: "", model: "acme/parent-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 }, streamingCompleted: true, messages: [] };
+      },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      runtimeDeps,
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+
+    // Aborted turn: the classified failure is dropped at turn_end and the
+    // interruption at agent_end cancels nothing extra.
+    harness.handlers.get("input")({ type: "input", text: "run tests", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "run tests", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "npm test" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: {}, isError: true });
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: { role: "assistant", stopReason: "aborted" }, toolResults: [] }, eventCtx);
+    harness.handlers.get("agent_end")({ type: "agent_end", messages: [{ role: "assistant", stopReason: "aborted" }] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(created.length, 0, "an aborted quality command dispatches nothing");
+
+    // One activation per Shadow: a held run keeps the next activation queued.
+    holdRun.active = true;
+    harness.handlers.get("input")({ type: "input", text: "work", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "work", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t2", toolName: "read", args: { path: "x" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t2", toolName: "read", result: {}, isError: false });
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(created.length, 1, "the first tool-turn activation started");
+    assert.equal(state.runtime.snapshot().runs.filter((run) => run.phase === "running").length, 1);
+    assert.equal(state.scheduler.snapshot().pending.length, 0, "no duplicate run of the active Shadow");
+
+    // A second dirty generation during the run stays pending, then
+    // dispatches with its latest checkpoint once the held run settles.
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t3", toolName: "grep", args: { pattern: "y" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t3", toolName: "grep", result: {}, isError: false });
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 1, message: {}, toolResults: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(created.length, 1, "the running Shadow never starts a duplicate concurrent run");
+    assert.equal(state.scheduler.snapshot().pending.length, 1, "the newer generation stays queued");
+
+    holdRun.active = false;
+    const running = state.runtime.snapshot().runs.find((run) => run.phase === "running");
+    state.runtime.cancelRun(running.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(created.length, 2, "the queued activation dispatches after the run settles");
+
+    // In-memory downgrade: a result from an old task flips to notify when a
+    // new task opens (the in-memory inbox is the fallback here).
+    const result = state.runtime.snapshot().results.at(-1);
+    assert.ok(result, "the settled run produced a result");
+    assert.notEqual(result.configuredDelivery, "notify");
+    harness.handlers.get("input")({ type: "input", text: "next task", source: "interactive" });
+    assert.notEqual(
+      state.runtime.snapshot().results.find((entry) => entry.id === result.id).configuredDelivery,
+      "notify",
+      "input alone does not advance a task before Pi starts its agent run",
+    );
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "next task", systemPromptOptions: { cwd: project } }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(
+      state.runtime.snapshot().results.find((entry) => entry.id === result.id).configuredDelivery,
+      "notify",
+      "old-task undelivered results downgrade in the in-memory inbox too",
+    );
+
+    // Streaming user input has no before_agent_start boundary in Pi. It opens
+    // its task only when the queued user message is consumed by the agent loop.
+    // Consume the initial user message emitted by the preceding idle run.
+    harness.handlers.get("message_start")({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "next task" }] } });
+    const beforeQueuedEpoch = state.scheduler.snapshot().taskEpoch;
+    harness.handlers.get("input")({
+      type: "input",
+      text: "queued task",
+      source: "interactive",
+      streamingBehavior: "followUp",
+    });
+    assert.equal(state.scheduler.snapshot().taskEpoch, beforeQueuedEpoch);
+    harness.handlers.get("message_start")({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "queued task" }] } });
+    assert.equal(state.scheduler.snapshot().taskEpoch, beforeQueuedEpoch + 1, "the consumed queued user message opens the task epoch");
+
+    // Paused session: the paused marker renders alongside any counts.
+    state.scheduler.pause();
+    const last = statusCalls.filter((call) => call.key === "pi-square.shadow-minds").at(-1);
+    assert.ok(/paused/.test(last?.text ?? ""), `the paused marker renders with the status: ${last?.text}`);
+    state.scheduler.resume();
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;

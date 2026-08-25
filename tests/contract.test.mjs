@@ -161,7 +161,10 @@ try {
     "pi-square.subagent-config-guide",
     "pi-square.shadow-config-guide",
   ]);
-  assert.equal(events.get("before_agent_start")?.length, 1, "prompt composition must use one handler");
+  // Prompt-manager keeps sole ownership of system-prompt replacement;
+  // shadow-minds' second handler only freezes the per-task snapshot and
+  // never returns a prompt-modifying result (covered by the shadow e2e).
+  assert.equal(events.get("before_agent_start")?.length, 2, "prompt composition has one replacing owner plus one observing owner");
   assert.deepEqual(
     readdirSync(join(packageRoot, "src", "notifications", "sounds")).sort(),
     ["question_bell.wav", "stop_bell.wav"],
@@ -201,8 +204,18 @@ try {
   }
   assert.deepEqual(activeTools, ["read", "bash"]);
 
-  const promptHandler = events.get("before_agent_start")[0];
+  // shadow-minds registers its snapshot observer before prompt-manager's
+  // replacing handler: the observer returns nothing, the replacer owns the
+  // composed prompt.
+  const [observer, promptHandler] = events.get("before_agent_start");
   const nativePrompt = "NATIVE SYSTEM\n\nNATIVE CONTEXT\n";
+  const observed = await observer({
+    type: "before_agent_start",
+    prompt: "hello",
+    systemPrompt: nativePrompt,
+    systemPromptOptions: { cwd: ctx.cwd },
+  }, ctx);
+  assert.equal(observed, undefined, "the shadow observer never modifies prompt composition");
   const result = await promptHandler({
     type: "before_agent_start",
     prompt: "hello",
