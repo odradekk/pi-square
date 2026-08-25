@@ -421,6 +421,18 @@ function addResult(inbox, index, overrides = {}) {
   assert.match(sanitized, /\[REDACTED\]/);
 }
 
+{
+  // A new task's forced-notify downgrade persists across reopening.
+  const { sessionDir } = makeSessionRoot();
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const steer = addResult(inbox, 1, { configuredDelivery: "steer" });
+  assert.equal(steer.configuredDelivery, "steer", "the fixture result starts configured for steer");
+  assert.equal(inbox.forceNotify(steer.id), true, "the undelivered result downgrades");
+  assert.equal(inbox.forceNotify(steer.id), false, "the downgrade is idempotent");
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  assert.equal(reopened.list()[0].configuredDelivery, "notify", "the downgrade survives reopening");
+}
+
 for (const root of roots) rmSync(root, { recursive: true, force: true });
 
 console.log("shadow-minds inbox-store tests: OK");

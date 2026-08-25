@@ -258,6 +258,11 @@ export interface ShadowInbox {
    * bounded reference entry, so a reopen does not append it again.
    */
   markReferenced?(id: string): boolean;
+  /**
+   * Downgrades one still-undelivered result's configured delivery to
+   * `notify`; a new parent task forces old-task results inbox-only.
+   */
+  forceNotify?(id: string): boolean;
   /** Bounded retention events when the backing store records them. */
   events?(): Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
   clear(): void;
@@ -346,6 +351,12 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
       const index = entries.findIndex((item) => item.id === id);
       if (index === -1) return false;
       entries.splice(index, 1);
+      return true;
+    },
+    forceNotify(id) {
+      const entry = entries.find((item) => item.id === id);
+      if (!entry || entry.delivery !== "notified" || entry.configuredDelivery === "notify") return false;
+      entry.configuredDelivery = "notify";
       return true;
     },
     clear() {

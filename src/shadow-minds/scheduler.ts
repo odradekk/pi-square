@@ -11,6 +11,9 @@ import type { ShadowMindsConfig } from "../core/config";
 import type { EffectiveShadowDefinition } from "./definitions";
 import type { ShadowTrigger } from "./parser";
 
+/** The four fixed automatic trigger values, as used by run records. */
+export type ShadowTriggerKind = ShadowTrigger;
+
 /** Fixed trigger priority: completion, failure, mutation, then tool turn. */
 export const TRIGGER_PRIORITY: Readonly<Record<ShadowTrigger, number>> = Object.freeze({
   completion: 3,

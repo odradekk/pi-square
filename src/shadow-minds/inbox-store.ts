@@ -635,6 +635,16 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeIndex();
       return true;
     },
+    forceNotify(id: string): boolean {
+      const entry = loaded.get(id);
+      if (!entry || entry.entity.delivery !== "notified" || entry.entity.configuredDelivery === "notify") return false;
+      const next = clone(entry);
+      next.entity.configuredDelivery = "notify";
+      writeEntity(next);
+      loaded.set(id, next);
+      writeIndex();
+      return true;
+    },
     clear(): void {
       // The partition is the authoritative record and deliberately survives
       // session-scoped resets; per-session clearing removes nothing.

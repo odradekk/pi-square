@@ -37,6 +37,7 @@ import { buildShadowUserPrompt, canonicalSchemaJson, type ShadowTrajectory } fro
 import type { ShadowModelResolution } from "./resolve";
 import { SUBMIT_SHADOW_RESULT_DESCRIPTION, SUBMIT_SHADOW_RESULT_PARAMETERS } from "./result";
 import { finalizeShadowDebugRun, openShadowDebugSessionManager, shadowDebugRunDir } from "./inbox-store";
+import type { ShadowTriggerKind, ShadowTriggerReason } from "./scheduler";
 import type { ShadowToolEnvelope } from "./tools";
 import {
   createShadowInbox,
@@ -79,10 +80,14 @@ export type ShadowRunPhase =
   | "submitted"
   | "silent"
   | "cancelled"
+  | "superseded"
   | "timeout"
   | "max_turns"
   | "max_tool_calls"
   | "error";
+
+/** How one run entered the runtime: a manager trial or scheduler dispatch. */
+export type ShadowRunSource = "manual" | "automatic";
 
 /** One model request's bounded usage and timing when the provider reports it. */
 export interface ShadowRequestMetric {
@@ -99,10 +104,16 @@ export interface ShadowRunView {
   id: string;
   shadowId: string;
   shadowName: string;
-  trigger: "manual";
+  source: ShadowRunSource;
   phase: ShadowRunPhase;
   startedAt: number;
   endedAt?: number;
+  /** The automatic activation trigger; absent for manual trials. */
+  trigger?: ShadowTriggerKind;
+  /** The task epoch an automatic run belongs to. */
+  taskEpoch?: number;
+  /** Merged trigger reasons for automatic runs, priority-ordered. */
+  triggerReasons?: ShadowTriggerReason[];
   note?: string;
   model?: string;
   /** Bounded terminal explanation; present for error phases. */
@@ -122,6 +133,13 @@ export interface ShadowRunView {
   /** Per-request usage and TTFT, bounded by the turn budget. */
   requests?: ShadowRequestMetric[];
 }
+
+export type ShadowRunRequest = ShadowManualRunRequest & {
+  /** Present for scheduler-dispatched runs. */
+  trigger?: ShadowTriggerKind;
+  taskEpoch?: number;
+  triggerReasons?: ShadowTriggerReason[];
+};
 
 export interface ShadowManualRunRequest {
   definition: EffectiveShadowDefinition;
@@ -261,13 +279,25 @@ export function createShadowRuntimeDeps(): ShadowRuntimeDeps {
 
 interface ActiveRun {
   view: ShadowRunView;
+  source: ShadowRunSource;
+  taskEpoch?: number;
+  startedAt: number;
   cancel(force?: boolean): void;
+  /** Supersedes this run for a newer task or a manual start. */
+  supersede(): void;
   /** Set when the session scope ended before the run settled. */
   detached?: boolean;
+  /** Set once superseded: the slot is released the moment it is chosen. */
+  superseding?: boolean;
 }
 
 export type ManualRunStart =
-  | { started: false; reason: string }
+  | { started: false; reason: string; kind?: "busy" | "failed" }
+  | { started: true; runId: string; done: Promise<ShadowRunView> };
+
+/** Automatic-run start result with an explicit refusal classification. */
+export type AutomaticRunStart =
+  | { started: false; reason: string; kind: "busy" | "failed" }
   | { started: true; runId: string; done: Promise<ShadowRunView> };
 
 function boundedMessage(value: unknown): string {
@@ -286,6 +316,11 @@ export function createShadowRuntime(input: {
   deps?: ShadowRuntimeDeps;
   /** Session inbox; defaults to the in-memory fallback. */
   inbox?: ShadowInbox;
+  /**
+   * The scheduler's current task epoch: a run whose task is no longer
+   * current persists its result with notify delivery.
+   */
+  currentTaskEpoch?: () => number;
 }) {
   const deps = input.deps ?? createShadowRuntimeDeps();
   let runSequence = 0;
@@ -308,6 +343,18 @@ export function createShadowRuntime(input: {
   };
 
   function startManualRun(request: ShadowManualRunRequest): ManualRunStart {
+    return startRun(request, "manual");
+  }
+
+  function startAutomaticRun(request: ShadowRunRequest): AutomaticRunStart {
+    const outcome = startRun({ ...request }, "automatic");
+    if (!outcome.started) {
+      return { ...outcome, kind: outcome.kind ?? "failed" };
+    }
+    return outcome;
+  }
+
+  function startRun(request: ShadowRunRequest, source: ShadowRunSource): ManualRunStart {
     const effective = structuredClone(input.config());
     const runEpoch = sessionEpoch;
     if (!effective.enabled) {
@@ -326,9 +373,19 @@ export function createShadowRuntime(input: {
     if (request.modelResolution?.error) {
       return { started: false, reason: request.modelResolution.error };
     }
-    if (active.length >= effective.defaults.maxConcurrentRuns) {
+    const occupiedSlots = active.filter((entry) => !entry.superseding).length;
+    if (occupiedSlots >= effective.defaults.maxConcurrentRuns) {
+      if (source === "manual") {
+        // Manual outranks automatic: free one slot by superseding the oldest
+        // automatic run. Manual runs are never superseded this way.
+        const preempted = supersedeOldestAutomatic(Number.MAX_SAFE_INTEGER);
+        if (preempted.ok) {
+          return startRun(request, source);
+        }
+      }
       return {
         started: false,
+        kind: "busy",
         reason: `All ${effective.defaults.maxConcurrentRuns} Shadow run slots are busy; cancel a run or wait for one to settle.`,
       };
     }
@@ -350,7 +407,12 @@ export function createShadowRuntime(input: {
       id: deps.makeRunId?.() ?? `run-${(++runSequence).toString(36)}`,
       shadowId: definition.id,
       shadowName: definition.name,
-      trigger: "manual",
+      source,
+      ...(request.trigger ? { trigger: request.trigger } : {}),
+      ...(request.taskEpoch !== undefined ? { taskEpoch: request.taskEpoch } : {}),
+      ...(request.triggerReasons && request.triggerReasons.length > 0
+        ? { triggerReasons: structuredClone(request.triggerReasons) }
+        : {}),
       phase: "running",
       startedAt,
       ...(note ? { note } : {}),
@@ -363,19 +425,27 @@ export function createShadowRuntime(input: {
       ...(request.trajectory.truncation !== "none" ? { trajectoryTruncated: true } : {}),
     };
 
-    let abortReason: "cancelled" | "timeout" | "max_turns" | "max_tool_calls" | undefined;
+    let abortReason: "cancelled" | "superseded" | "timeout" | "max_turns" | "max_tool_calls" | undefined;
     let submitted: { payload: unknown; at: number } | undefined;
     const controller = new AbortController();
     const usage = createChildSessionUsage();
-    const forceAbort = (reason: "cancelled" | "timeout" | "max_turns" | "max_tool_calls") => {
+    const forceAbort = (reason: "cancelled" | "superseded" | "timeout" | "max_turns" | "max_tool_calls") => {
       abortReason ??= reason;
       controller.abort();
     };
     const run: ActiveRun = {
       view,
+      source,
+      ...(request.taskEpoch !== undefined ? { taskEpoch: request.taskEpoch } : {}),
+      startedAt,
       cancel(force = false) {
         if (submitted && !force) return;
         forceAbort("cancelled");
+      },
+      supersede() {
+        if (run.superseding || submitted) return;
+        run.superseding = true;
+        forceAbort("superseded");
       },
     };
     active.push(run);
@@ -459,6 +529,15 @@ export function createShadowRuntime(input: {
         trajectory: request.trajectory,
         definition,
         schema: definition.outputSchema,
+        ...(request.trigger
+          ? {
+              triggerTask: {
+                trigger: request.trigger,
+                reasons: request.triggerReasons ?? [],
+                instruction: definition.triggerInstructions[request.trigger],
+              },
+            }
+          : {}),
         ...(note ? { note } : {}),
       });
 
@@ -549,7 +628,12 @@ export function createShadowRuntime(input: {
             ...(definitionHash ? { definitionHash } : {}),
             schemaHash,
             validationSchema: structuredClone(definition.outputSchema),
-            configuredDelivery: definition.delivery,
+            // A run that outlived its task delivers inbox-only: its result
+            // must never enter the newer task automatically.
+            configuredDelivery: request.taskEpoch !== undefined
+              && (input.currentTaskEpoch?.() ?? request.taskEpoch) > request.taskEpoch
+              ? "notify"
+              : definition.delivery,
             lifecycle: "submitted",
             toolCalls,
             trajectoryTruncated: request.trajectory.truncation !== "none",
@@ -600,6 +684,48 @@ export function createShadowRuntime(input: {
     return { started: true, runId: view.id, done };
   }
 
+  /**
+   * Supersedes the oldest running automatic run from a task epoch below
+   * `currentEpoch`. Manual runs and same-or-newer-epoch automatic runs are
+   * never eligible; a superseded run records the distinct `superseded`
+   * outcome and releases its slot immediately.
+   */
+  function supersedeOldestAutomatic(currentEpoch: number): { ok: boolean; runId?: string } {
+    const candidates = active
+      .filter((entry) => entry.source === "automatic"
+        && !entry.superseding
+        && entry.taskEpoch !== undefined
+        && entry.taskEpoch < currentEpoch)
+      .sort((a, b) => a.startedAt - b.startedAt);
+    const target = candidates[0];
+    if (!target) return { ok: false };
+    target.supersede();
+    return { ok: true, runId: target.view.id };
+  }
+
+  /** Cancels every active run of one task epoch (user interruption). */
+  function cancelTaskRuns(epoch: number): number {
+    let cancelled = 0;
+    for (const entry of [...active]) {
+      if (entry.taskEpoch !== epoch) continue;
+      entry.cancel(true);
+      cancelled += 1;
+    }
+    return cancelled;
+  }
+
+  /** Cancels every active automatic run and stamps why (session pause). */
+  function cancelAutomaticRuns(reason: string): number {
+    let cancelled = 0;
+    for (const entry of [...active]) {
+      if (entry.source !== "automatic") continue;
+      entry.view.message = boundedMessage(reason);
+      entry.cancel(true);
+      cancelled += 1;
+    }
+    return cancelled;
+  }
+
   function cancelRun(runId: string): { ok: boolean; message?: string } {
     const run = active.find((entry) => entry.view.id === runId);
     if (!run) return { ok: false, message: "That Shadow run is no longer active." };
@@ -617,7 +743,11 @@ export function createShadowRuntime(input: {
 
   return {
     startManualRun,
+    startAutomaticRun,
     cancelRun,
+    preemptOldestAutomatic: supersedeOldestAutomatic,
+    cancelTaskRuns,
+    cancelAutomaticRuns,
     snapshot,
     markResultRead(id: string) {
       const ok = inbox.markRead(id);
