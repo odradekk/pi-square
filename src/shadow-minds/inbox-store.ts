@@ -210,6 +210,9 @@ function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { val
       const item = metric as Record<string, unknown>;
       if (!["input", "output", "cacheRead", "cacheWrite", "cost"].every((key) => isFiniteNonNegative(item[key]))) return undefined;
       if (item.ttftMs !== undefined && !isFiniteNonNegative(item.ttftMs)) return undefined;
+      if (item.turn !== undefined && (!Number.isInteger(item.turn) || (item.turn as number) < 1)) return undefined;
+      if (item.toolCalls !== undefined && (!Number.isInteger(item.toolCalls) || (item.toolCalls as number) < 0)) return undefined;
+      if (item.cacheReported !== undefined && typeof item.cacheReported !== "boolean") return undefined;
     }
   }
   if (record.configuredDelivery !== undefined && !SHADOW_DELIVERIES.includes(record.configuredDelivery as never)) return undefined;

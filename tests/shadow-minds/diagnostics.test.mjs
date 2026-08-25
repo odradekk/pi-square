@@ -6,7 +6,7 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 
 const { createShadowRuntime } = await load(join(packageRoot, "src", "shadow-minds", "runtime.ts"));
-const { summarizeShadowUsage, shadowCohortGroupKey } = await load(
+const { SHADOW_COHORT_GROUPS_MAX, summarizeShadowUsage, shadowCohortGroupKey } = await load(
   join(packageRoot, "src", "shadow-minds", "diagnostics.ts"),
 );
 const { DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
@@ -308,7 +308,7 @@ function baseRequest(overrides = {}) {
   const bounded = summarizeShadowUsage(
     Array.from({ length: 40 }, (_, i) => mk(`x${i}`, { system: `s${i}`, toolSchema: "t", model: "m" })),
   );
-  assert.ok(bounded.cohorts.length <= 8, "the cohort list is bounded");
+  assert.ok(bounded.cohorts.length <= SHADOW_COHORT_GROUPS_MAX, "the cohort list is bounded");
   assert.ok(
     bounded.cohorts.reduce((sum, group) => sum + group.size, 0) <= 40,
     "dropped groups lose their runs from the bounded list only",
@@ -362,8 +362,10 @@ function baseRequest(overrides = {}) {
   scheduler.handleTurnEnd({ text: "[user] task", includedMessages: 1, totalMessages: 1, truncated: false, truncation: "none" });
   scheduler.handleAgentEnd({ interrupted: false, checkpoint: { text: "[user] task", includedMessages: 1, totalMessages: 1, truncated: false, truncation: "none" } });
 
-  // Failure outranks completion for the same task, so it dispatches first.
-  assert.deepEqual(started, ["quality", "after-answer"], "trigger priority decides dispatch order");
+  // The failure activation dispatches at turn end while completion waits for
+  // the settled run, so quality starts first — event sequencing, not
+  // priority arbitration (co-pending priority is covered below).
+  assert.deepEqual(started, ["quality", "after-answer"], "the deterministic event order decides dispatch");
   await Promise.all(settlements);
 
   const snapshot = runtime.snapshot();
@@ -387,6 +389,70 @@ function baseRequest(overrides = {}) {
   assert.deepEqual(summary.cache, { requests: 2, reportedRequests: 2, cacheRead: 200, cacheWrite: 10 });
   assert.equal(summary.cohorts.length, 1, "same-prompt runs share one cache cohort");
   assert.equal(summary.cohorts[0].size, 2);
+}
+
+// ── Co-pending trigger-priority arbitration (#161) ──────────────────
+
+{
+  // One busy slot leaves the failure activation pending at turn end; the
+  // settled run then enqueues completion. Both are co-pending, and dispatch
+  // arbitrates by TRIGGER_PRIORITY: completion (3) outranks failure (2)
+  // regardless of the earlier event that observed the failure.
+  const fake = fakeModel([[turnStart(), assistantStart, assistantEnd({ input: 10, output: 2, cacheRead: 100, cacheWrite: 5, cost: 0.01 })]]);
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const attempts = [];
+  const settlements = [];
+  let busyFirst = true;
+  const scheduler = createShadowScheduler({
+    now: () => 1,
+    currentRun: () => 1,
+    config: () => config(),
+    definitions: () => [
+      definition({ id: "quality", enabled: true, triggers: ["failure"] }),
+      definition({ id: "after-answer", enabled: true, triggers: ["completion"] }),
+    ],
+    start(activation) {
+      attempts.push(activation.definition.id);
+      if (busyFirst) {
+        busyFirst = false;
+        return { outcome: "busy", reason: "slot busy" };
+      }
+      const outcome = runtime.startAutomaticRun({
+        ...baseRequest({
+          definition: activation.definition,
+          trigger: activation.reasons[0]?.trigger,
+          taskEpoch: activation.taskEpoch,
+          triggerReasons: activation.reasons,
+        }),
+      });
+      if (outcome.started) settlements.push(outcome.done);
+      return outcome.started ? { outcome: "started" } : { outcome: "failed", reason: outcome.reason };
+    },
+    preemptOldestAutomatic: () => ({ ok: false, reason: "test" }),
+    activeRun: () => undefined,
+    cancelTaskRuns: () => 0,
+    cancelAutomaticRuns: () => 0,
+    forceNotifyOldResults: () => 0,
+  });
+
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.observeToolEnd("bash", true, { command: "npm test" });
+  // Turn end: the failure activation dispatches into a busy slot and stays
+  // pending — completion is not observed yet.
+  scheduler.handleTurnEnd({ text: "[user] task", includedMessages: 1, totalMessages: 1, truncated: false, truncation: "none" });
+  assert.deepEqual(attempts, ["quality"]);
+
+  // The settled run enqueues completion; both activations are co-pending
+  // and the next dispatch arbitrates by trigger priority.
+  scheduler.handleAgentEnd({ interrupted: false, checkpoint: { text: "[user] task", includedMessages: 1, totalMessages: 1, truncated: false, truncation: "none" } });
+  assert.deepEqual(
+    attempts,
+    ["quality", "after-answer", "quality"],
+    "co-pending completion outranks failure despite the earlier failure observation",
+  );
+  await Promise.all(settlements);
+  assert.equal(runtime.snapshot().runs.length, 2);
 }
 
 console.log("shadow-minds diagnostics tests: OK");

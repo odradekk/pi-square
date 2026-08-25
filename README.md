@@ -338,7 +338,8 @@ What works today:
   values at all. Every run records cache-cohort hashes — model, thinking,
   tool schema, SYSTEM, working directory, trajectory, checkpoint, and
   truncation mode, plus the frozen parent core and project rules hashed
-  where the raw text is visible — never prompt text or credentials. Cohort
+  where the raw text is visible and recorded when present — never prompt
+  text or credentials. Cohort
   groups show how many runs shared a model/SYSTEM/tool-schema prefix.
   Provider cache reuse is measured and best-effort; it is not guaranteed.
 - A strict `shadowMinds` section in agent and project pi-square configuration:

@@ -54,7 +54,12 @@ const RUN_HISTORY_MAX = 50;
 const RUN_MESSAGE_MAX_CHARS = 200;
 /** Cohort hash prefix length; full schemas never leave the run record. */
 const COHORT_HASH_CHARS = 16;
-/** Per-request metrics retained per run; the turn budget stays far below. */
+/**
+ * Per-request metrics retained per run. Must stay at or above
+ * `SHADOW_MINDS_MODEL_TURNS_HARD_MAX` (32): a run can never exceed its turn
+ * budget, so every request keeps its metric and the per-request totals
+ * never silently drop one.
+ */
 const REQUEST_METRICS_MAX = 64;
 
 function cohortHash(value: string): string {
