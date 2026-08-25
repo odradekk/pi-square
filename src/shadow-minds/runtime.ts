@@ -791,6 +791,21 @@ export function createShadowRuntime(input: {
       if (ok) notify();
       return ok;
     },
+    sendResultForDelivery(id: string) {
+      const ok = inbox.send(id);
+      if (ok) notify();
+      return ok;
+    },
+    markResultDelivered(id: string) {
+      const ok = inbox.markDelivered?.(id) ?? false;
+      if (ok) notify();
+      return ok;
+    },
+    degradeResultDelivery(id: string) {
+      const ok = inbox.degradeToNotify?.(id) ?? false;
+      if (ok) notify();
+      return ok;
+    },
     subscribe(listener: () => void): () => void {
       subscribers.add(listener);
       return () => subscribers.delete(listener);

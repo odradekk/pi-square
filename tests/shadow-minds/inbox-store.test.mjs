@@ -447,4 +447,44 @@ function addResult(inbox, index, overrides = {}) {
 
 for (const root of roots) rmSync(root, { recursive: true, force: true });
 
+// ── Confirmed-delivery persistence (#159) ───────────────────────────
+
+{
+  const { sessionDir } = makeSessionRoot("sess-delivery");
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-delivery" });
+  const schema = { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false };
+  const entity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "a" }, createdAt: 1, configuredDelivery: "steer", validationSchema: schema });
+  const wakeEntity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "b" }, createdAt: 2, configuredDelivery: "wake", validationSchema: schema });
+  assert.equal(inbox.send(entity.id), true);
+  assert.equal(inbox.markDelivered(entity.id), true, "a pending result confirms delivered");
+  assert.equal(inbox.markDelivered(entity.id), false, "confirmation refuses a second time");
+  assert.equal(inbox.send(wakeEntity.id), true);
+  assert.equal(inbox.degradeToNotify(wakeEntity.id), true, "a degraded result returns inbox-only");
+  assert.equal(inbox.degradeToNotify(entity.id), false, "a delivered result never degrades");
+
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-delivery" });
+  const deliveredView = reopened.list().find((entry) => entry.id === entity.id);
+  const degradedView = reopened.list().find((entry) => entry.id === wakeEntity.id);
+  assert.equal(deliveredView.delivery, "delivered", "delivery confirmation survives reopening");
+  assert.equal(degradedView.delivery, "notified", "a degraded result stays inbox-only");
+  assert.equal(degradedView.configuredDelivery, "notify");
+}
+
+{
+  const { sessionDir } = makeSessionRoot("sess-recover");
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-recover" });
+  const schema = { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false };
+  const pending = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "p" }, createdAt: 1, configuredDelivery: "wake", validationSchema: schema });
+  const fresh = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "f" }, createdAt: 2, configuredDelivery: "steer", validationSchema: schema });
+  assert.equal(inbox.send(pending.id), true);
+  const recovered = createPersistentShadowInbox({ sessionDir, sessionId: "sess-recover" });
+  assert.equal(recovered.recoverPendingDelivery(), 1, "only the pending result recovers at reopen");
+  const views = recovered.list();
+  assert.equal(views.find((entry) => entry.id === pending.id).delivery, "notified");
+  assert.equal(views.find((entry) => entry.id === pending.id).configuredDelivery, "notify");
+  assert.equal(views.find((entry) => entry.id === fresh.id).delivery, "notified");
+  assert.equal(views.find((entry) => entry.id === fresh.id).configuredDelivery, "steer");
+  assert.equal(recovered.recoverPendingDelivery(), 0, "recovery is idempotent");
+}
+
 console.log("shadow-minds inbox-store tests: OK");

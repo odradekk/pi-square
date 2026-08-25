@@ -271,6 +271,20 @@ export interface ShadowInbox {
    * `notify`; a new parent task forces old-task results inbox-only.
    */
   forceNotify?(id: string): boolean;
+  /**
+   * Confirms one delivery from transcript observation; `pending → delivered`.
+   */
+  markDelivered?(id: string): boolean;
+  /**
+   * A degraded delivery returns inbox-only: `pending → notified` with notify
+   * policy. Refused for delivered results.
+   */
+  degradeToNotify?(id: string): boolean;
+  /**
+   * Reopen recovery: results left `pending` by a lost session return
+   * inbox-only with notify policy; delivery never resumes automatically.
+   */
+  recoverPendingDelivery?(): number;
   /** Bounded retention events when the backing store records them. */
   events?(): Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
   clear(): void;
@@ -368,6 +382,29 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
       if (!entry || entry.delivery !== "notified" || entry.configuredDelivery === "notify") return false;
       entry.configuredDelivery = "notify";
       return true;
+    },
+    markDelivered(id) {
+      const entry = entries.find((item) => item.id === id);
+      if (!entry || entry.delivery !== "pending") return false;
+      entry.delivery = "delivered";
+      return true;
+    },
+    degradeToNotify(id) {
+      const entry = entries.find((item) => item.id === id);
+      if (!entry || entry.delivery === "delivered") return false;
+      entry.configuredDelivery = "notify";
+      if (entry.delivery === "pending") entry.delivery = "notified";
+      return true;
+    },
+    recoverPendingDelivery() {
+      let recovered = 0;
+      for (const entry of entries) {
+        if (entry.delivery !== "pending") continue;
+        entry.delivery = "notified";
+        entry.configuredDelivery = "notify";
+        recovered += 1;
+      }
+      return recovered;
     },
     clear() {
       entries.length = 0;

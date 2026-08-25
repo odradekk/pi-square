@@ -81,6 +81,7 @@ import { serializeShadowDefinition } from "./serialize";
 import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
 import { createShadowInbox, type ShadowInbox } from "./result";
+import { createShadowDeliveryController, type ShadowDeliveryController } from "./delivery";
 
 /** Parent-session custom entry type for one bounded result reference. */
 export const SHADOW_RESULT_ENTRY_TYPE = "pi-square.shadow-result";
@@ -92,6 +93,8 @@ export interface ShadowMindsState {
   runtime: ShadowRuntime;
   /** Deterministic automatic scheduling for this parent session. */
   scheduler: ShadowScheduler;
+  /** Confirmed delivery of Shadow results as advisory evidence (#159). */
+  delivery?: ShadowDeliveryController;
   /** Frozen per-task snapshot used by every automatic activation of the task. */
   taskSnapshot?: ShadowTaskSnapshot;
   /** Present when the parent session persists; Shadow results survive reopening. */
@@ -372,7 +375,11 @@ function makeServices(
       },
       markResultRead: (id) => runtime.markResultRead(id),
       dismissResult: (id) => runtime.dismissResult(id),
-      deleteResult: (id) => runtime.deleteResult(id),
+      deleteResult: (id) => {
+        const ok = runtime.deleteResult(id);
+        if (ok) state.delivery?.remove(id);
+        return ok;
+      },
       subscribe: (listener) => runtime.subscribe(listener),
     },
     scheduler: {
@@ -384,6 +391,31 @@ function makeServices(
       resume: () => {
         state.scheduler.resume();
         hooks?.onSchedulerChange?.();
+      },
+    },
+    delivery: {
+      sendResultToAgent(id: string): { ok: boolean; message: string } {
+        const result = state.runtime.snapshot().results.find((entry) => entry.id === id);
+        if (!result) return { ok: false, message: "That result is no longer available." };
+        const sent = state.delivery?.sendResultToAgent(result) ?? false;
+        return sent
+          ? { ok: true, message: "Sent to the agent as advisory evidence." }
+          : { ok: false, message: "That result is already being delivered or was delivered." };
+      },
+      sendErrorSummary(runId: string): { ok: boolean; message: string } {
+        const run = state.runtime.snapshot().runs.find((entry) => entry.id === runId);
+        if (!run) return { ok: false, message: "That run is no longer available." };
+        if (run.phase !== "error") return { ok: false, message: "Only failed runs can send a failure summary." };
+        const sent = state.delivery?.sendErrorSummary({
+          id: run.id,
+          shadowId: run.shadowId,
+          shadowName: run.shadowName,
+          phase: run.phase,
+          ...(run.message ? { message: run.message } : {}),
+        }) ?? false;
+        return sent
+          ? { ok: true, message: "Sent the failure summary to the agent." }
+          : { ok: false, message: "The failure summary could not be sent." };
       },
     },
     refresh(): ShadowManagerSnapshot {
@@ -698,6 +730,28 @@ export default function registerShadowMinds(
   const queuedFollowUpSources: Array<"real" | "extension"> = [];
   let streamingInputDesynchronized = false;
   let skipInitialUserMessage = false;
+  // Parent-run timing for delivery policies: one run spans its
+  // before_agent_start boundary through agent_settled, and queued steering
+  // or follow-up continuations stay inside the same run.
+  let parentRunSeq = 0;
+  let parentRunActive = false;
+  state.delivery = createShadowDeliveryController({
+    pi,
+    getRuntime: () => state.runtime,
+    timing: () => ({
+      currentRun: parentRunSeq,
+      currentTaskEpoch: state.scheduler.snapshot().taskEpoch,
+      parentRunning: parentRunActive,
+    }),
+    onDegrade: (count) => {
+      if (!ctx?.hasUI) return;
+      ctx.ui.notify(
+        notifyText(`shadow-minds: ${count} result${count === 1 ? "" : "s"} stayed in the inbox; the delivery window passed`),
+        "info",
+      );
+    },
+    onPendingChange: refreshStatus,
+  });
   const toolArgsById = new Map<string, { toolName: string; args: unknown }>();
   const TOOL_ARG_PAIRS_MAX = 64;
   const STREAMING_INPUT_PAIRS_MAX = 64;
@@ -737,11 +791,23 @@ export default function registerShadowMinds(
       taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
     }
     skipInitialUserMessage = true;
+    parentRunSeq += 1;
+    parentRunActive = true;
     state.scheduler.handleRunStart(realUserTask);
     refreshStatus();
   });
 
+  pi.on("agent_start", () => {
+    state.delivery?.handleAgentStart();
+  });
+
+  pi.on("agent_settled", () => {
+    parentRunActive = false;
+    state.delivery?.handleAgentSettled();
+  });
+
   pi.on("message_start", (event) => {
+    state.delivery?.observeMessage(event?.message);
     if (event?.message?.role !== "user") return;
     if (skipInitialUserMessage) {
       skipInitialUserMessage = false;
@@ -784,6 +850,7 @@ export default function registerShadowMinds(
   });
 
   pi.on("turn_end", (event, sessionCtx) => {
+    state.delivery?.handleTurnEnd(event?.message);
     if (!sessionCtx) return;
     // A turn that ended through user interruption drops its observations
     // instead of dispatching: Pi emits turn_end before agent_end on abort,
@@ -817,6 +884,7 @@ export default function registerShadowMinds(
       }
     }
     state.scheduler.handleAgentEnd({ interrupted, checkpoint });
+    state.delivery?.handleAgentEnd(event?.messages);
     refreshStatus();
     streamingInputDesynchronized = false;
     queuedSteeringSources.length = 0;
@@ -875,6 +943,18 @@ export default function registerShadowMinds(
     }
     state.runtime = makeRuntime(inbox);
     state.scheduler = makeScheduler();
+    state.delivery?.reset();
+    parentRunSeq = 0;
+    parentRunActive = false;
+    // A result left pending by a lost session never resumes automatically:
+    // it returns inbox-only with notify policy and waits for an explicit send.
+    const recoveredDeliveries = inbox?.recoverPendingDelivery?.() ?? 0;
+    if (recoveredDeliveries > 0 && sessionCtx.hasUI) {
+      sessionCtx.ui.notify(
+        `shadow-minds: recovered ${recoveredDeliveries} undelivered result${recoveredDeliveries === 1 ? "" : "s"} to the inbox`,
+        "info",
+      );
+    }
     pendingIdleInput = undefined;
     queuedSteeringSources.length = 0;
     queuedFollowUpSources.length = 0;
@@ -897,6 +977,7 @@ export default function registerShadowMinds(
   pi.on("session_shutdown", async () => {
     state.runtime.reset("Parent Pi session shutdown");
     state.scheduler.reset();
+    state.delivery?.reset();
     seenPhases.clear();
     statusContext?.ui.setStatus?.(SHADOW_STATUS_KEY, undefined);
     statusContext = undefined;
@@ -918,6 +999,7 @@ export default function registerShadowMinds(
     // runtime instance. A crash between the append and the persisted mark
     // can re-append one bounded entry at the next open.
     const seenResults = new Set<string>();
+    const seenDelivery = new Set<string>();
     unsubscribeRuntime = state.runtime.subscribe(() => {
       const sessionCtx = ctx;
       // A settled run may have freed a concurrency slot for queued work.
@@ -926,6 +1008,12 @@ export default function registerShadowMinds(
       const results = state.runtime.snapshot().results;
       for (const result of results) {
         if (seenResults.has(result.id) || result.referenced) continue;
+        // Fresh results alone enter the delivery machine; results restored
+        // from a reopened partition stay inbox-only until explicitly sent.
+        if (!seenDelivery.has(result.id)) {
+          seenDelivery.add(result.id);
+          state.delivery?.enqueueResult(result);
+        }
         if (!effectiveConfig().enabled) continue;
         try {
           pi.appendEntry(SHADOW_RESULT_ENTRY_TYPE, {
