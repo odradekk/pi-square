@@ -796,4 +796,33 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
   assert.deepEqual(retained.map((entry) => entry.epoch), [11, 10, 9, 8]);
 }
 
+// ── Completion-gate support (#160) ──────────────────────────────────
+
+{
+  const { state, scheduler } = makeHarness({
+    definitions: [
+      definition({ id: "gate-a", triggers: ["completion"], completionGate: true }),
+      definition({ id: "gate-b", triggers: ["completion"], completionGate: true }),
+      definition({ id: "plain", triggers: ["completion"] }),
+    ],
+    // The runtime owns the concurrency slots: the second start onward is busy.
+    busyUntil: 1,
+  });
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.handleAgentEnd({ interrupted: false, checkpoint: {} });
+  const pendingIds = scheduler.pendingCompletions();
+  assert.ok(pendingIds.length >= 2, "busy slots leave completion activations pending");
+  assert.ok(pendingIds.every((id) => ["gate-a", "gate-b", "plain"].includes(id)));
+
+  // Only unstarted pending items cancel; started runs are untouched.
+  const startedBefore = state.starts.length;
+  assert.ok(startedBefore > 0, "the free slots started completion runs at once");
+  const cancelled = scheduler.cancelPendingCompletions();
+  assert.equal(cancelled, pendingIds.length, "every pending completion cancels");
+  assert.equal(scheduler.pendingCompletions().length, 0);
+  assert.equal(scheduler.cancelPendingCompletions(), 0, "the cancellation is idempotent");
+  assert.equal(state.starts.length, startedBefore, "started runs continue past the cancellation");
+}
+
 console.log("shadow-minds scheduler tests: OK");

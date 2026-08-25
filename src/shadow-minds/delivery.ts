@@ -50,6 +50,11 @@ export interface ShadowDeliveryTiming {
   currentTaskEpoch: number;
   /** True while a parent agent run is between start and settle. */
   parentRunning: boolean;
+  /**
+   * Headless drain (#160): deliveries append to the transcript without
+   * triggering a model turn, so a print/JSON quit never starts new work.
+   */
+  quiet?: boolean;
 }
 
 /** A policy entry the gate decides for: `notify` never reaches the gate. */
@@ -253,6 +258,8 @@ export interface ShadowDeliveryController {
   isPending(id: string): boolean;
   /** Count of entries the parent has not confirmed. */
   pendingCount(): number;
+  /** Confirms quiet sends only when their IDs were observed in persisted transcript entries. */
+  confirmQuietDeliveries(observedIds: readonly string[]): number;
   /** Clears all state on session start and shutdown. */
   reset(): void;
 }
@@ -270,6 +277,10 @@ export function createShadowDeliveryController(options: {
 }): ShadowDeliveryController {
   const records = new Map<string, ShadowDeliveryRecord>();
   let sequence = 0;
+  // Quiet sends have no extension-visible message_start. Their IDs remain
+  // candidates until the shutdown drain observes the matching persisted
+  // custom-message entry in the parent session branch.
+  let quietSentIds = new Set<string>();
 
   const core = createConfirmedDeliveryCore<ShadowDeliveryValue>({
     send(batch, resent) {
@@ -289,9 +300,11 @@ export function createShadowDeliveryController(options: {
           if (entry.value.kind === "result") options.getRuntime()?.sendResultForDelivery(entry.id);
         }
         sequence += 1;
-        const sendOptions = timing.parentRunning
-          ? { triggerTurn: true as const, deliverAs: "steer" as const }
-          : { triggerTurn: true as const };
+        const sendOptions = timing.quiet
+          ? { triggerTurn: false as const }
+          : timing.parentRunning
+            ? { triggerTurn: true as const, deliverAs: "steer" as const }
+            : { triggerTurn: true as const };
         options.pi.sendMessage(
           {
             customType: SHADOW_NOTIFICATION_TYPE,
@@ -310,6 +323,11 @@ export function createShadowDeliveryController(options: {
           },
           sendOptions,
         );
+        // Collected only after the send returned: a failed send must never
+        // be self-confirmed.
+        if (timing.quiet) {
+          for (const entry of sendable) quietSentIds.add(entry.id);
+        }
       }
       if (degraded.length > 0) {
         for (const id of degraded) {
@@ -325,7 +343,9 @@ export function createShadowDeliveryController(options: {
     // Advisory results and infrastructure failure summaries never coalesce:
     // they carry different framing and would not fit one message.
     batchKey: (value) => value.kind,
-    isIdle: () => !options.timing().parentRunning,
+    // A headless drain defers every flush to its single settle point: an
+    // immediate enqueue flush followed by the settle would duplicate.
+    isIdle: () => !options.timing().parentRunning && !options.timing().quiet,
     onPendingChange: options.onPendingChange,
   });
 
@@ -440,8 +460,28 @@ export function createShadowDeliveryController(options: {
     },
     isPending: (id) => core.isPending(id),
     pendingCount: () => core.pendingCount(),
+    /**
+     * Confirms quiet sends only after the shutdown drain observed their IDs in
+     * actual parent-session custom-message entries. A fire-and-forget
+     * sendMessage call is not evidence that persistence succeeded.
+     */
+    confirmQuietDeliveries(observedIds) {
+      const observed = new Set(observedIds);
+      let confirmed = 0;
+      for (const id of [...quietSentIds]) {
+        if (!observed.has(id)) continue;
+        quietSentIds.delete(id);
+        const record = records.get(id);
+        records.delete(id);
+        core.remove(id);
+        if (record?.value.kind === "result") options.getRuntime()?.markResultDelivered(id);
+        confirmed += 1;
+      }
+      return confirmed;
+    },
     reset: () => {
       records.clear();
+      quietSentIds = new Set();
       core.reset();
     },
   };
