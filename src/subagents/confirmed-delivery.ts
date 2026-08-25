@@ -8,7 +8,9 @@
  * supplies result identity and payload, confirmation parsing, optional batch
  * compatibility grouping, message construction and sending, and a
  * pending-change hook for persistence — so the core assumes no particular
- * payload shape and carries no Subagent, display, or store semantics.
+ * payload shape and carries no Subagent, display, or store semantics. The
+ * shared head/tail text budget (`clipWithHeadTail`) also lives here for the
+ * Subagent and Shadow Minds adapters.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
@@ -17,6 +19,22 @@
 export const DEFAULT_MAX_BATCH_RESULTS = 6;
 /** Hard bound on the pending set so an unattended session stays bounded. */
 export const DEFAULT_MAX_PENDING_RESULTS = 50;
+/** Share of the budget kept from the head; the remainder keeps the tail. */
+const HEAD_SHARE = 0.7;
+
+/**
+ * Applies a model-facing head/tail budget to one text. A result states its
+ * conclusion early and its gaps late, so an oversized text keeps both. The
+ * omission marker is added to the kept text and is not counted in the budget.
+ */
+export function clipWithHeadTail(text: unknown, max: number): string {
+  const normalized = String(text ?? "").trim();
+  if (normalized.length <= max) return normalized;
+  const head = Math.floor(max * HEAD_SHARE);
+  const tail = max - head;
+  const omitted = normalized.length - head - tail;
+  return `${normalized.slice(0, head)}\n... [omitted ${omitted} characters] ...\n${normalized.slice(normalized.length - tail)}`;
+}
 
 /** One entry of a batch handed to the caller's send hook. */
 export interface ConfirmedDeliveryBatchEntry<T> {

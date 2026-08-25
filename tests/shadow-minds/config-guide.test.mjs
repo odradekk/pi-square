@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -1257,6 +1257,343 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     else process.env.PI_AGENT_DIR = previousAgentDir;
     if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── Confirmed delivery wiring (#159) ───────────────────────────────
+
+function writeShadowDefinition(dir, id, name, delivery, triggers) {
+  writeFileSync(join(dir, `${id}.md`), [
+    "---",
+    "promptVersion: 1",
+    `id: ${id}`,
+    `name: ${name}`,
+    "enabled: true",
+    `triggers: [${triggers.join(", ")}]`,
+    `delivery: ${delivery}`,
+    "tools: []",
+    "---",
+    "Observe and report.",
+    "",
+  ].join("\n"));
+}
+
+async function deliveryE2eSetup(dirname, definitions) {
+  const dir = mkdtempSync(join(tmpdir(), dirname));
+  const project = join(dir, "project");
+  const agentShadowDir = join(dir, "agent", "shadow-minds");
+  mkdirSync(project, { recursive: true });
+  mkdirSync(agentShadowDir, { recursive: true });
+  for (const definition of definitions) writeShadowDefinition(agentShadowDir, ...definition);
+  return { dir, project, agentShadowDir };
+}
+
+function deliveryEventCtx(project, sinks) {
+  return {
+    cwd: project,
+    hasUI: true,
+    isProjectTrusted: () => true,
+    ui: {
+      custom: async () => {},
+      confirm: async () => true,
+      notify(message, level) { sinks.notifications.push({ message, level }); },
+      setStatus(key, text) { sinks.statusCalls.push({ key, text }); },
+    },
+    model: { provider: "acme", id: "parent-model" },
+    modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 200_000 }) },
+    sessionManager: {
+      getSessionDir: () => "",
+      getSessionFile: () => undefined,
+      getSessionId: () => "sess-delivery",
+      getLeafId: () => "leaf-1",
+      getBranch: () => [],
+      buildContextEntries: () => [],
+    },
+  };
+}
+
+function deliveryRuntimeDeps(sinks, options = {}) {
+  return {
+    now: () => 1_000,
+    async createSession(input) {
+      return { session: { customTools: input.customTools } };
+    },
+    async runSession(input) {
+      if (options.fail) {
+        return { status: "error", prompted: true, timedOut: false, error: new Error("model auth failed"), finalText: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, streamingCompleted: false, messages: [] };
+      }
+      const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+      if (submit) {
+        await submit.execute("c1", { payload: JSON.stringify({ summary: options.summary ?? "advisory finding" }) }, undefined, undefined, sinks.eventCtx);
+      }
+      return { status: "completed", prompted: true, timedOut: false, finalText: "", model: "acme/parent-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 }, streamingCompleted: true, messages: [] };
+    },
+  };
+}
+
+function shadowDeliveries(harness) {
+  return harness.events.filter((event) => event[0] === "guide" && event[1].customType === "pi-square.shadow-notification");
+}
+
+const previousAgentDir159 = process.env.PI_AGENT_DIR;
+const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
+
+{
+  // Wake: the completion run settles, its result starts a follow-up turn,
+  // and transcript observation confirms the delivery.
+  const { dir } = await deliveryE2eSetup("shadow-wake-", [["wake-sentinel", "Wake sentinel", "wake", ["completion"]]]);
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = deliveryEventCtx(dir.includes("x") ? dir : join(dir, "project"), sinks);
+    sinks.eventCtx = eventCtx;
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      deliveryRuntimeDeps(sinks),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    harness.handlers.get("input")({ type: "input", text: "finish the feature", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "finish the feature", systemPromptOptions: { cwd: join(dir, "project") } }, eventCtx);
+    harness.handlers.get("agent_start")({ type: "agent_start" }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: { stopReason: "tool_use" }, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(state.runtime.snapshot().results.length, 1, "the completion run produced a result");
+    assert.equal(shadowDeliveries(harness).length, 0, "a busy parent holds the wake result");
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    const deliveries = shadowDeliveries(harness);
+    assert.equal(deliveries.length, 1, "the settled parent receives the wake result");
+    assert.equal(deliveries[0][2].triggerTurn, true, "the wake starts a follow-up turn");
+    // Pi's triggerTurn path emits agent_start without input/before_agent_start.
+    harness.handlers.get("agent_start")({ type: "agent_start" }, eventCtx);
+    assert.equal(state.currentParentRun(), 2, "the wake follow-up is tracked as an active parent run");
+    assert.match(deliveries[0][1].content, /\[Shadow advisory\]/, "the delivery is advisory-framed");
+    assert.match(deliveries[0][1].content, /shadow: Wake sentinel \(wake-sentinel\)/, "the source is attributed");
+    const resultId = state.runtime.snapshot().results[0].id;
+    assert.equal(state.runtime.snapshot().results[0].delivery, "pending", "the handoff is recorded");
+    await harness.handlers.get("message_start")({ type: "message_start", message: deliveries[0][1] }, eventCtx);
+    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered", "transcript observation confirms the delivery");
+    assert.equal(resultId.length > 0, true);
+  } finally {
+    if (previousAgentDir159 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir159;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Steer: the result lands while its source run is still active and enters
+  // the model at the turn boundary as steering.
+  const { dir } = await deliveryE2eSetup("shadow-steer-", [["steer-sentinel", "Steer sentinel", "steer", ["completion"]]]);
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = deliveryEventCtx(join(dir, "project"), sinks);
+    sinks.eventCtx = eventCtx;
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      deliveryRuntimeDeps(sinks),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    harness.handlers.get("input")({ type: "input", text: "work", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "work", systemPromptOptions: { cwd: join(dir, "project") } }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(state.runtime.snapshot().results.length, 1);
+    assert.equal(shadowDeliveries(harness).length, 0, "the running parent holds the steer result");
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 1, message: {}, toolResults: [] }, eventCtx);
+    const deliveries = shadowDeliveries(harness);
+    assert.equal(deliveries.length, 1, "the steer enters the model at the turn boundary");
+    assert.equal(deliveries[0][2].deliverAs, "steer", "an active run is steered, not followed up");
+    assert.equal(state.runtime.snapshot().results[0].delivery, "pending");
+  } finally {
+    if (previousAgentDir159 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir159;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Late steer: the run settles before any turn boundary, so the result
+  // degrades to notify and never reaches the model.
+  const { dir } = await deliveryE2eSetup("shadow-late-steer-", [["late-sentinel", "Late sentinel", "steer", ["completion"]]]);
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = deliveryEventCtx(join(dir, "project"), sinks);
+    sinks.eventCtx = eventCtx;
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      deliveryRuntimeDeps(sinks),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    harness.handlers.get("input")({ type: "input", text: "work", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "work", systemPromptOptions: { cwd: join(dir, "project") } }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(shadowDeliveries(harness).length, 0, "a late steer never reaches the model");
+    const result = state.runtime.snapshot().results[0];
+    assert.equal(result.delivery, "notified", "the degraded result returns inbox-only");
+    assert.equal(result.configuredDelivery, "notify", "the degraded result adopts notify policy");
+    assert.ok(sinks.notifications.some((entry) => entry.message.includes("stayed in the inbox")), "the degrade is visible");
+  } finally {
+    if (previousAgentDir159 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir159;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Notify: results stay inbox-only until an explicit Send to agent, which
+  // goes through the same confirmed machine; a failed run can only send a
+  // bounded failure summary explicitly.
+  const { dir } = await deliveryE2eSetup("shadow-notify-", [
+    ["quiet-sentinel", "Quiet sentinel", "notify", ["completion"]],
+    ["failing-sentinel", "Failing sentinel", "notify", ["completion"]],
+  ]);
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = deliveryEventCtx(join(dir, "project"), sinks);
+    sinks.eventCtx = eventCtx;
+    let failNext = false;
+    const deps = deliveryRuntimeDeps(sinks);
+    const originalRun = deps.runSession;
+    deps.runSession = async (input) => {
+      if (failNext) return deliveryRuntimeDeps(sinks, { fail: true }).runSession(input);
+      return originalRun(input);
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      deps,
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    harness.handlers.get("input")({ type: "input", text: "work", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "work", systemPromptOptions: { cwd: join(dir, "project") } }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(shadowDeliveries(harness).length, 0, "notify never auto-delivers");
+    const result = state.runtime.snapshot().results[0];
+    assert.equal(result.delivery, "notified");
+
+    const services = __testables.makeServices(state, eventCtx, new ConfirmationCoordinator());
+    const sent = services.delivery?.sendResultToAgent(result.id);
+    assert.equal(sent?.ok, true, sent?.message);
+    const deliveries = shadowDeliveries(harness);
+    assert.equal(deliveries.length, 1, "the explicit send reaches the model");
+    assert.equal(deliveries[0][2].triggerTurn, true);
+    await harness.handlers.get("message_start")({ type: "message_start", message: deliveries[0][1] }, eventCtx);
+    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered", "the explicit send confirms through the transcript");
+
+    // A failed run stays a diagnostic until the user sends its summary.
+    failNext = true;
+    harness.handlers.get("input")({ type: "input", text: "again", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "again", systemPromptOptions: { cwd: join(dir, "project") } }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const failedRun = state.runtime.snapshot().runs.find((run) => run.phase === "error");
+    assert.ok(failedRun, "the infrastructure failure is observable");
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    assert.equal(services.delivery?.sendErrorSummary(failedRun.id)?.ok, true);
+    const summary = shadowDeliveries(harness).at(-1);
+    assert.match(summary[1].content, /\[Shadow run failure summary\]/, "the failure summary is bounded and explicit");
+    assert.ok(summary[1].content.length < 4_000);
+  } finally {
+    if (previousAgentDir159 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir159;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Reopen recovery: a result left pending by a lost session returns
+  // inbox-only with notify policy.
+  const { dir, project } = await deliveryE2eSetup("shadow-recover-", [["wake-sentinel", "Wake sentinel", "wake", ["completion"]]]);
+  const sessionDir = join(dir, "sessions");
+  const sessionFile = join(sessionDir, "2026-08-25T00-00-00-000Z_sess-recover.jsonl");
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(sessionFile, "{}\n", "utf8");
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = {
+      ...deliveryEventCtx(project, sinks),
+      sessionManager: {
+        getSessionDir: () => sessionDir,
+        getSessionFile: () => sessionFile,
+        getSessionId: () => "sess-recover",
+        getLeafId: () => "leaf-1",
+        getBranch: () => [],
+        buildContextEntries: () => [],
+      },
+    };
+    sinks.eventCtx = eventCtx;
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      deliveryRuntimeDeps(sinks),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    harness.handlers.get("input")({ type: "input", text: "work", source: "interactive" });
+    await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "work", systemPromptOptions: { cwd: project } }, eventCtx);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    const resultId = state.runtime.snapshot().results[0].id;
+    assert.equal(state.runtime.snapshot().results[0].delivery, "pending", "the delivery is in flight before the loss");
+    // The session is lost before confirmation: no message_start fires.
+    await harness.handlers.get("session_start")({}, eventCtx);
+    const recovered = state.runtime.snapshot().results[0];
+    assert.equal(recovered.id, resultId);
+    assert.equal(recovered.delivery, "notified", "the lost delivery returns inbox-only");
+    assert.equal(recovered.configuredDelivery, "notify", "the recovered result adopts notify policy");
+    assert.equal(shadowDeliveries(harness).length, 1, "no second delivery happens after recovery");
+    // A runtime notification after reopen (for example a read marker) must
+    // not re-enqueue the restored result into the delivery machine.
+    state.runtime.markResultRead(resultId);
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    assert.equal(shadowDeliveries(harness).length, 1, "a restored result never auto-delivers after reopen");
+    assert.equal(state.runtime.snapshot().results[0].delivery, "notified");
+    // But an explicit send from the reopened inbox still works.
+    const services = __testables.makeServices(state, eventCtx, new ConfirmationCoordinator());
+    assert.equal(services.delivery?.sendResultToAgent(resultId)?.ok, true);
+    assert.equal(shadowDeliveries(harness).length, 2, "an explicit send still delivers after reopen");
+    await harness.handlers.get("message_start")({ type: "message_start", message: shadowDeliveries(harness).at(-1)[1] }, eventCtx);
+    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered", "the explicit send confirms after reopen");
+  } finally {
+    if (previousAgentDir159 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir159;
+    if (previousCodingAgentDir159 === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir159;
     rmSync(dir, { recursive: true, force: true });
   }
 }

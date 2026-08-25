@@ -298,6 +298,22 @@ What works today:
   (parent-model filter, read-only envelope, model and thinking resolution)
   and freeze the parent core, trusted project rules, and working directory
   once per real user task from that run's prompt options.
+- Valid results deliver to the parent model only through the definition's
+  fixed policy, always as source-attributed advisory evidence that
+  supplements — never replaces — the system prompt, tools, and user
+  instructions. `steer` enters the model only while the run that produced
+  the result is still the active parent run (a turn boundary steers it
+  into that run); `wake` enters the active run or, while the source task is
+  still current and the parent settled naturally, starts one follow-up
+  turn; `notify` never enters the model automatically and waits in the
+  inbox for an explicit **Send to agent**. Late or stale deliveries degrade
+  to notify visibly. Delivery is confirmed only through transcript
+  observation, batches up to six results without model summarization,
+  retains on send failure, resends after a natural settle, and stays
+  suppressed after an interruption; undelivered results from a lost session
+  recover inbox-only with notify policy at reopen. A failed run's
+  infrastructure diagnostics stay in `/shadow` and reach the model only as
+  a bounded failure summary through an explicit send.
 - A strict `shadowMinds` section in agent and project pi-square configuration:
   the agent-level `enabled` master switch (a project can never re-enable it)
   and runtime `defaults` that always stay below package hard caps. Defaults may

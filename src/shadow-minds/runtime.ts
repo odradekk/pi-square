@@ -132,12 +132,16 @@ export interface ShadowRunView {
   trajectoryTruncated?: boolean;
   /** Per-request usage and TTFT, bounded by the turn budget. */
   requests?: ShadowRequestMetric[];
+  /** Parent-run sequence in which the automatic activation was observed. */
+  sourceRun?: number;
 }
 
 export type ShadowRunRequest = ShadowManualRunRequest & {
   /** Present for scheduler-dispatched runs. */
   trigger?: ShadowTriggerKind;
   taskEpoch?: number;
+  /** Parent-run sequence in which the automatic activation was observed. */
+  sourceRun?: number;
   triggerReasons?: ShadowTriggerReason[];
 };
 
@@ -418,6 +422,7 @@ export function createShadowRuntime(input: {
       source,
       ...(request.trigger ? { trigger: request.trigger } : {}),
       ...(request.taskEpoch !== undefined ? { taskEpoch: request.taskEpoch } : {}),
+      ...(request.sourceRun !== undefined ? { sourceRun: request.sourceRun } : {}),
       ...(request.triggerReasons && request.triggerReasons.length > 0
         ? { triggerReasons: structuredClone(request.triggerReasons) }
         : {}),
@@ -641,7 +646,12 @@ export function createShadowRuntime(input: {
               ? { triggers: [...new Set(request.triggerReasons.map((reason) => reason.trigger))] }
               : {}),
             ...(request.taskEpoch !== undefined
-              ? { taskIdentity: { epoch: request.taskEpoch } }
+              ? {
+                  taskIdentity: {
+                    epoch: request.taskEpoch,
+                    ...(request.sourceRun !== undefined ? { sourceRun: request.sourceRun } : {}),
+                  },
+                }
               : {}),
             validationSchema: structuredClone(definition.outputSchema),
             // A run that outlived its task delivers inbox-only: its result
@@ -788,6 +798,21 @@ export function createShadowRuntime(input: {
     },
     deleteResult(id: string) {
       const ok = inbox.delete(id);
+      if (ok) notify();
+      return ok;
+    },
+    sendResultForDelivery(id: string) {
+      const ok = inbox.send(id);
+      if (ok) notify();
+      return ok;
+    },
+    markResultDelivered(id: string) {
+      const ok = inbox.markDelivered?.(id) ?? false;
+      if (ok) notify();
+      return ok;
+    },
+    degradeResultDelivery(id: string) {
+      const ok = inbox.degradeToNotify?.(id) ?? false;
       if (ok) notify();
       return ok;
     },

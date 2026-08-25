@@ -770,6 +770,7 @@ function baseRequest(overrides = {}) {
   const outcome = runtime.startAutomaticRun(baseRequest({
     trigger: "mutation",
     taskEpoch: 4,
+    sourceRun: 7,
     triggerReasons: [{ trigger: "mutation", firstObservedAt: 1, lastObservedAt: 2, detail: "write a.ts" }],
   }));
   assert.equal(outcome.started, true, "the automatic run starts through the same seam");
@@ -777,9 +778,12 @@ function baseRequest(overrides = {}) {
   assert.equal(view.source, "automatic");
   assert.equal(view.trigger, "mutation");
   assert.equal(view.taskEpoch, 4);
+  assert.equal(view.sourceRun, 7);
   assert.ok(prompts[0].includes("[Trigger task — mutation]"), "the prompt carries the trigger task");
   assert.ok(prompts[0].includes("write a.ts"), "merged reasons appear in the prompt");
   assert.ok(!prompts[0].includes("[Manual note]"), "automatic runs carry no manual note");
+  const result = runtime.snapshot().results[0];
+  assert.equal(result.taskIdentity.sourceRun, 7, "the result freezes the triggering parent run for delivery policy");
 }
 
 {
@@ -938,6 +942,34 @@ function baseRequest(overrides = {}) {
   const view = await outcome.done;
   const result = runtime.snapshot().results.find((entry) => entry.shadowId === view.shadowId);
   assert.equal(result.configuredDelivery, definition().delivery, "current-task delivery is untouched");
+}
+
+// ── confirmed-delivery inbox transitions (#159) ─────────────────────
+
+{
+  const fake = makeFake({ submit: JSON.stringify({ summary: "deliverable" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest({ definition: definition({ delivery: "steer" }) })).done;
+  const result = runtime.snapshot().results[0];
+  assert.equal(result.configuredDelivery, "steer", "the definition policy rides the result");
+
+  assert.equal(runtime.markResultDelivered(result.id), false, "a notified result cannot confirm delivery");
+  assert.equal(runtime.sendResultForDelivery(result.id), true, "the delivery handoff marks the result pending");
+  assert.equal(runtime.sendResultForDelivery(result.id), false, "the handoff is atomic");
+  assert.equal(runtime.snapshot().results[0].delivery, "pending");
+  assert.equal(runtime.markResultDelivered(result.id), true, "transcript confirmation delivers");
+  assert.equal(runtime.markResultDelivered(result.id), false, "confirmation is single-shot");
+  assert.equal(runtime.snapshot().results[0].delivery, "delivered");
+  assert.equal(runtime.degradeResultDelivery(result.id), false, "a delivered result never degrades");
+
+  await runtime.startManualRun(baseRequest({ definition: definition({ id: "second", name: "Second", delivery: "steer" }) })).done;
+  const second = runtime.snapshot().results[0];
+  assert.equal(runtime.sendResultForDelivery(second.id), true);
+  assert.equal(runtime.degradeResultDelivery(second.id), true, "a degraded delivery returns inbox-only");
+  const view = runtime.snapshot().results[0];
+  assert.equal(view.delivery, "notified");
+  assert.equal(view.configuredDelivery, "notify");
+  assert.equal(runtime.sendResultForDelivery("missing"), false);
 }
 
 console.log("shadow-minds runtime tests: OK");

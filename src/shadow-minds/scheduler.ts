@@ -170,6 +170,8 @@ export function formatTriggerReason(reason: ShadowTriggerReason): string {
 export interface ShadowPendingActivation {
   shadowId: string;
   taskEpoch: number;
+  /** Parent-run sequence in which the latest trigger was observed. */
+  sourceRun: number;
   /** Definition priority frozen at the latest enqueue. */
   shadowPriority: number;
   /** Highest-priority trigger among the merged reasons. */
@@ -220,6 +222,7 @@ export const TASK_EPOCH_RETENTION_MAX = 4;
 export interface ShadowSchedulerStartInput {
   definition: EffectiveShadowDefinition;
   taskEpoch: number;
+  sourceRun: number;
   reasons: ShadowTriggerReason[];
   generation: number;
   checkpoint: unknown;
@@ -232,6 +235,8 @@ export type ShadowSchedulerStartOutcome =
 
 export interface ShadowSchedulerDeps {
   now(): number;
+  /** Current parent-run sequence, frozen into each observed activation. */
+  currentRun?(): number;
   config(): ShadowMindsConfig;
   /** Re-read effective definitions before each trigger evaluation. */
   definitions(): readonly EffectiveShadowDefinition[];
@@ -369,6 +374,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
     const activation: ShadowPendingActivation = {
       shadowId: input.definition.id,
       taskEpoch,
+      sourceRun: deps.currentRun?.() ?? 0,
       shadowPriority: input.definition.priority,
       bestTrigger: ordered[0]!.trigger,
       reasons: ordered,
@@ -454,6 +460,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
       const started = deps.start({
         definition,
         taskEpoch: activation.taskEpoch,
+        sourceRun: activation.sourceRun,
         reasons: activation.reasons,
         generation: activation.generation,
         checkpoint: activation.checkpoint,
@@ -482,6 +489,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
       const retried = deps.start({
         definition,
         taskEpoch: activation.taskEpoch,
+        sourceRun: activation.sourceRun,
         reasons: activation.reasons,
         generation: activation.generation,
         checkpoint: activation.checkpoint,

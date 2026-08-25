@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  clipWithHeadTail,
   createConfirmedDeliveryCore,
   DEFAULT_MAX_BATCH_RESULTS,
   DEFAULT_MAX_PENDING_RESULTS,
@@ -26,8 +27,6 @@ export const SUBAGENT_NOTIFICATION_TYPE = "pi-square.subagent-notification";
 
 /** Model-facing budget for one result text. */
 export const MAX_RESULT_CHARS = 24_000;
-/** Share of the budget kept from the head; the remainder keeps the tail. */
-const HEAD_SHARE = 0.7;
 /** Results coalesced into a single delivery; the rest follow at the next one. */
 export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
 /** Hard bound on the pending set so an unattended session stays bounded. */
@@ -91,12 +90,7 @@ function clipTask(text: unknown): string {
  * budget.
  */
 export function budgetResultText(text: unknown, max: number = MAX_RESULT_CHARS): string {
-  const normalized = normalize(text);
-  if (normalized.length <= max) return normalized;
-  const head = Math.floor(max * HEAD_SHARE);
-  const tail = max - head;
-  const omitted = normalized.length - head - tail;
-  return `${normalized.slice(0, head)}\n... [omitted ${omitted} characters] ...\n${normalized.slice(normalized.length - tail)}`;
+  return clipWithHeadTail(text, max);
 }
 
 function agentLabel(result: SubagentDeliveryEntry): string {

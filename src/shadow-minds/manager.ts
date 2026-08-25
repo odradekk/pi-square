@@ -100,9 +100,18 @@ export interface ShadowSchedulerServices {
   resume(): void;
 }
 
+/** Confirmed delivery actions reachable from the manager (#159). */
+export interface ShadowDeliveryServices {
+  /** Promotes one inbox result to the parent agent through the confirmed machine. */
+  sendResultToAgent(id: string): { ok: boolean; message: string };
+  /** Sends one failed run's bounded summary; never automatic. */
+  sendErrorSummary(runId: string): { ok: boolean; message: string };
+}
+
 export interface ShadowManagerServices {
   runtime?: ShadowRuntimeServices;
   scheduler?: ShadowSchedulerServices;
+  delivery?: ShadowDeliveryServices;
   refresh(): ShadowManagerSnapshot;
   /** Maps an on-disk overlay path to its writable scope, when it is one. */
   scopeOf(filePath: string): WritableScope | undefined;
@@ -166,6 +175,13 @@ function resultSourceLabel(result: ShadowResultEntity): string {
   return result.source === "automatic"
     ? `automatic:${result.primaryTrigger ?? "trigger"}${result.taskIdentity ? ` task ${result.taskIdentity.epoch}` : ""}`
     : "manual";
+}
+
+/** Human delivery-state marker for inbox rows and result headers. */
+function deliveryLabel(delivery: ShadowResultEntity["delivery"]): string {
+  if (delivery === "delivered") return "delivered";
+  if (delivery === "pending") return "sending";
+  return "inbox";
 }
 
 function fit(line: string, width: number): string {
@@ -1159,6 +1175,19 @@ export class ShadowManager implements Component, Focusable {
       detail: "Open the inbox entry this run produced",
       onSelect: () => this.openResultActions(run.resultId!),
     });
+    if (run.phase === "error" && this.services?.delivery) {
+      items.push({
+        id: "send-failure-summary",
+        label: "Send failure summary",
+        detail: "Deliver a bounded summary of this infrastructure failure to the agent",
+        onSelect: () => {
+          const outcome = this.services!.delivery!.sendErrorSummary(runId);
+          if (outcome.ok) this.flash = { kind: "success", text: outcome.message };
+          else this.errorFlash(outcome.message);
+          this.tui.requestRender();
+        },
+      });
+    }
     this.openChoice({
       eyebrow: "RUNS / DETAIL",
       title: `${sanitizeDisplayLine(run.shadowName)} · ${run.phase}`,
@@ -1194,7 +1223,7 @@ export class ShadowManager implements Component, Focusable {
         sanitizeDisplayLine(result.shadowId),
         resultSourceLabel(result),
         result.attention,
-        result.delivery,
+        deliveryLabel(result.delivery),
       ].join(" · "),
       onSelect: () => this.openResultActions(result.id),
     }));
@@ -1232,11 +1261,26 @@ export class ShadowManager implements Component, Focusable {
       this.refreshRuntimeViews();
       this.tui.requestRender();
     };
+    const sendItem = this.services?.delivery && result.delivery === "notified"
+      ? [{
+          id: "send",
+          label: "Send to agent",
+          detail: "Deliver this result to the parent agent as advisory evidence",
+          onSelect: () => {
+            const outcome = this.services!.delivery!.sendResultToAgent(resultId);
+            if (outcome.ok) this.flash = { kind: "success", text: outcome.message };
+            else this.errorFlash(outcome.message);
+            this.refreshRuntimeViews();
+            this.tui.requestRender();
+          },
+        }]
+      : [];
     this.openChoice({
       eyebrow: "INBOX / RESULT",
       title: sanitizeDisplayLine(result.summary || result.shadowName),
-      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${resultSourceLabel(result)} · ${result.attention} · ${result.delivery}`,
+      description: `${sanitizeDisplayLine(result.shadowName)} (${sanitizeDisplayLine(result.shadowId)}) · ${resultSourceLabel(result)} · ${result.attention} · ${deliveryLabel(result.delivery)}`,
       items: [
+        ...sendItem,
         {
           id: "payload",
           label: "View payload",

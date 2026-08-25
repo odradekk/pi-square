@@ -225,6 +225,7 @@ function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { val
   if (record.taskIdentity !== undefined) {
     const identity = record.taskIdentity as Record<string, unknown>;
     if (!identity || typeof identity !== "object" || !Number.isInteger(identity.epoch) || (identity.epoch as number) < 0) return undefined;
+    if (identity.sourceRun !== undefined && (!Number.isInteger(identity.sourceRun) || (identity.sourceRun as number) < 0)) return undefined;
     if (identity.parentEntryId !== undefined && !isBoundedString(identity.parentEntryId, 64)) return undefined;
   }
   return {
@@ -654,6 +655,41 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       loaded.set(id, next);
       writeIndex();
       return true;
+    },
+    markDelivered(id: string): boolean {
+      const entry = loaded.get(id);
+      if (!entry || entry.entity.delivery !== "pending") return false;
+      const next = clone(entry);
+      next.entity.delivery = "delivered";
+      writeEntity(next);
+      loaded.set(id, next);
+      writeIndex();
+      return true;
+    },
+    degradeToNotify(id: string): boolean {
+      const entry = loaded.get(id);
+      if (!entry || entry.entity.delivery === "delivered") return false;
+      const next = clone(entry);
+      next.entity.configuredDelivery = "notify";
+      if (next.entity.delivery === "pending") next.entity.delivery = "notified";
+      writeEntity(next);
+      loaded.set(id, next);
+      writeIndex();
+      return true;
+    },
+    recoverPendingDelivery(): number {
+      let recovered = 0;
+      for (const [id, entry] of [...loaded.entries()]) {
+        if (entry.entity.delivery !== "pending") continue;
+        const next = clone(entry);
+        next.entity.delivery = "notified";
+        next.entity.configuredDelivery = "notify";
+        writeEntity(next);
+        loaded.set(id, next);
+        recovered += 1;
+      }
+      if (recovered > 0) writeIndex();
+      return recovered;
     },
     clear(): void {
       // The partition is the authoritative record and deliberately survives

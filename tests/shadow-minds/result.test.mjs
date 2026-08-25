@@ -202,4 +202,41 @@ async function execute(tool, payload) {
   assert.equal(inbox.list().length, 100, "the count hard cap cannot be raised by callers");
 }
 
+// ── Delivery-state transitions (#159) ───────────────────────────────
+
+{
+  const inbox = createShadowInbox();
+  const entity = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "x" }, createdAt: 1, configuredDelivery: "steer" });
+  assert.equal(inbox.markDelivered?.(entity.id), false, "a notified result cannot be confirmed delivered");
+  assert.equal(inbox.send(entity.id), true);
+  assert.equal(inbox.markDelivered?.(entity.id), true, "a pending result confirms delivered");
+  assert.equal(inbox.markDelivered?.(entity.id), false, "confirmation is idempotent-refused");
+  assert.equal(inbox.list()[0].delivery, "delivered");
+
+  const degraded = inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: "y" }, createdAt: 2, configuredDelivery: "steer" });
+  assert.equal(inbox.send(degraded.id), true);
+  assert.equal(inbox.degradeToNotify?.(degraded.id), true, "a never-sent pending result returns inbox-only");
+  const view = inbox.list()[0];
+  assert.equal(view.delivery, "notified", "a degraded result is inbox-only again");
+  assert.equal(view.configuredDelivery, "notify", "a degraded result adopts notify policy");
+  assert.equal(inbox.degradeToNotify?.(entity.id), false, "a delivered result never degrades");
+
+  inbox.clear();
+  for (let n = 0; n < 3; n += 1) {
+    inbox.add({ shadowId: "s", shadowName: "S", payload: { summary: `r${n}` }, createdAt: n, configuredDelivery: "wake" });
+  }
+  const ids = inbox.list().map((entry) => entry.id);
+  assert.equal(inbox.send(ids[0]), true);
+  const delivered = inbox.list()[1];
+  assert.equal(inbox.send(delivered.id), true);
+  assert.equal(inbox.markDelivered?.(delivered.id), true);
+  const recovered = inbox.recoverPendingDelivery?.() ?? -1;
+  assert.equal(recovered, 1, "only the pending result recovers");
+  const pendingView = inbox.list().find((entry) => entry.id === ids[0]);
+  assert.equal(pendingView.delivery, "notified", "a reopened pending result returns inbox-only");
+  assert.equal(pendingView.configuredDelivery, "notify", "a reopened result adopts notify policy");
+  const deliveredView = inbox.list().find((entry) => entry.id === delivered.id);
+  assert.equal(deliveredView.delivery, "delivered", "a delivered result stays delivered across recovery");
+}
+
 console.log("shadow-minds result tests: OK");

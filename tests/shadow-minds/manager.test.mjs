@@ -961,4 +961,81 @@ function makeRuntimeService(initial) {
   assert.ok(lines.includes("Reason: write a.ts"), "facts carry the merged trigger reason");
 }
 
+// ── Confirmed-delivery actions (#159) ───────────────────────────────
+
+{
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const deliveryCalls = { results: [], failures: [] };
+  const deliveryService = {
+    sendResultToAgent(id) {
+      deliveryCalls.results.push(id);
+      return { ok: true, message: "Sent to the agent as advisory evidence." };
+    },
+    sendErrorSummary(runId) {
+      deliveryCalls.failures.push(runId);
+      return { ok: true, message: "Sent the failure summary to the agent." };
+    },
+  };
+  const notifiedResult = {
+    id: "shr-9", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
+    trigger: "manual", payload: { summary: "Advisory finding." }, summary: "Advisory finding.",
+    delivery: "notified", attention: "unread", createdAt: 2_000, configuredDelivery: "notify",
+  };
+  const deliveredResult = { ...notifiedResult, id: "shr-10", delivery: "delivered" };
+  const failedRun = {
+    id: "run-7", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
+    source: "automatic", phase: "error", startedAt: 1_000, endedAt: 1_500,
+    message: "Model authentication failed.",
+  };
+  const service = makeRuntimeService({ runs: [failedRun], results: [notifiedResult, deliveredResult] });
+  const manager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {},
+    {
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      runtime: service.runtime,
+      delivery: deliveryService,
+    },
+  );
+
+  // Inbox rows show the delivery marker: inbox-only versus delivered.
+  manager.handleInput("r");
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  let lines = render(manager).join("\n");
+  assert.ok(lines.includes("unread · inbox"), "the inbox row shows the inbox delivery marker");
+  assert.ok(lines.includes("unread · delivered"), "the delivered marker renders");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Send to agent"), "a notified result offers Send to agent");
+  manager.handleInput("\r");
+  assert.deepEqual(deliveryCalls.results, ["shr-9"], "Send to agent reaches the delivery service");
+  assert.ok(render(manager).join("\n").includes("Sent to the agent"), "the send confirms visibly");
+  manager.handleInput("escape");
+  manager.handleInput("escape");
+  manager.handleInput("escape");
+
+  // A delivered result offers no second send.
+  manager.handleInput("r");
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  manager.handleInput("down");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(!lines.includes("Send to agent"), "a delivered result cannot resend");
+  assert.ok(lines.includes("View payload"), "the delivered result still opens its payload");
+  manager.handleInput("escape");
+  manager.handleInput("escape");
+  manager.handleInput("escape");
+
+  // A failed run offers the bounded failure summary, an explicit send only.
+  manager.handleInput("r");
+  manager.handleInput("\r");
+  manager.handleInput("\r");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Send failure summary"), "a failed run offers the summary send");
+  manager.handleInput("\r");
+  assert.deepEqual(deliveryCalls.failures, ["run-7"], "the failure summary reaches the delivery service");
+}
+
 console.log("shadow-minds manager tests: OK");
