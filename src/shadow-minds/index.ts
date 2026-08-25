@@ -557,8 +557,8 @@ export default function registerShadowMinds(
       forceNotifyOldResults(beforeEpoch) {
         let downgraded = 0;
         for (const result of state.runtime.snapshot().results) {
-          // Results without a recorded task identity are pre-scheduling-era
-          // or manual; treat them as old work.
+          // Results without a recorded task identity predate scheduling;
+          // treat them as old work.
           if ((result.taskIdentity?.epoch ?? 0) >= beforeEpoch) continue;
           if (currentInbox?.forceNotify?.(result.id)) downgraded += 1;
         }
@@ -712,10 +712,12 @@ export default function registerShadowMinds(
   pi.on("turn_end", (_event, sessionCtx) => {
     if (!sessionCtx) return;
     let checkpoint: ReturnType<typeof captureTrajectory> | undefined;
-    try {
-      checkpoint = captureTrajectory(sessionCtx, deliveredEvidence(state.runtime));
-    } catch {
-      checkpoint = undefined;
+    if (state.scheduler.shouldCapture()) {
+      try {
+        checkpoint = captureTrajectory(sessionCtx, deliveredEvidence(state.runtime));
+      } catch {
+        checkpoint = undefined;
+      }
     }
     state.scheduler.handleTurnEnd(checkpoint);
     refreshStatus();
@@ -725,7 +727,7 @@ export default function registerShadowMinds(
     const interrupted = Array.isArray(event?.messages)
       && event.messages.some((message) => (message as { stopReason?: unknown } | undefined)?.stopReason === "aborted");
     let checkpoint: ReturnType<typeof captureTrajectory> | undefined;
-    if (sessionCtx) {
+    if (sessionCtx && state.scheduler.shouldCapture()) {
       try {
         checkpoint = captureTrajectory(sessionCtx, deliveredEvidence(state.runtime));
       } catch {

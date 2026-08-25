@@ -13,6 +13,7 @@
 
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import type { EffectiveShadowDefinition } from "./definitions";
+import { formatTriggerReason } from "./scheduler";
 import type { ShadowOutputSchema, ShadowTrigger } from "./parser";
 
 export const SHADOW_GOVERNANCE_VERSION = 2 as const;
@@ -179,16 +180,7 @@ export function buildShadowUserPrompt(input: ShadowUserPromptInput): string {
   if (input.triggerTask) {
     const task = input.triggerTask;
     const reasonLines = task.reasons.length > 0
-      ? task.reasons.map((reason) => {
-        const detail = sanitizeDisplayLine(
-          reason.detail !== undefined
-            ? reason.detail
-            : reason.trigger === "tool_turn" && reason.generation !== undefined
-              ? `generation ${reason.generation}`
-              : reason.trigger,
-        );
-        return `- ${reason.trigger}: ${detail}`;
-      })
+      ? task.reasons.map((reason) => `- ${sanitizeDisplayLine(formatTriggerReason(reason))}`)
       : [`- ${task.trigger}`];
     sections.push(
       [

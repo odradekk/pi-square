@@ -60,7 +60,7 @@ const {
   assert.equal(ordered[0].trigger, "failure", "failure outranks mutation");
   const long = mergeTriggerReason([], { trigger: "mutation", at: 1, detail: "x".repeat(500) });
   assert.ok(long[0].detail.length <= 160, "details are bounded");
-  assert.equal(formatTriggerReason({ trigger: "tool_turn", firstObservedAt: 1, lastObservedAt: 2, generation: 7 }), "tool_turn generation 7");
+  assert.equal(formatTriggerReason({ trigger: "tool_turn", firstObservedAt: 1, lastObservedAt: 2, generation: 7 }), "tool_turn: generation 7");
 }
 
 {

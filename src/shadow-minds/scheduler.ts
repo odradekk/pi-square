@@ -122,7 +122,7 @@ export interface ShadowTriggerReason {
   detail?: string;
 }
 
-export const REASON_DETAIL_MAX_CHARS = 160;
+const REASON_DETAIL_MAX_CHARS = 160;
 
 /** Merges one observation into a reason list, keeping first/last timestamps. */
 export function mergeTriggerReason(
@@ -158,8 +158,9 @@ function sliceDetail(detail: string): string {
 /** Bounded canonical summary of one reason, used in prompts and status text. */
 export function formatTriggerReason(reason: ShadowTriggerReason): string {
   const parts: string[] = [reason.trigger];
-  if (reason.generation !== undefined && reason.trigger === "tool_turn") parts.push(`generation ${reason.generation}`);
-  return sliceDetail(parts.join(" "));
+  if (reason.detail) parts.push(reason.detail);
+  else if (reason.generation !== undefined && reason.trigger === "tool_turn") parts.push(`generation ${reason.generation}`);
+  return sliceDetail(parts.join(": "));
 }
 
 /**
@@ -273,6 +274,12 @@ export interface ShadowScheduler {
   handleAgentEnd(input: { interrupted: boolean; checkpoint: unknown }): void;
   /** A run settled: a concurrency slot may have freed. */
   handleRunSettled(): void;
+  /**
+   * Whether the next turn/agent boundary may consume a trajectory
+   * checkpoint: capture is skipped otherwise so a disabled or extension-
+   * continuation turn never pays the rendering cost.
+   */
+  shouldCapture(): boolean;
   pause(): void;
   resume(): void;
   snapshot(): ShadowSchedulerSnapshot;
@@ -565,6 +572,9 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
     },
     handleRunSettled() {
       dispatch();
+    },
+    shouldCapture() {
+      return realUserRunActive && !paused;
     },
     pause() {
       if (paused) return;
