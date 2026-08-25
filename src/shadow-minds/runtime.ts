@@ -627,6 +627,12 @@ export function createShadowRuntime(input: {
             usage: outcome.usage,
             ...(definitionHash ? { definitionHash } : {}),
             schemaHash,
+            ...(request.triggerReasons && request.triggerReasons.length > 0
+              ? { triggers: [...new Set(request.triggerReasons.map((reason) => reason.trigger))] }
+              : {}),
+            ...(request.taskEpoch !== undefined
+              ? { taskIdentity: { epoch: request.taskEpoch } }
+              : {}),
             validationSchema: structuredClone(definition.outputSchema),
             // A run that outlived its task delivers inbox-only: its result
             // must never enter the newer task automatically.

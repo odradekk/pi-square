@@ -364,8 +364,22 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
   const rankedPending = (): ShadowPendingActivation[] =>
     [...pending.values()].sort(compareActivations);
 
+  let dispatching = false;
+
   /** Starts pending activations in deterministic rank order. */
   const dispatch = (): void => {
+    // Starting a run notifies runtime subscribers synchronously; a re-entered
+    // dispatch would see the activation it is starting as still pending.
+    if (dispatching) return;
+    dispatching = true;
+    try {
+      dispatchOnce();
+    } finally {
+      dispatching = false;
+    }
+  };
+
+  const dispatchOnce = (): void => {
     const config = deps.config();
     if (!config.enabled || paused) return;
     for (const activation of rankedPending()) {
