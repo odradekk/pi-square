@@ -864,4 +864,97 @@ function makeRuntimeService(initial) {
   assert.ok(lines.includes("bytes retention"));
 }
 
+{
+  // Scheduling controls: pause/resume from the runs list, queued
+  // activations visible, and superseded automatic runs labeled.
+  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const schedulerCalls = { pause: 0, resume: 0 };
+  let paused = false;
+  let pendingData = [];
+  const service = makeRuntimeService({
+    runs: [
+      {
+        id: "run-auto", shadowId: "architecture-lens", shadowName: "Architecture lens",
+        source: "automatic", trigger: "mutation", taskEpoch: 3,
+        triggerReasons: [{ trigger: "mutation", detail: "write a.ts", firstObservedAt: 1, lastObservedAt: 2 }],
+        phase: "superseded", startedAt: 1_000, endedAt: 1_400,
+      },
+    ],
+    results: [],
+  });
+  const manager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {},
+    {
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      runtime: service.runtime,
+      scheduler: {
+        snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
+        pause() { schedulerCalls.pause += 1; paused = true; },
+        resume() { schedulerCalls.resume += 1; paused = false; },
+      },
+    },
+  );
+  manager.handleInput("r");
+  manager.handleInput("\r");
+  let lines = render(manager).join("\n");
+  assert.ok(lines.includes("Pause automatic Shadows"), "the runs list offers pause");
+  assert.ok(lines.includes("superseded"), "the superseded outcome is visible");
+  assert.ok(lines.includes("automatic · mutation"), "automatic runs carry source and trigger in the list detail");
+  manager.handleInput("\r");
+  assert.equal(schedulerCalls.pause, 1, "pause reaches the scheduler");
+  lines = render(manager).join("\n");
+  assert.ok(lines.includes("Resume automatic Shadows"), "the control flips to resume");
+
+  // Queued activations render with their trigger and reasons.
+  pendingData = [{
+    shadowId: "project-grounding",
+    taskEpoch: 3,
+    shadowPriority: 0,
+    bestTrigger: "failure",
+    reasons: [{ trigger: "failure", detail: "test command failed", firstObservedAt: 1, lastObservedAt: 2 }],
+    generation: 5,
+    checkpoint: undefined,
+    enqueuedAt: 1_200,
+    lastObservedAt: 1_200,
+  }];
+  const queuedManager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {},
+    {
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      runtime: service.runtime,
+      scheduler: {
+        snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
+        pause() { paused = true; },
+        resume() { paused = false; },
+      },
+    },
+  );
+  queuedManager.handleInput("r");
+  queuedManager.handleInput("\r");
+  lines = render(queuedManager).join("\n");
+  assert.ok(lines.includes("Queued: project-grounding"), "queued activations are visible");
+  assert.ok(lines.includes("failure"), "the pending trigger renders");
+
+  // Facts view: the automatic source, task, and merged reasons render fully.
+  const factsManager = new ShadowManager(
+    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    makeTui(), makeTheme(), makeKeybindings(), () => {},
+    {
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      runtime: service.runtime,
+    },
+  );
+  factsManager.handleInput("r");
+  factsManager.handleInput("\r");
+  factsManager.handleInput("down");
+  factsManager.handleInput("\r");
+  factsManager.handleInput("down");
+  factsManager.handleInput("\r");
+  lines = render(factsManager).join("\n");
+  assert.ok(lines.includes("Source: automatic · mutation · task 3"), "facts carry the automatic source and task");
+  assert.ok(lines.includes("Reason: write a.ts"), "facts carry the merged trigger reason");
+}
+
 console.log("shadow-minds manager tests: OK");

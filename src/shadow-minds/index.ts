@@ -314,6 +314,7 @@ function makeServices(
   ctx: ExtensionCommandContext,
   confirmations: ConfirmationCoordinator,
   runtime: ShadowRuntime = state.runtime,
+  hooks?: { onSchedulerChange?: () => void },
 ): ShadowManagerServices {
   return {
     runtime: {
@@ -373,6 +374,17 @@ function makeServices(
       dismissResult: (id) => runtime.dismissResult(id),
       deleteResult: (id) => runtime.deleteResult(id),
       subscribe: (listener) => runtime.subscribe(listener),
+    },
+    scheduler: {
+      snapshot: () => state.scheduler.snapshot(),
+      pause: () => {
+        state.scheduler.pause();
+        hooks?.onSchedulerChange?.();
+      },
+      resume: () => {
+        state.scheduler.resume();
+        hooks?.onSchedulerChange?.();
+      },
     },
     refresh(): ShadowManagerSnapshot {
       state.refresh(ctx.cwd, ctx.isProjectTrusted());
@@ -646,7 +658,9 @@ export default function registerShadowMinds(
         return;
       }
       if (!ctx.hasUI) return;
-      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, confirmations));
+      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, confirmations, undefined, {
+        onSchedulerChange: refreshStatus,
+      }));
     },
   });
 
