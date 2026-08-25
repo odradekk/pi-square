@@ -274,7 +274,7 @@ export function createShadowDeliveryController(options: {
           if (entry.value.kind === "result") options.getRuntime()?.sendResultForDelivery(entry.id);
         }
         sequence += 1;
-        const options_for_send = timing.parentRunning
+        const sendOptions = timing.parentRunning
           ? { triggerTurn: true as const, deliverAs: "steer" as const }
           : { triggerTurn: true as const };
         options.pi.sendMessage(
@@ -293,7 +293,7 @@ export function createShadowDeliveryController(options: {
               })),
             },
           },
-          options_for_send,
+          sendOptions,
         );
       }
       if (degraded.length > 0) {
