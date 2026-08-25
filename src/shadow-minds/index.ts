@@ -59,16 +59,27 @@ import {
   type ShadowProjectRule,
 } from "./prompt";
 import { matchesParentModelFilter, resolveShadowModel, resolveShadowThinkingLevel } from "./resolve";
+import {
+  createPersistentShadowInbox,
+  reconcileShadowPartitions,
+  sweepShadowDebugRetention,
+} from "./inbox-store";
 import { createShadowRuntime, type ShadowRuntime, type ShadowRuntimeDeps } from "./runtime";
 import { serializeShadowDefinition } from "./serialize";
 import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
+import type { ShadowInbox } from "./result";
+
+/** Parent-session custom entry type for one bounded result reference. */
+export const SHADOW_RESULT_ENTRY_TYPE = "pi-square.shadow-result";
 
 export interface ShadowMindsState {
   registry: ShadowDefinitionRegistry;
   cwd: string;
   projectTrusted: boolean;
   runtime: ShadowRuntime;
+  /** Present when the parent session persists; Shadow results survive reopening. */
+  partition?: { sessionDir: string; sessionId: string };
   /** The frozen task snapshot, captured from one command context. */
   captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot;
   refresh(cwd: string, projectTrusted: boolean): void;
@@ -244,6 +255,7 @@ function makeServices(
             modelResolution,
             ...(thinkingResolution.level ? { thinkingLevel: thinkingResolution.level } : {}),
             envelope: resolution.envelope,
+            ...(definition.debug && state.partition ? { debug: state.partition } : {}),
           });
           if (!outcome.started) {
             ctx.ui.notify(`shadow-minds: ${outcome.reason}`, "warning");
@@ -394,14 +406,20 @@ export default function registerShadowMinds(
   runtimeDeps?: ShadowRuntimeDeps,
 ): ShadowMindsState {
   const effectiveConfig = (): ShadowMindsConfig => config?.().shadowMinds ?? DEFAULT_CONFIG.shadowMinds;
+  let currentInbox: ShadowInbox | undefined;
+  const makeRuntime = (inbox?: ShadowInbox): ShadowRuntime => {
+    currentInbox = inbox;
+    return createShadowRuntime({
+      config: effectiveConfig,
+      ...(runtimeDeps ? { deps: runtimeDeps } : {}),
+      ...(inbox ? { inbox } : {}),
+    });
+  };
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
     cwd: process.cwd(),
     projectTrusted: false,
-    runtime: createShadowRuntime({
-      config: effectiveConfig,
-      ...(runtimeDeps ? { deps: runtimeDeps } : {}),
-    }),
+    runtime: makeRuntime(),
     captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot {
       // `getSystemPromptOptions` exists only on command contexts in Pi
       // 0.84.2 — the session-start event context never carries it — so the
@@ -470,6 +488,51 @@ export default function registerShadowMinds(
     ctx = sessionCtx;
     state.runtime.reset("Parent Pi session changed");
     seenPhases.clear();
+    // Each parent session owns its Shadow state: persisted sessions get the
+    // authoritative partition inbox (results survive reopening) while
+    // non-persisted sessions fall back to memory with a visible diagnostic.
+    const sessionDir = sessionCtx.sessionManager?.getSessionDir?.() ?? "";
+    const sessionFile = sessionCtx.sessionManager?.getSessionFile?.();
+    let inbox: ShadowInbox | undefined;
+    if (!effectiveConfig().enabled) {
+      // Disabled: no partition is opened, scanned, or created, and the
+      // fallback notice stays silent.
+      state.partition = undefined;
+    } else if (sessionDir && typeof sessionFile === "string" && sessionFile.length > 0) {
+      const sessionId = String(sessionCtx.sessionManager?.getSessionId?.() ?? "session");
+      state.partition = { sessionDir, sessionId };
+      const reconciled = reconcileShadowPartitions(sessionDir, sessionId);
+      if (reconciled.removed.length > 0) {
+        sessionCtx.hasUI && sessionCtx.ui.notify(
+          `shadow-minds: removed ${reconciled.removed.length} orphaned Shadow partition${reconciled.removed.length === 1 ? "" : "s"}`,
+          "info",
+        );
+      }
+      try {
+        sweepShadowDebugRetention(sessionDir, sessionId);
+        const persistentInbox = createPersistentShadowInbox({ sessionDir, sessionId });
+        inbox = persistentInbox;
+        for (const diagnostic of persistentInbox.diagnostics().slice(0, 3)) {
+          sessionCtx.hasUI && sessionCtx.ui.notify(`shadow-minds: ${notifyText(diagnostic)}`, "warning");
+        }
+      } catch (error) {
+        state.partition = undefined;
+        sessionCtx.hasUI && sessionCtx.ui.notify(
+          `shadow-minds: the persistent inbox could not open (${error instanceof Error ? error.message : String(error)}); results stay in memory`,
+          "warning",
+        );
+      }
+    } else {
+      state.partition = undefined;
+      if (sessionCtx.hasUI) {
+        sessionCtx.ui.notify(
+          "shadow-minds: this session is not persisted; Shadow results stay in memory",
+          "info",
+        );
+      }
+    }
+    state.runtime = makeRuntime(inbox);
+    bindRuntimeNotifications();
     state.refresh(sessionCtx.cwd, sessionCtx.isProjectTrusted());
     if (sessionCtx.hasUI && state.registry.diagnostics.length > 0) {
       const suffix = state.registry.diagnostics.length > 1
@@ -486,27 +549,59 @@ export default function registerShadowMinds(
   });
 
   // Terminal manual-run outcomes surface as bounded session notifications;
-  // operational failures never become cognitive payloads.
+  // operational failures never become cognitive payloads. New results also
+  // land one bounded reference entry in the parent session transcript so
+  // the inbox stays the single authoritative payload store.
   // Every non-running phase is terminal, so a phase change away from running
   // notifies once; entries for runs that left the history are pruned.
-  state.runtime.subscribe(() => {
-    const sessionCtx = ctx;
-    if (!sessionCtx?.hasUI) return;
-    const runs = state.runtime.snapshot().runs;
-    const liveIds = new Set(runs.map((run) => run.id));
-    for (const stale of seenPhases.keys()) {
-      if (!liveIds.has(stale)) seenPhases.delete(stale);
-    }
-    for (const run of runs) {
-      const previous = seenPhases.get(run.id);
-      seenPhases.set(run.id, run.phase);
-      if (previous === run.phase || run.phase === "running") continue;
-      const outcomeMessage = run.phase === "submitted"
-        ? `shadow-minds: ${run.shadowId} finished — result in the /shadow inbox`
-        : `shadow-minds: ${run.shadowId} run ended (${run.phase}${run.message ? `: ${run.message}` : ""})`;
-      sessionCtx.ui.notify(notifyText(outcomeMessage), run.phase === "error" ? "warning" : "info");
-    }
-  });
+  let unsubscribeRuntime: (() => void) | undefined;
+  const bindRuntimeNotifications = (): void => {
+    unsubscribeRuntime?.();
+    // Results carry a persisted `referenced` flag, so a reopened session
+    // does not re-append transcript references it already recorded; the
+    // in-memory set only guards duplicate notifications within this
+    // runtime instance. A crash between the append and the persisted mark
+    // can re-append one bounded entry at the next open.
+    const seenResults = new Set<string>();
+    unsubscribeRuntime = state.runtime.subscribe(() => {
+      const sessionCtx = ctx;
+      const results = state.runtime.snapshot().results;
+      for (const result of results) {
+        if (seenResults.has(result.id) || result.referenced) continue;
+        if (!effectiveConfig().enabled) continue;
+        try {
+          pi.appendEntry(SHADOW_RESULT_ENTRY_TYPE, {
+            version: 1 as const,
+            resultId: result.id,
+            shadowId: result.shadowId.slice(0, 64),
+            summary: result.summary.slice(0, 160),
+            createdAt: result.createdAt,
+          });
+          seenResults.add(result.id);
+          currentInbox?.markReferenced?.(result.id);
+        } catch {
+          // A session that cannot record the reference keeps the result in
+          // the inbox; the entry is observability, not authority.
+        }
+      }
+      if (!sessionCtx?.hasUI) return;
+      const runs = state.runtime.snapshot().runs;
+      const liveIds = new Set(runs.map((run) => run.id));
+      for (const stale of seenPhases.keys()) {
+        if (!liveIds.has(stale)) seenPhases.delete(stale);
+      }
+      for (const run of runs) {
+        const previous = seenPhases.get(run.id);
+        seenPhases.set(run.id, run.phase);
+        if (previous === run.phase || run.phase === "running") continue;
+        const outcomeMessage = run.phase === "submitted"
+          ? `shadow-minds: ${run.shadowId} finished — result in the /shadow inbox`
+          : `shadow-minds: ${run.shadowId} run ended (${run.phase}${run.message ? `: ${run.message}` : ""})`;
+        sessionCtx.ui.notify(notifyText(outcomeMessage), run.phase === "error" ? "warning" : "info");
+      }
+    });
+  };
+  bindRuntimeNotifications();
 
   return state;
 }

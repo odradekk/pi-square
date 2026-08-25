@@ -36,11 +36,13 @@ import type { EffectiveShadowDefinition } from "./definitions";
 import { buildShadowUserPrompt, canonicalSchemaJson, type ShadowTrajectory } from "./prompt";
 import type { ShadowModelResolution } from "./resolve";
 import { SUBMIT_SHADOW_RESULT_DESCRIPTION, SUBMIT_SHADOW_RESULT_PARAMETERS } from "./result";
+import { finalizeShadowDebugRun, openShadowDebugSessionManager, shadowDebugRunDir } from "./inbox-store";
 import type { ShadowToolEnvelope } from "./tools";
 import {
   createShadowInbox,
   createSubmitShadowResultTool,
   SUBMIT_SHADOW_RESULT_TOOL,
+  type ShadowInbox,
   type ShadowResultEntity,
 } from "./result";
 
@@ -56,6 +58,20 @@ const REQUEST_METRICS_MAX = 64;
 
 function cohortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, COHORT_HASH_CHARS);
+}
+
+/** Bounded definition-source hash recorded with every result entity. */
+function definitionHashOf(definition: EffectiveShadowDefinition): string | undefined {
+  const layers = definition.layers;
+  if (!Array.isArray(layers) || layers.length === 0) return undefined;
+  // Layer content hashes make the record change when a definition file is
+  // edited, not only when its path or scope assignment changes.
+  const sources = layers.map((layer) => ({
+    scope: layer.scope,
+    ...(typeof layer.filePath === "string" ? { filePath: layer.filePath } : {}),
+    ...(typeof layer.contentHash === "string" ? { contentHash: layer.contentHash } : {}),
+  }));
+  return cohortHash(canonicalSchemaJson(sources));
 }
 
 export type ShadowRunPhase =
@@ -120,11 +136,18 @@ export interface ShadowManualRunRequest {
    * no-tool trial; `submit_shadow_result` is always appended last.
    */
   envelope?: ShadowToolEnvelope;
+  /**
+   * Debug partition for a debug-enabled definition: the child session
+   * persists native JSONL there and the settled run is sanitized, indexed,
+   * and retention-swept after the run.
+   */
+  debug?: { sessionDir: string; sessionId: string };
 }
 
 export interface ShadowRuntimeSnapshot {
   runs: ShadowRunView[];
   results: ShadowResultEntity[];
+  evictionEvents: Array<{ kind: "evicted"; id: string; at: number; reason: "count" | "bytes" }>;
 }
 
 /** Child-session creation input for the runtime seam; the system rides on the loader. */
@@ -135,6 +158,8 @@ export interface ShadowChildSessionInput {
   thinkingLevel?: string;
   tools: string[];
   customTools: ToolDefinition<any, any, any>[];
+  /** Present for debug runs: the child persists native JSONL here. */
+  debugDir?: string;
 }
 
 export interface ShadowRuntimeDeps {
@@ -143,6 +168,16 @@ export interface ShadowRuntimeDeps {
   makeResultId?(): string;
   createSession(input: ShadowChildSessionInput): Promise<OneTimeChildSessionHandle>;
   runSession(input: OneTimeChildSessionRunInput): Promise<OneTimeChildSessionOutcome>;
+  /** Sanitizes, indexes, and retention-sweeps one settled debug run. */
+  finalizeDebug?(input: {
+    sessionDir: string;
+    sessionId: string;
+    runId: string;
+    shadowId: string;
+    startedAt: number;
+    endedAt: number;
+    phase: string;
+  }): void;
 }
 
 /**
@@ -208,9 +243,19 @@ export function createShadowRuntimeDeps(): ShadowRuntimeDeps {
           systemPrompt: input.system,
         }),
         settingsManager: shadowChildSettings(),
+        ...(input.debugDir ? { sessionManager: openShadowDebugSessionManager(input.debugDir, input.cwd) } : {}),
       });
     },
     runSession: runOneTimeChildSession,
+    finalizeDebug(input) {
+      finalizeShadowDebugRun(input.sessionDir, input.sessionId, {
+        runId: input.runId,
+        shadowId: input.shadowId,
+        startedAt: input.startedAt,
+        endedAt: input.endedAt,
+        phase: input.phase,
+      });
+    },
   };
 }
 
@@ -239,12 +284,13 @@ function boundedMessage(value: unknown): string {
 export function createShadowRuntime(input: {
   config: () => ShadowMindsConfig;
   deps?: ShadowRuntimeDeps;
+  /** Session inbox; defaults to the in-memory fallback. */
+  inbox?: ShadowInbox;
 }) {
   const deps = input.deps ?? createShadowRuntimeDeps();
   let runSequence = 0;
-  let resultSequence = 0;
-  const inbox = createShadowInbox({
-    makeId: deps.makeResultId ?? (() => `shr-${(++resultSequence).toString(36)}`),
+  const inbox = input.inbox ?? createShadowInbox({
+    makeId: deps.makeResultId,
   });
   let sessionEpoch = 0;
   const active: ActiveRun[] = [];
@@ -290,6 +336,8 @@ export function createShadowRuntime(input: {
     const { definition: requestDefinition } = request;
     const definition = structuredClone(requestDefinition);
     const envelope = request.envelope;
+    const definitionHash = definitionHashOf(definition);
+    const schemaHash = cohortHash(canonicalSchemaJson(definition.outputSchema));
     const startedAt = deps.now();
     const toolNames = [...(envelope?.toolNames ?? [])];
     const toolSchemaHash = envelope?.schemaHash
@@ -423,6 +471,7 @@ export function createShadowRuntime(input: {
           ...(request.thinkingLevel ? { thinkingLevel: request.thinkingLevel } : {}),
           tools: [...toolNames, SUBMIT_SHADOW_RESULT_TOOL],
           customTools: [...(envelope?.customTools ?? []), tool],
+          ...(request.debug ? { debugDir: shadowDebugRunDir(request.debug.sessionDir, request.debug.sessionId, view.id) } : {}),
         });
         let creationTimer: NodeJS.Timeout | undefined;
         let onCreationAbort: (() => void) | undefined;
@@ -488,16 +537,29 @@ export function createShadowRuntime(input: {
 
       let resultId: string | undefined;
       if (phase === "submitted" && submitted && runEpoch === sessionEpoch && !run.detached) {
-        const entity = inbox.add({
-          shadowId: definition.id,
-          shadowName: definition.name,
-          payload: submitted.payload,
-          ...(note ? { note } : {}),
-          createdAt: submitted.at,
-          ...(outcome.model ? { model: outcome.model } : {}),
-          usage: outcome.usage,
-        });
-        resultId = entity.id;
+        try {
+          const entity = inbox.add({
+            shadowId: definition.id,
+            shadowName: definition.name,
+            payload: submitted.payload,
+            ...(note ? { note } : {}),
+            createdAt: submitted.at,
+            ...(outcome.model ? { model: outcome.model } : {}),
+            usage: outcome.usage,
+            ...(definitionHash ? { definitionHash } : {}),
+            schemaHash,
+            validationSchema: structuredClone(definition.outputSchema),
+            configuredDelivery: definition.delivery,
+            lifecycle: "submitted",
+            toolCalls,
+            trajectoryTruncated: request.trajectory.truncation !== "none",
+            ...(requests.length > 0 ? { requests: structuredClone(requests) } : {}),
+          });
+          resultId = entity.id;
+        } catch (error) {
+          phase = "error";
+          message = boundedMessage(error);
+        }
       }
 
       view.phase = phase;
@@ -513,6 +575,23 @@ export function createShadowRuntime(input: {
       if (!run.detached) {
         history.unshift({ ...view });
         if (history.length > RUN_HISTORY_MAX) history.length = RUN_HISTORY_MAX;
+      }
+      if (request.debug) {
+        // Detached runs finalize too: an unsanitized debug log must never
+        // linger outside the retention sweep, whatever ended the run.
+        try {
+          deps.finalizeDebug?.({
+            sessionDir: request.debug.sessionDir,
+            sessionId: request.debug.sessionId,
+            runId: view.id,
+            shadowId: definition.id,
+            startedAt,
+            endedAt: view.endedAt ?? startedAt,
+            phase: view.phase,
+          });
+        } catch {
+          // Debug finalization is observability; failures never affect runs.
+        }
       }
       notify();
       return { ...view };
@@ -532,6 +611,7 @@ export function createShadowRuntime(input: {
     return {
       runs: [...active.map((run) => structuredClone(run.view)), ...history.map((run) => structuredClone(run))],
       results: inbox.list(),
+      evictionEvents: inbox.events?.().map((event) => structuredClone(event)) ?? [],
     };
   }
 
@@ -562,14 +642,15 @@ export function createShadowRuntime(input: {
     reset(_reason: string) {
       sessionEpoch += 1;
       runSequence = 0;
-      resultSequence = 0;
       const staleRuns = active.splice(0);
       for (const run of staleRuns) {
         run.detached = true;
         run.cancel(true);
       }
       history.length = 0;
-      inbox.clear();
+      // A persistent partition is the authoritative record and survives
+      // session-scoped resets; only the in-memory inbox is wiped.
+      if (!inbox.persistent) inbox.clear();
       notify();
     },
   };

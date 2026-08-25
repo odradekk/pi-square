@@ -101,6 +101,26 @@ function baseRequest(overrides = {}) {
   };
 }
 
+{
+  // A persistent inbox write failure becomes an observable bounded run error;
+  // it never rejects done or leaves the active slot occupied.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "accepted before persistence" }) });
+  const failingInbox = {
+    persistent: true,
+    add() { throw new Error("disk full Authorization: Bearer SECRET"); },
+    list: () => [], send: () => false, markRead: () => false, dismiss: () => false, delete: () => false, clear() {},
+  };
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps, inbox: failingInbox });
+  const terminal = await runtime.startManualRun(baseRequest()).done;
+  assert.equal(terminal.phase, "error");
+  assert.match(terminal.message, /disk full/);
+  assert.doesNotMatch(terminal.message, /SECRET/);
+  assert.equal(runtime.snapshot().results.length, 0);
+  const next = runtime.startManualRun(baseRequest({ definition: definition({ id: "next" }) }));
+  assert.equal(next.started, true, "the failed persistence path releases its active slot");
+  await next.done;
+}
+
 // ── start refusals ─────────────────────────────────────────────────
 
 {
@@ -448,7 +468,7 @@ function baseRequest(overrides = {}) {
   await runtime.startManualRun(baseRequest()).done;
   assert.equal(runtime.snapshot().results.length, 1);
   runtime.reset("new session");
-  assert.deepEqual(runtime.snapshot(), { runs: [], results: [] });
+  assert.deepEqual(runtime.snapshot(), { runs: [], results: [], evictionEvents: [] });
 }
 
 {
@@ -636,6 +656,102 @@ function baseRequest(overrides = {}) {
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
   await runtime.startManualRun(baseRequest()).done;
   assert.equal(runtime.snapshot().runs[0].requests, undefined);
+}
+
+// ── persistent inbox and debug wiring (#157) ─────────────────────
+
+{
+  // An injected persistent inbox survives runtime resets; the memory
+  // fallback is wiped by the same reset.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "persisted finding" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  assert.equal(runtime.snapshot().results.length, 1);
+  runtime.reset("session switch");
+  assert.deepEqual(runtime.snapshot(), { runs: [], results: [], evictionEvents: [] });
+
+  const { createShadowInbox } = await load(join(packageRoot, "src", "shadow-minds", "result.ts"));
+  const persistent = createShadowInbox();
+  Object.defineProperty(persistent, "persistent", { value: true });
+  const second = createShadowRuntime({ config: () => config(), deps: makeFake({ submit: JSON.stringify({ summary: "kept" }) }).deps, inbox: persistent });
+  await second.startManualRun(baseRequest()).done;
+  assert.equal(second.snapshot().results.length, 1);
+  second.reset("session switch");
+  assert.equal(second.snapshot().results.length, 1, "a persistent inbox survives the reset");
+}
+
+{
+  // A debug definition persists its child session and finalizes the log.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "debugged" }) });
+  const debugCalls = [];
+  fake.deps.finalizeDebug = (input) => debugCalls.push(input);
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const run = runtime.startManualRun(baseRequest({
+    definition: definition({ debug: true }),
+    debug: { sessionDir: "/sessions/alpha", sessionId: "sess-9" },
+  }));
+  await run.done;
+  assert.ok(fake.created[0].debugDir?.includes("/sessions/alpha"), "the child receives the debug directory");
+  assert.ok(fake.created[0].debugDir?.includes("run-"), "the debug directory is keyed by run id");
+  assert.equal(debugCalls.length, 1);
+  assert.equal(debugCalls[0].phase, "submitted");
+  assert.equal(debugCalls[0].shadowId, "session-synthesizer");
+  assert.ok(Number.isFinite(debugCalls[0].endedAt));
+}
+
+{
+  // A detached run still finalizes its debug log for sanitization.
+  const finalizeCalls = [];
+  let currentRuntime;
+  const fake = makeFake({ script: () => new Promise((resolve) => {
+    // Detach by resetting the session epoch mid-run.
+    currentRuntime.reset("session switch");
+    resolve(COMPLETED_NO_SUBMISSION);
+  }) });
+  fake.deps.finalizeDebug = (input) => finalizeCalls.push(input);
+  currentRuntime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const run = currentRuntime.startManualRun(baseRequest({
+    definition: definition({ debug: true }),
+    debug: { sessionDir: "/sessions/alpha", sessionId: "sess-9" },
+  }));
+  await run.done;
+  assert.equal(currentRuntime.snapshot().runs.length, 0, "detached runs leave no history");
+  assert.equal(finalizeCalls.length, 1, "detached runs still finalize debug logs");
+}
+
+{
+  // A non-debug definition never receives a debug directory.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "normal" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  assert.equal(fake.created[0].debugDir, undefined);
+}
+
+{
+  // The recorded definition hash changes when layer content changes.
+  const runOne = makeFake({ submit: JSON.stringify({ summary: "a" }) });
+  const runtimeOne = createShadowRuntime({ config: () => config(), deps: runOne.deps });
+  await runtimeOne.startManualRun(baseRequest({
+    definition: definition({ layers: [{ scope: "package", filePath: "/pkg/s.md", contentHash: "aaa" }] }),
+  })).done;
+  const runTwo = makeFake({ submit: JSON.stringify({ summary: "b" }) });
+  const runtimeTwo = createShadowRuntime({ config: () => config(), deps: runTwo.deps });
+  await runtimeTwo.startManualRun(baseRequest({
+    definition: definition({ layers: [{ scope: "package", filePath: "/pkg/s.md", contentHash: "bbb" }] }),
+  })).done;
+  const [one, two] = [runtimeOne, runtimeTwo].map((runtime) => runtime.snapshot().results[0]);
+  assert.ok(one.definitionHash && two.definitionHash);
+  assert.notEqual(one.definitionHash, two.definitionHash, "content edits change the recorded source hash");
+}
+
+{
+  // Result entities record provenance metadata.
+  const fake = makeFake({ submit: JSON.stringify({ summary: "provenance" }) });
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  await runtime.startManualRun(baseRequest()).done;
+  const entity = runtime.snapshot().results[0];
+  assert.equal(entity.configuredDelivery, "notify");
+  assert.match(entity.schemaHash, /^[0-9a-f]{16}$/);
 }
 
 console.log("shadow-minds runtime tests: OK");

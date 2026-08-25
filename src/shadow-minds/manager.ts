@@ -1030,7 +1030,7 @@ export class ShadowManager implements Component, Focusable {
         {
           id: "inbox",
           label: "Inbox",
-          detail: `${snapshot.results.length} results · ${unread} unread`,
+          detail: `${snapshot.results.length} results · ${unread} unread${(snapshot.evictionEvents?.length ?? 0) > 0 ? ` · ${snapshot.evictionEvents!.length} eviction events` : ""}`,
           onSelect: () => this.openInboxList(),
         },
       ],
@@ -1114,12 +1114,20 @@ export class ShadowManager implements Component, Focusable {
   private buildInboxItems(): ChoiceItem[] {
     const runtime = this.services?.runtime;
     if (!runtime) return [];
-    return runtime.snapshot().results.slice(0, 20).map((result) => ({
+    const snapshot = runtime.snapshot();
+    const results = snapshot.results.slice(0, 20).map((result) => ({
       id: result.id,
       label: sanitizeDisplayLine(result.summary || result.shadowName),
       detail: `${sanitizeDisplayLine(result.shadowId)} · ${result.attention} · ${result.delivery}`,
       onSelect: () => this.openResultActions(result.id),
     }));
+    const events = (snapshot.evictionEvents ?? []).slice(-5).reverse().map((event) => ({
+      id: `eviction-${event.at}-${event.id}`,
+      label: `Evicted result ${sanitizeDisplayLine(event.id)}`,
+      detail: `${event.reason} retention · ${new Date(event.at).toISOString()}`,
+      onSelect: () => {},
+    }));
+    return [...results, ...events];
   }
 
   private openInboxList(): void {

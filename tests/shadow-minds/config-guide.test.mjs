@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -36,6 +36,14 @@ const theme = {
 
 function render(component, width = 100) {
   return component.render(width).map((line) => stripVTControlCharacters(String(line).replace(PLAIN, "")));
+}
+
+async function waitFor(predicate, message, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail(message);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
 }
 
 // ── Guide content contract ───────────────────────────────────────────
@@ -129,16 +137,19 @@ function fakePi() {
   const renderers = new Map();
   const events = [];
   const handlers = new Map();
+  const entries = [];
   return {
     commands,
     renderers,
     events,
     handlers,
+    entries,
     pi: {
       registerCommand(name, definition) { commands.set(name, definition); },
       registerMessageRenderer(name, renderer) { renderers.set(name, renderer); },
       sendMessage(message, options) { events.push(["guide", message, options]); },
       sendUserMessage(message, options) { events.push(["user", message, options]); },
+      appendEntry(type, data) { entries.push({ type, data }); },
       on(event, handler) { handlers.set(event, handler); },
     },
   };
@@ -248,12 +259,15 @@ function fakePi() {
     const review = manager.render(100).join("\n");
     assert.ok(review.includes("LAYER MARKDOWN"), "the draft reaches the review");
     manager.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(
+      () => done.length === 1 && confirms.length === 1 && existsSync(join(project, ".pi", "shadow-minds", "e2e-role.md")),
+      "the approved draft did not finish its coordinated write",
+    );
     assert.equal(done.length, 1, "the manager closed itself for the approval");
     assert.equal(confirms.length, 1, "one coordinator-routed confirmation");
     assert.ok(confirms[0].signal, "the confirmation receives the coordinator abort signal");
     assert.ok(confirms[0].title.includes("project"), "the confirmation names the scope");
-    const { readFileSync, existsSync } = await import("node:fs");
+    const { readFileSync } = await import("node:fs");
     const written = join(project, ".pi", "shadow-minds", "e2e-role.md");
     assert.ok(existsSync(written), "the approved draft landed on disk");
     const onDisk = readFileSync(written, "utf8");
@@ -455,12 +469,13 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
       runtimeDeps,
     );
     const confirmations = new ConfirmationCoordinator();
-    const services = __testables.makeServices(state, ctx, confirmations);
 
-    // Open the parent session with the base context; runtime notifications
-    // have a UI surface and the capture cannot use this context.
+    // Open the parent session with the base context first; runtime
+    // notifications have a UI surface, the capture cannot use this context,
+    // and services bind to the session-scoped runtime replacement.
     await harness.handlers.get("session_start")({}, sessionCtx);
     assert.equal(harness.handlers.has("before_agent_start"), false, "prompt composition keeps its single-owner contract");
+    const services = __testables.makeServices(state, ctx, confirmations);
 
     const refused = services.runtime.runManual({ shadowId: "missing-role" });
     assert.equal(refused.ok, false);
@@ -719,6 +734,131 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     assert.equal(refused.ok, false);
     assert.match(refused.message, /No parent model/);
     assert.equal(created.length, 1, "no child is created when no parent model is selected");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── Persistent inbox wiring (#157) ─────────────────────────────────
+
+{
+  const { DEFAULT_CONFIG: DEFAULT_CONFIG_TEMPLATE } = await load(join(packageRoot, "src", "core", "config.ts"));
+  const { DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+
+  const { writeFileSync: writeDisk } = await import("node:fs");
+  const { readFileSync: readDisk } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "shadow-persist-"));
+  const project = join(dir, "project");
+  // Pi 0.84.2 layout: one shared per-cwd directory of flat session files.
+  const sessionDir = join(dir, "sessions");
+  const sessionFile = join(sessionDir, "2026-08-24T00-00-00-000Z_alpha-1.jsonl");
+  mkdirSync(project, { recursive: true });
+  mkdirSync(sessionDir, { recursive: true });
+  writeDisk(sessionFile, "{}\n", "utf8");
+  // A foreign orphan partition in the same shared directory.
+  mkdirSync(join(sessionDir, ".pi-square-shadow", "other-session", "results"), { recursive: true });
+
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  mkdirSync(join(dir, "agent"), { recursive: true });
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const notifications = [];
+    const sessionCtx = {
+      cwd: project,
+      hasUI: true,
+      isProjectTrusted: () => true,
+      model: { provider: "acme", id: "parent-model" },
+      modelRegistry: { find: (provider, id) => ({ provider, id }) },
+      sessionManager: {
+        getSessionDir: () => sessionDir,
+        getSessionFile: () => sessionFile,
+        getSessionId: () => "alpha-1",
+        getLeafId: () => "leaf-1",
+        getBranch: () => [],
+        buildContextEntries: () => [],
+      },
+      ui: { notify(message, level) { notifications.push({ message, level }); }, custom: async () => {} },
+    };
+    const created = [];
+    const ran = [];
+    const runtimeDeps = {
+      now: () => 1_000,
+      async createSession(input) {
+        created.push(input);
+        return { session: { customTools: input.customTools } };
+      },
+      async runSession(input) {
+        ran.push(input);
+        const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+        if (submit) await submit.execute(
+          "c1",
+          { payload: JSON.stringify({ decisions: [], progress: "persistent finding", open_questions: [] }) },
+          undefined,
+          undefined,
+          sessionCtx,
+        );
+        return { status: "completed", prompted: true, timedOut: false, finalText: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 }, streamingCompleted: true, messages: [] };
+      },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...DEFAULT_CONFIG_TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      runtimeDeps,
+    );
+    await harness.handlers.get("session_start")({}, sessionCtx);
+    assert.equal(state.partition?.sessionId, "alpha-1", "the session partition is bound");
+    assert.ok(!existsSync(join(sessionDir, ".pi-square-shadow", "other-session")), "orphan partitions without session files reconcile");
+    assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "alpha-1")), "the live session's partition survives reconciliation");
+    const services = __testables.makeServices(state, sessionCtx, new (await load(join(packageRoot, "src", "core", "confirmation.ts"))).ConfirmationCoordinator());
+
+    const started = services.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true, started.message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.equal(state.runtime.snapshot().results.length, 1);
+    const resultId = state.runtime.snapshot().results[0].id;
+    assert.equal(state.runtime.snapshot().results[0].configuredDelivery, "notify");
+    const reference = harness.entries.find((entry) => entry.type === "pi-square.shadow-result");
+    assert.ok(reference, "a bounded result reference lands in the parent session");
+    assert.equal(reference.data.resultId, resultId);
+    assert.ok(!("payload" in reference.data), "the reference never duplicates the payload");
+    assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "alpha-1", "results", `${resultId}.json`)));
+
+    // Reopening the same session keeps the result and never re-appends its
+    // transcript reference: the persisted `referenced` mark survives.
+    const referencesBefore = harness.entries.filter((entry) => entry.type === "pi-square.shadow-result").length;
+    assert.equal(referencesBefore, 1, "exactly one reference entry was appended");
+    await harness.handlers.get("session_start")({}, sessionCtx);
+    assert.equal(state.runtime.snapshot().results.length, 1, "results survive a session reopen");
+    assert.equal(state.runtime.snapshot().results[0].referenced, true, "the reference mark reloads");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(
+      harness.entries.filter((entry) => entry.type === "pi-square.shadow-result").length,
+      referencesBefore,
+      "a reopen never re-appends reference entries for known results",
+    );
+    assert.equal(state.runtime.snapshot().results[0].id, resultId);
+
+    // A non-persisted session falls back to memory visibly.
+    const memoryCtx = { ...sessionCtx, sessionManager: { getSessionDir: () => "", getSessionFile: () => undefined, getSessionId: () => "beta" } };
+    notifications.length = 0;
+    await harness.handlers.get("session_start")({}, memoryCtx);
+    assert.equal(state.partition, undefined);
+    assert.equal(state.runtime.snapshot().results.length, 0, "the memory fallback starts empty");
+    assert.ok(notifications.some((entry) => entry.message.includes("stay in memory")), "the fallback is visible");
+
+    // The persistent partition content is validated on load.
+    const index = JSON.parse(readDisk(join(sessionDir, ".pi-square-shadow", "alpha-1", "index.json"), "utf8"));
+    assert.equal(index.version, 1);
+    assert.ok(!("payload" in index.results[0]));
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;

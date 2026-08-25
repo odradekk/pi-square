@@ -222,7 +222,37 @@ What works today:
   is supported. Each run records prompt/tool/trajectory cache-cohort hashes plus
   per-request usage and time-to-first-token.
   The manager shows running state, supports cancellation, and lets you
-  inspect, mark read, dismiss, or delete results. The runtime freezes its
+  inspect, mark read, dismiss, or delete results.
+
+- Bounded recoverable result inbox: when the parent session persists, results
+  live in a dedicated hidden Shadow partition under the session directory,
+  keyed by the stable parent session ID — one versioned atomic JSON file per
+  result plus a bounded index of ordering and summary metadata, so reopening
+  the session restores its results and each result also leaves one bounded
+  reference entry (never the payload) in the parent transcript. Result
+  entities record the Shadow identity and definition-source hash, trigger,
+  configured delivery, hash-bound validation schema and payload, aggregate and
+  per-request cache/usage/TTFT data, tool-call count, lifecycle/truncation
+  qualifiers, and independent delivery (`notified | pending | delivered`) and attention
+  (`unread | read | dismissed`) states; Send to agent, read, dismiss, and
+  delete are distinct atomic transitions. Retention keeps at most 100
+  results and 16 MiB, evicting the oldest resolved entries before unread
+  notified ones and recording eviction events in the manager. Corrupt result
+  files are quarantined; every disk load checks bounded regular files, the
+  hash-bound effective schema, payload, and deterministic summary; a corrupt or
+  stale index rebuilds from a bounded validated scan, and no disk content is
+  surfaced without validation. Non-persisted
+  sessions fall back to a visible in-memory inbox, and a partition whose
+  session file was deleted (Pi stores sessions as flat files in the shared
+  per-project sessions directory) is removed by the session-start
+  reconciliation. Debug-enabled
+  definitions additionally store one native child-session JSONL per run in the
+  partition only after every string key/value has passed credential cleaning and
+  the sanitized log has been atomically replaced. Startup removes unindexed
+  crash residue; retention is capped at 20 logs per Shadow and 128 MiB total, and
+  a log too large or unsafe to sanitize is dropped. Debug stays off by default.
+
+  The runtime freezes its
   configuration and definition at start; timeout is enforced by a fixed
   deadline and the child executor, model turns at the pre-model `turn_start` boundary,
   and tool calls at Pi’s pre-validation `tool_execution_start` boundary, with a second check before payload acceptance. Session
