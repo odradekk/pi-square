@@ -70,6 +70,18 @@ export interface ShadowCompletionGate {
   reset(): void;
 }
 
+/** IDs of enabled definitions subscribed to completion with a gate. */
+function gateDefinitionIds(
+  definitions: readonly EffectiveShadowDefinition[],
+  config: ShadowMindsConfig,
+): Set<string> {
+  return new Set(
+    subscribedDefinitions(definitions, "completion", config)
+      .filter((definition) => definition.completionGate)
+      .map((definition) => definition.id),
+  );
+}
+
 export function createCompletionGate(deps: {
   now(): number;
   config(): ShadowMindsConfig;
@@ -113,6 +125,17 @@ export function createCompletionGate(deps: {
     }
   };
 
+  const closeGate = (reason: ShadowGateCloseReason): void => {
+    if (openedAt === undefined) return;
+    openedAt = undefined;
+    cancelTimer?.();
+    cancelTimer = undefined;
+    let cancelled = 0;
+    if (CANCELS_PENDING.has(reason)) cancelled = deps.scheduler.cancelPendingCompletions();
+    deps.onClose?.(reason, cancelled);
+    if (SETTLE_FORWARDING.has(reason)) settle(deps.now());
+  };
+
   return {
     get open() {
       return openedAt !== undefined;
@@ -122,11 +145,7 @@ export function createCompletionGate(deps: {
       if (openedAt !== undefined) return true;
       const config = deps.config();
       if (!config.enabled) return false;
-      const gateIds = new Set(
-        subscribedDefinitions(deps.definitions(), "completion", config)
-          .filter((definition) => definition.completionGate)
-          .map((definition) => definition.id),
-      );
+      const gateIds = gateDefinitionIds(deps.definitions(), config);
       if (gateIds.size === 0) return false;
       // The gate opens only for its own definitions: pending completions or
       // already-started completion runs of a non-gate Shadow stay on the
@@ -139,32 +158,20 @@ export function createCompletionGate(deps: {
       );
       openedAt = deps.now();
       deps.onOpen?.(windowSeconds);
-      cancelTimer = schedule(windowSeconds * 1_000, () => this.close("deadline"));
+      cancelTimer = schedule(windowSeconds * 1_000, () => closeGate("deadline"));
       return true;
     },
 
     notifyActivity() {
       if (openedAt === undefined) return;
-      const config = deps.config();
-      const gateIds = new Set(
-        subscribedDefinitions(deps.definitions(), "completion", config)
-          .filter((definition) => definition.completionGate)
-          .map((definition) => definition.id),
-      );
+      const gateIds = gateDefinitionIds(deps.definitions(), deps.config());
       if (deps.scheduler.pendingCompletions().some((id) => gateIds.has(id))) return;
       if (deps.hasRunningCompletionRuns(gateIds)) return;
-      this.close("completed");
+      closeGate("completed");
     },
 
     close(reason) {
-      if (openedAt === undefined) return;
-      openedAt = undefined;
-      cancelTimer?.();
-      cancelTimer = undefined;
-      let cancelled = 0;
-      if (CANCELS_PENDING.has(reason)) cancelled = deps.scheduler.cancelPendingCompletions();
-      deps.onClose?.(reason, cancelled);
-      if (SETTLE_FORWARDING.has(reason)) settle(deps.now());
+      closeGate(reason);
     },
 
     reset() {

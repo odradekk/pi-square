@@ -420,4 +420,36 @@ function makeHarness(options = {}) {
   assert.equal(views.shr1Degraded, 1);
 }
 
+// ── Quiet headless self-confirmation (#160) ────────────────────────
+
+{
+  // A quiet append never reaches extension handlers as message_start, so
+  // the drain confirms its own successful sends: sent entries transition
+  // to delivered and leave the pending set without an observation.
+  const { controller, sent, runtimeOps } = makeHarness({
+    timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
+  });
+  controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
+  assert.equal(sent.length, 0, "a quiet drain defers the flush to its settle point");
+  controller.handleAgentSettled();
+  assert.equal(sent.length, 1, "the settle point flushes quietly");
+  assert.equal(sent[0].sendOptions.triggerTurn, false, "a quiet send never starts a turn");
+  assert.equal(runtimeOps.markDelivered.length, 0, "nothing is confirmed before the drain confirms");
+  assert.equal(controller.confirmQuietDeliveries(), 1, "the drain confirms its quiet send");
+  assert.deepEqual(runtimeOps.markDelivered, ["shr-1"], "the inbox records the delivered state");
+  assert.equal(controller.pendingCount(), 0);
+  assert.equal(controller.confirmQuietDeliveries(), 0, "the confirmation is single-shot");
+
+  // A failed quiet send stays unconfirmed and pending for the retry path.
+  const failing = makeHarness({
+    failSendOnce: true,
+    timing: () => ({ currentRun: 1, currentTaskEpoch: 1, parentRunning: false, quiet: true }),
+  });
+  failing.controller.enqueueResult(makeResult({ configuredDelivery: "wake" }));
+  failing.controller.handleAgentSettled();
+  assert.equal(failing.sent.length, 0, "the quiet send failed");
+  assert.equal(failing.controller.confirmQuietDeliveries(), 0, "a failed send is never confirmed");
+  assert.equal(failing.controller.pendingCount(), 1, "the result stays pending for the next safe moment");
+}
+
 console.log("shadow-minds delivery tests: OK");

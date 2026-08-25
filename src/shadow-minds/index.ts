@@ -22,7 +22,12 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { ConfirmationCoordinator } from "../core/confirmation";
-import { DEFAULT_CONFIG, type PiSquareConfig, type ShadowMindsConfig } from "../core/config";
+import {
+  DEFAULT_CONFIG,
+  SHADOW_MINDS_HEADLESS_DRAIN_HARD_MAX_SECONDS,
+  type PiSquareConfig,
+  type ShadowMindsConfig,
+} from "../core/config";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import { getAgentPath } from "../core/paths";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -1050,18 +1055,22 @@ export default function registerShadowMinds(
     }
   });
 
-  pi.on("session_shutdown", async (_event) => {
-    // Session replacement and interactive quit cancel the applicable gate
-    // and Shadow work; there is no continuation to drain into.
+  pi.on("session_shutdown", async (event) => {
+    // Session replacement (switch/fork/new/resume/reload) and interactive
+    // quit cancel the applicable gate and Shadow work promptly: there is no
+    // continuation to drain into.
     state.gate?.close("session");
-    // Print/JSON quits are headless: Pi awaits this handler before the
+    // A print/JSON quit is headless: Pi awaits this handler before the
     // process exits, so started completion runs get one bounded drain
     // window to finish, persist, and deliver quietly — no turn is started.
-    const headless = ctx?.mode === "print" || ctx?.mode === "json";
+    // Replacement reasons must not drain: the outgoing session is replaced,
+    // not continued.
+    const headless = (ctx?.mode === "print" || ctx?.mode === "json")
+      && (event as { reason?: unknown } | undefined)?.reason === "quit";
     if (headless && effectiveConfig().enabled) {
       const seconds = Math.min(
         Math.max(1, effectiveConfig().defaults.headlessDrainSeconds),
-        300,
+        SHADOW_MINDS_HEADLESS_DRAIN_HARD_MAX_SECONDS,
       );
       const deadline = Date.now() + seconds * 1_000;
       draining = true;
@@ -1070,15 +1079,17 @@ export default function registerShadowMinds(
           && state.runtime.snapshot().runs.some((run) => run.phase === "running")) {
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        // One single settle point: the drained close cancels unstarted
-        // completions and forwards a held settle; anything still owed
-        // flushes here — quietly, with transcript confirmation.
-        state.gate?.close("drained");
+        // One single settle point: a held settle flushes here, quietly —
+        // the drain's sends append synchronously to the transcript, and a
+        // quiet append never reaches extension handlers as message_start
+        // (Pi 0.84.2 routes extension events through the agent stream), so
+        // the drain confirms its own successful sends immediately after.
         if (settleHeld) {
           settleHeld = false;
           state.delivery?.handleAgentSettled();
         }
         await new Promise((resolve) => setTimeout(resolve, 0));
+        state.delivery?.confirmQuietDeliveries();
       } finally {
         draining = false;
         settleHeld = false;

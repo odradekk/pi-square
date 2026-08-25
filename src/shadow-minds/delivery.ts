@@ -258,6 +258,8 @@ export interface ShadowDeliveryController {
   isPending(id: string): boolean;
   /** Count of entries the parent has not confirmed. */
   pendingCount(): number;
+  /** Confirms quiet (headless) sends after the drain's flush; see above. */
+  confirmQuietDeliveries(): number;
   /** Clears all state on session start and shutdown. */
   reset(): void;
 }
@@ -275,6 +277,11 @@ export function createShadowDeliveryController(options: {
 }): ShadowDeliveryController {
   const records = new Map<string, ShadowDeliveryRecord>();
   let sequence = 0;
+  // Quiet (headless) sends append synchronously to the parent transcript and
+  // never reach extension handlers as message_start (Pi 0.84.2 routes
+  // extension events through the agent stream only), so the drain confirms
+  // them itself once the flush returned without failure.
+  let quietSentIds = new Set<string>();
 
   const core = createConfirmedDeliveryCore<ShadowDeliveryValue>({
     send(batch, resent) {
@@ -317,6 +324,11 @@ export function createShadowDeliveryController(options: {
           },
           sendOptions,
         );
+        // Collected only after the send returned: a failed send must never
+        // be self-confirmed.
+        if (timing.quiet) {
+          for (const entry of sendable) quietSentIds.add(entry.id);
+        }
       }
       if (degraded.length > 0) {
         for (const id of degraded) {
@@ -449,8 +461,26 @@ export function createShadowDeliveryController(options: {
     },
     isPending: (id) => core.isPending(id),
     pendingCount: () => core.pendingCount(),
+    /**
+     * Confirms every quiet send whose flush returned without failure: the
+     * headless drain calls this once after its single settle-point flush,
+     * because a quiet append is already in the transcript and no
+     * extension-visible message_start will ever confirm it.
+     */
+    confirmQuietDeliveries() {
+      const ids = [...quietSentIds];
+      quietSentIds = new Set();
+      for (const id of ids) {
+        const record = records.get(id);
+        records.delete(id);
+        core.remove(id);
+        if (record?.value.kind === "result") options.getRuntime()?.markResultDelivered(id);
+      }
+      return ids.length;
+    },
     reset: () => {
       records.clear();
+      quietSentIds = new Set();
       core.reset();
     },
   };

@@ -814,7 +814,6 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
   const pendingIds = scheduler.pendingCompletions();
   assert.ok(pendingIds.length >= 2, "busy slots leave completion activations pending");
   assert.ok(pendingIds.every((id) => ["gate-a", "gate-b", "plain"].includes(id)));
-  assert.ok(pendingIds.every((id) => ["gate-a", "gate-b", "plain"].includes(id)));
 
   // Only unstarted pending items cancel; started runs are untouched.
   const startedBefore = state.starts.length;

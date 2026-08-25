@@ -1918,16 +1918,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     };
     sinks.eventCtx = eventCtx;
     const control = makeGateControl(1);
-    // Real Pi appends a quiet custom message and emits its message_start
-    // synchronously during sendMessage — before the shutdown handler can
-    // reset the delivery machine. Mirror that ordering here.
-    const rawSend = harness.pi.sendMessage.bind(harness.pi);
-    harness.pi.sendMessage = (message, options) => {
-      rawSend(message, options);
-      if (message?.customType === "pi-square.shadow-notification") {
-        harness.handlers.get("message_start")?.({ type: "message_start", message }, eventCtx);
-      }
-    };
     const state = registerShadowMinds(
       harness.pi,
       undefined,
@@ -1954,11 +1944,59 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     assert.equal(deliveries.length, 1, "the drain delivered the persisted result");
     assert.equal(deliveries[0][2].triggerTurn, false, "a headless drain never starts a turn");
     assert.match(deliveries[0][1].content, /\[Shadow advisory\]/);
-    // The result persisted to the partition; transcript observation confirms
-    // the quiet delivery on the surviving inbox.
+    // The result persisted to the partition, and the drain confirms its own
+    // quiet sends: a quiet append never reaches extension handlers as
+    // message_start (Pi routes extension events through the agent stream),
+    // so the drain marks the delivered state itself after the flush.
     assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "sess-drain")), "the drain persisted the partition");
-    await harness.handlers.get("message_start")({ type: "message_start", message: deliveries[0][1] }, eventCtx);
-    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered", "transcript observation confirms the quiet delivery");
+    assert.equal(state.runtime.snapshot().results[0].delivery, "delivered", "the drain confirms its quiet sends");
+  } finally {
+    if (previousAgentDir160 === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir160;
+    if (previousCodingAgentDir160 === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir160;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── Headless session replacement cancels instead of draining ────────
+
+{
+  const dir = mkdtempSync(join(tmpdir(), "shadow-gate-replace-"));
+  const project = join(dir, "project");
+  mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+  mkdirSync(project, { recursive: true });
+  writeGateDefinition(join(dir, "agent", "shadow-minds"), "gate-repl", "Gate Repl");
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sinks = { notifications: [], statusCalls: [] };
+    const eventCtx = gateEventCtx(project, sinks, "print");
+    sinks.eventCtx = eventCtx;
+    const control = makeGateControl(1);
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({
+        ...DEFAULT_SHADOW_MINDS_BASE(),
+        shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS, headlessDrainSeconds: 5 } },
+      }),
+      gateRuntimeDeps(sinks, control),
+    );
+    await harness.handlers.get("session_start")({}, eventCtx);
+    await driveRealUserRun(harness, eventCtx, project);
+    harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await harness.handlers.get("agent_end")({ type: "agent_end", messages: [] }, eventCtx);
+    await harness.handlers.get("agent_settled")({ type: "agent_settled" }, eventCtx);
+    // A print-mode session replacement (reason "new") must not drain: the
+    // outgoing session is replaced, so the held run aborts promptly and
+    // nothing delivers across the replacement.
+    const startedAt = Date.now();
+    await harness.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "new" }, eventCtx);
+    assert.ok(Date.now() - startedAt < 1_000, "a replacement reason skips the headless drain");
+    assert.equal(shadowDeliveries(harness).length, 0, "no delivery crosses the session replacement");
+    assert.equal(state.gate?.open, false, "the gate closed at the replacement");
   } finally {
     if (previousAgentDir160 === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir160;

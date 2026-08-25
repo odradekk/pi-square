@@ -95,12 +95,14 @@ function makeHarness(options = {}) {
 
 {
   // The window is clamped to the package hard cap.
-  const { state } = makeHarness({ configDefaults: { completionGateWindowSeconds: 120 } });
-  assert.equal(state.now, 1_000);
-  const { gate } = makeHarness({ configDefaults: { completionGateWindowSeconds: 120 } });
-  gate.maybeOpen();
-  // The harness stores the clamped ms on the second instance's timer.
-  assert.ok(gate.open);
+  const clamped = makeHarness({ configDefaults: { completionGateWindowSeconds: 120 } });
+  assert.equal(clamped.gate.maybeOpen(), true);
+  assert.ok(clamped.state.timer, "the deadline timer is scheduled");
+  assert.equal(
+    clamped.state.timer.ms,
+    GATE_WINDOW_HARD_MAX_SECONDS * 1_000,
+    "a configured window above the cap clamps to the hard cap",
+  );
   assert.equal(GATE_WINDOW_HARD_MAX_SECONDS, 60, "the hard cap is sixty seconds");
 }
 
@@ -137,7 +139,6 @@ function makeHarness(options = {}) {
   assert.deepEqual(state.closed, [{ reason: "deadline", cancelled: 1 }], "the pending completion cancelled at the deadline");
   assert.equal(pendingCompletions.length, 0);
   assert.deepEqual(state.settled, [11_000], "the deadline forwards the settle");
-  assert.equal(state.runningHeld, undefined, "started runs are untouched by the gate");
 }
 
 {

@@ -308,9 +308,11 @@ What works today:
   continue and unstarted completion items cancel visibly; late or stale
   results use the normal notify downgrade. A new user task, pause, abort,
   session switch, or shutdown cancels the applicable work with no
-  cross-session delivery, and a print/JSON quit drains started runs for the
-  bounded `headlessDrainSeconds`, persists, and delivers quietly without
-  starting a turn before cancelling at the deadline.
+  cross-session delivery, and a print/JSON quit (never a session switch, fork, new session, or
+  resume) drains started runs for the bounded `headlessDrainSeconds`,
+  persists, and delivers quietly without starting a turn — the drain
+  confirms its own quiet sends after the flush — before cancelling at the
+  deadline.
 - Valid results deliver to the parent model only through the definition's
   fixed policy, always as source-attributed advisory evidence that
   supplements — never replaces — the system prompt, tools, and user
