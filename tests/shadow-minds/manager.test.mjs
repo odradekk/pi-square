@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import jiti from "jiti";
@@ -1099,6 +1099,131 @@ function makeRuntimeService(initial) {
   assert.ok(lines.includes("Measured read: 500 · write: 0"), "only reported cache totals render");
   assert.ok(lines.includes("Cache reuse is measured and best-effort"), "the best-effort caveat renders");
   assert.ok(lines.includes("2 runs · model dddddddddddddddd"), "cohort groups render with their hashes");
+}
+
+// ── Repeated overlay edits preserve body inheritance (#177) ────────
+
+{
+  // Real end-to-end manager sequence: enable a package definition at agent
+  // scope (saving a minimal body-less overlay), reopen the same definition,
+  // and edit further fields. The parsed agent layer must keep its body
+  // absent so every follow-up edit reserializes a body-less overlay instead
+  // of failing with an invalid explicit empty body.
+  const { previewShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-reedit-"));
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+    writeFileSync(
+      join(dir, "agent", "shadow-minds", "project-grounding.md"),
+      "---\npromptVersion: 1\nid: project-grounding\nenabled: true\n---\n",
+      "utf8",
+    );
+    const registry = discoverShadowDefinitions(join(dir, "project"), { projectTrusted: false });
+    const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
+    assert.ok(grounding, "the layered definition is discovered");
+    assert.equal(grounding.enabled, true, "the agent overlay enables the package definition");
+    const agentLayer = grounding.layers.find((layer) => layer.scope === "agent");
+    assert.ok(agentLayer, "the agent layer is present");
+    assert.equal(agentLayer.fields.body, undefined, "the body-less agent overlay keeps its body absent");
+
+    const saved = [];
+    const services = {
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: false }),
+      overlaySnapshot: async (_scope, id) => ({
+        filePath: join(dir, "agent", "shadow-minds", `${id}.md`),
+        fingerprint: "fp",
+        contextFingerprint: shadowDefinitionContextFingerprint(grounding.layers),
+        content: "",
+      }),
+      preview: (scope, fields, expected) => {
+        // The production wiring: serialize the candidate, then validate it
+        // through the real discovery preview path.
+        try {
+          const content = serializeShadowDefinition(fields);
+          const preview = previewShadowDefinition(join(dir, "project"), {
+            projectTrusted: false,
+            scope,
+            filePath: join(dir, "agent", "shadow-minds", `${fields.id}.md`),
+            content,
+            expectedContextFingerprint: expected,
+          });
+          return {
+            content,
+            filePath: join(dir, "agent", "shadow-minds", `${fields.id}.md`),
+            definition: preview.definition,
+            errors: preview.errors,
+            contextFingerprint: preview.contextFingerprint,
+          };
+        } catch (error) {
+          return { content: "", filePath: "", errors: [error.message], contextFingerprint: expected };
+        }
+      },
+      approve: async () => true,
+      save: async (_scope, fields) => {
+        saved.push({ fields });
+        return { ok: true, message: "saved" };
+      },
+      deleteOverlay: async () => ({ ok: true, message: "deleted" }),
+    };
+
+    const manager = new ShadowManager(
+      { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: false },
+      makeTui(),
+      makeTheme(),
+      makeKeybindings(),
+      () => {},
+      services,
+    );
+
+    // Browse → definition actions → edit → agent scope (the only writable
+    // scope for an untrusted project) → priority → set value → review.
+    const entryIndex = registry.definitions.findIndex((definition) => definition.id === "project-grounding");
+    for (let step = 0; step < entryIndex; step += 1) manager.handleInput("down");
+    manager.handleInput("\r"); // definition actions
+    manager.handleInput("down");
+    manager.handleInput("down");
+    manager.handleInput("down");
+    manager.handleInput("\r"); // edit
+    manager.handleInput("\r"); // agent scope
+    for (let step = 0; step < 4; step += 1) manager.handleInput("down");
+    manager.handleInput("\r"); // priority field
+    manager.handleInput("down");
+    manager.handleInput("\r"); // set value
+    for (const character of "5") manager.handleInput(character);
+    manager.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(manager.view.kind, "review", "the follow-up edit reaches the review without an invalid-body rejection");
+    assert.ok(render(manager).join("\n").includes("priority: 5"), "the candidate sets priority: 5");
+    manager.handleInput("\r"); // approve
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(saved.length, 1, "the repeated edit saves");
+    assert.equal(saved[0].fields.priority, 5);
+    assert.equal(saved[0].fields.body, undefined, "the saved overlay stays body-less");
+
+    // Repeated edits across enum, list, and boolean fields all keep
+    // inheriting the package body.
+    for (const [field, value] of [["delivery", "notify"], ["tools", ["read"]], ["hidden", true]]) {
+      await manager.reviewSave(grounding, "agent", { ...structuredClone(agentLayer.fields), [field]: value });
+      assert.equal(manager.view.kind, "review", `editing ${field} reaches the review`);
+      assert.ok(
+        render(manager).join("\n").includes("LAYER MARKDOWN"),
+        `the ${field} candidate review shows the layer Markdown`,
+      );
+      manager.handleInput("\r"); // approve
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(saved.at(-1).fields.body, undefined, `the saved ${field} overlay stays body-less`);
+    }
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log("shadow-minds manager tests: OK");
