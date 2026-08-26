@@ -307,4 +307,27 @@ assert.ok(validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: 5 }).length >=
   assert.ok(validateShadowPayload(schema, { values: Array.from({ length: 65 }, () => "x") }).some((error) => /64|maxItems/i), "arrays stay under the absolute schema cap even when maxItems is omitted");
 }
 
+// ── A body-less overlay preserves body inheritance (#177) ──────────
+
+{
+  // The minimal enable-only overlay a user saves above a package template
+  // has no responsibility body: the parser must keep the body absent —
+  // inheriting the lower layer — instead of reporting an explicit empty
+  // body that the layer serializer would reject on the next edit.
+  const bodyless = "---\npromptVersion: 1\nid: enable-probe\nenabled: true\n---\n";
+  const parsed = parseOk(bodyless, "enable-probe.md");
+  assert.equal(parsed.fields.body, undefined, "a body-less overlay parses with an absent body");
+
+  const { serializeShadowDefinition } = await load(
+    join(import.meta.dirname, "..", "..", "src", "shadow-minds", "serialize.ts"),
+  );
+  const serialized = serializeShadowDefinition(parsed.fields);
+  assert.ok(
+    /^---\n[\s\S]*\n---\n$/.test(serialized) && !serialized.slice(serialized.lastIndexOf("---\n") + 4).trim(),
+    "serializing the parsed overlay stays body-less",
+  );
+  const reparsed = parseOk(serialized, "enable-probe.md");
+  assert.equal(reparsed.fields.body, undefined, "parse → serialize → parse preserves body inheritance");
+}
+
 console.log("shadow-minds parser tests: OK");
