@@ -1179,18 +1179,13 @@ export default function registerShadowMinds(
   const bindRuntimeNotifications = (): void => {
     unsubscribeRuntime?.();
     // Results carry a persisted `referenced` flag, so a reopened session
-    // does not re-append transcript references it already recorded. A
-    // crash between the append and the persisted mark can re-append one
-    // bounded entry at the next open. The append itself is guarded by an
-    // in-flight claim taken before the append (#178): a synchronous
-    // subscriber re-entry while the first append is still on the stack
-    // observes the claim and appends nothing. Pi 0.84.2's `appendEntry` is
-    // synchronous (appendCustomEntry plus a session-level emit to UI
-    // subscribers); a live Pi 0.84.3 host showed overlapping lifecycles
-    // appending the same result twice, which is a compatibility
-    // observation, not the supported contract — the inbox-backed claim
-    // (#181) keeps the at-most-once guarantee independent of that
-    // difference by refusing a second claim before any append.
+    // does not re-append transcript references it already recorded. The
+    // inbox-backed claim is acquired before appendEntry and survives runtime
+    // rebinds or a second extension instance (#181). Pi 0.84.2's synchronous
+    // append lifecycle still permits overlapping observers; the shared claim
+    // makes the guarantee independent of subscriber timing. An explicit
+    // append throw releases the owner token for retry. Once append returns,
+    // uncertain persistence stays fail-closed rather than risking a duplicate.
     // Results restored from a reopened partition never auto-deliver: only
     // results created inside this session enter the delivery machine.
     const seenDelivery = new Set<string>(state.runtime.snapshot().results.map((result) => result.id));
@@ -1215,8 +1210,9 @@ export default function registerShadowMinds(
         // Cross-lifecycle arbitration (#181): the inbox claim is exclusive
         // across every observer of the partition — this instance, a rebind,
         // or a second extension instance — so two stale-unreferenced views
-        // of one authoritative result cannot both append it. A refused
-        // claim is simply retried on a later update.
+        // of one authoritative result cannot both append it. A refused claim
+        // stays fail-closed; only an append that explicitly throws releases
+        // its owner token for a later retry.
         if (!(currentInbox?.claimReference?.(result.id) ?? true)) {
           inFlightReferences.delete(result.id);
           continue;
@@ -1229,14 +1225,24 @@ export default function registerShadowMinds(
             summary: result.summary.slice(0, 160),
             createdAt: result.createdAt,
           });
-          seenResults.add(result.id);
+        } catch {
+          // A session append that did not complete leaves no reference. The
+          // result stays authoritative in the inbox and releasing this
+          // instance's token lets a later observer retry.
+          currentInbox?.releaseReferenceClaim?.(result.id);
+          inFlightReferences.delete(result.id);
+          continue;
+        }
+        // Once appendEntry returns, at-most-once takes precedence over retry:
+        // if persisting `referenced` fails, the durable claim intentionally
+        // remains and blocks a second append. The result is still recoverable
+        // from the inbox; only its bounded transcript reference may lack the
+        // persisted optimization bit until a later repair path.
+        seenResults.add(result.id);
+        try {
           currentInbox?.markReferenced?.(result.id);
         } catch {
-          // A session that cannot record the reference keeps the result in
-          // the inbox; the entry is observability, not authority. Releasing
-          // the claim lets a later update — this runtime, a rebind, or
-          // another instance — retry the append.
-          currentInbox?.releaseReferenceClaim?.(result.id);
+          // Keep the claim fail-closed: the transcript append already landed.
         } finally {
           inFlightReferences.delete(result.id);
         }

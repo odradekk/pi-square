@@ -22,6 +22,7 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -34,6 +35,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { identityOf, sameFileIdentity, type FileIdentity } from "../core/safe-write";
 import { canonicalSchemaJson } from "./prompt";
 import {
   SHADOW_INBOX_DEFAULT_MAX_RESULTS,
@@ -66,13 +68,7 @@ export const SHADOW_PARTITION_DIR = ".pi-square-shadow";
 export const SHADOW_INBOX_MAX_RESULTS_HARD = 100;
 export const SHADOW_INBOX_MAX_BYTES_HARD = 16 * 1024 * 1024;
 
-/**
- * A transcript-reference claim older than this bound — or held by a process
- * that no longer exists — is stale and may be reclaimed (#181). Appends are
- * fast synchronous writes, so the bound only covers crash residue.
- */
-export const REFERENCE_CLAIM_STALE_MS = 30_000;
-
+const REFERENCE_CLAIM_MAX_BYTES = 1_024;
 const INDEX_SUMMARY_MAX_CHARS = 160;
 const INDEX_EVENTS_MAX = 32;
 const INDEX_SCAN_MAX_FILES = 512;
@@ -389,76 +385,95 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
   const entityPath = (id: string): string => join(resultsDir, `${requireSafePathSegment(id, "result id")}.json`);
   const referencesDir = join(partition, "references");
   const claimPath = (id: string): string => join(referencesDir, `${requireSafePathSegment(id, "result id")}.claim`);
+  const referenceClaimHandles = new Map<string, { token: string; identity: FileIdentity }>();
 
   /**
    * Bounded re-read of the persisted entity's `referenced` flag. The claim
    * arbitrates between separate store instances sharing one partition, so
    * the in-memory `loaded` copy may be stale: the entity on disk decides
-   * (#181). Any read failure reads as unreferenced — the claim file and the
-   * mark still guard the append.
+   * (#181). Any read failure refuses the claim fail-closed.
    */
-  const entityReferencedOnDisk = (id: string): boolean => {
-    if (!SAFE_PATH_SEGMENT.test(id)) return false;
+  const entityReferencedOnDisk = (id: string): boolean | undefined => {
+    if (!SAFE_PATH_SEGMENT.test(id)) return undefined;
     const path = entityPath(id);
     try {
-      if (!requireRegularFile(path)) return false;
-      if (lstatSync(path).size > RESULT_ENTITY_MAX_BYTES) return false;
+      if (!requireRegularFile(path)) return undefined;
+      const identity = lstatSync(path);
+      if (identity.size > RESULT_ENTITY_MAX_BYTES) return undefined;
       const parsed = JSON.parse(readFileSync(path, "utf8")) as { referenced?: unknown };
-      return parsed !== null && typeof parsed === "object" && parsed.referenced === true;
+      if (parsed === null || typeof parsed !== "object") return undefined;
+      return parsed.referenced === true;
     } catch {
-      return false;
+      return undefined;
     }
   };
 
+  const readReferenceClaim = (id: string): { token: string; identity: FileIdentity } | undefined => {
+    const path = claimPath(id);
+    try {
+      if (!requireRegularFile(path)) return undefined;
+      const identity = identityOf(lstatSync(path));
+      if (identity.size > REFERENCE_CLAIM_MAX_BYTES) return undefined;
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { token?: unknown };
+      if (
+        parsed === null
+        || typeof parsed !== "object"
+        || typeof parsed.token !== "string"
+        || parsed.token.length === 0
+        || parsed.token.length > 128
+      ) return undefined;
+      const finalIdentity = identityOf(lstatSync(path));
+      if (!sameFileIdentity(identity, finalIdentity)) return undefined;
+      return { token: parsed.token, identity: finalIdentity };
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Removes only a claim still carrying this store instance's owner token. */
   const removeReferenceClaim = (id: string): void => {
+    const handle = referenceClaimHandles.get(id);
+    if (!handle) return;
+    const current = readReferenceClaim(id);
+    if (!current || current.token !== handle.token || !sameFileIdentity(current.identity, handle.identity)) return;
     try {
-      rmSync(claimPath(id), { force: true });
+      rmSync(claimPath(id));
+      referenceClaimHandles.delete(id);
     } catch {
-      // A claim file that cannot be removed ages out or is reclaimed.
-    }
-  };
-
-  const claimFileIsStale = (path: string): boolean => {
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; at?: unknown };
-      if (parsed === null || typeof parsed !== "object") return true;
-      const at = typeof parsed.at === "number" && Number.isFinite(parsed.at) ? parsed.at : Number.NaN;
-      if (!Number.isNaN(at) && now() - at > REFERENCE_CLAIM_STALE_MS) return true;
-      const pid = typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
-      if (pid !== undefined && pid !== process.pid) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          return true;
-        }
-      }
-      return false;
-    } catch {
-      return true;
+      // A claim file that cannot be removed remains fail-closed. The result
+      // stays authoritative in the inbox and no second transcript reference
+      // is risked.
     }
   };
 
   const createReferenceClaim = (id: string): boolean => {
+    if (referenceClaimHandles.has(id)) return false;
+    const token = randomUUID();
+    let fd: number | undefined;
     try {
-      mkdirSync(referencesDir, { recursive: true });
-      writeFileSync(claimPath(id), `${JSON.stringify({ pid: process.pid, at: now() })}\n`, { encoding: "utf8", flag: "wx" });
+      requireSafeDirectory(referencesDir);
+      fd = openSync(claimPath(id), fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+      writeFileSync(fd, `${JSON.stringify({ token })}\n`, "utf8");
+      fsyncSync(fd);
+      const identity = identityOf(fstatSync(fd));
+      closeSync(fd);
+      fd = undefined;
+      referenceClaimHandles.set(id, { token, identity });
       return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
-      if (!claimFileIsStale(claimPath(id))) return false;
-      try {
-        rmSync(claimPath(id), { force: true });
-      } catch {
-        return false;
+    } catch {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          // Preserve the acquisition failure; an uncertain claim stays
+          // fail-closed and is never removed without its final identity.
+        }
       }
-      try {
-        writeFileSync(claimPath(id), `${JSON.stringify({ pid: process.pid, at: now() })}\n`, { encoding: "utf8", flag: "wx" });
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
   };
+
+
 
   const quarantine = (id: string, path: string, cause: string): void => {
     try {
@@ -749,7 +764,8 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       if (!entry || entry.entity.referenced) return false;
       // Disk is authoritative across store instances: another instance may
       // have appended and marked while this copy stayed in memory (#181).
-      if (entityReferencedOnDisk(id)) return false;
+      // An unreadable/invalid entity refuses the claim fail-closed.
+      if (entityReferencedOnDisk(id) !== false) return false;
       return createReferenceClaim(id);
     },
     releaseReferenceClaim(id: string): void {

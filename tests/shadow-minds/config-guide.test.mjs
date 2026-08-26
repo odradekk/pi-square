@@ -2236,7 +2236,10 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
 
     let started = servicesA.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(
+      () => a.state.runtime.snapshot().results.length > 0,
+      "instance A did not retain the first result after append failure",
+    );
     const firstId = a.state.runtime.snapshot().results[0].id;
     assert.equal(referenceCount(firstId), 0, "the failed append leaves no transcript reference");
     assert.ok(a.state.runtime.snapshot().results.some((result) => result.id === firstId), "the result stays in the inbox");
@@ -2259,8 +2262,12 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     // both land exactly one reference.
     started = servicesB.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const secondId = b.state.runtime.snapshot().results.at(-1).id;
+    await waitFor(
+      () => b.state.runtime.snapshot().results.length >= 2
+        && referenceCount(firstId) === 1,
+      "instance B did not retry the failed reference and persist its new result",
+    );
+    const secondId = b.state.runtime.snapshot().results.find((result) => result.id !== firstId)?.id;
     assert.notEqual(secondId, firstId, "distinct results are never coalesced");
     assert.equal(referenceCount(firstId), 1, "the retried reference lands exactly once");
     assert.equal(referenceCount(secondId), 1, "the new result lands exactly one reference");
@@ -2270,8 +2277,11 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     failA = false;
     started = servicesA.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const thirdId = a.state.runtime.snapshot().results.at(-1).id;
+    await waitFor(
+      () => a.state.runtime.snapshot().results.length >= 2,
+      "instance A did not persist its later distinct result",
+    );
+    const thirdId = a.state.runtime.snapshot().results.find((result) => result.id !== firstId && result.id !== secondId)?.id;
     assert.equal(referenceCount(firstId), 1, "a stale runtime instance never appends a second reference for the same result");
     assert.equal(referenceCount(secondId), 1, "results referenced by another instance stay single");
     assert.equal(referenceCount(thirdId), 1, "the third result lands exactly one reference");
