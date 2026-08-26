@@ -10,6 +10,8 @@ const pack = packs[0];
 const allowedRoots = new Set(["shadow-minds", "src", "subagents", "themes"]);
 const allowedFiles = new Set([
   "CHANGELOG.md",
+  "docs/adr/0011-shadow-minds.md",
+  "docs/shadow-minds.md",
   "LICENSE",
   "README.md",
   "THIRD_PARTY_NOTICES.md",

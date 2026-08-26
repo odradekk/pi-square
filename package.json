@@ -29,6 +29,8 @@
     "shadow-minds",
     "subagents",
     "themes",
+    "docs/shadow-minds.md",
+    "docs/adr/0011-shadow-minds.md",
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
