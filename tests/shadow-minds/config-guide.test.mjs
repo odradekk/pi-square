@@ -2008,4 +2008,144 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
   }
 }
 
+// ── Each result appends exactly one transcript reference (#178) ────
+
+{
+  const { DEFAULT_CONFIG: TEMPLATE, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+  const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
+
+  const { writeFileSync: writeDisk } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "shadow-ref-append-"));
+  const project = join(dir, "project");
+  const sessionDir = join(dir, "sessions");
+  const sessionFile = join(sessionDir, "2026-08-26T00-00-00-000Z_gamma-1.jsonl");
+  mkdirSync(project, { recursive: true });
+  mkdirSync(sessionDir, { recursive: true });
+  writeDisk(sessionFile, "{}\n", "utf8");
+
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  mkdirSync(join(dir, "agent"), { recursive: true });
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const harness = fakePi();
+    const sessionCtx = {
+      cwd: project,
+      hasUI: true,
+      isProjectTrusted: () => true,
+      model: { provider: "acme", id: "parent-model" },
+      modelRegistry: { find: (provider, id) => ({ provider, id }) },
+      sessionManager: {
+        getSessionDir: () => sessionDir,
+        getSessionFile: () => sessionFile,
+        getSessionId: () => "gamma-1",
+        getLeafId: () => "leaf-1",
+        getBranch: () => [],
+        buildContextEntries: () => [],
+      },
+      ui: { notify() {}, custom: async () => {} },
+    };
+    const runtimeDeps = {
+      now: () => 1_000,
+      async createSession(input) {
+        return { session: { customTools: input.customTools } };
+      },
+      async runSession(input) {
+        const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+        if (submit) {
+          await submit.execute(
+            "c1",
+            { payload: JSON.stringify({ decisions: [], progress: "one reference only", open_questions: [] }) },
+            undefined,
+            undefined,
+            sessionCtx,
+          );
+        }
+        return {
+          status: "completed", prompted: true, timedOut: false, finalText: "",
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+          streamingCompleted: true, messages: [],
+        };
+      },
+    };
+    const state = registerShadowMinds(
+      harness.pi,
+      undefined,
+      () => ({ ...TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+      runtimeDeps,
+    );
+    await harness.handlers.get("session_start")({}, sessionCtx);
+    const services = __testables.makeServices(state, sessionCtx, new ConfirmationCoordinator());
+    const referenceCount = (id) => harness.entries.filter((entry) => entry.type === "pi-square.shadow-result" && entry.data.resultId === id).length;
+
+    // Scenario 1 — the observed re-entry race: a runtime subscriber fires
+    // again while the first transcript append is still on the stack. The
+    // re-entered callback must observe an in-flight claim and append
+    // nothing, so the result lands exactly one reference (#178).
+    let reentryTrigger = null;
+    harness.pi.appendEntry = (type, data) => {
+      if (type !== "pi-square.shadow-result") return;
+      if (reentryTrigger) {
+        const trigger = reentryTrigger;
+        reentryTrigger = null;
+        // Synchronous re-entry: markResultRead notifies every subscriber
+        // before this append returns.
+        trigger();
+      }
+      harness.entries.push({ type, data });
+    };
+    reentryTrigger = () => {
+      const result = state.runtime.snapshot().results[0];
+      if (result) state.runtime.markResultRead(result.id);
+    };
+    let started = services.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true, started.message);
+    await waitFor(
+      () => state.runtime.snapshot().results[0]?.referenced === true,
+      "the first result was not referenced",
+    );
+    const firstId = state.runtime.snapshot().results[0].id;
+    assert.equal(referenceCount(firstId), 1, "a synchronous re-entry during the append never produces a second reference");
+    assert.equal(state.runtime.snapshot().results[0].referenced, true, "the successful append marks the result referenced");
+
+    // Scenario 2 — retry after failure: an append that throws releases its
+    // in-flight claim, the result stays safely in the inbox, and a later
+    // runtime update retries and appends exactly one reference.
+    let failNextAppend = true;
+    harness.pi.appendEntry = (type, data) => {
+      if (type !== "pi-square.shadow-result") return;
+      if (failNextAppend) {
+        failNextAppend = false;
+        throw new Error("session append failed");
+      }
+      harness.entries.push({ type, data });
+    };
+    started = services.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true, started.message);
+    await waitFor(
+      () => state.runtime.snapshot().results.length === 2,
+      "the second result was not created",
+    );
+    const secondId = state.runtime.snapshot().results.at(-1).id;
+    assert.notEqual(secondId, firstId, "distinct results are never coalesced");
+    assert.equal(referenceCount(secondId), 0, "the failed append leaves no transcript reference");
+    assert.ok(state.runtime.snapshot().results.some((result) => result.id === secondId), "the result stays safely available in the inbox");
+    state.runtime.markResultRead(secondId);
+    assert.equal(referenceCount(secondId), 1, "a later runtime update retries the append exactly once");
+    assert.equal(state.runtime.snapshot().results.find((result) => result.id === secondId).referenced, true, "the retried append marks the result referenced");
+
+    // Every result holds exactly one reference and references stay per-result.
+    for (const result of state.runtime.snapshot().results) {
+      assert.equal(referenceCount(result.id), 1, `result ${result.id} holds exactly one transcript reference`);
+    }
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log("shadow-minds config guide tests: OK");
