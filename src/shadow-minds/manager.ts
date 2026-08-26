@@ -40,6 +40,7 @@ import {
 } from "./parser";
 import { canonicalPayloadJson, type ShadowResultEntity } from "./result";
 import { SHADOW_MANUAL_NOTE_MAX_CHARS, type ShadowRunView, type ShadowRuntimeSnapshot } from "./runtime";
+import { summarizeShadowUsage } from "./diagnostics";
 import type { ShadowSchedulerSnapshot } from "./scheduler";
 import { newShadowDefinitionDraft } from "./serialize";
 
@@ -1064,7 +1065,61 @@ export class ShadowManager implements Component, Focusable {
           detail: `${snapshot.results.length} results · ${unread} unread${(snapshot.evictionEvents?.length ?? 0) > 0 ? ` · ${snapshot.evictionEvents!.length} eviction events` : ""}`,
           onSelect: () => this.openInboxList(),
         },
+        {
+          id: "diagnostics",
+          label: "Diagnostics",
+          detail: `${snapshot.runs.length} runs · ${snapshot.runs.reduce((sum, run) => sum + (run.requests?.length ?? 0), 0)} requests`,
+          onSelect: () => this.openDiagnostics(),
+        },
       ],
+    });
+  }
+
+  /** Bounded aggregate usage and cache diagnostics; hashes and counts only. */
+  private openDiagnostics(): void {
+    if (!this.services?.runtime) {
+      this.errorFlash("Diagnostics are unavailable in this session.");
+      return;
+    }
+    const summary = summarizeShadowUsage(this.services.runtime.snapshot().runs);
+    const lines: string[] = [];
+    lines.push(
+      `Runs: ${summary.runs} (${summary.running} running · ${summary.settled} settled) · requests ${summary.requests} · turns ${summary.turns} · tool calls ${summary.toolCalls}`,
+    );
+    lines.push(
+      `Tokens: in ${summary.input} · out ${summary.output} · cost ${summary.cost.toFixed(4)}`,
+    );
+    if (summary.ttft.count > 0) {
+      lines.push(
+        `TTFT: ${summary.ttft.count} observed · min ${summary.ttft.minMs}ms · avg ${summary.ttft.avgMs}ms · max ${summary.ttft.maxMs}ms`,
+      );
+    }
+    lines.push(
+      "",
+      "CACHE",
+      `Provider-reported: ${summary.cache.reportedRequests} of ${summary.cache.requests} requests`,
+    );
+    if (summary.cache.reportedRequests > 0) {
+      lines.push(`Measured read: ${summary.cache.cacheRead} · write: ${summary.cache.cacheWrite}`);
+    }
+    lines.push("Cache reuse is measured and best-effort; providers do not guarantee it.");
+    lines.push("", "COHORTS");
+    if (summary.cohorts.length === 0) {
+      lines.push(`No cohort hashes recorded (${summary.runsWithoutCohorts} runs).`);
+    } else {
+      for (const group of summary.cohorts) {
+        const cache = group.cache.reportedRequests > 0
+          ? ` · cache r ${group.cache.cacheRead}/w ${group.cache.cacheWrite}`
+          : "";
+        lines.push(`${group.size} run${group.size === 1 ? "" : "s"} · ${sanitizeDisplayLine(group.label)}${cache}`);
+      }
+    }
+    this.openReview({
+      eyebrow: "RUNS / DIAGNOSTICS",
+      title: "Shadow usage and cache diagnostics",
+      lines,
+      confirmLabel: "back",
+      onConfirm: () => this.back(),
     });
   }
 
@@ -1675,14 +1730,29 @@ function runFactsLines(run: ShadowRunView): string[] {
     lines.push(...run.toolWarnings.map((warning) => sanitizeDisplayLine(warning)));
   }
   lines.push("", "CACHE COHORTS");
-  lines.push(`system: ${run.systemHash ?? "—"}`);
-  lines.push(`tools: ${run.toolSchemaHash ?? "—"}`);
-  lines.push(`trajectory: ${run.trajectoryHash ?? "—"}${run.trajectoryTruncated ? " (truncated: dropped)" : ""}`);
+  const cohorts = run.cohorts;
+  if (cohorts) {
+    lines.push(`model: ${cohorts.model} · thinking: ${cohorts.thinking}`);
+    lines.push(`system: ${cohorts.system}`);
+    lines.push(`tools: ${cohorts.toolSchema} · cwd: ${cohorts.cwd}`);
+    lines.push(`trajectory: ${cohorts.trajectory}${run.trajectoryTruncated ? " (truncated: dropped)" : ""}`);
+    lines.push(`checkpoint: ${cohorts.trajectoryCheckpoint} · truncation: ${cohorts.truncation}`);
+    if (cohorts.parentCore !== undefined || cohorts.projectRules !== undefined) {
+      lines.push(`parent core: ${cohorts.parentCore ?? "—"} · project rules: ${cohorts.projectRules ?? "—"}`);
+    }
+  } else {
+    lines.push("model: —", "system: —", "tools: —", "trajectory: —");
+  }
   if (run.requests && run.requests.length > 0) {
     lines.push("", "REQUESTS");
-    run.requests.forEach((request, index) => {
+    run.requests.forEach((request) => {
+      const cache = request.cacheReported
+        ? `cache r ${request.cacheRead}/w ${request.cacheWrite}`
+        : "cache unreported";
       const ttft = request.ttftMs !== undefined ? ` · ttft ${request.ttftMs}ms` : "";
-      lines.push(`${index + 1}. in ${request.input} · out ${request.output} · cache r ${request.cacheRead}/w ${request.cacheWrite} · cost ${request.cost}${ttft}`);
+      lines.push(
+        `turn ${request.turn}. in ${request.input} · out ${request.output} · ${cache} · ${request.toolCalls} tool calls · cost ${request.cost}${ttft}`,
+      );
     });
   }
   return lines;

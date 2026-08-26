@@ -331,6 +331,17 @@ What works today:
   recover inbox-only with notify policy at reopen. A failed run's
   infrastructure diagnostics stay in `/shadow` and reach the model only as
   a bounded failure summary through an explicit send.
+- `/shadow` Run entries expose a bounded **Diagnostics** view with per-request
+  usage and prompt-cache observations: input/output tokens, cost, per-request
+  turns, tool calls, and TTFT, plus cache coverage where a provider-reported
+  zero stays distinguishable from an adapter that does not report cache
+  values at all. Every run records cache-cohort hashes — model, thinking,
+  tool schema, SYSTEM, working directory, trajectory, checkpoint, and
+  truncation mode, plus the frozen parent core and project rules hashed
+  where the raw text is visible and recorded when present — never prompt
+  text or credentials. Cohort
+  groups show how many runs shared a model/SYSTEM/tool-schema prefix.
+  Provider cache reuse is measured and best-effort; it is not guaranteed.
 - A strict `shadowMinds` section in agent and project pi-square configuration:
   the agent-level `enabled` master switch (a project can never re-enable it)
   and runtime `defaults` that always stay below package hard caps. Defaults may

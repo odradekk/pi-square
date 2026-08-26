@@ -62,6 +62,7 @@ import {
 import { formatModel } from "../subagents/child-session-executor";
 import {
   buildShadowSystem,
+  canonicalSchemaJson,
   type ShadowProjectRule,
 } from "./prompt";
 import { matchesParentModelFilter, resolveShadowModel, resolveShadowThinkingLevel } from "./resolve";
@@ -72,6 +73,7 @@ import {
 } from "./inbox-store";
 import {
   createShadowRuntime,
+  shadowCohortHash,
   type ShadowRunRequest,
   type ShadowRuntime,
   type ShadowRuntimeDeps,
@@ -331,6 +333,19 @@ function composeShadowRun(input: {
       modelResolution,
       ...(thinkingResolution.level ? { thinkingLevel: thinkingResolution.level } : {}),
       envelope: resolution.envelope,
+      // Authority hashes are computed here — where the raw snapshot text is
+      // visible — so the run record stores only hash prefixes, never the
+      // prompt text (odradekk/pi-square#161).
+      authorityCohort: {
+        ...(snapshot.parentCore ? { parentCoreHash: shadowCohortHash(snapshot.parentCore) } : {}),
+        ...(snapshot.projectRules.length > 0
+          ? {
+              projectRulesHash: shadowCohortHash(
+                canonicalSchemaJson(snapshot.projectRules.map((rule) => ({ path: rule.path, content: rule.content }))),
+              ),
+            }
+          : {}),
+      },
       ...(definition.debug && state.partition ? { debug: state.partition } : {}),
     };
     const outcome = input.source === "manual"

@@ -220,6 +220,21 @@ function addResult(inbox, index, overrides = {}) {
 }
 
 {
+  const { sessionDir } = makeSessionRoot();
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  const entity = addResult(inbox, 1, {
+    requests: [{ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turn: 1, toolCalls: 0 }],
+  });
+  const entityPath = join(shadowPartitionPath(sessionDir, "sess-1"), "results", `${entity.id}.json`);
+  const tampered = JSON.parse(readFileSync(entityPath, "utf8"));
+  tampered.requests[0].turn = 1_000_000;
+  tampered.requests[0].toolCalls = 1_000_000;
+  writeFileSync(entityPath, JSON.stringify(tampered), "utf8");
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });
+  assert.equal(reopened.list().length, 0, "tampered request metrics beyond package hard caps never surface");
+  assert.ok(existsSync(join(shadowPartitionPath(sessionDir, "sess-1"), "quarantine")));
+}
+{
   // A tampered entity (wrong shape) is quarantined too, never returned.
   const { sessionDir } = makeSessionRoot();
   const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "sess-1" });

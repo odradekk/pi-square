@@ -214,6 +214,12 @@ export interface ShadowResultMetadata {
     cacheWrite: number;
     cost: number;
     ttftMs?: number;
+    /** One-based turn ordinal (#161). */
+    turn?: number;
+    /** Tool executions attributed to this request (#161). */
+    toolCalls?: number;
+    /** Present only when the provider report carried cache fields (#161). */
+    cacheReported?: boolean;
   }>;
 }
 
