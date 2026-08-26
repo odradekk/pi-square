@@ -48,8 +48,11 @@ read-only extension factories — never parent registry overrides. Shell,
 writes, SSH, Firecrawl parse, authenticated GitHub, and delegation are
 excluded capabilities: requested-but-excluded tools drop with visible
 warnings, while required ones fail before prompting. The optional
-`pdf_search` and GitHub-class capabilities stay explicit opt-ins; bundled
-templates request only local evidence tools. The governance text restates
+`pdf_search` and GitHub-class capabilities stay explicit opt-ins; every
+bundled template requests only catalog tools from the read-only local and
+library evidence families — two of the six add `codegraph`, and two add
+the local `pdf_search` extractor — and none requests a remote or
+authenticated capability. The governance text restates
 the boundary for the model, and the envelope hash makes the effective tool
 set observable per run.
 

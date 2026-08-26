@@ -168,7 +168,8 @@ The Shadow-safe tool catalog is exactly: `read`, `grep`, `find`, `ls`,
 parse, authenticated GitHub, and delegation are excluded capabilities — a
 requested-but-excluded tool drops with a run-start warning, while a
 `requiredTools` miss fails before prompting. `pdf_search` is an explicit
-opt-in not present in any bundled template.
+opt-in outside the default local evidence set; two bundled templates
+(`project-grounding`, `architecture-lens`) request it.
 
 Models: an empty `model` inherits the activating parent model; an explicit
 `provider/model-id` resolves through the registry and requires configured
