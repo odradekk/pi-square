@@ -275,6 +275,20 @@ export interface ShadowInbox {
    */
   markReferenced?(id: string): boolean;
   /**
+   * Atomically claims the right to append this result's bounded transcript
+   * reference (#181). The claim is acquired before the append and is shared
+   * at the store's lifecycle scope — the persistent partition arbitrates
+   * between overlapping runtime instances and extension instances — so one
+   * authoritative result produces at most one reference. Returns false when
+   * another holder still owns the claim or the result is already referenced.
+   */
+  claimReference?(id: string): boolean;
+  /**
+   * Releases a claim after a failed append so a later update can retry; the
+   * result itself stays available in the inbox.
+   */
+  releaseReferenceClaim?(id: string): void;
+  /**
    * Downgrades one still-undelivered result's configured delivery to
    * `notify`; a new parent task forces old-task results inbox-only.
    */
@@ -320,6 +334,10 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
   );
   const makeId = options?.makeId ?? (() => `shr-${randomUUID()}`);
   const entries: ShadowResultEntity[] = [];
+  // One in-flight transcript-reference claim per result id (#181): the
+  // fallback store lives in one process, so a plain set coordinates every
+  // overlapping subscriber and runtime rebind sharing this instance.
+  const referenceClaims = new Set<string>();
   const clone = <T>(value: T): T => structuredClone(value);
 
   const evictIfNeeded = () => {
@@ -383,7 +401,24 @@ export function createShadowInbox(options?: { maxResults?: number; makeId?: () =
       const index = entries.findIndex((item) => item.id === id);
       if (index === -1) return false;
       entries.splice(index, 1);
+      referenceClaims.delete(id);
       return true;
+    },
+    claimReference(id) {
+      const entry = entries.find((item) => item.id === id);
+      if (!entry || entry.referenced || referenceClaims.has(id)) return false;
+      referenceClaims.add(id);
+      return true;
+    },
+    markReferenced(id) {
+      const entry = entries.find((item) => item.id === id);
+      if (!entry || entry.referenced) return false;
+      entry.referenced = true;
+      referenceClaims.delete(id);
+      return true;
+    },
+    releaseReferenceClaim(id) {
+      referenceClaims.delete(id);
     },
     forceNotify(id) {
       const entry = entries.find((item) => item.id === id);

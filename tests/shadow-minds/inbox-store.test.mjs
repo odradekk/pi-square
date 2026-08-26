@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -460,8 +460,6 @@ function addResult(inbox, index, overrides = {}) {
   assert.equal(reopened.list()[0].configuredDelivery, "notify", "the downgrade survives reopening");
 }
 
-for (const root of roots) rmSync(root, { recursive: true, force: true });
-
 // ── Confirmed-delivery persistence (#159) ───────────────────────────
 
 {
@@ -502,5 +500,78 @@ for (const root of roots) rmSync(root, { recursive: true, force: true });
   assert.equal(views.find((entry) => entry.id === fresh.id).configuredDelivery, "steer");
   assert.equal(recovered.recoverPendingDelivery(), 0, "recovery is idempotent");
 }
+
+// ── Transcript-reference claims are shared across instances (#181) ──
+
+{
+  const { sessionDir } = makeSessionRoot("claim-1");
+  const inboxA = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  const entity = addResult(inboxA, 1);
+  // A second store instance on the same partition observes the same
+  // authoritative result while its in-memory copy is still unreferenced.
+  const inboxB = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  assert.ok(inboxB.list().some((item) => item.id === entity.id), "the second instance observes the shared result");
+
+  assert.equal(inboxA.claimReference(entity.id), true, "the first instance claims the append right");
+  assert.equal(inboxB.claimReference(entity.id), false, "the second instance cannot claim the same result");
+  assert.equal(inboxA.claimReference(entity.id), false, "the holding instance does not double-claim");
+
+  // The successful append persists the referenced mark and drops the claim;
+  // the other instance decides from the entity on disk, not its stale copy.
+  assert.equal(inboxA.markReferenced(entity.id), true);
+  assert.equal(existsSync(join(shadowPartitionPath(sessionDir, "claim-1"), "references", `${entity.id}.claim`)), false, "the owned claim is removed after the referenced mark persists");
+  assert.equal(inboxB.claimReference(entity.id), false, "a referenced result is never claimable again, even from a stale in-memory copy");
+
+  // A failed append releases the claim so a later instance can retry. The
+  // later instance seeds the shared result from the partition, exactly like
+  // a session reopen that discovers another instance's in-flight result.
+  const second = addResult(inboxA, 2);
+  const inboxC = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  assert.ok(inboxC.list().some((item) => item.id === second.id), "a later instance seeds the shared result");
+  assert.equal(inboxC.claimReference(second.id), true, "another instance claims the retry right");
+  inboxC.releaseReferenceClaim(second.id);
+  assert.equal(inboxA.claimReference(second.id), true, "a released claim can be retried");
+  inboxA.releaseReferenceClaim(second.id);
+
+  // Unknown results never claim.
+  assert.equal(inboxA.claimReference("shr-does-not-exist"), false);
+
+  // An ambiguous crash residue is never reclaimed automatically: the process
+  // may have appended successfully before dying but failed to persist the
+  // referenced bit. At-most-once therefore fails closed and leaves the result
+  // recoverable in the inbox rather than risking a duplicate transcript entry.
+  const third = addResult(inboxA, 3);
+  const claimPath = join(shadowPartitionPath(sessionDir, "claim-1"), "references", `${third.id}.claim`);
+  mkdirSync(dirname(claimPath), { recursive: true });
+  writeFileSync(claimPath, JSON.stringify({ token: "crash-residue" }), { encoding: "utf8", mode: 0o600 });
+  assert.equal(inboxA.claimReference(third.id), false, "ambiguous crash residue stays fail-closed");
+  inboxA.releaseReferenceClaim(third.id);
+  assert.equal(existsSync(claimPath), true, "an instance never removes a claim token it does not own");
+
+  // Once an append may have landed, an uncommitted claim remains durable and
+  // blocks a reopened instance rather than risking a duplicate reference.
+  const fourth = addResult(inboxA, 4);
+  assert.equal(inboxA.claimReference(fourth.id), true);
+  const fourthClaim = join(shadowPartitionPath(sessionDir, "claim-1"), "references", `${fourth.id}.claim`);
+  assert.equal(statSync(fourthClaim).mode & 0o777, 0o600, "claim files are private");
+  const reopened = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 6_000 });
+  assert.equal(reopened.claimReference(fourth.id), false, "an ambiguous post-append claim stays fail-closed across reopen");
+}
+
+// A hostile references directory is rejected rather than followed.
+{
+  const { sessionDir } = makeSessionRoot("claim-link");
+  const inbox = createPersistentShadowInbox({ sessionDir, sessionId: "claim-link", now: () => 5_000 });
+  const entity = addResult(inbox, 1);
+  const outside = mkdtempSync(join(tmpdir(), "shadow-ref-outside-"));
+  roots.push(outside);
+  const references = join(shadowPartitionPath(sessionDir, "claim-link"), "references");
+  const { symlinkSync } = await import("node:fs");
+  symlinkSync(outside, references);
+  assert.equal(inbox.claimReference(entity.id), false, "a symlink references directory fails closed");
+  assert.deepEqual(readdirSync(outside), [], "the symlink target receives no claim file");
+}
+
+for (const root of roots) rmSync(root, { recursive: true, force: true });
 
 console.log("shadow-minds inbox-store tests: OK");

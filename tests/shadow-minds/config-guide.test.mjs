@@ -2148,4 +2148,155 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
   }
 }
 
+// ── Transcript references deduplicate across runtime instances (#181) ──
+
+{
+  const { DEFAULT_CONFIG: TEMPLATE, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+  const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
+
+  const { writeFileSync: writeDisk } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "shadow-ref-cross-"));
+  const project = join(dir, "project");
+  const sessionDir = join(dir, "sessions");
+  const sessionFile = join(sessionDir, "2026-08-27T00-00-00-000Z_delta-1.jsonl");
+  mkdirSync(project, { recursive: true });
+  mkdirSync(sessionDir, { recursive: true });
+  writeDisk(sessionFile, "{}\n", "utf8");
+
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  mkdirSync(join(dir, "agent"), { recursive: true });
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    const sessionCtx = {
+      cwd: project,
+      hasUI: true,
+      isProjectTrusted: () => true,
+      model: { provider: "acme", id: "parent-model" },
+      modelRegistry: { find: (provider, id) => ({ provider, id }) },
+      sessionManager: {
+        getSessionDir: () => sessionDir,
+        getSessionFile: () => sessionFile,
+        getSessionId: () => "delta-1",
+        getLeafId: () => "leaf-1",
+        getBranch: () => [],
+        buildContextEntries: () => [],
+      },
+      ui: { notify() {}, custom: async () => {} },
+    };
+    const makeRuntimeDeps = () => ({
+      now: () => 1_000,
+      async createSession(input) {
+        return { session: { customTools: input.customTools } };
+      },
+      async runSession(input) {
+        const submit = input.session.customTools.find((tool) => tool.name === "submit_shadow_result");
+        if (submit) {
+          await submit.execute(
+            "c1",
+            { payload: JSON.stringify({ decisions: [], progress: "cross-instance probe", open_questions: [] }) },
+            undefined,
+            undefined,
+            sessionCtx,
+          );
+        }
+        return {
+          status: "completed", prompted: true, timedOut: false, finalText: "",
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+          streamingCompleted: true, messages: [],
+        };
+      },
+    });
+    const makeState = () => {
+      const harness = fakePi();
+      const state = registerShadowMinds(
+        harness.pi,
+        undefined,
+        () => ({ ...TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
+        makeRuntimeDeps(),
+      );
+      return { harness, state };
+    };
+
+    // One shared transcript across both instances: every append lands here.
+    const appends = [];
+    const referenceCount = (id) => appends.filter((appended) => appended === id).length;
+
+    // Instance A appends fail at first (a failing session append path).
+    const a = makeState();
+    let failA = true;
+    a.harness.pi.appendEntry = (type, data) => {
+      if (type !== "pi-square.shadow-result") return;
+      if (failA) throw new Error("session append failed");
+      appends.push(data.resultId);
+    };
+    await a.harness.handlers.get("session_start")({}, sessionCtx);
+    const servicesA = __testables.makeServices(a.state, sessionCtx, new ConfirmationCoordinator());
+
+    let started = servicesA.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true, started.message);
+    await waitFor(
+      () => a.state.runtime.snapshot().results.length > 0,
+      "instance A did not retain the first result after append failure",
+    );
+    const firstId = a.state.runtime.snapshot().results[0].id;
+    assert.equal(referenceCount(firstId), 0, "the failed append leaves no transcript reference");
+    assert.ok(a.state.runtime.snapshot().results.some((result) => result.id === firstId), "the result stays in the inbox");
+
+    // Instance B opens the same session: its snapshot seeds the unreferenced
+    // result from the shared partition while A's append never landed.
+    const b = makeState();
+    b.harness.pi.appendEntry = (type, data) => {
+      if (type !== "pi-square.shadow-result") return;
+      appends.push(data.resultId);
+    };
+    await b.harness.handlers.get("session_start")({}, sessionCtx);
+    const servicesB = __testables.makeServices(b.state, sessionCtx, new ConfirmationCoordinator());
+    assert.ok(
+      b.state.runtime.snapshot().results.some((result) => result.id === firstId),
+      "instance B observes the shared authoritative result unreferenced",
+    );
+
+    // B's own run retries the failed reference and appends its new result:
+    // both land exactly one reference.
+    started = servicesB.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true, started.message);
+    await waitFor(
+      () => b.state.runtime.snapshot().results.length >= 2
+        && referenceCount(firstId) === 1,
+      "instance B did not retry the failed reference and persist its new result",
+    );
+    const secondId = b.state.runtime.snapshot().results.find((result) => result.id !== firstId)?.id;
+    assert.notEqual(secondId, firstId, "distinct results are never coalesced");
+    assert.equal(referenceCount(firstId), 1, "the retried reference lands exactly once");
+    assert.equal(referenceCount(secondId), 1, "the new result lands exactly one reference");
+
+    // A's later notification still sees its stale unreferenced in-memory copy;
+    // the inbox-backed claim must refuse a second append of the same result.
+    failA = false;
+    started = servicesA.runtime.runManual({ shadowId: "session-synthesizer" });
+    assert.equal(started.ok, true, started.message);
+    await waitFor(
+      () => a.state.runtime.snapshot().results.length >= 2,
+      "instance A did not persist its later distinct result",
+    );
+    const thirdId = a.state.runtime.snapshot().results.find((result) => result.id !== firstId && result.id !== secondId)?.id;
+    assert.equal(referenceCount(firstId), 1, "a stale runtime instance never appends a second reference for the same result");
+    assert.equal(referenceCount(secondId), 1, "results referenced by another instance stay single");
+    assert.equal(referenceCount(thirdId), 1, "the third result lands exactly one reference");
+    assert.equal(
+      new Set([firstId, secondId, thirdId]).size,
+      3,
+      "three distinct authoritative results exist",
+    );
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log("shadow-minds config guide tests: OK");
