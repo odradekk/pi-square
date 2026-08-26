@@ -22,6 +22,7 @@ Shadow Minds are enabled by the agent-level master switch in
 
 ```json
 {
+  "version": 2,
   "shadowMinds": {
     "enabled": true,
     "defaults": {
@@ -57,8 +58,8 @@ cap (see the configuration reference below).
 - **Run facts** — per run: the frozen tool envelope, trigger reasons, the
   full cache-cohort hash axes, and per-request metrics.
 
-Definition writes happen only through this manager; the extension never
-writes definition files on its own.
+The extension writes definitions only through this manager; it never changes
+definition files automatically.
 
 ## `/shadow <request>` and the Config Guide
 
@@ -87,8 +88,6 @@ triggers: [tool_turn, completion]
 delivery: steer
 completionGate: false
 tools: [read, grep, find, ls, codegraph, pdf_search]
-model: ""
-thinking: ""
 timeoutSeconds: 120
 maxTurns: 8
 maxToolCalls: 16
@@ -113,9 +112,9 @@ Fields:
 | `completionGate` | Answer-after-review window; requires `completion` | `false` |
 | `tools` | Shadow-safe tool list; omitted selects the default local set, `[]` selects none | default set |
 | `requiredTools` | Must be a subset of the final tool set | `[]` |
-| `model` | Explicit `provider/model-id` with configured auth; empty inherits the parent model | inherit |
+| `model` | Explicit `provider/model-id` with configured auth; omit to inherit the parent model | inherit |
 | `parentModels` | Exact `provider/model-id` or `*` filter on the activating parent model | any |
-| `thinking` | `off`…`max`; empty falls back to configuration default, then the parent's level | inherit |
+| `thinking` | `off`…`max`; omit to fall back to configuration default, then the parent's level | inherit |
 | `timeoutSeconds`, `maxTurns`, `maxToolCalls` | Per-run bounds under package caps | config defaults |
 | `debug` | Persist a sanitized child-session JSONL per run (see below) | `false` |
 | `outputSchema` | Bounded JSON object schema for the result payload; replaced atomically, `null` restores the default `{ summary: string }` | default schema |
@@ -125,9 +124,10 @@ Fields:
 Layers merge by stable ID: **package** templates (read-only, shipped in
 `shadow-minds/`) → **agent** overlays (`~/.pi/agent/shadow-minds/`) →
 **trusted-project** overlays (`.pi/shadow-minds/` in the project). Omitted
-fields inherit; explicit `null` or empty values clear; a provided body
-replaces the lower layer's body; `outputSchema` is replaced atomically; and
-trigger instructions merge per trigger key with `null` removing one key.
+fields inherit. Empty lists explicitly replace inherited lists, while an empty
+body inherits the lower body. `triggerInstructions` merges per key, with
+`null` removing one inherited instruction; `outputSchema` is replaced atomically,
+and `outputSchema: null` restores the default summary schema.
 The manager shows per-field provenance (scope, file, content hash).
 Untrusted projects contribute no definitions and cannot write overlays.
 
@@ -189,8 +189,9 @@ failures are observable lifecycle data, never results.
 
 A run's single obligation is one `submit_shadow_result` call whose payload
 string must match the definition's output schema. Schema errors list the
-exact fields to fix; a run that ends without a valid submission is
-discarded silently.
+exact fields to fix. If the run ends without a valid submission, its assistant
+text is discarded and no inbox result is created; the terminal run lifecycle
+remains visible in `/shadow`.
 
 Delivery policy (per definition, fixed):
 
