@@ -1173,8 +1173,17 @@ export default function registerShadowMinds(
     // does not re-append transcript references it already recorded; the
     // in-memory set only guards duplicate notifications within this
     // runtime instance. A crash between the append and the persisted mark
-    // can re-append one bounded entry at the next open.
+    // can re-append one bounded entry at the next open. The append itself
+    // is guarded by an in-flight claim taken before the append (#178): a
+    // synchronous subscriber re-entry while the first append is still on
+    // the stack observes the claim and appends nothing, and a failed
+    // append releases the claim so a later runtime update retries. Pi
+    // 0.84.2's `appendEntry` is synchronous (appendCustomEntry plus a
+    // session-level emit to UI subscribers); a differing Pi 0.84.3
+    // observation is not the supported contract, and the claim keeps the
+    // at-most-once guarantee independent of that difference.
     const seenResults = new Set<string>();
+    const inFlightReferences = new Set<string>();
     // Results restored from a reopened partition never auto-deliver: only
     // results created inside this session enter the delivery machine.
     const seenDelivery = new Set<string>(state.runtime.snapshot().results.map((result) => result.id));
@@ -1187,7 +1196,7 @@ export default function registerShadowMinds(
       refreshStatus();
       const results = state.runtime.snapshot().results;
       for (const result of results) {
-        if (seenResults.has(result.id) || result.referenced) continue;
+        if (seenResults.has(result.id) || inFlightReferences.has(result.id) || result.referenced) continue;
         // Fresh results alone enter the delivery machine; results restored
         // from a reopened partition stay inbox-only until explicitly sent.
         if (!seenDelivery.has(result.id)) {
@@ -1195,6 +1204,7 @@ export default function registerShadowMinds(
           state.delivery?.enqueueResult(result);
         }
         if (!effectiveConfig().enabled) continue;
+        inFlightReferences.add(result.id);
         try {
           pi.appendEntry(SHADOW_RESULT_ENTRY_TYPE, {
             version: 1 as const,
@@ -1207,7 +1217,10 @@ export default function registerShadowMinds(
           currentInbox?.markReferenced?.(result.id);
         } catch {
           // A session that cannot record the reference keeps the result in
-          // the inbox; the entry is observability, not authority.
+          // the inbox; the entry is observability, not authority. Releasing
+          // the claim lets a later runtime update retry the append.
+        } finally {
+          inFlightReferences.delete(result.id);
         }
       }
       if (!sessionCtx?.hasUI) return;
