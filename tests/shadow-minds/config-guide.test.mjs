@@ -2101,7 +2101,10 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     };
     let started = services.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(
+      () => state.runtime.snapshot().results[0]?.referenced === true,
+      "the first result was not referenced",
+    );
     const firstId = state.runtime.snapshot().results[0].id;
     assert.equal(referenceCount(firstId), 1, "a synchronous re-entry during the append never produces a second reference");
     assert.equal(state.runtime.snapshot().results[0].referenced, true, "the successful append marks the result referenced");
@@ -2120,7 +2123,10 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     };
     started = services.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(
+      () => state.runtime.snapshot().results.length === 2,
+      "the second result was not created",
+    );
     const secondId = state.runtime.snapshot().results.at(-1).id;
     assert.notEqual(secondId, firstId, "distinct results are never coalesced");
     assert.equal(referenceCount(secondId), 0, "the failed append leaves no transcript reference");
