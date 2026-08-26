@@ -165,11 +165,17 @@ The activity view, the manager, and the subagent status row summarize a child's 
 ## Shadow Minds (experimental, disabled by default)
 
 Shadow Minds are persistent, read-only cognitive roles that observe a session at
-deterministic boundaries. The feature is under construction
-(odradekk/pi-square#149) and ships disabled: installing or upgrading pi-square
-never creates Shadow model calls.
+deterministic boundaries. The feature is experimental (odradekk/pi-square#149)
+and ships disabled by default: installing or upgrading pi-square never creates
+Shadow model calls. The complete guide — configuration, definition and schema
+format, triggers, tool and model boundaries, `/shadow` and the Config Guide,
+inbox delivery, cross-task semantics, debug data, and cache metrics — is
+[`docs/shadow-minds.md`](docs/shadow-minds.md); the architecture decisions are
+recorded in ADR-0011. No success-rate, correctness, or cost-efficiency
+improvement is claimed: the feature has not been evaluated with real-model A/B
+testing.
 
-What works today:
+What ships today:
 
 - Six disabled package templates — Project grounding, Architecture lens,
   Completion check, Alternative explorer, Research scout, and Session
@@ -351,8 +357,7 @@ What works today:
 
 Definition files are ordinary Markdown with a strict bounded frontmatter
 subset; invalid definitions are diagnosed and excluded individually while
-valid ones remain inspectable. Result delivery (steer, wake, notify, and
-Send to agent) arrives with the later slices of #149.
+valid ones remain inspectable.
 
 ## Persistent SSH shell
 

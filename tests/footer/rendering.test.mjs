@@ -72,6 +72,9 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
     statuses: [
       { key: "z-other", text: "\u001b[31mready\nnow\u001b[0m" },
       { key: "pi-square.subagents", text: styledSubagents },
+      // The Shadow Minds status is a generic extension status: neutral dot
+      // marker, sanitized bounded text, never a lifecycle marker (#162).
+      { key: "pi-square.shadow-minds", text: "Shadow: 1 running · 2 unread · paused" },
     ],
   });
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
@@ -91,6 +94,13 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
     // Row 3: status with per-status markers
     assert.match(plain[2], /●/, `${file} at ${width}: subagent status has ● marker`);
     assert.match(plain[2], /subagents 1/, `${file} at ${width}: subagent text visible`);
+    // The Shadow Minds status renders with the neutral dot and no emoji
+    // anywhere on the row; the full bounded text is visible once the width
+    // admits it, and narrow widths still bound the row to the terminal.
+    if (width >= 80) {
+      assert.match(plain[2], /· Shadow: 1 running · 2 unread · paused/, `${file} at ${width}: shadow status uses the neutral marker`);
+    }
+    assert.doesNotMatch(plain[2], /[\u{1F000}-\u{1FAFF}\u{FE0F}\u{20E3}]/u, `${file} at ${width}: no emoji in the status row`);
     assert.doesNotMatch(plain[2], /\r|\n|\t|\u001b/, `${file} at ${width}: no control chars in status`);
 
     if (width >= 100) {
