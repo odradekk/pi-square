@@ -648,14 +648,17 @@ function baseRequest(overrides = {}) {
 }
 
 {
-  // A run without assistant completions reports no request metrics.
+  // A turn that began but ended before assistant completion remains visible as
+  // one zero-valued, cache-unreported request metric.
   const fake = makeFake({ script: async (input) => {
     input.onEvent({ type: "turn_start" });
     return { ...COMPLETED_NO_SUBMISSION, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 } };
   } });
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
   await runtime.startManualRun(baseRequest()).done;
-  assert.equal(runtime.snapshot().runs[0].requests, undefined);
+  assert.deepEqual(runtime.snapshot().runs[0].requests, [
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turn: 1, toolCalls: 0 },
+  ]);
 }
 
 // ── persistent inbox and debug wiring (#157) ─────────────────────

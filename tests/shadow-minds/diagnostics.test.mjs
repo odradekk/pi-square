@@ -5,7 +5,7 @@ import jiti from "jiti";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 
-const { createShadowRuntime } = await load(join(packageRoot, "src", "shadow-minds", "runtime.ts"));
+const { createShadowRuntime, isCacheUsageReported } = await load(join(packageRoot, "src", "shadow-minds", "runtime.ts"));
 const { SHADOW_COHORT_GROUPS_MAX, summarizeShadowUsage, shadowCohortGroupKey } = await load(
   join(packageRoot, "src", "shadow-minds", "diagnostics.ts"),
 );
@@ -86,7 +86,7 @@ function fakeModel(scriptedRequests, { submit } = {}) {
 
 const turnStart = () => ({ type: "turn_start" });
 const assistantStart = { type: "message_start", message: { role: "assistant" } };
-const assistantEnd = (usage) => ({ type: "message_end", message: { role: "assistant", usage } });
+const assistantEnd = (usage, api) => ({ type: "message_end", message: { role: "assistant", usage, ...(api ? { api } : {}) } });
 const toolStart = { type: "tool_execution_start" };
 
 function baseRequest(overrides = {}) {
@@ -99,7 +99,14 @@ function baseRequest(overrides = {}) {
   };
 }
 
-// ── Per-request diagnostics retain the reported facts ──────────────
+
+{
+  const normalizedZero = { input: 5, output: 1, cacheRead: 0, cacheWrite: 0 };
+  assert.equal(isCacheUsageReported(normalizedZero), false, "normalized zero fields without an explicit marker stay unreported");
+  assert.equal(isCacheUsageReported({ ...normalizedZero, cacheRead: 12 }), true, "a non-zero cache value is direct report evidence");
+  assert.equal(isCacheUsageReported({ ...normalizedZero, cacheReported: false }), false, "an explicit negative adapter marker wins");
+  assert.equal(isCacheUsageReported({ ...normalizedZero, cacheReported: true }), true, "an explicit adapter marker can distinguish a provider-reported zero");
+}
 
 {
   // Two requests: the first reports cache values (including a zero write),
@@ -144,8 +151,39 @@ function baseRequest(overrides = {}) {
 }
 
 {
+  const fake = fakeModel([[turnStart(), { __advance: 50 }]]);
+  const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
+  const view = await runtime.startManualRun(baseRequest()).done;
+  assert.equal(view.requests.length, 1, "a request that ended before assistant message_end remains observable");
+  assert.deepEqual(
+    view.requests[0],
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turn: 1, toolCalls: 0 },
+    "an incomplete request has bounded zero usage, no TTFT, and cache unreported",
+  );
+}
+
+{
+  const fake = fakeModel([[
+    turnStart(),
+    { __advance: Number.POSITIVE_INFINITY },
+    assistantStart,
+    assistantEnd({ input: Infinity, output: -3, cacheRead: Infinity, cacheWrite: -1, cost: Number.NaN }),
+    ...Array.from({ length: 140 }, () => toolStart),
+  ]]);
+  const runtime = createShadowRuntime({ config: () => config({ defaults: { maxToolCallsPerRun: 128 } }), deps: fake.deps });
+  const view = await runtime.startManualRun(baseRequest()).done;
+  const metric = view.requests[0];
+  assert.equal(metric.input, 0);
+  assert.equal(metric.output, 0);
+  assert.equal(metric.cacheRead, 0);
+  assert.equal(metric.cacheWrite, 0);
+  assert.equal(metric.cost, 0);
+  assert.equal(metric.ttftMs, undefined);
+  assert.equal(metric.toolCalls, 128, "request diagnostics clamp tool calls to the package hard cap");
+}
+{
   // A provider report of cache zeros is reported — the distinguishing case.
-  const fake = fakeModel([[turnStart(), assistantStart, assistantEnd({ input: 5, output: 1, cacheRead: 0, cacheWrite: 0 })]]);
+  const fake = fakeModel([[turnStart(), assistantStart, assistantEnd({ input: 5, output: 1, cacheRead: 0, cacheWrite: 0, cacheReported: true })]]);
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
   const view = await runtime.startManualRun(baseRequest()).done;
   assert.equal(view.requests[0].cacheReported, true);
@@ -227,6 +265,15 @@ function baseRequest(overrides = {}) {
   assert.notEqual(changedTrajectory.cohorts.truncation, a.cohorts.truncation);
   assert.equal(changedTrajectory.trajectoryTruncated, true);
 
+  const unsafePrehash = await mk().startManualRun(baseRequest({
+    envelope: { toolNames: [], customTools: [], schemaHash: "api_key=TOOLSECRET", warnings: [] },
+    authorityCohort: { parentCoreHash: "Authorization: Bearer CORESECRET", projectRulesHash: "password=RULESECRET" },
+  })).done;
+  for (const value of [unsafePrehash.cohorts.toolSchema, unsafePrehash.cohorts.parentCore, unsafePrehash.cohorts.projectRules]) {
+    assert.match(value, /^[0-9a-f]{16}$/, "externally supplied cohort values are normalized to hashes");
+  }
+  assert.doesNotMatch(JSON.stringify(unsafePrehash), /TOOLSECRET|CORESECRET|RULESECRET/, "non-hash cohort input never enters the run record verbatim");
+
   // Omitted authority input leaves those cohort entries absent, not fake.
   const noAuthority = await mk().startManualRun(baseRequest()).done;
   assert.equal(noAuthority.cohorts.parentCore, undefined);
@@ -291,6 +338,26 @@ function baseRequest(overrides = {}) {
   assert.ok(group.label.includes("m1"), "the group label carries its hash axes");
 }
 
+{
+  const summary = summarizeShadowUsage([{
+    id: "damaged",
+    phase: "submitted",
+    startedAt: 1,
+    usage: { input: Infinity, output: -5, cacheRead: 0, cacheWrite: 0, cost: Number.NaN, turns: Number.MAX_VALUE },
+    requests: [
+      { input: 0, output: 0, cacheRead: Infinity, cacheWrite: -1, cost: 0, turn: 1, toolCalls: Infinity, ttftMs: Infinity, cacheReported: true },
+      { input: 0, output: 0, cacheRead: Number.MAX_VALUE, cacheWrite: Number.MAX_VALUE, cost: 0, turn: 2, toolCalls: Number.MAX_VALUE, ttftMs: 10, cacheReported: true },
+    ],
+  }]);
+  assert.equal(summary.input, 0);
+  assert.equal(summary.output, 0);
+  assert.equal(summary.cost, 0);
+  assert.equal(summary.turns, Number.MAX_SAFE_INTEGER, "aggregate counts saturate at a finite hard bound");
+  assert.equal(summary.toolCalls, Number.MAX_SAFE_INTEGER);
+  assert.equal(summary.cache.cacheRead, Number.MAX_SAFE_INTEGER);
+  assert.equal(summary.cache.cacheWrite, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual(summary.ttft, { count: 1, minMs: 10, avgMs: 10, maxMs: 10 }, "non-finite TTFT values are excluded");
+}
 {
   // Cohort groups sort by size then key and stay bounded.
   const mk = (id, cohorts) => ({ id, phase: "submitted", startedAt: 1, cohorts });

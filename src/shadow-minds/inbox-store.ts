@@ -52,7 +52,10 @@ import {
   validateShadowPayload,
   type ShadowOutputSchema,
 } from "./parser";
-
+import {
+  SHADOW_MINDS_MODEL_TURNS_HARD_MAX,
+  SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
+} from "../core/config";
 /** Hidden partition directory beneath the parent session directory. */
 export const SHADOW_PARTITION_DIR = ".pi-square-shadow";
 
@@ -210,8 +213,16 @@ function validatePersistedEntity(value: unknown): LoadedEntity["entity"] & { val
       const item = metric as Record<string, unknown>;
       if (!["input", "output", "cacheRead", "cacheWrite", "cost"].every((key) => isFiniteNonNegative(item[key]))) return undefined;
       if (item.ttftMs !== undefined && !isFiniteNonNegative(item.ttftMs)) return undefined;
-      if (item.turn !== undefined && (!Number.isInteger(item.turn) || (item.turn as number) < 1)) return undefined;
-      if (item.toolCalls !== undefined && (!Number.isInteger(item.toolCalls) || (item.toolCalls as number) < 0)) return undefined;
+      if (item.turn !== undefined && (
+        !Number.isInteger(item.turn)
+        || (item.turn as number) < 1
+        || (item.turn as number) > SHADOW_MINDS_MODEL_TURNS_HARD_MAX
+      )) return undefined;
+      if (item.toolCalls !== undefined && (
+        !Number.isInteger(item.toolCalls)
+        || (item.toolCalls as number) < 0
+        || (item.toolCalls as number) > SHADOW_MINDS_TOOL_CALLS_HARD_MAX
+      )) return undefined;
       if (item.cacheReported !== undefined && typeof item.cacheReported !== "boolean") return undefined;
     }
   }

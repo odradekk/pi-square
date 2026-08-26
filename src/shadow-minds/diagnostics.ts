@@ -15,6 +15,16 @@ import type { ShadowCohortHashes, ShadowRunView } from "./runtime";
 /** Cohort groups retained in one summary, largest first. */
 export const SHADOW_COHORT_GROUPS_MAX = 8;
 
+const DIAGNOSTIC_NUMBER_MAX = Number.MAX_SAFE_INTEGER;
+
+function boundedNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(value, DIAGNOSTIC_NUMBER_MAX);
+}
+
+function boundedAdd(left: number, right: unknown): number {
+  return Math.min(DIAGNOSTIC_NUMBER_MAX, boundedNumber(left) + boundedNumber(right));
+}
 /** Cache observation over a set of per-request metrics. */
 export interface ShadowCacheCoverage {
   /** Requests observed in the set. */
@@ -68,11 +78,11 @@ function coverageOf(runs: readonly ShadowRunView[]): ShadowCacheCoverage {
   const coverage: ShadowCacheCoverage = { requests: 0, reportedRequests: 0, cacheRead: 0, cacheWrite: 0 };
   for (const run of runs) {
     for (const request of run.requests ?? []) {
-      coverage.requests += 1;
+      coverage.requests = boundedAdd(coverage.requests, 1);
       if (request.cacheReported) {
-        coverage.reportedRequests += 1;
-        coverage.cacheRead += request.cacheRead;
-        coverage.cacheWrite += request.cacheWrite;
+        coverage.reportedRequests = boundedAdd(coverage.reportedRequests, 1);
+        coverage.cacheRead = boundedAdd(coverage.cacheRead, request.cacheRead);
+        coverage.cacheWrite = boundedAdd(coverage.cacheWrite, request.cacheWrite);
       }
     }
   }
@@ -95,13 +105,14 @@ export function summarizeShadowUsage(runs: readonly ShadowRunView[]): ShadowUsag
     if (run.phase === "running") running += 1;
     else settled += 1;
     if (run.usage) {
-      turns += run.usage.turns;
-      input += run.usage.input;
-      output += run.usage.output;
-      cost += run.usage.cost;
+      turns = boundedAdd(turns, run.usage.turns);
+      input = boundedAdd(input, run.usage.input);
+      output = boundedAdd(output, run.usage.output);
+      cost = boundedAdd(cost, run.usage.cost);
     }
     for (const request of run.requests ?? []) {
-      if (request.ttftMs !== undefined) ttftValues.push(request.ttftMs);
+      const ttft = boundedNumber(request.ttftMs);
+      if (request.ttftMs !== undefined && ttft === request.ttftMs) ttftValues.push(ttft);
     }
     if (run.cohorts) {
       runsWithCohorts += 1;
@@ -133,10 +144,10 @@ export function summarizeShadowUsage(runs: readonly ShadowRunView[]): ShadowUsag
     settled,
     runsWithCohorts,
     runsWithoutCohorts: runs.length - runsWithCohorts,
-    requests: [...runs].reduce((sum, run) => sum + (run.requests?.length ?? 0), 0),
+    requests: [...runs].reduce((sum, run) => boundedAdd(sum, run.requests?.length ?? 0), 0),
     turns,
     toolCalls: [...runs].reduce(
-      (sum, run) => sum + (run.requests ?? []).reduce((inner, request) => inner + request.toolCalls, 0),
+      (sum, run) => (run.requests ?? []).reduce((inner, request) => boundedAdd(inner, request.toolCalls), sum),
       0,
     ),
     input,
@@ -145,7 +156,7 @@ export function summarizeShadowUsage(runs: readonly ShadowRunView[]): ShadowUsag
     ttft: {
       count: ttftCount,
       minMs: ttftCount > 0 ? Math.min(...ttftValues) : 0,
-      avgMs: ttftCount > 0 ? Math.round(ttftValues.reduce((sum, value) => sum + value, 0) / ttftCount) : 0,
+      avgMs: ttftCount > 0 ? Math.round(boundedNumber(ttftValues.reduce((sum, value) => boundedAdd(sum, value), 0) / ttftCount)) : 0,
       maxMs: ttftCount > 0 ? Math.max(...ttftValues) : 0,
     },
     cache: coverageOf(runs),

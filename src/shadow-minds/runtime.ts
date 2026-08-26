@@ -20,7 +20,11 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { ShadowMindsConfig } from "../core/config";
+import {
+  SHADOW_MINDS_MODEL_TURNS_HARD_MAX,
+  SHADOW_MINDS_TOOL_CALLS_HARD_MAX,
+  type ShadowMindsConfig,
+} from "../core/config";
 import {
   addUsageValues,
   createChildSessionUsage,
@@ -89,7 +93,46 @@ function modelCohortProjection(request: ShadowManualRunRequest): Record<string, 
   };
 }
 
-/** Bounded definition-source hash recorded with every result entity. */
+
+
+/**
+ * Public Pi usage objects normalize cache fields to zero, so zero alone cannot
+ * prove that a provider reported cache data. An explicit adapter marker wins;
+ * otherwise only a non-zero cache value is direct evidence. This keeps an
+ * unsupported/unreported zero distinct from a provider-reported zero without
+ * private adapter hooks.
+ */
+export function isCacheUsageReported(usage: unknown): boolean {
+  if (!usage || typeof usage !== "object") return false;
+  const record = usage as Record<string, unknown>;
+  if (typeof record.cacheReported === "boolean") return record.cacheReported;
+  return (Number(record.cacheRead) || 0) !== 0 || (Number(record.cacheWrite) || 0) !== 0;
+}
+
+function normalizedCohortHash(value: unknown): string {
+  const text = String(value ?? "");
+  return /^[0-9a-f]{16}$/i.test(text) ? text.toLowerCase() : cohortHash(text);
+}
+
+function boundedUsageNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(value, Number.MAX_SAFE_INTEGER);
+}
+
+function normalizeRequestMetric(metric: ShadowRequestMetric): void {
+  metric.input = boundedUsageNumber(metric.input);
+  metric.output = boundedUsageNumber(metric.output);
+  metric.cacheRead = boundedUsageNumber(metric.cacheRead);
+  metric.cacheWrite = boundedUsageNumber(metric.cacheWrite);
+  metric.cost = boundedUsageNumber(metric.cost);
+  metric.turn = Math.min(SHADOW_MINDS_MODEL_TURNS_HARD_MAX, Math.max(1, Math.trunc(boundedUsageNumber(metric.turn))));
+  metric.toolCalls = Math.min(SHADOW_MINDS_TOOL_CALLS_HARD_MAX, Math.trunc(boundedUsageNumber(metric.toolCalls)));
+  if (metric.ttftMs !== undefined) {
+    const ttft = boundedUsageNumber(metric.ttftMs);
+    if (ttft === 0 && metric.ttftMs !== 0) delete metric.ttftMs;
+    else metric.ttftMs = ttft;
+  }
+}
 function definitionHashOf(definition: EffectiveShadowDefinition): string | undefined {
   const layers = definition.layers;
   if (!Array.isArray(layers) || layers.length === 0) return undefined;
@@ -483,14 +526,18 @@ export function createShadowRuntime(input: {
     const cohorts: ShadowCohortHashes = {
       model: cohortHash(canonicalSchemaJson(modelCohortProjection(request))),
       thinking: cohortHash(request.thinkingLevel ?? "(inherited)"),
-      toolSchema: toolSchemaHash,
+      toolSchema: normalizedCohortHash(toolSchemaHash),
       system: cohortHash(request.system),
       cwd: cohortHash(request.cwd),
       trajectory: cohortHash(`${request.trajectory.text}\0${request.trajectory.truncation}`),
       trajectoryCheckpoint: cohortHash(canonicalSchemaJson(request.trajectory)),
       truncation: cohortHash(request.trajectory.truncation),
-      ...(request.authorityCohort?.parentCoreHash !== undefined ? { parentCore: request.authorityCohort.parentCoreHash } : {}),
-      ...(request.authorityCohort?.projectRulesHash !== undefined ? { projectRules: request.authorityCohort.projectRulesHash } : {}),
+      ...(request.authorityCohort?.parentCoreHash !== undefined
+        ? { parentCore: normalizedCohortHash(request.authorityCohort.parentCoreHash) }
+        : {}),
+      ...(request.authorityCohort?.projectRulesHash !== undefined
+        ? { projectRules: normalizedCohortHash(request.authorityCohort.projectRulesHash) }
+        : {}),
     };
     const view: ShadowRunView = {
       id: deps.makeRunId?.() ?? `run-${(++runSequence).toString(36)}`,
@@ -606,11 +653,9 @@ export function createShadowRuntime(input: {
           // unreported so an unsupported adapter never reads as a zero.
           if (currentRequest) {
             addUsageValues(currentRequest, event.message?.usage);
+            normalizeRequestMetric(currentRequest);
             const report = event.message?.usage;
-            if (
-              report && typeof report === "object"
-              && (typeof report.cacheRead === "number" || typeof report.cacheWrite === "number")
-            ) {
+            if (isCacheUsageReported(report)) {
               currentRequest.cacheReported = true;
             }
             if (requests.length < REQUEST_METRICS_MAX) requests.push(currentRequest);
@@ -701,6 +746,18 @@ export function createShadowRuntime(input: {
           messages: [],
         };
       }
+
+      // A turn_start is authoritative evidence that a provider request began.
+      // If the run ended before assistant message_end (timeout, abort, provider
+      // error), retain one zero-valued unreported metric rather than silently
+      // dropping the request from diagnostics.
+      if (currentRequest && requests.length < REQUEST_METRICS_MAX) {
+        normalizeRequestMetric(currentRequest);
+        requests.push(currentRequest);
+        currentRequest = undefined;
+      }
+
+      for (const requestMetric of requests) normalizeRequestMetric(requestMetric);
 
       let phase: ShadowRunPhase;
       let message: string | undefined;
