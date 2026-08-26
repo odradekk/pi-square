@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -501,6 +501,48 @@ for (const root of roots) rmSync(root, { recursive: true, force: true });
   assert.equal(views.find((entry) => entry.id === fresh.id).delivery, "notified");
   assert.equal(views.find((entry) => entry.id === fresh.id).configuredDelivery, "steer");
   assert.equal(recovered.recoverPendingDelivery(), 0, "recovery is idempotent");
+}
+
+// ── Transcript-reference claims are shared across instances (#181) ──
+
+{
+  const { sessionDir } = makeSessionRoot("claim-1");
+  const inboxA = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  const entity = addResult(inboxA, 1);
+  // A second store instance on the same partition observes the same
+  // authoritative result while its in-memory copy is still unreferenced.
+  const inboxB = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  assert.ok(inboxB.list().some((item) => item.id === entity.id), "the second instance observes the shared result");
+
+  assert.equal(inboxA.claimReference(entity.id), true, "the first instance claims the append right");
+  assert.equal(inboxB.claimReference(entity.id), false, "the second instance cannot claim the same result");
+  assert.equal(inboxA.claimReference(entity.id), false, "the holding instance does not double-claim");
+
+  // The successful append persists the referenced mark and drops the claim;
+  // the other instance decides from the entity on disk, not its stale copy.
+  assert.equal(inboxA.markReferenced(entity.id), true);
+  assert.equal(inboxB.claimReference(entity.id), false, "a referenced result is never claimable again, even from a stale in-memory copy");
+
+  // A failed append releases the claim so a later instance can retry. The
+  // later instance seeds the shared result from the partition, exactly like
+  // a session reopen that discovers another instance's in-flight result.
+  const second = addResult(inboxA, 2);
+  const inboxC = createPersistentShadowInbox({ sessionDir, sessionId: "claim-1", now: () => 5_000 });
+  assert.ok(inboxC.list().some((item) => item.id === second.id), "a later instance seeds the shared result");
+  assert.equal(inboxC.claimReference(second.id), true, "another instance claims the retry right");
+  inboxC.releaseReferenceClaim(second.id);
+  assert.equal(inboxA.claimReference(second.id), true, "a released claim can be retried");
+  inboxA.releaseReferenceClaim(second.id);
+
+  // Unknown results never claim.
+  assert.equal(inboxA.claimReference("shr-does-not-exist"), false);
+
+  // A claim left by a dead process is reclaimed after the stale bound.
+  const third = addResult(inboxA, 3);
+  const claimPath = join(shadowPartitionPath(sessionDir, "claim-1"), "references", `${third.id}.claim`);
+  mkdirSync(dirname(claimPath), { recursive: true });
+  writeFileSync(claimPath, JSON.stringify({ pid: 999_999_999, at: 5_000 }), "utf8");
+  assert.equal(inboxA.claimReference(third.id), true, "a stale claim from a dead process is reclaimed");
 }
 
 console.log("shadow-minds inbox-store tests: OK");

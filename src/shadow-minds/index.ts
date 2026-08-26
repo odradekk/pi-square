@@ -1167,23 +1167,30 @@ export default function registerShadowMinds(
   // Every non-running phase is terminal, so a phase change away from running
   // notifies once; entries for runs that left the history are pruned.
   let unsubscribeRuntime: (() => void) | undefined;
+  // Reference dedup lives at the registration scope, not inside one
+  // subscriber binding (#181): `seenResults` and `inFlightReferences`
+  // survive runtime rebinds so overlapping subscribers and session
+  // replacements within this extension instance share one view, and the
+  // inbox-backed claim below arbitrates between separate runtime or
+  // extension instances observing the same authoritative result through one
+  // partition.
+  const seenResults = new Set<string>();
+  const inFlightReferences = new Set<string>();
   const bindRuntimeNotifications = (): void => {
     unsubscribeRuntime?.();
     // Results carry a persisted `referenced` flag, so a reopened session
-    // does not re-append transcript references it already recorded; the
-    // in-memory set only guards duplicate notifications within this
-    // runtime instance. A crash between the append and the persisted mark
-    // can re-append one bounded entry at the next open. The append itself
-    // is guarded by an in-flight claim taken before the append (#178): a
-    // synchronous subscriber re-entry while the first append is still on
-    // the stack observes the claim and appends nothing, and a failed
-    // append releases the claim so a later runtime update retries. Pi
-    // 0.84.2's `appendEntry` is synchronous (appendCustomEntry plus a
-    // session-level emit to UI subscribers); a differing Pi 0.84.3
-    // observation is not the supported contract, and the claim keeps the
-    // at-most-once guarantee independent of that difference.
-    const seenResults = new Set<string>();
-    const inFlightReferences = new Set<string>();
+    // does not re-append transcript references it already recorded. A
+    // crash between the append and the persisted mark can re-append one
+    // bounded entry at the next open. The append itself is guarded by an
+    // in-flight claim taken before the append (#178): a synchronous
+    // subscriber re-entry while the first append is still on the stack
+    // observes the claim and appends nothing. Pi 0.84.2's `appendEntry` is
+    // synchronous (appendCustomEntry plus a session-level emit to UI
+    // subscribers); a live Pi 0.84.3 host showed overlapping lifecycles
+    // appending the same result twice, which is a compatibility
+    // observation, not the supported contract — the inbox-backed claim
+    // (#181) keeps the at-most-once guarantee independent of that
+    // difference by refusing a second claim before any append.
     // Results restored from a reopened partition never auto-deliver: only
     // results created inside this session enter the delivery machine.
     const seenDelivery = new Set<string>(state.runtime.snapshot().results.map((result) => result.id));
@@ -1205,6 +1212,15 @@ export default function registerShadowMinds(
         }
         if (!effectiveConfig().enabled) continue;
         inFlightReferences.add(result.id);
+        // Cross-lifecycle arbitration (#181): the inbox claim is exclusive
+        // across every observer of the partition — this instance, a rebind,
+        // or a second extension instance — so two stale-unreferenced views
+        // of one authoritative result cannot both append it. A refused
+        // claim is simply retried on a later update.
+        if (!(currentInbox?.claimReference?.(result.id) ?? true)) {
+          inFlightReferences.delete(result.id);
+          continue;
+        }
         try {
           pi.appendEntry(SHADOW_RESULT_ENTRY_TYPE, {
             version: 1 as const,
@@ -1218,7 +1234,9 @@ export default function registerShadowMinds(
         } catch {
           // A session that cannot record the reference keeps the result in
           // the inbox; the entry is observability, not authority. Releasing
-          // the claim lets a later runtime update retry the append.
+          // the claim lets a later update — this runtime, a rebind, or
+          // another instance — retry the append.
+          currentInbox?.releaseReferenceClaim?.(result.id);
         } finally {
           inFlightReferences.delete(result.id);
         }

@@ -11,7 +11,10 @@
  * is strictly validated before it can surface, so unvalidated disk content
  * never reaches the parent model. Non-persisted sessions keep the in-memory
  * inbox; this store implements the same `ShadowInbox` surface plus the
- * atomic `send` delivery transition the confirmed-delivery slice drives.
+ * atomic `send` delivery transition the confirmed-delivery slice drives and
+ * the exclusive-create transcript-reference claims that keep one
+ * authoritative result to one bounded reference across overlapping runtime
+ * and extension instances (#181).
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -62,6 +65,13 @@ export const SHADOW_PARTITION_DIR = ".pi-square-shadow";
 /** Package hard caps for inbox retention. */
 export const SHADOW_INBOX_MAX_RESULTS_HARD = 100;
 export const SHADOW_INBOX_MAX_BYTES_HARD = 16 * 1024 * 1024;
+
+/**
+ * A transcript-reference claim older than this bound — or held by a process
+ * that no longer exists — is stale and may be reclaimed (#181). Appends are
+ * fast synchronous writes, so the bound only covers crash residue.
+ */
+export const REFERENCE_CLAIM_STALE_MS = 30_000;
 
 const INDEX_SUMMARY_MAX_CHARS = 160;
 const INDEX_EVENTS_MAX = 32;
@@ -377,6 +387,78 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
   const clone = <T>(value: T): T => structuredClone(value);
 
   const entityPath = (id: string): string => join(resultsDir, `${requireSafePathSegment(id, "result id")}.json`);
+  const referencesDir = join(partition, "references");
+  const claimPath = (id: string): string => join(referencesDir, `${requireSafePathSegment(id, "result id")}.claim`);
+
+  /**
+   * Bounded re-read of the persisted entity's `referenced` flag. The claim
+   * arbitrates between separate store instances sharing one partition, so
+   * the in-memory `loaded` copy may be stale: the entity on disk decides
+   * (#181). Any read failure reads as unreferenced — the claim file and the
+   * mark still guard the append.
+   */
+  const entityReferencedOnDisk = (id: string): boolean => {
+    if (!SAFE_PATH_SEGMENT.test(id)) return false;
+    const path = entityPath(id);
+    try {
+      if (!requireRegularFile(path)) return false;
+      if (lstatSync(path).size > RESULT_ENTITY_MAX_BYTES) return false;
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { referenced?: unknown };
+      return parsed !== null && typeof parsed === "object" && parsed.referenced === true;
+    } catch {
+      return false;
+    }
+  };
+
+  const removeReferenceClaim = (id: string): void => {
+    try {
+      rmSync(claimPath(id), { force: true });
+    } catch {
+      // A claim file that cannot be removed ages out or is reclaimed.
+    }
+  };
+
+  const claimFileIsStale = (path: string): boolean => {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; at?: unknown };
+      if (parsed === null || typeof parsed !== "object") return true;
+      const at = typeof parsed.at === "number" && Number.isFinite(parsed.at) ? parsed.at : Number.NaN;
+      if (!Number.isNaN(at) && now() - at > REFERENCE_CLAIM_STALE_MS) return true;
+      const pid = typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
+      if (pid !== undefined && pid !== process.pid) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return true;
+    }
+  };
+
+  const createReferenceClaim = (id: string): boolean => {
+    try {
+      mkdirSync(referencesDir, { recursive: true });
+      writeFileSync(claimPath(id), `${JSON.stringify({ pid: process.pid, at: now() })}\n`, { encoding: "utf8", flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+      if (!claimFileIsStale(claimPath(id))) return false;
+      try {
+        rmSync(claimPath(id), { force: true });
+      } catch {
+        return false;
+      }
+      try {
+        writeFileSync(claimPath(id), `${JSON.stringify({ pid: process.pid, at: now() })}\n`, { encoding: "utf8", flag: "wx" });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  };
 
   const quarantine = (id: string, path: string, cause: string): void => {
     try {
@@ -647,6 +729,7 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
         return false;
       }
       loaded.delete(id);
+      removeReferenceClaim(id);
       writeIndex();
       return true;
     },
@@ -658,7 +741,19 @@ export function createPersistentShadowInbox(options: PersistentShadowInboxOption
       writeEntity(next);
       loaded.set(id, next);
       writeIndex();
+      removeReferenceClaim(id);
       return true;
+    },
+    claimReference(id: string): boolean {
+      const entry = loaded.get(id);
+      if (!entry || entry.entity.referenced) return false;
+      // Disk is authoritative across store instances: another instance may
+      // have appended and marked while this copy stayed in memory (#181).
+      if (entityReferencedOnDisk(id)) return false;
+      return createReferenceClaim(id);
+    },
+    releaseReferenceClaim(id: string): void {
+      removeReferenceClaim(id);
     },
     forceNotify(id: string): boolean {
       const entry = loaded.get(id);

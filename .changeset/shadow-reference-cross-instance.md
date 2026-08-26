@@ -1,0 +1,5 @@
+---
+"@odradekk/pi-square": patch
+---
+
+Deduplicate Shadow transcript references across runtime lifecycles. The at-most-once append claim moves from the per-subscriber closure to the extension registration scope and is arbitrated by the inbox itself: the persistent partition grants one exclusive-create claim file per result (`references/<id>.claim`) with a disk-authoritative `referenced` re-check and stale reclaim for crash residue, while the in-memory fallback keeps a per-store claim set. Two overlapping subscribers, session reopen/replacement, or a second extension instance observing the same unreferenced result can no longer both append it — a real-model session that produced 30 references for 20 results now yields exactly one per result. A failed append still releases its claim for a later retry, successful appends persist `referenced` so reopen never re-appends, and advisory delivery stays separately confirmed from transcript evidence. The duplicate was observed under a Pi 0.84.3 CLI host; Pi 0.84.2's synchronous appendEntry lifecycle remains the supported contract and the claim makes the guarantee independent of the host difference.

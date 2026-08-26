@@ -239,4 +239,25 @@ async function execute(tool, payload) {
   assert.equal(deliveredView.delivery, "delivered", "a delivered result stays delivered across recovery");
 }
 
+// ── Transcript-reference claims: in-memory fallback (#181) ─────────
+
+{
+  const inbox = createShadowInbox({ makeId: () => "shr-mem-1" });
+  const schema = { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false };
+  const entity = inbox.add({
+    shadowId: "session-synthesizer",
+    shadowName: "Session synthesizer",
+    payload: { summary: "claim probe" },
+    validationSchema: schema,
+    createdAt: 1,
+  });
+  assert.equal(inbox.claimReference(entity.id), true, "the first claim wins");
+  assert.equal(inbox.claimReference(entity.id), false, "a held claim blocks a second claim");
+  assert.equal(inbox.claimReference("shr-unknown"), false, "an unknown result never claims");
+  inbox.releaseReferenceClaim(entity.id);
+  assert.equal(inbox.claimReference(entity.id), true, "a released claim can be retried");
+  assert.equal(inbox.markReferenced(entity.id), true, "the successful append persists the referenced mark");
+  assert.equal(inbox.claimReference(entity.id), false, "a referenced result is never claimable again");
+}
+
 console.log("shadow-minds result tests: OK");
