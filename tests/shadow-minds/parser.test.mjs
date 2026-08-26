@@ -317,6 +317,15 @@ assert.ok(validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: 5 }).length >=
   const bodyless = "---\npromptVersion: 1\nid: enable-probe\nenabled: true\n---\n";
   const parsed = parseOk(bodyless, "enable-probe.md");
   assert.equal(parsed.fields.body, undefined, "a body-less overlay parses with an absent body");
+  const whitespaceOnly = parseOk(
+    "---\npromptVersion: 1\nid: whitespace-probe\nenabled: true\n---\n \n   \n",
+    "whitespace-probe.md",
+  );
+  assert.equal(
+    whitespaceOnly.fields.body,
+    undefined,
+    "a whitespace-only overlay body also preserves inheritance",
+  );
 
   const { serializeShadowDefinition } = await load(
     join(import.meta.dirname, "..", "..", "src", "shadow-minds", "serialize.ts"),

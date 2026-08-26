@@ -978,12 +978,13 @@ function normalizeDefinitionFields(
   }
 
   // A body-less layer inherits its responsibility body from the lower
-  // layer: canonicalize an empty raw body to absent (#177) so the parsed
-  // overlay round-trips through the serializer as body-less instead of
-  // carrying an explicit empty string that the layer write path rejects on
-  // the next edit. An effective definition with no non-empty body anywhere
-  // still fails closed in discovery's complete-candidate validation.
-  if (body !== "") {
+  // layer: canonicalize an empty or whitespace-only raw body to absent
+  // (#177) so the parsed overlay round-trips through the serializer as
+  // body-less instead of carrying an explicit blank string that the layer
+  // write path rejects on the next edit. An effective definition with no
+  // non-empty body anywhere still fails closed in discovery's complete-
+  // candidate validation.
+  if (body.trim() !== "") {
     if (body.length > SHADOW_BODY_MAX_CHARS) {
       errors.push(`${source}: body exceeds ${SHADOW_BODY_MAX_CHARS.toLocaleString("en-US")} characters (${body.length.toLocaleString("en-US")})`);
     }
