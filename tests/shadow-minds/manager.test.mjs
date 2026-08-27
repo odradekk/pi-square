@@ -54,7 +54,7 @@ function render(manager, width = 100) {
   assert.equal(DEFAULT_CONFIG.shadowMinds.enabled, false, "sanity: the feature ships disabled");
 }
 
-// ── The clean-install view over the six package templates ────────────
+// ── The populated view over six user-owned agent fixtures ────────────
 
 {
   const tui = makeTui();
@@ -1108,11 +1108,11 @@ function makeRuntimeService(initial) {
 // ── Repeated overlay edits preserve body inheritance (#177) ────────
 
 {
-  // Real end-to-end manager sequence: enable a package definition at agent
-  // scope (saving a minimal body-less overlay), reopen the same definition,
-  // and edit further fields. The parsed agent layer must keep its body
-  // absent so every follow-up edit reserializes a body-less overlay instead
-  // of failing with an invalid explicit empty body.
+  // Real end-to-end manager sequence: enable an agent-base definition through
+  // a project overlay (saving a minimal body-less layer), reopen the same
+  // definition, and edit further fields. The parsed project layer must keep
+  // its body absent so every follow-up edit reserializes a body-less overlay
+  // instead of failing with an invalid explicit empty body.
   const { previewShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
   const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-reedit-"));
   const previousAgentDir = process.env.PI_AGENT_DIR;

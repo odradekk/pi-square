@@ -254,7 +254,7 @@ function fakePi() {
     state.refresh(project);
     const services = __testables.makeServices(state, ctx, confirmations);
 
-    // Preview composes the candidate against live package templates.
+    // Preview composes the project candidate against the live agent base.
     const preview = services.preview("project", { id: "research-scout", enabled: true });
     assert.deepEqual(preview.errors, []);
     assert.ok(preview.definition.enabled);

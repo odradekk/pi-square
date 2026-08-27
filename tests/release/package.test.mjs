@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,6 +47,38 @@ assert.match(releaseWorkflow, /version: npm run version-packages/);
 assert.match(releaseWorkflow, /publish: npm run release/);
 assert.doesNotMatch(releaseWorkflow, /NPM_TOKEN/);
 
+const requiredPackFiles = [
+  "LICENSE",
+  "README.md",
+  "THIRD_PARTY_NOTICES.md",
+  "package.json",
+  "src/index.ts",
+  "src/display-api.ts",
+  "shadow-minds/example.md",
+  "shadow-minds/schema-reference.md",
+  "subagents/crawler.yaml",
+  "subagents/example_profile.yaml",
+  "subagents/explorer.yaml",
+  "subagents/generalist.yaml",
+  "subagents/librarian.yaml",
+  "subagents/oracle.yaml",
+];
+const rejectedShadowAsset = spawnSync(
+  process.execPath,
+  [join(packageRoot, "scripts", "verify-pack.mjs")],
+  {
+    input: JSON.stringify([{
+      name: "@odradekk/pi-square",
+      size: 1,
+      unpackedSize: 1,
+      entryCount: requiredPackFiles.length + 1,
+      files: [...requiredPackFiles, "shadow-minds/unexpected.md"].map((path) => ({ path })),
+    }]),
+    encoding: "utf8",
+  },
+);
+assert.notEqual(rejectedShadowAsset.status, 0, "the publication verifier rejects a third Shadow reference asset");
+assert.match(rejectedShadowAsset.stderr, /unexpected publication file: shadow-minds\/unexpected\.md/);
 for (const name of readdirSync(join(packageRoot, ".changeset"))) {
   if (!name.endsWith(".md") || name === "README.md") continue;
   const content = readFileSync(join(packageRoot, ".changeset", name), "utf8");

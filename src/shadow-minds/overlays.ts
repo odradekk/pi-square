@@ -8,8 +8,7 @@
  * through the same merge used for discovery, permission preservation, and an
  * fsync'd temporary file renamed atomically into place. A stale or concurrent
  * write is refused with `SHADOW_STALE_REVIEW` and neither version is lost.
- * Package templates are read-only by construction — only the agent and
- * project scopes are writable here.
+ * Only the two user-owned agent and project scopes are writable here.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -302,7 +301,7 @@ export async function writeShadowOverlay(
 
     // Complete effective-candidate validation: the serialized layer must
     // reparse and merge into a valid effective definition under exactly the
-    // same package/agent/project context that the manager reviewed.
+    // same agent/project context that the manager reviewed.
     const preview = previewShadowDefinition(input.cwd, {
       scope: input.scope,
       filePath: paths.filePath,

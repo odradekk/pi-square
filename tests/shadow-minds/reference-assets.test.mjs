@@ -31,6 +31,7 @@ const {
   SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS,
   SHADOW_TRIGGERS,
   SHADOW_TRIGGERS_MAX,
+  SHADOW_PARENT_MODELS_MAX,
   parseShadowDefinitionFile,
 } = await load(join(packageRoot, "src", "shadow-minds", "parser.ts"));
 const {
@@ -93,29 +94,57 @@ function extractBlocks(markdown, info) {
   assert.equal(contract.file.commentPolicy, "whole-line-only");
 
   const fields = contract.fields;
+  assert.deepEqual(
+    Object.keys(fields).sort(),
+    [
+      "body", "completionGate", "debug", "delivery", "enabled", "hidden", "id", "maxToolCalls",
+      "maxTurns", "model", "name", "outputSchema", "parentModels", "priority", "requiredTools",
+      "thinking", "timeoutSeconds", "tools", "triggerInstructions", "triggers",
+    ].sort(),
+    "the normative contract covers every production definition field",
+  );
   assert.equal(fields.id.required, true);
   assert.equal(fields.id.maxLength, SHADOW_ID_MAX_CHARS);
   assert.equal(fields.id.pattern, SHADOW_ID_PATTERN.source);
   assert.equal(fields.id.equalsFilenameStem, true);
   assert.equal(fields.name.maxLength, SHADOW_NAME_MAX_CHARS);
+  assert.equal(fields.name.effectiveRequired, true);
+  assert.equal(fields.enabled.default, false);
+  assert.equal(fields.hidden.default, false);
   assert.equal(fields.priority.min, SHADOW_PRIORITY_MIN);
   assert.equal(fields.priority.max, SHADOW_PRIORITY_MAX);
+  assert.equal(fields.priority.default, 0);
   assert.deepEqual(fields.triggers.enum, [...SHADOW_TRIGGERS]);
   assert.equal(fields.triggers.maxEntries, SHADOW_TRIGGERS_MAX);
-  assert.deepEqual(fields.delivery.enum, [...SHADOW_DELIVERIES]);
-  assert.deepEqual(fields.thinking.enum, [...SHADOW_THINKING_LEVELS]);
+  assert.equal(fields.triggers.unique, true);
+  assert.deepEqual(fields.triggers.default, []);
+  assert.equal(fields.triggerInstructions.keysFromTriggers, true);
   assert.equal(fields.triggerInstructions.valueMaxLength, SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS);
   assert.equal(fields.triggerInstructions.nullClearsKey, true);
-  assert.equal(fields.timeoutSeconds.max, SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS);
-  assert.equal(fields.maxTurns.max, SHADOW_MINDS_MODEL_TURNS_HARD_MAX);
-  assert.equal(fields.maxToolCalls.max, SHADOW_MINDS_TOOL_CALLS_HARD_MAX);
+  assert.equal(fields.triggerInstructions.merge, "per-key across layers");
+  assert.deepEqual(fields.delivery.enum, [...SHADOW_DELIVERIES]);
+  assert.equal(fields.delivery.default, "steer");
+  assert.equal(fields.completionGate.default, false);
+  assert.equal(fields.completionGate.requiresCompletionTrigger, true);
+  assert.equal(fields.parentModels.maxEntries, SHADOW_PARENT_MODELS_MAX);
+  assert.equal(fields.parentModels.unique, true);
+  assert.equal(fields.parentModels.entryPattern, "exact provider/model-id or *");
+  assert.equal(fields.model.pattern, SHADOW_MODEL_REFERENCE.source);
+  assert.deepEqual(fields.thinking.enum, [...SHADOW_THINKING_LEVELS]);
+  assert.deepEqual(fields.timeoutSeconds, { min: 1, max: SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS });
+  assert.deepEqual(fields.maxTurns, { min: 1, max: SHADOW_MINDS_MODEL_TURNS_HARD_MAX });
+  assert.deepEqual(fields.maxToolCalls, { min: 1, max: SHADOW_MINDS_TOOL_CALLS_HARD_MAX });
   assert.equal(fields.tools.maxEntries, SHADOW_TOOLS_MAX);
+  assert.equal(fields.tools.unique, true);
   assert.equal(fields.tools.entryPattern, SHADOW_TOOL_PATTERN.source);
   assert.deepEqual(fields.tools.default, [...SHADOW_DEFAULT_TOOLS]);
+  assert.equal(fields.tools.emptyListMeans, "no tools");
+  assert.equal(fields.tools.catalogIsFixed, true);
   assert.equal(fields.requiredTools.maxEntries, SHADOW_TOOLS_MAX);
+  assert.equal(fields.requiredTools.unique, true);
   assert.equal(fields.requiredTools.entryPattern, SHADOW_TOOL_PATTERN.source);
   assert.equal(fields.requiredTools.subsetOfFinalTools, true);
-  assert.equal(fields.model.pattern, SHADOW_MODEL_REFERENCE.source);
+  assert.equal(fields.debug.default, false);
   assert.equal(fields.outputSchema.maxDepth, SHADOW_SCHEMA_MAX_DEPTH);
   assert.equal(fields.outputSchema.maxTotalProperties, SHADOW_SCHEMA_MAX_TOTAL_PROPERTIES);
   assert.equal(fields.outputSchema.maxPropertiesPerObject, SHADOW_SCHEMA_MAX_PROPERTIES_PER_OBJECT);
@@ -123,8 +152,13 @@ function extractBlocks(markdown, info) {
   assert.equal(fields.outputSchema.stringMaxLength, SHADOW_SCHEMA_STRING_MAX_LENGTH);
   assert.equal(fields.outputSchema.atomicReplace, true);
   assert.equal(fields.outputSchema.nullRestoresDefault, true);
+  assert.equal(fields.outputSchema.rootMustBeObject, true);
+  assert.equal(fields.outputSchema.additionalPropertiesFalseRequired, true);
   assert.deepEqual(fields.outputSchema.default, DEFAULT_OUTPUT_SCHEMA);
   assert.equal(fields.body.maxChars, SHADOW_BODY_MAX_CHARS);
+  assert.equal(fields.body.omittedOrEmptyInherits, true);
+  assert.equal(fields.body.nonEmptyReplaces, true);
+  assert.equal(fields.body.effectiveRequired, true);
   assert.equal(contract.payload.maxEncodedChars, SHADOW_PAYLOAD_MAX_CHARS);
   assert.equal(contract.payload.maxFieldErrors, SHADOW_PAYLOAD_VALIDATION_ERRORS_MAX);
 }

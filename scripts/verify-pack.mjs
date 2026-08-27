@@ -7,7 +7,7 @@ if (!Array.isArray(packs) || packs.length !== 1) {
 }
 
 const pack = packs[0];
-const allowedRoots = new Set(["shadow-minds", "src", "subagents", "themes"]);
+const allowedRoots = new Set(["src", "subagents", "themes"]);
 const allowedFiles = new Set([
   "CHANGELOG.md",
   "docs/adr/0011-shadow-minds.md",
@@ -16,6 +16,8 @@ const allowedFiles = new Set([
   "README.md",
   "THIRD_PARTY_NOTICES.md",
   "package.json",
+  "shadow-minds/example.md",
+  "shadow-minds/schema-reference.md",
 ]);
 const requiredFiles = [
   "LICENSE",

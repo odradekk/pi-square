@@ -110,9 +110,9 @@ function assertValid(fields: ShadowDefinitionFields): void {
   if (typeof fields.id !== "string" || !SHADOW_ID_PATTERN.test(fields.id)) {
     throw new Error(`Shadow definition id must match ${SHADOW_ID_PATTERN} (got '${fields.id}').`);
   }
-  // Name and body are optional per layer: an overlay may inherit them from a
-  // lower layer. Effective completeness is enforced by the write path's
-  // full-candidate validation, so a body-less overlay above no package layer
+  // Name and body are optional per layer: a project overlay may inherit them
+  // from the agent base. Effective completeness is enforced by the write
+  // path's full-candidate validation, so a body-less project-only definition
   // can never reach disk through the manager.
   if (fields.name !== undefined && (typeof fields.name !== "string" || fields.name.length < 1 || fields.name.length > SHADOW_NAME_MAX_CHARS)) {
     throw new Error(`Shadow definition name must be a string between 1 and ${SHADOW_NAME_MAX_CHARS} characters when present.`);
