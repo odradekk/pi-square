@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -300,15 +301,78 @@ try {
   );
   assert.equal(readFileSync(malformedPath, "utf8"), "left\nmalformed\nright\n", "a malformed request leaves the named file untouched");
 
+  // ── Native path authority (#185): the parent replace edits existing
+  // external regular text files under the same validation, mutation queue,
+  // and the initiating workspace's canonical-target lock key. The child
+  // definition keeps the workspace-containment refusal until its own slice.
   const outside = join(root, "outside.txt");
-  writeFileSync(outside, "outside\n", "utf8");
+  writeFileSync(outside, "outside\nexternal-middle\n", "utf8");
+  const externalRead = await transformAnchoredReadContent(
+    [{ type: "text", text: "factory content" }],
+    { path: "../outside.txt" },
+    workspace,
+    "parent",
+    { confineToWorkspace: false },
+  );
+  const externalMiddle = readRows(externalRead).find((row) => row.text === "external-middle");
+  assert.ok(externalMiddle, "the parent anchored read serves external rows");
+
+  const parentReplace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, false);
+  const externalEdit = await parentReplace.execute(
+    "replace-external",
+    {
+      path: "../outside.txt",
+      remove_from: externalMiddle.hash,
+      remove_to: externalMiddle.hash,
+      replacement_text: "edited externally",
+    },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  assert.equal(externalEdit.details.status, undefined, "an external replace succeeds");
+  assert.equal(readFileSync(outside, "utf8"), "outside\nedited externally\n", "the external file is edited in place");
+
+  const externalStore = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+  try {
+    assert.ok(
+      externalStore.prepare("SELECT COUNT(*) AS count FROM undo WHERE path = ?").get(realpathSync(outside)).count > 0,
+      "an external replace records its undo row in the initiating workspace's store",
+    );
+  } finally {
+    externalStore.close();
+  }
+  const lockDir = join(workspace, ".pi", "anchored-edit", "locks");
+  assert.ok(
+    !existsSync(lockDir) || readdirSync(lockDir).length === 0,
+    "a completed external replace leaves no lock residue in the initiating workspace",
+  );
+
+  await assert.rejects(
+    () => parentReplace.execute(
+      "replace-external-missing",
+      {
+        path: "../created-by-replace.txt",
+        remove_from: externalMiddle.hash,
+        remove_to: externalMiddle.hash,
+        replacement_text: "must not create",
+      },
+      undefined,
+      undefined,
+      { cwd: workspace },
+    ),
+    /E_NOT_FOUND/,
+    "a missing external file is refused, never created by replace",
+  );
+  assert.equal(existsSync(join(root, "created-by-replace.txt")), false, "replace did not create the external file");
+
   await assert.rejects(
     () => replace.execute(
       "replace-outside",
       {
         path: "../outside.txt",
-        remove_from: first.hash,
-        remove_to: first.hash,
+        remove_from: externalMiddle.hash,
+        remove_to: externalMiddle.hash,
         replacement_text: "blocked",
       },
       undefined,
@@ -316,9 +380,8 @@ try {
       { cwd: workspace },
     ),
     /E_OUTSIDE_WORKSPACE.*Disable anchoredEditing\.enabled/s,
-    "outside paths are refused with the named built-in alternative",
+    "the confined (child) replace definition still refuses outside paths",
   );
-  assert.equal(readFileSync(outside, "utf8"), "outside\n", "an outside refusal does not alter the file");
 
   console.log("anchored replace integration tests: OK");
 } finally {

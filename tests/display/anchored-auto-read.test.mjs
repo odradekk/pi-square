@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const { registerAnchoredAutoRead } = await load("../../src/anchored-edit/auto-read.ts");
+const { transformAnchoredReadContent } = await load("../../src/anchored-edit/read-transform.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 
 const root = mkdtempSync(join(tmpdir(), "pi-square-anchored-auto-read-"));
@@ -76,6 +78,185 @@ try {
     );
   }
   assert.equal(unchanged, undefined, "an unchanged write does not append anchors");
+
+  // ── Native path authority (#185): a parent write to an external path
+  // clears served state for that canonical file in the initiating workspace
+  // and, when the content changed, appends fresh anchors. Failed writes keep
+  // native result behavior.
+  const external = join(root, "outside-auto.txt");
+  writeFileSync(external, "before\n", "utf8");
+  const seededExternal = await transformAnchoredReadContent(
+    [{ type: "text", text: "factory content" }],
+    { path: "../outside-auto.txt" },
+    workspace,
+    "parent",
+    { confineToWorkspace: false },
+  );
+  {
+    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    try {
+      const row = store.prepare("SELECT hashes FROM served WHERE path = ?").get(realpathSync(external));
+      assert.ok(row, "the pre-write external read seeds a served row");
+      assert.equal(JSON.parse(row.hashes).length, 1, "the seeded row carries the single pre-write anchor");
+    } finally {
+      store.close();
+    }
+  }
+  for (const handler of events.get("tool_call") ?? []) {
+    await handler(
+      { toolName: "write", toolCallId: "write-external", input: { path: "../outside-auto.txt", content: "after\n" } },
+      { cwd: workspace },
+    );
+  }
+  writeFileSync(external, "after\n", "utf8");
+  let externalResult;
+  for (const handler of events.get("tool_result") ?? []) {
+    externalResult = await handler(
+      {
+        toolName: "write",
+        toolCallId: "write-external",
+        input: { path: "../outside-auto.txt", content: "after\n" },
+        content: [{ type: "text", text: "Successfully wrote 6 bytes to ../outside-auto.txt" }],
+        details: undefined,
+        isError: false,
+      },
+      { cwd: workspace },
+    );
+  }
+  assert.ok(externalResult, "a changed external write returns an augmented result");
+  assert.match(externalResult.content[1].text, /--- Auto-read \(hashline anchors\) ---/);
+  assert.match(externalResult.content[1].text, /^[A-Za-z0-9]{3}│after$/m, "an external write appends fresh anchors");
+  {
+    // With autoRead on, the write clears the pre-write served row and then
+    // records the post-write anchors, so the row reflects the new content:
+    // the pre-write anchor is gone and the fresh one is served.
+    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    try {
+      const row = store.prepare("SELECT hashes FROM served WHERE path = ?").get(realpathSync(external));
+      assert.ok(row, "the external served row exists after the write");
+      const servedHashes = new Set(JSON.parse(row.hashes));
+      const seededAnchor = /([A-Za-z0-9]{3})│before/.exec(
+        seededExternal.map((part) => part.type === "text" ? part.text : "").join(""),
+      )?.[1];
+      const freshAnchor = /([A-Za-z0-9]{3})│after/.exec(
+        externalResult.content[1].text,
+      )?.[1];
+      assert.ok(seededAnchor && freshAnchor, "both pre-write and post-write anchors are identified");
+      assert.equal(servedHashes.has(seededAnchor), false, "a successful external write drops the pre-write served anchor");
+      assert.equal(servedHashes.has(freshAnchor), true, "the write's auto-read serves the fresh anchor");
+    } finally {
+      store.close();
+    }
+  }
+
+  // AC4 without auto-read re-recording: a write with autoRead disabled clears
+  // the served row for the canonical external file and appends nothing.
+  {
+    const plainEvents = new Map();
+    const plainPi = {
+      on(name, handler) {
+        const handlers = plainEvents.get(name) ?? [];
+        handlers.push(handler);
+        plainEvents.set(name, handlers);
+      },
+    };
+    registerAnchoredAutoRead(
+      plainPi,
+      () => ({ anchoredEditing: { enabled: true, autoRead: false } }),
+      () => true,
+    );
+    const clearedExternal = join(root, "outside-cleared.txt");
+    writeFileSync(clearedExternal, "before\n", "utf8");
+    await transformAnchoredReadContent(
+      [{ type: "text", text: "factory content" }],
+      { path: "../outside-cleared.txt" },
+      workspace,
+      "parent",
+      { confineToWorkspace: false },
+    );
+    for (const handler of plainEvents.get("tool_call") ?? []) {
+      await handler(
+        { toolName: "write", toolCallId: "write-external-cleared", input: { path: "../outside-cleared.txt", content: "after\n" } },
+        { cwd: workspace },
+      );
+    }
+    writeFileSync(clearedExternal, "after\n", "utf8");
+    let clearedResult;
+    for (const handler of plainEvents.get("tool_result") ?? []) {
+      clearedResult = await handler(
+        {
+          toolName: "write",
+          toolCallId: "write-external-cleared",
+          input: { path: "../outside-cleared.txt", content: "after\n" },
+          content: [{ type: "text", text: "Successfully wrote 6 bytes" }],
+          details: undefined,
+          isError: false,
+        },
+        { cwd: workspace },
+      );
+    }
+    assert.equal(clearedResult, undefined, "disabled auto-read appends nothing");
+    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    try {
+      assert.equal(
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE path = ?").get(realpathSync(clearedExternal)).count,
+        0,
+        "a successful external write clears served state for the canonical file in the initiating workspace",
+      );
+    } finally {
+      store.close();
+    }
+  }
+
+  // A write that creates a new external file still appends fresh anchors: the
+  // pre-execution comparison sees no existing bytes, so the write counts as
+  // changed for the bounded UTF-8 content.
+  for (const handler of events.get("tool_call") ?? []) {
+    await handler(
+      { toolName: "write", toolCallId: "write-external-new", input: { path: "../outside-new.txt", content: "fresh\n" } },
+      { cwd: workspace },
+    );
+  }
+  // The Pi write factory has created the file by the time tool_result fires.
+  writeFileSync(join(root, "outside-new.txt"), "fresh\n", "utf8");
+  let externalNew;
+  for (const handler of events.get("tool_result") ?? []) {
+    externalNew = await handler(
+      {
+        toolName: "write",
+        toolCallId: "write-external-new",
+        input: { path: "../outside-new.txt", content: "fresh\n" },
+        content: [{ type: "text", text: "Successfully wrote 6 bytes to ../outside-new.txt" }],
+        details: undefined,
+        isError: false,
+      },
+      { cwd: workspace },
+    );
+  }
+  assert.ok(externalNew, "a new external file write returns an augmented result");
+  assert.match(externalNew.content[1].text, /^[A-Za-z0-9]{3}│fresh$/m, "a created external file gets fresh anchors");
+
+  for (const handler of events.get("tool_call") ?? []) {
+    await handler(
+      { toolName: "write", toolCallId: "write-external-failed", input: { path: "../outside-auto.txt", content: "nope\n" } },
+      { cwd: workspace },
+    );
+  }
+  let failedExternal;
+  for (const handler of events.get("tool_result") ?? []) {
+    failedExternal = await handler(
+      {
+        toolName: "write",
+        toolCallId: "write-external-failed",
+        input: { path: "../outside-auto.txt", content: "nope\n" },
+        content: [{ type: "text", text: "Could not write file" }],
+        details: undefined,
+        isError: true,
+      },
+      { cwd: workspace },
+    );
+  }
+  assert.equal(failedExternal, undefined, "a failed external write keeps its native result");
 
   const disabledEvents = new Map();
   registerAnchoredAutoRead(

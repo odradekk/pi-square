@@ -1,13 +1,16 @@
+import { realpathSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { resolveWorkspacePath } from "../core/paths.ts";
+import { isWithinWorkspace } from "../core/paths.ts";
 import { loadFileKindAndText } from "./file-kind.ts";
 import { readNormFile } from "./file-reader.ts";
+import { resolveTarget } from "./fs-write.ts";
 import { loadHashStoreAt } from "./hash-store.ts";
 import { MAX_HASH_LINES } from "./hashline/index.ts";
-import { projectHashStorePath } from "./paths.ts";
+import { projectHashStorePath, toCwd } from "./paths.ts";
 import { fmtReadPreview } from "./read.ts";
 import { recordServed } from "./served.ts";
+import { errCode } from "./utils.ts";
 import { PARENT_OWNER } from "./workspace-support.ts";
 import { pruneMissingForAllOwners } from "./partitions.ts";
 
@@ -36,20 +39,56 @@ function readParams(value: unknown): { path: string; offset?: number; limit?: nu
   };
 }
 
+/**
+ * Path policy for the anchored read surfaces (#185). The parent passes
+ * `confineToWorkspace: false` so anchored read preserves Pi 0.84.2's native
+ * path authority: absolute paths, `~` paths, cwd-relative paths (including
+ * `../`), and canonical targets reached through symlinks, all under the same
+ * OS permissions as Pi's native read. Child surfaces keep the default
+ * workspace containment until their own native-authority slice.
+ *
+ * External targets keep the initiating workspace's snapshot/served state and
+ * lock area: two different workspaces intentionally do not share state or
+ * locks for the same external file (accepted last-write-wins, matching Pi's
+ * native cross-workspace behavior), while two sessions in one workspace
+ * still coordinate through that workspace's shared store and locks.
+ */
+export interface AnchoredReadPathOptions {
+  confineToWorkspace?: boolean;
+}
+
+interface ResolvedReadTarget {
+  workspaceRoot: string;
+  absolutePath: string;
+}
+
+/** Resolves a read path with Pi's native semantics: normalize (~, `@`,
+ *  unicode spaces, file:// URLs), resolve against the execution cwd, then
+ *  canonicalize existing segments through symlinks. Unlike a realpath probe,
+ *  a missing target resolves instead of throwing, so Pi's factory can produce
+ *  its own native not-found result. */
+async function resolveReadTarget(cwd: string, requestedPath: string): Promise<ResolvedReadTarget> {
+  const workspaceRoot = realpathSync(cwd);
+  const absolutePath = await resolveTarget(toCwd(requestedPath, cwd));
+  return { workspaceRoot, absolutePath };
+}
+
 export async function guardAnchoredRead(
   value: unknown,
   cwd: string,
+  options: AnchoredReadPathOptions = {},
 ): Promise<ReadModelContent | undefined> {
   const params = readParams(value);
   if (!params) return undefined;
+  const confineToWorkspace = options.confineToWorkspace ?? true;
 
-  let workspace;
+  let resolved;
   try {
-    workspace = resolveWorkspacePath(cwd, params.path);
+    resolved = await resolveReadTarget(cwd, params.path);
   } catch (error) {
     return errorText("E_READ_PATH", `Cannot resolve ${params.path}: ${errorMessage(error)}`);
   }
-  if (!workspace.isInsideWorkspace) {
+  if (confineToWorkspace && !isWithinWorkspace(resolved.workspaceRoot, resolved.absolutePath)) {
     return errorText(
       "E_OUTSIDE_WORKSPACE",
       `${params.path} resolves outside the workspace. Disable anchoredEditing.enabled to use Pi's built-in read for that path.`,
@@ -57,7 +96,7 @@ export async function guardAnchoredRead(
   }
 
   try {
-    const fileStat = await stat(workspace.absolutePath);
+    const fileStat = await stat(resolved.absolutePath);
     if (fileStat.isDirectory()) {
       return errorText("E_READ_FAILED", `[E_NOT_TEXT] Path is a directory: ${params.path}. Use ls to inspect directories.`);
     }
@@ -79,17 +118,19 @@ export async function transformAnchoredReadContent(
   value: unknown,
   cwd: string,
   owner: string = PARENT_OWNER,
+  options: AnchoredReadPathOptions = {},
 ): Promise<ReadModelContent> {
   const params = readParams(value);
   if (!params) return content;
+  const confineToWorkspace = options.confineToWorkspace ?? true;
 
-  let workspace;
+  let resolved;
   try {
-    workspace = resolveWorkspacePath(cwd, params.path);
+    resolved = await resolveReadTarget(cwd, params.path);
   } catch (error) {
     return errorText("E_READ_PATH", `Cannot resolve ${params.path}: ${errorMessage(error)}`);
   }
-  if (!workspace.isInsideWorkspace) {
+  if (confineToWorkspace && !isWithinWorkspace(resolved.workspaceRoot, resolved.absolutePath)) {
     return errorText(
       "E_OUTSIDE_WORKSPACE",
       `${params.path} resolves outside the workspace. Disable anchoredEditing.enabled to use Pi's built-in read for that path.`,
@@ -98,22 +139,28 @@ export async function transformAnchoredReadContent(
 
   let file;
   try {
-    file = await loadFileKindAndText(workspace.absolutePath, {
+    file = await loadFileKindAndText(resolved.absolutePath, {
       maxLines: MAX_HASH_LINES,
       displayPath: params.path,
     });
   } catch (error) {
+    // The factory already produced its own native not-found result; pass it
+    // through unchanged instead of replacing it with anchored wording.
+    if (errCode(error) === "ENOENT") return content;
     return errorText("E_READ_FAILED", errorMessage(error));
   }
   if (file.kind === "image") return content;
 
   try {
-    const store = await loadHashStoreAt(projectHashStorePath(workspace.workspaceRoot), {
+    // Native path authority (#185): the store stays attributed to the
+    // initiating workspace even for external targets, so served rows for the
+    // same external file in two workspaces never mix.
+    const store = await loadHashStoreAt(projectHashStorePath(resolved.workspaceRoot), {
       owner,
       migrateLegacy: false,
     });
     try {
-      const normalized = await readNormFile(params.path, workspace.workspaceRoot, {
+      const normalized = await readNormFile(params.path, resolved.workspaceRoot, {
         preloadedFile: file,
         maxLines: MAX_HASH_LINES,
         store,

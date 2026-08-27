@@ -27,18 +27,32 @@ export type ReadContentGuard = (
 export const ANCHORED_READ_GUIDELINES = [
   "When anchoredEditing.enabled is on, read line prefixes are evidence from the current file. Do not invent anchors.",
   "After a replace, use its returned diff rows for an immediate follow-up; read again only when you need wider file context.",
-  "Anchored read only serves paths inside the current workspace.",
 ];
+
+const CONFINED_WORKSPACE_GUIDELINE =
+  "Anchored read only serves paths inside the current workspace.";
+const NATIVE_PATH_GUIDELINE =
+  "Anchored read accepts the same paths as Pi's built-in read, including absolute, ~, and ../ paths outside the workspace.";
 
 /**
  * Appends the anchored-read prompt guidelines to a read definition. Shared by
  * the parent override and the child anchored read so the two surfaces carry
- * the same evidence rules.
+ * the same evidence rules. The path guideline follows the surface's path
+ * policy (#185): the parent states native path authority; child surfaces keep
+ * the workspace confinement guideline until their own native-authority slice.
  */
-export function withAnchoredReadGuidelines(definition: GenericDefinition): GenericDefinition {
+export function withAnchoredReadGuidelines(
+  definition: GenericDefinition,
+  options: { confineToWorkspace?: boolean } = {},
+): GenericDefinition {
+  const confineToWorkspace = options.confineToWorkspace ?? true;
   return {
     ...definition,
-    promptGuidelines: [...(definition.promptGuidelines ?? []), ...ANCHORED_READ_GUIDELINES],
+    promptGuidelines: [
+      ...(definition.promptGuidelines ?? []),
+      ...ANCHORED_READ_GUIDELINES,
+      confineToWorkspace ? CONFINED_WORKSPACE_GUIDELINE : NATIVE_PATH_GUIDELINE,
+    ],
   };
 }
 

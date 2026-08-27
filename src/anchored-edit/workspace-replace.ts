@@ -11,6 +11,7 @@ import { AnchorMismatchError, RangeStaleError, parseHashRef, HASH_SEP } from "./
 import { MAX_RANGE_STALE_LINES } from "./constants.ts";
 import { acquireFileLock, lockFilePath } from "./file-lock.ts";
 import { loadProjectHashStore, outsideWorkspaceError, PARENT_OWNER } from "./workspace-support.ts";
+import { toCwd } from "./paths.ts";
 import type { HashStore } from "./hash-store.ts";
 import {
   assertReq,
@@ -130,12 +131,24 @@ async function lockTimeoutRefusal(
  * @param requireServed Forces verification against the owner's served record
  *   even when the owner never read the file. Used by child replaces so a child
  *   cannot edit a region it was never shown; the parent leaves it off.
+ * @param confineToWorkspace Whether targets outside the workspace are refused.
+ *   The parent registration passes false so replace preserves Pi 0.84.2's
+ *   native path authority (absolute, ~, cwd-relative including ../, and
+ *   symlinked targets) under the same validation, mutation queue, and the
+ *   initiating workspace's canonical-target lock key (#185). Child surfaces
+ *   keep the default workspace containment until their own slice. External
+ *   targets keep the initiating workspace's store and lock area: two
+ *   different workspaces intentionally do not share external-target state or
+ *   locks (accepted last-write-wins, matching Pi's native cross-workspace
+ *   behavior). `replace` still edits existing files only; `write` remains the
+ *   creation path.
  */
 export function createAnchoredReplaceToolDefinition(
   fallbackCwd: string,
   autoRead: () => boolean = () => true,
   owner: string = PARENT_OWNER,
   requireServed: boolean = false,
+  confineToWorkspace: boolean = true,
 ): WorkspaceReplaceDefinition {
   return {
     name: "replace",
@@ -159,10 +172,12 @@ export function createAnchoredReplaceToolDefinition(
         assertReq(canonical);
 
         const normalizedParams: ReqParams = canonical;
-        const target = resolveWorkspacePath(workspace.workspaceRoot, normalizedParams.path);
-        if (!target.isInsideWorkspace) throw outsideWorkspaceError(normalizedParams.path);
-        const mutationTargetPath = await resolveTarget(target.absolutePath);
-        if (!isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) {
+        // Native path authority (#185): resolve exactly as Pi's built-in edit
+        // does (see toCwd), then canonicalize through symlinks; containment
+        // is a child-surface policy, not a parent rule. External targets keep
+        // the initiating workspace's store and canonical-target lock key.
+        const mutationTargetPath = await resolveTarget(toCwd(normalizedParams.path, cwd));
+        if (confineToWorkspace && !isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) {
           throw outsideWorkspaceError(normalizedParams.path);
         }
 
@@ -247,7 +262,7 @@ export function createAnchoredReplaceToolDefinition(
 
             try {
               abortIf(signal);
-              await writeAtomic(target.absolutePath, bom + restoreEndings(result, originalEnding));
+              await writeAtomic(mutationTargetPath, bom + restoreEndings(result, originalEnding));
             } catch (error) {
               await undo.restore();
               throw error;
@@ -301,7 +316,13 @@ export default function registerAnchoredReplace(
 ): void {
   pi.on("session_start", async (_event, ctx) => {
     if (!config().anchoredEditing.enabled || !anchoredReadAvailable()) return;
-    const definition = createAnchoredReplaceToolDefinition(ctx.cwd, () => config().anchoredEditing.autoRead);
+    const definition = createAnchoredReplaceToolDefinition(
+      ctx.cwd,
+      () => config().anchoredEditing.autoRead,
+      PARENT_OWNER,
+      false,
+      false,
+    );
     pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
   });
 }
