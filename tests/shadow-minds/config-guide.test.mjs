@@ -65,9 +65,32 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.match(guide.content, /\[Shadow Config Guide\]/);
   assert.match(guide.content, /promptVersion: 1/);
   assert.match(guide.content, /disabled, priority 0, no automatic triggers, steer delivery/);
-  assert.match(guide.content, /never write definition files directly/);
   assert.match(guide.content, /The next user message is the only authorized configuration request/);
+  // #189: the Guide is the natural-language configuration path.
+  assert.match(guide.content, /Consultations?[^.]*without changing any file/, "consultations answer without file changes");
+  assert.match(guide.content, /ordinary (?:read, write, and replace|file)/, "create/modify work is ordinary file work");
+  assert.match(guide.content, /delete[^.]*platform shell/, "deletion names the platform shell");
+  assert.match(guide.content, /minimal clarification question/, "ambiguous scope or deletion asks one clarification");
   assert.ok(guide.content.includes(".pi/shadow-minds"), "the default project write path is documented");
+  assert.ok(
+    guide.content.includes(join(fixtureRoot, "agent", "shadow-minds")),
+    "the runtime-resolved agent base path is documented",
+  );
+  assert.ok(guide.content.includes(join(packageRoot, ".pi", "shadow-minds")), "the runtime-resolved project overlay path is documented");
+  assert.ok(guide.content.includes("pi-square.json"), "the agent config path is documented");
+  assert.match(guide.content, /never (?:turns the master switch on|enables the master switch)/, "drafts never enable the master switch");
+  assert.match(guide.content, /explicitly asks to enable/, "only explicit requests may enable");
+  assert.match(guide.content, /preserve every unrelated setting/, "agent config edits preserve unrelated settings");
+  assert.match(guide.content, /Re-read every file/, "mutations end with a disk re-read");
+  assert.match(guide.content, /reopen \/shadow/, "the report points back at production diagnostics");
+  assert.match(guide.content, /never run as definitions/, "packaged references are non-running");
+  assert.match(guide.content, /upgrades may overwrite/, "package reference edits are upgrade-fragile");
+  assert.match(guide.content, /tool_turn/, "the trigger decision tree names tool_turn");
+  assert.match(guide.content, /completionGate/, "the gate decision is documented");
+  assert.match(guide.content, /maxToolCalls/, "budgets are documented");
+  assert.doesNotMatch(guide.content, /never write definition files directly/, "the manager-only write instruction is gone");
+  assert.doesNotMatch(guide.content, /review and confirmation/, "no Shadow-specific confirmation remains");
+  assert.ok(guide.content.includes("read, grep, find, ls, codegraph, pdf_search, search, fetch, libs, docs"), "the read-only catalog is documented");
   assert.ok(JSON.stringify(guide.content).length < 60_000, "the guide stays bounded");
   assert.equal(guide.details.version, 1);
   assert.equal(guide.details.definitionCount, registry.definitions.length);
@@ -137,7 +160,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
     theme,
   ));
   const text = expanded.join("\n");
-  assert.ok(text.includes("Configuration contract"), "the expanded view renders the contract");
+  assert.ok(text.includes("How to treat the next user message"), "the expanded view renders the request-handling section");
   assert.ok(!text.includes("[Shadow Config Guide]"), "the bracket header is stripped for Markdown rendering");
 }
 

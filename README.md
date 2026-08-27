@@ -196,9 +196,15 @@ What ships today:
   effective-candidate validation, permission preservation, and atomic rename;
   a stale or concurrent change refuses the write without losing either
   version. Definition writes alone create no model calls.
-- `/shadow <request>` asks the parent agent for configuration help: a bounded
-  Shadow Config Guide is delivered before the unchanged request, and only the
-  user request triggers a turn. No definition is written automatically.
+- `/shadow <request>` is the natural-language configuration and consultation
+  path: a bounded Shadow Config Guide is delivered before the unchanged
+  request, and only the user request triggers a turn. Questions are answered
+  without file changes; clear create, modify, enable, disable, and delete
+  requests run through the ordinary `read`, `write`, and `replace` tools with
+  the platform shell for deletion — drafts never enable the agent-only master
+  switch, agent config edits preserve unrelated settings, and every mutation
+  ends with a re-read, an expected-effective-behavior and cost report, and a
+  prompt to reopen `/shadow` for production diagnostics (#189).
 - Manual trials: every definition offers **Run manually** in the `/shadow`
   manager, evidence-grounded definitions included. An optional bounded
   one-time note applies to that run only. The trial executes as a fresh,

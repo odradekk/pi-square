@@ -57,18 +57,37 @@ cap (see the configuration reference below).
 - **Run facts** — per run: the frozen tool envelope, trigger reasons, the
   full cache-cohort hash axes, and per-request metrics.
 
-The extension writes definitions only through this manager; it never changes
-definition files automatically.
+Definitions are ordinary files, and the manager is one of two editing
+paths: the agent can also edit or delete them directly with the ordinary
+file tools when you ask through `/shadow <request>`.
 
 ## `/shadow <request>` and the Config Guide
 
 `/shadow <request>` (for example `/shadow add a Shadow that checks
-architecture decisions after each answer`) asks the parent agent for
-configuration help. Before your unchanged request triggers the turn, a
-bounded **Shadow Config Guide** is injected as reference context: the
-configuration contract, the merge semantics, the tool catalog, and the
-current effective definition metadata. The guide itself changes nothing;
-the agent drafts overlay Markdown for you to review through the manager.
+architecture decisions after each answer`) is the natural-language
+configuration and consultation path. Before your unchanged request
+triggers the turn, a bounded **Shadow Config Guide** is injected as
+reference context: runtime-resolved agent and project scope paths, the
+strict fail-closed definition contract and merge semantics, the
+trigger/delivery/gate/tools/budget decision tree, the read-only runtime
+boundary, progressive paths to the packaged `example.md` and
+`schema-reference.md`, and the current effective definition metadata.
+Questions are answered without changing files; clear create, modify,
+enable, disable, and delete requests run through the ordinary `read`,
+`write`, and `replace` tools with the active platform shell for deletion —
+there is no Shadow-specific write tool or confirmation. Ambiguous scope or
+layer-deletion requests get one minimal clarification question first.
+
+Creating or editing a draft never enables the master switch; the
+agent-level `shadowMinds.enabled` setting changes only when you explicitly
+ask to enable or run Shadow Minds, and agent config edits read the complete
+file and preserve every unrelated setting. After any change the agent
+re-reads the files it touched and reports the scope, exact paths, expected
+effective behavior (enabled state, triggers, delivery, gate, tools, model,
+budgets), automatic-run cost implications, and the need to reopen `/shadow`
+to refresh definitions and inspect production diagnostics. Best-effort
+self-checks never bypass strict discovery: an invalid file is still
+excluded per ID with an actionable diagnostic.
 
 ## Definition files
 
