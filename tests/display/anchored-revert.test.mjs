@@ -467,17 +467,37 @@ try {
   assert.equal(externalRevert.details.status, undefined, "an external revert succeeds");
   assert.equal(readFileSync(outsideRevert, "utf8"), "alpha\nbeta\ngamma\n", "the external revert restores the prior content");
 
-  await assert.rejects(
-    () => createAnchoredRevertToolDefinition(workspace).execute(
-      "revert-external-confined",
+  // #186: the child revert composition (revertAnyOwner: false) also follows
+  // the external replace; a child reverts an external edit it made itself.
+  {
+    const childRevert = createAnchoredRevertToolDefinition(workspace, undefined, "subagent_revert_probe", false, false);
+    const childReplaceTool = createAnchoredReplaceToolDefinition(workspace, undefined, "subagent_revert_probe", true, false);
+    const childReadRows = readRows(await transformAnchoredReadContent(
+      [{ type: "text", text: "factory content" }],
+      { path: "../outside-revert.txt" },
+      workspace,
+      "subagent_revert_probe",
+      { confineToWorkspace: false },
+    ));
+    const childBeta = childReadRows.find((row) => row.text === "beta");
+    await childReplaceTool.execute(
+      "revert-external-child-replace",
+      { path: "../outside-revert.txt", remove_from: childBeta.hash, remove_to: childBeta.hash, replacement_text: "CHILD" },
+      undefined,
+      undefined,
+      { cwd: workspace },
+    );
+    assert.equal(readFileSync(outsideRevert, "utf8"), "alpha\nCHILD\ngamma\n", "the child external replace applies");
+    const childRevertResult = await childRevert.execute(
+      "revert-external-child",
       { path: "../outside-revert.txt" },
       undefined,
       undefined,
       { cwd: workspace },
-    ),
-    /E_OUTSIDE_WORKSPACE.*Disable anchoredEditing\.enabled/s,
-    "the confined (child) revert definition still refuses outside paths",
-  );
+    );
+    assert.equal(childRevertResult.details.status, undefined, "the child revert restores an external file it edited");
+    assert.equal(readFileSync(outsideRevert, "utf8"), "alpha\nbeta\ngamma\n", "the child revert restored the prior content");
+  }
 
   console.log("anchored revert integration tests: OK");
 } finally {

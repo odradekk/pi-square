@@ -1,8 +1,8 @@
-import { resolve } from "node:path";
 import { createWriteToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { isWithinWorkspace, resolveWorkspacePath } from "../core/paths.ts";
+import { resolveWorkspacePath } from "../core/paths.ts";
 import { resolveTarget } from "./fs-write.ts";
 import { acquireFileLock, fileLockedMessage, lockFilePath } from "./file-lock.ts";
+import { toCwd } from "./paths.ts";
 import { clearUndoRecord } from "./replace-undo.ts";
 import { clearServed } from "./served.ts";
 import { loadProjectHashStore } from "./workspace-support.ts";
@@ -12,11 +12,23 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
 /**
  * Builds the child write tool for a writable subagent while anchored editing is
  * on. It is Pi's public write factory, so the child writes exactly as it does
- * with the built-in tool, with one addition: a successful workspace write
- * clears that file's single revert record (whoever made the recorded edit) and
- * the child's own served rows, so single-level revert never outlives a
- * subsequent write by the child, and a later revert cannot clobber the write.
- * A failed write leaves both intact.
+ * with the built-in tool, with one addition: a successful write clears that
+ * file's single revert record (whoever made the recorded edit) and the child's
+ * own served rows, so single-level revert never outlives a subsequent write by
+ * the child, and a later revert cannot clobber the write. A failed write
+ * leaves both intact. Only the acting child's own rows are cleared, so a
+ * sibling child's served partition survives the write.
+ *
+ * Native path authority (#186): the write follows Pi's native path resolution
+ * for every supported target — absolute paths, `~` paths, cwd-relative paths
+ * (including `../`), and canonical targets reached through symlinks — so the
+ * write is the creation path for external files too (`replace` edits existing
+ * files only). The cross-process write lock and the state clear apply uniformly
+ * to workspace and external targets through the initiating workspace's lock
+ * area: two different workspaces intentionally do not share external-target
+ * state or locks (accepted last-write-wins, matching Pi's native
+ * cross-workspace behavior), while two sessions in one workspace still
+ * coordinate.
  *
  * The returned definition carries the built-in write name; when it is passed as
  * a child custom tool it overrides the child's built-in write, leaving exactly
@@ -32,10 +44,7 @@ export function createChildAnchoredWriteTool(cwd: string, owner: string): Generi
     ...base,
     async execute(toolCallId, params: { path: string; content: string }, signal, onUpdate, ctx) {
       const workspace = resolveWorkspacePath(cwd, ".");
-      const path = await resolveTarget(resolve(workspace.workspaceRoot, params.path));
-      if (!isWithinWorkspace(workspace.workspaceRoot, path)) {
-        return base.execute(toolCallId, params, signal, onUpdate, ctx);
-      }
+      const path = await resolveTarget(toCwd(params.path, cwd));
       // The child write also takes the cross-process write lock, so a child
       // write and a parent (or another session's) replace or revert on the same
       // file can never interleave; one wins and the other is refused or waits.

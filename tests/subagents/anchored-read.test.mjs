@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -59,6 +59,10 @@ try {
     childRead.promptGuidelines.some((guideline) => /Do not invent anchors/.test(guideline)),
     "child read carries the anchored-read evidence guidelines",
   );
+  assert.ok(
+    childRead.promptGuidelines.some((guideline) => /same paths as Pi's built-in read/.test(guideline)),
+    "the child guideline states native path authority",
+  );
 
   // Every workspace text line is prefixed by a three-character anchor, and the
   // anchors match the parent's transform for the same file.
@@ -92,20 +96,60 @@ try {
   const directory = await childRead.execute("child-directory", { path: "directory" }, undefined, undefined, { cwd: workspace });
   assert.match(directory.content[0].text, /Path is a directory.*Use ls/s, "directories give the standard alternative");
 
-  // A path outside the workspace is refused with the same named error as the parent.
-  writeFileSync(join(root, "outside.txt"), "outside");
+  // ── Native path authority (#186): the child anchored read accepts the same
+  // paths as Pi's native read — absolute, ~, cwd-relative ../, and symlinked
+  // targets — with no workspace-containment refusal, and the outside read
+  // returns the same anchors the parent transform returns.
+  writeFileSync(join(root, "outside.txt"), "outside\nsecond");
   const childOutside = await childRead.execute("child-outside", { path: "../outside.txt" }, undefined, undefined, { cwd: workspace });
   const parentOutside = await transformAnchoredReadContent(
     [{ type: "text", text: "factory content" }],
     { path: "../outside.txt" },
     workspace,
+    "parent",
+    { confineToWorkspace: false },
   );
-  assert.match(childOutside.content[0].text, /E_OUTSIDE_WORKSPACE.*Disable anchoredEditing\.enabled/s, "child outside path has the named error");
-  assert.equal(
-    textOf(childOutside.content),
-    textOf(parentOutside),
-    "the child outside-path error matches the parent's exactly",
+  assert.match(childOutside.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "the child read serves external rows with anchors");
+  assert.deepEqual(
+    readRows(childOutside.content).map((row) => row.hash),
+    readRows(parentOutside).map((row) => row.hash),
+    "the child's external anchors match the parent's for the same file",
   );
+
+  const externalAnchors = readRows(childOutside.content).map((row) => row.hash);
+  assert.ok(externalAnchors.length >= 2, "the external read serves every line");
+
+  const childAbsolute = await childRead.execute("child-absolute", { path: join(root, "outside.txt") }, undefined, undefined, { cwd: workspace });
+  assert.match(childAbsolute.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "the child read accepts an absolute external path");
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  try {
+    writeFileSync(join(root, ".child-home.txt"), "from home");
+    const childHome = await childRead.execute("child-home", { path: "~/.child-home.txt" }, undefined, undefined, { cwd: workspace });
+    assert.match(childHome.content[0].text, /^[A-Za-z0-9]{3}│from home$/m, "the child read expands ~ to the home directory");
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+
+  symlinkSync(join(root, "outside.txt"), join(workspace, "child-linked.txt"));
+  const childLinked = await childRead.execute("child-linked", { path: "child-linked.txt" }, undefined, undefined, { cwd: workspace });
+  assert.match(childLinked.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "a workspace symlink to an external target reads its canonical content");
+
+  // The external read records served rows only under the acting child owner:
+  // a file only the child read has no served rows in the parent partition.
+  // (Anchors are content-derived, so two agents reading the same file hold the
+  // same anchors in their own partitions — isolation is per-partition, not
+  // per-anchor secrecy.)
+  {
+    const childServed = getServed(await loadProjectHashStore(workspace, CHILD_ONE), realpathSync(join(root, "outside.txt")));
+    assert.ok(childServed && childServed.size > 0, "the child's external read records served rows under the child owner");
+    writeFileSync(join(root, "child-only.txt"), "child only\nsecond");
+    await childRead.execute("child-only", { path: "../child-only.txt" }, undefined, undefined, { cwd: workspace });
+    const parentOfChildOnly = getServed(await loadProjectHashStore(workspace, PARENT_OWNER), realpathSync(join(root, "child-only.txt")));
+    assert.equal(parentOfChildOnly, undefined, "a file only the child read has no served rows under the parent owner");
+  }
 
   // Supported images retain Pi attachments (image behaviour unchanged).
   const image = await childRead.execute("child-image", { path: "pixel.png" }, undefined, undefined, { cwd: workspace });

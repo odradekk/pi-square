@@ -11,6 +11,14 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
  * a child's edit verifies against the rows its own read served and its revert
  * record stays in its own partition.
  *
+ * Native path authority (#186): the child tools pass `confineToWorkspace:
+ * false`, so a child can replace and revert any Pi-native-accessible external
+ * target while its `requireServed` gate still refuses anchors the child was
+ * never served (recoverably, with the current range as fresh rows). External
+ * targets keep the initiating workspace's store and lock area: two different
+ * workspaces intentionally do not share external-target state or locks
+ * (accepted last-write-wins, matching Pi's native cross-workspace behavior).
+ *
  * Unlike the parent, the child replace always verifies against its served
  * record (`requireServed`): a child that names anchors it never read for itself
  * is refused with the recoverable stale-range code, and the refusal serves the
@@ -30,7 +38,7 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
  */
 export function createChildAnchoredEditTools(cwd: string, owner: string): GenericToolDefinition[] {
   return [
-    createAnchoredReplaceToolDefinition(cwd, () => true, owner, true) as GenericToolDefinition,
-    createAnchoredRevertToolDefinition(cwd, () => true, owner, false) as GenericToolDefinition,
+    createAnchoredReplaceToolDefinition(cwd, () => true, owner, true, false) as GenericToolDefinition,
+    createAnchoredRevertToolDefinition(cwd, () => true, owner, false, false) as GenericToolDefinition,
   ];
 }
