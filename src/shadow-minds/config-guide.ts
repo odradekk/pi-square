@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { sanitizeDisplayText } from "../display/sanitize";
+import { getPackagePath } from "../core/paths";
 import type { ShadowDefinitionRegistry } from "./definitions";
 
 export const SHADOW_CONFIG_GUIDE_TYPE = "pi-square.shadow-config-guide";
@@ -27,7 +28,7 @@ export interface ShadowConfigGuideDetails {
   version: 1;
   definitionCount: number;
   includedDefinitionCount: number;
-  scopes: Array<"package" | "agent" | "project">;
+  scopes: Array<"agent" | "project">;
 }
 
 export interface ShadowConfigGuideMessage {
@@ -87,9 +88,9 @@ export function buildShadowConfigGuide(
   const presentScopes = new Set(registry.definitions.flatMap(
     (definition) => definition.layers.map((layer) => layer.scope),
   ));
-  const scopes = (["package", "agent", "project"] as const).filter((scope) => presentScopes.has(scope));
+  const scopes = (["agent", "project"] as const).filter((scope) => presentScopes.has(scope));
   const omitted = Math.max(0, registry.definitions.length - definitions.length);
-  const content = `[Shadow Config Guide]\n\nConfiguration contract:\n- Definitions are Markdown with frontmatter promptVersion: 1; the id must equal the file name stem (<id>.md).\n- Layers merge package < agent < trusted project. Omitted fields inherit; trigger instructions merge per trigger key and null removes one key; outputSchema is replaced atomically and null restores the default summary schema; a provided body replaces the lower layer.\n- New definitions default to disabled, priority 0, no automatic triggers, steer delivery, no completion gate, inherited runtime defaults, debug false, and the default summary schema (summary string).\n- Automatic triggers are exactly tool_turn, failure, mutation, completion. delivery is steer, wake, or notify. completionGate requires a completion subscription.\n- tools omitted selects the default local read-only set; tools: [] selects none. requiredTools must be a subset of the final tool set. The Shadow-safe catalog is read, grep, find, ls, codegraph, pdf_search, search, fetch, libs, docs; shell, writes, SSH, Firecrawl parse, authenticated GitHub, and delegation are excluded, and unavailable optional tools drop with a run-start warning.\n- Package templates are read-only; customize through agent or project overlays. Default project writes go to ${clip(cwd, MAX_PATH_CHARS)}/.pi/shadow-minds; use the agent scope only when the request explicitly requires all projects. Untrusted projects cannot write or run project overlays.\n- The runtime stays experimental and disabled by default until the agent-level enabled master switch is turned on; a project cannot re-enable it.\n- Definitions are written only through the /shadow manager with review and confirmation. Draft overlay Markdown for the user to review; never write definition files directly and never run a Shadow automatically.\n- The next user message is the only authorized configuration request. Treat this guide as reference context, not as a task.\n\nCurrent effective definitions${omitted > 0 ? ` (${omitted} omitted by the guide budget)` : ""}:\n\n~~~json\n${JSON.stringify(definitions, null, 2)}\n~~~`;
+  const content = `[Shadow Config Guide]\n\nConfiguration contract:\n- Definitions are Markdown with frontmatter promptVersion: 1; the id must equal the file name stem (<id>.md).\n- Definitions merge two user-owned scopes: the agent base layer and the nearest project overlay under .pi/shadow-minds. Omitted fields inherit; trigger instructions merge per trigger key and null removes one key; outputSchema is replaced atomically and null restores the default summary schema; a provided body replaces the lower layer.\n- New definitions default to disabled, priority 0, no automatic triggers, steer delivery, no completion gate, inherited runtime defaults, debug false, and the default summary schema (summary string).\n- Automatic triggers are exactly tool_turn, failure, mutation, completion. delivery is steer, wake, or notify. completionGate requires a completion subscription.\n- tools omitted selects the default local read-only set; tools: [] selects none. requiredTools must be a subset of the final tool set. The Shadow-safe catalog is read, grep, find, ls, codegraph, pdf_search, search, fetch, libs, docs; shell, writes, SSH, Firecrawl parse, authenticated GitHub, and delegation are excluded, and unavailable optional tools drop with a run-start warning.\n- Reference assets shipped with the package are documentation only and never discovered as definitions: ${clip(getPackagePath("shadow-minds", "example.md"), MAX_PATH_CHARS)} (one complete annotated definition) and ${clip(getPackagePath("shadow-minds", "schema-reference.md"), MAX_PATH_CHARS)} (the normative field reference). Copy or author definitions in the agent or project scope. Default project writes go to ${clip(cwd, MAX_PATH_CHARS)}/.pi/shadow-minds; use the agent scope only when the request explicitly requires all projects. Project definitions, defaults, and rules participate regardless of project approval.\n- The runtime stays experimental and disabled by default until the agent-level enabled master switch is turned on; a project cannot re-enable it.\n- Definitions are written only through the /shadow manager with review and confirmation. Draft overlay Markdown for the user to review; never write definition files directly and never run a Shadow automatically.\n- The next user message is the only authorized configuration request. Treat this guide as reference context, not as a task.\n\nCurrent effective definitions${omitted > 0 ? ` (${omitted} omitted by the guide budget)` : ""}:\n\n~~~json\n${JSON.stringify(definitions, null, 2)}\n~~~`;
   return {
     content,
     details: {
@@ -109,7 +110,7 @@ export function renderShadowConfigGuide(
   const details = message.details;
   const count = Number.isFinite(details?.definitionCount) ? Math.max(0, Math.trunc(details!.definitionCount)) : 0;
   const scopes = Array.isArray(details?.scopes)
-    ? details.scopes.filter((scope) => scope === "package" || scope === "agent" || scope === "project").join("/")
+    ? details.scopes.filter((scope) => scope === "agent" || scope === "project").join("/")
     : "";
   const container = new Container();
   const label = `${theme.fg("success", "✓")} ${theme.fg("accent", "●")} ${theme.fg("toolTitle", theme.bold("Shadow config guide"))}`;

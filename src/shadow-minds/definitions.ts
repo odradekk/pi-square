@@ -1,19 +1,20 @@
 /**
  * Layered Shadow definition discovery and merge
- * (odradekk/pi-square#149, slice #153).
+ * (odradekk/pi-square#149, slice #153; two-scope model #188).
  *
- * Definitions are Markdown files discovered in three scopes: read-only package
- * templates shipped with pi-square, agent overlays under the Pi agent
- * directory, and trusted-project overlays under `.pi/shadow-minds` found by
- * walking up from the workspace. Layers merge by stable ID — package → agent
- * → trusted project — with per-field provenance (source scope, file path,
- * content hash), trigger-instruction key merge with explicit-null clearing,
- * atomic output-schema replacement, and body replacement versus inheritance.
+ * Definitions are Markdown files discovered in exactly two user-owned scopes:
+ * agent-base definitions under the Pi agent directory and the nearest
+ * project overlay under `.pi/shadow-minds` found by walking up from the
+ * workspace. Layers merge by stable ID — agent base → project overlay — with
+ * per-field provenance (source scope, file path, content hash),
+ * trigger-instruction key merge with explicit-null clearing, atomic
+ * output-schema replacement, and body replacement versus inheritance.
  *
  * Failure is scoped per ID: an invalid or same-scope-conflicting definition is
  * diagnosed and excluded while every other valid definition stays inspectable.
- * Untrusted project definitions are diagnosed and excluded entirely; package
- * and agent definitions remain available in the same registry.
+ * Project participation never depends on project trust (#188): every project
+ * contributes its overlay on the same terms, and the packaged reference
+ * assets are documentation only — never a discovery scope.
  */
 
 import { createHash } from "node:crypto";
@@ -21,7 +22,7 @@ import { realpathSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isWithinWorkspace } from "../core/paths";
 import { diagnostic, type DiagnosticMessage } from "../core/diagnostics";
-import { getAgentPath, getPackagePath } from "../core/paths";
+import { getAgentPath } from "../core/paths";
 import {
   DEFAULT_OUTPUT_SCHEMA,
   parseShadowDefinitionFile,
@@ -34,7 +35,7 @@ import {
   type ShadowTrigger,
 } from "./parser";
 
-export type ShadowDefinitionScope = "package" | "agent" | "project";
+export type ShadowDefinitionScope = "agent" | "project";
 
 export interface ShadowDefinitionSource {
   scope: ShadowDefinitionScope;
@@ -311,31 +312,24 @@ interface ShadowScopeCollection {
   diagnostics: DiagnosticMessage[];
 }
 
-function collectShadowScopes(cwd: string, projectTrusted: boolean): ShadowScopeCollection {
+function collectShadowScopes(cwd: string): ShadowScopeCollection {
   const diagnostics: DiagnosticMessage[] = [];
   const scopes: ShadowScopeEntry[] = [
-    { dir: getPackagePath("shadow-minds"), scope: "package" },
     { dir: getAgentPath("shadow-minds"), scope: "agent" },
   ];
+  // Project participation is unconditional (#188): trust never gates the
+  // project overlay scope.
   const projectLocation = findNearestProjectShadowDir(cwd);
   if (projectLocation?.error) {
     diagnostics.push(diagnostic("warning", projectLocation.error));
-  } else if (projectLocation && !projectTrusted) {
-    diagnostics.push(diagnostic(
-      "warning",
-      `Shadow definitions in ${projectLocation.dir} are ignored because the project is not trusted`,
-    ));
   } else if (projectLocation) {
     scopes.push({ dir: projectLocation.dir, scope: "project", projectRoot: projectLocation.projectRoot });
   }
   return { scopes, diagnostics };
 }
 
-export function discoverShadowDefinitions(
-  cwd: string,
-  options: { projectTrusted: boolean },
-): ShadowDefinitionRegistry {
-  const collected = collectShadowScopes(cwd, options.projectTrusted);
+export function discoverShadowDefinitions(cwd: string): ShadowDefinitionRegistry {
+  const collected = collectShadowScopes(cwd);
   const diagnostics = collected.diagnostics;
   const scopes = collected.scopes;
 
@@ -396,7 +390,7 @@ export function discoverShadowDefinitions(
       ));
       continue;
     }
-    const ordered = ["package", "agent", "project"] as const;
+    const ordered = ["agent", "project"] as const;
     const layers = ordered
       .flatMap((scope) => buckets.find((bucket) => bucket.scope === scope)?.layers ?? []);
     const merged = mergeLayers(id, layers);
@@ -449,7 +443,6 @@ export function shadowDefinitionContextFingerprint(layers: readonly ShadowDefini
 function previewShadowLayers(
   cwd: string,
   options: {
-    projectTrusted: boolean;
     scope: "agent" | "project";
     filePath: string;
     content?: string;
@@ -458,7 +451,7 @@ function previewShadowLayers(
   },
 ): { definition?: EffectiveShadowDefinition; errors: string[]; contextFingerprint: string } {
   const id = stemOf(options.filePath);
-  const { scopes } = collectShadowScopes(cwd, options.projectTrusted);
+  const { scopes } = collectShadowScopes(cwd);
   const loaded: LoadedLayer[] = [];
   for (const { dir, scope, projectRoot } of scopes) {
     if (!dir) continue;
@@ -474,7 +467,7 @@ function previewShadowLayers(
 
   const errors: string[] = [];
   const buckets: { scope: ShadowDefinitionScope; layers: (LoadedLayer & { parsed: ParsedShadowDefinition })[] }[] = [];
-  for (const scope of ["package", "agent", "project"] as const) {
+  for (const scope of ["agent", "project"] as const) {
     const claiming = loaded.filter((layer) => layer.scope === scope && layer.filePath !== options.filePath);
     for (const layer of claiming) {
       if (!layer.parsed) errors.push(...layer.errors);
@@ -504,7 +497,7 @@ function previewShadowLayers(
   }
   if (errors.length > 0) return { errors, contextFingerprint: currentContextFingerprint };
 
-  const ordered = (["package", "agent", "project"] as const)
+  const ordered = (["agent", "project"] as const)
     .flatMap((scope) => buckets.find((bucket) => bucket.scope === scope)?.layers ?? []);
   if (ordered.length === 0) return { errors: [], contextFingerprint: currentContextFingerprint };
   return { ...mergeLayers(id, ordered), contextFingerprint: currentContextFingerprint };
@@ -517,7 +510,6 @@ function previewShadowLayers(
 export function previewShadowDefinition(
   cwd: string,
   options: {
-    projectTrusted: boolean;
     scope: "agent" | "project";
     filePath: string;
     content: string;
@@ -531,7 +523,6 @@ export function previewShadowDefinition(
 export function previewShadowDefinitionDeletion(
   cwd: string,
   options: {
-    projectTrusted: boolean;
     scope: "agent" | "project";
     filePath: string;
     expectedContextFingerprint?: string;

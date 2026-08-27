@@ -2,11 +2,11 @@
  * Shadow Minds feature entry (odradekk/pi-square#149, slices #153–#155).
  *
  * This entry owns the definition registry state, refreshes it on session
- * start from the canonical workspace and project-trust result, registers
+ * start from the canonical workspace result, registers
  * the `/shadow` manager with its safe overlay write services, and provides
  * the parameterized `/shadow <request>` Config Guide flow. The session
  * runtime executes manual no-tool trials through the shared one-time
- * child-session executor seam: every run freezes the parent core, trusted
+ * child-session executor seam: every run freezes the parent core, project
  * project rules, and canonical working directory from the parent's current
  * prompt options at activation, and composes the versioned Shadow SYSTEM and
  * reference-only trajectory from that snapshot. Manager approvals route through the
@@ -102,7 +102,6 @@ export const SHADOW_RESULT_ENTRY_TYPE = "pi-square.shadow-result";
 export interface ShadowMindsState {
   registry: ShadowDefinitionRegistry;
   cwd: string;
-  projectTrusted: boolean;
   runtime: ShadowRuntime;
   /** Deterministic automatic scheduling for this parent session. */
   scheduler: ShadowScheduler;
@@ -118,7 +117,7 @@ export interface ShadowMindsState {
   partition?: { sessionDir: string; sessionId: string };
   /** The frozen task snapshot, captured from one command context. */
   captureTaskSnapshot(commandCtx: ExtensionCommandContext): ShadowTaskSnapshot;
-  refresh(cwd: string, projectTrusted: boolean): void;
+  refresh(cwd: string): void;
   managerSnapshot(): ShadowManagerSnapshot;
 }
 
@@ -141,11 +140,7 @@ function rulesFromContextFiles(files: unknown): ShadowProjectRule[] {
 }
 
 /** Freezes the parent-task authority snapshot from prompt-build options. */
-function taskSnapshotFromOptions(
-  options: unknown,
-  cwd: string,
-  projectTrusted: boolean,
-): ShadowTaskSnapshot {
+function taskSnapshotFromOptions(options: unknown, cwd: string): ShadowTaskSnapshot {
   const parentCore = parentCoreFromOptions(options);
   let canonical: string;
   try {
@@ -160,9 +155,9 @@ function taskSnapshotFromOptions(
   }
   return {
     ...(parentCore ? { parentCore } : {}),
-    projectRules: projectTrusted
-      ? rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles)
-      : [],
+    // Project rules participate unconditionally (#188): trust never gates
+    // the frozen Shadow authority snapshot.
+    projectRules: rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles),
     cwd: canonical,
   };
 }
@@ -272,7 +267,7 @@ function composeShadowRun(input: {
   const runtime = state.runtime;
   try {
     const liveConfig = state.managerSnapshot().config ?? DEFAULT_CONFIG.shadowMinds;
-    state.refresh(ctx.cwd, ctx.isProjectTrusted());
+    state.refresh(ctx.cwd);
     const definition = state.registry.definitions.find((entry) => entry.id === input.definition.id) ?? input.definition;
     const parentLabel = formatModel(ctx.model);
     if (!matchesParentModelFilter(definition.parentModels, parentLabel)) {
@@ -376,7 +371,7 @@ function makeServices(
       snapshot: () => runtime.snapshot(),
       runManual(input) {
         try {
-          state.refresh(ctx.cwd, ctx.isProjectTrusted());
+          state.refresh(ctx.cwd);
           const definition = state.registry.definitions.find((entry) => entry.id === input.shadowId);
           if (!definition) {
             return { ok: false, message: `Shadow definition '${input.shadowId}' is no longer available.` };
@@ -472,7 +467,7 @@ function makeServices(
       },
     },
     refresh(): ShadowManagerSnapshot {
-      state.refresh(ctx.cwd, ctx.isProjectTrusted());
+      state.refresh(ctx.cwd);
       return state.managerSnapshot();
     },
     scopeOf(filePath: string): "agent" | "project" | undefined {
@@ -490,7 +485,6 @@ function makeServices(
     },
     async overlaySnapshot(scope, id, filePath) {
       return readShadowOverlaySnapshot(scope, ctx.cwd, id, {
-        projectTrusted: ctx.isProjectTrusted(),
         filePath,
       });
     },
@@ -499,8 +493,7 @@ function makeServices(
         const content = serializeShadowDefinition(fields);
         const filePath = reviewedFilePath ?? shadowOverlayFilePath(scope, ctx.cwd, fields.id);
         const preview = previewShadowDefinition(ctx.cwd, {
-          projectTrusted: ctx.isProjectTrusted(),
-          scope,
+            scope,
           filePath,
           content,
           expectedContextFingerprint,
@@ -523,8 +516,7 @@ function makeServices(
     previewDelete(scope, _id, filePath, expectedContextFingerprint) {
       try {
         const preview = previewShadowDefinitionDeletion(ctx.cwd, {
-          projectTrusted: ctx.isProjectTrusted(),
-          scope,
+            scope,
           filePath,
           expectedContextFingerprint,
         });
@@ -551,15 +543,14 @@ function makeServices(
       try {
         const result = await writeShadowOverlay({
           cwd: ctx.cwd,
-          projectTrusted: ctx.isProjectTrusted(),
-          scope,
+            scope,
           fields,
           reviewFilePath,
           reviewFingerprint,
           reviewContextFingerprint,
           reviewIdentity,
         });
-        state.refresh(ctx.cwd, ctx.isProjectTrusted());
+        state.refresh(ctx.cwd);
         ctx.ui.notify(`shadow-minds: saved ${fields.id} ${scope} overlay (${result.filePath})`, "info");
         return { ok: true, message: `Saved ${fields.id} ${scope} overlay.` };
       } catch (error) {
@@ -572,15 +563,14 @@ function makeServices(
       try {
         const result = await deleteShadowOverlay({
           cwd: ctx.cwd,
-          projectTrusted: ctx.isProjectTrusted(),
-          scope,
+            scope,
           id,
           filePath,
           reviewFingerprint,
           reviewContextFingerprint,
           reviewIdentity,
         });
-        state.refresh(ctx.cwd, ctx.isProjectTrusted());
+        state.refresh(ctx.cwd);
         const message = result.removed
           ? `Deleted the ${id} ${scope} overlay.`
           : `No ${id} ${scope} overlay existed anymore.`;
@@ -681,7 +671,6 @@ export default function registerShadowMinds(
   const state: ShadowMindsState = {
     registry: { definitions: [], invalid: [], diagnostics: [] },
     cwd: process.cwd(),
-    projectTrusted: false,
     runtime: makeRuntime(),
     scheduler: makeScheduler(),
     currentParentRun: () => parentRunSeq,
@@ -704,20 +693,17 @@ export default function registerShadowMinds(
       }
       return {
         ...(parentCore ? { parentCore } : {}),
-        projectRules: commandCtx.isProjectTrusted()
-          ? rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles)
-          : [],
+        projectRules: rulesFromContextFiles((options as { contextFiles?: unknown } | undefined)?.contextFiles),
         cwd,
       };
     },
-    refresh(cwd: string, projectTrusted: boolean): void {
+    refresh(cwd: string): void {
       state.cwd = cwd;
-      state.projectTrusted = projectTrusted;
-      state.registry = discoverShadowDefinitions(cwd, { projectTrusted });
+      state.registry = discoverShadowDefinitions(cwd);
     },
     managerSnapshot(): ShadowManagerSnapshot {
       const effective = config?.().shadowMinds;
-      return snapshot(state.registry, state.projectTrusted, effective);
+      return snapshot(state.registry, effective);
     },
   };
   // ── Bounded completion gate (#160) ─────────────────────────────────
@@ -786,7 +772,7 @@ export default function registerShadowMinds(
     handler: async (args, ctx) => {
       const rawRequest = String(args ?? "");
       const request = rawRequest.trim();
-      state.refresh(ctx.cwd, ctx.isProjectTrusted());
+      state.refresh(ctx.cwd);
       if (request) {
         const guide = buildShadowConfigGuide(state.registry, ctx.cwd);
         pi.sendMessage({
@@ -885,7 +871,6 @@ export default function registerShadowMinds(
     state.taskSnapshot = taskSnapshotFromOptions(
       event?.systemPromptOptions,
       sessionCtx?.cwd ?? state.cwd,
-      Boolean(sessionCtx?.isProjectTrusted?.()),
     );
     if (realUserTask) {
       taskSnapshots.record(state.scheduler.snapshot().taskEpoch, state.taskSnapshot);
@@ -1096,7 +1081,7 @@ export default function registerShadowMinds(
     toolArgsById.clear();
     bindRuntimeNotifications();
     bindSchedulerStatus(sessionCtx);
-    state.refresh(sessionCtx.cwd, sessionCtx.isProjectTrusted());
+    state.refresh(sessionCtx.cwd);
     if (sessionCtx.hasUI && state.registry.diagnostics.length > 0) {
       const suffix = state.registry.diagnostics.length > 1
         ? ` (+${state.registry.diagnostics.length - 1} more)`

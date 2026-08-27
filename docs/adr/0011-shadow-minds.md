@@ -73,9 +73,9 @@ clipping and budget diagnostics.
 
 Each manual trial or automatic dispatch creates one fresh one-time child
 session; there is no resume, no shared Session identity, and no long-lived
-child. A frozen authority snapshot (parent system core, trusted project
+child. A frozen authority snapshot (parent system core, project
 rules, canonical working directory) is captured once per real user task from
-that run's prompt options. New tasks, pause, interruption, session
+that run's prompt options; project rules participate unconditionally (#188). New tasks, pause, interruption, session
 replacement, and shutdown cancel the applicable runs and pending work; a
 stale-task result is forced to `notify` delivery rather than silently
 steering a newer task.
@@ -94,15 +94,17 @@ quietly without starting a turn; replacement reasons cancel promptly.
 ### Layered definitions
 
 Definitions are Markdown with a strict bounded frontmatter subset
-(`promptVersion: 1`, `id` equals the file stem). Layers merge package →
-agent → trusted-project by stable ID: omitted fields inherit, explicit
+(`promptVersion: 1`, `id` equals the file stem). Layers merge agent base →
+nearest project overlay by stable ID (#188): omitted fields inherit, explicit
 null/empty clears, trigger instructions merge per key with null removing a
 key, `outputSchema` replaces atomically (null restores the default summary
-schema), and a provided body replaces the lower layer. Package templates are
-read-only; all writes flow through the `/shadow` manager with candidate
+schema), and a provided body replaces the lower layer. The package layer and
+Shadow-specific project trust were removed: discovery scans exactly the two
+user-owned scopes, the packaged `example.md` and `schema-reference.md` are
+never-discovered reference assets, and every project contributes on the same
+terms. All writes flow through the `/shadow` manager with candidate
 review, review-fingerprint CAS, locking, identity checks, complete
-effective-candidate validation, and atomic rename. Untrusted projects
-contribute nothing.
+effective-candidate validation, and atomic rename.
 
 ### Inbox persistence
 
@@ -130,8 +132,10 @@ notify, pending caps, and reopen recovery that never auto-redelivers.
 ### Trust
 
 The agent-level master switch is the only enabler; a project layer can never
-re-enable the feature, define SSH-like sensitive settings, or run project
-definitions from an untrusted project. Effective configuration always stays
+re-enable the feature or define SSH-like sensitive settings. Project
+definitions, runtime defaults, and rules participate in every project
+(#188): the fixed strictly read-only tool catalog — never project trust — is
+the capability boundary. Effective configuration always stays
 under package hard caps, and an invalid section fails closed.
 
 ### Cache strategy: measured, never speculative

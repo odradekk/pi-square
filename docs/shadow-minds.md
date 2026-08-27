@@ -46,10 +46,9 @@ cap (see the configuration reference below).
   sources (scope, file name, content hash), trigger set, delivery policy,
   diagnostics, and hidden or invalid state.
 - **Overlays** — create, edit single fields, enable, disable, hide, and
-  delete agent and trusted-project overlays. Every write shows a full
+  delete agent and project overlays. Every write shows a full
   candidate review — the layer Markdown plus the effective behavior change —
-  before the confirmation. Package templates are read-only; customize
-  through overlays.
+  before the confirmation.
 - **Runs / Inbox** — manual trials with a bounded one-time note, live run
   observation with cancellation, the session result inbox (payloads, read,
   dismiss, delete, explicit delivery), scheduling notes (clipped queue
@@ -80,8 +79,8 @@ and a responsibility body:
 ```markdown
 ---
 promptVersion: 1
-id: project-grounding
-name: Project grounding
+id: my-shadow
+name: My shadow
 enabled: false
 priority: 0
 triggers: [tool_turn, completion]
@@ -121,15 +120,25 @@ Fields:
 
 ### Layers
 
-Layers merge by stable ID: **package** templates (read-only, shipped in
-`shadow-minds/`) → **agent** overlays (`~/.pi/agent/shadow-minds/`) →
-**trusted-project** overlays (`.pi/shadow-minds/` in the project). Omitted
-fields inherit. Empty lists explicitly replace inherited lists, while an empty
-body inherits the lower body. `triggerInstructions` merges per key, with
-`null` removing one inherited instruction; `outputSchema` is replaced atomically,
-and `outputSchema: null` restores the default summary schema.
-The manager shows per-field provenance (scope, file, content hash).
-Untrusted projects contribute no definitions and cannot write overlays.
+Layers merge by stable ID across exactly two user-owned scopes (#188): the
+**agent** base layer (`~/.pi/agent/shadow-minds/`) and the nearest **project**
+overlay (`.pi/shadow-minds/` in the project, found by walking up from the
+workspace; outer project scopes are ignored once the nearest one is found).
+Omitted fields inherit. Empty lists explicitly replace inherited lists, while
+an empty body inherits the lower body. `triggerInstructions` merges per key,
+with `null` removing one inherited instruction; `outputSchema` is replaced
+atomically, and `outputSchema: null` restores the default summary schema.
+The manager shows per-field provenance (scope, file, content hash). Project
+participation never depends on project approval, and project-only IDs are
+valid when their single file is complete.
+
+The packaged `shadow-minds/` directory holds two reference assets that never
+enter discovery or the manager: the annotated `example.md` (one complete
+parser-valid definition) and the normative `schema-reference.md` (every
+field, bound, enum, default, and consistency rule, machine-checked by
+contract tests). Copy or author definitions in the agent or project scope;
+package files are documentation, and package upgrades cannot add effective
+definitions.
 
 ## Triggers and scheduling
 
@@ -168,8 +177,8 @@ The Shadow-safe tool catalog is exactly: `read`, `grep`, `find`, `ls`,
 parse, authenticated GitHub, and delegation are excluded capabilities — a
 requested-but-excluded tool drops with a run-start warning, while a
 `requiredTools` miss fails before prompting. `pdf_search` is an explicit
-opt-in outside the default local evidence set; two bundled templates
-(`project-grounding`, `architecture-lens`) request it.
+opt-in outside the default local evidence set; a definition lists it in
+`tools` when a task needs local PDF evidence.
 
 Models: an empty `model` inherits the activating parent model; an explicit
 `provider/model-id` resolves through the registry and requires configured
@@ -181,7 +190,7 @@ levels the model supports.
 ## Runs, results, and delivery
 
 Every run is one fresh, one-time child session with the versioned Shadow
-SYSTEM (governance plus the frozen parent core and trusted project rules
+SYSTEM (governance plus the frozen parent core and project rules
 for that task) and a reference-only trajectory view of the parent's visible
 branch. Timeouts, turn limits, and tool-call budgets are enforced at native
 pre-model and pre-validation boundaries; timeouts, cancellations, and model

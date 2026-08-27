@@ -1,7 +1,7 @@
 /**
  * Safe Shadow definition overlay writer (odradekk/pi-square#149, slice #154).
  *
- * Every persistent change to an agent or trusted-project overlay goes through
+ * Every persistent change to an agent or project overlay goes through
  * this module: canonical scope resolution, project-trust enforcement, symlink
  * and file-identity checks, an advisory lock with stale reclaim, fingerprint
  * CAS against the reviewed content, complete effective-candidate validation
@@ -174,15 +174,6 @@ function assertOverlayPathSafe(paths: OverlayScopePaths): void {
   }
 }
 
-function assertProjectWritable(scope: ShadowOverlayScope, projectTrusted: boolean): void {
-  if (scope === "project" && !projectTrusted) {
-    throw failShadow(
-      "SHADOW_PROJECT_UNTRUSTED",
-      "project-scope Shadow overlays require a trusted project",
-    );
-  }
-}
-
 function fingerprintContent(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
@@ -227,15 +218,13 @@ export async function readShadowOverlaySnapshot(
   scope: ShadowOverlayScope,
   cwd: string,
   id: string,
-  context: { projectTrusted: boolean; filePath?: string },
+  context: { filePath?: string } = {},
 ): Promise<ShadowOverlaySnapshot> {
-  assertProjectWritable(scope, context.projectTrusted);
   const paths = resolveOverlayPaths(scope, cwd, id, context.filePath);
   assertOverlayPathSafe(paths);
   const content = await readOverlayContent(paths.filePath);
   const identity = await regularFileIdentity(failShadow, paths.filePath, "overlay file", SHADOW_IDENTITY_CODES);
   const preview = previewShadowDefinitionDeletion(cwd, {
-    projectTrusted: context.projectTrusted,
     scope,
     filePath: paths.filePath,
   });
@@ -251,7 +240,6 @@ export async function readShadowOverlaySnapshot(
 export async function writeShadowOverlay(
   input: {
     cwd: string;
-    projectTrusted: boolean;
     scope: ShadowOverlayScope;
     fields: ShadowDefinitionFields;
     reviewFingerprint: string;
@@ -261,7 +249,6 @@ export async function writeShadowOverlay(
   },
   testHooks: ShadowOverlayTestHooks = {},
 ): Promise<{ filePath: string; content: string }> {
-  assertProjectWritable(input.scope, input.projectTrusted);
   const paths = resolveOverlayPaths(input.scope, input.cwd, input.fields.id, input.reviewFilePath);
   assertOverlayPathSafe(paths);
   await mkdir(paths.root, { recursive: true });
@@ -317,7 +304,6 @@ export async function writeShadowOverlay(
     // reparse and merge into a valid effective definition under exactly the
     // same package/agent/project context that the manager reviewed.
     const preview = previewShadowDefinition(input.cwd, {
-      projectTrusted: input.projectTrusted,
       scope: input.scope,
       filePath: paths.filePath,
       content,
@@ -363,7 +349,6 @@ export async function writeShadowOverlay(
       throw failShadow("SHADOW_STALE_REVIEW", "overlay file identity changed while the reviewed update was being prepared");
     }
     const finalPreview = previewShadowDefinition(input.cwd, {
-      projectTrusted: input.projectTrusted,
       scope: input.scope,
       filePath: paths.filePath,
       content,
@@ -406,7 +391,6 @@ export async function writeShadowOverlay(
 export async function deleteShadowOverlay(
   input: {
     cwd: string;
-    projectTrusted: boolean;
     scope: ShadowOverlayScope;
     id: string;
     reviewFingerprint: string;
@@ -416,7 +400,6 @@ export async function deleteShadowOverlay(
   },
   testHooks: ShadowOverlayTestHooks = {},
 ): Promise<{ removed: boolean; filePath: string }> {
-  assertProjectWritable(input.scope, input.projectTrusted);
   const paths = resolveOverlayPaths(input.scope, input.cwd, input.id, input.filePath);
   assertOverlayPathSafe(paths);
 
@@ -432,7 +415,6 @@ export async function deleteShadowOverlay(
       throw failShadow("SHADOW_STALE_REVIEW", "overlay was removed since review; review the current definition and try again");
     }
     const preview = previewShadowDefinitionDeletion(input.cwd, {
-      projectTrusted: input.projectTrusted,
       scope: input.scope,
       filePath: paths.filePath,
       expectedContextFingerprint: input.reviewContextFingerprint,
@@ -469,7 +451,6 @@ export async function deleteShadowOverlay(
       );
     }
     const preview = previewShadowDefinitionDeletion(input.cwd, {
-      projectTrusted: input.projectTrusted,
       scope: input.scope,
       filePath: paths.filePath,
       expectedContextFingerprint: input.reviewContextFingerprint,
@@ -485,7 +466,6 @@ export async function deleteShadowOverlay(
     }
     await testHooks.beforeRename?.();
     const finalPreview = previewShadowDefinitionDeletion(input.cwd, {
-      projectTrusted: input.projectTrusted,
       scope: input.scope,
       filePath: paths.filePath,
       expectedContextFingerprint: input.reviewContextFingerprint,
