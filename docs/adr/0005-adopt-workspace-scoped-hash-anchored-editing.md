@@ -67,9 +67,26 @@ repository. The vendored source and exact upstream provenance are recorded in
    overwriting it. Superseded by ADR-0007, which adds the cross-process write
    lock with a fixed lock ordering.
 3. The feature is workspace-bounded. Paths outside the canonical workspace use
-   Pi's built-in tools after the feature is disabled.
+   Pi's built-in tools after the feature is disabled. Superseded for the parent
+   surface by the native path authority change (#185): parent anchored read,
+   `replace`, `revert`, and write-state handling accept the same paths as Pi
+   0.84.2's native tools. Child anchored surfaces keep this boundary until
+   their own native-authority slice.
 4. The public tool is named `revert`; the vendor implementation and its retained
    regression suite keep the upstream `undo_last_replace` name internally.
+
+## Partially superseded: native path authority (#185)
+
+Trade-off 3 above no longer holds for the parent surface. Parent anchored
+read, `replace`, `revert`, and write-state handling now preserve Pi 0.84.2's
+native path authority — absolute paths, `~` paths, cwd-relative paths
+(including `../`), and canonical targets reached through symlinks — with no
+workspace-containment refusal. State for every target, external ones
+included, stays attributed to the workspace that initiated the operation,
+and two different workspaces intentionally keep independent external-target
+state and locks (an accepted last-write-wins possibility matching Pi's
+native cross-workspace behavior). Child anchored surfaces retain the
+workspace boundary until their own native-authority slice.
 
 ## Superseded by ADR-0007
 

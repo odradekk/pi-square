@@ -17,7 +17,7 @@ documented here, and every code documented here is emitted by the module source;
 | `[E_WOULD_EMPTY]` | An edit would empty a non-empty file; use `write` instead. |
 | `[E_NOT_FOUND]` | The path does not exist. |
 | `[E_ACCESS]` | The file is not readable or writable. |
-| `[E_READ_PATH]` | The requested `read` path cannot be resolved for workspace anchor handling. |
+| `[E_READ_PATH]` | The requested `read` path cannot be resolved (an unresolvable cwd or a symlink loop). A missing path is not this code: Pi's native read failure is preserved. |
 | `[E_READ_FAILED]` | Anchored-read guarding or post-factory transformation failed. The message gives the cause and may provide an appropriate fallback. |
 | `[E_NOT_TEXT]` | The path is a directory, binary file, image, or UTF-16/UTF-32 encoded text; hashline editing only supports text files. |
 | `[E_FILE_LOCKED]` | `replace`, `revert`, or a subagent `write` refused: the cross-process write lock on the target file could not be acquired within the bounded wait because another editor holds it. For `replace` the refusal is `[E_RANGE_STALE]` with fresh anchors; `revert` and `write` use `[E_FILE_LOCKED]` and leave state (including the revert record) untouched for a retry. |
@@ -26,4 +26,4 @@ documented here, and every code documented here is emitted by the module source;
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted to the hash store; the `replace` was refused and the file was left unchanged. |
 | `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 238,328-line hashline limit or the 100MB size limit. |
-| `[E_OUTSIDE_WORKSPACE]` | The canonical target resolves outside the workspace; disable anchored editing to use the Pi built-in path. |
+| `[E_OUTSIDE_WORKSPACE]` | The canonical target resolves outside the workspace. Emitted by the confined child anchored surfaces only; the parent tools follow Pi's native path authority (#185) and do not emit this code. |

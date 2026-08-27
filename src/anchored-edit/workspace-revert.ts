@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
@@ -19,6 +18,7 @@ import { loadGuide, loadP } from "./prompts.ts";
 import { recordServedDiff } from "./served.ts";
 import { abortIf, cntDiff, errCode, isRec, makePrepareArguments, rejectUnknownFields, splitLines } from "./utils.ts";
 import { loadProjectHashStore, outsideWorkspaceError, PARENT_OWNER } from "./workspace-support.ts";
+import { toCwd } from "./paths.ts";
 
 const REVERT_FIELDS = new Set(["path"]);
 
@@ -101,12 +101,21 @@ function ownershipWarning(owner: string | undefined, path: string): {
  *   true so a supervisor can roll back a subagent's edit; a subagent keeps the
  *   default false so it can revert only an edit it made itself and is refused
  *   otherwise with the owning agent named.
+ * @param confineToWorkspace Whether targets outside the workspace are refused.
+ *   The parent registration passes false so revert follows an external
+ *   replace with the same native path authority (#185); child surfaces keep
+ *   the default workspace confinement until their own slice. External targets
+ *   keep the initiating workspace's store and canonical-target lock key, and
+ *   two different workspaces intentionally do not share external-target state
+ *   or locks (accepted last-write-wins, matching Pi's native cross-workspace
+ *   behavior).
  */
 export function createAnchoredRevertToolDefinition(
   fallbackCwd: string,
   autoRead: () => boolean = () => true,
   owner: string = PARENT_OWNER,
   revertAnyOwner: boolean = false,
+  confineToWorkspace: boolean = true,
 ): WorkspaceRevertDefinition {
   return {
     name: "revert",
@@ -120,8 +129,12 @@ export function createAnchoredRevertToolDefinition(
       assertRevertRequest(params);
       const cwd = ctx?.cwd ?? fallbackCwd;
       const workspace = resolveWorkspacePath(cwd, ".");
-      const mutationTargetPath = await resolveTarget(resolve(workspace.workspaceRoot, params.path));
-      if (!isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) {
+      // Native path authority (#185): resolve exactly as Pi's built-in tools
+      // do, then canonicalize through symlinks; containment is a child-surface
+      // policy, not a parent rule. External targets keep the initiating
+      // workspace's store and canonical-target lock key.
+      const mutationTargetPath = await resolveTarget(toCwd(params.path, cwd));
+      if (confineToWorkspace && !isWithinWorkspace(workspace.workspaceRoot, mutationTargetPath)) {
         throw outsideWorkspaceError(params.path);
       }
       const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
@@ -242,6 +255,7 @@ export function registerAnchoredRevert(
       () => config().anchoredEditing.autoRead,
       PARENT_OWNER,
       true,
+      false,
     );
     pi.registerTool(runtime ? decorateInternalTool(definition, runtime) : definition);
   });

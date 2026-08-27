@@ -26,21 +26,31 @@ describe("toCwd", () => {
     expect(toCwd("~", cwd)).toBe(os.homedir());
   });
 
-  it("preserves a leading @ in relative paths", () => {
+  // Native path authority (#185): toCwd mirrors Pi 0.84.2's normalizePath
+  // (utils/paths.ts) — a leading @ mention prefix is stripped, unicode
+  // spaces fold to plain spaces, and the strip happens before ~ expansion —
+  // so the anchored tools resolve exactly the path the Pi factory resolved.
+  it("strips a leading @ mention prefix like Pi's native tools", () => {
     expect(toCwd("@src/main.ts", cwd)).toBe(
-      resolve(cwd, "@src/main.ts"),
+      resolve(cwd, "src/main.ts"),
     );
   });
 
-  it("preserves unicode spaces in file names", () => {
+  it("folds unicode spaces to plain spaces like Pi's native tools", () => {
     expect(toCwd("src/my\u00A0file.ts", cwd)).toBe(
-      resolve(cwd, "src/my\u00A0file.ts"),
+      resolve(cwd, "src/my file.ts"),
     );
   });
 
-  it("does not treat @~ as home-directory expansion", () => {
+  it("strips @ before ~ expansion, so @~ reaches the home directory", () => {
     expect(toCwd("@~/notes.md", cwd)).toBe(
-      resolve(cwd, "@~/notes.md"),
+      os.homedir() + "/notes.md",
+    );
+  });
+
+  it("decodes file:// URLs to paths", () => {
+    expect(toCwd(`file://${resolve(cwd, "src/main.ts")}`, cwd)).toBe(
+      resolve(cwd, "src/main.ts"),
     );
   });
 });

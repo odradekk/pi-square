@@ -433,6 +433,52 @@ try {
   assert.equal(restartRevert.isError, undefined, "revert history survives a store restart");
   assert.equal(readFileSync(restarted, "utf8"), "one\ntwo\nthree\n");
 
+  // ── Native path authority (#185): the parent revert follows an external
+  // replace, restoring recorded content with the same authority rules.
+  const outsideRevert = join(root, "outside-revert.txt");
+  writeFileSync(outsideRevert, "alpha\nbeta\ngamma\n", "utf8");
+  const externalRead = await transformAnchoredReadContent(
+    [{ type: "text", text: "factory content" }],
+    { path: "../outside-revert.txt" },
+    workspace,
+    "parent",
+    { confineToWorkspace: false },
+  );
+  const beta = readRows(externalRead).find((row) => row.text === "beta");
+  assert.ok(beta, "the parent anchored read serves the external row");
+  const parentReplace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, false);
+  await parentReplace.execute(
+    "replace-external",
+    { path: "../outside-revert.txt", remove_from: beta.hash, remove_to: beta.hash, replacement_text: "BETA" },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  assert.equal(readFileSync(outsideRevert, "utf8"), "alpha\nBETA\ngamma\n", "the external replace applies");
+
+  const parentRevert = createAnchoredRevertToolDefinition(workspace, undefined, undefined, undefined, false);
+  const externalRevert = await parentRevert.execute(
+    "revert-external",
+    { path: "../outside-revert.txt" },
+    undefined,
+    undefined,
+    { cwd: workspace },
+  );
+  assert.equal(externalRevert.details.status, undefined, "an external revert succeeds");
+  assert.equal(readFileSync(outsideRevert, "utf8"), "alpha\nbeta\ngamma\n", "the external revert restores the prior content");
+
+  await assert.rejects(
+    () => createAnchoredRevertToolDefinition(workspace).execute(
+      "revert-external-confined",
+      { path: "../outside-revert.txt" },
+      undefined,
+      undefined,
+      { cwd: workspace },
+    ),
+    /E_OUTSIDE_WORKSPACE.*Disable anchoredEditing\.enabled/s,
+    "the confined (child) revert definition still refuses outside paths",
+  );
+
   console.log("anchored revert integration tests: OK");
 } finally {
   shutdownHashStore();

@@ -1,9 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { DEFAULT_MAX_BYTES, type AgentToolResult, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { PiSquareConfig } from "../core/config.ts";
-import { isWithinWorkspace, resolveWorkspacePath } from "../core/paths.ts";
+import { resolveWorkspacePath } from "../core/paths.ts";
 import { loadFileKindAndText } from "./file-kind.ts";
 import { readNormFile } from "./file-reader.ts";
 import { resolveTarget } from "./fs-write.ts";
@@ -14,6 +13,7 @@ import { extractWarnings } from "./replace-render.ts";
 import { clearServed, recordServed } from "./served.ts";
 import { isRec, visLines } from "./utils.ts";
 import { loadProjectHashStore } from "./workspace-support.ts";
+import { toCwd } from "./paths.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
 
 type PendingWrite = {
@@ -45,8 +45,15 @@ export function registerAnchoredAutoRead(
     if (!input) return;
     try {
       const workspace = resolveWorkspacePath(ctx.cwd, ".");
-      const path = await resolveTarget(resolve(workspace.workspaceRoot, input.path));
-      if (!isWithinWorkspace(workspace.workspaceRoot, path)) return;
+      // Native path authority (#185): parent write-state handling follows Pi's
+      // native path resolution (absolute, ~, cwd-relative including ../, and
+      // symlinked targets), so a write to any supported path clears served
+      // state for that canonical file in the initiating workspace. External
+      // targets keep the initiating workspace's store and lock area; two
+      // different workspaces intentionally do not share external-target state
+      // or locks (accepted last-write-wins, matching Pi's native
+      // cross-workspace behavior).
+      const path = await resolveTarget(toCwd(input.path, ctx.cwd));
       let changed = true;
       const pending: PendingWrite = { path, changed, displayPath: input.path, workspaceRoot: workspace.workspaceRoot };
       pendingWrites.set(event.toolCallId, pending);

@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { setBannerDisplayDiagnostic } from "../banner";
 import { guardAnchoredRead, initializeAnchoredReadStore, transformAnchoredReadContent } from "../anchored-edit/read-transform";
+import { PARENT_OWNER } from "../anchored-edit/workspace-support";
 import {
   withAnchoredReadGuidelines,
   withAnchoredReadTransform,
@@ -759,15 +760,21 @@ export default function registerDisplayBuiltins(
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
     for (const definition of definitions) {
       const anchoredRead = definition.name === "read" && anchoredReadEnabled;
+      // Native path authority (#185): the parent anchored read follows Pi
+      // 0.84.2's native path semantics (absolute, ~, cwd-relative, ../, and
+      // symlinked targets) instead of refusing workspace-external paths, while
+      // the initiating workspace keeps the snapshot/served state and lock area
+      // for external targets.
       const readContentTransform = anchoredRead
-        ? transformAnchoredReadContent
+        ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string) =>
+          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { confineToWorkspace: false })
         : undefined;
       pi.registerTool(decorateBuiltinDefinition(
-        anchoredRead ? withAnchoredReadGuidelines(definition) : definition,
+        anchoredRead ? withAnchoredReadGuidelines(definition, { confineToWorkspace: false }) : definition,
         ctx.cwd,
         () => controller.runtime,
         readContentTransform,
-        anchoredRead ? guardAnchoredRead : undefined,
+        anchoredRead ? (params: unknown, executionCwd: string) => guardAnchoredRead(params, executionCwd, { confineToWorkspace: false }) : undefined,
       ));
     }
     const owner = ownSource(pi);

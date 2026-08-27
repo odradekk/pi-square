@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -82,6 +82,8 @@ writeFileSync(join(workspace, "utf16.txt"), Buffer.concat([Buffer.from([0xff, 0x
 writeFileSync(join(workspace, "long.txt"), `${"x".repeat(201 * 1024)}\nshort`);
 writeFileSync(join(workspace, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
 mkdirSync(join(workspace, "directory"));
+mkdirSync(join(root, "external-dir"));
+writeFileSync(join(root, ".outside-home.txt"), "from home");
 
 try {
   const args = { path: "source.txt" };
@@ -130,7 +132,7 @@ try {
   assert.ok(!on.activeTools().includes("edit"), "default anchored editing removes Pi edit from the active parent tools");
   const read = on.definitions.get("read");
   assert.ok(read.promptGuidelines.some((guideline) => /Do not invent anchors/.test(guideline)));
-  assert.ok(read.promptGuidelines.some((guideline) => /inside the current workspace/.test(guideline)));
+  assert.ok(read.promptGuidelines.some((guideline) => /same paths as Pi's built-in read/.test(guideline)), "the parent guideline states native path authority");
   const first = await read.execute("first", args, undefined, undefined, { cwd: workspace });
   const second = await read.execute("second", args, undefined, undefined, { cwd: workspace });
   assert.equal(first.content[0].text, second.content[0].text, "unchanged files keep anchors across reads");
@@ -155,9 +157,43 @@ try {
   const directory = await read.execute("directory", { path: "directory" }, undefined, undefined, { cwd: workspace });
   assert.match(directory.content[0].text, /Path is a directory.*Use ls/s, "directories have a usable alternative");
 
-  writeFileSync(join(root, "outside.txt"), "outside");
+  // ── Native path authority (#185): the parent anchored read accepts the
+  // same paths as Pi 0.84.2's native read, with no workspace-containment
+  // refusal. External targets keep the initiating workspace's store.
+  writeFileSync(join(root, "outside.txt"), "outside\nsecond");
   const outside = await read.execute("outside", { path: "../outside.txt" }, undefined, undefined, { cwd: workspace });
-  assert.match(outside.content[0].text, /E_OUTSIDE_WORKSPACE.*Disable anchoredEditing.enabled/s, "outside paths have a named alternative");
+  assert.match(outside.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "a ../ path outside the workspace reads with anchors");
+
+  const absolute = await read.execute("absolute", { path: join(root, "outside.txt") }, undefined, undefined, { cwd: workspace });
+  assert.match(absolute.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "an absolute path outside the workspace reads with anchors");
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  try {
+    const homeRead = await read.execute("home", { path: "~/.outside-home.txt" }, undefined, undefined, { cwd: workspace });
+    assert.match(homeRead.content[0].text, /^[A-Za-z0-9]{3}│from home$/m, "a ~ path expands to the home directory and reads with anchors");
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+
+  symlinkSync(join(root, "outside.txt"), join(workspace, "linked.txt"));
+  const linked = await read.execute("linked", { path: "linked.txt" }, undefined, undefined, { cwd: workspace });
+  assert.match(linked.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "a workspace symlink to an external target reads its canonical content");
+
+  const externalDirectory = await read.execute("external-directory", { path: "../external-dir" }, undefined, undefined, { cwd: workspace });
+  assert.match(externalDirectory.content[0].text, /Path is a directory.*Use ls/s, "an external directory keeps the named directory response");
+
+  await assert.rejects(
+    () => factory.execute("factory-missing", { path: "../no-such-external.txt" }, undefined, undefined, { cwd: workspace }),
+    (error) => error?.code === "ENOENT",
+    "Pi's native read throws its own not-found for a missing external path",
+  );
+  await assert.rejects(
+    () => read.execute("anchored-missing", { path: "../no-such-external.txt" }, undefined, undefined, { cwd: workspace }),
+    (error) => error?.code === "ENOENT",
+    "a missing external path preserves Pi's native not-found failure",
+  );
 
   const binary = await read.execute("binary", { path: "binary.pdf" }, undefined, undefined, { cwd: workspace });
   assert.match(binary.content[0].text, /binary file/, "binary files are refused as text");
@@ -186,6 +222,15 @@ try {
     assert.deepEqual(store.prepare("SELECT DISTINCT owner FROM snapshots").all().map((row) => row.owner), ["parent"], "snapshots retain an owner dimension");
     assert.deepEqual(store.prepare("SELECT DISTINCT owner FROM served").all().map((row) => row.owner), ["parent"], "served rows retain an owner dimension");
     assert.ok(store.prepare("PRAGMA table_info(undo)").all().some((row) => row.name === "owner"), "revert records retain an owner dimension");
+    const canonicalOutside = realpathSync(join(root, "outside.txt"));
+    assert.ok(
+      store.prepare("SELECT COUNT(*) AS count FROM served WHERE path = ?").get(canonicalOutside).count > 0,
+      "external reads record served rows in the initiating workspace's store",
+    );
+    assert.ok(
+      store.prepare("SELECT COUNT(*) AS count FROM snapshots WHERE path = ?").get(canonicalOutside).count > 0,
+      "external reads record snapshot rows in the initiating workspace's store",
+    );
   } finally {
     store.close();
   }

@@ -77,6 +77,59 @@ try {
   }
   assert.equal(unchanged, undefined, "an unchanged write does not append anchors");
 
+  // ── Native path authority (#185): a parent write to an external path
+  // clears served state for that canonical file in the initiating workspace
+  // and, when the content changed, appends fresh anchors. Failed writes keep
+  // native result behavior.
+  const external = join(root, "outside-auto.txt");
+  writeFileSync(external, "before\n", "utf8");
+  for (const handler of events.get("tool_call") ?? []) {
+    await handler(
+      { toolName: "write", toolCallId: "write-external", input: { path: "../outside-auto.txt", content: "after\n" } },
+      { cwd: workspace },
+    );
+  }
+  writeFileSync(external, "after\n", "utf8");
+  let externalResult;
+  for (const handler of events.get("tool_result") ?? []) {
+    externalResult = await handler(
+      {
+        toolName: "write",
+        toolCallId: "write-external",
+        input: { path: "../outside-auto.txt", content: "after\n" },
+        content: [{ type: "text", text: "Successfully wrote 6 bytes to ../outside-auto.txt" }],
+        details: undefined,
+        isError: false,
+      },
+      { cwd: workspace },
+    );
+  }
+  assert.ok(externalResult, "a changed external write returns an augmented result");
+  assert.match(externalResult.content[1].text, /--- Auto-read \(hashline anchors\) ---/);
+  assert.match(externalResult.content[1].text, /^[A-Za-z0-9]{3}│after$/m, "an external write appends fresh anchors");
+
+  for (const handler of events.get("tool_call") ?? []) {
+    await handler(
+      { toolName: "write", toolCallId: "write-external-failed", input: { path: "../outside-auto.txt", content: "nope\n" } },
+      { cwd: workspace },
+    );
+  }
+  let failedExternal;
+  for (const handler of events.get("tool_result") ?? []) {
+    failedExternal = await handler(
+      {
+        toolName: "write",
+        toolCallId: "write-external-failed",
+        input: { path: "../outside-auto.txt", content: "nope\n" },
+        content: [{ type: "text", text: "Could not write file" }],
+        details: undefined,
+        isError: true,
+      },
+      { cwd: workspace },
+    );
+  }
+  assert.equal(failedExternal, undefined, "a failed external write keeps its native result");
+
   const disabledEvents = new Map();
   registerAnchoredAutoRead(
     { on(name, handler) { disabledEvents.set(name, [...(disabledEvents.get(name) ?? []), handler]); } },
