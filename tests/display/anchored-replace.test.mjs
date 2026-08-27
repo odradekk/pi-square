@@ -366,9 +366,23 @@ try {
   );
   assert.equal(existsSync(join(root, "created-by-replace.txt")), false, "replace did not create the external file");
 
-  await assert.rejects(
-    () => replace.execute(
-      "replace-outside",
+  // #186: the child composition (requireServed, native paths) refuses a
+  // parent-served external anchor recoverably — the child must read the range
+  // itself — instead of refusing the external path.
+  {
+    const childComposition = createAnchoredReplaceToolDefinition(workspace, undefined, "subagent_child_probe", true, false);
+    const servedChildRead = await transformAnchoredReadContent(
+      [{ type: "text", text: "factory content" }],
+      { path: "../outside.txt" },
+      workspace,
+      "subagent_child_probe",
+      { confineToWorkspace: false },
+    );
+    const servedRow = readRows(servedChildRead).find((row) => row.text === "edited externally");
+    assert.ok(servedRow, "the child-surface read serves the external row");
+    // Name an anchor the parent served but this child never read.
+    const refusedChild = await childComposition.execute(
+      "replace-outside-child",
       {
         path: "../outside.txt",
         remove_from: externalMiddle.hash,
@@ -378,10 +392,29 @@ try {
       undefined,
       undefined,
       { cwd: workspace },
-    ),
-    /E_OUTSIDE_WORKSPACE.*Disable anchoredEditing\.enabled/s,
-    "the confined (child) replace definition still refuses outside paths",
-  );
+    );
+    assert.equal(refusedChild.details.status, "warning", "the child external refusal is a completed warning");
+    assert.ok(
+      ["E_RANGE_STALE", "E_STALE_ANCHOR", "E_AMBIGUOUS_ANCHOR"].includes(refusedChild.details.errorCode),
+      `the child external refusal stays recoverable (${refusedChild.details.errorCode})`,
+    );
+    assert.equal(readFileSync(outside, "utf8"), "outside\nedited externally\n", "the refusal modifies nothing");
+
+    const childEdit = await childComposition.execute(
+      "replace-outside-child-served",
+      {
+        path: "../outside.txt",
+        remove_from: servedRow.hash,
+        remove_to: servedRow.hash,
+        replacement_text: "child edited",
+      },
+      undefined,
+      undefined,
+      { cwd: workspace },
+    );
+    assert.equal(childEdit.details.status, undefined, "the child surface edits an external range it read itself");
+    assert.equal(readFileSync(outside, "utf8"), "outside\nchild edited\n", "the child edit applied");
+  }
 
   console.log("anchored replace integration tests: OK");
 } finally {

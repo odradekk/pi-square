@@ -9,6 +9,15 @@ import { withAnchoredReadGuidelines, withAnchoredReadTransform } from "./read-to
  * anchoring implementation. Served rows are recorded under the given owner, so
  * one child's read never makes another agent's edit legal.
  *
+ * Native path authority (#186): the child read accepts the same paths as Pi's
+ * native read — absolute paths, `~` paths, cwd-relative paths (including
+ * `../`), and canonical targets reached through symlinks — with no
+ * workspace-containment refusal, exactly as the parent surface does (#185).
+ * Served rows for an external target are recorded under the acting child owner
+ * in the initiating workspace's store: two different workspaces intentionally
+ * do not share external-target state or locks (accepted last-write-wins,
+ * matching Pi's native cross-workspace behavior).
+ *
  * The returned definition carries the built-in read name; when it is passed as
  * a child custom tool it overrides the child's built-in read, leaving exactly
  * one read tool offered. It has no renderer fields, so child tool construction
@@ -27,8 +36,9 @@ export function createChildAnchoredReadTool(
   const anchored = withAnchoredReadTransform(
     definition,
     cwd,
-    (content, value, executionCwd) => transformAnchoredReadContent(content, value, executionCwd, owner),
-    guardAnchoredRead,
+    (content, value, executionCwd) =>
+      transformAnchoredReadContent(content, value, executionCwd, owner, { confineToWorkspace: false }),
+    (params, executionCwd) => guardAnchoredRead(params, executionCwd, { confineToWorkspace: false }),
   );
-  return withAnchoredReadGuidelines(anchored);
+  return withAnchoredReadGuidelines(anchored, { confineToWorkspace: false });
 }

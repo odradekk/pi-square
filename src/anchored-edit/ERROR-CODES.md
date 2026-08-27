@@ -26,4 +26,4 @@ documented here, and every code documented here is emitted by the module source;
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted to the hash store; the `replace` was refused and the file was left unchanged. |
 | `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 238,328-line hashline limit or the 100MB size limit. |
-| `[E_OUTSIDE_WORKSPACE]` | The canonical target resolves outside the workspace. Emitted by the confined child anchored surfaces only; the parent tools follow Pi's native path authority (#185) and do not emit this code. |
+| `[E_OUTSIDE_WORKSPACE]` | The canonical target resolves outside the workspace. Retained for callers that explicitly opt into workspace confinement; no production surface emits it since the writable-child compositions adopted native path authority (#186, following the parent in #185). |

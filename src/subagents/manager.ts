@@ -46,7 +46,7 @@ import { sanitizeSubagentDisplay } from "./display";
 import { isRunLeaseActive } from "./lease";
 import { compileFreshPrompt, promptDefinitionHash } from "./prompt";
 import { latestToolCallSummary } from "./tool-display";
-import { anchoredEditingEnabled, type SubagentRuntimeState } from "./tool";
+import { anchoredAutoReadEnabled, anchoredEditingEnabled, type SubagentRuntimeState } from "./tool";
 import type { BackgroundJobSnapshot, SubagentRunDetails } from "./types";
 
 type ManagerTab = "running" | "session" | "definitions";
@@ -291,7 +291,16 @@ function createProductionServices(
         return { ok: false, message: `Subagent '${id}' is active and cannot be resumed concurrently.` };
       }
       const job = createQueuedResumeJob({ state: state.background, details, task, parentSessionId });
-      startBackgroundResumeJob({ pi, state: state.background, job, ctx, task, anchoredEditing: anchoredEditingEnabled(state), parentSessionId });
+      startBackgroundResumeJob({
+        pi,
+        state: state.background,
+        job,
+        ctx,
+        task,
+        anchoredEditing: anchoredEditingEnabled(state),
+        anchoredAutoRead: anchoredAutoReadEnabled(state),
+        parentSessionId,
+      });
       return {
         ok: true,
         message: `Queued resume for ${details.agent?.name ?? "generic"} ${shortId(id)}.`,
@@ -326,6 +335,7 @@ function createProductionServices(
         ctx,
         task,
         anchoredEditing: anchoredEditingEnabled(state),
+        anchoredAutoRead: anchoredAutoReadEnabled(state),
         parentSessionId,
         inheritedSystemCore: state.inheritedSystemCore,
         thinkingLevel: pi.getThinkingLevel(),

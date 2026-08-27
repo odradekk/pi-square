@@ -85,8 +85,12 @@ workspace-containment refusal. State for every target, external ones
 included, stays attributed to the workspace that initiated the operation,
 and two different workspaces intentionally keep independent external-target
 state and locks (an accepted last-write-wins possibility matching Pi's
-native cross-workspace behavior). Child anchored surfaces retain the
-workspace boundary until their own native-authority slice.
+native cross-workspace behavior). Writable-child anchored surfaces adopted
+the same native authority in #186: a writable child's read, replace, revert,
+and write accept the same paths, keep external state under the acting child
+owner in the initiating workspace, and preserve the child's `requireServed`
+range gate. The `E_OUTSIDE_WORKSPACE` boundary remains only for callers that
+explicitly opt into confinement.
 
 ## Superseded by ADR-0007
 

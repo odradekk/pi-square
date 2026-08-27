@@ -11,7 +11,7 @@ import { fmtReadPreview } from "./read.ts";
 import { clearUndoRecord } from "./replace-undo.ts";
 import { extractWarnings } from "./replace-render.ts";
 import { clearServed, recordServed } from "./served.ts";
-import { isRec, visLines } from "./utils.ts";
+import { errCode, isRec, visLines } from "./utils.ts";
 import { loadProjectHashStore } from "./workspace-support.ts";
 import { toCwd } from "./paths.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
@@ -26,6 +26,59 @@ type PendingWrite = {
 function writeInput(value: unknown): { path: string; content: string } | undefined {
   if (!isRec(value) || typeof value.path !== "string" || typeof value.content !== "string") return undefined;
   return { path: value.path, content: value.content };
+}
+
+export interface AutoReadAnchorsInput {
+  /** Canonical target path. */
+  path: string;
+  /** Model-visible path string used for display and anchored-row text. */
+  displayPath: string;
+  /** Initiating workspace root owning the store. */
+  workspaceRoot: string;
+  /** Loaded project hash store under the acting owner; the caller releases it. */
+  store: ReturnType<typeof loadProjectHashStore> extends Promise<infer T> ? T : never;
+}
+
+/**
+ * Renders the bounded auto-read anchor appendix for one written file and
+ * records its rows as served under the acting owner. Shared by the parent
+ * write hook and the writable-child anchored write (#186) so both surfaces
+ * append byte-identical anchors. Returns undefined when the target is not
+ * supported bounded UTF-8 text (binary, image, oversized, non-regular); the
+ * caller then keeps the native factory result unchanged.
+ */
+export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promise<string | undefined> {
+  try {
+    const file = await loadFileKindAndText(input.path, {
+      maxLines: MAX_HASH_LINES,
+      displayPath: input.displayPath,
+    });
+    if (file.kind !== "text") return undefined;
+    const normalized = await readNormFile(input.displayPath, input.workspaceRoot, {
+      maxLines: MAX_HASH_LINES,
+      preloadedFile: file,
+      store: input.store,
+    });
+    const preview = await fmtReadPreview(
+      normalized.normalized,
+      {},
+      normalized.fileHashes,
+      normalized.absolutePath,
+      DEFAULT_MAX_BYTES,
+      AUTO_READ_MAX,
+    );
+    recordServed(input.store, normalized.absolutePath, preview.servedHashes);
+    const skipped = preview.nextOffset === undefined
+      ? ""
+      : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
+    const warning = normalized.hadUtf8DecodeErrors
+      ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
+      : "";
+    return `--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`;
+  } catch (error) {
+    if (errCode(error) === "E_FILE_TOO_LARGE" || String(error).includes("[E_FILE_TOO_LARGE]")) return undefined;
+    throw error;
+  }
 }
 
 function append(content: AgentToolResult<unknown>["content"], text: string): { content: AgentToolResult<unknown>["content"] } {
@@ -97,32 +150,14 @@ export function registerAnchoredAutoRead(
           clearServed(store, pending.path);
           if (!config().anchoredEditing.autoRead || !pending.changed) return;
           try {
-            const file = await loadFileKindAndText(pending.path, {
-              maxLines: MAX_HASH_LINES,
+            const appendix = await renderAutoReadAnchors({
+              path: pending.path,
               displayPath: pending.displayPath,
-            });
-            if (file.kind !== "text") return;
-            const normalized = await readNormFile(pending.displayPath, pending.workspaceRoot, {
-              maxLines: MAX_HASH_LINES,
-              preloadedFile: file,
+              workspaceRoot: pending.workspaceRoot,
               store,
             });
-            const preview = await fmtReadPreview(
-              normalized.normalized,
-              {},
-              normalized.fileHashes,
-              normalized.absolutePath,
-              DEFAULT_MAX_BYTES,
-              AUTO_READ_MAX,
-            );
-            recordServed(store, normalized.absolutePath, preview.servedHashes);
-            const skipped = preview.nextOffset === undefined
-              ? ""
-              : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
-            const warning = normalized.hadUtf8DecodeErrors
-              ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
-              : "";
-            return append(event.content, `\n\n--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`);
+            if (appendix !== undefined) return append(event.content, `\n\n${appendix}`);
+            return;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.error("Auto-read after write failed:", error);

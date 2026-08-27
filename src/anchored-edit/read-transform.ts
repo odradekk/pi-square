@@ -45,7 +45,7 @@ function readParams(value: unknown): { path: string; offset?: number; limit?: nu
  * path authority: absolute paths, `~` paths, cwd-relative paths (including
  * `../`), and canonical targets reached through symlinks, all under the same
  * OS permissions as Pi's native read. Child surfaces keep the default
- * workspace containment until their own native-authority slice.
+ * workspace containment; the writable-child composition passes false (#186).
  *
  * External targets keep the initiating workspace's snapshot/served state and
  * lock area: two different workspaces intentionally do not share state or

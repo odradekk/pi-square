@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -150,6 +150,101 @@ try {
     undefined, undefined, ctx,
   );
   assert.equal(thirdRefused.details?.errorCode, "E_RANGE_STALE", "verification consults only the calling child's own record");
+
+  // ── Native path authority (#186): the child replace edits an external file
+  // only through its own served record. A blind anchor from another agent's
+  // read is refused recoverably and serves the current range; after the child
+  // itself reads the range, the same edit applies. Stale and ambiguous
+  // anchors stay recoverable safety refusals rather than tool failures.
+  const externalFile = join(root, "external-edit.txt");
+  writeFileSync(externalFile, "ext-alpha\next-beta\next-gamma\n");
+  const [externalBlind] = createChildAnchoredEditTools(workspace, CHILD_TWO);
+  const parentExternalRead = createChildAnchoredReadTool(workspace, PARENT_OWNER);
+  const parentExternalRows = readRows(
+    (await parentExternalRead.execute("parent-external-read", { path: "../external-edit.txt" }, undefined, undefined, ctx)).content,
+  );
+  const externalBeta = parentExternalRows.find((row) => row.text === "ext-beta").hash;
+  const blindRefusal = await externalBlind.execute(
+    "child-external-blind",
+    { path: "../external-edit.txt", remove_from: externalBeta, remove_to: externalBeta, replacement_text: "EDITED" },
+    undefined, undefined, ctx,
+  );
+  assert.equal(blindRefusal.details?.status, "warning", "a child naming anchors another agent read is refused");
+  assert.ok(
+    ["E_RANGE_STALE", "E_STALE_ANCHOR", "E_AMBIGUOUS_ANCHOR"].includes(blindRefusal.details?.errorCode),
+    `the external blind refusal stays recoverable (${blindRefusal.details?.errorCode})`,
+  );
+  assert.match(textOf(blindRefusal.content), /fresh anchors|Current range|Call read/i, "the refusal carries recoverable feedback");
+  assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\next-beta\next-gamma\n", "the external file is untouched by the refusal");
+
+  const childExternalRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
+  const childExternalRows = readRows(
+    (await childExternalRead.execute("child-external-read", { path: "../external-edit.txt" }, undefined, undefined, ctx)).content,
+  );
+  const childExternalBeta = childExternalRows.find((row) => row.text === "ext-beta").hash;
+  const externalEdit = await (await childReplace(CHILD_ONE)).execute(
+    "child-external-edit",
+    { path: "../external-edit.txt", remove_from: childExternalBeta, remove_to: childExternalBeta, replacement_text: "EDITED" },
+    undefined, undefined, ctx,
+  );
+  assert.equal(externalEdit.details?.status, undefined, "a child editing an external range it read itself succeeds");
+  assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\nEDITED\next-gamma\n", "the external file changed as intended");
+
+  assert.ok(
+    await getUndo(realpathSync(externalFile), await loadProjectHashStore(workspace, CHILD_ONE)),
+    "the external child replace persists its revert record in the initiating workspace under the child owner",
+  );
+
+  // A stale external anchor is a recoverable warning with fresh rows.
+  writeFileSync(externalFile, "ext-alpha\nchanged-on-disk\next-gamma\n");
+  const staleExternal = await (await childReplace(CHILD_ONE)).execute(
+    "child-external-stale",
+    { path: "../external-edit.txt", remove_from: childExternalBeta, remove_to: childExternalBeta, replacement_text: "SHOULD NOT APPLY" },
+    undefined, undefined, ctx,
+  );
+  assert.equal(staleExternal.details?.status, "warning", "a stale external anchor is a completed warning");
+  assert.ok(
+    ["E_RANGE_STALE", "E_STALE_ANCHOR", "E_AMBIGUOUS_ANCHOR"].includes(staleExternal.details?.errorCode),
+    `the stale external refusal stays recoverable (${staleExternal.details?.errorCode})`,
+  );
+  assert.match(
+    textOf(staleExternal.content),
+    /Call read\(\) to get fresh anchors/,
+    "the stale refusal carries recoverable fresh-anchor feedback",
+  );
+
+  // The child revert follows the external replace through the same authority.
+  // The child revert is owner-scoped (revertAnyOwner: false), so it is built
+  // from the same child that made the edit.
+  const [, childOneRevert] = createChildAnchoredEditTools(workspace, CHILD_ONE);
+  writeFileSync(externalFile, "ext-alpha\next-beta\next-gamma\n");
+  const revertRange = readRows(
+    (await childExternalRead.execute("child-external-re-read", { path: "../external-edit.txt" }, undefined, undefined, ctx)).content,
+  ).find((row) => row.text === "ext-beta").hash;
+  await (await childReplace(CHILD_ONE)).execute(
+    "child-external-replace",
+    { path: "../external-edit.txt", remove_from: revertRange, remove_to: revertRange, replacement_text: "REPLACED" },
+    undefined, undefined, ctx,
+  );
+  const externalRevertResult = await childOneRevert.execute(
+    "child-external-revert",
+    { path: "../external-edit.txt" },
+    undefined, undefined, ctx,
+  );
+  assert.match(textOf(externalRevertResult.content), /Reverted the last replace/, "the child revert restores an external file");
+  assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\next-beta\next-gamma\n", "the external file is restored");
+
+  // A missing external file is refused, never created by the child replace.
+  const missingChildReplace = await childReplace(CHILD_ONE);
+  await assert.rejects(
+    () => missingChildReplace.execute(
+      "child-external-missing",
+      { path: "../created-externally-by-child.txt", remove_from: revertRange, remove_to: revertRange, replacement_text: "no" },
+      undefined, undefined, ctx,
+    ),
+    /E_NOT_FOUND/,
+    "a missing external file is refused, never created by the child replace",
+  );
 
   // Session assembly: a writable child that declares edit with anchored editing
   // on gets the anchored replace and revert appended; read-only roles and

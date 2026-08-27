@@ -39,7 +39,8 @@ const NATIVE_PATH_GUIDELINE =
  * the parent override and the child anchored read so the two surfaces carry
  * the same evidence rules. The path guideline follows the surface's path
  * policy (#185): the parent states native path authority; child surfaces keep
- * the workspace confinement guideline until their own native-authority slice.
+ * the workspace confinement guideline; the writable-child composition
+ * selects the native-path guideline (#186), matching the parent.
  */
 export function withAnchoredReadGuidelines(
   definition: GenericDefinition,
