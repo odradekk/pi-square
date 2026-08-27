@@ -20,10 +20,9 @@ const { initHasher, _lineHashesPure } = await load("../../src/anchored-edit/hash
 const { acquireFileLock, lockFilePath } = await load("../../src/anchored-edit/file-lock.ts");
 const { resolveTarget } = await load("../../src/anchored-edit/fs-write.ts");
 const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-edit/workspace-replace.ts");
-const { createAnchoredRevertToolDefinition } = await load("../../src/anchored-edit/workspace-revert.ts");
 const { loadProjectHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
-const { getUndoRecord, saveUndo } = await load("../../src/anchored-edit/replace-undo.ts");
+const { recordServed } = await load("../../src/anchored-edit/served.ts");
 
 const helperPath = join(dirname(fileURLToPath(import.meta.url)), "cross-process-lock-helper.mjs");
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -212,35 +211,47 @@ try {
   );
   assert.ok(!existsSync(await canonicalLockPath("stale.txt")), "the lock is released after the successful replace");
 
-  // --- Criterion 7/9: revert takes the same lock. While a real process holds
-  // the lock, a revert is refused with E_FILE_LOCKED and leaves state intact;
-  // once the lock is free, the same revert succeeds. ---
-  writeFileSync(join(workspace, "revert.txt"), "alpha\nBETA\ngamma\n");
-  const store = await loadProjectHashStore(workspace, PARENT_OWNER);
-  const undo = await saveUndo(
-    join(workspace, "revert.txt"),
-    { content: "alpha\nbeta\ngamma\n", bom: "", originalEnding: "\n", hashes: [], resultContent: "alpha\nBETA\ngamma\n" },
-    store,
-  );
-  store.release();
-  assert.equal(undo.persisted, true, "the undo record persists");
+  // --- Criterion 7/9 (#187): a second session's replace takes the same lock.
+  // While a real process holds the lock, another session's replace is refused
+  // with the recoverable stale-range code and leaves the file untouched; once
+  // the lock is free, the same edit applies. ---
+  writeFileSync(join(workspace, "second-session.txt"), "alpha\nbeta\ngamma\n");
+  const secondStore = await loadProjectHashStore(workspace, PARENT_OWNER);
+  const secondHashes = hashesOf("alpha\nbeta\ngamma\n");
+  recordServed(secondStore, join(workspace, "second-session.txt"), secondHashes);
+  secondStore.release();
 
-  const revertHolder = await holdLock("revert.txt");
-  const reverter = spawnJob({ mode: "revert", workspace, path: "revert.txt" });
-  const lockedRevert = await waitResult(reverter.resultPath);
-  assert.match(textOf(lockedRevert.content), /\[E_FILE_LOCKED\]/, "revert is refused while the lock is held");
-  const store2 = await loadProjectHashStore(workspace, PARENT_OWNER);
-  const intact = await getUndoRecord(join(workspace, "revert.txt"), store2);
-  assert.ok(intact, "a refused revert leaves the undo record intact");
-  store2.release();
-  await kill(revertHolder.child);
-
-  const reverter2 = spawnJob({ mode: "revert", workspace, path: "revert.txt" });
-  await waitResult(reverter2.resultPath);
+  const secondHolder = await holdLock("second-session.txt");
+  const secondReplace = spawnJob({
+    mode: "replace",
+    workspace,
+    path: "second-session.txt",
+    removeFrom: secondHashes[1],
+    removeTo: secondHashes[1],
+    replacement: "BETA",
+  });
+  const lockedSecond = await waitResult(secondReplace.resultPath);
+  assert.match(textOf(lockedSecond.content), /\[E_RANGE_STALE\]/, "a second session's replace is refused while the lock is held");
   assert.equal(
-    readFileSync(join(workspace, "revert.txt"), "utf8"),
+    readFileSync(join(workspace, "second-session.txt"), "utf8"),
     "alpha\nbeta\ngamma\n",
-    "the revert succeeds once the lock is free and restores the file",
+    "the refused second-session replace leaves the file untouched",
+  );
+  await kill(secondHolder.child);
+
+  const secondReplace2 = spawnJob({
+    mode: "replace",
+    workspace,
+    path: "second-session.txt",
+    removeFrom: secondHashes[1],
+    removeTo: secondHashes[1],
+    replacement: "BETA",
+  });
+  await waitResult(secondReplace2.resultPath);
+  assert.equal(
+    readFileSync(join(workspace, "second-session.txt"), "utf8"),
+    "alpha\nBETA\ngamma\n",
+    "the second-session replace succeeds once the lock is free",
   );
 
   // --- Criterion 7/9: the child anchored write takes the same lock. While a

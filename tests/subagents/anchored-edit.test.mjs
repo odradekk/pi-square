@@ -6,11 +6,10 @@ import { join } from "node:path";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { createChildAnchoredEditTools } = await load("../../src/anchored-edit/child-edit.ts");
+const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 const { loadProjectHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { getServed } = await load("../../src/anchored-edit/served.ts");
-const { getUndo } = await load("../../src/anchored-edit/replace-undo.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 const { __testables } = await load("../../src/subagents/session.ts");
 
@@ -42,34 +41,25 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 const ctx = { cwd: workspace };
 
 async function childReplace(owner) {
-  const [replace] = createChildAnchoredEditTools(workspace, owner);
-  return replace;
+  return createChildAnchoredReplaceTool(workspace, owner);
 }
 
 try {
   const source = join(workspace, "source.txt");
   writeFileSync(source, "alpha\nbeta\ngamma\ndelta\n");
 
-  // The child editing tools are exactly replace and revert, carry the parent's
-  // schemas, and are renderer-free so child tool construction needs no display
-  // runtime.
-  const [replace, revert] = createChildAnchoredEditTools(workspace, CHILD_ONE);
+  // The child editing tool is exactly replace (#187: revert and the undo store
+  // are gone), carries the parent's schema, and is renderer-free so child tool
+  // construction needs no display runtime.
+  const replace = createChildAnchoredReplaceTool(workspace, CHILD_ONE);
   assert.equal(replace.name, "replace", "the child editing tool is the anchored replace");
-  assert.equal(revert.name, "revert", "the child editing tool is the anchored revert");
   assert.equal(replace.renderShell, undefined, "child replace carries no pi-square display shell");
-  assert.equal(revert.renderShell, undefined, "child revert carries no pi-square display shell");
   assert.equal(replace.renderCall, undefined, "child replace stays renderer-free");
   assert.equal(replace.renderResult, undefined, "child replace stays renderer-free");
-  assert.equal(revert.renderCall, undefined, "child revert stays renderer-free");
-  assert.equal(revert.renderResult, undefined, "child revert stays renderer-free");
   assert.equal(replace.parameters.type, "object");
   assert.equal(replace.parameters.anyOf, undefined);
   assert.equal(replace.parameters.additionalProperties, false);
   assert.deepEqual(replace.parameters.required, ["remove_from", "remove_to", "replacement_text"]);
-  assert.equal(revert.parameters.type, "object");
-  assert.equal(revert.parameters.anyOf, undefined);
-  assert.equal(revert.parameters.additionalProperties, false);
-  assert.deepEqual(revert.parameters.required, ["path"]);
 
   // A child editing a region it read itself succeeds.
   const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
@@ -83,27 +73,14 @@ try {
   assert.equal(ownRegion.details?.status, undefined, "a child editing a region it read itself succeeds");
   assert.equal(readFileSync(source, "utf8"), "alpha\nBETA2\ndelta\n", "the file changed as intended");
 
-  // The replace wrote its undo record under the editing child's own owner; the
-  // parent's partition does not see it.
-  assert.ok(
-    await getUndo(source, await loadProjectHashStore(workspace, CHILD_ONE)),
-    "the child replace persists a revert record under the child's own owner",
-  );
-  assert.equal(
-    await getUndo(source, await loadProjectHashStore(workspace, PARENT_OWNER)),
-    undefined,
-    "the parent's revert record is not affected by the child's edit",
-  );
-
-  // The child revert restores the file and clears the child's undo record.
-  const revertResult = await revert.execute("child-revert", { path: "source.txt" }, undefined, undefined, ctx);
-  assert.match(textOf(revertResult.content), /Reverted the last replace/, "the child revert restores the file");
-  assert.equal(readFileSync(source, "utf8"), "alpha\nbeta\ngamma\ndelta\n", "the file is restored");
-  assert.equal(
-    await getUndo(source, await loadProjectHashStore(workspace, CHILD_ONE)),
-    undefined,
-    "the child revert clears the child's undo record",
-  );
+  // The replace recorded its post-edit rows under the editing child's own
+  // owner; the parent's partition is not credited with the fresh anchor.
+  const freshAnchor = ownRegion.details.diff.match(/([A-Za-z0-9]{3})│BETA2/)?.[1];
+  assert.ok(freshAnchor, "the child replace carries a fresh anchor for the changed line");
+  const childServedRows = getServed(await loadProjectHashStore(workspace, CHILD_ONE), source);
+  assert.ok(childServedRows?.has(freshAnchor), "the child replace records post-edit rows under the child owner");
+  const parentServedRows = getServed(await loadProjectHashStore(workspace, PARENT_OWNER), source);
+  assert.ok(!parentServedRows?.has(freshAnchor), "the parent partition is not credited with the child's fresh anchor");
 
   // A child editing a region only the parent read is refused with the
   // recoverable stale-range code: the parent read serves rows under its own
@@ -113,7 +90,7 @@ try {
   const parentResult = await parentRead.execute("parent-read", { path: "source.txt" }, undefined, undefined, ctx);
   const parentAnchors = readRows(parentResult.content).map((row) => row.hash);
 
-  const [childTwoReplace] = createChildAnchoredEditTools(workspace, CHILD_TWO);
+  const childTwoReplace = createChildAnchoredReplaceTool(workspace, CHILD_TWO);
   const refused = await childTwoReplace.execute(
     "child-two",
     { path: "source.txt", remove_from: parentAnchors[1], remove_to: parentAnchors[2], replacement_text: "BETA2" },
@@ -143,7 +120,7 @@ try {
   const thirdRead = createChildAnchoredReadTool(workspace, CHILD_TWO);
   const thirdReadResult = await thirdRead.execute("third-read", { path: "other.txt" }, undefined, undefined, ctx);
   const thirdAnchors = readRows(thirdReadResult.content).map((row) => row.hash);
-  const [childOneAgain] = createChildAnchoredEditTools(workspace, CHILD_ONE);
+  const childOneAgain = createChildAnchoredReplaceTool(workspace, CHILD_ONE);
   const thirdRefused = await childOneAgain.execute(
     "child-one",
     { path: "other.txt", remove_from: thirdAnchors[1], remove_to: thirdAnchors[2], replacement_text: "TWO" },
@@ -158,7 +135,7 @@ try {
   // anchors stay recoverable safety refusals rather than tool failures.
   const externalFile = join(root, "external-edit.txt");
   writeFileSync(externalFile, "ext-alpha\next-beta\next-gamma\n");
-  const [externalBlind] = createChildAnchoredEditTools(workspace, CHILD_TWO);
+  const externalBlind = createChildAnchoredReplaceTool(workspace, CHILD_TWO);
   const parentExternalRead = createChildAnchoredReadTool(workspace, PARENT_OWNER);
   const parentExternalRows = readRows(
     (await parentExternalRead.execute("parent-external-read", { path: "../external-edit.txt" }, undefined, undefined, ctx)).content,
@@ -190,10 +167,8 @@ try {
   assert.equal(externalEdit.details?.status, undefined, "a child editing an external range it read itself succeeds");
   assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\nEDITED\next-gamma\n", "the external file changed as intended");
 
-  assert.ok(
-    await getUndo(realpathSync(externalFile), await loadProjectHashStore(workspace, CHILD_ONE)),
-    "the external child replace persists its revert record in the initiating workspace under the child owner",
-  );
+  const externalServed = getServed(await loadProjectHashStore(workspace, CHILD_ONE), realpathSync(externalFile));
+  assert.ok(externalServed && externalServed.size > 0, "the external child replace records served rows in the initiating workspace under the child owner");
 
   // A stale external anchor is a recoverable warning with fresh rows.
   writeFileSync(externalFile, "ext-alpha\nchanged-on-disk\next-gamma\n");
@@ -213,33 +188,26 @@ try {
     "the stale refusal carries recoverable fresh-anchor feedback",
   );
 
-  // The child revert follows the external replace through the same authority.
-  // The child revert is owner-scoped (revertAnyOwner: false), so it is built
-  // from the same child that made the edit.
-  const [, childOneRevert] = createChildAnchoredEditTools(workspace, CHILD_ONE);
+  // A follow-up external replace through the served rows left by the previous
+  // edit applies without another read (replace is the only path; there is no
+  // revert, so the post-edit rows are the recovery surface).
   writeFileSync(externalFile, "ext-alpha\next-beta\next-gamma\n");
-  const revertRange = readRows(
+  const followUpRange = readRows(
     (await childExternalRead.execute("child-external-re-read", { path: "../external-edit.txt" }, undefined, undefined, ctx)).content,
   ).find((row) => row.text === "ext-beta").hash;
   await (await childReplace(CHILD_ONE)).execute(
     "child-external-replace",
-    { path: "../external-edit.txt", remove_from: revertRange, remove_to: revertRange, replacement_text: "REPLACED" },
+    { path: "../external-edit.txt", remove_from: followUpRange, remove_to: followUpRange, replacement_text: "REPLACED" },
     undefined, undefined, ctx,
   );
-  const externalRevertResult = await childOneRevert.execute(
-    "child-external-revert",
-    { path: "../external-edit.txt" },
-    undefined, undefined, ctx,
-  );
-  assert.match(textOf(externalRevertResult.content), /Reverted the last replace/, "the child revert restores an external file");
-  assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\next-beta\next-gamma\n", "the external file is restored");
+  assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\nREPLACED\next-gamma\n", "the external file changed as intended");
 
   // A missing external file is refused, never created by the child replace.
   const missingChildReplace = await childReplace(CHILD_ONE);
   await assert.rejects(
     () => missingChildReplace.execute(
       "child-external-missing",
-      { path: "../created-externally-by-child.txt", remove_from: revertRange, remove_to: revertRange, replacement_text: "no" },
+      { path: "../created-externally-by-child.txt", remove_from: followUpRange, remove_to: followUpRange, replacement_text: "no" },
       undefined, undefined, ctx,
     ),
     /E_NOT_FOUND/,
@@ -247,8 +215,8 @@ try {
   );
 
   // Session assembly: a writable child that declares edit with anchored editing
-  // on gets the anchored replace and revert appended; read-only roles and
-  // disabled editing get none.
+  // on gets the anchored replace appended; read-only roles and disabled editing
+  // get none.
   const assembled = { definitions: [] };
   const replaced = __testables.appendChildAnchoredEdit(assembled, {
     anchoredEditing: true,
@@ -259,8 +227,8 @@ try {
   assert.equal(replaced, true, "a writable child that declares edit replaces the capability");
   assert.deepEqual(
     assembled.definitions.map((definition) => definition.name),
-    ["replace", "revert"],
-    "the edit capability resolves to the anchored replace and revert",
+    ["replace"],
+    "the edit capability resolves to the anchored replace only",
   );
 
   const readOnly = { definitions: [] };
@@ -295,14 +263,14 @@ try {
   // the built-in edit tool and adds the anchored tool names, so the child has
   // exactly one editing path and the custom definitions stay active.
   const replacedList = __testables.resolveChildToolAllowlist(["read", "write", "edit", "ls"], true);
-  assert.deepEqual(replacedList, ["read", "write", "ls", "replace", "revert"], "edit is removed and replace/revert are added");
+  assert.deepEqual(replacedList, ["read", "write", "ls", "replace"], "edit is removed and replace is added");
   const plainList = __testables.resolveChildToolAllowlist(["read", "write", "edit"], false);
   assert.deepEqual(plainList, ["read", "write", "edit"], "without replacement the allowlist is unchanged");
 
   // Resume re-resolves the capability against the current configuration rather
   // than a frozen set: the persisted selection keeps the logical edit tool, and
   // the mapping is re-derived on every run from the current anchoredEditing
-  // flag. A frozen resolution would persist replace/revert by name, which the
+  // flag. A frozen resolution would persist replace by name, which the
   // capability gate forbids.
   const { resolveSubagentTools } = await load("../../src/subagents/tool-policy.ts");
   const generalist = resolveSubagentTools({
@@ -318,7 +286,7 @@ try {
     cwd: workspace,
     owner: CHILD_ONE,
   });
-  assert.equal(resumedOnReplaced, true, "resume with anchored editing on re-maps the edit capability to the anchored tools");
+  assert.equal(resumedOnReplaced, true, "resume with anchored editing on re-maps the edit capability to the anchored replace");
   const resumedOff = { definitions: [] };
   const resumedOffReplaced = __testables.appendChildAnchoredEdit(resumedOff, {
     anchoredEditing: false,

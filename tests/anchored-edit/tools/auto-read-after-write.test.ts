@@ -415,34 +415,6 @@ describe("auto-read after write", () => {
     }
   });
 
-  it("replaces undo_last_replace tool results with the diff and no anchors block", async () => {
-    const cwd = await makeTempDir("auto-read-test-undo-");
-    await writeFile(join(cwd, "undo.txt"), "alpha\nbeta\n", "utf-8");
-    try {
-      const { getToolResultHandler } = createTestPi();
-      const handler = getToolResultHandler();
-
-      const diff = " alpha\n-   │BETA\n+BET│beta";
-      const undoResult = await handler!(
-        {
-          toolName: "undo_last_replace",
-          toolCallId: "undo-1",
-          input: { path: "undo.txt" },
-          content: [{ type: "text", text: "Undone last replace on undo.txt." }],
-          details: { diff, metrics: { classification: "applied" } },
-          isError: false,
-        },
-        { cwd },
-      );
-
-      expect(undoResult).toBeDefined();
-      expect(undoResult!.content).toHaveLength(1);
-      expect(undoResult!.content![0]!.text).toBe(diff);
-      expect(undoResult!.content![0]!.text).not.toContain("--- Auto-read");
-    } finally {
-      await cleanupCwd(cwd);
-    }
-  });
 });
 
 describe("auto-read after write — non-text files", () => {

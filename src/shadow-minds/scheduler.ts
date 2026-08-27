@@ -26,7 +26,7 @@ export const TRIGGER_PRIORITY: Readonly<Record<ShadowTrigger, number>> = Object.
  * Pi- and pi-square-owned declarative mutation tools. Unknown third-party
  * tools are never classified as mutations by name guessing.
  */
-export const MUTATION_TOOL_NAMES: readonly string[] = Object.freeze(["edit", "write", "replace", "revert"]);
+export const MUTATION_TOOL_NAMES: readonly string[] = Object.freeze(["edit", "write", "replace"]);
 
 export function isMutationToolName(name: string): boolean {
   return MUTATION_TOOL_NAMES.includes(name);
@@ -714,7 +714,7 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
  * non-error end remains their authoritative success signal.
  */
 function mutationWasApplied(toolName: string, result: unknown): boolean {
-  if (toolName !== "replace" && toolName !== "revert") return true;
+  if (toolName !== "replace") return true;
   if (!result || typeof result !== "object") return false;
   const details = (result as { details?: unknown }).details;
   if (!details || typeof details !== "object") return false;

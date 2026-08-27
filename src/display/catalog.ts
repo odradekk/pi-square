@@ -53,13 +53,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     description: "Replace an anchored range in a workspace file",
   },
   {
-    name: "revert",
-    family: "filesystem",
-    parent: true,
-    child: false,
-    description: "Revert the most recent anchored replace in a workspace file",
-  },
-  {
     name: "write",
     family: "filesystem",
     parent: true,

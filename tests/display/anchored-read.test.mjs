@@ -12,7 +12,6 @@ const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayController } = await load("../../src/display/index.ts");
 const { default: registerDisplayBuiltins } = await load("../../src/display/builtins.ts");
 const { default: registerAnchoredReplace } = await load("../../src/anchored-edit/workspace-replace.ts");
-const { default: registerAnchoredRevert } = await load("../../src/anchored-edit/workspace-revert.ts");
 
 const OWN = { path: "/package/src/index.ts", source: "@odradekk/pi-square", scope: "user", origin: "package" };
 const BUILTIN = { path: "<builtin>", source: "built-in", scope: "temporary", origin: "top-level" };
@@ -46,7 +45,6 @@ function createHarness(config) {
   let anchoredReadAvailable = false;
   registerDisplayBuiltins(pi, controller, (available) => { anchoredReadAvailable = available; });
   registerAnchoredReplace(pi, () => controller.config, () => controller.runtime, () => anchoredReadAvailable);
-  registerAnchoredRevert(pi, () => controller.config, () => controller.runtime, () => anchoredReadAvailable);
   return { events, definitions, controller, activeTools: () => pi.getActiveTools() };
 }
 
@@ -120,12 +118,7 @@ try {
   const on = createHarness(DEFAULT_CONFIG);
   await start(on, workspace);
   const replace = on.definitions.get("replace");
-  const revert = on.definitions.get("revert");
   assert.ok(replace, "default anchored editing registers replace");
-  assert.ok(revert, "default anchored editing registers revert");
-  assert.equal(revert.renderShell, "self", "revert uses the shared operational display shell");
-  assert.equal(typeof revert.renderCall, "function", "revert renders through the production decoration path");
-  assert.equal(typeof revert.renderResult, "function", "revert renders results through the production decoration path");
   assert.equal(replace.renderShell, "self", "replace uses the shared operational display shell");
   assert.equal(typeof replace.renderCall, "function", "replace renders through the production decoration path");
   assert.equal(typeof replace.renderResult, "function", "replace renders results through the production decoration path");
@@ -221,7 +214,7 @@ try {
   try {
     assert.deepEqual(store.prepare("SELECT DISTINCT owner FROM snapshots").all().map((row) => row.owner), ["parent"], "snapshots retain an owner dimension");
     assert.deepEqual(store.prepare("SELECT DISTINCT owner FROM served").all().map((row) => row.owner), ["parent"], "served rows retain an owner dimension");
-    assert.ok(store.prepare("PRAGMA table_info(undo)").all().some((row) => row.name === "owner"), "revert records retain an owner dimension");
+    assert.equal(store.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'undo'").get().count, 0, "the undo-free store creates no undo table (#187)");
     const canonicalOutside = realpathSync(join(root, "outside.txt"));
     assert.ok(
       store.prepare("SELECT COUNT(*) AS count FROM served WHERE path = ?").get(canonicalOutside).count > 0,
@@ -254,7 +247,6 @@ try {
   await start(on, workspace);
   assert.ok(on.activeTools().includes("edit"), "a later disabled session restores Pi edit to the active parent tools");
   assert.ok(!on.activeTools().includes("replace"), "a later disabled session removes replace from the active parent tools");
-  assert.ok(!on.activeTools().includes("revert"), "a later disabled session removes revert from the active parent tools");
   assert.deepEqual(on.activeTools(), ["read", "edit", "write"], "a later disabled session restores the complete active-tool baseline");
   assert.deepEqual(readFileSync(storePath), storeBytesBeforeDisable, "disabling anchored editing leaves the existing store untouched");
   on.controller.dispose();

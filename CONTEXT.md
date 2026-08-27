@@ -39,7 +39,7 @@ The resting presentation of a tool entry in the operational interface: exactly o
 _Avoid_: folded card, multi-row summary
 
 **Mutation family**:
-The four tools whose collapsed entries keep a bounded payload body below the header row: edit, replace, revert, and write. Every other tool's collapsed entry is a single row; its payload is visible only when expanded.
+The three tools whose collapsed entries keep a bounded payload body below the header row: edit, replace, and write. Every other tool's collapsed entry is a single row; its payload is visible only when expanded.
 _Avoid_: payload tools, edit tools
 
 **Content column**:

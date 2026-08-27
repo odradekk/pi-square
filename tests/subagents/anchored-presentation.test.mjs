@@ -73,14 +73,10 @@ function details(overrides = {}) {
 
 // ─── 1. The shared allowlisted formatter names the anchored target ──
 
-test("replace and revert summaries name the target file", () => {
+test("replace summaries name the target file", () => {
   assert.equal(
     formatToolCall("replace", { path: "src/a.txt", remove_from: "abc", remove_to: "def", replacement_text: "X", secret: "private" }),
     "replace src/a.txt",
-  );
-  assert.equal(
-    formatToolCall("revert", { path: "src/a.txt", secret: "private" }),
-    "revert src/a.txt",
   );
   assert.doesNotMatch(formatToolCall("replace", { path: "src/a.txt", secret: "private" }), /private/);
 });
@@ -100,12 +96,6 @@ test("legacy JSON timeline entries use the same anchored formatter", () => {
     text: 'replace {"path":"src/a.txt","remove_from":"abc","replacement_text":"X"}',
   });
   assert.deepEqual(replace, { tool: "replace", summary: "src/a.txt" });
-  const revert = toolEventDisplay({
-    kind: "tool",
-    phase: "start",
-    text: 'revert {"path":"src/a.txt"}',
-  });
-  assert.deepEqual(revert, { tool: "revert", summary: "src/a.txt" });
 });
 
 // ─── 2. Refusal detection at the tool boundary ─────────────────────
@@ -115,16 +105,7 @@ test("warning results from anchored tools are refusals, not successes or failure
     __testables.anchorRefusalCode({ content: [], details: { status: "warning", errorCode: "E_RANGE_STALE" } }, false),
     "E_RANGE_STALE",
   );
-  assert.equal(
-    __testables.anchorRefusalCode({ content: [], details: { status: "warning", errorCode: "E_UNDO_OWNER" } }, false),
-    "E_UNDO_OWNER",
-  );
-  assert.equal(
-    __testables.anchorRefusalCode({ content: [], details: { status: "warning", errorCode: "E_UNDO_STALE" } }, false),
-    "E_UNDO_STALE",
-  );
-  // A warning without a refusal code (e.g. "no revert history") is a benign
-  // notice, not a refusal.
+  // A warning without a refusal code is a benign notice, not a refusal.
   assert.equal(
     __testables.anchorRefusalCode({ content: [], details: { status: "warning" } }, false),
     undefined,

@@ -2,7 +2,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { initHasher } from "./hashline";
 import { regReplace } from "./replace";
-import { regReplaceUndo, clearUndo } from "./replace-undo";
 import { regRead, fmtReadPreview } from "./read";
 import type { RMetrics } from "./replace-response";
 import { extractWarnings } from "./replace-render";
@@ -24,7 +23,6 @@ export default function (pi: ExtensionAPI): void {
   regRead(pi);
 
   regReplace(pi);
-  regReplaceUndo(pi);
 
   let autoRead = true;
 
@@ -47,11 +45,11 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("toggle-auto-read", {
-    description: "Toggle automatic hashline anchors after write and post-edit diffs after replace and undo_last_replace operations",
+    description: "Toggle automatic hashline anchors after write and post-edit diffs after replace operations",
     handler: async (_args, ctx) => {
       autoRead = await toggleAutoRead();
       const state = autoRead ? "enabled" : "disabled";
-      ctx.ui.notify(`Auto-read anchors (write) and post-edit diffs (replace/undo): ${state}`, "info");
+      ctx.ui.notify(`Auto-read anchors (write) and post-edit diffs (replace): ${state}`, "info");
     },
   });
 
@@ -63,11 +61,10 @@ export default function (pi: ExtensionAPI): void {
       if (typeof writtenPath === "string") {
         try {
           const target = await resolveTarget(toCwd(writtenPath, ctx.cwd));
-          await clearUndo(target);
           const store = await loadHashStore();
           clearServed(store, target);
         } catch (error) {
-          console.error("Failed to clear undo after write:", error);
+          console.error("Failed to clear served state after write:", error);
         }
       }
       if (!autoRead) return;
@@ -107,10 +104,7 @@ export default function (pi: ExtensionAPI): void {
       }
     }
 
-    if (
-      event.toolName !== "replace" &&
-      event.toolName !== "undo_last_replace"
-    ) return;
+    if (event.toolName !== "replace") return;
     if (!autoRead) return;
 
     const metrics = (event.details as { metrics?: RMetrics } | undefined)?.metrics;

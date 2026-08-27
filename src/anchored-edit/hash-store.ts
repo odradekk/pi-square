@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { dirname } from "path";
+import { basename, dirname, join } from "path";
 import { readFile, rename, mkdir, stat } from "fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { hashStorePath, legacyHashStorePath } from "./paths";
@@ -7,6 +7,7 @@ import { errCode, isRec, splitLines } from "./utils";
 import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT } from "./constants";
+import { acquireFileLock } from "./file-lock";
 type SqlParams = (string | number)[];
 
 interface Prepared {
@@ -15,37 +16,18 @@ interface Prepared {
   allHashes: (...params: SqlParams) => Record<string, unknown>[];
   deleteOne: (...params: SqlParams) => void;
   upsert: (...params: SqlParams) => void;
-  undoUpsert: (...params: SqlParams) => void;
-  undoGet: (...params: SqlParams) => Record<string, unknown> | undefined;
-  undoDelete: (...params: SqlParams) => void;
   servedGet: (...params: SqlParams) => Record<string, unknown> | undefined;
   servedUpsert: (...params: SqlParams) => void;
   servedDelete: (...params: SqlParams) => void;
   /** Owner-agnostic partition operations; present only on scoped stores. */
   listOwners?: () => Record<string, unknown>[];
-  undoOwners?: () => Record<string, unknown>[];
   deleteOwner?: (owner: string) => void;
-  /** Owner-agnostic undo (revert record) operations; present only on scoped stores. */
-  undoGetAny?: (path: string) => (Record<string, unknown> & { owner: unknown }) | undefined;
-  undoDeleteAny?: (path: string) => void;
-  undoUpsertAs?: (
-    owner: string,
-    path: string,
-    content: string,
-    bom: string,
-    ending: string,
-    hashes: string,
-    resultContent: string,
-    updatedAt: number,
-  ) => void;
 }
 
 export interface OwnerPartition {
   owner: string;
-  /** Newest updated_at across the owner's snapshot, undo, and served rows. */
+  /** Newest updated_at across the owner's snapshot and served rows. */
   updatedAt: number;
-  /** Whether the owner still holds a revert record (an undo row). */
-  hasUndo: boolean;
 }
 
 export interface HashStore {
@@ -62,14 +44,6 @@ export interface HashStoreHandle extends HashStore {
 export interface HashStoreLoadOptions {
   owner?: string;
   migrateLegacy?: boolean;
-}
-
-export interface UndoRecord {
-  content: string;
-  bom: string;
-  ending: string;
-  hashes: string[];
-  resultContent: string;
 }
 
 interface LegacySnapshot {
@@ -153,7 +127,11 @@ function withBusyRetry<T>(fn: () => T): T {
   throw lastError;
 }
 
-function openDbWithBusyRetry(storePath: string, owner: string | undefined): { db: DatabaseSync; stmts: Prepared } {
+type OpenedDb =
+  | { db: DatabaseSync; legacy: true }
+  | { db: DatabaseSync; stmts: Prepared; legacy: false };
+
+function openDbWithBusyRetry(storePath: string, owner: string | undefined): OpenedDb {
   return withBusyRetry(() => openDb(storePath, owner));
 }
 
@@ -252,11 +230,30 @@ class HashStoreHandleImpl implements HashStoreHandle {
     });
   }
 }
-function openDb(storePath: string, owner: string | undefined): { db: DatabaseSync; stmts: Prepared } {
+function inspectLegacyStore(db: DatabaseSync): boolean {
+  const tables = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+  ).all() as Array<{ name?: unknown }>;
+  if (tables.length === 0) return false;
+  if (tables.some((row) => row.name === "undo")) return true;
+  if (!tables.some((row) => row.name === "meta")) return true;
+  try {
+    const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
+    return versionRow?.value !== String(HASH_STORE_VERSION);
+  } catch {
+    return true;
+  }
+}
+
+function openDb(storePath: string, owner: string | undefined): OpenedDb {
   const db = new DatabaseSync(storePath, {
     timeout: HASH_STORE_BUSY_TIMEOUT,
   });
   try {
+    // Inspect before any PRAGMA that can create sidecars, DDL, or version write:
+    // an older non-empty database is quarantined in its original schema rather
+    // than being partially migrated before it is renamed aside.
+    if (inspectLegacyStore(db)) return { db, legacy: true };
     return buildStore(db, owner);
   } catch (error) {
     try {
@@ -269,7 +266,7 @@ function openDb(storePath: string, owner: string | undefined): { db: DatabaseSyn
 function buildStore(
   db: DatabaseSync,
   owner: string | undefined,
-): { db: DatabaseSync; stmts: Prepared } {
+): { db: DatabaseSync; stmts: Prepared; legacy: false } {
   const scoped = owner !== undefined;
   const ownerColumn = scoped ? "owner TEXT NOT NULL, " : "";
   const pathColumn = scoped ? "path TEXT NOT NULL, " : "path TEXT PRIMARY KEY, ";
@@ -298,19 +295,6 @@ function buildStore(
     ")"
   );
   db.exec(
-    "CREATE TABLE IF NOT EXISTS undo (" +
-      ownerColumn +
-      pathColumn +
-      "content TEXT NOT NULL, " +
-      "bom TEXT NOT NULL, " +
-      "ending TEXT NOT NULL, " +
-      "hashes TEXT NOT NULL, " +
-      "result_content TEXT NOT NULL, " +
-      "updated_at INTEGER NOT NULL" +
-      primaryKey +
-    ")"
-  );
-  db.exec(
     "CREATE TABLE IF NOT EXISTS served (" +
       ownerColumn +
       pathColumn +
@@ -319,16 +303,9 @@ function buildStore(
       primaryKey +
     ")"
   );
-  const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
-  if (versionRow && versionRow.value !== String(HASH_STORE_VERSION)) {
-    if (scoped) {
-      db.prepare("DELETE FROM snapshots WHERE owner = ?").run(owner!);
-      db.prepare("DELETE FROM undo WHERE owner = ?").run(owner!);
-    } else {
-      db.exec("DELETE FROM snapshots");
-      db.exec("DELETE FROM undo");
-    }
-  }
+  // A current database reaches this point; an empty database receives the
+  // undo-free schema and its first version row. Older non-empty databases were
+  // detected before DDL and are quarantined untouched.
   db.prepare(
     "INSERT INTO meta (key, value) VALUES ('version', ?) " +
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -338,22 +315,14 @@ function buildStore(
     `SELECT hashes FROM snapshots WHERE ${ownerWhere}path = ? AND checksum = ? AND line_count = ?`
   );
   const allStmt = db.prepare(scoped
-    ? "SELECT path FROM snapshots WHERE owner = ? UNION SELECT path FROM undo WHERE owner = ? UNION SELECT path FROM served WHERE owner = ?"
-    : "SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served");
+    ? "SELECT path FROM snapshots WHERE owner = ? UNION SELECT path FROM served WHERE owner = ?"
+    : "SELECT path FROM snapshots UNION SELECT path FROM served");
   const allHashesStmt = db.prepare(`SELECT path, hashes FROM snapshots${scoped ? " WHERE owner = ?" : ""}`);
   const delStmt = db.prepare(`DELETE FROM snapshots WHERE ${ownerWhere}path = ?`);
   const upsertStmt = db.prepare(
     `INSERT INTO snapshots (${ownerColumns}path, checksum, line_count, hashes, updated_at) VALUES (${ownerValues}?, ?, ?, ?, ?) ` +
     `ON CONFLICT(${conflictTarget}) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at`
   );
-  const undoUpsertStmt = db.prepare(
-    `INSERT INTO undo (${ownerColumns}path, content, bom, ending, hashes, result_content, updated_at) VALUES (${ownerValues}?, ?, ?, ?, ?, ?, ?) ` +
-    `ON CONFLICT(${conflictTarget}) DO UPDATE SET content = excluded.content, bom = excluded.bom, ending = excluded.ending, hashes = excluded.hashes, result_content = excluded.result_content, updated_at = excluded.updated_at`
-  );
-  const undoGetStmt = db.prepare(
-    `SELECT content, bom, ending, hashes, result_content FROM undo WHERE ${ownerWhere}path = ?`
-  );
-  const undoDelStmt = db.prepare(`DELETE FROM undo WHERE ${ownerWhere}path = ?`);
   const servedGetStmt = db.prepare(`SELECT hashes FROM served WHERE ${ownerWhere}path = ?`);
   const servedUpsertStmt = db.prepare(
     `INSERT INTO served (${ownerColumns}path, hashes, updated_at) VALUES (${ownerValues}?, ?, ?) ` +
@@ -363,73 +332,33 @@ function buildStore(
   const ownerListStmt = scoped ? db.prepare(
     "SELECT owner, MAX(updated_at) AS updated_at FROM (" +
     "SELECT owner, updated_at FROM snapshots " +
-    "UNION ALL SELECT owner, updated_at FROM undo " +
     "UNION ALL SELECT owner, updated_at FROM served" +
     ") GROUP BY owner"
   ) : undefined;
-  const undoOwnersStmt = scoped ? db.prepare("SELECT DISTINCT owner FROM undo") : undefined;
   const deleteOwnerSnapshotsStmt = scoped ? db.prepare("DELETE FROM snapshots WHERE owner = ?") : undefined;
-  const deleteOwnerUndoStmt = scoped ? db.prepare("DELETE FROM undo WHERE owner = ?") : undefined;
   const deleteOwnerServedStmt = scoped ? db.prepare("DELETE FROM served WHERE owner = ?") : undefined;
-  // The undo (revert) record is file-global: exactly one row per path across
-  // all owners, with the owner recorded as data (who made the most recent
-  // edit). These owner-agnostic statements let any scoped handle read, clear,
-  // or rewrite that single record, so the parent can revert any agent's edit
-  // while a child is limited to records it owns.
-  const undoGetAnyStmt = scoped ? db.prepare(
-    "SELECT owner, content, bom, ending, hashes, result_content FROM undo " +
-    "WHERE path = ? ORDER BY updated_at DESC LIMIT 1"
-  ) : undefined;
-  const undoDeleteAnyStmt = scoped ? db.prepare("DELETE FROM undo WHERE path = ?") : undefined;
-  const undoUpsertAsStmt = scoped ? db.prepare(
-    "INSERT INTO undo (owner, path, content, bom, ending, hashes, result_content, updated_at) " +
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
-    "ON CONFLICT(owner, path) DO UPDATE SET content = excluded.content, bom = excluded.bom, " +
-    "ending = excluded.ending, hashes = excluded.hashes, result_content = excluded.result_content, " +
-    "updated_at = excluded.updated_at"
-  ) : undefined;
   const stmts: Prepared = {
     get: (...params) => getStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
-    allPaths: (...params) => allStmt.all(...(scoped ? [owner!, owner!, owner!, ...params] : params)) as Record<string, unknown>[],
+    allPaths: (...params) => allStmt.all(...(scoped ? [owner!, owner!, ...params] : params)) as Record<string, unknown>[],
     allHashes: (...params) => allHashesStmt.all(...withOwner(params)) as Record<string, unknown>[],
     deleteOne: (...params) => { withBusyRetry(() => { delStmt.run(...withOwner(params)); }); },
     upsert: (...params) => { withBusyRetry(() => { upsertStmt.run(...withOwner(params)); }); },
-    undoUpsert: (...params) => { withBusyRetry(() => { undoUpsertStmt.run(...withOwner(params)); }); },
-    undoGet: (...params) => undoGetStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
-    undoDelete: (...params) => { withBusyRetry(() => { undoDelStmt.run(...withOwner(params)); }); },
     servedGet: (...params) => servedGetStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
     servedUpsert: (...params) => { withBusyRetry(() => { servedUpsertStmt.run(...withOwner(params)); }); },
     servedDelete: (...params) => { withBusyRetry(() => { servedDelStmt.run(...withOwner(params)); }); },
-    ...(scoped && ownerListStmt && undoOwnersStmt && deleteOwnerSnapshotsStmt && deleteOwnerUndoStmt && deleteOwnerServedStmt
+    ...(scoped && ownerListStmt && deleteOwnerSnapshotsStmt && deleteOwnerServedStmt
       ? {
           listOwners: () => ownerListStmt.all() as Record<string, unknown>[],
-          undoOwners: () => undoOwnersStmt.all() as Record<string, unknown>[],
           deleteOwner: (owner: string) => {
             withBusyRetry(() => {
               deleteOwnerSnapshotsStmt.run(owner);
-              deleteOwnerUndoStmt.run(owner);
               deleteOwnerServedStmt.run(owner);
             });
           },
         }
       : {}),
-    ...(scoped && undoGetAnyStmt && undoDeleteAnyStmt && undoUpsertAsStmt
-      ? {
-          undoGetAny: (path: string) => undoGetAnyStmt.get(path) as (Record<string, unknown> & { owner: unknown }) | undefined,
-          undoDeleteAny: (path: string) => {
-            withBusyRetry(() => {
-              undoDeleteAnyStmt.run(path);
-            });
-          },
-          undoUpsertAs: (owner: string, path: string, content: string, bom: string, ending: string, hashes: string, resultContent: string, updatedAt: number) => {
-            withBusyRetry(() => {
-              undoUpsertAsStmt.run(owner, path, content, bom, ending, hashes, resultContent, updatedAt);
-            });
-          },
-        }
-      : {}),
   };
-  return { db, stmts };
+  return { db, stmts, legacy: false };
 }
 
 function isHealthy(db: DatabaseSync): boolean {
@@ -442,17 +371,27 @@ function isHealthy(db: DatabaseSync): boolean {
   }
 }
 
-async function quarantineStore(storePath: string): Promise<void> {
-  const suffix = `.corrupt-${Date.now()}`;
-  for (const candidate of [storePath, `${storePath}-wal`, `${storePath}-shm`]) {
+async function quarantineStore(storePath: string, label: "corrupt" | "old-schema"): Promise<void> {
+  const suffix = `.${label}-${Date.now()}`;
+  try {
+    await rename(storePath, `${storePath}${suffix}`);
+  } catch (error) {
+    if (errCode(error) === "ENOENT") return;
+    throw new Error(`Failed to quarantine ${label} hash store ${storePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (const candidate of [`${storePath}-wal`, `${storePath}-shm`]) {
     try {
       await rename(candidate, `${candidate}${suffix}`);
     } catch (error) {
       if (errCode(error) !== "ENOENT") {
-        console.error("Failed to quarantine corrupt hash store file:", error);
+        console.error(`Failed to quarantine ${label} hash store sidecar:`, error);
       }
     }
   }
+}
+
+function schemaLockPath(storePath: string): string {
+  return join(dirname(storePath), "locks", `store-${basename(storePath)}.schema.lock`);
 }
 
 function shutdownDb(db: DatabaseSync): void {
@@ -463,28 +402,41 @@ function shutdownDb(db: DatabaseSync): void {
   db.close();
 }
 
-async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
+async function openStoreUnlocked(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
   const owner = options.owner;
   await initHasher();
   await mkdir(dirname(storePath), { recursive: true });
 
   let existed = existsSync(storePath);
-  let opened: { db: DatabaseSync; stmts: Prepared };
+  let opened: OpenedDb;
   try {
     opened = openDbWithBusyRetry(storePath, owner);
   } catch (error) {
     if (!isCorruptionError(error)) throw error;
     console.error("Hash store failed to open, rebuilding:", error);
-    await quarantineStore(storePath);
+    await quarantineStore(storePath, "corrupt");
     existed = false;
     opened = openDbWithBusyRetry(storePath, owner);
   }
+  if (opened.legacy) {
+    // #187 undo-free schema: an older store (or any store that still carries
+    // the removed undo table) is quarantined whole, database and sidecars, and
+    // rebuilt fresh. Cached snapshot and served state do not survive the
+    // upgrade; the loss is explicit and recoverable through a new read, which
+    // re-records both.
+    shutdownDb(opened.db);
+    await quarantineStore(storePath, "old-schema");
+    existed = false;
+    opened = openDbWithBusyRetry(storePath, owner);
+  }
+  if (opened.legacy) throw new Error(`Fresh anchor store ${storePath} reopened as an old schema`);
   if (!isHealthy(opened.db)) {
     shutdownDb(opened.db);
-    await quarantineStore(storePath);
+    await quarantineStore(storePath, "corrupt");
     existed = false;
     opened = openDbWithBusyRetry(storePath, owner);
   }
+  if (opened.legacy) throw new Error(`Rebuilt anchor store ${storePath} reopened as an old schema`);
   const { db, stmts } = opened;
 
   if (!existed && options.migrateLegacy !== false) {
@@ -509,6 +461,23 @@ async function openStore(storePath: string, options: HashStoreLoadOptions): Prom
 
   registerExitHandler();
   return entry;
+}
+
+async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
+  // Schema detection, whole-database quarantine, and fresh rebuild mutate one
+  // path across every owner partition. Serialize that lifecycle across owners
+  // and Pi processes so two concurrent first opens cannot quarantine each
+  // other's newly rebuilt database and leave handles attached to different
+  // inodes. Cached opens bypass this path and pay no lock cost.
+  const lock = await acquireFileLock(schemaLockPath(storePath), {
+    waitMs: Math.max(HASH_STORE_BUSY_TIMEOUT * 5, 5000),
+  });
+  if (!lock) throw new Error(`[E_FILE_LOCKED] Timed out waiting to open anchor store ${storePath}. Retry the operation.`);
+  try {
+    return await openStoreUnlocked(storePath, options);
+  } finally {
+    await lock.release();
+  }
 }
 
 function registerExitHandler(): void {
@@ -672,98 +641,6 @@ export function upsertSnapshot(
   cacheSnapshot(path, checksum, lineCount, hashes);
 }
 
-export function upsertUndo(store: HashStore, path: string, entry: UndoRecord): void {
-  store.stmts.undoUpsert(
-    path,
-    entry.content,
-    entry.bom,
-    entry.ending,
-    JSON.stringify(entry.hashes),
-    entry.resultContent,
-    Date.now(),
-  );
-}
-
-export function getUndoEntry(store: HashStore, path: string): UndoRecord | undefined {
-  const row = store.stmts.undoGet(path);
-  if (!row) return undefined;
-  const parsed = parseHashList(row.hashes as string, () => store.stmts.undoDelete(path));
-  if (!parsed) return undefined;
-  return {
-    content: row.content as string,
-    bom: row.bom as string,
-    ending: row.ending as string,
-    hashes: parsed,
-    resultContent: row.result_content as string,
-  };
-}
-
-export interface UndoRecordWithOwner {
-  owner: string | undefined;
-  entry: UndoRecord;
-}
-
-/**
- * Reads the single file-global revert record for a path, together with the
- * owner who made that most recent edit. On a scoped store the record is
- * selected across all owners (the newest row wins), because the undo table
- * holds exactly one record per file regardless of owner; on an unscoped
- * (legacy) store the record is the single path-keyed row and the owner is
- * undefined.
- */
-export function getUndoEntryAny(store: HashStore, path: string): UndoRecordWithOwner | undefined {
-  const row = store.stmts.undoGetAny ? store.stmts.undoGetAny(path) : store.stmts.undoGet(path);
-  if (!row) return undefined;
-  const parsed = parseHashList(row.hashes as string, () => deleteUndoAny(store, path));
-  if (!parsed) return undefined;
-  return {
-    owner: store.stmts.undoGetAny ? String(row.owner) : undefined,
-    entry: {
-      content: row.content as string,
-      bom: row.bom as string,
-      ending: row.ending as string,
-      hashes: parsed,
-      resultContent: row.result_content as string,
-    },
-  };
-}
-
-/**
- * Clears the single file-global revert record for a path. On a scoped store
- * this removes the row regardless of which owner holds it; on an unscoped
- * (legacy) store it removes the single path-keyed row.
- */
-export function deleteUndoAny(store: HashStore, path: string): void {
-  if (store.stmts.undoDeleteAny) store.stmts.undoDeleteAny(path);
-  else store.stmts.undoDelete(path);
-}
-
-/**
- * Writes a revert record under an explicit owner on a scoped store, or under
- * the store's own scope on an unscoped store. Used when a failed replace must
- * restore the prior record under the owner who made that edit.
- */
-export function upsertUndoFor(store: HashStore, path: string, entry: UndoRecord, owner: string | undefined): void {
-  if (store.stmts.undoUpsertAs && owner !== undefined) {
-    store.stmts.undoUpsertAs(
-      owner,
-      path,
-      entry.content,
-      entry.bom,
-      entry.ending,
-      JSON.stringify(entry.hashes),
-      entry.resultContent,
-      Date.now(),
-    );
-  } else {
-    upsertUndo(store, path, entry);
-  }
-}
-
-export function deleteUndo(store: HashStore, path: string): void {
-  store.stmts.undoDelete(path);
-}
-
 const STAT_BATCH = 64;
 
 async function statMissing(rows: { path: string }[]): Promise<string[]> {
@@ -795,7 +672,6 @@ export async function pruneMissing(store: HashStoreHandle): Promise<void> {
     for (const path of missing) {
       store.stmts.deleteOne(path);
       snapshotCache.delete(path);
-      store.stmts.undoDelete(path);
       store.stmts.servedDelete(path);
     }
   });
@@ -803,17 +679,14 @@ export async function pruneMissing(store: HashStoreHandle): Promise<void> {
 
 /**
  * Lists every distinct owner partition in a scoped store, with the newest
- * activity across its snapshot, undo, and served rows and whether it still
- * holds a revert record. Unscoped (legacy) stores have no owner column and
- * return no partitions.
+ * activity across its snapshot and served rows. Unscoped (legacy) stores have
+ * no owner column and return no partitions.
  */
 export function listOwnerPartitions(store: HashStore): OwnerPartition[] {
   const rows = store.stmts.listOwners?.() ?? [];
-  const undoOwners = new Set((store.stmts.undoOwners?.() ?? []).map((row) => String(row.owner)));
   return rows.map((row) => ({
     owner: String(row.owner),
     updatedAt: Number(row.updated_at ?? 0),
-    hasUndo: undoOwners.has(String(row.owner)),
   }));
 }
 

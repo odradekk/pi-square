@@ -13,13 +13,10 @@ const {
   createAnchoredReplaceToolDefinition,
 } = await load("../../src/anchored-edit/workspace-replace.ts");
 const {
-  createAnchoredRevertToolDefinition,
-} = await load("../../src/anchored-edit/workspace-revert.ts");
-const {
   loadProjectHashStore,
   PARENT_OWNER,
 } = await load("../../src/anchored-edit/workspace-support.ts");
-const { getUndoEntry, shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
+const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 const { getServed } = await load("../../src/anchored-edit/served.ts");
 
 const CHILD_OWNER = "child";
@@ -87,7 +84,9 @@ try {
     "read transform records served rows under the child owner",
   );
 
-  // A child-owner replace writes its undo record only into the child partition.
+  // A child-owner replace records its post-edit rows only in the child
+  // partition (#187: replace is the only range-editing path; the undo store is
+  // gone, so served rows are the per-owner state).
   const childReplace = createAnchoredReplaceToolDefinition(workspace, () => true, CHILD_OWNER);
   const changed = await childReplace.execute(
     "replace-1",
@@ -103,36 +102,14 @@ try {
   );
   assert.equal(readFileSync(source, "utf8"), "first\nreplaced\nlast\n");
   assert.equal(changed.details.status, undefined, "child replace applies without a warning");
+  const childServed = getServed(await loadProjectHashStore(workspace, CHILD_OWNER), source);
+  assert.ok(childServed, "the child replace records post-edit rows under the child owner");
+  const parentServed = getServed(await loadProjectHashStore(workspace), source);
+  const freshAnchor = changed.details.diff.match(/([A-Za-z0-9]{3})│replaced/)?.[1];
+  assert.ok(freshAnchor, "the child's fresh anchor is identified");
   assert.ok(
-    getUndoEntry(await loadProjectHashStore(workspace, CHILD_OWNER), source),
-    "replace undo persists under the child owner",
-  );
-  assert.equal(
-    getUndoEntry(await loadProjectHashStore(workspace), source),
-    undefined,
-    "the parent partition stays isolated from child undo records",
-  );
-
-  // A child-owner revert consumes the child undo record and leaves the parent alone.
-  const childRevert = createAnchoredRevertToolDefinition(workspace, () => true, CHILD_OWNER);
-  const reverted = await childRevert.execute(
-    "revert-1",
-    { path: "source.txt" },
-    undefined,
-    undefined,
-    { cwd: workspace },
-  );
-  assert.equal(readFileSync(source, "utf8"), "first\nmiddle\nlast\n");
-  assert.equal(reverted.details.status, undefined, "child revert applies without a warning");
-  assert.equal(
-    getUndoEntry(await loadProjectHashStore(workspace, CHILD_OWNER), source),
-    undefined,
-    "revert clears the child undo record",
-  );
-  assert.equal(
-    getUndoEntry(await loadProjectHashStore(workspace), source),
-    undefined,
-    "the parent partition stays isolated after child revert",
+    parentServed && !parentServed.has(freshAnchor),
+    "the parent partition is not credited with the child's fresh anchor",
   );
 
   console.log("anchored owner partition tests: OK");

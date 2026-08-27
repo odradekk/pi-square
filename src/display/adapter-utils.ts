@@ -47,15 +47,14 @@ export function asRecord(value: unknown): UnknownRecord {
 
 /**
  * Mutation family (C4 revision): the only tools whose collapsed entries keep
- * a bounded diff/preview body below the single row — edit, replace, revert,
- * and write. Anchored replace/revert are covered so anchored editing keeps
+ * a bounded diff/preview body below the single row — edit, replace, and
+ * write. Anchored replace is covered so anchored editing keeps
  * its diff-forward review experience. Every other tool's collapsed entry is
  * exactly one row; its payload is visible only when expanded.
  */
 export const MUTATION_FAMILY_TOOLS: ReadonlySet<string> = new Set([
   "edit",
   "replace",
-  "revert",
   "write",
 ]);
 

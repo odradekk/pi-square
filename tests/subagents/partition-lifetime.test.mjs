@@ -7,15 +7,13 @@ import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
-const { createChildAnchoredEditTools } = await load("../../src/anchored-edit/child-edit.ts");
+const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { loadProjectHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { getServed, recordServed } = await load("../../src/anchored-edit/served.ts");
 const {
-  getUndoEntry,
   listOwnerPartitions,
   shutdownHashStore,
   upsertSnapshot,
-  upsertUndo,
 } = await load("../../src/anchored-edit/hash-store.ts");
 const {
   MAX_RETAINED_CHILD_PARTITIONS,
@@ -65,15 +63,6 @@ async function ownerHasServed(owner, path) {
   }
 }
 
-async function ownerHasUndo(owner, path) {
-  const store = await loadProjectHashStore(workspace, owner);
-  try {
-    return Boolean(getUndoEntry(store, path));
-  } finally {
-    store.release();
-  }
-}
-
 const root = mkdtempSync(join(tmpdir(), "pi-square-partition-lifetime-"));
 const workspace = join(root, "workspace");
 const agentDir = join(root, "agent");
@@ -88,13 +77,13 @@ const source = join(workspace, "source.txt");
 try {
   writeFileSync(source, "alpha\nbeta\ngamma\ndelta\n");
 
-  // A resumed child keeps its served and revert records under its own owner,
-  // so it can edit a range it was shown before it became inactive without
-  // reading again: reconciliation with the child retained never evicts it.
+  // A resumed child keeps its served records under its own owner, so it can
+  // edit a range it was shown before it became inactive without reading again:
+  // reconciliation with the child retained never evicts it.
   const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
   const firstRead = await childRead.execute("read", { path: "source.txt" }, undefined, undefined, ctx);
   const anchors = readRows(firstRead.content).map((row) => row.hash);
-  const [replace] = createChildAnchoredEditTools(workspace, CHILD_ONE);
+  const replace = createChildAnchoredReplaceTool(workspace, CHILD_ONE);
   const replaceResult = await replace.execute(
     "replace",
     { path: "source.txt", remove_from: anchors[1], remove_to: anchors[2], replacement_text: "BETA2" },
@@ -108,12 +97,6 @@ try {
   const retained = await reconcileChildPartitions(workspace, new Set([CHILD_ONE]));
   assert.deepEqual(retained.evicted, [], "a retained child partition is never evicted");
   assert.ok(await ownerHasServed(CHILD_ONE, source), "the served record survives reconciliation");
-  assert.ok(await ownerHasUndo(CHILD_ONE, source), "the revert record survives reconciliation");
-
-  // Revert restores, proving the retained revert record is still restorable.
-  const [, revert] = createChildAnchoredEditTools(workspace, CHILD_ONE);
-  const revertResult = await revert.execute("revert", { path: "source.txt" }, undefined, undefined, ctx);
-  assert.match(textOf(revertResult.content), /Reverted the last replace/, "the retained revert record is restorable after reconcile");
 
   // Dropping one child's records leaves the parent's and other children's
   // records intact.
@@ -123,7 +106,6 @@ try {
   await parentRead.execute("read-parent", { path: "source.txt" }, undefined, undefined, ctx);
   await dropChildPartition(workspace, CHILD_ONE);
   assert.ok(!(await ownerHasServed(CHILD_ONE, source)), "the dropped child's served record is gone");
-  assert.ok(!(await ownerHasUndo(CHILD_ONE, source)), "the dropped child's revert record is gone");
   assert.ok(await ownerHasServed(CHILD_TWO, source), "another child's records are intact");
   assert.ok(await ownerHasServed(PARENT_OWNER, source), "the parent's records are intact");
 
@@ -135,8 +117,8 @@ try {
   assert.ok(!(await ownerHasServed(CHILD_TWO, source)), "the orphan's records are dropped with its artifacts");
 
   // A documented bound limits retained child partitions, with
-  // least-recently-active eviction order, and eviction never discards a revert
-  // record that is still eligible to be restored.
+  // least-recently-active eviction order (#187 removed the revert-record
+  // retention exception: every partition is equally evictable).
   const file = join(workspace, "bound.txt");
   writeFileSync(file, "one\n");
   const seeds = [];
@@ -146,12 +128,6 @@ try {
     try {
       upsertSnapshot(store, file, "checksum", 1, [`AAA`]);
       recordServed(store, file, ["AAA"]);
-      // The four oldest partitions hold a revert record (eligible to restore);
-      // they must survive eviction even though they are the least-recently
-      // active.
-      if (i < 4) {
-        upsertUndo(store, file, { content: "old", bom: "", ending: "\n", hashes: ["AAA"], resultContent: "new" });
-      }
     } finally {
       store.release();
     }
@@ -163,11 +139,9 @@ try {
   assert.equal(remaining.length, MAX_RETAINED_CHILD_PARTITIONS, "the bound limits retained child partitions");
   assert.deepEqual(
     reconciledBound.evicted.slice().sort(),
-    seeds.slice(4, 8).sort(),
-    "the least-recently-active partitions without a revert record are evicted first",
+    seeds.slice(0, 4).sort(),
+    "the least-recently-active partitions are evicted first",
   );
-  assert.ok(await ownerHasUndo(seeds[0], file), "the oldest revert record is never discarded by eviction");
-  assert.ok(await ownerHasUndo(seeds[3], file), "every revert record survives eviction");
 
   // Records for files that no longer exist are pruned for every owner, not
   // only the parent.

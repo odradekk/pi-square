@@ -8,7 +8,7 @@ import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
-const { createChildAnchoredEditTools } = await load("../../src/anchored-edit/child-edit.ts");
+const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
 const { lockFilePath, acquireFileLock } = await load("../../src/anchored-edit/file-lock.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
@@ -240,7 +240,7 @@ try {
   // A child replace and write on the same external file coordinate through the
   // initiating workspace's shared lock (same-workspace discipline, #186 AC7).
   {
-    const [childReplace] = createChildAnchoredEditTools(workspace, CHILD_TWO);
+    const childReplace = createChildAnchoredReplaceTool(workspace, CHILD_TWO);
     const writeTwo = createChildAnchoredWriteTool(workspace, CHILD_TWO);
     const rows = readRows(
       (await createChildAnchoredReadTool(workspace, CHILD_TWO).execute("lock-race-seed", { path: "../external-write.txt" }, undefined, undefined, ctx)).content,

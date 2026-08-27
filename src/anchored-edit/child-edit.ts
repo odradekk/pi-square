@@ -1,44 +1,38 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createAnchoredReplaceToolDefinition } from "./workspace-replace";
-import { createAnchoredRevertToolDefinition } from "./workspace-revert";
 
 type GenericToolDefinition = ToolDefinition<any, any, any>;
 
 /**
- * Builds the child anchored replace and revert tools for a writable subagent.
- * They are the same display-free definitions the parent uses (identical
- * schemas, prompts, and verification), executed under the child's own owner so
- * a child's edit verifies against the rows its own read served and its revert
- * record stays in its own partition.
+ * Builds the child anchored replace tool for a writable subagent. It is the
+ * same display-free definition the parent uses (identical schema, prompt, and
+ * verification), executed under the child's own owner so a child's edit
+ * verifies against the rows its own read served. Replace is the only
+ * range-editing path (#187 removed revert and the undo store): the child maps
+ * the built-in edit capability to this tool alone.
  *
- * Native path authority (#186): the child tools pass `confineToWorkspace:
- * false`, so a child can replace and revert any Pi-native-accessible external
- * target while its `requireServed` gate still refuses anchors the child was
- * never served (recoverably, with the current range as fresh rows). External
- * targets keep the initiating workspace's store and lock area: two different
+ * Native path authority (#186): the child tool passes `confineToWorkspace:
+ * false`, so a child can replace any Pi-native-accessible external target
+ * while its `requireServed` gate still refuses anchors the child was never
+ * served (recoverably, with the current range as fresh rows). External targets
+ * keep the initiating workspace's store and lock area: two different
  * workspaces intentionally do not share external-target state or locks
  * (accepted last-write-wins, matching Pi's native cross-workspace behavior).
  *
  * Unlike the parent, the child replace always verifies against its served
- * record (`requireServed`): a child that names anchors it never read for itself
- * is refused with the recoverable stale-range code, and the refusal serves the
- * current range for its immediate retry. The child keeps `autoRead` on so each
- * successful edit records its result rows and the child's next edit on that
- * content is not refused. The child revert is `revertAnyOwner: false`, so it
- * can revert only an edit it made itself and is refused otherwise with the
- * owning agent named; the parent's registration grants `revertAnyOwner: true`
- * so a supervisor can roll back a subagent's edit.
+ * record (`requireServed`): a child that names anchors it never read for
+ * itself is refused with the recoverable stale-range code, and the refusal
+ * serves the current range for its immediate retry. The child keeps `autoRead`
+ * on so each successful edit records its result rows and the child's next edit
+ * on that content is not refused.
  *
- * The returned definitions carry no renderer fields, so child tool construction
- * needs no parent display runtime.
+ * The returned definition carries no renderer fields, so child tool
+ * construction needs no parent display runtime.
  *
  * @param cwd The child's working directory.
- * @param owner Anchor-store owner the child's replace and revert use. Required
- *   so a child's records never mix with the parent's or another child's.
+ * @param owner Anchor-store owner the child's replace uses. Required so a
+ *   child's records never mix with the parent's or another child's.
  */
-export function createChildAnchoredEditTools(cwd: string, owner: string): GenericToolDefinition[] {
-  return [
-    createAnchoredReplaceToolDefinition(cwd, () => true, owner, true, false) as GenericToolDefinition,
-    createAnchoredRevertToolDefinition(cwd, () => true, owner, false, false) as GenericToolDefinition,
-  ];
+export function createChildAnchoredReplaceTool(cwd: string, owner: string): GenericToolDefinition {
+  return createAnchoredReplaceToolDefinition(cwd, () => true, owner, true, false) as GenericToolDefinition;
 }
