@@ -34,6 +34,12 @@ export function anchoredEditingEnabled(state: SubagentRuntimeState): boolean {
   return state.config?.()?.anchoredEditing?.enabled === true;
 }
 
+/** The agent-only `anchoredEditing.autoRead` setting for child tool assembly;
+ *  defaults to true like the configuration default. */
+export function anchoredAutoReadEnabled(state: SubagentRuntimeState): boolean {
+  return state.config?.()?.anchoredEditing?.autoRead ?? true;
+}
+
 // The former single subagent tool exposed mode=fg/bg/resume plus an optional id
 // in one schema. GPT models served through the OpenAI Responses API populate
 // every declared property, so they always emitted id and tripped the fg/bg
@@ -239,6 +245,7 @@ export function registerSubagentTool(
           contextMessages: parentContext.contextMessages,
           cwd: normalized.cwd,
           anchoredEditing: anchoredEditingEnabled(state),
+          anchoredAutoRead: anchoredAutoReadEnabled(state),
           inheritedSystemCore: state.inheritedSystemCore,
           systemPrompt: normalized.systemPrompt,
           thinkingLevel: pi.getThinkingLevel(),
@@ -262,6 +269,7 @@ export function registerSubagentTool(
           contextMessages: parentContext.contextMessages,
           cwd: normalized.cwd,
           anchoredEditing: anchoredEditingEnabled(state),
+          anchoredAutoRead: anchoredAutoReadEnabled(state),
           inheritedSystemCore: state.inheritedSystemCore,
           systemPrompt: normalized.systemPrompt,
           thinkingLevel: pi.getThinkingLevel(),
@@ -307,6 +315,7 @@ export function registerSubagentTool(
           id,
           task,
           anchoredEditing: anchoredEditingEnabled(state),
+          anchoredAutoRead: anchoredAutoReadEnabled(state),
           parentSessionId: parentContext.parentSessionId,
           contextMessages: parentContext.contextMessages,
           signal,

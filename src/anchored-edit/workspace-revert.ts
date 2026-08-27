@@ -103,8 +103,8 @@ function ownershipWarning(owner: string | undefined, path: string): {
  *   otherwise with the owning agent named.
  * @param confineToWorkspace Whether targets outside the workspace are refused.
  *   The parent registration passes false so revert follows an external
- *   replace with the same native path authority (#185); child surfaces keep
- *   the default workspace confinement until their own slice. External targets
+ *   replace with the same native path authority (#185); the writable-child
+ *   compositions pass false too (#186). External targets
  *   keep the initiating workspace's store and canonical-target lock key, and
  *   two different workspaces intentionally do not share external-target state
  *   or locks (accepted last-write-wins, matching Pi's native cross-workspace

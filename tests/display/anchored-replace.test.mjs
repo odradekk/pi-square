@@ -393,7 +393,6 @@ try {
       undefined,
       { cwd: workspace },
     );
-    assert.equal(refusedChild.details.status, "warning", "the child surface refuses an anchor it was never served");
     assert.equal(refusedChild.details.status, "warning", "the child external refusal is a completed warning");
     assert.ok(
       ["E_RANGE_STALE", "E_STALE_ANCHOR", "E_AMBIGUOUS_ANCHOR"].includes(refusedChild.details.errorCode),

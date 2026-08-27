@@ -39,9 +39,9 @@ const ctx = { cwd: workspace };
 try {
   // ── Native path authority (#186): a writable child's write on an external
   // path takes the cross-process lock from the initiating workspace, clears
-  // only that child's served rows, appends nothing extra, and creates missing
-  // files exactly as Pi's write factory does. Read-only roles keep their
-  // assembly gates.
+  // only that child's served rows, appends bounded fresh anchors for supported
+  // changed UTF-8 text, and creates missing files exactly as Pi's write
+  // factory does. Read-only roles keep their assembly gates.
   const external = join(root, "external-write.txt");
   writeFileSync(external, "one\ntwo\nthree\n", "utf8");
   const canonical = realpathSync(external);
@@ -59,6 +59,48 @@ try {
   );
   assert.match(textOf(writeResult.content), /Successfully wrote/, "the child write succeeds on an external path");
   assert.equal(readFileSync(external, "utf8"), "one\nTWO\nthree\n", "the external file was written");
+  assert.match(
+    textOf(writeResult.content),
+    /--- Auto-read \(hashline anchors\) ---\n[A-Za-z0-9]{3}│one\n[A-Za-z0-9]{3}│TWO\n[A-Za-z0-9]{3}│three/,
+    "a changed external write appends bounded fresh anchors",
+  );
+  {
+    // The appended anchors are served to the writing child only.
+    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    try {
+      const fresh = textOf(writeResult.content).match(/([A-Za-z0-9]{3})│TWO/)?.[1];
+      assert.ok(fresh, "the fresh anchor is identified");
+      const served = store.prepare("SELECT hashes FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonical);
+      assert.ok(served && JSON.parse(served.hashes).includes(fresh), "the write's auto-read serves the fresh anchor under the writing child");
+    } finally {
+      store.close();
+    }
+  }
+
+  // An unchanged external write appends nothing: the pre-write comparison sees
+  // identical bytes.
+  const unchangedResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE).execute(
+    "child-write-unchanged",
+    { path: "../external-write.txt", content: "one\nTWO\nthree\n" },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.match(textOf(unchangedResult.content), /Successfully wrote/);
+  assert.doesNotMatch(textOf(unchangedResult.content), /Auto-read/, "an unchanged write appends no anchors");
+
+  // An unsupported (over-limit) external write keeps the factory result
+  // without an anchor appendix: the appendix bounds reject the target.
+  const huge = `${"a\n".repeat(240_000)}end`;
+  const hugeResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE).execute(
+    "child-write-huge",
+    { path: "../external-huge.txt", content: huge },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.match(textOf(hugeResult.content), /Successfully wrote/, "the over-limit write still succeeds through the factory");
+  assert.doesNotMatch(textOf(hugeResult.content), /Auto-read/, "an unsupported write keeps its native result without anchors");
 
   // Only the writing child's served rows were cleared; the parent and another
   // child's partitions keep their rows for the same canonical file.

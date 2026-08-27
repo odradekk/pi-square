@@ -28,6 +28,54 @@ function writeInput(value: unknown): { path: string; content: string } | undefin
   return { path: value.path, content: value.content };
 }
 
+export interface AutoReadAnchorsInput {
+  /** Canonical target path. */
+  path: string;
+  /** Model-visible path string used for display and anchored-row text. */
+  displayPath: string;
+  /** Initiating workspace root owning the store. */
+  workspaceRoot: string;
+  /** Loaded project hash store under the acting owner; the caller releases it. */
+  store: ReturnType<typeof loadProjectHashStore> extends Promise<infer T> ? T : never;
+}
+
+/**
+ * Renders the bounded auto-read anchor appendix for one written file and
+ * records its rows as served under the acting owner. Shared by the parent
+ * write hook and the writable-child anchored write (#186) so both surfaces
+ * append byte-identical anchors. Returns undefined when the target is not
+ * supported bounded UTF-8 text (binary, image, oversized, non-regular); the
+ * caller then keeps the native factory result unchanged.
+ */
+export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promise<string | undefined> {
+  const file = await loadFileKindAndText(input.path, {
+    maxLines: MAX_HASH_LINES,
+    displayPath: input.displayPath,
+  });
+  if (file.kind !== "text") return undefined;
+  const normalized = await readNormFile(input.displayPath, input.workspaceRoot, {
+    maxLines: MAX_HASH_LINES,
+    preloadedFile: file,
+    store: input.store,
+  });
+  const preview = await fmtReadPreview(
+    normalized.normalized,
+    {},
+    normalized.fileHashes,
+    normalized.absolutePath,
+    DEFAULT_MAX_BYTES,
+    AUTO_READ_MAX,
+  );
+  recordServed(input.store, normalized.absolutePath, preview.servedHashes);
+  const skipped = preview.nextOffset === undefined
+    ? ""
+    : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
+  const warning = normalized.hadUtf8DecodeErrors
+    ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
+    : "";
+  return `--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`;
+}
+
 function append(content: AgentToolResult<unknown>["content"], text: string): { content: AgentToolResult<unknown>["content"] } {
   return { content: [...content, { type: "text", text }] };
 }
@@ -97,32 +145,14 @@ export function registerAnchoredAutoRead(
           clearServed(store, pending.path);
           if (!config().anchoredEditing.autoRead || !pending.changed) return;
           try {
-            const file = await loadFileKindAndText(pending.path, {
-              maxLines: MAX_HASH_LINES,
+            const appendix = await renderAutoReadAnchors({
+              path: pending.path,
               displayPath: pending.displayPath,
-            });
-            if (file.kind !== "text") return;
-            const normalized = await readNormFile(pending.displayPath, pending.workspaceRoot, {
-              maxLines: MAX_HASH_LINES,
-              preloadedFile: file,
+              workspaceRoot: pending.workspaceRoot,
               store,
             });
-            const preview = await fmtReadPreview(
-              normalized.normalized,
-              {},
-              normalized.fileHashes,
-              normalized.absolutePath,
-              DEFAULT_MAX_BYTES,
-              AUTO_READ_MAX,
-            );
-            recordServed(store, normalized.absolutePath, preview.servedHashes);
-            const skipped = preview.nextOffset === undefined
-              ? ""
-              : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
-            const warning = normalized.hadUtf8DecodeErrors
-              ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
-              : "";
-            return append(event.content, `\n\n--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`);
+            if (appendix !== undefined) return append(event.content, `\n\n${appendix}`);
+            return;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.error("Auto-read after write failed:", error);

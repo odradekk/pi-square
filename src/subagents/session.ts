@@ -406,11 +406,13 @@ function appendChildAnchoredEdit(
  */
 function appendChildAnchoredWrite(
   customTools: { definitions: ToolDefinition[] },
-  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string },
+  options: { anchoredEditing?: boolean; anchoredAutoRead?: boolean; builtInTools: string[]; cwd: string; owner: string },
 ): boolean {
   if (!options.anchoredEditing) return false;
   if (!options.builtInTools.includes("write")) return false;
-  customTools.definitions.push(createChildAnchoredWriteTool(options.cwd, options.owner));
+  customTools.definitions.push(
+    createChildAnchoredWriteTool(options.cwd, options.owner, () => options.anchoredAutoRead ?? true),
+  );
   return true;
 }
 
@@ -831,6 +833,7 @@ export async function runSubagentTask(input: {
   contextMessages?: ParentContextMessage[];
   cwd?: string;
   anchoredEditing?: boolean;
+  anchoredAutoRead?: boolean;
   inheritedSystemCore?: string;
   systemPrompt?: string;
   thinkingLevel?: string;
@@ -873,6 +876,7 @@ export async function runSubagentTask(input: {
   });
   appendChildAnchoredWrite(customTools, {
     anchoredEditing: input.anchoredEditing,
+    anchoredAutoRead: input.anchoredAutoRead,
     builtInTools: resolvedTools.builtInTools,
     cwd,
     owner: input.id,
@@ -1060,6 +1064,7 @@ export async function resumeSubagentTask(input: {
   id: string;
   task: string;
   anchoredEditing?: boolean;
+  anchoredAutoRead?: boolean;
   parentSessionId?: string;
   contextMessages?: ParentContextMessage[];
   signal?: AbortSignal;
@@ -1121,6 +1126,7 @@ export async function resumeSubagentTask(input: {
     });
     appendChildAnchoredWrite(customTools, {
       anchoredEditing: input.anchoredEditing,
+      anchoredAutoRead: input.anchoredAutoRead,
       builtInTools: resolvedTools.builtInTools,
       cwd: runCwd,
       owner: input.id,

@@ -445,6 +445,7 @@ export function startBackgroundJob(input: {
   task: string;
   cwd?: string;
   anchoredEditing?: boolean;
+  anchoredAutoRead?: boolean;
   inheritedSystemCore?: string;
   systemPrompt?: string;
   thinkingLevel?: string;
@@ -465,6 +466,7 @@ export function startBackgroundJob(input: {
       mode: "bg",
       task: input.task,
       anchoredEditing: input.anchoredEditing,
+      anchoredAutoRead: input.anchoredAutoRead,
       parentSessionId: input.parentSessionId,
       contextMessages: input.contextMessages,
       cwd: input.cwd,
@@ -487,6 +489,7 @@ export function startBackgroundResumeJob(input: {
   ctx: any;
   task: string;
   anchoredEditing?: boolean;
+  anchoredAutoRead?: boolean;
   parentSessionId: string;
 }): void {
   startBackgroundLifecycle({
@@ -499,6 +502,7 @@ export function startBackgroundResumeJob(input: {
       id: input.job.id,
       task: input.task,
       anchoredEditing: input.anchoredEditing,
+      anchoredAutoRead: input.anchoredAutoRead,
       parentSessionId: input.parentSessionId,
       signal: input.job.abortController.signal,
       onUpdate,

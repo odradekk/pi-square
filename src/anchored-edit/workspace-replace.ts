@@ -135,8 +135,8 @@ async function lockTimeoutRefusal(
  *   The parent registration passes false so replace preserves Pi 0.84.2's
  *   native path authority (absolute, ~, cwd-relative including ../, and
  *   symlinked targets) under the same validation, mutation queue, and the
- *   initiating workspace's canonical-target lock key (#185). Child surfaces
- *   keep the default workspace containment until their own slice. External
+ *   initiating workspace's canonical-target lock key (#185); the writable-child
+ *   compositions pass false too (#186). External
  *   targets keep the initiating workspace's store and lock area: two
  *   different workspaces intentionally do not share external-target state or
  *   locks (accepted last-write-wins, matching Pi's native cross-workspace
