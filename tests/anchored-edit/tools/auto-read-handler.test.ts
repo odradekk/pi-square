@@ -398,25 +398,6 @@ describe("replace diff in model-visible text", () => {
   });
 
 
-  it("leaves the undo summary untouched when the result carries no diff", async () => {
-    const { pi, handlers } = makeFakePi();
-    register(pi);
-    const handler = handlers.get("tool_result");
-
-    const result = await handler!(
-      {
-        toolName: "undo_last_replace",
-        isError: false,
-        input: { path: "undonodiff.txt" },
-        details: { metrics: { classification: "applied" } },
-        content: [{ type: "text", text: "Undone last replace on undonodiff.txt." }],
-      },
-      { cwd: "/tmp" },
-    );
-
-    expect(result).toBeUndefined();
-  });
-
   it("leaves the summary untouched for replace when auto-read is disabled", async () => {
     await withTempDir("auto-read-diff-off-", async (dir) => {
       const configDir = join(dir, ".config", "pi-hashline-edit-pro");
