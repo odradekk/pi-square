@@ -103,7 +103,6 @@ function render(manager, width = 100) {
       definitions: registry.definitions,
       invalid: [],
       diagnostics: [],
-      projectTrusted: true,
       config: {
         enabled: true,
         defaults: {
@@ -146,7 +145,6 @@ function render(manager, width = 100) {
         errors: ["broken.md: unknown field 'color'"],
       }],
       diagnostics: registry.diagnostics,
-      projectTrusted: true,
     },
     tui,
     makeTheme(),
@@ -173,7 +171,6 @@ function render(manager, width = 100) {
       definitions: discoverShadowDefinitions(fixtureProject).definitions,
       invalid: [],
       diagnostics: [],
-      projectTrusted: true,
     },
     tui,
     makeTheme(),
@@ -280,7 +277,7 @@ function render(manager, width = 100) {
   let approveResult = true;
   let previewErrors = [];
   const services = {
-    refresh: () => ({ definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+    refresh: () => ({ definitions, invalid: [], diagnostics: [] }),
     scopeOf: (filePath) => (filePath.includes("agent") ? "agent" : "project"),
     overlaySnapshot: async (scope, id) => ({
       filePath: `/scope/${scope}/${id}.md`,
@@ -444,7 +441,7 @@ function render(manager, width = 100) {
     join(packageRoot, "src", "shadow-minds", "overlays.ts"),
   );
   const services = {
-    refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+    refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
     scopeOf: () => "project",
     overlaySnapshot: async () => ({ filePath: "/scope/project/new-role.md", fingerprint: missing }),
     preview: (scope, fields) => ({
@@ -464,7 +461,7 @@ function render(manager, width = 100) {
     deleteOverlay: async () => ({ ok: true, message: "deleted" }),
   };
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -519,7 +516,7 @@ function render(manager, width = 100) {
   const longBody = `${"x".repeat(5000)}TAIL-SENTINEL`;
   let saves = 0;
   const longServices = {
-    refresh: () => ({ definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true }),
+    refresh: () => ({ definitions: [grounding], invalid: [], diagnostics: [] }),
     scopeOf: () => "project",
     overlaySnapshot: async (_scope, id) => ({
       filePath: `/scope/project/${id}.md`,
@@ -540,7 +537,7 @@ function render(manager, width = 100) {
     deleteOverlay: async () => ({ ok: true, message: "deleted" }),
   };
   const manager = new ShadowManager(
-    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: [grounding], invalid: [], diagnostics: [] },
     { requestRender() {}, terminal: { rows: 20, columns: 80 } },
     makeTheme(),
     makeKeybindings(),
@@ -558,7 +555,7 @@ function render(manager, width = 100) {
 
   // The outputSchema field offers a custom bounded JSON editor.
   const schemaManager = new ShadowManager(
-    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: [grounding], invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {}, longServices,
   );
   schemaManager.handleInput("\r"); // actions
@@ -598,7 +595,7 @@ function render(manager, width = 100) {
     previewDelete: (_scope, _id, _path, expected) => ({ definition: grounding, errors: [], contextFingerprint: expected }),
   };
   const deleteManager = new ShadowManager(
-    { definitions: [layered], invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: [layered], invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {}, deleteServices,
   );
   deleteManager.handleInput("\r");
@@ -673,12 +670,12 @@ function makeRuntimeService(initial) {
 
   const service = makeRuntimeService({ runs: [], results: [] });
   const withRun = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   let index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) withRun.handleInput("down");
@@ -688,12 +685,12 @@ function makeRuntimeService(initial) {
   assert.ok(noToolLines.some((line) => line.includes("none — submit_shadow_result only")), "the no-tool label names the single tool");
 
   const withoutRun = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   index = registry.definitions.findIndex((definition) => definition.id === "project-grounding");
   for (let step = 0; step < index; step += 1) withoutRun.handleInput("down");
@@ -711,12 +708,12 @@ function makeRuntimeService(initial) {
   const service = makeRuntimeService({ runs: [], results: [] });
   const done = [];
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults, thinking: "medium" } } },
+    { definitions: registry.definitions, invalid: [], diagnostics: [], config: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults, thinking: "medium" } } },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => done.push(1),
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) manager.handleInput("down");
@@ -748,12 +745,12 @@ function makeRuntimeService(initial) {
   const registry = discoverShadowDefinitions(fixtureProject);
   const service = makeRuntimeService({ runs: [], results: [] });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: false, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
+    { definitions: registry.definitions, invalid: [], diagnostics: [], config: { enabled: false, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) manager.handleInput("down");
@@ -795,12 +792,12 @@ function makeRuntimeService(initial) {
     evictionEvents: [{ kind: "evicted", id: "shr-old", at: 1_500, reason: "count" }],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
 
   manager.handleInput("r");
@@ -873,9 +870,9 @@ function makeRuntimeService(initial) {
     evictionEvents: [{ kind: "evicted", id: "shr-old", at: 1_500, reason: "bytes" }],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   manager.handleInput("r");
   manager.handleInput("down");
@@ -904,10 +901,10 @@ function makeRuntimeService(initial) {
     results: [],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       scheduler: {
         snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
@@ -940,10 +937,10 @@ function makeRuntimeService(initial) {
     lastObservedAt: 1_200,
   }];
   const queuedManager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       scheduler: {
         snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
@@ -960,10 +957,10 @@ function makeRuntimeService(initial) {
 
   // Facts view: the automatic source, task, and merged reasons render fully.
   const factsManager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
     },
   );
@@ -1006,10 +1003,10 @@ function makeRuntimeService(initial) {
   };
   const service = makeRuntimeService({ runs: [failedRun], results: [notifiedResult, deliveredResult] });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       delivery: deliveryService,
     },
@@ -1083,12 +1080,12 @@ function makeRuntimeService(initial) {
     results: [],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   manager.handleInput("r");
   // RUNS / INBOX -> Runs -> Diagnostics is the third entry.

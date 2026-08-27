@@ -942,7 +942,6 @@ export class ShadowManager implements Component, Focusable {
     this.openChoice({
       eyebrow: "OVERLAYS / ACTIONS",
       title: `${selected.id} · ${selected.name}`,
-      description: undefined,
       items: [
         {
           id: "run-manually",

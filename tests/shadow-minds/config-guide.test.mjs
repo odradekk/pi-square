@@ -227,7 +227,6 @@ function fakePi() {
   mkdirSync(join(dir, "agent"), { recursive: true });
   installShadowFixtures(join(dir, "agent"));
   mkdirSync(project, { recursive: true });
-  installShadowFixtures(join(dir, "agent"));
   const previousAgentDir = process.env.PI_AGENT_DIR;
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_AGENT_DIR = join(dir, "agent");

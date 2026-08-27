@@ -2,7 +2,7 @@
  * Safe Shadow definition overlay writer (odradekk/pi-square#149, slice #154).
  *
  * Every persistent change to an agent or project overlay goes through
- * this module: canonical scope resolution, project-trust enforcement, symlink
+ * this module: canonical scope resolution, symlink
  * and file-identity checks, an advisory lock with stale reclaim, fingerprint
  * CAS against the reviewed content, complete effective-candidate validation
  * through the same merge used for discovery, permission preservation, and an
