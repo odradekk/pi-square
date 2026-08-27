@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { dirname } from "path";
+import { basename, dirname, join } from "path";
 import { readFile, rename, mkdir, stat } from "fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { hashStorePath, legacyHashStorePath } from "./paths";
@@ -7,6 +7,7 @@ import { errCode, isRec, splitLines } from "./utils";
 import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT } from "./constants";
+import { acquireFileLock } from "./file-lock";
 type SqlParams = (string | number)[];
 
 interface Prepared {
@@ -126,7 +127,11 @@ function withBusyRetry<T>(fn: () => T): T {
   throw lastError;
 }
 
-function openDbWithBusyRetry(storePath: string, owner: string | undefined): { db: DatabaseSync; stmts: Prepared; legacy: boolean } {
+type OpenedDb =
+  | { db: DatabaseSync; legacy: true }
+  | { db: DatabaseSync; stmts: Prepared; legacy: false };
+
+function openDbWithBusyRetry(storePath: string, owner: string | undefined): OpenedDb {
   return withBusyRetry(() => openDb(storePath, owner));
 }
 
@@ -225,11 +230,30 @@ class HashStoreHandleImpl implements HashStoreHandle {
     });
   }
 }
-function openDb(storePath: string, owner: string | undefined): { db: DatabaseSync; stmts: Prepared; legacy: boolean } {
+function inspectLegacyStore(db: DatabaseSync): boolean {
+  const tables = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+  ).all() as Array<{ name?: unknown }>;
+  if (tables.length === 0) return false;
+  if (tables.some((row) => row.name === "undo")) return true;
+  if (!tables.some((row) => row.name === "meta")) return true;
+  try {
+    const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
+    return versionRow?.value !== String(HASH_STORE_VERSION);
+  } catch {
+    return true;
+  }
+}
+
+function openDb(storePath: string, owner: string | undefined): OpenedDb {
   const db = new DatabaseSync(storePath, {
     timeout: HASH_STORE_BUSY_TIMEOUT,
   });
   try {
+    // Inspect before any PRAGMA that can create sidecars, DDL, or version write:
+    // an older non-empty database is quarantined in its original schema rather
+    // than being partially migrated before it is renamed aside.
+    if (inspectLegacyStore(db)) return { db, legacy: true };
     return buildStore(db, owner);
   } catch (error) {
     try {
@@ -242,7 +266,7 @@ function openDb(storePath: string, owner: string | undefined): { db: DatabaseSyn
 function buildStore(
   db: DatabaseSync,
   owner: string | undefined,
-): { db: DatabaseSync; stmts: Prepared; legacy: boolean } {
+): { db: DatabaseSync; stmts: Prepared; legacy: false } {
   const scoped = owner !== undefined;
   const ownerColumn = scoped ? "owner TEXT NOT NULL, " : "";
   const pathColumn = scoped ? "path TEXT NOT NULL, " : "path TEXT PRIMARY KEY, ";
@@ -279,16 +303,9 @@ function buildStore(
       primaryKey +
     ")"
   );
-  // #187 undo-free schema: an older store is detected before it is touched
-  // further, so the caller can quarantine the whole database and its sidecars
-  // and rebuild fresh instead of migrating rows in place. Older means either a
-  // stored schema version that is not the current one or any store that still
-  // carries the removed undo table (including pre-versioning databases).
-  const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
-  const undoTablePresent = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'undo'",
-  ).get() !== undefined;
-  const legacy = undoTablePresent || (versionRow !== undefined && versionRow.value !== String(HASH_STORE_VERSION));
+  // A current database reaches this point; an empty database receives the
+  // undo-free schema and its first version row. Older non-empty databases were
+  // detected before DDL and are quarantined untouched.
   db.prepare(
     "INSERT INTO meta (key, value) VALUES ('version', ?) " +
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -341,7 +358,7 @@ function buildStore(
         }
       : {}),
   };
-  return { db, stmts, legacy };
+  return { db, stmts, legacy: false };
 }
 
 function isHealthy(db: DatabaseSync): boolean {
@@ -356,15 +373,25 @@ function isHealthy(db: DatabaseSync): boolean {
 
 async function quarantineStore(storePath: string, label: "corrupt" | "old-schema"): Promise<void> {
   const suffix = `.${label}-${Date.now()}`;
-  for (const candidate of [storePath, `${storePath}-wal`, `${storePath}-shm`]) {
+  try {
+    await rename(storePath, `${storePath}${suffix}`);
+  } catch (error) {
+    if (errCode(error) === "ENOENT") return;
+    throw new Error(`Failed to quarantine ${label} hash store ${storePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (const candidate of [`${storePath}-wal`, `${storePath}-shm`]) {
     try {
       await rename(candidate, `${candidate}${suffix}`);
     } catch (error) {
       if (errCode(error) !== "ENOENT") {
-        console.error("Failed to quarantine corrupt hash store file:", error);
+        console.error(`Failed to quarantine ${label} hash store sidecar:`, error);
       }
     }
   }
+}
+
+function schemaLockPath(storePath: string): string {
+  return join(dirname(storePath), "locks", `store-${basename(storePath)}.schema.lock`);
 }
 
 function shutdownDb(db: DatabaseSync): void {
@@ -375,13 +402,13 @@ function shutdownDb(db: DatabaseSync): void {
   db.close();
 }
 
-async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
+async function openStoreUnlocked(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
   const owner = options.owner;
   await initHasher();
   await mkdir(dirname(storePath), { recursive: true });
 
   let existed = existsSync(storePath);
-  let opened: { db: DatabaseSync; stmts: Prepared; legacy: boolean };
+  let opened: OpenedDb;
   try {
     opened = openDbWithBusyRetry(storePath, owner);
   } catch (error) {
@@ -402,12 +429,14 @@ async function openStore(storePath: string, options: HashStoreLoadOptions): Prom
     existed = false;
     opened = openDbWithBusyRetry(storePath, owner);
   }
+  if (opened.legacy) throw new Error(`Fresh anchor store ${storePath} reopened as an old schema`);
   if (!isHealthy(opened.db)) {
     shutdownDb(opened.db);
     await quarantineStore(storePath, "corrupt");
     existed = false;
     opened = openDbWithBusyRetry(storePath, owner);
   }
+  if (opened.legacy) throw new Error(`Rebuilt anchor store ${storePath} reopened as an old schema`);
   const { db, stmts } = opened;
 
   if (!existed && options.migrateLegacy !== false) {
@@ -432,6 +461,23 @@ async function openStore(storePath: string, options: HashStoreLoadOptions): Prom
 
   registerExitHandler();
   return entry;
+}
+
+async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
+  // Schema detection, whole-database quarantine, and fresh rebuild mutate one
+  // path across every owner partition. Serialize that lifecycle across owners
+  // and Pi processes so two concurrent first opens cannot quarantine each
+  // other's newly rebuilt database and leave handles attached to different
+  // inodes. Cached opens bypass this path and pay no lock cost.
+  const lock = await acquireFileLock(schemaLockPath(storePath), {
+    waitMs: Math.max(HASH_STORE_BUSY_TIMEOUT * 5, 5000),
+  });
+  if (!lock) throw new Error(`[E_FILE_LOCKED] Timed out waiting to open anchor store ${storePath}. Retry the operation.`);
+  try {
+    return await openStoreUnlocked(storePath, options);
+  } finally {
+    await lock.release();
+  }
 }
 
 function registerExitHandler(): void {

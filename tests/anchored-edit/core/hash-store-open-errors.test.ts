@@ -9,7 +9,6 @@ const state = vi.hoisted(() => ({
   persistentBusy: false,
   runCalls: 0,
   rename: vi.fn(async () => undefined),
-  mkdir: vi.fn(async () => undefined),
   readFile: vi.fn(async () => {
     const err = new Error("no such file") as NodeJS.ErrnoException;
     err.code = "ENOENT";
@@ -62,8 +61,10 @@ vi.mock("fs/promises", async (importOriginal) => {
   return {
     ...actual,
     rename: state.rename,
-    mkdir: state.mkdir,
-    readFile: state.readFile,
+    readFile: async (path: Parameters<typeof actual.readFile>[0], ...args: any[]) =>
+      String(path).endsWith(".schema.lock")
+        ? (actual.readFile as any)(path, ...args)
+        : state.readFile(),
   };
 });
 

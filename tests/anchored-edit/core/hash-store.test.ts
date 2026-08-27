@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   loadHashStore,
+  loadHashStoreAt,
   shutdownHashStore,
   getSnapshot,
   upsertSnapshot,
@@ -538,6 +539,8 @@ describe("hash-store — schema versioning", () => {
       const quarantined = entries.filter((name) => name.includes(".old-schema-"));
       expect(quarantined.length).toBe(1);
       const old = new DatabaseSync(join(configHome(home), quarantined[0]), { defensive: false } as any);
+      const oldVersion = old.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
+      expect(oldVersion?.value).toBe("5");
       const oldRows = old.prepare("SELECT COUNT(*) AS n FROM snapshots").get() as { n: number };
       old.close();
       expect(oldRows.n).toBe(1);
@@ -587,6 +590,45 @@ describe("hash-store — schema versioning", () => {
       await put(reloaded, "/q.ts", "y\n", ["QRS"]);
       expect(getSnapshot(reloaded, "/q.ts", "y\n")).toEqual(["QRS"]);
       expect(getSnapshot(reloaded, "/p.ts", "x\n")).toBeUndefined();
+    });
+  });
+
+  it("serializes concurrent first opens across owner partitions (#187)", async () => {
+    await withTempHome(async (home) => {
+      const path = sqlitePath(home);
+      const initial = await loadHashStoreAt(path, { owner: "parent", migrateLegacy: false });
+      await put(initial, "/p.ts", "x\n", ["XYZ"]);
+      initial.release();
+      shutdownHashStore();
+
+      const legacy = new DatabaseSync(path, { defensive: false } as any);
+      legacy.exec(
+        "CREATE TABLE undo (owner TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL, " +
+        "PRIMARY KEY(owner, path))",
+      );
+      legacy.prepare("UPDATE meta SET value = '5' WHERE key = 'version'").run();
+      legacy.close();
+
+      const [parent, child] = await Promise.all([
+        loadHashStoreAt(path, { owner: "parent", migrateLegacy: false }),
+        loadHashStoreAt(path, { owner: "subagent_00000000-0000-4000-8000-000000000001", migrateLegacy: false }),
+      ]);
+      try {
+        upsertSnapshot(parent, "/parent.ts", contentChecksum("p\n"), 1, ["PAR"]);
+        upsertSnapshot(child, "/child.ts", contentChecksum("c\n"), 1, ["CHD"]);
+        expect(getSnapshot(parent, "/parent.ts", "p\n")).toEqual(["PAR"]);
+        expect(getSnapshot(child, "/child.ts", "c\n")).toEqual(["CHD"]);
+      } finally {
+        parent.release();
+        child.release();
+      }
+
+      const entries = await readdir(configHome(home));
+      expect(entries.filter((name) => name.includes(".old-schema-")).length).toBe(1);
+      const fresh = new DatabaseSync(path, { defensive: false } as any);
+      expect(fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'undo'").get()).toBeUndefined();
+      expect(fresh.prepare("SELECT COUNT(*) AS n FROM snapshots").get()).toEqual({ n: 2 });
+      fresh.close();
     });
   });
 
