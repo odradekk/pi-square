@@ -439,7 +439,7 @@ export class OperationalDisplayComponent implements Component {
     }
 
     if (collapsed && !hidden && MUTATION_FAMILY_TOOLS.has(description.tool)) {
-      // C4 revision: the mutation family (edit, replace, revert, write) is
+      // C4 revision: the mutation family (edit, replace, write) is
       // the only exception to the one-row collapsed entry. It keeps a
       // bounded diff/preview body below the row in every state — including
       // the running call, where write shows its projected preview and edit
@@ -550,7 +550,7 @@ export class OperationalDisplayComponent implements Component {
 
   /**
    * C4/C6 mutation-family collapsed body: the only exception to the
-   * one-row collapsed entry. edit, replace, revert, and write keep a
+   * one-row collapsed entry. edit, replace, and write keep a
    * bounded diff/preview body below the row so file mutations stay
    * reviewable without expanding. The outcome summary already sits inline
    * in the row, so this body never appends a summary row. A failed

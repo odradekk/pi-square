@@ -82,13 +82,6 @@ describe("prompt guidelines", () => {
     expect(content).toContain("call again after any edit");
     expect(content).not.toContain("{{AUTO_READ_NOTE}}");
   });
-  it("undo-last-replace-guidelines.md loads without template variables", () => {
-    const content = readFileSync(
-      new URL("../../../src/anchored-edit/prompts/undo-last-replace-guidelines.md", import.meta.url),
-      "utf-8",
-    );
-    expect(content).not.toContain("{{");
-  });
 });
 
 describe("read tool guidelines", () => {

@@ -9,11 +9,8 @@ import {
   shutdownHashStore,
   getSnapshot,
   upsertSnapshot,
-  upsertUndo,
-  getUndoEntry,
   isValidHashList,
   SNAPSHOT_CACHE_LIMIT,
-  deleteUndo,
   pruneMissing,
   type HashStore,
 } from "../../../src/anchored-edit/hash-store";
@@ -25,117 +22,6 @@ import { getWritableTempRoot } from "../support/fixtures";
 let tmpHome: string;
 beforeAll(async () => {
   await initHasher();
-});
-
-describe("hash-store — undo entries", () => {
-  it("round-trips an undo entry", async () => {
-    await withTempHome(async () => {
-      const store = await loadHashStore();
-      upsertUndo(store, "/a.ts", {
-        content: "old",
-        bom: "\uFEFF",
-        ending: "\r\n",
-        hashes: ["abc", "def"],
-        resultContent: "new",
-      });
-      const entry = getUndoEntry(store, "/a.ts");
-      expect(entry).toEqual({
-        content: "old",
-        bom: "\uFEFF",
-        ending: "\r\n",
-        hashes: ["abc", "def"],
-        resultContent: "new",
-      });
-    });
-  });
-
-  it("returns undefined for a path with no undo entry", async () => {
-    await withTempHome(async () => {
-      const store = await loadHashStore();
-      expect(getUndoEntry(store, "/missing.ts")).toBeUndefined();
-    });
-  });
-
-  it("overwrites the previous entry for the same path", async () => {
-    await withTempHome(async () => {
-      const store = await loadHashStore();
-      upsertUndo(store, "/a.ts", {
-        content: "first",
-        bom: "",
-        ending: "\n",
-        hashes: ["aB3"],
-        resultContent: "first!",
-      });
-      upsertUndo(store, "/a.ts", {
-        content: "second",
-        bom: "",
-        ending: "\r",
-        hashes: ["bC4"],
-        resultContent: "second!",
-      });
-      const entry = getUndoEntry(store, "/a.ts");
-      expect(entry!.content).toBe("second");
-      expect(entry!.ending).toBe("\r");
-      expect(entry!.hashes).toEqual(["bC4"]);
-    });
-  });
-
-  it("deletes an undo entry", async () => {
-    await withTempHome(async () => {
-      const store = await loadHashStore();
-      upsertUndo(store, "/a.ts", {
-        content: "old",
-        bom: "",
-        ending: "\n",
-        hashes: ["xY7"],
-        resultContent: "new",
-      });
-      deleteUndo(store, "/a.ts");
-      expect(getUndoEntry(store, "/a.ts")).toBeUndefined();
-    });
-  });
-
-  it("treats a row with unparseable hashes as a miss", async () => {
-    await withTempHome(async (home) => {
-      const store = await loadHashStore();
-      upsertUndo(store, "/a.ts", {
-        content: "old",
-        bom: "",
-        ending: "\n",
-        hashes: ["xY7"],
-        resultContent: "new",
-      });
-      const db = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      db.prepare("UPDATE undo SET hashes = ? WHERE path = ?").run("{not json", "/a.ts");
-      db.close();
-      expect(getUndoEntry(store, "/a.ts")).toBeUndefined();
-      const check = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      const remaining = check.prepare("SELECT COUNT(*) AS n FROM undo WHERE path = ?").get("/a.ts") as { n: number };
-      check.close();
-      expect(remaining.n).toBe(0);
-    });
-  });
-
-  it("treats a row with malformed hash strings as a miss", async () => {
-    await withTempHome(async (home) => {
-      const store = await loadHashStore();
-      upsertUndo(store, "/a.ts", {
-        content: "old",
-        bom: "",
-        ending: "\n",
-        hashes: ["xY7"],
-        resultContent: "new",
-      });
-      const db = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      db.prepare("UPDATE undo SET hashes = ? WHERE path = ?").run('["ZZ", "ZZZZ"]', "/a.ts");
-      db.close();
-      expect(getUndoEntry(store, "/a.ts")).toBeUndefined();
-      const check = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      const remaining = check.prepare("SELECT COUNT(*) AS n FROM undo WHERE path = ?").get("/a.ts") as { n: number };
-      check.close();
-      expect(remaining.n).toBe(0);
-    });
-  });
 });
 
 async function withTempHome(run: (home: string) => Promise<void>): Promise<void> {
@@ -426,39 +312,6 @@ describe("hash-store — pruneMissing", () => {
     });
   });
 
-  it("removes undo entries for files that no longer exist", async () => {
-    await withTempHome(async () => {
-      const store = await loadHashStore();
-      upsertUndo(store, "/gone.ts", {
-        content: "old",
-        bom: "",
-        ending: "\n",
-        hashes: ["ZZZ"],
-        resultContent: "new",
-      });
-      await pruneMissing(store);
-      expect(getUndoEntry(store, "/gone.ts")).toBeUndefined();
-    });
-  });
-
-  it("keeps undo entries for files that still exist", async () => {
-    await withTempHome(async (home) => {
-      const existing = join(home, "keep.ts");
-      await writeFile(existing, "keep\n", "utf-8");
-
-      const store = await loadHashStore();
-      upsertUndo(store, existing, {
-        content: "old",
-        bom: "",
-        ending: "\n",
-        hashes: ["KEP"],
-        resultContent: "new",
-      });
-      await pruneMissing(store);
-      expect(getUndoEntry(store, existing)).toBeDefined();
-    });
-  });
-
   it("keeps snapshots for files that still exist", async () => {
     await withTempHome(async (home) => {
       const existing = join(home, "keep.ts");
@@ -652,51 +505,105 @@ describe("hash-store — schema versioning", () => {
     });
   });
 
-  it("invalidates all snapshots when the stored version differs", async () => {
+  it("quarantines an older-schema store and rebuilds it fresh (#187)", async () => {
     await withTempHome(async (home) => {
+      // Simulate a v5 store: current-era tables plus an undo table and rows.
       const store = await loadHashStore();
       await put(store, "/p.ts", "x\n", ["XYZ"]);
-      upsertUndo(store, "/u.ts", {
-        content: "old",
-        bom: "",
-        ending: "\n",
-        hashes: ["UVW"],
-        resultContent: "new",
-      });
       shutdownHashStore();
 
-      const db = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      db.prepare("UPDATE meta SET value = '999' WHERE key = 'version'").run();
-      db.close();
+      const legacy = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
+      legacy.exec(
+        "CREATE TABLE undo (path TEXT PRIMARY KEY, content TEXT NOT NULL, bom TEXT NOT NULL, " +
+        "ending TEXT NOT NULL, hashes TEXT NOT NULL, result_content TEXT NOT NULL, updated_at INTEGER NOT NULL)",
+      );
+      legacy.prepare("UPDATE meta SET value = '5' WHERE key = 'version'").run();
+      legacy.close();
 
       const reloaded = await loadHashStore();
+      // Cached snapshot and served state loss is explicit: nothing survives.
       expect(getSnapshot(reloaded, "/p.ts", "x\n")).toBeUndefined();
-      expect(getUndoEntry(reloaded, "/u.ts")).toBeUndefined();
 
-      const check = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      const row = check.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
-      check.close();
-      expect(row?.value).toBe(String(HASH_STORE_VERSION));
+      const fresh = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
+      const versionRow = fresh.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
+      const undoTable = fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'undo'").get();
+      const snapshotRows = fresh.prepare("SELECT COUNT(*) AS n FROM snapshots").get() as { n: number };
+      fresh.close();
+      expect(versionRow?.value).toBe(String(HASH_STORE_VERSION));
+      expect(undoTable).toBeUndefined();
+      expect(snapshotRows.n).toBe(0);
+
+      // The old database was quarantined exactly once, with its old rows.
+      const entries = await readdir(configHome(home));
+      const quarantined = entries.filter((name) => name.includes(".old-schema-"));
+      expect(quarantined.length).toBe(1);
+      const old = new DatabaseSync(join(configHome(home), quarantined[0]), { defensive: false } as any);
+      const oldRows = old.prepare("SELECT COUNT(*) AS n FROM snapshots").get() as { n: number };
+      old.close();
+      expect(oldRows.n).toBe(1);
     });
   });
 
-  it("keeps snapshots from a pre-versioning database and writes the version", async () => {
+  it("quarantines an undo-bearing pre-versioning database (#187)", async () => {
     await withTempHome(async (home) => {
       const store = await loadHashStore();
       await put(store, "/p.ts", "x\n", ["XYZ"]);
       shutdownHashStore();
 
-      const db = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      db.exec("DROP TABLE meta");
-      db.close();
+      const legacy = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
+      legacy.exec("DROP TABLE meta");
+      // An old (pre-versioning) store still carried the undo table.
+      legacy.exec("CREATE TABLE undo (path TEXT PRIMARY KEY, content TEXT NOT NULL)");
+      legacy.close();
 
       const reloaded = await loadHashStore();
-      expect(getSnapshot(reloaded, "/p.ts", "x\n")).toEqual(["XYZ"]);
+      expect(getSnapshot(reloaded, "/p.ts", "x\n")).toBeUndefined();
 
-      const check = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-      const row = check.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
-      check.close();
-      expect(row?.value).toBe(String(HASH_STORE_VERSION));
+      const entries = await readdir(configHome(home));
+      expect(entries.some((name) => name.includes(".old-schema-"))).toBe(true);
+    });
+  });
+
+  it("quarantines once and reopens fresh beside crash residue (#187)", async () => {
+    await withTempHome(async (home) => {
+      const store = await loadHashStore();
+      await put(store, "/p.ts", "x\n", ["XYZ"]);
+      shutdownHashStore();
+
+      const legacy = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
+      legacy.prepare("UPDATE meta SET value = '4' WHERE key = 'version'").run();
+      legacy.close();
+      // Simulated crash residue: stale sidecar files beside the database. The
+      // quarantine loop moves the sidecars best-effort; SQLite WAL recovery on
+      // open may already have discarded them, which the loop tolerates.
+      await writeFile(`${sqlitePath(home)}-wal`, "stale-wal", "utf-8");
+      await writeFile(`${sqlitePath(home)}-shm`, "stale-shm", "utf-8");
+
+      const reloaded = await loadHashStore();
+      const entries = await readdir(configHome(home));
+      const db = sqlitePath(home).split(/[\\/]/).pop()!;
+      expect(entries.filter((name) => name.startsWith(`${db}.old-schema-`)).length).toBe(1);
+      // Whatever happened to the sidecars, the fresh store is usable.
+      await put(reloaded, "/q.ts", "y\n", ["QRS"]);
+      expect(getSnapshot(reloaded, "/q.ts", "y\n")).toEqual(["QRS"]);
+      expect(getSnapshot(reloaded, "/p.ts", "x\n")).toBeUndefined();
+    });
+  });
+
+  it("a fresh store produces no migration residue (#187)", async () => {
+    await withTempHome(async (home) => {
+      const store = await loadHashStore();
+      await put(store, "/p.ts", "x\n", ["XYZ"]);
+      expect(getSnapshot(store, "/p.ts", "x\n")).toEqual(["XYZ"]);
+      shutdownHashStore();
+
+      const entries = await readdir(configHome(home));
+      expect(entries.some((name) => name.includes(".old-schema-"))).toBe(false);
+      expect(entries.some((name) => name.includes(".corrupt-"))).toBe(false);
+      const fresh = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
+      const undoTable = fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'undo'").get();
+      fresh.close();
+      expect(undoTable).toBeUndefined();
     });
   });
 });

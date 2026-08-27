@@ -69,7 +69,7 @@ for (const family of DISPLAY_FAMILIES) {
 
 const expectedTools = [
   // Pi built-in
-  "read", "ls", "edit", "replace", "revert", "write", "find", "grep",
+  "read", "ls", "edit", "replace", "write", "find", "grep",
   // Platform shell
   "bash", "pwsh",
   // pi-square search
@@ -94,16 +94,15 @@ const parentOnly = allNames.filter((n) => {
   const e = getCatalogEntry(n);
   return e.parent && !e.child;
 });
-// parse, replace, revert, ssh, todo, ask, delegate, resume are parent-only
+// parse, replace, ssh, todo, ask, delegate, resume are parent-only
 assert.ok(parentOnly.includes("replace"), "replace must be parent-only");
-assert.ok(parentOnly.includes("revert"), "revert must be parent-only");
 assert.ok(parentOnly.includes("parse"), "parse must be parent-only");
 assert.ok(parentOnly.includes("ssh"), "ssh must be parent-only");
 assert.ok(parentOnly.includes("todo"), "todo must be parent-only");
 assert.ok(parentOnly.includes("ask"), "ask must be parent-only");
 assert.ok(parentOnly.includes("delegate"), "delegate must be parent-only");
 assert.ok(parentOnly.includes("resume"), "resume must be parent-only");
-assert.equal(parentOnly.length, 8, `expected 8 parent-only tools, got ${parentOnly.length}`);
+assert.equal(parentOnly.length, 7, `expected 7 parent-only tools, got ${parentOnly.length}`);
 
 // ── Platform shell ownership ─────────────────────────────────────────
 

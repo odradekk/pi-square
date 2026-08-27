@@ -286,27 +286,6 @@ describe("auto-read handler", () => {
     expect(content[0].text).not.toContain("--- Auto-read");
   });
 
-  it("returns only the diff for an undo_last_replace with auto-read on (no anchors block)", async () => {
-    const { pi, handlers } = makeFakePi();
-    register(pi);
-    const handler = handlers.get("tool_result");
-    const diff = " aaa\n-   │BBB\n+XYZ│bbb\n ccc";
-    const result = await handler!(
-      {
-        toolName: "undo_last_replace",
-        isError: false,
-        input: { path: "only-undo.txt" },
-        details: { diff, metrics: { classification: "applied", changed_lines: { first: 5, last: 5 } } },
-        content: [{ type: "text", text: "Undone." }],
-      },
-      { cwd: "/tmp" },
-    );
-    expect(result).toBeDefined();
-    const content = (result as { content: Array<{ type: string; text: string }> }).content;
-    expect(content).toHaveLength(1);
-    expect(content[0].text).toBe(diff);
-    expect(content[0].text).not.toContain("--- Auto-read");
-  });
 
   it("does not auto-display lines over 50KB even though read allows 200KB lines", async () => {
     await withTempDir("auto-read-big-line-", async (dir) => {
@@ -418,36 +397,6 @@ describe("replace diff in model-visible text", () => {
     expect(result).toBeUndefined();
   });
 
-  it("shows the post-edit diff for undo_last_replace results too", async () => {
-    await withTempDir("auto-read-diff-undo-", async (dir) => {
-      await writeFile(join(dir, "undo.txt"), "aaa\nbbb\nccc\n", "utf-8");
-
-      const { pi, handlers } = makeFakePi();
-      register(pi);
-      const handler = handlers.get("tool_result");
-      const diff = " aaa\n-   │BBB\n+XYZ│bbb\n ccc";
-
-      const result = await handler!(
-        {
-          toolName: "undo_last_replace",
-          isError: false,
-          input: { path: "undo.txt" },
-          details: {
-            diff,
-            metrics: { classification: "applied", changed_lines: { first: 2, last: 2 } },
-          },
-          content: [{ type: "text", text: "Undone last replace on undo.txt.\nFile reverted to previous state. Call `read` to get fresh anchors for follow-up edits." }],
-        },
-        { cwd: dir },
-      );
-
-      const content = (result as { content: Array<{ type: string; text: string }> }).content;
-      expect(content).toHaveLength(1);
-      expect(content[0].text).toBe(diff);
-      expect(content[0].text).not.toContain("Undone last replace");
-      expect(content[0].text).not.toContain("--- Auto-read");
-    });
-  });
 
   it("leaves the undo summary untouched when the result carries no diff", async () => {
     const { pi, handlers } = makeFakePi();

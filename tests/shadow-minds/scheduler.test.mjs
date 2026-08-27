@@ -18,7 +18,7 @@ const {
 
 {
   assert.deepEqual(TRIGGER_PRIORITY, { completion: 3, failure: 2, mutation: 1, tool_turn: 0 });
-  assert.deepEqual([...MUTATION_TOOL_NAMES], ["edit", "write", "replace", "revert"]);
+  assert.deepEqual([...MUTATION_TOOL_NAMES], ["edit", "write", "replace"]);
   assert.equal(isMutationToolName("edit"), true);
   assert.equal(isMutationToolName("bash"), false, "shell is never a declarative mutation");
   assert.equal(isMutationToolName("some_mcp_write_thing"), false, "unknown tools are never guessed");

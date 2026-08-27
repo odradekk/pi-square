@@ -99,6 +99,18 @@ superseded: the record is single-level per file across all owners, owned by the
 most recent editor. ADR-0007 also covers the ownership, retention, capability
 resolution, and concurrency rules for anchored editing in child sessions.
 
+## Superseded by #187 (undo-free store)
+
+The revert half of this decision is superseded: the parent and child revert
+tools, the undo table, and every persistent undo concept were removed, and the
+anchor-store schema advanced to an undo-free version whose first open of an
+older store quarantines the database and sidecars once and rebuilds fresh
+(cached snapshots and served state are lost explicitly and recover through a
+new read). `replace` is the only range-editing path on every surface; recovery
+from an unwanted edit is a follow-up `replace` or Pi's own file history. The
+read/served/snapshot mechanics, native path authority (#185, #186), owner
+partitions, mutation queues, and locks are unchanged.
+
 ## Vocabulary note
 
 `anchor`, `served state`, and `anchor store` are durable terms not yet defined in

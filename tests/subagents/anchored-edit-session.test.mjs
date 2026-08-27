@@ -8,10 +8,8 @@ import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
-const { createChildAnchoredEditTools } = await load("../../src/anchored-edit/child-edit.ts");
+const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
-const { loadProjectHashStore } = await load("../../src/anchored-edit/workspace-support.ts");
-const { getUndoEntry } = await load("../../src/anchored-edit/hash-store.ts");
 
 const CHILD_ONE = "subagent_00000000-0000-4000-8000-000000000001";
 
@@ -39,17 +37,18 @@ function textOf(content) {
 
 try {
   // Anchored editing on + a writable child that declares edit: the anchored
-  // replace and revert are active, and Pi's built-in edit tool is absent, so
-  // the child has exactly one range-editing path (as the parent does).
+  // replace is active, and Pi's built-in edit tool is absent, so the child has
+  // exactly one range-editing path (as the parent does; #187 made replace the
+  // only such path).
   const anchored = await sessionWith(
-    ["read", "write", "replace", "revert"],
+    ["read", "write", "replace"],
     [
       createChildAnchoredReadTool(workspace, CHILD_ONE),
-      ...createChildAnchoredEditTools(workspace, CHILD_ONE),
+      createChildAnchoredReplaceTool(workspace, CHILD_ONE),
     ],
   );
   const toolNames = anchored.getAllTools().map((tool) => tool.name);
-  assert.deepEqual(toolNames, ["read", "write", "replace", "revert"], "the child has exactly one editing path and no built-in edit");
+  assert.deepEqual(toolNames, ["read", "write", "replace"], "the child has exactly one editing path and no built-in edit");
   assert.equal(anchored.getToolDefinition("edit"), undefined, "the built-in edit tool is absent while anchored editing is on");
   const anchoredReplace = anchored.getToolDefinition("replace");
   assert.ok(anchoredReplace, "the anchored replace is offered");
@@ -72,13 +71,13 @@ try {
   assert.equal(readFileSync(source, "utf8"), "alpha\nBETA2\ndelta", "the file changed as intended");
 
   // A child that also receives the anchored write override has exactly one
-  // write tool, and a successful write consumes the file's single revert
-  // record so a later revert is refused as having no history.
+  // write tool, and a successful write clears the child's own served rows so
+  // its next replace starts from fresh anchors.
   const writeAnchored = await sessionWith(
-    ["read", "write", "replace", "revert"],
+    ["read", "write", "replace"],
     [
       createChildAnchoredReadTool(workspace, CHILD_ONE),
-      ...createChildAnchoredEditTools(workspace, CHILD_ONE),
+      createChildAnchoredReplaceTool(workspace, CHILD_ONE),
       createChildAnchoredWriteTool(workspace, CHILD_ONE),
     ],
   );
@@ -97,19 +96,17 @@ try {
     { cwd: workspace },
   );
   assert.match(textOf(writeResult.content), /Successfully wrote/, "the anchored write writes the file");
-  assert.equal(
-    await getUndoEntry(await loadProjectHashStore(workspace, CHILD_ONE), source),
-    undefined,
-    "a successful child write clears the child's revert record in the session",
-  );
-  const noHistoryRevert = await writeAnchored.getToolDefinition("revert").execute(
-    "session-revert-after-write",
-    { path: "source.txt" },
+  const writeText = textOf(writeResult.content);
+  const writtenAnchor = /([A-Za-z0-9]{3})│WRITTEN/.exec(writeText)?.[1];
+  assert.ok(writtenAnchor, "the write appends fresh anchors through auto-read");
+  const followUpReplace = await writeAnchored.getToolDefinition("replace").execute(
+    "session-replace-after-write",
+    { path: "source.txt", remove_from: writtenAnchor, remove_to: writtenAnchor, replacement_text: "POSTWRITE" },
     undefined,
     undefined,
     { cwd: workspace },
   );
-  assert.match(textOf(noHistoryRevert.content), /No revert history/, "the child's write consumed the revert record");
+  assert.ok(followUpReplace.details?.status !== "warning", "the write's fresh anchors support an immediate follow-up replace");
   writeAnchored.dispose();
   anchored.dispose();
 
@@ -119,7 +116,6 @@ try {
   const plain = await sessionWith(["read", "write", "edit"], []);
   assert.deepEqual(plain.getAllTools().map((tool) => tool.name).sort(), ["edit", "read", "write"], "disabled anchored editing keeps Pi's built-in edit");
   assert.equal(plain.getToolDefinition("replace"), undefined, "no anchored replace is added when disabled");
-  assert.equal(plain.getToolDefinition("revert"), undefined, "no anchored revert is added when disabled");
   plain.dispose();
 
   console.log("child anchored edit session tests: OK");

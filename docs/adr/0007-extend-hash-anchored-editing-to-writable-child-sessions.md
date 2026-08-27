@@ -125,3 +125,13 @@ discipline.
 4. A same-process same-file write and replace contend on the lock and the
    bounded wait decides the loser, rather than a strictly ordered internal
    queue for the write path.
+
+## Superseded by #187 (undo-free store)
+
+The undo-record, revert-authority, and retention-exception sections of this ADR
+are superseded: the child and parent revert tools, the file-global undo record,
+the `[E_UNDO_OWNER]`/`[E_UNDO_STALE]`/`[E_UNDO_UNAVAILABLE]` codes, and the
+`hasUndo` retention exception were removed with the undo-free store schema. The
+writable-child capability mapping now resolves `edit` to the anchored `replace`
+alone; partition retention, the served gate, lock ordering, and native path
+authority are unchanged. Points 1 and 2 above are void; points 3 and 4 stand.

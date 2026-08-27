@@ -9,7 +9,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { createChildAnchoredReadTool } from "../anchored-edit/child-read";
-import { createChildAnchoredEditTools } from "../anchored-edit/child-edit";
+import { createChildAnchoredReplaceTool } from "../anchored-edit/child-edit";
 import { createChildAnchoredWriteTool } from "../anchored-edit/child-write";
 import { createChildTools } from "../tool-catalog";
 import {
@@ -97,20 +97,17 @@ function recordToolError(details: SubagentRunDetails, tool: string, message: str
 
 /** Codes the anchored safety mechanism emits when it refuses a call because the
  *  requested edit no longer applies safely to the current state (stale range,
- *  stale or ambiguous anchor, wrong revert owner, concurrent editor, or an undo
- *  record it could not persist). These are working refusals, not failures. */
+ *  stale or ambiguous anchor, or a concurrent editor). These are working
+ *  refusals, not failures. */
 const ANCHOR_REFUSAL_CODES = new Set([
   "E_RANGE_STALE",
   "E_STALE_ANCHOR",
   "E_AMBIGUOUS_ANCHOR",
-  "E_UNDO_STALE",
-  "E_UNDO_OWNER",
   "E_FILE_LOCKED",
-  "E_UNDO_UNAVAILABLE",
 ]);
 
 /** Anchored tools whose refusal is a working mechanism, not a failed call. */
-const ANCHORED_TOOL_NAMES = new Set(["replace", "revert", "write"]);
+const ANCHORED_TOOL_NAMES = new Set(["replace", "write"]);
 
 /** Extracts the anchored-refusal code from a child tool result, or undefined.
  *  A warning result from an anchored tool with a refusal code is a working
@@ -378,12 +375,13 @@ function appendChildAnchoredRead(
 }
 
 /**
- * Grants the child the anchored replace and revert tools when the child
- * declares the built-in edit capability and anchored editing is enabled. The
- * definitions are the parent's own, executed under the child's owner. Returns
- * true when the edit capability was replaced, so the caller removes the
- * built-in edit tool and adds replace/revert to the session allowlist; the
- * child then has exactly one range-editing path, as the parent does.
+ * Grants the child the anchored replace tool when the child declares the
+ * built-in edit capability and anchored editing is enabled. The definition is
+ * the parent's own, executed under the child's owner. Returns true when the
+ * edit capability was replaced, so the caller removes the built-in edit tool
+ * and adds replace to the session allowlist; the child then has exactly one
+ * range-editing path, as the parent does (#187 made replace the only such
+ * path by removing revert and the undo store).
  */
 function appendChildAnchoredEdit(
   customTools: { definitions: ToolDefinition[] },
@@ -391,7 +389,7 @@ function appendChildAnchoredEdit(
 ): boolean {
   if (!options.anchoredEditing) return false;
   if (!options.builtInTools.includes("edit")) return false;
-  customTools.definitions.push(...createChildAnchoredEditTools(options.cwd, options.owner));
+  customTools.definitions.push(createChildAnchoredReplaceTool(options.cwd, options.owner));
   return true;
 }
 
@@ -399,10 +397,9 @@ function appendChildAnchoredEdit(
  * Appends the child anchored write when the child declares the built-in write
  * capability and anchored editing is enabled. The custom definition carries the
  * built-in write name and overrides the child's built-in write, so the child
- * writes exactly as before; a successful write clears the file's single revert
- * record (whoever made the recorded edit) and the child's own served rows, so a
- * later revert cannot clobber the write and the child's next edit on the new
- * content is not refused by stale served rows. A failed write keeps both.
+ * writes exactly as before; a successful write clears the child's own served
+ * rows so its next edit on the new content is not refused by stale served
+ * rows. A failed write keeps them.
  */
 function appendChildAnchoredWrite(
   customTools: { definitions: ToolDefinition[] },
@@ -418,13 +415,13 @@ function appendChildAnchoredWrite(
 
 /**
  * Computes the effective built-in tool allowlist after capability resolution:
- * when the child's edit capability was replaced by the anchored replace/revert,
- * the built-in edit tool is removed and the anchored tool names are added so
- * their custom definitions stay active in the child session registry.
+ * when the child's edit capability was replaced by the anchored replace, the
+ * built-in edit tool is removed and the anchored tool name is added so its
+ * custom definition stays active in the child session registry.
  */
 function resolveChildToolAllowlist(builtInTools: string[], editReplaced: boolean): string[] {
   if (!editReplaced) return [...builtInTools];
-  return [...builtInTools.filter((name) => name !== "edit"), "replace", "revert"];
+  return [...builtInTools.filter((name) => name !== "edit"), "replace"];
 }
 
 function updateSnapshotContext(

@@ -12,7 +12,6 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const { acquireFileLock, lockFilePath } = await load("../../src/anchored-edit/file-lock.ts");
 const { resolveTarget } = await load("../../src/anchored-edit/fs-write.ts");
 const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-edit/workspace-replace.ts");
-const { createAnchoredRevertToolDefinition } = await load("../../src/anchored-edit/workspace-revert.ts");
 const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 
@@ -52,13 +51,6 @@ async function main() {
       undefined,
       { cwd: workspace },
     );
-    writeFileSync(resultPath, JSON.stringify(result));
-    return;
-  }
-
-  if (mode === "revert") {
-    const revert = createAnchoredRevertToolDefinition(workspace);
-    const result = await revert.execute("revert", { path }, undefined, undefined, { cwd: workspace });
     writeFileSync(resultPath, JSON.stringify(result));
     return;
   }

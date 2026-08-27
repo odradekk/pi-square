@@ -17,6 +17,7 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 const cwd = join(agentDir, "workspace");
 mkdirSync(cwd, { recursive: true });
 writeFileSync(join(cwd, "sample.txt"), "pi-square-smoke-needle\n", "utf8");
+writeFileSync(join(agentDir, "external-smoke.txt"), "pi-square-smoke-external\n", "utf8");
 writeFileSync(join(cwd, "AGENTS.md"), "SMOKE PROJECT INSTRUCTIONS\n", "utf8");
 writeFileSync(join(agentDir, "SYSTEM.md"), "SMOKE NATIVE SYSTEM\n", "utf8");
 writeFileSync(join(agentDir, "auth.json"), "{}\n", "utf8");
@@ -53,7 +54,7 @@ try {
 
   const expectedTools = [
     "ask", "codegraph", "delegate", "docs", "fetch", "github",
-    "libs", "parse", "pdf_search", "replace", "resume", "revert", "search",
+    "libs", "parse", "pdf_search", "replace", "resume", "search",
     "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
@@ -98,14 +99,14 @@ try {
     return tool;
   };
   assert.ok(session.agent.state.tools.some((tool) => tool.name === "replace"), "anchored replace must be active by default");
-  assert.ok(session.agent.state.tools.some((tool) => tool.name === "revert"), "anchored revert must be active by default");
+  assert.ok(!session.agent.state.tools.some((tool) => tool.name === "revert"), "anchored revert must be gone (#187 replace-only surface)");
   assert.ok(!session.agent.state.tools.some((tool) => tool.name === "edit"), "Pi edit must be inactive when anchored editing is enabled by default");
 
   const bashResult = await toolByName("bash").execute("smoke:bash", { command: "printf pi-square-bash" }, undefined, undefined);
   assert.equal(bashResult.content[0].text, "pi-square-bash");
 
   for (const toolName of [
-    "read", "grep", "find", "ls", "replace", "revert", "write", "bash",
+    "read", "grep", "find", "ls", "replace", "write", "bash",
     ...expectedTools,
   ]) {
     const definition = session.getToolDefinition(toolName);
@@ -142,25 +143,22 @@ try {
     isError: writeResult.isError ?? false,
   });
   assert.match(refreshedWrite?.content.map((entry) => entry.type === "text" ? entry.text : "").join("\n") ?? "", /Auto-read \(hashline anchors\)/);
-  const clearedRevert = await toolByName("revert").execute(
-    "smoke:cleared-revert",
-    { path: "sample.txt" },
+  // A successful write refreshes the served state through auto-read, so the
+  // write's fresh anchors support an immediate follow-up replace without
+  // another read (#187: served rows replaced the revert record as the
+  // post-edit recovery surface).
+  const writtenAnchor = /^([A-Za-z0-9]{3})│pi-square-smoke-written$/m.exec(
+    refreshedWrite?.content.map((entry) => entry.type === "text" ? entry.text : "").join("\n") ?? "",
+  )?.[1];
+  assert.ok(writtenAnchor, "the write's auto-read appendix carries a fresh anchor");
+  const writeFollowUp = await toolByName("replace").execute(
+    "smoke:write-follow-up-replace",
+    { path: "sample.txt", remove_from: writtenAnchor, remove_to: writtenAnchor, replacement_text: "pi-square-smoke-after-write" },
     undefined,
     undefined,
   );
-  assert.equal(clearedRevert.details.status, "warning", "a successful Pi write clears the replace history");
-  assert.equal(clearedRevert.details.errorCode, undefined, "cleared history is not a stale-revert refusal");
-  assert.match(clearedRevert.content[0].text, /No revert history/, "a successful Pi write consumes the replace record");
+  assert.match(writeFollowUp.content[0].text, /Successfully replaced/, "the write's fresh anchors support an immediate follow-up replace");
 
-  const postWriteRead = await toolByName("read").execute("smoke:post-write-read", { path: "sample.txt" }, undefined, undefined);
-  const postWriteAnchor = /^([A-Za-z0-9]{3})│pi-square-smoke-written$/m.exec(postWriteRead.content[0].text)?.[1];
-  assert.ok(postWriteAnchor, "the refreshed write state supports a later anchored replace");
-  await toolByName("replace").execute(
-    "smoke:failed-write-replace",
-    { path: "sample.txt", remove_from: postWriteAnchor, remove_to: postWriteAnchor, replacement_text: "pi-square-smoke-pending" },
-    undefined,
-    undefined,
-  );
   await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:failed-write", input: writeInput });
   const failedWrite = await runner.emitToolResult({
     toolName: "write",
@@ -171,13 +169,49 @@ try {
     isError: true,
   });
   assert.equal(failedWrite, undefined, "failed writes leave their original result unchanged");
-  const preservedRevert = await toolByName("revert").execute(
-    "smoke:preserved-revert",
-    { path: "sample.txt" },
+  const pendingAnchor = /\+([A-Za-z0-9]{3})│pi-square-smoke-after-write/.exec(writeFollowUp.details.diff ?? "")?.[1];
+  assert.ok(pendingAnchor, "the applied replace carries a fresh anchor for the failed-write check");
+  const preservedServed = await toolByName("replace").execute(
+    "smoke:preserved-served-replace",
+    { path: "sample.txt", remove_from: pendingAnchor, remove_to: pendingAnchor, replacement_text: "pi-square-smoke-pending" },
     undefined,
     undefined,
   );
-  assert.equal(preservedRevert.details.status, undefined, "a failed Pi write preserves the replace history");
+  assert.match(preservedServed.content[0].text, /Successfully replaced/, "a failed Pi write preserves the served state for the next replace");
+
+  // ── #187: an external read → replace → write flow through native path
+  // authority, with replace as the only range-editing path. ──
+  const externalRead = await toolByName("read").execute("smoke:external-read", { path: "../external-smoke.txt" }, undefined, undefined);
+  const externalAnchor = /^([A-Za-z0-9]{3})│pi-square-smoke-external$/m.exec(externalRead.content[0].text)?.[1];
+  assert.ok(externalAnchor, "an external read through the parent override serves anchored rows");
+  const externalReplace = await toolByName("replace").execute(
+    "smoke:external-replace",
+    { path: "../external-smoke.txt", remove_from: externalAnchor, remove_to: externalAnchor, replacement_text: "pi-square-smoke-external-edited" },
+    undefined,
+    undefined,
+  );
+  assert.match(externalReplace.content[0].text, /Successfully replaced/, "an external replace applies through the same authority");
+  const externalWriteInput = { path: "../external-smoke.txt", content: "pi-square-smoke-external-written\n" };
+  await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:external-write", input: externalWriteInput });
+  const externalWriteResult = await toolByName("write").execute(
+    "smoke:external-write",
+    externalWriteInput,
+    undefined,
+    undefined,
+  );
+  const refreshedExternalWrite = await runner.emitToolResult({
+    toolName: "write",
+    toolCallId: "smoke:external-write",
+    input: externalWriteInput,
+    content: externalWriteResult.content,
+    details: externalWriteResult.details,
+    isError: false,
+  });
+  assert.match(
+    refreshedExternalWrite?.content.map((entry) => entry.type === "text" ? entry.text : "").join("\n") ?? "",
+    /Auto-read \(hashline anchors\)/,
+    "an external write refreshes its anchors through auto-read",
+  );
 
   const todoResult = await toolByName("todo").execute("smoke:todo", {
     action: "set",
@@ -201,7 +235,6 @@ try {
   assert.ok(session.agent.state.tools.some((tool) => tool.name === "read"), "disabled anchored editing restores Pi read");
   assert.ok(session.agent.state.tools.some((tool) => tool.name === "edit"), "disabled anchored editing restores Pi edit");
   assert.ok(!session.agent.state.tools.some((tool) => tool.name === "replace"), "disabled anchored editing removes replace");
-  assert.ok(!session.agent.state.tools.some((tool) => tool.name === "revert"), "disabled anchored editing removes revert");
   const disabledRead = await toolByName("read").execute("smoke:disabled-read", { path: "sample.txt" }, undefined, undefined);
   assert.doesNotMatch(disabledRead.content[0].text, /^[A-Za-z0-9]{3}│/m, "disabled read returns Pi content without anchors");
 

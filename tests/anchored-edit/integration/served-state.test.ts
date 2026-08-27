@@ -334,39 +334,6 @@ describe("served-state range verification", () => {
     });
   });
 
-  it("re-edits with original anchors after an undo (undo diff rows are served)", async () => {
-    await withTempFile("sample.ts", "a\nb\nc\nd\n", async ({ cwd, path }) => {
-      const { ctx, readTool, editTool, getTool } = setupIntegrationTest(cwd);
-      const undo = getTool("undo_last_replace");
-      const readResult = await readTool.execute("r1", { path: "sample.ts" }, undefined, undefined, ctx);
-      const lines = getText(readResult).split("\n");
-      const bHash = extractHash(lines.find((l: string) => l.includes("│b"))!);
-
-      const edited = await editTool.execute(
-        "e1",
-        { path: "sample.ts", remove_from: bHash, remove_to: bHash, replacement_text: "B" },
-        undefined,
-        undefined,
-        ctx,
-      );
-      expect(edited.content[0].text).toContain("Successfully replaced");
-      expect(await readFile(path, "utf-8")).toBe("a\nB\nc\nd\n");
-
-      const undone = await undo.execute("u1", { path: "sample.ts" }, undefined, undefined, ctx);
-      expect(undone.content[0].text).toContain("Undone last replace");
-      expect(await readFile(path, "utf-8")).toBe("a\nb\nc\nd\n");
-
-      const retry = await editTool.execute(
-        "e2",
-        { path: "sample.ts", remove_from: bHash, remove_to: bHash, replacement_text: "B" },
-        undefined,
-        undefined,
-        ctx,
-      );
-      expect(retry.content[0].text).toContain("Successfully replaced");
-      expect(await readFile(path, "utf-8")).toBe("a\nB\nc\nd\n");
-    });
-  });
 
   it("clears served state on write and re-serves via the auto-read block", async () => {
     await withTempFile("sample.ts", "a\nb\nc\n", async ({ cwd }) => {

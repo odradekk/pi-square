@@ -165,12 +165,12 @@ test("anchored editing tools are capability-gated and cannot be requested by nam
     "replace in tools is rejected with the capability-gated error",
   );
   assert.ok(!inTools.builtInTools.includes("replace"), "replace is never resolved as a built-in tool");
-  const inExtension = resolveSubagentTools({ tools: ["read"], extensionTools: ["revert"] }, "linux");
+  const inExtension = resolveSubagentTools({ tools: ["read"], extensionTools: ["replace"] }, "linux");
   assert.ok(
-    inExtension.errors.some((error) => error.includes("revert") && error.includes("edit capability")),
-    "revert in extensionTools is rejected with the capability-gated error",
+    inExtension.errors.some((error) => error.includes("replace") && error.includes("edit capability")),
+    "replace in extensionTools is rejected with the capability-gated error",
   );
-  assert.ok(!inExtension.extensionTools.includes("revert"), "revert is never resolved as an extension tool");
+  assert.ok(!inExtension.extensionTools.includes("replace"), "replace is never resolved as an extension tool");
 });
 
 let failed = 0;

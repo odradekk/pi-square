@@ -139,7 +139,7 @@ continuations (including delivery of a Shadow result) never trigger:
 - `tool_turn` — runs at most once per reviewed activity generation (a
   generation is marked when a parent tool executes).
 - `mutation` — a successful Pi or pi-square declarative mutation tool
-  (`edit`, `write`, `replace`, `revert`) was applied.
+  (`edit`, `write`, `replace`) was applied.
 - `failure` — a classified quality command (`test`, `build`, `typecheck`,
   `smoke`, `package-check` target) ended non-zero. Arbitrary commands never
   count as failures.

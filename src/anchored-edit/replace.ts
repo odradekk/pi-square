@@ -44,7 +44,6 @@ import {
   type RRState,
 } from "./replace-render";
 import { loadP, loadGuide } from "./prompts";
-import { saveUndo } from "./replace-undo";
 import { loadHashStore, findSnapshotPaths, type HashStore } from "./hash-store";
 import { getServed, recordServedSafe, recordServedDiffSafe } from "./served";
 
@@ -546,28 +545,11 @@ export function buildToolDef(): ToolDef {
         }
 
         abortIf(signal);
-        const undo = await saveUndo(mutationTargetPath, {
-          content: originalNormalized,
-          bom,
-          originalEnding,
-          hashes: originalHashes,
-          resultContent: result,
-        });
-        if (!undo.persisted) {
-          throw new Error(
-            `[E_UNDO_UNAVAILABLE] Cannot persist undo history to the hash store; the edit was NOT applied and ${path} is unchanged. Retry the replace, or use write if the store cannot be recovered.`
-          );
-        }
-        try {
-          abortIf(signal);
-          await writeAtomic(
-            absolutePath,
-            bom + restoreEndings(result, originalEnding),
-          );
-        } catch (error) {
-          await undo.restore();
-          throw error;
-        }
+        abortIf(signal);
+        await writeAtomic(
+          absolutePath,
+          bom + restoreEndings(result, originalEnding),
+        );
         const updatedSnapshotId = await safeSnapId(absolutePath, "post-edit");
 
         const editMeta: RMeta = {

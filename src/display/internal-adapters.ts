@@ -20,7 +20,6 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
   parse: ["path", "pages", "mode", "max_tokens", "timeout"],
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
-  revert: ["path"],
   // github uses per-operation GITHUB_ARG_FIELDS below, not this flat map.
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
@@ -32,7 +31,7 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   pdf_search: ["query"],
   codegraph: ["operation"], bash: ["command"], pwsh: ["command"],
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
-  docs: ["libraryId"], parse: ["path"], replace: ["path"], revert: ["path"],
+  docs: ["libraryId"], parse: ["path"], replace: ["path"],
   ask: [], todo: ["action"],
   delegate: ["agent"], resume: ["id"],
 });
@@ -42,7 +41,7 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
   pdf_search: "PDF search",
   codegraph: "CodeGraph", bash: "Bash", pwsh: "PowerShell",
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
-  docs: "Documentation", parse: "PDF parse", replace: "Replace", revert: "Revert", github: "GitHub",
+  docs: "Documentation", parse: "PDF parse", replace: "Replace", github: "GitHub",
   ask: "Questions", todo: "Tasks",
   delegate: "Subagent", resume: "Resume subagent",
 });
@@ -51,7 +50,6 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
 const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   parse: ["path"],
   replace: ["path"],
-  revert: ["path"],
 });
 
 /** Per-operation target fields for the merged github tool. */
@@ -256,7 +254,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         rows: outcome.rows,
         durationMs,
         ...(text ? { preview: { text } } : {}),
-        ...((name === "replace" || name === "revert") && !failed && typeof details.diff === "string" && details.diff
+        ...(name === "replace" && !failed && typeof details.diff === "string" && details.diff
           ? {
               diff: {
                 path: typeof replacePath === "string" ? replacePath : undefined,

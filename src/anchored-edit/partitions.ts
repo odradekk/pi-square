@@ -34,8 +34,8 @@ function workspaceRootOf(cwd: string): string | undefined {
 
 /**
  * Deletes every anchor-store row belonging to one child owner. Called when a
- * child's history is deleted so its served and revert records are dropped with
- * its artifacts; also used by the reconciliation.
+ * child's history is deleted so its served records are dropped with its
+ * artifacts; also used by the reconciliation.
  */
 export async function dropChildPartition(cwd: string, owner: string): Promise<void> {
   if (!isChildOwner(owner)) return;
@@ -78,12 +78,10 @@ export async function pruneMissingForAllOwners(cwd: string): Promise<void> {
  * Reconciles the workspace's child partitions against the retained artifact
  * set and enforces the documented bound. A retained child (whose subagent
  * artifacts still exist) is never evicted, so a resumed child keeps the served
- * and revert records it was working from. Eviction order is least-recently
- * active: orphan partitions (children whose artifacts are gone) are dropped
- * first, then, when the bound is exceeded, the least-recently-active retained
- * partitions are evicted. Eviction never drops a partition that still holds a
- * revert record (an eligible undo entry), so a child can always restore its
- * last replace.
+ * records it was working from. Eviction order is least-recently active: orphan
+ * partitions (children whose artifacts are gone) are dropped first, then, when
+ * the bound is exceeded, the least-recently-active retained partitions are
+ * evicted.
  *
  * @returns the owners whose partitions were evicted.
  */
@@ -108,7 +106,6 @@ export async function reconcileChildPartitions(
     let retainedCount = retained.length;
     for (const partition of retained) {
       if (retainedCount <= MAX_RETAINED_CHILD_PARTITIONS) break;
-      if (partition.hasUndo) continue;
       deleteOwnerPartition(store, partition.owner);
       evicted.push(partition.owner);
       retainedCount -= 1;

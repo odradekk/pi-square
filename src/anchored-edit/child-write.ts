@@ -5,7 +5,6 @@ import { renderAutoReadAnchors } from "./auto-read.ts";
 import { resolveTarget } from "./fs-write.ts";
 import { acquireFileLock, fileLockedMessage, lockFilePath } from "./file-lock.ts";
 import { toCwd } from "./paths.ts";
-import { clearUndoRecord } from "./replace-undo.ts";
 import { clearServed } from "./served.ts";
 import { loadProjectHashStore } from "./workspace-support.ts";
 
@@ -14,12 +13,11 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
 /**
  * Builds the child write tool for a writable subagent while anchored editing is
  * on. It is Pi's public write factory, so the child writes exactly as it does
- * with the built-in tool, with one addition: a successful write clears that
- * file's single revert record (whoever made the recorded edit) and the child's
- * own served rows, so single-level revert never outlives a subsequent write by
- * the child, and a later revert cannot clobber the write. A failed write
- * leaves both intact. Only the acting child's own rows are cleared, so a
- * sibling child's served partition survives the write.
+ * with the built-in tool, with one addition: a successful write clears the
+ * child's own served rows, so its next edit on the new content is not refused
+ * by stale served rows. A failed write leaves them intact. Only the acting
+ * child's own rows are cleared, so a sibling child's served partition survives
+ * the write.
  *
  * Native path authority (#186): the write follows Pi's native path resolution
  * for every supported target — absolute paths, `~` paths, cwd-relative paths
@@ -60,8 +58,8 @@ export function createChildAnchoredWriteTool(
       const workspace = resolveWorkspacePath(cwd, ".");
       const path = await resolveTarget(toCwd(params.path, cwd));
       // The child write also takes the cross-process write lock, so a child
-      // write and a parent (or another session's) replace or revert on the same
-      // file can never interleave; one wins and the other is refused or waits.
+      // write and a parent (or another session's) replace on the same file can
+      // never interleave; one wins and the other is refused or waits.
       const lock = await acquireFileLock(lockFilePath(workspace.workspaceRoot, path), { signal });
       if (!lock) {
         throw new Error(fileLockedMessage(params.path, "write"));
@@ -81,13 +79,12 @@ export function createChildAnchoredWriteTool(
         const result = await base.execute(toolCallId, params, signal, onUpdate, ctx);
         try {
           // The cross-process lock serializes this file for every other writer,
-          // so the state clear cannot interleave with a concurrent replace or
-          // revert and needs no separate per-file mutation queue here (wrapping
-          // the clear in one would invert lock order against replace/revert and
-          // could deadlock a same-process contender).
+          // so the state clear cannot interleave with a concurrent replace and
+          // needs no separate per-file mutation queue here (wrapping the clear
+          // in one would invert lock order against replace and could deadlock a
+          // same-process contender).
           const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
           try {
-            clearUndoRecord(path, store);
             clearServed(store, path);
             if (!autoRead() || !changed) return result;
             try {

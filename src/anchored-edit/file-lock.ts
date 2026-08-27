@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { errCode } from "./utils";
 
 /**
- * Cross-process per-target-file lock used by the anchored replace, revert, and
- * child write, so served-state verification and the write happen as one atomic
+ * Cross-process per-target-file lock used by the anchored replace and child
+ * write, so served-state verification and the write happen as one atomic
  * unit across every Pi session that shares the workspace. A second session
  * editing the same file therefore comes under the same discipline as a second
  * agent in this session: it waits for the lock (bounded), then either proceeds
@@ -63,8 +63,8 @@ interface LockOwner {
   acquiredAt: number;
 }
 
-/** Refusal text shared by `revert` and the child `write` on lock timeout. The
- *  `replace` path uses its own `E_RANGE_STALE` refusal with fresh anchors. */
+/** Refusal text used by the child `write` on lock timeout. The `replace` path
+ *  uses its own `E_RANGE_STALE` refusal with fresh anchors. */
 export function fileLockedMessage(path: string, operation: string): string {
   return `[E_FILE_LOCKED] Another editor holds the write lock on ${path}; the ${operation} was not applied. Retry the ${operation}.`;
 }

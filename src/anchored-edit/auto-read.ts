@@ -8,7 +8,6 @@ import { readNormFile } from "./file-reader.ts";
 import { resolveTarget } from "./fs-write.ts";
 import { MAX_HASH_LINES } from "./hashline/index.ts";
 import { fmtReadPreview } from "./read.ts";
-import { clearUndoRecord } from "./replace-undo.ts";
 import { extractWarnings } from "./replace-render.ts";
 import { clearServed, recordServed } from "./served.ts";
 import { errCode, isRec, visLines } from "./utils.ts";
@@ -124,7 +123,7 @@ export function registerAnchoredAutoRead(
   });
 
   pi.on("tool_result", async (event, _ctx) => {
-    if (event.toolName === "replace" || event.toolName === "revert") {
+    if (event.toolName === "replace") {
       if (event.isError || !config().anchoredEditing.enabled || !config().anchoredEditing.autoRead || !anchoredReadAvailable()) return;
       if (!isRec(event.details) || typeof event.details.diff !== "string" || event.details.diff.length === 0) return;
       const metrics = isRec(event.details.metrics) ? event.details.metrics : undefined;
@@ -146,7 +145,6 @@ export function registerAnchoredAutoRead(
       return await withFileMutationQueue(pending.path, async () => {
         const store = await loadProjectHashStore(pending.workspaceRoot);
         try {
-          clearUndoRecord(pending.path, store);
           clearServed(store, pending.path);
           if (!config().anchoredEditing.autoRead || !pending.changed) return;
           try {

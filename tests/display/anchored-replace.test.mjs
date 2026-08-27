@@ -336,8 +336,13 @@ try {
   const externalStore = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
   try {
     assert.ok(
-      externalStore.prepare("SELECT COUNT(*) AS count FROM undo WHERE path = ?").get(realpathSync(outside)).count > 0,
-      "an external replace records its undo row in the initiating workspace's store",
+      externalStore.prepare("SELECT COUNT(*) AS count FROM served WHERE path = ?").get(realpathSync(outside)).count > 0,
+      "an external replace records its served rows in the initiating workspace's store",
+    );
+    assert.equal(
+      externalStore.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'undo'").get().count,
+      0,
+      "the undo-free store creates no undo table (#187)",
     );
   } finally {
     externalStore.close();

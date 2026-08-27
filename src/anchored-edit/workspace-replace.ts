@@ -23,7 +23,6 @@ import {
 } from "./replace.ts";
 import { buildChanged, buildNoop, type RMeta } from "./replace-response.ts";
 import { restoreEndings } from "./replace-diff.ts";
-import { saveUndo } from "./replace-undo.ts";
 import { loadGuide, loadP } from "./prompts.ts";
 import { recordServedDiffSafe } from "./served.ts";
 import { abortIf, isRec, makePrepareArguments, splitLines } from "./utils.ts";
@@ -247,26 +246,8 @@ export function createAnchoredReplaceToolDefinition(
               );
             }
 
-            const undo = await saveUndo(mutationTargetPath, {
-              content: originalNormalized,
-              bom,
-              originalEnding,
-              hashes: originalHashes,
-              resultContent: result,
-            }, store);
-            if (!undo.persisted) {
-              throw new Error(
-                `[E_UNDO_UNAVAILABLE] Cannot persist undo history to the hash store; the edit was NOT applied and ${normalizedParams.path} is unchanged. Retry the replace, or use write if the store cannot be recovered.`,
-              );
-            }
-
-            try {
-              abortIf(signal);
-              await writeAtomic(mutationTargetPath, bom + restoreEndings(result, originalEnding));
-            } catch (error) {
-              await undo.restore();
-              throw error;
-            }
+            abortIf(signal);
+            await writeAtomic(mutationTargetPath, bom + restoreEndings(result, originalEnding));
             const snapshotId = await safeSnapId(mutationTargetPath, "post-anchored-replace");
             const editMeta: RMeta = {
               editsAttempted,

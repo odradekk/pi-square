@@ -256,35 +256,4 @@ describe("regReplace — robustness", () => {
     });
   });
 
-  it("still refuses the edit when undo persistence fails", async () => {
-    await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
-      const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
-      const hashStore = await import("../../../src/anchored-edit/hash-store");
-      const spy = vi
-        .spyOn(hashStore, "upsertUndo")
-        .mockImplementation(() => {
-          throw new Error("store down");
-        });
-      try {
-        await expect(
-          editTool.execute(
-            "e1",
-            {
-              path: "sample.ts",
-              remove_from: hashes[1]!, remove_to: hashes[1]!,
-              replacement_text: "BBB",
-            },
-            undefined,
-            undefined,
-            ctx,
-          ),
-        ).rejects.toThrow(/E_UNDO_UNAVAILABLE/);
-      } finally {
-        spy.mockRestore();
-      }
-      const content = await readFile(path, "utf-8");
-      expect(content).toBe("aaa\nbbb\nccc\n");
-    });
-  });
 });
