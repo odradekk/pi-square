@@ -24,6 +24,7 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { loadConfig } = await load(join(packageRoot, "src", "core", "config.ts"));
 
+try {
 const agentScope = join(agentDir, "shadow-minds");
 const projectScope = join(project, ".pi", "shadow-minds");
 
@@ -119,6 +120,37 @@ writeDefinition(projectScope, "incomplete-role", [
   assert.ok(incomplete.errors.length > 0, "the exclusion carries actionable diagnostics");
 }
 
+// ── Deleting the agent base strands a dependent minimal overlay ────────
+
+writeDefinition(agentScope, "stranded-role", [
+  "---",
+  "promptVersion: 1",
+  "id: stranded-role",
+  "name: Stranded role",
+  "tools: [read]",
+  "---",
+  "Base body.",
+  "",
+]);
+writeDefinition(projectScope, "stranded-role", [
+  "---",
+  "promptVersion: 1",
+  "id: stranded-role",
+  "enabled: true",
+  "---",
+  "",
+]);
+{
+  assert.ok(effective("stranded-role"), "the dependent overlay is complete while its base exists");
+
+  // The literal base-deletion flow: the platform shell removes the base file.
+  rmSync(join(agentScope, "stranded-role.md"));
+  const stranded = invalidFor("stranded-role");
+  assert.ok(stranded, "deleting the agent base strands the minimal overlay as incomplete");
+  assert.ok(stranded.errors.length > 0, "the stranded overlay is diagnosed, never run");
+  assert.ok(effective("flow-role"), "unrelated valid IDs keep running");
+}
+
 // ── Invalid file recovery through an ordinary rewrite ─────────────────
 
 writeDefinition(agentScope, "broken-role", [
@@ -183,5 +215,7 @@ writeDefinition(agentScope, "broken-role", [
   rmSync(projectConfig);
 }
 
-rmSync(dir, { recursive: true, force: true });
+} finally {
+  rmSync(dir, { recursive: true, force: true });
+}
 console.log("shadow-minds guide file-flow tests: OK");
