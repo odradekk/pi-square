@@ -89,6 +89,32 @@ try {
   assert.match(textOf(unchangedResult.content), /Successfully wrote/);
   assert.doesNotMatch(textOf(unchangedResult.content), /Auto-read/, "an unchanged write appends no anchors");
 
+  // The agent-only autoRead=false setting still clears the acting child's stale
+  // served rows after a successful changed write, but appends and serves no
+  // replacement anchors.
+  await childRead.execute("seed-auto-read-off", { path: "../external-write.txt" }, undefined, undefined, ctx);
+  const autoReadOff = await createChildAnchoredWriteTool(workspace, CHILD_ONE, () => false).execute(
+    "child-write-auto-read-off",
+    { path: "../external-write.txt", content: "one\nAUTO-OFF\nthree\n" },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.match(textOf(autoReadOff.content), /Successfully wrote/);
+  assert.doesNotMatch(textOf(autoReadOff.content), /Auto-read/, "autoRead=false appends no child anchors");
+  {
+    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    try {
+      assert.equal(
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonical).count,
+        0,
+        "autoRead=false still clears the writing child's stale served row",
+      );
+    } finally {
+      store.close();
+    }
+  }
+
   // An unsupported (over-limit) external write keeps the factory result
   // without an anchor appendix: the appendix bounds reject the target.
   const huge = `${"a\n".repeat(240_000)}end`;

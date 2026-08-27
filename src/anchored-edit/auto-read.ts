@@ -11,7 +11,7 @@ import { fmtReadPreview } from "./read.ts";
 import { clearUndoRecord } from "./replace-undo.ts";
 import { extractWarnings } from "./replace-render.ts";
 import { clearServed, recordServed } from "./served.ts";
-import { isRec, visLines } from "./utils.ts";
+import { errCode, isRec, visLines } from "./utils.ts";
 import { loadProjectHashStore } from "./workspace-support.ts";
 import { toCwd } from "./paths.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
@@ -48,32 +48,37 @@ export interface AutoReadAnchorsInput {
  * caller then keeps the native factory result unchanged.
  */
 export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promise<string | undefined> {
-  const file = await loadFileKindAndText(input.path, {
-    maxLines: MAX_HASH_LINES,
-    displayPath: input.displayPath,
-  });
-  if (file.kind !== "text") return undefined;
-  const normalized = await readNormFile(input.displayPath, input.workspaceRoot, {
-    maxLines: MAX_HASH_LINES,
-    preloadedFile: file,
-    store: input.store,
-  });
-  const preview = await fmtReadPreview(
-    normalized.normalized,
-    {},
-    normalized.fileHashes,
-    normalized.absolutePath,
-    DEFAULT_MAX_BYTES,
-    AUTO_READ_MAX,
-  );
-  recordServed(input.store, normalized.absolutePath, preview.servedHashes);
-  const skipped = preview.nextOffset === undefined
-    ? ""
-    : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
-  const warning = normalized.hadUtf8DecodeErrors
-    ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
-    : "";
-  return `--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`;
+  try {
+    const file = await loadFileKindAndText(input.path, {
+      maxLines: MAX_HASH_LINES,
+      displayPath: input.displayPath,
+    });
+    if (file.kind !== "text") return undefined;
+    const normalized = await readNormFile(input.displayPath, input.workspaceRoot, {
+      maxLines: MAX_HASH_LINES,
+      preloadedFile: file,
+      store: input.store,
+    });
+    const preview = await fmtReadPreview(
+      normalized.normalized,
+      {},
+      normalized.fileHashes,
+      normalized.absolutePath,
+      DEFAULT_MAX_BYTES,
+      AUTO_READ_MAX,
+    );
+    recordServed(input.store, normalized.absolutePath, preview.servedHashes);
+    const skipped = preview.nextOffset === undefined
+      ? ""
+      : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
+    const warning = normalized.hadUtf8DecodeErrors
+      ? "\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]"
+      : "";
+    return `--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}${warning}`;
+  } catch (error) {
+    if (errCode(error) === "E_FILE_TOO_LARGE" || String(error).includes("[E_FILE_TOO_LARGE]")) return undefined;
+    throw error;
+  }
 }
 
 function append(content: AgentToolResult<unknown>["content"], text: string): { content: AgentToolResult<unknown>["content"] } {

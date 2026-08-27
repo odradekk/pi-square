@@ -90,17 +90,22 @@ export function createChildAnchoredWriteTool(
             clearUndoRecord(path, store);
             clearServed(store, path);
             if (!autoRead() || !changed) return result;
-            const appendix = await renderAutoReadAnchors({
-              path,
-              displayPath: params.path,
-              workspaceRoot: workspace.workspaceRoot,
-              store,
-            });
-            if (appendix === undefined) return result;
-            return {
-              ...result,
-              content: [...result.content, { type: "text", text: `\n\n${appendix}` }],
-            };
+            try {
+              const appendix = await renderAutoReadAnchors({
+                path,
+                displayPath: params.path,
+                workspaceRoot: workspace.workspaceRoot,
+                store,
+              });
+              if (appendix === undefined) return result;
+              return {
+                ...result,
+                content: [...result.content, { type: "text", text: `\n\n${appendix}` }],
+              };
+            } catch (error) {
+              console.error(`Auto-read after anchored child write failed for ${owner}:`, error);
+              return result;
+            }
           } finally {
             store.release();
           }
