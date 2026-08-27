@@ -17,6 +17,7 @@ const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shado
 const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
   join(packageRoot, "src", "shadow-minds", "serialize.ts"),
 );
+const { installShadowFixtures } = await import("./lib/fixtures.mjs");
 
 function root() {
   return mkdtempSync(join(tmpdir(), `pi-square-shadow-ov-${process.pid}-${Date.now()}`));
@@ -34,6 +35,7 @@ async function withRoot(fn) {
   process.env.PI_AGENT_DIR = join(dir, "agent");
   process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   mkdirSync(join(dir, "agent"), { recursive: true });
+  installShadowFixtures(join(dir, "agent"));
   try {
     await fn(dir, join(dir, "project"));
   } finally {
@@ -56,7 +58,6 @@ async function writeShadowOverlay(input, hooks) {
   let reviewIdentity = input.reviewIdentity;
   if (reviewContextFingerprint === undefined || reviewIdentity === undefined) {
     const review = await readShadowOverlaySnapshot(input.scope, input.cwd, input.fields.id, {
-      projectTrusted: input.projectTrusted,
     });
     reviewContextFingerprint ??= review.contextFingerprint;
     reviewIdentity ??= review.identity;
@@ -69,7 +70,6 @@ async function reviewedDelete(input, hooks) {
   let reviewIdentity = input.reviewIdentity;
   if (reviewContextFingerprint === undefined || reviewIdentity === undefined) {
     const review = await readShadowOverlaySnapshot(input.scope, input.cwd, input.id, {
-      projectTrusted: input.projectTrusted,
       filePath: input.filePath,
     });
     reviewContextFingerprint ??= review.contextFingerprint;
@@ -82,46 +82,45 @@ async function reviewedDelete(input, hooks) {
 await withRoot(async (dir, project) => {
   mkdirSync(project, { recursive: true });
   const draft = { id: "project-grounding", enabled: true, priority: 7 };
-  const snapshot = await readShadowOverlaySnapshot("project", project, "project-grounding", { projectTrusted: true });
+  const snapshot = await readShadowOverlaySnapshot("project", project, "project-grounding");
   assert.equal(snapshot.fingerprint, MISSING_OVERLAY_FINGERPRINT, "a missing overlay reviews as the empty-content fingerprint");
   const result = await writeShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields: draft,
     reviewFingerprint: snapshot.fingerprint,
   });
   assert.equal(result.filePath, join(project, ".pi", "shadow-minds", "project-grounding.md"));
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(project);
   const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
   assert.ok(grounding, "the written overlay is discovered");
   assert.equal(grounding.enabled, true);
   assert.equal(grounding.priority, 7);
-  assert.equal(grounding.triggers.join(","), "tool_turn,completion", "unmentioned fields inherit the package layer");
+  assert.equal(grounding.triggers.join(","), "tool_turn,completion", "unmentioned fields inherit the agent base");
   assert.equal(grounding.fieldSources.enabled.scope, "project");
-  assert.equal(grounding.fieldSources.triggers.scope, "package");
+  assert.equal(grounding.fieldSources.triggers.scope, "agent");
   assert.equal(grounding.layers.length, 2);
 });
 
-// ── Agent overlays write to the agent directory and merge over templates ──
+// ── Agent overlays write to the agent directory as the base layer ────
 
 await withRoot(async (dir, project) => {
   mkdirSync(project, { recursive: true });
-  const fields = { id: "alternative-explorer", triggers: [] };
-  const snapshot = await readShadowOverlaySnapshot("agent", project, "alternative-explorer", { projectTrusted: false });
+  const fields = { ...newShadowDefinitionDraft("agent-role", "Agent role", "Own the agent-layer body."), triggers: [] };
+  const snapshot = await readShadowOverlaySnapshot("agent", project, "agent-role");
   await writeShadowOverlay({
     cwd: project,
-    projectTrusted: false,
     scope: "agent",
     fields,
     reviewFingerprint: snapshot.fingerprint,
   });
-  const registry = discoverShadowDefinitions(project, { projectTrusted: false });
-  const explorer = registry.definitions.find((definition) => definition.id === "alternative-explorer");
-  assert.ok(explorer);
-  assert.equal(explorer.triggers.length, 0, "explicit empty triggers clear the package subscription");
-  assert.equal(explorer.enabled, false);
-  assert.ok(explorer.body.includes("alternative"), "the name and body inherit from the package layer");
+  const registry = discoverShadowDefinitions(project);
+  const role = registry.definitions.find((definition) => definition.id === "agent-role");
+  assert.ok(role);
+  assert.equal(role.triggers.length, 0, "a new agent definition starts with no automatic triggers");
+  assert.equal(role.enabled, false, "a new agent definition starts disabled");
+  assert.ok(role.body.includes("agent-layer body"), "the agent layer owns the body it wrote");
+  assert.equal(role.layers.length, 1, "no other scope claims the new ID");
 });
 
 // ── Writes follow discovery into an ancestor project directory ───────
@@ -133,37 +132,36 @@ await withRoot(async (dir, project) => {
   mkdirSync(child, { recursive: true });
   await writeShadowOverlay({
     cwd: child,
-    projectTrusted: true,
     scope: "project",
     fields: { id: "research-scout", enabled: true },
     reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
   });
   assert.equal(
-    (await readShadowOverlaySnapshot("project", child, "research-scout", { projectTrusted: true })).filePath,
+    (await readShadowOverlaySnapshot("project", child, "research-scout")).filePath,
     join(parent, ".pi", "shadow-minds", "research-scout.md"),
     "an ancestor discovered directory is the write target",
   );
-  const registry = discoverShadowDefinitions(child, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(child);
   const scout = registry.definitions.find((definition) => definition.id === "research-scout");
   assert.ok(scout);
   assert.equal(scout.enabled, true);
 });
 
-// ── Untrusted projects cannot write project overlays ─────────────────
-
+// #188 removed Shadow project trust: every project writes on the same
+// terms (the write and delete refusals below cover the remaining guards).
 await withRoot(async (_dir, project) => {
   mkdirSync(project, { recursive: true });
-  await rejectsWrite(
-    writeShadowOverlay({
-      cwd: project,
-      projectTrusted: false,
-      scope: "project",
-      fields: newShadowDefinitionDraft("x", "X", "Body."),
-      reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
-    }),
-    "SHADOW_PROJECT_UNTRUSTED",
-  );
-  assert.ok(!existsSync(join(project, ".pi")), "a refused write creates no directories");
+  const draft = newShadowDefinitionDraft("x", "X", "Body.");
+  const result = await writeShadowOverlay({
+    cwd: project,
+    scope: "project",
+    fields: draft,
+    reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
+  });
+  assert.ok(result.filePath.endsWith(join(".pi", "shadow-minds", "x.md")), "project writes never require approval");
+  const registry = discoverShadowDefinitions(project);
+  const written = registry.definitions.find((definition) => definition.id === "x");
+  assert.ok(written, "the approval-free project write is discovered immediately");
 });
 
 // ── Stale review refuses without losing either version ───────────────
@@ -173,7 +171,6 @@ await withRoot(async (_dir, project) => {
   const fields = newShadowDefinitionDraft("research-scout", "Research scout", "First body.");
   await writeShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields,
     reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
@@ -183,14 +180,13 @@ await withRoot(async (_dir, project) => {
   await rejectsWrite(
     writeShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       fields: { ...fields, body: "Second body." },
       reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
     }),
     "SHADOW_STALE_REVIEW",
   );
-  const current = (await readShadowOverlaySnapshot("project", project, "research-scout", { projectTrusted: true })).fingerprint;
+  const current = (await readShadowOverlaySnapshot("project", project, "research-scout")).fingerprint;
   const onDisk = await import("node:fs/promises").then((fs) => fs.readFile(join(project, ".pi", "shadow-minds", "research-scout.md"), "utf8"));
   assert.ok(onDisk.includes("Externally edited body."), "the external version survives");
   assert.notEqual(current, "", "the refreshed fingerprint reflects the external version");
@@ -203,12 +199,11 @@ await withRoot(async (_dir, project) => {
   const fields = newShadowDefinitionDraft("alt", "Alt", "Body one.");
   const filePath = join(project, ".pi", "shadow-minds", "alt.md");
   write(filePath, serializeShadowDefinition(fields));
-  const fingerprint = (await readShadowOverlaySnapshot("project", project, "alt", { projectTrusted: true })).fingerprint;
+  const fingerprint = (await readShadowOverlaySnapshot("project", project, "alt")).fingerprint;
   await rejectsWrite(
     writeShadowOverlay(
       {
         cwd: project,
-        projectTrusted: true,
         scope: "project",
         fields: { ...fields, body: "Body two." },
         reviewFingerprint: fingerprint,
@@ -240,7 +235,6 @@ await withRoot(async (dir, project) => {
   await rejectsWrite(
     writeShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       fields: newShadowDefinitionDraft("evil", "Evil", "Body."),
       reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
@@ -253,7 +247,6 @@ await withRoot(async (dir, project) => {
   await rejectsWrite(
     writeShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       fields: newShadowDefinitionDraft("evil", "Evil", "Body."),
       reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
@@ -270,7 +263,6 @@ await withRoot(async (_dir, project) => {
   await rejectsWrite(
     writeShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       fields: {
         id: "completion-check",
@@ -287,11 +279,10 @@ await withRoot(async (_dir, project) => {
   await rejectsWrite(
     writeShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "agent",
       fields: {
-        id: "completion-check",
-        name: "Completion check",
+        id: "gateless",
+        name: "Gateless",
         completionGate: true,
         triggers: ["mutation"],
         body: "Body.",
@@ -307,17 +298,16 @@ await withRoot(async (_dir, project) => {
 await withRoot(async (_dir, project) => {
   mkdirSync(project, { recursive: true });
   write(join(project, ".pi", "shadow-minds", "completion-check.md"), "not frontmatter at all\n");
-  let registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  let registry = discoverShadowDefinitions(project);
   assert.ok(!registry.definitions.some((definition) => definition.id === "completion-check"), "the broken layer fails the ID closed");
-  const snapshot = await readShadowOverlaySnapshot("project", project, "completion-check", { projectTrusted: true });
+  const snapshot = await readShadowOverlaySnapshot("project", project, "completion-check");
   await writeShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields: newShadowDefinitionDraft("completion-check", "Completion check", "Repaired body."),
     reviewFingerprint: snapshot.fingerprint,
   });
-  registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  registry = discoverShadowDefinitions(project);
   const repaired = registry.definitions.find((definition) => definition.id === "completion-check");
   assert.ok(repaired, "writing a valid overlay over a broken one restores the ID");
   assert.equal(repaired.enabled, false);
@@ -330,10 +320,9 @@ await withRoot(async (_dir, project) => {
   const filePath = join(project, ".pi", "shadow-minds", "mode.md");
   write(filePath, serializeShadowDefinition(newShadowDefinitionDraft("mode", "Mode", "Body.")));
   chmodSync(filePath, 0o640);
-  const fingerprint = (await readShadowOverlaySnapshot("project", project, "mode", { projectTrusted: true })).fingerprint;
+  const fingerprint = (await readShadowOverlaySnapshot("project", project, "mode")).fingerprint;
   await writeShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields: { id: "mode", name: "Mode", body: "Body two." },
     reviewFingerprint: fingerprint,
@@ -343,7 +332,6 @@ await withRoot(async (_dir, project) => {
   // A brand-new file is owner-only.
   await writeShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields: newShadowDefinitionDraft("fresh", "Fresh", "Body."),
     reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
@@ -365,7 +353,6 @@ await withRoot(async (_dir, project) => {
     writeShadowOverlay(
       {
         cwd: project,
-        projectTrusted: true,
         scope: "project",
         fields: newShadowDefinitionDraft("contended", "Contended", "Body."),
         reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
@@ -384,14 +371,13 @@ await withRoot(async (_dir, project) => {
   await writeShadowOverlay(
     {
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       fields: newShadowDefinitionDraft("contended", "Contended", "Body."),
       reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
     },
     { retryCount: 1, retryDelayMs: 1 },
   );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(project);
   assert.ok(registry.definitions.some((definition) => definition.id === "contended"));
 });
 
@@ -402,16 +388,14 @@ await withRoot(async (_dir, project) => {
   const fields = newShadowDefinitionDraft("gone", "Gone", "Body.");
   await writeShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields,
     reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
   });
   const filePath = join(project, ".pi", "shadow-minds", "gone.md");
-  let snapshot = await readShadowOverlaySnapshot("project", project, "gone", { projectTrusted: true });
+  let snapshot = await readShadowOverlaySnapshot("project", project, "gone");
   const removed = await reviewedDelete({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     id: "gone",
     reviewFingerprint: snapshot.fingerprint,
@@ -420,10 +404,9 @@ await withRoot(async (_dir, project) => {
   assert.ok(!existsSync(filePath));
   assert.ok(!existsSync(`${filePath}.lock`), "the lock is released after deletion");
   // Deleting an already-missing overlay is a completed no-op.
-  snapshot = await readShadowOverlaySnapshot("project", project, "gone", { projectTrusted: true });
+  snapshot = await readShadowOverlaySnapshot("project", project, "gone");
   const again = await reviewedDelete({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     id: "gone",
     reviewFingerprint: snapshot.fingerprint,
@@ -432,7 +415,6 @@ await withRoot(async (_dir, project) => {
   // A changed overlay is never deleted against the review.
   await writeShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields,
     reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
@@ -441,7 +423,6 @@ await withRoot(async (_dir, project) => {
   await rejectsWrite(
     reviewedDelete({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       id: "gone",
       reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
@@ -451,20 +432,24 @@ await withRoot(async (_dir, project) => {
   assert.ok(existsSync(filePath), "the changed overlay survives a stale delete");
 });
 
-// ── Untrusted projects cannot delete project overlays ────────────────
-
+// Project deletes equally never require approval (#188).
 await withRoot(async (_dir, project) => {
   mkdirSync(project, { recursive: true });
-  await rejectsWrite(
-    reviewedDelete({
-      cwd: project,
-      projectTrusted: false,
-      scope: "project",
-      id: "anything",
-      reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
-    }),
-    "SHADOW_PROJECT_UNTRUSTED",
-  );
+  await writeShadowOverlay({
+    cwd: project,
+    scope: "project",
+    fields: newShadowDefinitionDraft("gone-now", "Gone", "Body."),
+    reviewFingerprint: MISSING_OVERLAY_FINGERPRINT,
+  });
+  const review = await readShadowOverlaySnapshot("project", project, "gone-now");
+  const outcome = await reviewedDelete({
+    cwd: project,
+    scope: "project",
+    id: "gone-now",
+    reviewFingerprint: review.fingerprint,
+    reviewIdentity: review.identity,
+  });
+  assert.equal(outcome.removed, true);
 });
 
 
@@ -473,8 +458,8 @@ await withRoot(async (_dir, project) => {
 await withRoot(async (_dir, project) => {
   mkdirSync(project, { recursive: true });
   const fields = newShadowDefinitionDraft("identity", "Identity", "Body.");
-  await writeShadowOverlay({ cwd: project, projectTrusted: true, scope: "project", fields, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
-  const reviewed = await readShadowOverlaySnapshot("project", project, "identity", { projectTrusted: true });
+  await writeShadowOverlay({ cwd: project, scope: "project", fields, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
+  const reviewed = await readShadowOverlaySnapshot("project", project, "identity");
   const replacement = `${reviewed.filePath}.replacement`;
   writeFileSync(replacement, reviewed.content, "utf8");
   const { renameSync } = await import("node:fs");
@@ -482,7 +467,6 @@ await withRoot(async (_dir, project) => {
   await rejectsWrite(
     rawWriteShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       fields: { ...fields, enabled: true },
       reviewFingerprint: reviewed.fingerprint,
@@ -501,12 +485,11 @@ await withRoot(async (dir, project) => {
   mkdirSync(project, { recursive: true });
   const agentPath = join(dir, "agent", "shadow-minds", "project-grounding.md");
   write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 1 }));
-  const reviewed = await readShadowOverlaySnapshot("project", project, "project-grounding", { projectTrusted: true });
+  const reviewed = await readShadowOverlaySnapshot("project", project, "project-grounding");
   write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 2 }));
   await rejectsWrite(
     rawWriteShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       fields: { id: "project-grounding", enabled: true },
       reviewFingerprint: reviewed.fingerprint,
@@ -523,8 +506,8 @@ await withRoot(async (dir, project) => {
 await withRoot(async (_dir, project) => {
   mkdirSync(project, { recursive: true });
   const fields = newShadowDefinitionDraft("delete-identity", "Delete identity", "Body.");
-  await writeShadowOverlay({ cwd: project, projectTrusted: true, scope: "project", fields, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
-  const reviewed = await readShadowOverlaySnapshot("project", project, "delete-identity", { projectTrusted: true });
+  await writeShadowOverlay({ cwd: project, scope: "project", fields, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
+  const reviewed = await readShadowOverlaySnapshot("project", project, "delete-identity");
   const replacement = `${reviewed.filePath}.replacement`;
   writeFileSync(replacement, reviewed.content, "utf8");
   const { renameSync } = await import("node:fs");
@@ -532,7 +515,6 @@ await withRoot(async (_dir, project) => {
   await rejectsWrite(
     deleteShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       id: "delete-identity",
       filePath: reviewed.filePath,
@@ -551,33 +533,31 @@ await withRoot(async (_dir, project) => {
 
 await withRoot(async (dir, project) => {
   mkdirSync(project, { recursive: true });
-  const agentPath = join(dir, "agent", "shadow-minds", "project-grounding.md");
-  write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 1 }));
-  const reviewed = await readShadowOverlaySnapshot("project", project, "project-grounding", { projectTrusted: true });
+  const agentPath = join(dir, "agent", "shadow-minds", "context-probe.md");
+  write(agentPath, serializeShadowDefinition(newShadowDefinitionDraft("context-probe", "Context probe", "Base body.")));
+  const reviewed = await readShadowOverlaySnapshot("project", project, "context-probe");
   await rejectsWrite(
     rawWriteShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
-      fields: { id: "project-grounding", enabled: true },
+      fields: { id: "context-probe", enabled: true },
       reviewFingerprint: reviewed.fingerprint,
       reviewContextFingerprint: reviewed.contextFingerprint,
       reviewIdentity: reviewed.identity,
     }, {
-      beforeRename: () => write(agentPath, serializeShadowDefinition({ id: "project-grounding", priority: 2 })),
+      beforeRename: () => write(agentPath, serializeShadowDefinition(newShadowDefinitionDraft("context-probe", "Context probe", "Base body two."))),
     }),
     "SHADOW_STALE_REVIEW",
   );
   assert.ok(!existsSync(reviewed.filePath), "the project candidate is not renamed after a late context change");
 
   const deletable = newShadowDefinitionDraft("late-delete", "Late delete", "Body.");
-  await writeShadowOverlay({ cwd: project, projectTrusted: true, scope: "project", fields: deletable, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
-  const deleteReview = await readShadowOverlaySnapshot("project", project, "late-delete", { projectTrusted: true });
+  await writeShadowOverlay({ cwd: project, scope: "project", fields: deletable, reviewFingerprint: MISSING_OVERLAY_FINGERPRINT });
+  const deleteReview = await readShadowOverlaySnapshot("project", project, "late-delete");
   const agentDeletePath = join(dir, "agent", "shadow-minds", "late-delete.md");
   await rejectsWrite(
     deleteShadowOverlay({
       cwd: project,
-      projectTrusted: true,
       scope: "project",
       id: "late-delete",
       filePath: deleteReview.filePath,
@@ -598,10 +578,9 @@ await withRoot(async (_dir, project) => {
   mkdirSync(project, { recursive: true });
   const upperPath = join(project, ".pi", "shadow-minds", "upper.MD");
   write(upperPath, serializeShadowDefinition(newShadowDefinitionDraft("upper", "Upper", "Body.")));
-  const reviewed = await readShadowOverlaySnapshot("project", project, "upper", { projectTrusted: true, filePath: upperPath });
+  const reviewed = await readShadowOverlaySnapshot("project", project, "upper", { filePath: upperPath });
   await rawWriteShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     fields: { ...newShadowDefinitionDraft("upper", "Upper", "Body."), enabled: true },
     reviewFilePath: reviewed.filePath,
@@ -611,10 +590,9 @@ await withRoot(async (_dir, project) => {
   });
   assert.ok(existsSync(upperPath), "the existing uppercase overlay path is updated in place");
   assert.ok(!existsSync(join(project, ".pi", "shadow-minds", "upper.md")), "no duplicate lowercase overlay is created");
-  const refreshed = await readShadowOverlaySnapshot("project", project, "upper", { projectTrusted: true, filePath: upperPath });
+  const refreshed = await readShadowOverlaySnapshot("project", project, "upper", { filePath: upperPath });
   await deleteShadowOverlay({
     cwd: project,
-    projectTrusted: true,
     scope: "project",
     id: "upper",
     filePath: refreshed.filePath,

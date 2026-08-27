@@ -12,15 +12,6 @@ const {
 } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { SHADOW_DEFAULT_TOOLS } = await load(join(packageRoot, "src", "shadow-minds", "parser.ts"));
 
-const TEMPLATE_IDS = [
-  "alternative-explorer",
-  "architecture-lens",
-  "completion-check",
-  "project-grounding",
-  "research-scout",
-  "session-synthesizer",
-];
-
 function root() {
   return mkdtempSync(join(tmpdir(), `pi-square-shadow-defs-${process.pid}-${Date.now()}`));
 }
@@ -48,7 +39,8 @@ async function withRoot(fn) {
 }
 
 function definitionFile(fields, body = "Own the responsibility described here.") {
-  const lines = ["---", "promptVersion: 1", `id: ${fields.id}`, `name: ${fields.name}`];
+  const lines = ["---", "promptVersion: 1", `id: ${fields.id}`];
+  if (fields.name !== undefined) lines.push(`name: ${fields.name}`);
   for (const [key, value] of Object.entries(fields)) {
     if (key === "id" || key === "name") continue;
     if (value === null) {
@@ -84,280 +76,366 @@ function yamlBlock(value, indent) {
   return lines.join("\n");
 }
 
-// ── Package templates ────────────────────────────────────────────────
+// ── Two user-owned scopes; packaged assets are never discovered (#188) ─
 
 await withRoot(async (_dir, project) => {
-  const registry = discoverShadowDefinitions(project, { projectTrusted: false });
-  assert.deepEqual(
-    registry.definitions.map((definition) => definition.id),
-    TEMPLATE_IDS,
-    "the six package templates must be the only definitions in a clean install",
-  );
-  assert.equal(registry.invalid.length, 0, JSON.stringify(registry.invalid));
-  assert.equal(registry.diagnostics.length, 0, JSON.stringify(registry.diagnostics));
-  for (const definition of registry.definitions) {
-    assert.equal(definition.enabled, false, `${definition.id} must ship disabled`);
-    assert.equal(definition.priority, 0);
-    assert.equal(definition.hidden, false);
-    assert.equal(definition.completionGate, definition.id === "completion-check");
-    assert.ok(definition.body.trim().length > 0);
-    assert.equal(definition.fieldSources.name.scope, "package");
-    assert.equal(definition.fieldSources.body.scope, "package");
-    assert.equal(definition.layers.length, 1);
-    assert.equal(definition.layers[0].scope, "package");
-  }
-  const byId = Object.fromEntries(registry.definitions.map((definition) => [definition.id, definition]));
-  assert.deepEqual(byId["project-grounding"].triggers, ["tool_turn", "completion"]);
-  assert.equal(byId["project-grounding"].delivery, "steer");
-  assert.deepEqual(byId["architecture-lens"].triggers, ["mutation", "completion"]);
-  assert.deepEqual(byId["completion-check"].triggers, ["completion"]);
-  assert.equal(byId["completion-check"].delivery, "wake");
-  assert.deepEqual(byId["alternative-explorer"].triggers, ["tool_turn"]);
-  assert.equal(byId["alternative-explorer"].delivery, "notify");
-  assert.equal(byId["research-scout"].triggers.length, 0, "research-scout ships without automatic triggers");
-  assert.equal(byId["research-scout"].delivery, "notify");
-  assert.deepEqual(byId["session-synthesizer"].tools, [], "session-synthesizer requests no investigation tools");
-  assert.deepEqual(byId["session-synthesizer"].outputSchema.required, ["decisions", "progress", "open_questions"]);
-  assert.ok(!byId["research-scout"].tools?.includes("search"), "research-scout has no remote tool by default");
+  const registry = discoverShadowDefinitions(project);
+  assert.deepEqual(registry.definitions, [], "a clean install discovers no definitions");
+  assert.deepEqual(registry.invalid, []);
+  assert.deepEqual(registry.diagnostics, [], "no package layer or trust diagnostics exist");
 });
 
 // ── Layered merge, provenance, and clearing semantics ────────────────
 
 await withRoot(async (dir, project) => {
+  const agent = join(dir, "agent", "shadow-minds");
   write(
-    join(dir, "agent", "shadow-minds", "project-grounding.md"),
-    definitionFile(
-      { id: "project-grounding", name: "Project grounding", enabled: true, priority: 5, triggerInstructions: { tool_turn: "Focus on the newest evidence." } },
-      "Agent-local body for grounding.",
-    ),
+    join(agent, "grounding.md"),
+    definitionFile({
+      id: "grounding",
+      name: "Project grounding",
+      enabled: true,
+      priority: 5,
+      triggers: ["tool_turn", "completion"],
+      triggerInstructions: { tool_turn: "Ground tool output in the repo.", completion: "Check the finished answer." },
+      delivery: "steer",
+      tools: ["read", "grep", "find"],
+      requiredTools: ["read"],
+    }, "Agent-base body for grounding."),
   );
   write(
-    join(project, ".pi", "shadow-minds", "project-grounding.md"),
-    definitionFile(
-      { id: "project-grounding", name: "Project grounding (project)", delivery: "notify", triggerInstructions: { tool_turn: null, completion: "Check the wrap-up." } },
-      "",
-    ),
+    join(project, ".pi", "shadow-minds", "grounding.md"),
+    definitionFile({
+      id: "grounding",
+      name: "Grounding overlay",
+      priority: 9,
+      triggerInstructions: { tool_turn: null, completion: "Overlay completion check." },
+      tools: [],
+      requiredTools: [],
+    }, "Agent-local body for grounding."),
   );
 
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
-  assert.ok(grounding, "grounding stays present");
-  assert.equal(grounding.name, "Project grounding (project)", "project layer wins scalar fields");
-  assert.equal(grounding.enabled, true, "agent layer applies where the project omits");
-  assert.equal(grounding.priority, 5);
-  assert.equal(grounding.delivery, "notify");
-  assert.deepEqual(grounding.triggerInstructions, { completion: "Check the wrap-up." }, "null clears a trigger key and new keys merge");
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.invalid.length, 0, JSON.stringify(registry.invalid));
+  assert.equal(registry.definitions.length, 1);
+  const grounding = registry.definitions[0];
+  assert.equal(grounding.id, "grounding");
+  assert.equal(grounding.name, "Grounding overlay", "the project overlay wins scalar fields");
+  assert.equal(grounding.enabled, true, "unmentioned fields inherit the agent base");
+  assert.equal(grounding.priority, 9);
+  assert.equal(grounding.delivery, "steer");
+  assert.deepEqual(grounding.triggers, ["tool_turn", "completion"]);
+  assert.deepEqual(
+    grounding.triggerInstructions,
+    { completion: "Overlay completion check." },
+    "trigger instructions merge per key; null removes one key",
+  );
+  assert.deepEqual(grounding.tools, [], "an explicit empty list replaces the inherited list");
+  assert.deepEqual(grounding.requiredTools, [], "every explicit empty list replaces its inherited list");
+  assert.equal(grounding.body, "Agent-local body for grounding.", "the highest provided body replaces the base body (edge-trimmed)");
+  assert.equal(grounding.layers.length, 2, "agent base + project overlay both contribute");
+  assert.equal(grounding.layers[0].scope, "agent", "the agent layer is the base");
+  assert.equal(grounding.layers[1].scope, "project", "the project overlay is the top layer");
   assert.equal(grounding.fieldSources.name.scope, "project");
-  assert.equal(grounding.fieldSources.enabled.scope, "agent");
-  assert.equal(grounding.fieldSources["triggerInstructions.completion"].scope, "project");
-  assert.equal(grounding.body, "Agent-local body for grounding.", "the highest provided body replaces the package body (edge-trimmed)");
-  assert.equal(grounding.fieldSources.body.scope, "agent");
-  assert.equal(grounding.layers.length, 3, "package + agent + project layers all contribute");
-  assert.equal(grounding.layers[0].scope, "package");
-  assert.equal(grounding.layers[2].scope, "project");
+  assert.equal(grounding.fieldSources.enabled.scope, "agent", "unmentioned fields keep base provenance");
+  assert.equal(grounding.fieldSources["triggerInstructions.tool_turn"].scope, "project", "the clearing overlay owns the cleared key's provenance");
 });
 
 // ── Output-schema replacement and default restoration ────────────────
 
 await withRoot(async (dir, project) => {
+  const agent = join(dir, "agent", "shadow-minds");
+  const customSchema = {
+    type: "object",
+    properties: { findings: { type: "array", items: { type: "string", maxLength: 500 } } },
+    required: ["findings"],
+    additionalProperties: false,
+  };
   write(
-    join(dir, "agent", "shadow-minds", "session-synthesizer.md"),
-    definitionFile({
-      id: "session-synthesizer",
-      name: "Session synthesizer",
-      outputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: { note: { type: "string", maxLength: 100 } },
-        required: ["note"],
-      },
-    }),
+    join(agent, "schema-probe.md"),
+    definitionFile({ id: "schema-probe", name: "Schema probe", outputSchema: customSchema }),
   );
-  let registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  let synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
-  assert.deepEqual(synthesizer.outputSchema.required, ["note"], "a higher layer replaces the schema atomically");
+  const overlay = join(project, ".pi", "shadow-minds", "schema-probe.md");
 
-  write(
-    join(project, ".pi", "shadow-minds", "session-synthesizer.md"),
-    definitionFile({ id: "session-synthesizer", name: "Session synthesizer", outputSchema: null }),
+  let registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions[0].outputSchema.properties.findings.type, "array");
+  assert.equal(registry.definitions[0].fieldSources.outputSchema.scope, "agent");
+
+  write(overlay, definitionFile({ id: "schema-probe", name: "Schema overlay", outputSchema: { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"], additionalProperties: false } }));
+  registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions[0].outputSchema.properties.verdict.type, "string", "outputSchema is replaced atomically, never field-merged");
+  assert.equal(registry.definitions[0].fieldSources.outputSchema.scope, "project");
+
+  write(overlay, definitionFile({ id: "schema-probe", name: "Schema overlay", outputSchema: null }));
+  registry = discoverShadowDefinitions(project);
+  assert.deepEqual(
+    registry.definitions[0].outputSchema,
+    { type: "object", properties: { summary: { type: "string", minLength: 1, maxLength: 12000 } }, required: ["summary"], additionalProperties: false },
+    "outputSchema: null restores the default summary schema",
   );
-  registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
-  assert.deepEqual(synthesizer.outputSchema.required, ["summary"], "explicit null restores the default schema");
-  assert.equal(synthesizer.fieldSources.outputSchema.scope, "project");
+
+  write(overlay, definitionFile({ id: "schema-probe", name: "Schema overlay" }));
+  registry = discoverShadowDefinitions(project);
+  assert.deepEqual(
+    registry.definitions[0].outputSchema.properties,
+    { findings: { type: "array", items: { type: "string", maxLength: 500 } } },
+    "an overlay that never mentions outputSchema keeps the base schema",
+  );
 });
 
 // ── New definitions default to the documented starting shape ─────────
 
-await withRoot(async (dir, project) => {
+await withRoot(async (dir, _project) => {
   write(
-    join(dir, "agent", "shadow-minds", "my-shadow.md"),
-    definitionFile({ id: "my-shadow", name: "My Shadow" }),
+    join(dir, "agent", "shadow-minds", "fresh.md"),
+    definitionFile({ id: "fresh", name: "Fresh" }),
   );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  const mine = registry.definitions.find((definition) => definition.id === "my-shadow");
-  assert.ok(mine);
-  assert.equal(mine.enabled, false);
-  assert.equal(mine.priority, 0);
-  assert.deepEqual(mine.triggers, []);
-  assert.equal(mine.delivery, "steer");
-  assert.equal(mine.completionGate, false);
-  assert.equal(mine.parentModels, undefined);
-  assert.equal(mine.model, undefined);
-  assert.equal(mine.debug, false);
-  assert.deepEqual(mine.requiredTools, []);
-  assert.equal(mine.tools, undefined, "omitted tools keep the default local read-only set unresolved until #156");
+  const registry = discoverShadowDefinitions(join(dir, "project"));
+  assert.equal(registry.definitions.length, 1);
+  const fresh = registry.definitions[0];
+  assert.equal(fresh.enabled, false, "definitions stay disabled until their files enable them");
+  assert.equal(fresh.hidden, false);
+  assert.equal(fresh.priority, 0);
+  assert.deepEqual(fresh.triggers, []);
+  assert.equal(fresh.delivery, "steer");
+  assert.equal(fresh.completionGate, false);
+  assert.equal(fresh.debug, false);
+  // Omitted `tools` stays absent in the effective definition: the default
+  // local evidence set resolves at run assembly (tools.ts), not in discovery.
+  assert.equal(fresh.tools, undefined, "an omitted tools list defers to the runtime default set");
   assert.deepEqual([...SHADOW_DEFAULT_TOOLS], ["read", "grep", "find", "ls"]);
+  assert.deepEqual(fresh.requiredTools, []);
+  assert.equal(fresh.timeoutSeconds, undefined);
+  assert.equal(fresh.maxTurns, undefined);
+  assert.equal(fresh.maxToolCalls, undefined);
 });
 
-// ── Minimal overlays inherit package identity and body ───────────────
+// ── Minimal project overlays inherit agent-base identity and body ────
 
 await withRoot(async (dir, project) => {
   write(
-    join(dir, "agent", "shadow-minds", "project-grounding.md"),
-    "---\npromptVersion: 1\nid: project-grounding\nenabled: true\n---\n",
+    join(dir, "agent", "shadow-minds", "minimal.md"),
+    definitionFile({
+      id: "minimal",
+      name: "Minimal base",
+      enabled: false,
+      triggers: ["tool_turn"],
+    }, "Agent-base body for minimal."),
   );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
-  assert.ok(grounding, "a minimal overlay must keep the package definition effective");
-  assert.equal(grounding.name, "Project grounding", "an omitted overlay name inherits");
-  assert.equal(grounding.enabled, true);
-  assert.ok(grounding.body.includes("Ground the current work"), "an omitted body inherits");
+  write(
+    join(project, ".pi", "shadow-minds", "minimal.md"),
+    definitionFile({ id: "minimal", enabled: true }, ""),
+  );
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.invalid.length, 0, JSON.stringify(registry.invalid));
+  const minimal = registry.definitions[0];
+  assert.ok(minimal, "a minimal overlay must keep the agent-base definition effective");
+  assert.equal(minimal.name, "Minimal base", "identity inherits from the agent base");
+  assert.equal(minimal.enabled, true, "the overlay still overrides what it names");
+  assert.equal(minimal.body, "Agent-base body for minimal.", "the body inherits from the agent base");
+  assert.equal(minimal.fieldSources.name.scope, "agent");
+  assert.equal(minimal.fieldSources.enabled.scope, "project");
 });
 
-// ── Trusted-project paths remain canonical and workspace-bounded ─────
-
-await withRoot(async (dir, project) => {
-  const outside = join(dir, "outside-shadow-definitions");
-  mkdirSync(outside, { recursive: true });
-  write(join(outside, "escaped.md"), definitionFile({ id: "escaped", name: "Escaped", enabled: true }));
-  mkdirSync(join(project, ".pi"), { recursive: true });
-  symlinkSync(outside, join(project, ".pi", "shadow-minds"));
-
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  assert.equal(registry.definitions.some((definition) => definition.id === "escaped"), false, "a project symlink may not import definitions from outside the workspace");
-  assert.ok(registry.diagnostics.some((entry) => /outside|canonical|symlink/i.test(entry.message)), "the rejected project directory is diagnosed");
-  assert.throws(() => shadowDefinitionScopeDir("project", project), /outside the project workspace/i, "the future write scope refuses the same unsafe symlink");
-});
-// ── Standalone definitions still require an effective name ──────────
+// ── Project-only complete IDs participate without any trust concept ──
 
 await withRoot(async (dir, project) => {
   write(
-    join(dir, "agent", "shadow-minds", "nameless.md"),
-    "---\npromptVersion: 1\nid: nameless\nenabled: true\n---\nBody.\n",
+    join(project, ".pi", "shadow-minds", "project-only.md"),
+    definitionFile({
+      id: "project-only",
+      name: "Project-only Shadow",
+      triggers: ["failure"],
+      delivery: "notify",
+      tools: ["read", "ls"],
+    }, "Fully owned by this project."),
   );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  assert.equal(registry.definitions.some((definition) => definition.id === "nameless"), false);
-  assert.ok(registry.invalid.find((entry) => entry.id === "nameless")?.errors.some((error) => /name is missing/i.test(error)));
+  // No agent base exists: the project file must be complete on its own.
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.invalid.length, 0, JSON.stringify(registry.invalid));
+  assert.equal(registry.definitions.length, 1);
+  assert.equal(registry.definitions[0].id, "project-only");
+  assert.equal(registry.definitions[0].name, "Project-only Shadow");
+  assert.deepEqual(registry.definitions[0].triggers, ["failure"]);
+  assert.deepEqual(registry.definitions[0].tools, ["read", "ls"]);
+  assert.equal(registry.diagnostics.length, 0, "project participation produces no trust diagnostics");
 });
 
-// ── Untrusted project exclusion ──────────────────────────────────────
+// ── Nearest project directory wins; outer projects are ignored ───────
 
 await withRoot(async (dir, project) => {
+  const inner = join(project, "inner");
   write(
-    join(project, ".pi", "shadow-minds", "project-grounding.md"),
-    definitionFile({ id: "project-grounding", name: "Hijacked" }),
+    join(project, ".pi", "shadow-minds", "outer.md"),
+    definitionFile({ id: "outer", name: "Outer Shadow" }),
   );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: false });
-  const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
-  assert.equal(grounding.name, "Project grounding", "untrusted project layers never contribute");
-  assert.equal(grounding.layers.length, 1);
-  assert.equal(grounding.fieldSources.name.scope, "package");
+  write(
+    join(inner, ".pi", "shadow-minds", "inner.md"),
+    definitionFile({ id: "inner", name: "Inner Shadow" }),
+  );
+  const registry = discoverShadowDefinitions(inner);
+  assert.deepEqual(
+    registry.definitions.map((definition) => definition.id),
+    ["inner"],
+    "discovery stops at the nearest .pi/shadow-minds; outer scopes are ignored",
+  );
+});
+
+// ── Project paths remain canonical and workspace-bounded ─────────────
+
+await withRoot(async (dir, project) => {
+  const outsideFile = join(dir, "outside", "escaped.md");
+  mkdirSync(join(project, ".pi", "shadow-minds"), { recursive: true });
+  mkdirSync(join(dir, "outside"), { recursive: true });
+  writeFileSync(outsideFile, definitionFile({ id: "escaped", name: "Escaped" }));
+  symlinkSync(outsideFile, join(project, ".pi", "shadow-minds", "escaped.md"));
+  write(
+    join(project, ".pi", "shadow-minds", "kept.md"),
+    definitionFile({ id: "kept", name: "Kept" }),
+  );
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions.length, 1, "the symlinked escape is not discovered");
+  assert.equal(registry.definitions[0].id, "kept");
   assert.ok(
-    registry.diagnostics.some((entry) => /not trusted/.test(entry.message)),
-    "an untrusted project layer is diagnosed",
+    registry.invalid.some((entry) => entry.id === "escaped"),
+    "the escaped file is reported as an invalid ID",
   );
 });
 
 // ── Per-ID fail-closed isolation ─────────────────────────────────────
 
 await withRoot(async (dir, project) => {
+  const agent = join(dir, "agent", "shadow-minds");
+  write(join(agent, "good.md"), definitionFile({ id: "good", name: "Good" }));
+  write(join(agent, "broken.md"), "---\npromptVersion: 1\nid: broken\nname: Broken\nbogus: value\n---\nBody");
   write(
-    join(dir, "agent", "shadow-minds", "broken.md"),
-    "---\npromptVersion: 1\nid: broken\nname: Broken\nunknown: field\n---\n\nBody.\n",
+    join(project, ".pi", "shadow-minds", "also-good.md"),
+    definitionFile({ id: "also-good", name: "Also good", triggers: ["completion"] }),
   );
-  write(
-    join(dir, "agent", "shadow-minds", "empty-body.md"),
-    "---\npromptVersion: 1\nid: empty-body\nname: Empty body\n---\n",
+  const registry = discoverShadowDefinitions(project);
+  assert.deepEqual(
+    registry.definitions.map((definition) => definition.id),
+    ["also-good", "good"],
+    "invalid definitions are excluded while unrelated valid IDs stay active",
   );
-  write(
-    join(dir, "agent", "shadow-minds", "gateless.md"),
-    definitionFile({ id: "gateless", name: "Gateless", completionGate: true }),
+  assert.equal(registry.invalid.length, 1);
+  assert.equal(registry.invalid[0].id, "broken");
+  assert.ok(registry.invalid[0].errors.some((message) => message.includes("unknown field 'bogus'")));
+  assert.ok(
+    registry.diagnostics.some((entry) => entry.message.includes("Shadow definition 'broken' is excluded")),
+    "exclusions are diagnosed visibly",
   );
-  write(
-    join(dir, "agent", "shadow-minds", "needs-shell.md"),
-    definitionFile({ id: "needs-shell", name: "Needs shell", tools: ["read"], requiredTools: ["shell"] }),
-  );
-  write(
-    join(dir, "agent", "shadow-minds", "healthy.md"),
-    definitionFile({ id: "healthy", name: "Healthy" }),
-  );
+});
 
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  assert.equal(registry.invalid.length, 4);
-  const invalidById = Object.fromEntries(registry.invalid.map((entry) => [entry.id, entry]));
-  assert.ok(invalidById.broken.errors.some((message) => /unknown field 'unknown'/.test(message)));
-  assert.ok(invalidById["empty-body"].errors.some((message) => /explicitly empty/.test(message)));
-  assert.ok(invalidById.gateless.errors.some((message) => /completionGate requires/.test(message)));
-  assert.ok(invalidById["needs-shell"].errors.some((message) => /outside the final tool set/.test(message)));
-  for (const entry of registry.invalid) {
-    assert.ok(entry.sources.length >= 1);
-  }
-  assert.ok(
-    registry.definitions.find((definition) => definition.id === "healthy"),
-    "valid definitions remain inspectable next to invalid ones",
-  );
-  assert.ok(
-    registry.definitions.find((definition) => definition.id === "project-grounding"),
-    "package definitions remain inspectable next to invalid agent ones",
-  );
-  assert.equal(registry.diagnostics.length, registry.invalid.length, "every invalid definition carries a diagnostic");
+// ── Same-scope duplicate files invalidate the whole ID ───────────────
+
+await withRoot(async (dir, project) => {
+  const agent = join(dir, "agent", "shadow-minds");
+  write(join(agent, "dup.md"), definitionFile({ id: "dup", name: "Dup one" }));
+  // Agent + project layers for one ID still merge.
+  mkdirSync(join(project, ".pi", "shadow-minds"), { recursive: true });
+  write(join(project, ".pi", "shadow-minds", "dup.md"), definitionFile({ id: "dup", name: "Dup project" }));
+  let registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions.length, 1, "agent + project layers for one ID still merge");
+
+  // Now claim the same ID twice inside the agent scope via case variants.
+  write(join(agent, "dup.MD"), definitionFile({ id: "dup", name: "Dup case" }));
+  registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions.length, 0, "the same-scope conflict invalidates the ID");
+  assert.equal(registry.invalid.length, 1);
+  assert.equal(registry.invalid[0].id, "dup");
+  assert.equal(registry.invalid[0].sources.length, 2, "every claiming file is reported");
 });
 
 // ── A broken layer invalidates the whole effective ID ────────────────
 
 await withRoot(async (dir, project) => {
   write(
-    join(dir, "agent", "shadow-minds", "project-grounding.md"),
-    "---\npromptVersion: 1\nid: project-grounding\nname: Broken overlay\nunknown: field\n---\n\nAgent body.\n",
+    join(dir, "agent", "shadow-minds", "keep-base.md"),
+    definitionFile({ id: "keep-base", name: "Keep base", triggers: ["tool_turn"] }),
   );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  assert.ok(
-    !registry.definitions.some((definition) => definition.id === "project-grounding"),
-    "a broken overlay must not silently continue the package behavior for the same ID",
+  write(
+    join(project, ".pi", "shadow-minds", "keep-base.md"),
+    definitionFile({ id: "keep-base", name: "Keep overlay", priority: "not-a-number" }),
   );
-  const invalid = registry.invalid.find((entry) => entry.id === "project-grounding");
-  assert.ok(invalid, "the broken ID is reported as invalid");
-  assert.ok(invalid.errors.some((message) => /unknown field 'unknown'/.test(message)));
-  assert.ok(
-    registry.definitions.some((definition) => definition.id === "completion-check"),
-    "unrelated IDs stay effective",
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions.length, 0, "a broken overlay must not silently continue the agent-base behavior");
+  assert.equal(registry.invalid.length, 1);
+  assert.equal(registry.invalid[0].id, "keep-base");
+});
+
+// ── Effective completeness gates activation ─────────────────────────
+
+await withRoot(async (dir, project) => {
+  const agent = join(dir, "agent", "shadow-minds");
+  // No layer ever provides a name: the effective definition is incomplete.
+  write(join(agent, "nameless.md"), definitionFile({ id: "nameless" }, ""));
+  write(
+    join(project, ".pi", "shadow-minds", "nameless.md"),
+    definitionFile({ id: "nameless", priority: 1 }, ""),
   );
+  // completionGate without a completion subscription.
+  write(join(agent, "gated.md"), definitionFile({ id: "gated", name: "Gated", completionGate: true }));
+  // requiredTools outside the final tool set.
+  write(join(agent, "required.md"), definitionFile({ id: "required", name: "Required", tools: ["read"], requiredTools: ["grep"] }));
+  // Empty effective body.
+  write(join(agent, "bodiless.md"), definitionFile({ id: "bodiless", name: "Bodiless" }, ""));
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions.length, 0);
+  const ids = registry.invalid.map((entry) => entry.id).sort();
+  assert.deepEqual(ids, ["bodiless", "gated", "nameless", "required"]);
+  const byId = new Map(registry.invalid.map((entry) => [entry.id, entry]));
+  assert.ok(byId.get("nameless").errors.some((message) => message.includes("effective name is missing")));
+  assert.ok(byId.get("gated").errors.some((message) => message.includes("completionGate requires a completion trigger")));
+  assert.ok(byId.get("required").errors.some((message) => message.includes("required tool 'grep' is outside the final tool set")));
+  assert.ok(byId.get("bodiless").errors.some((message) => message.includes("effective body is explicitly empty")));
 });
 
 // ── Uppercase .MD files are discovered like lowercase ones ───────────
 
 await withRoot(async (dir, project) => {
-  write(
-    join(dir, "agent", "shadow-minds", "caps.MD"),
-    "---\npromptVersion: 1\nid: caps\nname: Caps\n---\n\nBody.\n",
-  );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  assert.ok(registry.definitions.some((definition) => definition.id === "caps"), "a .MD file parses and merges");
+  write(join(dir, "agent", "shadow-minds", "upper.MD"), definitionFile({ id: "upper", name: "Upper" }));
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions.length, 1);
+  assert.equal(registry.definitions[0].id, "upper");
 });
 
-// ── Body inheritance from the package layer ──────────────────────────
+// ── Filename and frontmatter id must match exactly ───────────────────
 
 await withRoot(async (dir, project) => {
   write(
-    join(dir, "agent", "shadow-minds", "completion-check.md"),
-    definitionFile({ id: "completion-check", name: "Completion check", priority: 2 }, ""),
+    join(dir, "agent", "shadow-minds", "real-name.md"),
+    definitionFile({ id: "different-id", name: "Mismatch" }),
   );
-  const registry = discoverShadowDefinitions(project, { projectTrusted: true });
-  const check = registry.definitions.find((definition) => definition.id === "completion-check");
-  assert.ok(check.body.includes("Check the finished answer"), "an overlay without a body inherits the package body");
-  assert.equal(check.fieldSources.body.scope, "package");
-  assert.equal(check.priority, 2);
+  const registry = discoverShadowDefinitions(project);
+  assert.equal(registry.definitions.length, 0);
+  assert.equal(registry.invalid[0].id, "real-name");
+  assert.ok(
+    registry.invalid[0].errors.some((message) => message.includes("must equal the Markdown filename stem")),
+  );
+});
+
+// ── Scope-directory targeting still follows discovery ────────────────
+
+await withRoot(async (dir, project) => {
+  assert.equal(
+    shadowDefinitionScopeDir("agent", project),
+    join(dir, "agent", "shadow-minds"),
+    "the agent scope targets the Pi agent directory",
+  );
+  assert.equal(
+    shadowDefinitionScopeDir("project", project),
+    join(project, ".pi", "shadow-minds"),
+    "a workspace without an existing overlay targets .pi/shadow-minds",
+  );
+  mkdirSync(join(project, ".pi", "shadow-minds"), { recursive: true });
+  const inner = join(project, "nested");
+  mkdirSync(inner, { recursive: true });
+  assert.equal(
+    shadowDefinitionScopeDir("project", inner),
+    join(project, ".pi", "shadow-minds"),
+    "writes follow the nearest discovered project scope",
+  );
 });
 
 console.log("shadow-minds definitions tests: OK");

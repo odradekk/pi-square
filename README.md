@@ -177,25 +177,25 @@ testing.
 
 What ships today:
 
-- Six disabled package templates — Project grounding, Architecture lens,
-  Completion check, Alternative explorer, Research scout, and Session
-  synthesizer — shipped read-only in `shadow-minds/`.
-- Layered definitions: package templates, agent overlays under
-  `~/.pi/agent/shadow-minds`, and trusted-project overlays under
+- User-owned definitions in exactly two scopes (#188): agent-base files
+  under `~/.pi/agent/shadow-minds` and the nearest project overlay under
   `.pi/shadow-minds` merge by stable ID, with per-field provenance,
   trigger-instruction key merge, atomic output-schema replacement, and Markdown
-  body replacement versus inheritance.
+  body replacement versus inheritance. Project participation never depends on
+  project approval. Two packaged reference assets — the annotated
+  `shadow-minds/example.md` and the normative `shadow-minds/schema-reference.md`
+  — are documentation only and never enter discovery; package upgrades cannot
+  add effective definitions.
 - A `/shadow` manager that inspects effective fields, layer sources, hidden
-  and invalid state, and diagnostics, and safely edits agent and
-  trusted-project overlays: create, edit single fields, enable, disable,
+  and invalid state, and diagnostics, and safely edits agent and project
+  overlays: create, edit single fields, enable, disable,
   hide, and delete, each with a full candidate review — the layer Markdown
   plus the effective behavior change — confirmed through the session
-  confirmation coordinator. Writes enforce canonical scope, project trust,
+  confirmation coordinator. Writes enforce canonical scope,
   symlink and file identity, locking, review fingerprint CAS, complete
   effective-candidate validation, permission preservation, and atomic rename;
   a stale or concurrent change refuses the write without losing either
-  version. Package templates stay read-only; definition writes alone create
-  no model calls.
+  version. Definition writes alone create no model calls.
 - `/shadow <request>` asks the parent agent for configuration help: a bounded
   Shadow Config Guide is delivered before the unchanged request, and only the
   user request triggers a turn. No definition is written automatically.
@@ -203,7 +203,7 @@ What ships today:
   manager, evidence-grounded definitions included. An optional bounded
   one-time note applies to that run only. The trial executes as a fresh,
   non-resumable child session whose SYSTEM is the versioned Shadow governance
-  plus a parent-task snapshot — the custom system core, trusted project
+  plus a parent-task snapshot — the custom system core, project
   rules, and canonical working directory, frozen from the parent's prompt
   options at run start — and whose USER message is the reference-only parent
   trajectory, the Shadow responsibility, the canonical output schema, and
@@ -302,7 +302,7 @@ What ships today:
   queued, and unread counts plus a paused marker (visible even while
   otherwise idle). Automatic runs share the manual guards
   (parent-model filter, read-only envelope, model and thinking resolution)
-  and freeze the parent core, trusted project rules, and working directory
+  and freeze the parent core, project rules, and working directory
   once per real user task from that run's prompt options.
 - A definition subscribed to `completion` may declare `completionGate: true`
   (valid only with that trigger): when its run ends, Shadow Minds holds only

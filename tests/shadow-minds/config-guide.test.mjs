@@ -28,6 +28,17 @@ const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
 const { DEFAULT_CONFIG, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
 const { MISSING_OVERLAY_FINGERPRINT } = await load(join(packageRoot, "src", "shadow-minds", "overlays.ts"));
 
+// File-scope agent base with the six fixture definitions (#188): the former
+// package templates live on as test data so discovery is fully controlled by
+// temp directories instead of shipped assets.
+const { installShadowFixtures } = await import("./lib/fixtures.mjs");
+const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-square-shadow-guide-fixture-"));
+const fixtureProject = join(fixtureRoot, "project");
+mkdirSync(fixtureProject, { recursive: true });
+installShadowFixtures(join(fixtureRoot, "agent"));
+process.env.PI_AGENT_DIR = join(fixtureRoot, "agent");
+process.env.PI_CODING_AGENT_DIR = join(fixtureRoot, "agent");
+
 const PLAIN = /\x1b\[[0-9;]*m/g;
 const theme = {
   fg(_token, text) { return String(text); },
@@ -49,7 +60,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
 // ── Guide content contract ───────────────────────────────────────────
 
 {
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: false });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const guide = buildShadowConfigGuide(registry, packageRoot);
   assert.match(guide.content, /\[Shadow Config Guide\]/);
   assert.match(guide.content, /promptVersion: 1/);
@@ -61,7 +72,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.equal(guide.details.version, 1);
   assert.equal(guide.details.definitionCount, registry.definitions.length);
   assert.equal(guide.details.includedDefinitionCount, registry.definitions.length);
-  assert.deepEqual(guide.details.scopes, ["package"]);
+  assert.deepEqual(guide.details.scopes, ["agent"], "the agent fixture layer is the only scope");
   const metadata = guideDefinitionMetadata(registry);
   assert.ok(metadata.length > 0);
   assert.ok(metadata.every((entry) => !("body" in entry)), "responsibility bodies never enter the guide");
@@ -70,7 +81,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
 
 // Registry-derived metadata uses the shared VT and credential sanitizer.
 {
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: false });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const poisoned = structuredClone(registry);
   poisoned.definitions[0].name = "safe\x1b]8;;https://evil.example\x07link\x1b]8;;\x07 Authorization: Bearer topsecret";
   poisoned.definitions[0].layers[0].filePath = "/tmp/api_key=topsecret/project-grounding.md";
@@ -111,7 +122,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
 // ── Renderer collapsed and expanded ──────────────────────────────────
 
 {
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: false });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const guide = buildShadowConfigGuide(registry, packageRoot);
   const collapsed = render(renderShadowConfigGuide(
     { content: guide.content, details: guide.details },
@@ -214,6 +225,7 @@ function fakePi() {
   const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-cmd-"));
   const project = join(dir, "project");
   mkdirSync(join(dir, "agent"), { recursive: true });
+  installShadowFixtures(join(dir, "agent"));
   mkdirSync(project, { recursive: true });
   const previousAgentDir = process.env.PI_AGENT_DIR;
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -239,10 +251,10 @@ function fakePi() {
         notify(message, level) { notifications.push({ message, level }); },
       },
     };
-    state.refresh(project, true);
+    state.refresh(project);
     const services = __testables.makeServices(state, ctx, confirmations);
 
-    // Preview composes the candidate against live package templates.
+    // Preview composes the project candidate against the live agent base.
     const preview = services.preview("project", { id: "research-scout", enabled: true });
     assert.deepEqual(preview.errors, []);
     assert.ok(preview.definition.enabled);
@@ -304,7 +316,7 @@ function fakePi() {
     confirms.length = 0;
     const declinedCtx = { ...ctx, ui: { ...ctx.ui, confirm: async (title, message, opts) => { confirms.push({ title, message, signal: Boolean(opts?.signal) }); return false; } } };
     const declinedServices = __testables.makeServices(state, declinedCtx, confirmations);
-    state.refresh(project, true);
+    state.refresh(project);
     const declinedManager = new ShadowManager(
       state.managerSnapshot(),
       { requestRender() {}, terminal: { rows: 24, columns: 100 } },
@@ -328,7 +340,7 @@ function fakePi() {
     // AC4 regression: an external change during the review window is refused.
     const freshCtx = { ...ctx, ui: { ...ctx.ui, confirm: async () => true } };
     const freshServices = __testables.makeServices(state, freshCtx, new ConfirmationCoordinator());
-    state.refresh(project, true);
+    state.refresh(project);
     const racedManager = new ShadowManager(
       state.managerSnapshot(),
       { requestRender() {}, terminal: { rows: 24, columns: 100 } },
@@ -397,6 +409,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   const previousAgentDir = process.env.PI_AGENT_DIR;
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   mkdirSync(join(dir, "agent"), { recursive: true });
+  installShadowFixtures(join(dir, "agent"));
   process.env.PI_AGENT_DIR = join(dir, "agent");
   process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   try {
@@ -637,7 +650,9 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     cwd: packageRoot,
     hasUI: true,
     ui: { notify() {}, confirm: async () => true, custom: async () => {} },
-    isProjectTrusted() { throw new Error("stale extension context"); },
+    // #188 removed the trust read; the model getter is the stale-context
+    // surface manual activation still reads.
+    get model() { throw new Error("stale extension context"); },
   };
   const service = __testables.makeServices(state, staleCtx, new ConfirmationCoordinator());
   const refused = service.runtime.runManual({ shadowId: "session-synthesizer" });
@@ -666,7 +681,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     sessionManager: { getBranch: () => [], getLeafId: () => undefined },
     getSystemPromptOptions: () => ({ cwd: packageRoot }),
   };
-  state.refresh(packageRoot, true);
+  state.refresh(fixtureProject);
   const definition = state.registry.definitions.find((entry) => entry.id === "session-synthesizer");
   const service = __testables.makeServices(state, ctx, new ConfirmationCoordinator());
   liveConfig = {
@@ -688,7 +703,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   assert.equal(created, 0);
 }
 
-// ── Manual authority uses canonical cwd, trust, and an explicit model ─
+// ── Manual authority uses canonical cwd, project rules, and an explicit model ─
 
 {
   const { DEFAULT_CONFIG: TEMPLATE, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
@@ -702,6 +717,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   process.env.PI_AGENT_DIR = join(dir, "agent");
   process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   mkdirSync(join(dir, "agent"), { recursive: true });
+  installShadowFixtures(join(dir, "agent"));
   try {
     const harness = fakePi();
     const created = [];
@@ -737,17 +753,19 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
       }),
     };
 
-    const untrustedCtx = { ...baseCtx, model: { provider: "p", id: "m" }, isProjectTrusted: () => false };
-    state.refresh(linkedProject, false);
-    const untrusted = __testables.makeServices(state, untrustedCtx, new ConfirmationCoordinator());
-    const started = untrusted.runtime.runManual({ shadowId: "session-synthesizer" });
+    // #188: project rules participate regardless of project approval — the
+    // fixed read-only catalog, not trust, is the capability boundary.
+    const rulesCtx = { ...baseCtx, model: { provider: "p", id: "m" }, isProjectTrusted: () => false };
+    state.refresh(linkedProject);
+    const withRules = __testables.makeServices(state, rulesCtx, new ConfirmationCoordinator());
+    const started = withRules.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(created[0].cwd, realpathSync(linkedProject), "the child cwd is canonicalized");
-    assert.doesNotMatch(created[0].system, /PROJECT-SECRET-RULE/, "untrusted project rules do not enter the Shadow SYSTEM");
+    assert.match(created[0].system, /PROJECT-SECRET-RULE/, "project rules enter the Shadow SYSTEM regardless of approval");
 
     const noModelCtx = { ...baseCtx, model: undefined, isProjectTrusted: () => true };
-    state.refresh(linkedProject, true);
+    state.refresh(linkedProject);
     const noModel = __testables.makeServices(state, noModelCtx, new ConfirmationCoordinator());
     const refused = noModel.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(refused.ok, false);
@@ -784,6 +802,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   const previousAgentDir = process.env.PI_AGENT_DIR;
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   mkdirSync(join(dir, "agent"), { recursive: true });
+  installShadowFixtures(join(dir, "agent"));
   process.env.PI_AGENT_DIR = join(dir, "agent");
   process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   try {
@@ -1053,7 +1072,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
       "Watch quality gates.",
       "",
     ].join("\n"));
-    state.refresh(project, true);
+    state.refresh(project);
     harness.handlers.get("input")({ type: "input", text: "fix", source: "interactive" });
     await harness.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "fix", systemPromptOptions: { cwd: project } }, eventCtx);
     harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t6", toolName: "bash", args: { command: "npm run typecheck" } });
@@ -2026,6 +2045,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
   const previousAgentDir = process.env.PI_AGENT_DIR;
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   mkdirSync(join(dir, "agent"), { recursive: true });
+  installShadowFixtures(join(dir, "agent"));
   process.env.PI_AGENT_DIR = join(dir, "agent");
   process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   try {
@@ -2166,6 +2186,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
   const previousAgentDir = process.env.PI_AGENT_DIR;
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   mkdirSync(join(dir, "agent"), { recursive: true });
+  installShadowFixtures(join(dir, "agent"));
   process.env.PI_AGENT_DIR = join(dir, "agent");
   process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   try {

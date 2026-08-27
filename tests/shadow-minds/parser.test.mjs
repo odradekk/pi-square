@@ -110,7 +110,10 @@ parseErr("promptVersion: 1\n", /frontmatter/i);
 parseErr("---\npromptVersion: 1\nid: probe\nname: Probe\n", /closing/i);
 parseErr("  ---\npromptVersion: 1\n---\nbody", /frontmatter/i);
 parseOk("---\npromptVersion: 1\nid: probe\nname: Probe\n---\n");
-parseErr(file("# a comment\npromptVersion: 1\n", ""), /comment/i);
+// Full-line frontmatter comments are skipped (#188); '#' after a value
+// remains a scalar-content rejection (covered again in the comment block).
+parseOk(file("# a comment\npromptVersion: 1\nid: probe\nname: Probe\n", ""), "probe.md");
+parseErr(file("promptVersion: 1\nid: probe\nname: Probe # trailing\n", ""), /comment/i);
 parseErr(file("promptVersion: 1\nid: probe\nname: Probe\nkey: |\n  block\n", ""), /block scalar/i);
 
 // ── Version, unknown fields, YAML-subset rejection ───────────────────
@@ -337,6 +340,45 @@ assert.ok(validateShadowPayload(DEFAULT_OUTPUT_SCHEMA, { summary: 5 }).length >=
   );
   const reparsed = parseOk(serialized, "enable-probe.md");
   assert.equal(reparsed.fields.body, undefined, "parse → serialize → parse preserves body inheritance");
+}
+
+// ── Full-line frontmatter comments (#188) ────────────────────────────
+{
+  // Reference-asset annotation: a full-line comment is documentation for
+  // authors, not a value. The strict subset skips whole comment lines at any
+  // indentation and still rejects '#' inside scalars and after values.
+  const annotated = [
+    "---",
+    "# One complete annotated definition; copy into your agent or project",
+    "# scope and edit from there. The id must equal the file name stem.",
+    "promptVersion: 1",
+    "id: annotated-probe",
+    "name: Annotated probe",
+    "# enabled stays false until you explicitly turn this definition on",
+    "enabled: false",
+    "triggerInstructions:",
+    "  # per-trigger guidance merges by key across layers; null removes one",
+    "  completion: Review the settled answer before delivery.",
+    "outputSchema:",
+    "  type: object",
+    "  # every object schema must close with additionalProperties: false",
+    "  additionalProperties: false",
+    "---",
+    "Own the responsibility described here.",
+    "",
+  ].join("\n");
+  const parsed = parseOk(annotated, "annotated-probe.md");
+  assert.equal(parsed.fields.id, "annotated-probe");
+  assert.equal(parsed.fields.enabled, false);
+  assert.equal(parsed.fields.triggerInstructions.completion, "Review the settled answer before delivery.");
+  assert.equal(parsed.fields.outputSchema.type, "object");
+  assert.equal(parsed.fields.outputSchema.additionalProperties, false);
+
+  parseErr(
+    file("promptVersion: 1\nid: hash-probe\nname: hash # inline comment", ""),
+    /comments are not supported/,
+    "hash-probe.md",
+  );
 }
 
 console.log("shadow-minds parser tests: OK");

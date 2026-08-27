@@ -3,7 +3,7 @@
  *
  * The Shadow SYSTEM is one versioned governance block plus frozen
  * task-scoped authority sections: the parent's custom system core and the
- * trusted project rules captured when the parent task began. Pi 0.84.2
+ * project rules captured when the parent task began. Pi 0.84.2
  * itself appends the canonical working-directory suffix to every child
  * SYSTEM prompt, so this module never duplicates it. The USER message is
  * the reference-only trajectory, the Shadow identity and responsibility
@@ -29,7 +29,7 @@ Governance:
 - When a submission is rejected, the error lists the exact fields to fix. Correct the payload and submit again within the remaining budget; do not restate the payload in plain text.
 - A run that ends without a valid submission is discarded silently: your final assistant text is never delivered as a Shadow result.`;
 
-/** One trusted project rule file frozen from the parent task snapshot. */
+/** One project rule file frozen from the parent task snapshot. */
 export interface ShadowProjectRule {
   path: string;
   content: string;

@@ -3,14 +3,13 @@
  *
  * A focus-preserving, non-overlay TUI view that inspects every effective
  * Shadow definition with its layer provenance and, when write services are
- * supplied, creates and edits agent and trusted-project overlays. Every
- * write is reviewed in a scrollable candidate view first, then approved
- * through the session FIFO confirmation coordinator after the manager
- * closes itself, and executed by the safe overlay writer. Package templates
- * stay read-only. Runtime services add manual trials across the Shadow-safe
- * read-only evidence catalog (the no-tool trial included) with a bounded
- * one-time note, live run observation with cancellation, and result-inbox
- * inspection (read, dismiss, delete). The view follows the shared unframed
+ * supplied, creates and edits agent and project layers. Every write is
+ * reviewed in a scrollable candidate view first, then approved through the
+ * session FIFO confirmation coordinator after the manager closes itself, and
+ * executed by the safe overlay writer. Runtime services add manual trials
+ * across the Shadow-safe read-only evidence catalog (including no-tool trials),
+ * with a bounded one-time note, live run observation with cancellation, and
+ * result-inbox inspection (read, dismiss, delete). The view follows the shared
  * operational grammar: one-cell status rail, label-led rows, muted borders,
  * no emoji.
  */
@@ -56,7 +55,6 @@ export interface ShadowManagerSnapshot {
   definitions: EffectiveShadowDefinition[];
   invalid: ShadowDefinitionRegistry["invalid"];
   diagnostics: ShadowDefinitionRegistry["diagnostics"];
-  projectTrusted: boolean;
   /** Effective feature configuration; absent when unknown at open time. */
   config?: { enabled: boolean; defaults: ShadowMindsDefaults };
 }
@@ -160,14 +158,12 @@ export interface ShadowManagerServices {
 
 export function snapshot(
   registry: ShadowDefinitionRegistry,
-  projectTrusted: boolean,
   config?: { enabled: boolean; defaults: ShadowMindsDefaults },
 ): ShadowManagerSnapshot {
   return {
     definitions: registry.definitions,
     invalid: registry.invalid,
     diagnostics: registry.diagnostics,
-    projectTrusted,
     ...(config ? { config } : {}),
   };
 }
@@ -452,9 +448,7 @@ export class ShadowManager implements Component, Focusable {
       {
         id: "project",
         label: "Project",
-        detail: this.data.projectTrusted
-          ? "Write to the discovered .pi/shadow-minds directory"
-          : "unavailable — the project is not trusted",
+        detail: "Write to the discovered .pi/shadow-minds directory",
         onSelect: () => onSelect("project"),
       },
       {
@@ -464,7 +458,6 @@ export class ShadowManager implements Component, Focusable {
         onSelect: () => onSelect("agent"),
       },
     ];
-    if (!this.data.projectTrusted) items.shift();
     this.openChoice({ eyebrow: "OVERLAYS / SCOPE", title, description, items });
   }
 
@@ -865,7 +858,7 @@ export class ShadowManager implements Component, Focusable {
       ? selected.invalid.sources
       : selected.layers.filter((layer) => layer.scope === "agent" || layer.scope === "project").map((layer) => layer.filePath);
     if (sources.length === 0) {
-      this.errorFlash("Package templates are read-only. Use hide to overlay instead.");
+      this.errorFlash("No agent or project definition layer is available to delete.");
       return;
     }
     this.openChoice({
@@ -948,9 +941,6 @@ export class ShadowManager implements Component, Focusable {
     this.openChoice({
       eyebrow: "OVERLAYS / ACTIONS",
       title: `${selected.id} · ${selected.name}`,
-      description: selected.layers.some((layer) => layer.scope !== "package")
-        ? undefined
-        : "Package templates are read-only; edits create overlays.",
       items: [
         {
           id: "run-manually",
@@ -1658,9 +1648,6 @@ export class ShadowManager implements Component, Focusable {
 
   private renderDiagnostics(width: number): string[] {
     const lines: string[] = [];
-    if (!this.data.projectTrusted) {
-      lines.push(fit(this.theme.fg("dim", `project layer: untrusted — project Shadow definitions are excluded`), width));
-    }
     for (const diagnostic of this.data.diagnostics.slice(0, DIAGNOSTIC_LINES)) {
       lines.push(fit(this.theme.fg("warning", clip(diagnostic.message, width)), width));
     }

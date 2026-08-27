@@ -7,7 +7,8 @@
  * parses a deliberately tiny YAML subset — plain, single- and double-quoted
  * scalars, nested maps by fixed two-space indentation, flow lists of
  * scalars — and rejects everything else (anchors, aliases, tags, merge keys,
- * complex keys, block scalars, comments, tabs, duplicate keys). No runtime
+ * complex keys, block scalars, trailing or inline comments, tabs, duplicate
+ * keys; whole-line comments are skipped as author documentation). No runtime
  * dependency is added and no general YAML is supported.
  *
  * The output schema subset is a bounded JSON Schema dialect: object roots
@@ -67,8 +68,10 @@ export type ShadowThinkingLevel = (typeof SHADOW_THINKING_LEVELS)[number];
 
 /** The single shared ID pattern; writers and the manager reuse it. */
 export const SHADOW_ID_PATTERN = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._-]{0,${SHADOW_ID_MAX_CHARS - 1}}$`);
-const SHADOW_TOOL_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-const SHADOW_MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+/** Tool-name shape shared by `tools` and `requiredTools` (#188 contract). */
+export const SHADOW_TOOL_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+/** Exact `provider/model-id` reference shape (#188 contract). */
+export const SHADOW_MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 // ── Output schema subset ─────────────────────────────────────────────
 
 export type ShadowOutputSchema =
@@ -488,10 +491,10 @@ function parseYamlSubset(source: string, lines: string[]): { value?: { [key: str
     const indentMatch = /^ */.exec(raw)![0].length;
     const text = raw.slice(indentMatch);
     if (text === "") continue;
-    if (text.startsWith("#")) {
-      errors.push(`${source}: line ${index + 2}: comments are not supported`);
-      continue;
-    }
+    // Full-line comments are author documentation for reference assets and
+    // hand-written definitions (#188): skip them at any indentation. A '#'
+    // inside or after a scalar value is still rejected by the scalar parser.
+    if (text.startsWith("#")) continue;
     prepared.push({ indent: indentMatch, text, number: index + 2 });
   }
   if (errors.length > 0) return { errors };

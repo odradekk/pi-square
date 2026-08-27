@@ -13,6 +13,13 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
 const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
+const { installShadowFixtures } = await import("./lib/fixtures.mjs");
+const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-square-shadow-manager-fixture-"));
+const fixtureProject = join(fixtureRoot, "project");
+mkdirSync(fixtureProject, { recursive: true });
+installShadowFixtures(join(fixtureRoot, "agent"));
+process.env.PI_AGENT_DIR = join(fixtureRoot, "agent");
+process.env.PI_CODING_AGENT_DIR = join(fixtureRoot, "agent");
 const { serializeShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "serialize.ts"));
 const { DEFAULT_CONFIG } = await load(join(packageRoot, "src", "core", "config.ts"));
 
@@ -47,16 +54,15 @@ function render(manager, width = 100) {
   assert.equal(DEFAULT_CONFIG.shadowMinds.enabled, false, "sanity: the feature ships disabled");
 }
 
-// ── The clean-install view over the six package templates ────────────
+// ── The populated view over six user-owned agent fixtures ────────────
 
 {
   const tui = makeTui();
   const manager = new ShadowManager(
     {
-      definitions: discoverShadowDefinitions(packageRoot, { projectTrusted: false }).definitions,
+      definitions: discoverShadowDefinitions(fixtureProject).definitions,
       invalid: [],
       diagnostics: [],
-      projectTrusted: false,
     },
     tui,
     makeTheme(),
@@ -69,7 +75,7 @@ function render(manager, width = 100) {
   assert.ok(lines.some((line) => /Project grounding/.test(line)), "definitions appear in the list");
   const detail = lines.join("\n");
   assert.ok(detail.includes("TRIGGERS: tool_turn"), "effective trigger fields render for the selection");
-  assert.ok(detail.includes("untrusted"), "the untrusted-project diagnostic section renders");
+  assert.ok(!detail.includes("untrusted"), "no trust concept renders in the manager view (#188)");
   assert.ok(!lines.some((line) => /[\u2190\u2192]/.test(line) && /tabs/.test(line)), "no tab row — one view");
   // Navigate to Project grounding and assert its merged view.
   manager.handleInput("down");
@@ -78,7 +84,7 @@ function render(manager, width = 100) {
   const grounded = render(manager).join("\n");
   assert.ok(grounded.includes("TRIGGERS: tool_turn, completion"), "the selected definition shows its effective triggers");
   assert.ok(
-    grounded.includes("LAYERS:") && /package: project-grounding\.md \([0-9a-f]{8}\)/.test(grounded),
+    grounded.includes("LAYERS:") && /agent: project-grounding\.md \([0-9a-f]{8}\)/.test(grounded),
     "layer sources render with scope, file name, and hash",
   );
   assert.ok(grounded.includes("BODY:"), "the responsibility body has a bounded preview");
@@ -91,13 +97,12 @@ function render(manager, width = 100) {
 
 {
   const tui = makeTui();
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: false });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const manager = new ShadowManager(
     {
       definitions: registry.definitions,
       invalid: [],
       diagnostics: [],
-      projectTrusted: true,
       config: {
         enabled: true,
         defaults: {
@@ -123,13 +128,13 @@ function render(manager, width = 100) {
   const configLine = lines.find((line) => line.includes("CONFIG:"));
   assert.ok(configLine?.includes("gate 10s"), "the gate default renders");
   assert.ok(configLine?.includes("queue 32"), "the queued-ID default renders");
-  assert.ok(/package: [^\n]*\([0-9a-f]{8}\)/.test(lines.join("\n")), "layer sources show a content-hash prefix");
+  assert.ok(/agent: [^\n]*\([0-9a-f]{8}\)/.test(lines.join("\n")), "layer sources show a content-hash prefix");
 }
 
 // ── Invalid entries render with state and sources ────────────────────
 
 {
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: false });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const tui = makeTui();
   const manager = new ShadowManager(
     {
@@ -140,7 +145,6 @@ function render(manager, width = 100) {
         errors: ["broken.md: unknown field 'color'"],
       }],
       diagnostics: registry.diagnostics,
-      projectTrusted: true,
     },
     tui,
     makeTheme(),
@@ -164,10 +168,9 @@ function render(manager, width = 100) {
   let closed = 0;
   const manager = new ShadowManager(
     {
-      definitions: discoverShadowDefinitions(packageRoot, { projectTrusted: false }).definitions,
+      definitions: discoverShadowDefinitions(fixtureProject).definitions,
       invalid: [],
       diagnostics: [],
-      projectTrusted: true,
     },
     tui,
     makeTheme(),
@@ -191,6 +194,7 @@ function render(manager, width = 100) {
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_AGENT_DIR = join(tmp, "agent");
   process.env.PI_CODING_AGENT_DIR = join(tmp, "agent");
+  installShadowFixtures(join(tmp, "agent"));
   try {
     const sent = [];
     const registered = new Map();
@@ -232,7 +236,7 @@ function render(manager, width = 100) {
     assert.equal(opened, 1, "a TUI session opens the read-only view");
     assert.deepEqual(sent, [], "the read-only view creates no model calls");
 
-    // Session start refreshes the registry from the canonical cwd and trust.
+    // Session start refreshes the registry from the canonical cwd.
     let notified = [];
     await handlers.get("session_start")(undefined, {
       cwd: tmp,
@@ -247,8 +251,7 @@ function render(manager, width = 100) {
       "project-grounding",
       "research-scout",
       "session-synthesizer",
-    ], "session start discovers the package templates");
-    assert.equal(state.projectTrusted, false);
+    ], "session start discovers the agent fixture definitions");
     assert.deepEqual(notified, [], "a clean registry notifies nothing");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
@@ -266,7 +269,7 @@ function render(manager, width = 100) {
   const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
     join(packageRoot, "src", "shadow-minds", "serialize.ts"),
   );
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const definitions = registry.definitions;
   const grounding = definitions.find((definition) => definition.id === "project-grounding");
 
@@ -274,7 +277,7 @@ function render(manager, width = 100) {
   let approveResult = true;
   let previewErrors = [];
   const services = {
-    refresh: () => ({ definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+    refresh: () => ({ definitions, invalid: [], diagnostics: [] }),
     scopeOf: (filePath) => (filePath.includes("agent") ? "agent" : "project"),
     overlaySnapshot: async (scope, id) => ({
       filePath: `/scope/${scope}/${id}.md`,
@@ -317,7 +320,7 @@ function render(manager, width = 100) {
 
   const done = [];
   const manager = new ShadowManager(
-    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -358,7 +361,7 @@ function render(manager, width = 100) {
 
   // Declined approval writes nothing.
   const declined = new ShadowManager(
-    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -376,7 +379,7 @@ function render(manager, width = 100) {
 
   // An invalid candidate flashes instead of opening a review.
   const invalidCandidate = new ShadowManager(
-    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -397,7 +400,7 @@ function render(manager, width = 100) {
 
   // Without services, writes are unavailable.
   const readonlyManager = new ShadowManager(
-    { definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -407,21 +410,22 @@ function render(manager, width = 100) {
   lines = render(readonlyManager);
   assert.ok(lines.join("\n").includes("unavailable"), "create without services flashes unavailability");
 
-  // Untrusted projects only offer the agent scope.
-  const untrusted = new ShadowManager(
-    { definitions, invalid: [], diagnostics: [], projectTrusted: false },
+  // #188: both scopes are always offered — project participation no longer
+  // depends on project trust.
+  const anyProject = new ShadowManager(
+    { definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
     services,
   );
-  untrusted.handleInput("\r");
-  untrusted.handleInput("down");
-  untrusted.handleInput("\r");
+  anyProject.handleInput("\r");
+  anyProject.handleInput("down");
+  anyProject.handleInput("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  lines = render(untrusted);
-  assert.ok(!lines.join("\n").includes("Project"), "the project scope is hidden when untrusted");
+  lines = render(anyProject);
+  assert.ok(lines.join("\n").includes("Project"), "the project scope is always offered");
   assert.ok(lines.join("\n").includes("Agent"), "the agent scope remains");
 }
 
@@ -431,13 +435,13 @@ function render(manager, width = 100) {
   const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
     join(packageRoot, "src", "shadow-minds", "serialize.ts"),
   );
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const calls = { approve: [], save: [] };
   const { MISSING_OVERLAY_FINGERPRINT: missing } = await load(
     join(packageRoot, "src", "shadow-minds", "overlays.ts"),
   );
   const services = {
-    refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+    refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
     scopeOf: () => "project",
     overlaySnapshot: async () => ({ filePath: "/scope/project/new-role.md", fingerprint: missing }),
     preview: (scope, fields) => ({
@@ -457,7 +461,7 @@ function render(manager, width = 100) {
     deleteOverlay: async () => ({ ok: true, message: "deleted" }),
   };
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
@@ -506,13 +510,13 @@ function render(manager, width = 100) {
 // ── Reviews expose complete content, delete fallback, and schema editing ─
 
 {
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
   const contextFingerprint = shadowDefinitionContextFingerprint(grounding.layers);
   const longBody = `${"x".repeat(5000)}TAIL-SENTINEL`;
   let saves = 0;
   const longServices = {
-    refresh: () => ({ definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true }),
+    refresh: () => ({ definitions: [grounding], invalid: [], diagnostics: [] }),
     scopeOf: () => "project",
     overlaySnapshot: async (_scope, id) => ({
       filePath: `/scope/project/${id}.md`,
@@ -533,7 +537,7 @@ function render(manager, width = 100) {
     deleteOverlay: async () => ({ ok: true, message: "deleted" }),
   };
   const manager = new ShadowManager(
-    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: [grounding], invalid: [], diagnostics: [] },
     { requestRender() {}, terminal: { rows: 20, columns: 80 } },
     makeTheme(),
     makeKeybindings(),
@@ -551,7 +555,7 @@ function render(manager, width = 100) {
 
   // The outputSchema field offers a custom bounded JSON editor.
   const schemaManager = new ShadowManager(
-    { definitions: [grounding], invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: [grounding], invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {}, longServices,
   );
   schemaManager.handleInput("\r"); // actions
@@ -591,7 +595,7 @@ function render(manager, width = 100) {
     previewDelete: (_scope, _id, _path, expected) => ({ definition: grounding, errors: [], contextFingerprint: expected }),
   };
   const deleteManager = new ShadowManager(
-    { definitions: [layered], invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: [layered], invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {}, deleteServices,
   );
   deleteManager.handleInput("\r");
@@ -658,7 +662,7 @@ function makeRuntimeService(initial) {
 
 {
   // Every definition offers a manual run; the label carries its tool declaration.
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
   const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
   assert.ok(synthesizer.tools?.length === 0, "sanity: session-synthesizer declares the empty tool list");
@@ -666,12 +670,12 @@ function makeRuntimeService(initial) {
 
   const service = makeRuntimeService({ runs: [], results: [] });
   const withRun = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   let index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) withRun.handleInput("down");
@@ -681,12 +685,12 @@ function makeRuntimeService(initial) {
   assert.ok(noToolLines.some((line) => line.includes("none — submit_shadow_result only")), "the no-tool label names the single tool");
 
   const withoutRun = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   index = registry.definitions.findIndex((definition) => definition.id === "project-grounding");
   for (let step = 0; step < index; step += 1) withoutRun.handleInput("down");
@@ -698,18 +702,18 @@ function makeRuntimeService(initial) {
 
 {
   // Full flow: note → review → confirm closes the manager and starts the run.
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const synthesizer = registry.definitions.find((definition) => definition.id === "session-synthesizer");
   assert.ok(synthesizer);
   const service = makeRuntimeService({ runs: [], results: [] });
   const done = [];
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults, thinking: "medium" } } },
+    { definitions: registry.definitions, invalid: [], diagnostics: [], config: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults, thinking: "medium" } } },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => done.push(1),
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) manager.handleInput("down");
@@ -738,15 +742,15 @@ function makeRuntimeService(initial) {
 
 {
   // The master switch refuses the trial inside the manager.
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const service = makeRuntimeService({ runs: [], results: [] });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true, config: { enabled: false, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
+    { definitions: registry.definitions, invalid: [], diagnostics: [], config: { enabled: false, defaults: DEFAULT_CONFIG.shadowMinds.defaults } },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) manager.handleInput("down");
@@ -759,7 +763,7 @@ function makeRuntimeService(initial) {
 
 {
   // Runs entry: live refresh, cancellation, result inspection, and actions.
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const runningRun = {
     id: "run-1", shadowId: "session-synthesizer", shadowName: "Session synthesizer",
     trigger: "manual", phase: "running", startedAt: 1_000, note: "trial",
@@ -788,12 +792,12 @@ function makeRuntimeService(initial) {
     evictionEvents: [{ kind: "evicted", id: "shr-old", at: 1_500, reason: "count" }],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
 
   manager.handleInput("r");
@@ -860,15 +864,15 @@ function makeRuntimeService(initial) {
 {
   // Persisted retention events render in the inbox rather than remaining an
   // internal store-only audit surface.
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const service = makeRuntimeService({
     runs: [], results: [],
     evictionEvents: [{ kind: "evicted", id: "shr-old", at: 1_500, reason: "bytes" }],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   manager.handleInput("r");
   manager.handleInput("down");
@@ -881,7 +885,7 @@ function makeRuntimeService(initial) {
 {
   // Scheduling controls: pause/resume from the runs list, queued
   // activations visible, and superseded automatic runs labeled.
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const schedulerCalls = { pause: 0, resume: 0 };
   let paused = false;
   let pendingData = [];
@@ -897,10 +901,10 @@ function makeRuntimeService(initial) {
     results: [],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       scheduler: {
         snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
@@ -933,10 +937,10 @@ function makeRuntimeService(initial) {
     lastObservedAt: 1_200,
   }];
   const queuedManager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       scheduler: {
         snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
@@ -953,10 +957,10 @@ function makeRuntimeService(initial) {
 
   // Facts view: the automatic source, task, and merged reasons render fully.
   const factsManager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
     },
   );
@@ -974,7 +978,7 @@ function makeRuntimeService(initial) {
 // ── Confirmed-delivery actions (#159) ───────────────────────────────
 
 {
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const deliveryCalls = { results: [], failures: [] };
   const deliveryService = {
     sendResultToAgent(id) {
@@ -999,10 +1003,10 @@ function makeRuntimeService(initial) {
   };
   const service = makeRuntimeService({ runs: [failedRun], results: [notifiedResult, deliveredResult] });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       delivery: deliveryService,
     },
@@ -1051,7 +1055,7 @@ function makeRuntimeService(initial) {
 // ── Diagnostics view (#161) ────────────────────────────────────────
 
 {
-  const registry = discoverShadowDefinitions(packageRoot, { projectTrusted: true });
+  const registry = discoverShadowDefinitions(fixtureProject);
   const cohorts = {
     model: "dddddddddddddddd", thinking: "eeeeeeeeeeeeeeee", toolSchema: "bbbbbbbbbbbbbbbb",
     system: "aaaaaaaaaaaaaaaa", cwd: "ffffffffffffffff", trajectory: "cccccccccccccccc",
@@ -1076,12 +1080,12 @@ function makeRuntimeService(initial) {
     results: [],
   });
   const manager = new ShadowManager(
-    { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true },
+    { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(),
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: true }), runtime: service.runtime },
+    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
   );
   manager.handleInput("r");
   // RUNS / INBOX -> Runs -> Diagnostics is the third entry.
@@ -1104,11 +1108,11 @@ function makeRuntimeService(initial) {
 // ── Repeated overlay edits preserve body inheritance (#177) ────────
 
 {
-  // Real end-to-end manager sequence: enable a package definition at agent
-  // scope (saving a minimal body-less overlay), reopen the same definition,
-  // and edit further fields. The parsed agent layer must keep its body
-  // absent so every follow-up edit reserializes a body-less overlay instead
-  // of failing with an invalid explicit empty body.
+  // Real end-to-end manager sequence: enable an agent-base definition through
+  // a project overlay (saving a minimal body-less layer), reopen the same
+  // definition, and edit further fields. The parsed project layer must keep
+  // its body absent so every follow-up edit reserializes a body-less overlay
+  // instead of failing with an invalid explicit empty body.
   const { previewShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
   const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-reedit-"));
   const previousAgentDir = process.env.PI_AGENT_DIR;
@@ -1116,25 +1120,31 @@ function makeRuntimeService(initial) {
   process.env.PI_AGENT_DIR = join(dir, "agent");
   process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
   try {
-    mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+    // A complete agent base plus a body-less enable overlay above it.
+    installShadowFixtures(join(dir, "agent"));
+    const project = join(dir, "project");
+    mkdirSync(join(project, ".pi", "shadow-minds"), { recursive: true });
     writeFileSync(
-      join(dir, "agent", "shadow-minds", "project-grounding.md"),
+      join(project, ".pi", "shadow-minds", "project-grounding.md"),
       "---\npromptVersion: 1\nid: project-grounding\nenabled: true\n---\n",
       "utf8",
     );
-    const registry = discoverShadowDefinitions(join(dir, "project"), { projectTrusted: false });
+    const registry = discoverShadowDefinitions(project);
     const grounding = registry.definitions.find((definition) => definition.id === "project-grounding");
     assert.ok(grounding, "the layered definition is discovered");
-    assert.equal(grounding.enabled, true, "the agent overlay enables the package definition");
-    const agentLayer = grounding.layers.find((layer) => layer.scope === "agent");
-    assert.ok(agentLayer, "the agent layer is present");
-    assert.equal(agentLayer.fields.body, undefined, "the body-less agent overlay keeps its body absent");
+    assert.equal(grounding.enabled, true, "the project overlay enables the agent-base definition");
+    const overlayLayer = grounding.layers.find((layer) => layer.scope === "project");
+    assert.ok(overlayLayer, "the project layer is present");
+    assert.equal(overlayLayer.fields.body, undefined, "the body-less overlay keeps its body absent");
 
     const saved = [];
+    const scopeDir = (scope) => scope === "agent"
+      ? join(dir, "agent", "shadow-minds")
+      : join(project, ".pi", "shadow-minds");
     const services = {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: false }),
-      overlaySnapshot: async (_scope, id) => ({
-        filePath: join(dir, "agent", "shadow-minds", `${id}.md`),
+      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
+      overlaySnapshot: async (scope, id) => ({
+        filePath: join(scopeDir(scope), `${id}.md`),
         fingerprint: "fp",
         contextFingerprint: shadowDefinitionContextFingerprint(grounding.layers),
         content: "",
@@ -1144,16 +1154,16 @@ function makeRuntimeService(initial) {
         // through the real discovery preview path.
         try {
           const content = serializeShadowDefinition(fields);
-          const preview = previewShadowDefinition(join(dir, "project"), {
-            projectTrusted: false,
+          const filePath = join(scopeDir(scope), `${fields.id}.md`);
+          const preview = previewShadowDefinition(project, {
             scope,
-            filePath: join(dir, "agent", "shadow-minds", `${fields.id}.md`),
+            filePath,
             content,
             expectedContextFingerprint: expected,
           });
           return {
             content,
-            filePath: join(dir, "agent", "shadow-minds", `${fields.id}.md`),
+            filePath,
             definition: preview.definition,
             errors: preview.errors,
             contextFingerprint: preview.contextFingerprint,
@@ -1171,7 +1181,7 @@ function makeRuntimeService(initial) {
     };
 
     const manager = new ShadowManager(
-      { definitions: registry.definitions, invalid: [], diagnostics: [], projectTrusted: false },
+      { definitions: registry.definitions, invalid: [], diagnostics: [] },
       makeTui(),
       makeTheme(),
       makeKeybindings(),
@@ -1179,8 +1189,8 @@ function makeRuntimeService(initial) {
       services,
     );
 
-    // Browse → definition actions → edit → agent scope (the only writable
-    // scope for an untrusted project) → priority → set value → review.
+    // Browse → definition actions → edit → project scope (the layer that
+    // owns the enable overlay) → priority → set value → review.
     const entryIndex = registry.definitions.findIndex((definition) => definition.id === "project-grounding");
     for (let step = 0; step < entryIndex; step += 1) manager.handleInput("down");
     manager.handleInput("\r"); // definition actions
@@ -1188,7 +1198,7 @@ function makeRuntimeService(initial) {
     manager.handleInput("down");
     manager.handleInput("down");
     manager.handleInput("\r"); // edit
-    manager.handleInput("\r"); // agent scope
+    manager.handleInput("\r"); // project scope
     for (let step = 0; step < 4; step += 1) manager.handleInput("down");
     manager.handleInput("\r"); // priority field
     manager.handleInput("down");
@@ -1205,9 +1215,9 @@ function makeRuntimeService(initial) {
     assert.equal(saved[0].fields.body, undefined, "the saved overlay stays body-less");
 
     // Repeated edits across enum, list, and boolean fields all keep
-    // inheriting the package body.
+    // inheriting the agent-base body.
     for (const [field, value] of [["delivery", "notify"], ["tools", ["read"]], ["hidden", true]]) {
-      await manager.reviewSave(grounding, "agent", { ...structuredClone(agentLayer.fields), [field]: value });
+      await manager.reviewSave(grounding, "project", { ...structuredClone(overlayLayer.fields), [field]: value });
       assert.equal(manager.view.kind, "review", `editing ${field} reaches the review`);
       assert.ok(
         render(manager).join("\n").includes("LAYER MARKDOWN"),
