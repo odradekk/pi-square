@@ -1,5 +1,0 @@
----
-"@odradekk/pi-square": minor
----
-
-Shadow Minds: deterministic automatic scheduling. Enabled definitions subscribed to `tool_turn`, `mutation`, `failure`, or `completion` now activate automatically from real-user parent runs — extension continuations never trigger — with turn-level coalescing into one latest-checkpoint pending activation per Shadow, deterministic arbitration (task generation, trigger priority, Shadow priority, ID) under the configured concurrency, per-task automatic-start, and queued-ID bounds, new-task preemption of the oldest previous-task automatic run recorded as a distinct `superseded` outcome (manual runs are never superseded), forced `notify` delivery for old-task results, interruption and pause cancellation semantics, and a bounded conditional footer status with running, queued, unread, and paused counts. The `/shadow` runs list gains pause/resume and pending-queue visibility; automatic prompts carry a bounded trigger-task section with the observed reasons and the definition's trigger-specific instruction. The feature remains disabled by default.

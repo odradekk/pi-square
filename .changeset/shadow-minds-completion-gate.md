@@ -1,5 +1,0 @@
----
-"@odradekk/pi-square": minor
----
-
-Shadow Minds: run bounded completion-gate continuations. A definition subscribed to the completion trigger may now declare `completionGate: true`: when a real-user run ends, Shadow Minds holds only its own settled handling for the configured, capped `completionGateWindowSeconds` after the answer has already rendered — the parent's assistant message is never delayed or altered. Valid gate results queue at the gate close, the earliest safe continuation boundary, under their normal steer/wake/notify delivery policy while other gate runs continue independently. At the deadline, started completion runs continue onto the normal late/stale rules while every unstarted completion pending item cancels visibly. A new user task, pause, user abort, session switch/fork/new session, stale context, or interactive shutdown cancels the applicable work without cross-session delivery, and a print or JSON quit performs one bounded `headlessDrainSeconds` headless drain for started runs — persisting results and delivering them quietly without starting a model turn — before cancelling at the deadline.
