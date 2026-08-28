@@ -61,9 +61,10 @@ opens; an already open manager keeps its stable snapshot with no watcher or
 internal refresh action — reopening `/shadow` is the explicit refresh.
 
 The same reopen revalidates pending automatic work against the refreshed
-registry (#191): activations for deleted, disabled, hidden, invalid, or
-no-longer-subscribed definitions are dropped immediately with a visible
-scheduling note instead of starting from stale configuration, while
+registry and agent master switch (#191): activations for deleted, disabled,
+hidden, invalid, or no-longer-subscribed definitions are dropped immediately,
+as is all queued work while the master switch is off. Each drop carries a
+visible scheduling note instead of starting from stale configuration, while
 still-eligible activations keep their queue position with refreshed
 priority. Running work is never touched by a refresh — each run keeps the
 definition, model, tools, authority, and working directory frozen at its

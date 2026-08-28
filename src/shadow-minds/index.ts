@@ -240,9 +240,25 @@ function composeShadowRun(input: {
   const { state, ctx } = input;
   const runtime = state.runtime;
   try {
-    const liveConfig = state.managerSnapshot().config ?? DEFAULT_CONFIG.shadowMinds;
     state.refresh(ctx.cwd);
-    const definition = state.registry.definitions.find((entry) => entry.id === input.definition.id) ?? input.definition;
+    const liveConfig = state.managerSnapshot().config ?? DEFAULT_CONFIG.shadowMinds;
+    const definition = state.registry.definitions.find((entry) => entry.id === input.definition.id);
+    const automaticReasons = input.source === "automatic"
+      ? (input.triggerReasons ?? []).filter((reason) => definition?.triggers.includes(reason.trigger))
+      : [];
+    if (!definition
+      || (input.source === "automatic" && (
+        !definition.enabled
+        || definition.hidden
+        || !liveConfig.enabled
+        || automaticReasons.length === 0
+      ))) {
+      return {
+        started: false,
+        kind: "failed",
+        reason: `Shadow '${input.definition.id}' is no longer eligible after the pre-start refresh.`,
+      };
+    }
     const parentLabel = formatModel(ctx.model);
     if (!matchesParentModelFilter(definition.parentModels, parentLabel)) {
       input.onWarning?.(
@@ -288,10 +304,14 @@ function composeShadowRun(input: {
     const request: ShadowRunRequest = {
       definition,
       ...(input.note ? { note: input.note } : {}),
-      ...(input.trigger ? { trigger: input.trigger } : {}),
+      ...(input.source === "automatic" && automaticReasons[0] ? { trigger: automaticReasons[0].trigger } : input.trigger ? { trigger: input.trigger } : {}),
       ...(input.taskEpoch !== undefined ? { taskEpoch: input.taskEpoch } : {}),
       ...(input.sourceRun !== undefined ? { sourceRun: input.sourceRun } : {}),
-      ...(input.triggerReasons && input.triggerReasons.length > 0 ? { triggerReasons: input.triggerReasons } : {}),
+      ...(input.source === "automatic" && automaticReasons.length > 0
+        ? { triggerReasons: automaticReasons }
+        : input.triggerReasons && input.triggerReasons.length > 0
+          ? { triggerReasons: input.triggerReasons }
+          : {}),
       system: buildShadowSystem({
         ...(snapshot.parentCore ? { parentCore: snapshot.parentCore } : {}),
         projectRules: snapshot.projectRules,
@@ -557,9 +577,9 @@ export default function registerShadowMinds(
       state.cwd = cwd;
       state.registry = discoverShadowDefinitions(cwd);
       // #191: the refreshed registry revalidates pending activations at once
-      // — deleted, disabled, hidden, invalid, or unsubscribed work drops
-      // visibly instead of starting from stale configuration at the next
-      // dispatch. The scheduler is assigned in the initial state literal and
+      // — a disabled master switch or deleted, disabled, hidden, invalid, or
+      // unsubscribed definition drops queued work visibly instead of starting
+      // from stale configuration at the next dispatch. The scheduler is assigned
       // again before the session_start refresh, so it always exists here.
       state.scheduler.revalidate();
     },

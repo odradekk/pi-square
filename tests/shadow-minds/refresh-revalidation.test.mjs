@@ -147,6 +147,18 @@ function queuePendingMutation(harness) {
   assert.equal(kept.length, 1, "still-eligible activations survive the revalidation");
   assert.equal(kept[0].shadowPriority, 7, "the refreshed priority replaces the queued snapshot priority");
 }
+{
+  // Disabling the agent master switch invalidates every queued activation.
+  // Re-enabling later must not replay triggers observed before the disable.
+  const harness = makeSchedulerHarness();
+  queuePendingMutation(harness);
+  harness.state.config = { ...harness.state.config, enabled: false };
+  harness.scheduler.revalidate();
+  const snapshot = harness.scheduler.snapshot();
+  assert.equal(snapshot.pending.length, 0, "the disabled master switch drops all pending activations");
+  assert.ok(snapshot.diagnostics.some((line) => line.includes("master switch")), "the master-switch drop is visible");
+}
+
 
 {
   // Trust never enters the decision: the revalidation contract is registry-
@@ -376,7 +388,31 @@ function queuePendingMutation(harness) {
     assert.ok(healed, "the repaired file returns to the effective catalog");
     assert.equal(healed.enabled, true, "the project overlay enablement is honored after repair");
 
-    // 9. The parameterized command keeps its ordering contract end to end.
+    // 9. Pre-start race: dispatch may observe the in-memory registry just
+    // before a file changes. The compose boundary refresh must fail closed
+    // instead of falling back to the stale definition selected by dispatch.
+    hold.active = false;
+    harness.handlers.get("input")({ type: "input", text: "race", source: "interactive" });
+    await harness.handlers.get("before_agent_start")(
+      { type: "before_agent_start", prompt: "race", systemPromptOptions: { cwd: project } },
+      eventCtx,
+    );
+    harness.handlers.get("agent_start")({ type: "agent_start" }, eventCtx);
+    harness.handlers.get("tool_execution_start")({ type: "tool_execution_start", toolCallId: "t4", toolName: "write", args: { file_path: "src/d.ts" } });
+    harness.handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "t4", toolName: "write", result: {}, isError: false });
+    writeDefinition(agentScope, "lifecycle-lens", [
+      "---", "promptVersion: 1", "id: lifecycle-lens", "name: Race-broken lens", "color: red", "---", "Body.", "",
+    ]);
+    const createdBeforeRace = created.length;
+    await harness.handlers.get("turn_end")({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, eventCtx);
+    await new Promise((resolveTick) => setTimeout(resolveTick, 10));
+    assert.equal(created.length, createdBeforeRace, "the pre-start refresh never creates a child from the stale definition");
+    assert.ok(
+      state.scheduler.snapshot().diagnostics.some((line) => line.includes("no longer eligible after the pre-start refresh")),
+      "the raced stale activation fails visibly",
+    );
+
+    // 10. The parameterized command keeps its ordering contract end to end.
     await harness.commands.get("shadow").handler("  tighten the lens budget  ", eventCtx);
     assert.equal(harness.events.at(-2)[0], "guide");
     assert.equal(harness.events.at(-1)[0], "user");
