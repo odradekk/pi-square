@@ -5,8 +5,9 @@
  * Writes exactly the Markdown shape the strict frontmatter parser accepts:
  * one canonical field order, double-quoted scalars, one-line flow lists, and
  * nested block maps for trigger instructions and output schemas. Round-trip
- * parity with `parseShadowDefinitionFile` is contract-tested, so every layer
- * the manager writes reparses deterministically.
+ * parity with `parseShadowDefinitionFile` is contract-tested. Since #190 the
+ * serializer is an internal contract surface only — the reference assets and
+ * round-trip tests consume it; it is no longer a runtime write path.
  */
 
 import {

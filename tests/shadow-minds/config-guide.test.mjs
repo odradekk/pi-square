@@ -22,11 +22,7 @@ let registerShadowMinds;
 let __testables;
 const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
-const { newShadowDefinitionDraft, serializeShadowDefinition } = await load(
-  join(packageRoot, "src", "shadow-minds", "serialize.ts"),
-);
 const { DEFAULT_CONFIG, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
-const { MISSING_OVERLAY_FINGERPRINT } = await load(join(packageRoot, "src", "shadow-minds", "overlays.ts"));
 
 // File-scope agent base with the six fixture definitions (#188): the former
 // package templates live on as test data so discovery is fully controlled by
@@ -293,184 +289,6 @@ function fakePi() {
   assert.equal(customCalls, 1, "the manager opens with a UI");
 }
 
-// ── End-to-end services write through the real safe writer ──────────
-
-{
-  const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
-  const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-cmd-"));
-  const project = join(dir, "project");
-  mkdirSync(join(dir, "agent"), { recursive: true });
-  installShadowFixtures(join(dir, "agent"));
-  mkdirSync(project, { recursive: true });
-  const previousAgentDir = process.env.PI_AGENT_DIR;
-  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_AGENT_DIR = join(dir, "agent");
-  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
-  try {
-    const harness = fakePi();
-    ({ default: registerShadowMinds, __testables } = await load(join(packageRoot, "src", "shadow-minds", "index.ts")));
-    const state = registerShadowMinds(harness.pi);
-    const confirmations = new ConfirmationCoordinator();
-    const confirms = [];
-    const notifications = [];
-    const ctx = {
-      cwd: project,
-      hasUI: true,
-      isProjectTrusted: () => true,
-      ui: {
-        custom: async () => {},
-        confirm: async (title, message, opts) => {
-          confirms.push({ title, message, signal: Boolean(opts?.signal) });
-          return true;
-        },
-        notify(message, level) { notifications.push({ message, level }); },
-      },
-    };
-    state.refresh(project);
-    const services = __testables.makeServices(state, ctx, confirmations);
-
-    // Preview composes the project candidate against the live agent base.
-    const preview = services.preview("project", { id: "research-scout", enabled: true });
-    assert.deepEqual(preview.errors, []);
-    assert.ok(preview.definition.enabled);
-    assert.ok(preview.filePath.endsWith("research-scout.md"));
-
-    // The manager create flow drives approval, write, notify, and refresh.
-    const done = [];
-    const manager = new ShadowManager(
-      state.managerSnapshot(),
-      { requestRender() {}, terminal: { rows: 24, columns: 100 } },
-      { fg: (_t, x) => x, bold: (x) => x },
-      new KeybindingsManager(TUI_KEYBINDINGS),
-      () => done.push(1),
-      services,
-    );
-    manager.handleInput("n");
-    manager.handleInput("\r");
-    for (const character of "e2e-role") manager.handleInput(character);
-    manager.handleInput("\r");
-    manager.handleInput("\r");
-    for (const character of "E2E body.") manager.handleInput(character);
-    manager.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const review = manager.render(100).join("\n");
-    assert.ok(review.includes("LAYER MARKDOWN"), "the draft reaches the review");
-    manager.handleInput("\r");
-    await waitFor(
-      () => done.length === 1 && confirms.length === 1 && existsSync(join(project, ".pi", "shadow-minds", "e2e-role.md")),
-      "the approved draft did not finish its coordinated write",
-    );
-    assert.equal(done.length, 1, "the manager closed itself for the approval");
-    assert.equal(confirms.length, 1, "one coordinator-routed confirmation");
-    assert.ok(confirms[0].signal, "the confirmation receives the coordinator abort signal");
-    assert.ok(confirms[0].title.includes("project"), "the confirmation names the scope");
-    const { readFileSync } = await import("node:fs");
-    const written = join(project, ".pi", "shadow-minds", "e2e-role.md");
-    assert.ok(existsSync(written), "the approved draft landed on disk");
-    const onDisk = readFileSync(written, "utf8");
-    assert.match(onDisk, /enabled: false/);
-    assert.match(onDisk, /delivery: "steer"/);
-    assert.ok(notifications.some((entry) => entry.message.includes("saved e2e-role project overlay")), "the save outcome is notified");
-    assert.ok(state.registry.definitions.some((definition) => definition.id === "e2e-role"), "the registry refreshed after the write");
-
-    // A stale write is refused and reported for re-review.
-    const currentReview = await services.overlaySnapshot("project", "e2e-role");
-    const staleResult = await services.save(
-      "project",
-      { id: "e2e-role", enabled: true },
-      currentReview.filePath,
-      MISSING_OVERLAY_FINGERPRINT,
-      currentReview.contextFingerprint,
-      currentReview.identity,
-    );
-    assert.equal(staleResult.ok, false);
-    assert.match(staleResult.message, /changed since it was reviewed/);
-    assert.ok(notifications.some((entry) => entry.message.includes("changed since it was reviewed")));
-
-    // A decline routed through the manager approval writes nothing.
-    confirms.length = 0;
-    const declinedCtx = { ...ctx, ui: { ...ctx.ui, confirm: async (title, message, opts) => { confirms.push({ title, message, signal: Boolean(opts?.signal) }); return false; } } };
-    const declinedServices = __testables.makeServices(state, declinedCtx, confirmations);
-    state.refresh(project);
-    const declinedManager = new ShadowManager(
-      state.managerSnapshot(),
-      { requestRender() {}, terminal: { rows: 24, columns: 100 } },
-      { fg: (_t, x) => x, bold: (x) => x },
-      new KeybindingsManager(TUI_KEYBINDINGS),
-      () => {},
-      declinedServices,
-    );
-    // Run manually is the first action; the real TUI keybindings map the
-    // down-arrow escape sequence, so navigate explicitly to Enable.
-    declinedManager.handleInput("\r");
-    declinedManager.handleInput("\x1b[B");
-    declinedManager.handleInput("\r");
-    declinedManager.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    declinedManager.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(confirms.length, 1, "the approval was requested");
-    assert.ok(readFileSync(written, "utf8").includes("enabled: false"), "a declined approval changed nothing on disk");
-
-    // AC4 regression: an external change during the review window is refused.
-    const freshCtx = { ...ctx, ui: { ...ctx.ui, confirm: async () => true } };
-    const freshServices = __testables.makeServices(state, freshCtx, new ConfirmationCoordinator());
-    state.refresh(project);
-    const racedManager = new ShadowManager(
-      state.managerSnapshot(),
-      { requestRender() {}, terminal: { rows: 24, columns: 100 } },
-      { fg: (_t, x) => x, bold: (x) => x },
-      new KeybindingsManager(TUI_KEYBINDINGS),
-      () => {},
-      freshServices,
-    );
-    racedManager.handleInput("\r");
-    racedManager.handleInput("\x1b[B");
-    racedManager.handleInput("\r");
-    racedManager.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const raceView = racedManager.render(100).join("\n");
-    assert.ok(raceView.includes("LAYER MARKDOWN"), "the review opened (fingerprint captured at open)");
-    const externalFingerprint = (await services.overlaySnapshot("project", "e2e-role")).fingerprint;
-    const { writeFileSync: writeExternally } = await import("node:fs");
-    writeExternally(written, readFileSync(written, "utf8").replace("enabled: false", "enabled: false\nname: \"Externally renamed\""), "utf8");
-    racedManager.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.ok(readFileSync(written, "utf8").includes("Externally renamed"), "the external version survives the raced approval");
-    assert.ok(notifications.some((entry) => entry.message.includes("changed since it was reviewed")), "the raced write is refused with the stale-review outcome");
-    assert.notEqual((await services.overlaySnapshot("project", "e2e-role")).fingerprint, externalFingerprint, "sanity: the file really changed externally");
-
-    // Deletion through the reviewed fingerprint.
-    const snapshot = await services.overlaySnapshot("project", "e2e-role");
-    const deleted = await services.deleteOverlay(
-      "project",
-      "e2e-role",
-      snapshot.filePath,
-      snapshot.fingerprint,
-      snapshot.contextFingerprint,
-      snapshot.identity,
-    );
-    assert.equal(deleted.ok, true);
-    assert.ok(!existsSync(written), "the reviewed overlay is deleted");
-
-    // Coordinator serialization holds for concurrent approvals.
-    const running = [];
-    await Promise.all([
-      confirmations.run(undefined, async () => { running.push("a-start"); await new Promise((r) => setTimeout(r, 10)); running.push("a-end"); return true; }),
-      confirmations.run(undefined, async () => { running.push("b-start"); await new Promise((r) => setTimeout(r, 0)); running.push("b-end"); return true; }),
-    ]);
-    assert.deepEqual(running, ["a-start", "a-end", "b-start", "b-end"], "confirmations never interleave");
-  } finally {
-    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = previousAgentDir;
-    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
-
 // ── Manual-run service wiring (#155) ────────────────────────────────
 
 {
@@ -560,13 +378,12 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
           };
         },
     };
+    ({ default: registerShadowMinds, __testables } = await load(join(packageRoot, "src", "shadow-minds", "index.ts")));
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_CONFIG_TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       runtimeDeps,
     );
-    const confirmations = new ConfirmationCoordinator();
 
     // Open the parent session with the base context first; runtime
     // notifications have a UI surface, the capture cannot use this context,
@@ -582,7 +399,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
       sessionCtx,
     );
     assert.equal(observed, undefined, "the observer never modifies prompt composition");
-    const services = __testables.makeServices(state, ctx, confirmations);
+    const services = __testables.makeServices(state, ctx);
 
     const refused = services.runtime.runManual({ shadowId: "missing-role" });
     assert.equal(refused.ok, false);
@@ -713,7 +530,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   // A manager review may outlive its guarded command context. Activation must
   // fail closed instead of throwing from Pi's stale-context getters.
   const harness = fakePi();
-  const state = registerShadowMinds(harness.pi, undefined, () => ({
+  const state = registerShadowMinds(harness.pi, () => ({
     ...DEFAULT_CONFIG,
     shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } },
   }), {
@@ -729,7 +546,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     // surface manual activation still reads.
     get model() { throw new Error("stale extension context"); },
   };
-  const service = __testables.makeServices(state, staleCtx, new ConfirmationCoordinator());
+  const service = __testables.makeServices(state, staleCtx);
   const refused = service.runtime.runManual({ shadowId: "session-synthesizer" });
   assert.equal(refused.ok, false);
   assert.match(refused.message, /no longer active/);
@@ -741,7 +558,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   let liveConfig = { ...DEFAULT_CONFIG, shadowMinds: { enabled: true, defaults: { ...DEFAULT_CONFIG.shadowMinds.defaults } } };
   let created = 0;
   const harness = fakePi();
-  const state = registerShadowMinds(harness.pi, undefined, () => liveConfig, {
+  const state = registerShadowMinds(harness.pi, () => liveConfig, {
     now: () => 1,
     async createSession() { created += 1; return { session: {} }; },
     async runSession() { throw new Error("must not run"); },
@@ -758,7 +575,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
   };
   state.refresh(fixtureProject);
   const definition = state.registry.definitions.find((entry) => entry.id === "session-synthesizer");
-  const service = __testables.makeServices(state, ctx, new ConfirmationCoordinator());
+  const service = __testables.makeServices(state, ctx);
   liveConfig = {
     ...liveConfig,
     shadowMinds: {
@@ -812,7 +629,6 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     };
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       runtimeDeps,
     );
@@ -832,7 +648,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     // fixed read-only catalog, not trust, is the capability boundary.
     const rulesCtx = { ...baseCtx, model: { provider: "p", id: "m" }, isProjectTrusted: () => false };
     state.refresh(linkedProject);
-    const withRules = __testables.makeServices(state, rulesCtx, new ConfirmationCoordinator());
+    const withRules = __testables.makeServices(state, rulesCtx);
     const started = withRules.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -841,7 +657,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
 
     const noModelCtx = { ...baseCtx, model: undefined, isProjectTrusted: () => true };
     state.refresh(linkedProject);
-    const noModel = __testables.makeServices(state, noModelCtx, new ConfirmationCoordinator());
+    const noModel = __testables.makeServices(state, noModelCtx);
     const refused = noModel.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(refused.ok, false);
     assert.match(refused.message, /No parent model/);
@@ -922,7 +738,6 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     };
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_CONFIG_TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       runtimeDeps,
     );
@@ -930,7 +745,7 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     assert.equal(state.partition?.sessionId, "alpha-1", "the session partition is bound");
     assert.ok(!existsSync(join(sessionDir, ".pi-square-shadow", "other-session")), "orphan partitions without session files reconcile");
     assert.ok(existsSync(join(sessionDir, ".pi-square-shadow", "alpha-1")), "the live session's partition survives reconciliation");
-    const services = __testables.makeServices(state, sessionCtx, new (await load(join(packageRoot, "src", "core", "confirmation.ts"))).ConfirmationCoordinator());
+    const services = __testables.makeServices(state, sessionCtx);
 
     const started = services.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
@@ -1060,7 +875,6 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     };
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({
         ...DEFAULT_SHADOW_MINDS_BASE(),
         shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } },
@@ -1263,7 +1077,6 @@ const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", 
     };
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       runtimeDeps,
     );
@@ -1446,7 +1259,6 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     sinks.eventCtx = eventCtx;
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       deliveryRuntimeDeps(sinks),
     );
@@ -1493,7 +1305,6 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     sinks.eventCtx = eventCtx;
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       deliveryRuntimeDeps(sinks),
     );
@@ -1530,7 +1341,6 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     sinks.eventCtx = eventCtx;
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       deliveryRuntimeDeps(sinks),
     );
@@ -1578,7 +1388,6 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     };
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       deps,
     );
@@ -1594,7 +1403,7 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     const result = state.runtime.snapshot().results[0];
     assert.equal(result.delivery, "notified");
 
-    const services = __testables.makeServices(state, eventCtx, new ConfirmationCoordinator());
+    const services = __testables.makeServices(state, eventCtx);
     const sent = services.delivery?.sendResultToAgent(result.id);
     assert.equal(sent?.ok, true, sent?.message);
     const deliveries = shadowDeliveries(harness);
@@ -1651,7 +1460,6 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     sinks.eventCtx = eventCtx;
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       deliveryRuntimeDeps(sinks),
     );
@@ -1678,7 +1486,7 @@ const previousCodingAgentDir159 = process.env.PI_CODING_AGENT_DIR;
     assert.equal(shadowDeliveries(harness).length, 1, "a restored result never auto-delivers after reopen");
     assert.equal(state.runtime.snapshot().results[0].delivery, "notified");
     // But an explicit send from the reopened inbox still works.
-    const services = __testables.makeServices(state, eventCtx, new ConfirmationCoordinator());
+    const services = __testables.makeServices(state, eventCtx);
     assert.equal(services.delivery?.sendResultToAgent(resultId)?.ok, true);
     assert.equal(shadowDeliveries(harness).length, 2, "an explicit send still delivers after reopen");
     await harness.handlers.get("message_start")({ type: "message_start", message: shadowDeliveries(harness).at(-1)[1] }, eventCtx);
@@ -1803,7 +1611,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     const control = makeGateControl(1);
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       gateRuntimeDeps(sinks, control),
     );
@@ -1857,7 +1664,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     const control = makeGateControl(1);
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({
         ...DEFAULT_SHADOW_MINDS_BASE(),
         shadowMinds: {
@@ -1910,7 +1716,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     const control = makeGateControl(1);
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       gateRuntimeDeps(sinks, control),
     );
@@ -1962,7 +1767,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     const control = makeGateControl(0);
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...DEFAULT_SHADOW_MINDS_BASE(), shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       gateRuntimeDeps(sinks, control),
     );
@@ -2016,7 +1820,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     const control = makeGateControl(1);
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({
         ...DEFAULT_SHADOW_MINDS_BASE(),
         shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS, headlessDrainSeconds: 1 } },
@@ -2073,7 +1876,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     const control = makeGateControl(1);
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({
         ...DEFAULT_SHADOW_MINDS_BASE(),
         shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS, headlessDrainSeconds: 5 } },
@@ -2166,7 +1968,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
     };
     const state = registerShadowMinds(
       harness.pi,
-      undefined,
       () => ({ ...TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
       runtimeDeps,
     );
@@ -2308,7 +2109,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
       const harness = fakePi();
       const state = registerShadowMinds(
         harness.pi,
-        undefined,
         () => ({ ...TEMPLATE, shadowMinds: { enabled: true, defaults: { ...DEFAULT_SHADOW_MINDS } } }),
         makeRuntimeDeps(),
       );
@@ -2328,7 +2128,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
       appends.push(data.resultId);
     };
     await a.harness.handlers.get("session_start")({}, sessionCtx);
-    const servicesA = __testables.makeServices(a.state, sessionCtx, new ConfirmationCoordinator());
+    const servicesA = __testables.makeServices(a.state, sessionCtx);
 
     let started = servicesA.runtime.runManual({ shadowId: "session-synthesizer" });
     assert.equal(started.ok, true, started.message);
@@ -2348,7 +2148,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
       appends.push(data.resultId);
     };
     await b.harness.handlers.get("session_start")({}, sessionCtx);
-    const servicesB = __testables.makeServices(b.state, sessionCtx, new ConfirmationCoordinator());
+    const servicesB = __testables.makeServices(b.state, sessionCtx);
     assert.ok(
       b.state.runtime.snapshot().results.some((result) => result.id === firstId),
       "instance B observes the shared authoritative result unreferenced",
