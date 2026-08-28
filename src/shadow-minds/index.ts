@@ -439,10 +439,6 @@ function makeServices(
           : { ok: false, message: "The failure summary could not be sent." };
       },
     },
-    refresh(): ShadowManagerSnapshot {
-      state.refresh(ctx.cwd);
-      return state.managerSnapshot();
-    },
   };
 }
 
@@ -628,7 +624,7 @@ export default function registerShadowMinds(
   pi.registerMessageRenderer(SHADOW_CONFIG_GUIDE_TYPE, renderShadowConfigGuide);
 
   pi.registerCommand("shadow", {
-    description: "Manage layered Shadow definitions and overlays, or ask Pi to help configure one.",
+    description: "Inspect read-only Shadow definitions, runs, and results, or ask Pi to help configure one.",
     handler: async (args, ctx) => {
       const rawRequest = String(args ?? "");
       const request = rawRequest.trim();

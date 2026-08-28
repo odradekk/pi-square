@@ -1908,7 +1908,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
 
 {
   const { DEFAULT_CONFIG: TEMPLATE, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
-  const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
 
   const { writeFileSync: writeDisk } = await import("node:fs");
   const dir = mkdtempSync(join(tmpdir(), "shadow-ref-append-"));
@@ -1972,7 +1971,7 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
       runtimeDeps,
     );
     await harness.handlers.get("session_start")({}, sessionCtx);
-    const services = __testables.makeServices(state, sessionCtx, new ConfirmationCoordinator());
+    const services = __testables.makeServices(state, sessionCtx);
     const referenceCount = (id) => harness.entries.filter((entry) => entry.type === "pi-square.shadow-result" && entry.data.resultId === id).length;
 
     // Scenario 1 — the observed re-entry race: a runtime subscriber fires
@@ -2048,7 +2047,6 @@ const previousCodingAgentDir160 = process.env.PI_CODING_AGENT_DIR;
 
 {
   const { DEFAULT_CONFIG: TEMPLATE, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
-  const { ConfirmationCoordinator } = await load(join(packageRoot, "src", "core", "confirmation.ts"));
 
   const { writeFileSync: writeDisk } = await import("node:fs");
   const dir = mkdtempSync(join(tmpdir(), "shadow-ref-cross-"));

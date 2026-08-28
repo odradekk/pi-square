@@ -83,7 +83,6 @@ export interface ShadowManagerServices {
   runtime?: ShadowRuntimeServices;
   scheduler?: ShadowSchedulerServices;
   delivery?: ShadowDeliveryServices;
-  refresh(): ShadowManagerSnapshot;
 }
 
 export function snapshot(
@@ -336,7 +335,55 @@ export class ShadowManager implements Component, Focusable {
           detail: `${toolsLabel(selected)} · ${runBoundLabel(runBounds(selected, this.data.config?.defaults))}`,
           onSelect: () => this.runManually(selected),
         },
+        {
+          id: "view-definition",
+          label: "View definition",
+          detail: "Full body, layers, and provenance",
+          onSelect: () => this.viewDefinition(selected),
+        },
       ],
+    });
+  }
+
+  /** Scrollable read-only inspection of one effective definition (#190). */
+  private viewDefinition(definition: EffectiveShadowDefinition): void {
+    const lines: string[] = [
+      `Name: ${definition.name}`,
+      `ID: ${definition.id}`,
+      `State: ${definition.enabled ? "enabled" : "disabled"}${definition.hidden ? " · hidden" : ""}`,
+      `Triggers: ${definition.triggers.length > 0 ? definition.triggers.join(", ") : "manual only"}`,
+      `Delivery: ${definition.delivery}${definition.completionGate ? " · completion gate" : ""}`,
+      `Priority: ${definition.priority}`,
+      `Tools: ${toolLabel(definition)}`,
+    ];
+    if (definition.model) lines.push(`Model: ${definition.model}`);
+    if (definition.thinking) lines.push(`Thinking: ${definition.thinking}`);
+    const instructionKeys = Object.keys(definition.triggerInstructions);
+    if (instructionKeys.length > 0) {
+      lines.push("", "TRIGGER INSTRUCTIONS");
+      for (const key of instructionKeys) {
+        lines.push(`${key}: ${definition.triggerInstructions[key as keyof typeof definition.triggerInstructions] ?? ""}`);
+      }
+    }
+    lines.push("", "LAYERS");
+    for (const layer of definition.layers) {
+      lines.push(`${layer.scope}: ${layer.filePath} (${layer.contentHash.slice(0, 8)})`);
+    }
+    lines.push("", "PROVENANCE");
+    const sourceKeys = Object.keys(definition.fieldSources);
+    for (const key of sourceKeys) {
+      const source = definition.fieldSources[key as keyof typeof definition.fieldSources];
+      lines.push(`${key}: ${source?.scope ?? "default"}`);
+    }
+    lines.push("", "BODY");
+    lines.push(...definition.body.replace(/\r/g, "").split("\n"));
+    lines.push("", `Edit: ${definition.layers.at(-1)?.filePath ?? "(no layer)"} · or /shadow <request>`);
+    this.openReview({
+      eyebrow: "DEFINITIONS / VIEW",
+      title: `${definition.id} · ${definition.name}`,
+      lines,
+      confirmLabel: "back",
+      onConfirm: () => this.back(),
     });
   }
 
@@ -1018,8 +1065,11 @@ export class ShadowManager implements Component, Focusable {
       rows.push(fit(this.theme.fg("muted", "Changes: edit the file or /shadow <request>"), width));
     }
     rows.push(this.theme.fg("dim", "BODY:"));
-    const bodyLines = definition.body.replace(/\r/g, "").split("\n").filter((line) => line.trim() !== "").slice(0, BODY_PREVIEW_LINES);
+    const allBodyLines = definition.body.replace(/\r/g, "").split("\n").filter((line) => line.trim() !== "");
+    const bodyLines = allBodyLines.slice(0, BODY_PREVIEW_LINES);
     for (const line of bodyLines) rows.push(fit(this.theme.fg("text", `  ${line}`), width));
+    const bodyHidden = allBodyLines.length - bodyLines.length;
+    if (bodyHidden > 0) rows.push(fit(this.theme.fg("dim", `  (+${bodyHidden} more body line${bodyHidden === 1 ? "" : "s"} — View definition)`), width));
     return rows;
   }
 

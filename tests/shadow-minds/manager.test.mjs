@@ -234,6 +234,51 @@ function render(manager, width = 100) {
 }
 
 {
+  // The full responsibility body is reachable through the read-only view (#190).
+  const dir = mkdtempSync(join(tmpdir(), "pi-square-shadow-fullbody-"));
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_AGENT_DIR = join(dir, "agent");
+  process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+  try {
+    mkdirSync(join(dir, "agent", "shadow-minds"), { recursive: true });
+    const body = Array.from({ length: 20 }, (_, index) => `Responsibility line ${index + 1} of the long role body.`).join("\n");
+    writeFileSync(join(dir, "agent", "shadow-minds", "long-body.md"), [
+      "---", "promptVersion: 1", "id: long-body", "name: Long body", "tools: [read]", "---", body, "",
+    ].join("\n"), "utf8");
+    const registry = discoverShadowDefinitions(join(dir, "project") === "" ? dir : dir);
+    const manager = new ShadowManager(
+      { definitions: registry.definitions, invalid: [], diagnostics: [] },
+      makeTui(),
+      makeTheme(),
+      makeKeybindings(),
+      () => {},
+    );
+    const entryIndex = registry.definitions.findIndex((definition) => definition.id === "long-body");
+    for (let step = 0; step < entryIndex; step += 1) manager.handleInput("down");
+    const panel = render(manager, 160).join("\n");
+    assert.ok(panel.includes("(+12 more body line"), "the side panel marks the bounded preview");
+    manager.handleInput("\r"); // action sheet
+    manager.handleInput("down"); // View definition
+    manager.handleInput("\r");
+    assert.equal(manager.view.kind, "review", "the definition opens in the scrollable read-only view");
+    const head = render(manager, 160).join("\n");
+    assert.ok(head.includes("LAYERS"), "the read-only view starts with the definition facts");
+    assert.ok(head.includes("later lines"), "the bounded viewport clips before scrolling");
+    for (let step = 0; step < 12; step += 1) manager.handleInput("down");
+    assert.ok(render(manager, 160).join("\n").includes("Responsibility line 1 of the long role body."), "scrolling reaches the body's beginning");
+    for (let step = 0; step < 40; step += 1) manager.handleInput("down");
+    assert.ok(render(manager, 160).join("\n").includes("Responsibility line 20 of the long role body."), "scrolling reveals the full body");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousCodingAgentDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
   // An invalid entry opens its diagnostics read-only instead of a delete flow.
   const registry = discoverShadowDefinitions(fixtureProject);
   const manager = new ShadowManager(
