@@ -1,5 +1,0 @@
----
-"@odradekk/pi-square": patch
----
-
-Deduplicate Shadow transcript references across runtime lifecycles. The at-most-once append claim moves from the per-subscriber closure to the extension registration scope and is arbitrated by the inbox itself: the persistent partition grants one fsync'd exclusive-create claim file per result (`references/<id>.claim`) with a disk-authoritative `referenced` re-check, owner-token and file-identity checked release, and fail-closed crash residue, while the in-memory fallback keeps a per-store claim set. Two overlapping subscribers, session reopen/replacement, or a second extension instance observing the same unreferenced result can no longer both append it. A failed append releases only its own claim for a later retry; once an append returns, an uncertain referenced-mark write keeps the durable claim rather than risking a duplicate. Advisory delivery stays separately confirmed from transcript evidence. The defect was reproduced under the supported Pi 0.84.2 host as well as a Pi 0.84.3 host.

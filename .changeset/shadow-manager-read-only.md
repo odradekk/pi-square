@@ -1,9 +1,0 @@
----
-"@odradekk/pi-square": major
----
-
-Reduce the `/shadow` manager to a read-only definitions and operations window (odradekk/pi-square#190, third slice of #184). Manager definition create, edit, toggle-as-write, delete, scope selection, candidate reviews, confirmation flows, and the dedicated safe overlay writer stack (`src/shadow-minds/overlays.ts` with its lock/CAS/review-fingerprint machinery) are removed, together with the discovery preview helpers that served only that stack. Definition files change exclusively through the ordinary file tools guided by `/shadow <request>` (#189).
-
-The Definitions view keeps rich inspection and adds what the editing flows used to carry: per-field provenance, full copyable layer paths alongside scope and content hash, the responsibility body, invalid diagnostics, and a copyable edit path with the `/shadow <request>` hint; invalid entries open a read-only diagnostics view routed to the same request path. Manual Trial with the bounded one-time note, live run observation with cancellation, Runs and Scheduling with pending and clipped evidence, Pause/Resume, the Inbox with Send to agent, payload inspection, attention and deletion, the usage/cache Diagnostics view, and run-facts inspection are unchanged. Each no-argument `/shadow` invocation rediscovers definition files before the manager opens, and an open manager keeps its stable snapshot with no watcher or internal refresh action — reopening `/shadow` is the explicit refresh. The internal serializer stays for round-trip and reference-asset contract tests only and is no longer a runtime write path. Shadow Minds no longer routes any `ctx.ui.confirm` call through the FIFO coordinator.
-
-The `/shadow <request>` Guide flow, message ordering, and turn-trigger semantics are unchanged. Full tests, type checking, smoke, package check, and the frame benchmark pass.

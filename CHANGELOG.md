@@ -1,5 +1,31 @@
 # @odradekk/pi-square
 
+## 12.0.0
+
+### Major Changes
+
+- 4926bd6: Remove anchored-edit revert and rebuild the undo-free store (odradekk/pi-square#187). Parent and writable-child editing now use `replace` as the only range-editing path; every revert tool, undo record, undo error, prompt, persistence rule, and presentation path is removed. Opening an older or undo-bearing anchor store quarantines it before any schema write and rebuilds a fresh store, so cached served state is intentionally lost and recovered through a new read.
+
+- 6f1afd9, eaac90e: Make Shadow Minds definitions entirely user-owned and reduce `/shadow` to a read-only definitions and operations window (odradekk/pi-square#184). The six transitional package-owned runnable templates and the package discovery layer are removed. Discovery now scans only the agent base directory and nearest project overlay, with no Shadow-specific project-trust gate; package upgrades cannot add or change effective definitions. The Manager keeps definition/provenance inspection, manual trials, scheduling, Inbox, diagnostics, pause, and cancellation, but removes create/edit/delete, scope selection, candidate reviews, confirmations, and the dedicated overlay writer. Definition changes use ordinary file tools through `/shadow <request>`. Exactly two never-discovered reference assets ship under `shadow-minds/`: `example.md` and `schema-reference.md`.
+
+### Minor Changes
+
+- fe038be, 883601e: Give parent and writable-child anchored `read`, `replace`, and `write` Pi 0.84.2's native path authority, including absolute paths, `~`, cwd-relative `../`, and canonical targets reached through symlinks. External target state and locks remain attributed to the initiating workspace; acting-owner served isolation, child `requireServed`, bounded cross-process locking, auto-read, and the write-only creation path remain enforced. The final 12.0.0 surface is replace-only and carries no revert records or tools.
+
+- f12945a, f9a4d2b, c3da550, 8272786, b6f3950, 7fc52a5, 44d9cd4, ce70be8, e87ac9c: Add the default-off experimental Shadow Minds runtime. User-owned definitions can run fresh, non-resumable, strictly read-only child sessions manually or through deterministic `tool_turn`, `mutation`, `failure`, and `completion` triggers. Runs use bounded model turns, tool calls, deadlines, queues, concurrency, trajectories, credential cleaning, schema-validated `submit_shadow_result`, persistent validated Inbox entities, reliable `steer`/`wake`/`notify` delivery, an answer-after-review completion gate, usage/TTFT/cache-cohort diagnostics, and visible scheduling/cancellation outcomes. Shell, writes, SSH, Firecrawl upload/parse, authenticated GitHub, and delegation remain outside the fixed Shadow-safe catalog. The feature remains disabled until the agent-level master switch is explicitly enabled, and no success-rate, correctness, or cost-efficiency improvement is claimed without real-model A/B evidence.
+
+- e97038d: Make `/shadow <request>` the natural-language configuration and consultation path. Clear create, modify, enable, disable, and delete requests use ordinary `read`, `write`, `replace`, and platform-shell deletion; ambiguous scope or layer deletion asks one minimal question. The Guide exposes runtime-resolved paths, merge/fail-closed semantics, the trigger/delivery/gate/tools/budget decision tree, reference assets, cost implications, explicit master enablement, unrelated-config preservation, post-change re-read, and reopen-`/shadow` verification.
+
+- 94e6eb9: Revalidate pending automatic work whenever `/shadow` refreshes definitions and again immediately before an automatic start. Missing, disabled, hidden, invalid, unsubscribed, or master-disabled queued work drops with bounded visible evidence; live trigger reasons are filtered against refreshed subscriptions. Running work keeps its frozen definition, model, tools, authority, and cwd, while completed Inbox results remain unchanged.
+
+### Patch Changes
+
+- bc22e30: Preserve body inheritance for body-less user-owned project overlays; standalone definitions still require a complete effective body and invalid candidates fail closed.
+
+- 610d20f, a5232de: Append each Shadow result's bounded parent-transcript reference at most once across synchronous re-entry, overlapping subscribers, runtime replacement, reopen, and multiple extension instances. Failed appends remain retryable without duplicating a successful or uncertain append.
+
+- 6d14e14: Keep Subagent SYSTEM snapshots stable across fresh and resumed Pi 0.84.2 sessions by stripping repeated working-directory-only and historical date-plus-working-directory runtime suffixes before freezing the prompt.
+
 ## 11.0.0
 
 ### Major Changes

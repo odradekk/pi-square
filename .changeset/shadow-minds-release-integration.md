@@ -1,5 +1,0 @@
----
-"@odradekk/pi-square": minor
----
-
-Shadow Minds release integration: complete the repository-wide documentation for the default-off experimental capability. Add ADR-0011 (the boundary from delegated Subagents, deterministic triggers, strict read-only policy, task/session lifecycle, answer-after-review gate, layered definitions, inbox persistence, reliable delivery, trust, and the measured never-speculative cache strategy) and a complete user guide (`docs/shadow-minds.md`) covering default-off behavior, configuration, the definition/schema format, triggers, tool/model boundaries, `/shadow` and the Config Guide, inbox delivery, cross-task semantics, debug data, cache metrics, and the experimental status. README now links the guide and states explicitly that no success-rate, correctness, or cost-efficiency improvement is claimed without real-model A/B evidence. This changeset rides in the same minor release as the Shadow Minds capability slices and the Subagent SYSTEM working-directory stability correction.
