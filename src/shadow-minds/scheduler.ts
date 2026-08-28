@@ -304,6 +304,14 @@ export interface ShadowScheduler {
    * continuation turn never pays the rendering cost.
    */
   shouldCapture(): boolean;
+  /**
+   * Revalidates every pending activation against the current registry and
+   * configuration (#191). A registry refresh (reopening `/shadow`) calls this
+   * immediately so deleted, disabled, invalid, or no-longer-subscribed work
+   * drops with visible scheduling evidence instead of waiting for the next
+   * dispatch boundary.
+   */
+  revalidate(): void;
   pause(): void;
   resume(): void;
   snapshot(): ShadowSchedulerSnapshot;
@@ -518,6 +526,9 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
   };
 
   return {
+    revalidate() {
+      reconcilePending(deps.definitions(), deps.config());
+    },
     handleInput(source) {
       if (source === "extension") return;
       taskEpoch += 1;

@@ -194,7 +194,12 @@ What ships today:
   cache diagnostics stay; definition create/edit/delete affordances, scope
   editors, candidate reviews, confirmations, and the dedicated overlay
   writer stack are gone. Each no-argument invocation rediscovers files before
-  opening, and an open manager holds a stable snapshot with no watcher.
+  opening, and an open manager holds a stable snapshot with no watcher. The
+  reopen revalidates pending automatic work against the refreshed registry —
+  deleted, disabled, invalid, or unsubscribed activations drop with visible
+  scheduling evidence — while running runs keep their frozen definition,
+  model, tools, authority, and cwd, and completed inbox results are never
+  mutated by a refresh (#191).
 - `/shadow <request>` is the natural-language configuration and consultation
   path: a bounded Shadow Config Guide is delivered before the unchanged
   request, and only the user request triggers a turn. Questions are answered
