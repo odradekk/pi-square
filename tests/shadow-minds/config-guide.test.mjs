@@ -65,9 +65,37 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.match(guide.content, /\[Shadow Config Guide\]/);
   assert.match(guide.content, /promptVersion: 1/);
   assert.match(guide.content, /disabled, priority 0, no automatic triggers, steer delivery/);
-  assert.match(guide.content, /never write definition files directly/);
   assert.match(guide.content, /The next user message is the only authorized configuration request/);
+  // #189: the Guide is the natural-language configuration path.
+  assert.match(guide.content, /Consultations?[^.]*without changing any file/, "consultations answer without file changes");
+  assert.match(guide.content, /ordinary (?:read, write, and replace|file)/, "create/modify work is ordinary file work");
+  assert.match(guide.content, /delete[^.]*platform shell/, "deletion names the platform shell");
+  assert.match(guide.content, /minimal clarification question/, "ambiguous scope or deletion asks one clarification");
+  assert.match(guide.content, /deleting a project overlay reveals the agent base/, "overlay deletion consequence is explicit");
+  assert.match(guide.content, /deleting an agent base can strand a minimal project overlay/, "base deletion warning is explicit");
+  assert.match(guide.content, /omitted or empty body inherits/, "body inheritance matches production parsing");
+  assert.match(guide.content, /omitting model inherits/, "model inheritance uses omission rather than an invalid empty scalar");
+  assert.match(guide.content, /definition's own enabled field arms only that definition/, "definition enablement is distinct from the master switch");
   assert.ok(guide.content.includes(".pi/shadow-minds"), "the default project write path is documented");
+  assert.ok(
+    guide.content.includes(join(fixtureRoot, "agent", "shadow-minds")),
+    "the runtime-resolved agent base path is documented",
+  );
+  assert.ok(guide.content.includes(join(packageRoot, ".pi", "shadow-minds")), "the runtime-resolved project overlay path is documented");
+  assert.ok(guide.content.includes("pi-square.json"), "the agent config path is documented");
+  assert.match(guide.content, /never (?:turns the master switch on|enables the master switch)/, "drafts never enable the master switch");
+  assert.match(guide.content, /explicitly asks to enable/, "only explicit requests may enable");
+  assert.match(guide.content, /preserve every unrelated setting/, "agent config edits preserve unrelated settings");
+  assert.match(guide.content, /Re-read every file/, "mutations end with a disk re-read");
+  assert.match(guide.content, /reopen \/shadow/, "the report points back at production diagnostics");
+  assert.match(guide.content, /never run as definitions/, "packaged references are non-running");
+  assert.match(guide.content, /upgrades may overwrite/, "package reference edits are upgrade-fragile");
+  assert.match(guide.content, /tool_turn/, "the trigger decision tree names tool_turn");
+  assert.match(guide.content, /completionGate/, "the gate decision is documented");
+  assert.match(guide.content, /maxToolCalls/, "budgets are documented");
+  assert.doesNotMatch(guide.content, /never write definition files directly/, "the manager-only write instruction is gone");
+  assert.doesNotMatch(guide.content, /review and confirmation/, "no Shadow-specific confirmation remains");
+  assert.ok(guide.content.includes("read, grep, find, ls, codegraph, pdf_search, search, fetch, libs, docs"), "the read-only catalog is documented");
   assert.ok(JSON.stringify(guide.content).length < 60_000, "the guide stays bounded");
   assert.equal(guide.details.version, 1);
   assert.equal(guide.details.definitionCount, registry.definitions.length);
@@ -77,6 +105,31 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.ok(metadata.length > 0);
   assert.ok(metadata.every((entry) => !("body" in entry)), "responsibility bodies never enter the guide");
   assert.ok(metadata.every((entry) => entry.layers.length <= 3), "layer provenance is bounded");
+}
+
+// A project scope rejected by discovery must not make consultations fail or
+// redirect ordinary writes to a fallback path (#189).
+{
+  const root = mkdtempSync(join(tmpdir(), "pi-square-shadow-guide-unsafe-project-"));
+  const project = join(root, "project");
+  const outside = join(root, "outside");
+  try {
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, join(project, ".pi", "shadow-minds"), "dir");
+    const registry = discoverShadowDefinitions(project);
+    assert.ok(registry.diagnostics.some((entry) => /outside the project workspace/.test(entry.message)));
+    const guide = buildShadowConfigGuide(registry, project);
+    assert.match(guide.content, /Project overlay unavailable/);
+    assert.match(guide.content, /Do not create, modify, or delete project-scope definitions/);
+    assert.match(guide.content, /consultations and agent-scope work remain available/);
+    assert.ok(
+      !guide.content.includes(`${join(project, ".pi", "shadow-minds")}. Writes follow discovery`),
+      "the rejected project path is never presented as a writable target",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 // Registry-derived metadata uses the shared VT and credential sanitizer.
@@ -137,7 +190,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
     theme,
   ));
   const text = expanded.join("\n");
-  assert.ok(text.includes("Configuration contract"), "the expanded view renders the contract");
+  assert.ok(text.includes("How to treat the next user message"), "the expanded view renders the request-handling section");
   assert.ok(!text.includes("[Shadow Config Guide]"), "the bracket header is stripped for Markdown rendering");
 }
 
@@ -192,6 +245,28 @@ function fakePi() {
   assert.equal(harness.events[0][2].triggerTurn, undefined, "the guide itself does not trigger a turn");
   assert.equal(harness.events[1][1], request, "the native user request is forwarded byte-for-byte");
   assert.equal(harness.events[1][2].deliverAs, "followUp");
+}
+
+{
+  const root = mkdtempSync(join(tmpdir(), "pi-square-shadow-command-unsafe-project-"));
+  const project = join(root, "project");
+  const outside = join(root, "outside");
+  try {
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, join(project, ".pi", "shadow-minds"), "dir");
+    const harness = fakePi();
+    ({ default: registerShadowMinds } = await load(join(packageRoot, "src", "shadow-minds", "index.ts")));
+    registerShadowMinds(harness.pi);
+    const handler = harness.commands.get("shadow").handler;
+    const request = "explain why project Shadow configuration is unavailable";
+    await handler(request, { cwd: project, hasUI: false, isProjectTrusted: () => false });
+    assert.deepEqual(harness.events.map((event) => event[0]), ["guide", "user"]);
+    assert.match(harness.events[0][1].content, /Project overlay unavailable/);
+    assert.equal(harness.events[1][1], request);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 // ── The bare command opens the manager only with a UI ───────────────
