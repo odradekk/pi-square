@@ -186,16 +186,15 @@ What ships today:
   `shadow-minds/example.md` and the normative `shadow-minds/schema-reference.md`
   — are documentation only and never enter discovery; package upgrades cannot
   add effective definitions.
-- A `/shadow` manager that inspects effective fields, layer sources, hidden
-  and invalid state, and diagnostics, and safely edits agent and project
-  overlays: create, edit single fields, enable, disable,
-  hide, and delete, each with a full candidate review — the layer Markdown
-  plus the effective behavior change — confirmed through the session
-  confirmation coordinator. Writes enforce canonical scope,
-  symlink and file identity, locking, review fingerprint CAS, complete
-  effective-candidate validation, permission preservation, and atomic rename;
-  a stale or concurrent change refuses the write without losing either
-  version. Definition writes alone create no model calls.
+- A read-only `/shadow` manager (#190): every effective definition with its
+  merged fields, per-field provenance, layer sources (scope, full file path,
+  content hash), hidden and invalid state, diagnostics, the responsibility
+  body, and a copyable edit path with the `/shadow <request>` hint. Manual
+  trials, runs and scheduling, the result inbox, pause/resume, and usage and
+  cache diagnostics stay; definition create/edit/delete affordances, scope
+  editors, candidate reviews, confirmations, and the dedicated overlay
+  writer stack are gone. Each no-argument invocation rediscovers files before
+  opening, and an open manager holds a stable snapshot with no watcher.
 - `/shadow <request>` is the natural-language configuration and consultation
   path: a bounded Shadow Config Guide is delivered before the unchanged
   request, and only the user request triggers a turn. Questions are answered

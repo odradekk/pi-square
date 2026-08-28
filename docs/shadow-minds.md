@@ -40,15 +40,14 @@ cap (see the configuration reference below).
 
 ## The `/shadow` manager
 
-`/shadow` opens a single non-overlay manager:
+`/shadow` opens a single non-overlay manager. It is read-only (#190):
+definitions change only through ordinary file edits or `/shadow <request>`.
 
-- **Browse** — every effective definition with its merged fields, layer
-  sources (scope, file name, content hash), trigger set, delivery policy,
-  diagnostics, and hidden or invalid state.
-- **Overlays** — create, edit single fields, enable, disable, hide, and
-  delete agent and project overlays. Every write shows a full
-  candidate review — the layer Markdown plus the effective behavior change —
-  before the confirmation.
+- **Browse** — every effective definition with its merged fields, per-field
+  provenance, layer sources (scope, full file path, content hash), trigger
+  set, delivery policy, diagnostics, hidden or invalid state, the
+  responsibility body, and a copyable edit path with the
+  `/shadow <request>` hint.
 - **Runs / Inbox** — manual trials with a bounded one-time note, live run
   observation with cancellation, the session result inbox (payloads, read,
   dismiss, delete, explicit delivery), scheduling notes (clipped queue
@@ -57,9 +56,9 @@ cap (see the configuration reference below).
 - **Run facts** — per run: the frozen tool envelope, trigger reasons, the
   full cache-cohort hash axes, and per-request metrics.
 
-Definitions are ordinary files, and the manager is one of two editing
-paths: the agent can also edit or delete them directly with the ordinary
-file tools when you ask through `/shadow <request>`.
+Each no-argument invocation rediscovers definition files before the manager
+opens; an already open manager keeps its stable snapshot with no watcher or
+internal refresh action — reopening `/shadow` is the explicit refresh.
 
 ## `/shadow <request>` and the Config Guide
 

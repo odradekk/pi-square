@@ -102,9 +102,14 @@ schema), and a provided body replaces the lower layer. The package layer and
 Shadow-specific project trust were removed: discovery scans exactly the two
 user-owned scopes, the packaged `example.md` and `schema-reference.md` are
 never-discovered reference assets, and every project contributes on the same
-terms. All writes flow through the `/shadow` manager with candidate
-review, review-fingerprint CAS, locking, identity checks, complete
-effective-candidate validation, and atomic rename.
+terms. Definition files change only through ordinary file tools (#189,
+#190): `/shadow <request>` carries the bounded natural-language configuration
+contract, and the `/shadow` manager is a read-only inspection and operations
+window — the dedicated overlay writer with its candidate reviews,
+review-fingerprint CAS, locking, identity checks, and atomic rename was
+deleted rather than kept beside Pi's ordinary editing model. Strict
+discovery remains the fail-closed backstop; the internal serializer serves
+round-trip and reference-asset contract tests only.
 
 ### Inbox persistence
 

@@ -1,18 +1,19 @@
 /**
- * Shadow Minds feature entry (odradekk/pi-square#149, slices #153–#155).
+ * Shadow Minds feature entry (odradekk/pi-square#149, slices #153–#155;
+ * read-only manager since #190).
  *
  * This entry owns the definition registry state, refreshes it on session
- * start from the canonical workspace result, registers
- * the `/shadow` manager with its safe overlay write services, and provides
- * the parameterized `/shadow <request>` Config Guide flow. The session
+ * start from the canonical workspace result and before every no-argument
+ * `/shadow` open, registers the read-only manager, and provides the
+ * parameterized `/shadow <request>` Config Guide flow. The session
  * runtime executes manual no-tool trials through the shared one-time
  * child-session executor seam: every run freezes the parent core, project
- * project rules, and canonical working directory from the parent's current
+ * rules, and canonical working directory from the parent's current
  * prompt options at activation, and composes the versioned Shadow SYSTEM and
- * reference-only trajectory from that snapshot. Manager approvals route through the
- * session FIFO confirmation coordinator; every persistent write executes
- * through the safe overlay writer. The runtime performs model calls only
- * for explicitly started manual trials while the master switch is on.
+ * reference-only trajectory from that snapshot. Definition files change only
+ * through ordinary file tools; the manager never writes. The runtime performs
+ * model calls only for explicitly started manual trials while the master
+ * switch is on.
  */
 
 import { realpathSync } from "node:fs";
@@ -21,16 +22,13 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { ConfirmationCoordinator } from "../core/confirmation";
 import {
   DEFAULT_CONFIG,
   SHADOW_MINDS_HEADLESS_DRAIN_HARD_MAX_SECONDS,
   type PiSquareConfig,
   type ShadowMindsConfig,
 } from "../core/config";
-import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
-import { getAgentPath } from "../core/paths";
-import { isAbsolute, relative, resolve } from "node:path";
+import { sanitizeDisplayLine } from "../display/sanitize";
 import {
   buildShadowConfigGuide,
   renderShadowConfigGuide,
@@ -38,27 +36,16 @@ import {
 } from "./config-guide";
 import {
   discoverShadowDefinitions,
-  previewShadowDefinition,
-  previewShadowDefinitionDeletion,
   shadowDefinitionContextFingerprint,
-  shadowDefinitionScopeDir,
   type EffectiveShadowDefinition,
   type ShadowDefinitionRegistry,
 } from "./definitions";
 import {
   openShadowManager,
   snapshot,
-  type ShadowApprovalRequest,
   type ShadowManagerServices,
   type ShadowManagerSnapshot,
 } from "./manager";
-import {
-  ShadowOverlayError,
-  deleteShadowOverlay,
-  readShadowOverlaySnapshot,
-  shadowOverlayFilePath,
-  writeShadowOverlay,
-} from "./overlays";
 import { formatModel } from "../subagents/child-session-executor";
 import {
   buildShadowSystem,
@@ -84,7 +71,6 @@ import {
   type ShadowScheduler,
   type ShadowSchedulerStartInput,
 } from "./scheduler";
-import { serializeShadowDefinition } from "./serialize";
 import { buildTrajectory, type ShadowTrajectoryEvidence } from "./trajectory";
 import { resolveShadowTools } from "./tools";
 import { createShadowInbox, type ShadowInbox } from "./result";
@@ -227,18 +213,6 @@ function notifyText(message: string): string {
   const sanitized = sanitizeDisplayLine(message);
   return sanitized.length <= MAX_NOTIFY_CHARS ? sanitized : `${sanitized.slice(0, MAX_NOTIFY_CHARS - 1)}…`;
 }
-function outcomeOf(error: unknown, fallbackPrefix: string) {
-  if (error instanceof ShadowOverlayError) {
-    if (error.code === "SHADOW_STALE_REVIEW") {
-      return {
-        ok: false,
-        message: notifyText(`The overlay changed since it was reviewed; nothing was written. Reopen /shadow and review the current file.`),
-      };
-    }
-    return { ok: false, message: notifyText(`${fallbackPrefix}: ${error.message}`) };
-  }
-  return { ok: false, message: notifyText(`${fallbackPrefix}: ${error instanceof Error ? error.message : String(error)}`) };
-}
 
 /**
  * Composes and starts one run from an effective definition against a live
@@ -358,11 +332,10 @@ function composeShadowRun(input: {
   }
 }
 
-/** Builds the manager write and runtime services against one command invocation. */
+/** Builds the manager runtime services against one command invocation. */
 function makeServices(
   state: ShadowMindsState,
   ctx: ExtensionCommandContext,
-  confirmations: ConfirmationCoordinator,
   runtime: ShadowRuntime = state.runtime,
   hooks?: { onSchedulerChange?: () => void },
 ): ShadowManagerServices {
@@ -466,128 +439,11 @@ function makeServices(
           : { ok: false, message: "The failure summary could not be sent." };
       },
     },
-    refresh(): ShadowManagerSnapshot {
-      state.refresh(ctx.cwd);
-      return state.managerSnapshot();
-    },
-    scopeOf(filePath: string): "agent" | "project" | undefined {
-      const within = (dir: string): boolean => {
-        const rel = relative(resolve(dir), resolve(filePath));
-        return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-      };
-      if (within(getAgentPath("shadow-minds"))) return "agent";
-      try {
-        if (within(shadowDefinitionScopeDir("project", ctx.cwd))) return "project";
-      } catch {
-        // Project scope resolution is unavailable; only the agent scope maps.
-      }
-      return undefined;
-    },
-    async overlaySnapshot(scope, id, filePath) {
-      return readShadowOverlaySnapshot(scope, ctx.cwd, id, {
-        filePath,
-      });
-    },
-    preview(scope, fields, expectedContextFingerprint, reviewedFilePath) {
-      try {
-        const content = serializeShadowDefinition(fields);
-        const filePath = reviewedFilePath ?? shadowOverlayFilePath(scope, ctx.cwd, fields.id);
-        const preview = previewShadowDefinition(ctx.cwd, {
-            scope,
-          filePath,
-          content,
-          expectedContextFingerprint,
-        });
-        return {
-          content,
-          filePath,
-          definition: preview.definition,
-          errors: preview.errors,
-          contextFingerprint: preview.contextFingerprint,
-        };
-      } catch (error) {
-        return {
-          content: "",
-          filePath: "",
-          errors: [error instanceof Error ? error.message : String(error)],
-        };
-      }
-    },
-    previewDelete(scope, _id, filePath, expectedContextFingerprint) {
-      try {
-        const preview = previewShadowDefinitionDeletion(ctx.cwd, {
-            scope,
-          filePath,
-          expectedContextFingerprint,
-        });
-        return {
-          definition: preview.definition,
-          errors: preview.errors,
-          contextFingerprint: preview.contextFingerprint,
-        };
-      } catch (error) {
-        return { errors: [error instanceof Error ? error.message : String(error)] };
-      }
-    },
-    async approve(request: ShadowApprovalRequest): Promise<boolean> {
-      if (!ctx.hasUI) return false;
-      return confirmations.run(undefined, (signal) => ctx.ui.confirm(
-        sanitizeDisplayLine(request.title),
-        sanitizeDisplayText([...request.lines, "", request.destructive
-          ? "This permanently changes Shadow definition files on disk."
-          : "Declining performs no write."].join("\n")),
-        { signal },
-      ));
-    },
-    async save(scope, fields, reviewFilePath, reviewFingerprint, reviewContextFingerprint, reviewIdentity) {
-      try {
-        const result = await writeShadowOverlay({
-          cwd: ctx.cwd,
-            scope,
-          fields,
-          reviewFilePath,
-          reviewFingerprint,
-          reviewContextFingerprint,
-          reviewIdentity,
-        });
-        state.refresh(ctx.cwd);
-        ctx.ui.notify(`shadow-minds: saved ${fields.id} ${scope} overlay (${result.filePath})`, "info");
-        return { ok: true, message: `Saved ${fields.id} ${scope} overlay.` };
-      } catch (error) {
-        const outcome = outcomeOf(error, "saving the overlay failed");
-        ctx.ui.notify(`shadow-minds: ${outcome.message}`, "warning");
-        return outcome;
-      }
-    },
-    async deleteOverlay(scope, id, filePath, reviewFingerprint, reviewContextFingerprint, reviewIdentity) {
-      try {
-        const result = await deleteShadowOverlay({
-          cwd: ctx.cwd,
-            scope,
-          id,
-          filePath,
-          reviewFingerprint,
-          reviewContextFingerprint,
-          reviewIdentity,
-        });
-        state.refresh(ctx.cwd);
-        const message = result.removed
-          ? `Deleted the ${id} ${scope} overlay.`
-          : `No ${id} ${scope} overlay existed anymore.`;
-        ctx.ui.notify(`shadow-minds: ${message}`, "info");
-        return { ok: true, message };
-      } catch (error) {
-        const outcome = outcomeOf(error, "deleting the overlay failed");
-        ctx.ui.notify(`shadow-minds: ${outcome.message}`, "warning");
-        return outcome;
-      }
-    },
   };
 }
 
 export default function registerShadowMinds(
   pi: ExtensionAPI,
-  confirmations: ConfirmationCoordinator = new ConfirmationCoordinator(),
   config?: () => PiSquareConfig,
   runtimeDeps?: ShadowRuntimeDeps,
 ): ShadowMindsState {
@@ -768,7 +624,7 @@ export default function registerShadowMinds(
   pi.registerMessageRenderer(SHADOW_CONFIG_GUIDE_TYPE, renderShadowConfigGuide);
 
   pi.registerCommand("shadow", {
-    description: "Manage layered Shadow definitions and overlays, or ask Pi to help configure one.",
+    description: "Inspect read-only Shadow definitions, runs, and results, or ask Pi to help configure one.",
     handler: async (args, ctx) => {
       const rawRequest = String(args ?? "");
       const request = rawRequest.trim();
@@ -785,7 +641,7 @@ export default function registerShadowMinds(
         return;
       }
       if (!ctx.hasUI) return;
-      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, confirmations, undefined, {
+      await openShadowManager(ctx, state.managerSnapshot(), makeServices(state, ctx, undefined, {
         onSchedulerChange: refreshStatus,
       }));
     },
