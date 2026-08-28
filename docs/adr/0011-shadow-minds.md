@@ -48,13 +48,11 @@ read-only extension factories — never parent registry overrides. Shell,
 writes, SSH, Firecrawl parse, authenticated GitHub, and delegation are
 excluded capabilities: requested-but-excluded tools drop with visible
 warnings, while required ones fail before prompting. The optional
-`pdf_search` and GitHub-class capabilities stay explicit opt-ins; every
-bundled template requests only catalog tools from the read-only local and
-library evidence families — two of the six add `codegraph`, and two add
-the local `pdf_search` extractor — and none requests a remote or
-authenticated capability. The governance text restates
-the boundary for the model, and the envelope hash makes the effective tool
-set observable per run.
+`pdf_search` capability stays an explicit opt-in. No runnable package-owned
+Shadow definition ships (#188): the two packaged Markdown files are
+never-discovered format/schema references, not tool-bearing roles. The
+governance text restates the boundary for the model, and the envelope hash
+makes the effective tool set observable per run.
 
 ### Deterministic triggers and scheduling
 
@@ -67,7 +65,15 @@ epochs; extension continuations never trigger, so a Shadow result delivered
 as a steering message can never re-trigger Shadows recursively. Dispatch
 arbitrates by task generation, fixed trigger priority, Shadow priority, then
 ID, under concurrency, per-task start, and queue bounds, with visible
-clipping and budget diagnostics.
+clipping and budget diagnostics. Reopening `/shadow` rediscovers files and
+immediately revalidates queued activations against the effective registry and
+agent master switch (#191): ineligible or no-longer-subscribed work drops
+visibly, and the automatic pre-start boundary refreshes once more so a file
+change after dispatch selection fails closed rather than starting a stale
+definition. Still-valid merged reasons are filtered to the live subscriptions.
+Running work and completed Inbox results are outside refresh mutation: a run
+keeps the definition, model, tools, authority, and working directory frozen at
+its start.
 
 ### Task and Session lifecycle
 

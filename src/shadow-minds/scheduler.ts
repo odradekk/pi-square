@@ -304,6 +304,14 @@ export interface ShadowScheduler {
    * continuation turn never pays the rendering cost.
    */
   shouldCapture(): boolean;
+  /**
+   * Revalidates every pending activation against the current registry and
+   * configuration (#191). A registry refresh (reopening `/shadow`) calls this
+   * immediately so a disabled master switch or deleted, disabled, hidden,
+   * invalid, or no-longer-subscribed definition drops queued work with visible
+   * scheduling evidence instead of waiting for the next dispatch boundary.
+   */
+  revalidate(): void;
   pause(): void;
   resume(): void;
   snapshot(): ShadowSchedulerSnapshot;
@@ -414,6 +422,13 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
     definitions: readonly EffectiveShadowDefinition[],
     config: ShadowMindsConfig,
   ): void => {
+    if (!config.enabled) {
+      for (const id of pending.keys()) {
+        pending.delete(id);
+        recordDiagnostic(`Shadow '${id}' was dropped because the master switch is disabled.`);
+      }
+      return;
+    }
     const byId = new Map(definitions.map((definition) => [definition.id, definition]));
     for (const [id, activation] of [...pending]) {
       const definition = byId.get(id);
@@ -518,6 +533,9 @@ export function createShadowScheduler(deps: ShadowSchedulerDeps): ShadowSchedule
   };
 
   return {
+    revalidate() {
+      reconcilePending(deps.definitions(), deps.config());
+    },
     handleInput(source) {
       if (source === "extension") return;
       taskEpoch += 1;
