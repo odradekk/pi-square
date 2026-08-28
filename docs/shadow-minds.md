@@ -61,7 +61,7 @@ opens; an already open manager keeps its stable snapshot with no watcher or
 internal refresh action — reopening `/shadow` is the explicit refresh.
 
 The same reopen revalidates pending automatic work against the refreshed
-registry (#191): activations for deleted, disabled, invalid, or
+registry (#191): activations for deleted, disabled, hidden, invalid, or
 no-longer-subscribed definitions are dropped immediately with a visible
 scheduling note instead of starting from stale configuration, while
 still-eligible activations keep their queue position with refreshed

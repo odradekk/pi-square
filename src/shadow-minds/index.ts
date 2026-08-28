@@ -557,9 +557,11 @@ export default function registerShadowMinds(
       state.cwd = cwd;
       state.registry = discoverShadowDefinitions(cwd);
       // #191: the refreshed registry revalidates pending activations at once
-      // — deleted, disabled, invalid, or unsubscribed work drops visibly
-      // instead of starting from stale configuration at the next dispatch.
-      state.scheduler?.revalidate();
+      // — deleted, disabled, hidden, invalid, or unsubscribed work drops
+      // visibly instead of starting from stale configuration at the next
+      // dispatch. The scheduler is assigned in the initial state literal and
+      // again before the session_start refresh, so it always exists here.
+      state.scheduler.revalidate();
     },
     managerSnapshot(): ShadowManagerSnapshot {
       const effective = config?.().shadowMinds;
