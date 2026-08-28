@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import jiti from "jiti";
@@ -191,18 +191,31 @@ writeDefinition(agentScope, "broken-role", [
 {
   const configPath = join(agentDir, "config", "pi-square.json");
   mkdirSync(join(agentDir, "config"), { recursive: true });
-  // The Guide's explicit-enable flow: read the complete file, change only
-  // the shadowMinds fields, keep every unrelated setting.
-  writeFileSync(configPath, JSON.stringify({
+  // The Guide's explicit-enable flow starts from a complete on-disk read,
+  // changes only shadowMinds.enabled, and preserves unrelated and nested
+  // Shadow defaults rather than constructing a replacement config from memory.
+  const before = {
+    version: 2,
     banner: { enabled: false },
     display: { motion: "full" },
-    shadowMinds: { enabled: true },
-  }, null, 2), "utf8");
+    anchoredEditing: { enabled: false, autoRead: false },
+    shadowMinds: { enabled: false, defaults: { runTimeoutSeconds: 45 } },
+  };
+  writeFileSync(configPath, `${JSON.stringify(before, null, 2)}\n`, "utf8");
+  const complete = JSON.parse(readFileSync(configPath, "utf8"));
+  const after = {
+    ...complete,
+    shadowMinds: { ...complete.shadowMinds, enabled: true },
+  };
+  writeFileSync(configPath, `${JSON.stringify(after, null, 2)}\n`, "utf8");
 
   const loaded = loadConfig(project);
   assert.equal(loaded.config.shadowMinds.enabled, true, "an explicit enable request turns the agent-only master on");
   assert.equal(loaded.config.banner.enabled, false, "unrelated banner settings survive");
   assert.equal(loaded.config.display.motion, "full", "unrelated display settings survive");
+  assert.deepEqual(loaded.config.anchoredEditing, { enabled: false, autoRead: false }, "unrelated anchored-edit settings survive");
+  assert.equal(loaded.config.shadowMinds.defaults.runTimeoutSeconds, 45, "existing Shadow defaults survive the enable-only change");
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), after, "the disk rewrite changes no field except the intended master switch");
   assert.ok(loaded.diagnostics.every((entry) => entry.severity !== "error"), "no diagnostics from the preserved rewrite");
 
   // A project layer can never enable the master switch.

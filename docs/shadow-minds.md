@@ -76,7 +76,10 @@ Questions are answered without changing files; clear create, modify,
 enable, disable, and delete requests run through the ordinary `read`,
 `write`, and `replace` tools with the active platform shell for deletion —
 there is no Shadow-specific write tool or confirmation. Ambiguous scope or
-layer-deletion requests get one minimal clarification question first.
+layer-deletion requests get one minimal clarification question first. Before
+deleting, the agent reads both layers and reports the consequence: removing a
+project overlay reveals the agent base when one exists, while removing an agent
+base may leave a minimal project overlay incomplete and excluded.
 
 Creating or editing a draft never enables the master switch; the
 agent-level `shadowMinds.enabled` setting changes only when you explicitly
@@ -199,7 +202,7 @@ requested-but-excluded tool drops with a run-start warning, while a
 opt-in outside the default local evidence set; a definition lists it in
 `tools` when a task needs local PDF evidence.
 
-Models: an empty `model` inherits the activating parent model; an explicit
+Models: omitting `model` inherits the activating parent model; an explicit
 `provider/model-id` resolves through the registry and requires configured
 authentication. `parentModels` restricts automatic activation to exact
 parent models (`*` matches any). Thinking falls back in order: definition →
