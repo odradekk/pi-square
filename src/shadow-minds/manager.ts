@@ -373,7 +373,7 @@ export class ShadowManager implements Component, Focusable {
     const sourceKeys = Object.keys(definition.fieldSources);
     for (const key of sourceKeys) {
       const source = definition.fieldSources[key as keyof typeof definition.fieldSources];
-      lines.push(`${key}: ${source?.scope ?? "default"}`);
+      lines.push(`${key}: ${formatDefinitionSource(source)}`);
     }
     lines.push("", "BODY");
     lines.push(...definition.body.replace(/\r/g, "").split("\n"));
@@ -1057,7 +1057,7 @@ export class ShadowManager implements Component, Focusable {
     const sourceKeys = Object.keys(definition.fieldSources).slice(0, 20);
     for (const key of sourceKeys) {
       const source = definition.fieldSources[key as keyof typeof definition.fieldSources];
-      rows.push(fit(this.theme.fg("muted", `  ${key}: ${source?.scope ?? "default"}`), width));
+      rows.push(fit(this.theme.fg("muted", `  ${key}: ${formatDefinitionSource(source)}`), width));
     }
     const editPath = definition.layers.at(-1)?.filePath;
     if (editPath) {
@@ -1086,6 +1086,12 @@ export class ShadowManager implements Component, Focusable {
 
 function definitionLabel(definition: EffectiveShadowDefinition): string {
   return `${definition.name} (${definition.id})`;
+}
+
+function formatDefinitionSource(source: EffectiveShadowDefinition["fieldSources"][string] | undefined): string {
+  return source
+    ? `${source.scope}: ${source.filePath} (${source.contentHash.slice(0, 8)})`
+    : "default";
 }
 
 /** Reviewed run bounds for one manual trial. */

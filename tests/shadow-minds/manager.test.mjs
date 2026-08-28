@@ -20,7 +20,6 @@ mkdirSync(fixtureProject, { recursive: true });
 installShadowFixtures(join(fixtureRoot, "agent"));
 process.env.PI_AGENT_DIR = join(fixtureRoot, "agent");
 process.env.PI_CODING_AGENT_DIR = join(fixtureRoot, "agent");
-const { serializeShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "serialize.ts"));
 const { DEFAULT_CONFIG } = await load(join(packageRoot, "src", "core", "config.ts"));
 
 const PLAIN = /\x1b\[[0-9;]*m/g;
@@ -94,6 +93,11 @@ function render(manager, width = 100) {
     "the full layer path stays copyable (#190)",
   );
   assert.ok(grounded.includes("PROVENANCE:"), "per-field provenance renders (#190)");
+  assert.ok(
+    wide.includes(`enabled: agent: ${join(fixtureRoot, "agent", "shadow-minds", "project-grounding.md")}`),
+    "per-field provenance includes the full source path",
+  );
+  assert.match(wide, /enabled: agent: [^\n]*project-grounding\.md \([0-9a-f]{8}\)/, "per-field provenance includes the source hash");
   assert.ok(grounded.includes("BODY:"), "the responsibility body has a bounded preview");
   for (const width of [39, 40, 60, 63, 64, 80, 100, 120]) {
     const narrowed = render(manager, width);
@@ -264,6 +268,7 @@ function render(manager, width = 100) {
     assert.equal(manager.view.kind, "review", "the definition opens in the scrollable read-only view");
     const head = render(manager, 160).join("\n");
     assert.ok(head.includes("LAYERS"), "the read-only view starts with the definition facts");
+    assert.match(head, /name: agent: [^\n]*long-body\.md \([0-9a-f]{8}\)/, "the full view carries per-field source path and hash");
     assert.ok(head.includes("later lines"), "the bounded viewport clips before scrolling");
     for (let step = 0; step < 12; step += 1) manager.handleInput("down");
     assert.ok(render(manager, 160).join("\n").includes("Responsibility line 1 of the long role body."), "scrolling reaches the body's beginning");
@@ -491,7 +496,7 @@ function makeRuntimeService(initial) {
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
+    { runtime: service.runtime },
   );
   let index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) withRun.handleInput("down");
@@ -506,7 +511,7 @@ function makeRuntimeService(initial) {
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
+    { runtime: service.runtime },
   );
   index = registry.definitions.findIndex((definition) => definition.id === "project-grounding");
   for (let step = 0; step < index; step += 1) withoutRun.handleInput("down");
@@ -529,7 +534,7 @@ function makeRuntimeService(initial) {
     makeTheme(),
     makeKeybindings(),
     () => done.push(1),
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
+    { runtime: service.runtime },
   );
   const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) manager.handleInput("down");
@@ -566,7 +571,7 @@ function makeRuntimeService(initial) {
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
+    { runtime: service.runtime },
   );
   const index = registry.definitions.findIndex((definition) => definition.id === "session-synthesizer");
   for (let step = 0; step < index; step += 1) manager.handleInput("down");
@@ -613,7 +618,7 @@ function makeRuntimeService(initial) {
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
+    { runtime: service.runtime },
   );
 
   manager.handleInput("r");
@@ -688,7 +693,7 @@ function makeRuntimeService(initial) {
   const manager = new ShadowManager(
     { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
+    { runtime: service.runtime },
   );
   manager.handleInput("r");
   manager.handleInput("down");
@@ -720,7 +725,6 @@ function makeRuntimeService(initial) {
     { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       scheduler: {
         snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
@@ -756,7 +760,6 @@ function makeRuntimeService(initial) {
     { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       scheduler: {
         snapshot: () => ({ taskEpoch: 3, paused, toolGeneration: 5, automaticStartsByTask: [{ epoch: 3, starts: 1 }], pending: pendingData, clippedIds: [], diagnostics: [] }),
@@ -776,7 +779,6 @@ function makeRuntimeService(initial) {
     { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
     },
   );
@@ -822,7 +824,6 @@ function makeRuntimeService(initial) {
     { definitions: registry.definitions, invalid: [], diagnostics: [] },
     makeTui(), makeTheme(), makeKeybindings(), () => {},
     {
-      refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }),
       runtime: service.runtime,
       delivery: deliveryService,
     },
@@ -901,7 +902,7 @@ function makeRuntimeService(initial) {
     makeTheme(),
     makeKeybindings(),
     () => {},
-    { refresh: () => ({ definitions: registry.definitions, invalid: [], diagnostics: [] }), runtime: service.runtime },
+    { runtime: service.runtime },
   );
   manager.handleInput("r");
   // RUNS / INBOX -> Runs -> Diagnostics is the third entry.
