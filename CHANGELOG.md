@@ -1,5 +1,15 @@
 # @odradekk/pi-square
 
+## 12.1.0
+
+### Minor Changes
+
+- d4c452c: Redesign the shared operational display around a calmer evidence-first grammar: one-row headers with natural single-space spacing and no qualifier badges, quieter indented bodies, lower default density, and no repeated expanded summaries. The anchored `replace` result now renders its bounded unified diff as the only payload in both collapsed and expanded states. Running entries gain a subtle full-motion color pulse while reduced, off, non-TTY, CI, and no-color sessions remain static.
+
+### Patch Changes
+
+- e471562: Move the anchored-edit hash store and cross-process lock area out of the workspace and into the Pi session directory (`<sessionDir>/anchored-edit/`, e.g. `~/.pi/agent/sessions/<workspace>/anchored-edit/`), with a workspace-keyed temp-directory fallback for non-persisted sessions such as print mode. Projects no longer accumulate `.pi/anchored-edit/` state; existing stores at the old location are left untouched (anchored state is a recoverable cache that a fresh read rebuilds) and the `.gitignore` entries for the old location are removed. Also remove the dormant vendored user-global store and registration module (`src/anchored-edit/index.ts`, `config.ts`, and the legacy JSON migration), which no live code path ever reached.
+
 ## 12.0.0
 
 ### Major Changes
