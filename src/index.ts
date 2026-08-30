@@ -4,6 +4,7 @@ import registerAnchoredAutoRead from "./anchored-edit/auto-read";
 import registerAnchoredReplace from "./anchored-edit/workspace-replace";
 import registerBanner from "./banner";
 import registerCodeGraph from "./codegraph";
+import registerContextMemory from "./context-memory";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config";
 import { ConfirmationCoordinator } from "./core/confirmation";
 import { emitDiagnostics } from "./core/diagnostics";
@@ -38,6 +39,14 @@ export default function piSquare(pi: ExtensionAPI): void {
   });
 
   registerDisplay(pi, display);
+  // Context Memory registers after configuration and the display runtime and
+  // before Prompt Manager and the built-in overrides (#215): its session-start
+  // active-tool synchronization runs before display/builtins captures its
+  // active-tool baseline, so the two owned tool names never enter it.
+  const contextMemory = registerContextMemory(pi, {
+    configProvider: () => display.config,
+    displayRuntimeProvider: () => display.runtime,
+  });
   let anchoredReadAvailable = false;
   registerDisplayBuiltins(pi, display, (available) => { anchoredReadAvailable = available; });
   registerAnchoredReplace(
@@ -65,5 +74,5 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerShellTools(pi, {}, () => display.runtime);
   registerSshTool(pi, () => display.config, confirmations, () => display.runtime);
   registerBanner(pi, () => display.config);
-  registerPromptManager(pi, subagents);
+  registerPromptManager(pi, { ...subagents, contextMemory });
 }

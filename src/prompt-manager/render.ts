@@ -1,3 +1,4 @@
+import type { ContextMemorySnapshot } from "../context-memory/view";
 import type { PromptManagerSegment } from "./types";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ByRoleChars, CollapsedEntries, MessageEntrySummary } from "./decompose";
@@ -259,6 +260,37 @@ function renderSystemSection(
   return lines;
 }
 
+/**
+ * Context Memory `memory[]` section (odradekk/pi-square#215, #216): one
+ * bounded line per baseline state, rendered between the system-prompt
+ * section and the message section. The stable states stay one or two
+ * lines; later slices add the active Memory rows on the same section.
+ * Never part of the usage bar — Memory accounting leaves the total
+ * usage bar unchanged (#215).
+ */
+function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySnapshot): string[] {
+  let description: string;
+  switch (memory.state) {
+    case "disabled":
+      description = "disabled · enable through agent-level contextMemory configuration";
+      break;
+    case "unsupported":
+      description = memory.reason === "host-version"
+        ? "unsupported Pi host · native compaction unchanged"
+        : "required Pi interfaces unavailable · native compaction unchanged";
+      break;
+    case "no-memory":
+      description = "enabled · no Memory blocks yet";
+      break;
+  }
+  return [
+    RAIL_CONT +
+    paint(theme, "text", "memory[]") +
+    "     " +
+    paint(theme, "dim", description),
+  ];
+}
+
 function roleColor(role: string, inLlmContext: boolean): string {
   if (!inLlmContext) return "dim";
   if (role === "user") return "userMessageText";
@@ -344,6 +376,8 @@ export interface PromptManagerViewInput {
   tools: ToolInfoLite[];
   segments: PromptManagerSegment[];
   promptOrder: string[];
+  /** Read-only Context Memory snapshot; rendered as the `memory[]` section. */
+  memory: ContextMemorySnapshot;
   systemPromptChars: number;
   collapsedMessages: CollapsedEntries;
   totalMessageEntries: number;
@@ -430,6 +464,8 @@ export function renderVerbose(input: PromptManagerViewInput, theme: ThemeWrapper
     input.currentTurn,
     input.systemPromptChars,
   ));
+  lines.push(blankInner(theme));
+  lines.push(...renderMemorySection(theme, input.memory));
   lines.push(blankInner(theme));
   lines.push(...renderMessagesSection(
     theme,

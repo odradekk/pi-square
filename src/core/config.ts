@@ -141,6 +141,39 @@ const AnchoredEditingSchema = Type.Object({
   enabled: Type.Optional(Type.Boolean()),
   autoRead: Type.Optional(Type.Boolean()),
 }, { additionalProperties: false });
+// ── Context Memory (odradekk/pi-square#215, #216) ───────────────────
+
+export const CONTEXT_MEMORY_THRESHOLD_PERCENT_MIN = 10;
+export const CONTEXT_MEMORY_THRESHOLD_PERCENT_MAX = 80;
+export const CONTEXT_MEMORY_BUDGET_PERCENT_MIN = 1;
+export const CONTEXT_MEMORY_BUDGET_PERCENT_MAX = 25;
+
+/**
+ * Exactly one of a percent object or a token object; the union itself
+ * rejects threshold shapes that declare both or neither key because each
+ * branch is strict and requires its own single field.
+ */
+const ContextMemoryThresholdSchema = Type.Union([
+  Type.Object({
+    percent: Type.Integer({
+      minimum: CONTEXT_MEMORY_THRESHOLD_PERCENT_MIN,
+      maximum: CONTEXT_MEMORY_THRESHOLD_PERCENT_MAX,
+    }),
+  }, { additionalProperties: false }),
+  Type.Object({
+    tokens: Type.Integer({ minimum: 1 }),
+  }, { additionalProperties: false }),
+]);
+
+/** Agent layer only: a project layer declaring `contextMemory` is rejected atomically. */
+const ContextMemoryAgentSchema = Type.Object({
+  enabled: Type.Optional(Type.Boolean()),
+  compressionThreshold: Type.Optional(ContextMemoryThresholdSchema),
+  memoryBudgetPercent: Type.Optional(Type.Integer({
+    minimum: CONTEXT_MEMORY_BUDGET_PERCENT_MIN,
+    maximum: CONTEXT_MEMORY_BUDGET_PERCENT_MAX,
+  })),
+}, { additionalProperties: false });
 
 const ShadowThinkingSchema = Type.Union([
   Type.Literal("off"),
@@ -179,6 +212,7 @@ const AgentConfigLayerSchema = Type.Object({
   ...CommonLayerProperties,
   ssh: Type.Optional(SshLayerSchema),
   anchoredEditing: Type.Optional(AnchoredEditingSchema),
+  contextMemory: Type.Optional(ContextMemoryAgentSchema),
   shadowMinds: Type.Optional(ShadowMindsAgentSchema),
 }, { additionalProperties: false });
 
@@ -223,6 +257,17 @@ export interface SshConfig {
 export interface AnchoredEditingConfig {
   enabled: boolean;
   autoRead: boolean;
+}
+
+export type ContextMemoryThreshold =
+  | { percent: number }
+  | { tokens: number };
+
+/** Effective Context Memory configuration; agent-only authority, default-off (odradekk/pi-square#215). */
+export interface ContextMemoryConfig {
+  enabled: boolean;
+  compressionThreshold: ContextMemoryThreshold;
+  memoryBudgetPercent: number;
 }
 
 /** Effective Shadow Minds runtime defaults; every value sits below its package hard cap. */
@@ -276,6 +321,7 @@ export interface PiSquareConfig {
   };
   ssh: SshConfig;
   anchoredEditing: AnchoredEditingConfig;
+  contextMemory: ContextMemoryConfig;
   shadowMinds: ShadowMindsConfig;
   display: DisplayEffectiveConfig;
 }
@@ -285,6 +331,11 @@ export const DEFAULT_CONFIG: Readonly<PiSquareConfig> = Object.freeze({
   banner: Object.freeze({ enabled: true }),
   ssh: Object.freeze({ maxSessions: 8, profiles: Object.freeze([]) }) as unknown as SshConfig,
   anchoredEditing: Object.freeze({ enabled: true, autoRead: true }),
+  contextMemory: Object.freeze({
+    enabled: false,
+    compressionThreshold: Object.freeze({ percent: 30 }),
+    memoryBudgetPercent: 10,
+  }) as ContextMemoryConfig,
   shadowMinds: Object.freeze({
     enabled: false,
     defaults: DEFAULT_SHADOW_MINDS,
@@ -310,6 +361,7 @@ function legacyConfirmCommandsPath(value: unknown): string | undefined {
 function readLayer<T extends TSchema>(
   path: string,
   schema: T,
+  options: { projectForbiddenFields?: readonly string[] } = {},
 ): { value?: Static<T>; diagnostics: DiagnosticMessage[]; shadowMindsDeclared?: boolean; unreadable?: boolean } {
   if (!existsSync(path)) return { diagnostics: [] };
   let value: unknown;
@@ -345,6 +397,17 @@ function readLayer<T extends TSchema>(
       )],
       shadowMindsDeclared,
     };
+  }
+  for (const field of options.projectForbiddenFields ?? []) {
+    if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, field)) {
+      return {
+        diagnostics: [diagnostic(
+          "warning",
+          `pi-square config ignored at ${path}: ${field} is agent-only configuration and cannot be set in a project layer; remove it there and set it in the agent layer`,
+        )],
+        shadowMindsDeclared,
+      };
+    }
   }
   if (!Value.Check(schema, value)) {
     const first = [...Value.Errors(schema, value)][0];
@@ -410,7 +473,19 @@ function normalizeSsh(layer: AgentConfigLayer["ssh"]): SshConfig {
     })),
   };
 }
-
+function normalizeContextMemory(
+  layer: AgentConfigLayer["contextMemory"],
+  base: ContextMemoryConfig,
+): ContextMemoryConfig {
+  if (!layer) return base;
+  return {
+    enabled: layer.enabled ?? base.enabled,
+    compressionThreshold: layer.compressionThreshold
+      ? { ...layer.compressionThreshold }
+      : base.compressionThreshold,
+    memoryBudgetPercent: layer.memoryBudgetPercent ?? base.memoryBudgetPercent,
+  };
+}
 function semanticDisplayError(layer: { display?: DisplayLayerConfig }): string | undefined {
   const display = layer.display;
   if (!display?.tools) return undefined;
@@ -491,6 +566,7 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
           enabled: agentLayer.value.anchoredEditing?.enabled ?? config.anchoredEditing.enabled,
           autoRead: agentLayer.value.anchoredEditing?.autoRead ?? config.anchoredEditing.autoRead,
         },
+        contextMemory: normalizeContextMemory(agentLayer.value.contextMemory, config.contextMemory),
         shadowMinds: {
           enabled: agentLayer.value.shadowMinds?.enabled ?? config.shadowMinds.enabled,
           defaults: { ...config.shadowMinds.defaults, ...agentLayer.value.shadowMinds?.defaults },
@@ -501,7 +577,9 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
     }
   }
 
-  const projectLayer = readLayer(projectPath, ProjectConfigLayerSchema);
+  const projectLayer = readLayer(projectPath, ProjectConfigLayerSchema, {
+    projectForbiddenFields: ["contextMemory"],
+  });
   diagnostics.push(...projectLayer.diagnostics);
   shadowMindsInvalid ||= projectLayer.unreadable === true || (projectLayer.shadowMindsDeclared === true && projectLayer.value === undefined);
   if (projectLayer.value) {

@@ -8,7 +8,12 @@ import {
   DefaultResourceLoader,
   SessionManager,
   SettingsManager,
+  initTheme,
 } from "@earendil-works/pi-coding-agent";
+
+// The /context command handler reads ctx.ui.theme; initialize the theme
+// registry the way an interactive session would.
+initTheme();
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const agentDir = mkdtempSync(join(tmpdir(), "pi-square-smoke-agent-"));
@@ -229,6 +234,51 @@ try {
   }, undefined, undefined);
   assert.equal(codegraphResult.details.code, "NOT_INDEXED");
   assert.equal(codegraphResult.details.phase, "recoverable");
+
+  // ── Context Memory shell (#215, #216): default-off, registered but inactive ──
+  const allToolsAfterStart = extensionsResult.runtime.getAllTools().map((tool) => tool.name);
+  assert.ok(allToolsAfterStart.includes("submit_memory"), "submit_memory is registered");
+  assert.ok(allToolsAfterStart.includes("read_memory_source"), "read_memory_source is registered");
+  for (const definition of ["submit_memory", "read_memory_source"]) {
+    assert.equal(typeof session.getToolDefinition(definition)?.renderCall, "function", `${definition} renders calls through pi-square`);
+    assert.equal(session.getToolDefinition(definition)?.renderShell, "self", `${definition} owns its display shell`);
+  }
+  const inactiveMemoryTools = (name) => name === "submit_memory" || name === "read_memory_source";
+  assert.ok(
+    !session.agent.state.tools.some((tool) => inactiveMemoryTools(tool.name)),
+    "default-off configuration leaves both Context Memory tools inactive",
+  );
+
+  const contextCommand = runner.getCommand("context");
+  assert.ok(contextCommand, "/context remains the sole Context Memory surface owner");
+  async function runContextCommand() {
+    const notified = [];
+    const commandCtx = runner.createCommandContext();
+    await contextCommand.handler("", {
+      ...commandCtx,
+      hasUI: true,
+      ui: { ...commandCtx.ui, notify: (text) => notified.push(text) },
+    });
+    return notified.join("\n");
+  }
+  const defaultContextView = await runContextCommand();
+  assert.match(defaultContextView, /memory\[\]/, "/context renders the memory[] section");
+  assert.match(defaultContextView, /disabled · enable through agent-level contextMemory configuration/,
+    "the default state explains disabled");
+  assert.match(defaultContextView, /Prompt Manager/, "/context still renders the Prompt Manager snapshot");
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    contextMemory: { enabled: true },
+  }, null, 2) + "\n");
+  await runner.emit({ type: "session_start", reason: "config-change" });
+  assert.ok(
+    !session.agent.state.tools.some((tool) => inactiveMemoryTools(tool.name)),
+    "an enabled configuration still leaves both tools inactive without Memory or a due run",
+  );
+  const enabledContextView = await runContextCommand();
+  assert.match(enabledContextView, /enabled · no Memory blocks yet/,
+    "the enabled/no-Memory state renders through /context");
 
   writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
     version: 2,

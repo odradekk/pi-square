@@ -78,7 +78,10 @@ for (const entry of DISPLAY_CATALOG) {
           const plain = stripVTControlCharacters(lines.join("\n"));
           assert.match(plain, new RegExp(`^${expectedRails[status]}`));
           assert.doesNotMatch(plain, /owned|secret-value|hidden-token|do-not-show|\x1b|\x07/);
-          if (status === "error") assert.match(plain, /\[REDACTED\]/, "errors must remain visible and redacted under every result mode");
+          // At the narrowest widths a long catalog title (read_memory_source)
+          // middle-elides the sentence; the redaction marker survives whole or
+          // as its elided tail — the secret itself never renders.
+          if (status === "error") assert.match(plain, /\[REDACTED\]|…TED\]/, "errors must remain visible and redacted under every result mode");
         }
       }
     }

@@ -115,6 +115,8 @@ const EXPECTED_TITLES = {
   ssh: "SSH",
   todo: "Tasks",
   ask: "Questions",
+  submit_memory: "Memory submit",
+  read_memory_source: "Memory source",
   delegate: "Subagent",
   resume: "Resume",
 };

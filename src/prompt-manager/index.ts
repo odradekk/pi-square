@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ContextMemoryRegistration } from "../context-memory";
 import { byRoleChars, collapseEntries, summarizeEntries } from "./decompose";
 import {
   renderByMode,
@@ -23,6 +24,8 @@ const MODES: DisplayMode[] = ["off", "minimal", "summary", "verbose"];
 interface PromptManagerDependencies {
   buildSubagentCatalog(cwd: string, turnSeq: number): PromptManagerSegment;
   setInheritedSystemCore(systemPrompt: string | undefined): void;
+  /** Read-only Context Memory view provider; Prompt Manager owns only the rendering. */
+  contextMemory: ContextMemoryRegistration;
 }
 
 function emptySnapshot(): PromptManagerSnapshot {
@@ -99,6 +102,7 @@ export default function registerPromptManager(
       tools,
       segments: snapshot.segments,
       promptOrder: snapshot.promptOrder,
+      memory: dependencies.contextMemory.snapshot(),
       systemPromptChars: charCount(systemPromptText),
       collapsedMessages: collapsed,
       totalMessageEntries: summarized.length,
