@@ -14,6 +14,7 @@ const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/chi
 const CHILD_ONE = "subagent_00000000-0000-4000-8000-000000000001";
 
 const workspace = mkdtempSync(join(tmpdir(), "pi-square-child-anchored-edit-session-"));
+const sessionDir = join(workspace, ".test-session");
 const source = join(workspace, "source.txt");
 writeFileSync(source, "alpha\nbeta\ngamma\ndelta");
 
@@ -43,8 +44,8 @@ try {
   const anchored = await sessionWith(
     ["read", "write", "replace"],
     [
-      createChildAnchoredReadTool(workspace, CHILD_ONE),
-      createChildAnchoredReplaceTool(workspace, CHILD_ONE),
+      createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir),
+      createChildAnchoredReplaceTool(workspace, CHILD_ONE, sessionDir),
     ],
   );
   const toolNames = anchored.getAllTools().map((tool) => tool.name);
@@ -76,9 +77,9 @@ try {
   const writeAnchored = await sessionWith(
     ["read", "write", "replace"],
     [
-      createChildAnchoredReadTool(workspace, CHILD_ONE),
-      createChildAnchoredReplaceTool(workspace, CHILD_ONE),
-      createChildAnchoredWriteTool(workspace, CHILD_ONE),
+      createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir),
+      createChildAnchoredReplaceTool(workspace, CHILD_ONE, sessionDir),
+      createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir),
     ],
   );
   assert.equal(

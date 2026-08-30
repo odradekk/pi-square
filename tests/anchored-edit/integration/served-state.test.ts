@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { readFile, writeFile } from "fs/promises";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { loadHashStore, shutdownHashStore } from "../../../src/anchored-edit/hash-store";
+import type { PiSquareConfig } from "../../../src/core/config";
+import { shutdownHashStore } from "../../../src/anchored-edit/hash-store";
 import { getServed } from "../../../src/anchored-edit/served";
-import { withTempFile, setupIntegrationTest, getText, extractHash } from "../support/fixtures";
+import { withTempFile, setupIntegrationTest, getText, extractHash, loadTestStore, makeTestCtx } from "../support/fixtures";
 import { toCwd } from "../../../src/anchored-edit/paths";
 import { resolveTarget } from "../../../src/anchored-edit/fs-write";
 
 async function servedFor(cwd: string, name: string): Promise<Set<string> | undefined> {
-  const store = await loadHashStore();
-  return getServed(store, await resolveTarget(toCwd(name, cwd)));
+  const store = await loadTestStore(cwd);
+  try {
+    return getServed(store, await resolveTarget(toCwd(name, cwd)));
+  } finally {
+    store.release();
+  }
 }
 
 function feedbackRows(message: string): string[] {
@@ -28,23 +33,18 @@ describe("served-state range verification", () => {
 
       await writeFile(path, "a\nB\nc\nd\n", "utf-8");
 
-      let caught: Error | undefined;
-      try {
-        await editTool.execute(
-          "e1",
-          { path: "sample.ts", remove_from: aHash, remove_to: dHash, replacement_text: "a\nx\nd" },
-          undefined,
-          undefined,
-          ctx,
-        );
-      } catch (error) {
-        caught = error as Error;
-      }
-      expect(caught).toBeDefined();
-      expect(caught!.message).toMatch(/E_RANGE_STALE/);
-      expect(caught!.message).toContain("Nothing was modified");
+      const refusal = await editTool.execute(
+        "e1",
+        { path: "sample.ts", remove_from: aHash, remove_to: dHash, replacement_text: "a\nx\nd" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refusal.details.status).toBe("warning");
+      expect(getText(refusal)).toMatch(/E_RANGE_STALE/);
+      expect(getText(refusal)).toContain("Nothing was modified");
       expect(await readFile(path, "utf-8")).toBe("a\nB\nc\nd\n");
-      const rows = feedbackRows(caught!.message);
+      const rows = feedbackRows(getText(refusal));
       expect(rows).toHaveLength(4);
       expect(rows[0]).toMatch(/│a$/);
       expect(rows[1]).toMatch(/│B$/);
@@ -63,19 +63,15 @@ describe("served-state range verification", () => {
 
       await writeFile(path, "a\nB\nc\nd\n", "utf-8");
 
-      let feedback = "";
-      try {
-        await editTool.execute(
-          "e1",
-          { path: "sample.ts", remove_from: aHash, remove_to: dHash, replacement_text: "a\nx\nd" },
-          undefined,
-          undefined,
-          ctx,
-        );
-      } catch (error) {
-        feedback = (error as Error).message;
-      }
-      const rows = feedbackRows(feedback);
+      const refusal = await editTool.execute(
+        "e1",
+        { path: "sample.ts", remove_from: aHash, remove_to: dHash, replacement_text: "a\nx\nd" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refusal.details.status).toBe("warning");
+      const rows = feedbackRows(getText(refusal));
       const freshA = extractHash(rows[0]!);
       const freshD = extractHash(rows[rows.length - 1]!);
 
@@ -102,18 +98,15 @@ describe("served-state range verification", () => {
 
       await writeFile(path, "A\nb\nC\nd\n", "utf-8");
 
-      let staleError = "";
-      try {
-        await editTool.execute(
-          "e1",
-          { path: "sample.ts", remove_from: aHash, remove_to: dHash, replacement_text: "x" },
-          undefined,
-          undefined,
-          ctx,
-        );
-      } catch (error) {
-        staleError = (error as Error).message;
-      }
+      const refusal = await editTool.execute(
+        "e1",
+        { path: "sample.ts", remove_from: aHash, remove_to: dHash, replacement_text: "x" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refusal.details.status).toBe("warning");
+      const staleError = getText(refusal);
       expect(staleError).toMatch(/E_STALE_ANCHOR/);
       expect(staleError).toContain("Current context around resolved anchor");
 
@@ -192,22 +185,17 @@ describe("served-state range verification", () => {
       const aHash = extractHash(getText(r1).split("\n").find((l: string) => l.includes("│a"))!);
       const fHash = extractHash(getText(r2).split("\n").find((l: string) => l.includes("│f"))!);
 
-      let caught: Error | undefined;
-      try {
-        await editTool.execute(
-          "e1",
-          { path: "sample.ts", remove_from: aHash, remove_to: fHash, replacement_text: "x" },
-          undefined,
-          undefined,
-          ctx,
-        );
-      } catch (error) {
-        caught = error as Error;
-      }
-      expect(caught).toBeDefined();
-      expect(caught!.message).toMatch(/E_RANGE_STALE/);
+      const refusal = await editTool.execute(
+        "e1",
+        { path: "sample.ts", remove_from: aHash, remove_to: fHash, replacement_text: "x" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refusal.details.status).toBe("warning");
+      expect(getText(refusal)).toMatch(/E_RANGE_STALE/);
       expect(await readFile(path, "utf-8")).toBe("a\nb\nc\nd\ne\nf\n");
-      const rows = feedbackRows(caught!.message);
+      const rows = feedbackRows(getText(refusal));
       expect(rows).toHaveLength(6);
       expect(rows[2]).toMatch(/│c$/);
       expect(rows[3]).toMatch(/│d$/);
@@ -245,15 +233,15 @@ describe("served-state range verification", () => {
       const aHashAfter = extractHash(firstDiff.split("\n").find((l: string) => l.startsWith("+") && l.includes("│A"))!).replace(/^[+ ]/, "");
       const secondDiff = (second.details as { diff?: string } | undefined)?.diff ?? "";
       const jHashAfter = extractHash(secondDiff.split("\n").find((l: string) => l.startsWith("+") && l.includes("│J"))!).replace(/^[+ ]/, "");
-      await expect(
-        editTool.execute(
-          "e3",
-          { path: "sample.ts", remove_from: aHashAfter, remove_to: jHashAfter, replacement_text: "X" },
-          undefined,
-          undefined,
-          ctx,
-        ),
-      ).rejects.toThrow(/E_RANGE_STALE/);
+      const refused = await editTool.execute(
+        "e3",
+        { path: "sample.ts", remove_from: aHashAfter, remove_to: jHashAfter, replacement_text: "X" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refused.details.status).toBe("warning");
+      expect(getText(refused)).toMatch(/E_RANGE_STALE/);
       expect(await readFile(path, "utf-8")).toBe("A\nb\nc\nd\ne\nf\ng\nh\ni\nJ\n");
     });
   });
@@ -282,7 +270,7 @@ describe("served-state range verification", () => {
   it("applies without verification when the file was never served", async () => {
     await withTempFile("sample.ts", "a\nb\nc\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("a\nb\nc\n", `${cwd}/sample.ts`);
+      const hashes = await lineHashes("a\nb\nc\n");
 
       const result = await editTool.execute(
         "e1",
@@ -343,28 +331,37 @@ describe("served-state range verification", () => {
       const aHash = extractHash(lines.find((l: string) => l.includes("│a"))!);
 
       const { writeFile: writeFileFs } = await import("fs/promises");
-      await writeFileFs(`${cwd}/sample.ts`, "x\ny\nz\n", "utf-8");
 
       const writeEvent = {
         toolName: "write",
+        toolCallId: "write-1",
         isError: false,
-        input: { path: "sample.ts" },
+        input: { path: "sample.ts", content: "x\ny\nz\n" },
         content: [{ type: "text", text: "File written." }],
       };
-      const { default: register } = await import("../../../src/anchored-edit/index");
+      const { registerAnchoredAutoRead } = await import("../../../src/anchored-edit/auto-read");
       const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
       const pi = {
         registerTool() {},
         registerCommand() {},
-        getActiveTools: () => [],
-        setActiveTools() {},
         on(event: string, handler: unknown) {
           handlers.set(event, handler as (event: unknown, ctx: unknown) => Promise<unknown>);
         },
       } as never;
-      register(pi as never);
-      await handlers.get("session_start")!({}, { cwd, ui: { notify() {} } });
-      const result = await handlers.get("tool_result")!(writeEvent, { cwd });
+      registerAnchoredAutoRead(
+        pi as never,
+        () => ({ anchoredEditing: { enabled: true, autoRead: true } }) as PiSquareConfig,
+        () => true,
+      );
+      const handlerCtx = makeTestCtx(cwd);
+      await handlers.get("tool_call")!(
+        { toolName: "write", toolCallId: "write-1", input: { path: "sample.ts", content: "x\ny\nz\n" } },
+        handlerCtx,
+      );
+      // The Pi write factory has written the new content by the time
+      // tool_result fires.
+      await writeFileFs(`${cwd}/sample.ts`, "x\ny\nz\n", "utf-8");
+      const result = await handlers.get("tool_result")!(writeEvent, handlerCtx);
       expect(result).toBeDefined();
 
       const servedAfterWrite = await servedFor(cwd, "sample.ts");

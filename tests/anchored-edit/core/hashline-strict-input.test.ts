@@ -5,14 +5,12 @@ import {
 	resEdit,
 	type HTEdit,
 } from "../../../src/anchored-edit/hashline";
-import { useTestHome } from "../support/fixtures";
 
-const home = useTestHome();
 
 describe("edit input validation", () => {
 	it("strips bare HASH| prefix in content with warning", async () => {
 		const file = "foo\nbar";
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const toolEdit: HTEdit = { remove_from: hashes[0]!, remove_to: hashes[0]!, replacement_text: `${hashes[0]!}│FOO` };
     const result = applyEdit(file, resEdit(toolEdit));
 		expect(result.content).toBe("FOO\nbar");
@@ -61,7 +59,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	}
 
 	it("strips a bare prefix that matches an existing file line hash", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const betaHash = hashes[1]!;
 		const result = applyTool(
@@ -74,7 +72,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	});
 
 	it("strips a bare prefix whose hash exists in the file hash set", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const gammaHash = hashes[2]!;
 		const result = applyTool(
@@ -86,7 +84,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	});
 
 	it("strips bare prefixes even when the hash is not in the file hash set", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -98,7 +96,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	});
 
 	it("reports the replacement_text line for each stripped line", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -109,7 +107,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	});
 
 	it("keeps indentation after the separator while dropping leading prefix whitespace", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -119,7 +117,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	});
 
 	it("accepts a single legit 'TS: TypeScript' line without warning", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -130,7 +128,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	});
 
 	it("does not false-positive on shorter valid-content prefixes like '#' or '+'", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -140,7 +138,7 @@ describe("partial hash prefixes copied into content (issue #24)", () => {
 	});
 
 	it("strips prefixes from long lines without truncation", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const betaHash = hashes[1]!;
 		const longLine = `${betaHash}│${"y".repeat(500)}`;
@@ -161,7 +159,7 @@ describe("diff preview rows copied into content", () => {
 	}
 
 	it("strips +HASH│ addition rows with warning", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -173,7 +171,7 @@ describe("diff preview rows copied into content", () => {
 	});
 
 	it("strips -HASH│ and -   │ deletion rows with warning", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -184,7 +182,7 @@ describe("diff preview rows copied into content", () => {
 	});
 
 	it("leaves numbered deletion rows as literal content without warning", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -195,7 +193,7 @@ describe("diff preview rows copied into content", () => {
 	});
 
 	it("leaves plain +x / -x unified-diff lines as literal content without warning", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -214,7 +212,7 @@ describe("diff-prefix false-positive guards (tightened shapes)", () => {
 	}
 
 	it("leaves literal '+ HASH│' content with a space after the plus untouched", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -225,7 +223,7 @@ describe("diff-prefix false-positive guards (tightened shapes)", () => {
 	});
 
 	it("leaves literal '- HASH│' content with a space after the minus untouched", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -236,7 +234,7 @@ describe("diff-prefix false-positive guards (tightened shapes)", () => {
 	});
 
 	it("leaves literal '+ abc│' / '- xyz│' lines untouched", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -247,7 +245,7 @@ describe("diff-prefix false-positive guards (tightened shapes)", () => {
 	});
 
 	it("still strips exact +HASH│ rows without a space", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,
@@ -258,7 +256,7 @@ describe("diff-prefix false-positive guards (tightened shapes)", () => {
 	});
 
 	it("still strips exact -HASH│ and -   │ rows", async () => {
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const anchor = hashes[0]!;
 		const result = applyTool(
       { remove_from: anchor,

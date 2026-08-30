@@ -2,7 +2,7 @@
  * Closed display type contracts, fixed policy constants, and visual grammar.
  *
  * Single source of truth for policy bounds, defaults, status/result/diff
- * enums, motion caps, layout breakpoints, and the fixed status-rail frames.
+ * enums, motion caps, layout breakpoints, and fixed row-rhythm constants.
  * No runtime imports so it can be consumed by config validation, policy
  * resolution, and the display runtime without circular dependencies.
  */
@@ -93,11 +93,12 @@ export type DisplayMotion = "full" | "reduced" | "off";
 
 export const DISPLAY_MOTIONS: readonly DisplayMotion[] = ["full", "reduced", "off"];
 
-/** Fixed interval between full-motion duration updates in milliseconds (~8.3 FPS). */
+/** Fixed interval between full-motion duration and running-pulse updates in milliseconds (~8.3 FPS). */
 export const MOTION_FULL_INTERVAL_MS = 120;
 /** Fixed interval between reduced-motion duration updates in milliseconds (1 FPS). */
 export const MOTION_REDUCED_INTERVAL_MS = 1_000;
-
+/** Slow running-marker breathing period used only in full-motion color sessions. */
+export const RUNNING_PULSE_PERIOD_MS = 1_600;
 // ─── Family ──────────────────────────────────────────────────────────
 
 export type DisplayFamily =
@@ -117,35 +118,6 @@ export const DISPLAY_FAMILIES: readonly DisplayFamily[] = [
   "agent",
 ];
 
-/**
- * Header badge label for each qualifier. `warning` has no badge because the
- * warning color or fallback marker already carries that meaning.
- *
- * Badges belong to the core visual grammar and are deliberately not
- * configurable through `/display`.
- */
-export const QUALIFIER_BADGES: Readonly<Partial<Record<OperationalQualifier, string>>> =
-  Object.freeze({
-    "needs-input": "needs input",
-    cancelling: "cancelling",
-    retrying: "retrying",
-    projected: "projected",
-    truncated: "truncated",
-    partial: "partial",
-  });
-
-/**
- * Badge priority. Action-critical qualifiers come first so that a compact
- * layout keeps the most important one.
- */
-export const QUALIFIER_BADGE_ORDER: readonly OperationalQualifier[] = Object.freeze([
-  "needs-input",
-  "cancelling",
-  "retrying",
-  "projected",
-  "truncated",
-  "partial",
-]);
 
 // ─── Policy bounds (single source of truth) ──────────────────────────
 
@@ -173,7 +145,6 @@ export const DISPLAY_TOOL_NAME_REGEX = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 export const LAYOUT_COMPACT_MAX_COLUMNS = 63;
 /** Regular tier: 64 ≤ width ≤ 99; wide tier: width ≥ 100. */
 export const LAYOUT_REGULAR_MAX_COLUMNS = 99;
-
 // ─── Default policy ──────────────────────────────────────────────────
 
 export const DEFAULT_DISPLAY_MOTION: DisplayMotion = "full";
@@ -192,14 +163,14 @@ export interface DisplayPolicy {
 
 export const DEFAULT_DISPLAY_POLICY: Readonly<DisplayPolicy> = Object.freeze({
   resultMode: "preview",
-  previewLines: 9,
+  previewLines: 5,
   expandedMaxLines: 4_000,
-  showMetadata: true,
+  showMetadata: false,
   showDuration: true,
   wordWrap: true,
   diffView: "unified",
   diffSplitMinWidth: 120,
-  diffCollapsedLines: 24,
+  diffCollapsedLines: 12,
 });
 
 export type DisplayPolicyField = keyof DisplayPolicy;
@@ -388,15 +359,15 @@ export interface DisplayDescriptionV1 {
   readonly truncated?: boolean;
   readonly error?: string;
   /**
-   * C6 raw failure text. When it differs from `error` (the one-sentence
-   * statement), the expanded body renders it exactly once as an `ERROR`
-   * section; the collapsed body never shows it.
+   * Raw failure text. When it differs from `error` (the one-sentence
+   * statement), the expanded evidence body renders it exactly once as an
+   * `Error` section; the collapsed body never shows it.
    */
   readonly errorRaw?: string;
   /**
-   * C4 outcome sentence (`60 lines · 2.1 KB`). A terminal collapsed entry
-   * renders it inline in its single row; the expanded body closes with it
-   * as a summary row.
+   * Outcome sentence (`60 lines · 2.1 KB`) carried by the one-row header in
+   * collapsed and expanded terminal states. The evidence body never repeats
+   * it as a closing summary row.
    */
   readonly summary?: string;
   readonly qualifiers?: readonly OperationalQualifier[];

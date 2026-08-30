@@ -27,19 +27,6 @@ const LIFECYCLE_TOKENS: Readonly<Record<OperationalLifecycle, ThemeColor>> =
     aborted: "muted",
   });
 
-// Qualifier badge tokens. Action-critical qualifiers use the warning token so
-// that required user action stays visible in a collapsed header.
-const QUALIFIER_TOKENS: Readonly<Record<OperationalQualifier, ThemeColor>> =
-  Object.freeze({
-    warning: "warning",
-    partial: "muted",
-    retrying: "warning",
-    cancelling: "warning",
-    truncated: "warning",
-    projected: "warning",
-    "needs-input": "warning",
-  });
-
 export function operationalToken(
   lifecycle: OperationalLifecycle,
   qualifiers: readonly OperationalQualifier[],
@@ -57,21 +44,35 @@ export function styleOperational(
   return theme.fg(operationalToken(lifecycle, qualifiers), text);
 }
 
+const ANSI_BOLD = "\u001b[1m";
+const ANSI_DIM = "\u001b[2m";
+const ANSI_RESET = "\u001b[0m";
+
+/**
+ * Running pulse: a slow three-level brightness wave on the accent token. The
+ * marker never disappears; ANSI dim approximates the 45% brightness floor and
+ * bold forms the bright crest. The caller enables this only for color-capable
+ * full-motion sessions, so reduced/off/no-color output stays static.
+ */
+export function styleRunningPulse(theme: Theme, text: string, phase: number): string {
+  // Minimal test doubles may implement only fg(); they receive the static
+  // running marker rather than raw ANSI pulse codes.
+  if (typeof theme.getFgAnsi !== "function") return theme.fg("accent", text);
+  const color = theme.getFgAnsi("accent");
+  const normalized = ((phase % 1) + 1) % 1;
+  const wave = (1 - Math.cos(normalized * Math.PI * 2)) / 2;
+  if (wave < 0.34) return `${color}${ANSI_DIM}${text}${ANSI_RESET}`;
+  if (wave > 0.82) return `${color}${ANSI_BOLD}${text}${ANSI_RESET}`;
+  return `${color}${text}${ANSI_RESET}`;
+}
+
 export function styleTone(theme: Theme, tone: DisplayTone | undefined, text: string): string {
   return theme.fg(TONE_TOKENS[tone ?? "default"], text);
 }
 
-export function styleBadge(
-  theme: Theme,
-  qualifier: OperationalQualifier,
-  text: string,
-): string {
-  return theme.fg(QUALIFIER_TOKENS[qualifier], text);
-}
-
 export function styleTitle(theme: Theme, text: string): string {
   // State-only hue: tool titles move to the neutral text token so color
-  // marks operational state only (marker, badges, diff added/removed).
+  // marks operational state only (marker and diff added/removed lines).
   return theme.fg("text", theme.bold(text));
 }
 

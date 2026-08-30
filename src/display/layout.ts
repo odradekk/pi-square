@@ -7,7 +7,6 @@ import {
   LAYOUT_COMPACT_MAX_COLUMNS,
   LAYOUT_REGULAR_MAX_COLUMNS,
 } from "./types";
-
 export type DisplayLayoutTier = "compact" | "regular" | "wide";
 
 export function layoutTier(width: number): DisplayLayoutTier {
@@ -113,15 +112,12 @@ export interface HeaderRowSpec {
   readonly target?: string;
   /** Path targets are elided in the middle; text targets are end-truncated. */
   readonly targetKind?: "text" | "path";
-  /** Badge labels in priority order, highest first. */
-  readonly badges?: readonly string[];
   /** Right-aligned element, usually the duration. */
   readonly right?: string;
   /**
-   * Inline muted outcome summary (C4 collapsed-entry revision): the one-row
-   * collapsed entry carries it between the target and the right-side badges
-   * and duration. It is middle-elided when space runs out, then dropped
-   * before any badge but after the duration.
+   * Inline outcome summary: the one-row entry carries it between the target
+   * and the right-side duration. It is middle-elided when space runs out,
+   * then dropped after the duration.
    */
   readonly inlineSummary?: string;
 }
@@ -129,12 +125,10 @@ export interface HeaderRowSpec {
 export interface FittedHeaderRow {
   readonly title: string;
   readonly target?: string;
-  readonly badges: readonly string[];
   readonly right?: string;
-  /** Inline muted outcome summary when it survives the drop order. */
+  /** Inline outcome summary when it survives the drop order. */
   readonly inlineSummary?: string;
 }
-
 /**
  * C2 middle elision for display paths: keep the first segment and the file
  * name (`src/…/components.ts`); the file name is never elided while any
@@ -203,22 +197,20 @@ export function elideTextMiddle(text: string, width: number): string {
 }
 
 /**
- * Fit one header row into the given width without wrapping (C5). The drop
- * order is fixed: compact tiers drop the right element and keep only the
- * highest-priority badge; deeper scarcity drops the right element first,
- * then the inline summary, then all but the highest-priority badge, then
+ * Fit one header row into the given width without wrapping. The title keeps
+ * its natural width with a single space before the target at every tier. The
+ * drop order is fixed: compact tiers always drop the right element; deeper
+ * scarcity drops the right element first, then the inline summary, then
  * truncates the target below its minimum, and truncates the title only as a
- * final resort. The returned badges are always a prefix of the input badges.
+ * final resort.
  */
 export function fitHeaderRow(spec: HeaderRowSpec, width: number, viewportWidth = width): FittedHeaderRow {
   const safe = Math.max(1, Math.floor(width));
   const viewport = Math.max(1, Math.floor(viewportWidth));
-  const allBadges = spec.badges ?? [];
   const compact = layoutTier(viewport) === "compact";
+  const title = spec.title;
   const markerWidth = visibleWidth(spec.marker) + 1;
-  const titleWidth = visibleWidth(spec.title);
-  const badgesWidth = (badges: readonly string[]) =>
-    badges.reduce((sum, badge) => sum + 1 + visibleWidth(badge), 0);
+  const titleWidth = visibleWidth(title);
   const rightWidth = (right: string | undefined) =>
     right ? HEADER_GAP_CELLS + visibleWidth(right) : 0;
   const targetNatural = spec.target ? visibleWidth(spec.target) : 0;
@@ -235,33 +227,29 @@ export function fitHeaderRow(spec: HeaderRowSpec, width: number, viewportWidth =
 
   interface Candidate {
     readonly right?: string;
-    readonly badges: readonly string[];
     readonly withSummary: boolean;
   }
-  // Drop order: duration, inline summary, all but the highest-priority
-  // badge, then badges entirely. Within a candidate the target is truncated
-  // as the final resort, so a candidate only fails when the target would be
-  // squeezed below its minimum. Compact tiers always drop the duration.
+  // Drop order: duration, then inline summary. Within a candidate the target
+  // is truncated as the final resort, so a candidate only fails when the
+  // target would be squeezed below its minimum. Compact tiers always drop
+  // the duration.
   const candidates: readonly Candidate[] = compact
     ? [
-      { badges: allBadges.slice(0, 1), withSummary: true },
-      { badges: allBadges.slice(0, 1), withSummary: false },
-      { badges: [], withSummary: false },
+      { withSummary: true },
+      { withSummary: false },
     ]
     : [
-      { right: spec.right, badges: allBadges, withSummary: true },
-      { badges: allBadges, withSummary: true },
-      { badges: allBadges, withSummary: false },
-      { badges: allBadges.slice(0, 1), withSummary: false },
-      { badges: [], withSummary: false },
+      { right: spec.right, withSummary: true },
+      { withSummary: true },
+      { withSummary: false },
     ];
 
   for (const candidate of candidates) {
-    const fixed = markerWidth + titleWidth + badgesWidth(candidate.badges) + rightWidth(candidate.right);
+    const fixed = markerWidth + titleWidth + rightWidth(candidate.right);
     const hasTarget = spec.target !== undefined;
     const wantsSummary = candidate.withSummary && spec.inlineSummary !== undefined;
     if (!hasTarget && !wantsSummary) {
-      if (fixed <= safe) return { title: spec.title, badges: candidate.badges, right: candidate.right };
+      if (fixed <= safe) return { title, right: candidate.right };
       continue;
     }
     // Content budget: everything after marker+title (plus one leading gap).
@@ -275,9 +263,8 @@ export function fitHeaderRow(spec: HeaderRowSpec, width: number, viewportWidth =
       if (summary !== undefined) {
         const targetBudget = contentBudget - visibleWidth(summary) - 1;
         return {
-          title: spec.title,
+          title,
           target: truncateTarget(Math.max(targetBudget, targetFloor)),
-          badges: candidate.badges,
           right: candidate.right,
           inlineSummary: summary,
         };
@@ -289,9 +276,8 @@ export function fitHeaderRow(spec: HeaderRowSpec, width: number, viewportWidth =
     if (hasTarget) {
       if (contentBudget >= MIN_TARGET_CELLS || contentBudget >= targetNatural) {
         return {
-          title: spec.title,
+          title,
           target: truncateTarget(contentBudget),
-          badges: candidate.badges,
           right: candidate.right,
         };
       }
@@ -301,8 +287,7 @@ export function fitHeaderRow(spec: HeaderRowSpec, width: number, viewportWidth =
     const summary = elideSummary(contentBudget);
     if (summary !== undefined) {
       return {
-        title: spec.title,
-        badges: candidate.badges,
+        title,
         right: candidate.right,
         inlineSummary: summary,
       };
@@ -313,11 +298,10 @@ export function fitHeaderRow(spec: HeaderRowSpec, width: number, viewportWidth =
   // title alone. The final render pass hard-truncates anything remaining.
   const minimalBudget = safe - markerWidth - titleWidth - (spec.target ? 1 : 0);
   if (spec.target && minimalBudget >= 1) {
-    return { title: spec.title, target: truncateTarget(minimalBudget), badges: [], right: undefined };
+    return { title, target: truncateTarget(minimalBudget), right: undefined };
   }
   return {
-    title: truncatePlain(spec.title, Math.max(1, safe - markerWidth)),
-    badges: [],
+    title: truncatePlain(title, Math.max(1, safe - markerWidth)),
     right: undefined,
   };
 }

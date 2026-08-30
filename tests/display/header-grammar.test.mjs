@@ -207,25 +207,68 @@ const EXPECTED_TITLES = {
   const absolute = join(TMP, "src", "display", "components.ts");
   const call = decorated.renderCall({ path: absolute }, plainTheme, makeCtx({ path: absolute }));
   const header = stripVTControlCharacters(call.render(120)[0] ?? "");
-  assert.ok(header.startsWith("○ Read src/display/components.ts"), `read target is workspace-relative: '${header}'`);
+  // The title keeps its natural width, separated from the target by one
+  // space at every tier.
+  assert.ok(
+    header.startsWith("○ Read src/display/components.ts"),
+    `read target is workspace-relative after the natural title: '${header}'`,
+  );
   assert.ok(!header.includes(TMP), "read header must not show the absolute workspace root");
 
   const homePath = join(homedir(), "other", "repo", "index.ts");
   const homeCall = decorated.renderCall({ path: homePath }, plainTheme, makeCtx({ path: homePath }));
   const homeHeader = stripVTControlCharacters(homeCall.render(120)[0] ?? "");
-  assert.ok(homeHeader.startsWith("○ Read ~/other/repo/index.ts"), `home path uses ~: '${homeHeader}'`);
+  assert.ok(
+    homeHeader.startsWith("○ Read ~/other/repo/index.ts"),
+    `home path uses ~ after the natural title: '${homeHeader}'`,
+  );
   runtime.dispose();
+}
+
+// ─── C1: the title keeps natural single-space spacing at every tier ─
+
+{
+  // No tier pads or truncates the title into an identity column; the target
+  // follows after exactly one space.
+  for (const width of [40, 64, 80, 99, 100, 120]) {
+    const fitted = fitHeaderRow(
+      { marker: "●", title: "Grep", target: "TODO" },
+      width,
+    );
+    assert.equal(fitted.title, "Grep", `natural title at ${width}`);
+    assert.equal(fitted.target, "TODO", `target survives at ${width}`);
+  }
+
+  // Through the component: exactly one space separates the title and target
+  // at every tier, whatever the title length.
+  const headerAt = (width, title) => stripVTControlCharacters(
+    new OperationalDisplayComponent(
+      { version: 1, tool: "grep", family: "search", lifecycle: "running", title, target: "TODO" },
+      DEFAULT_DISPLAY_POLICY,
+      plainTheme,
+      { expanded: false },
+    ).render(width)[0],
+  );
+  for (const width of [39, 64, 80, 99, 100, 120]) {
+    for (const title of ["Grep", "Text search", "Structural search"]) {
+      const header = headerAt(width, title);
+      assert.ok(
+        header.startsWith(`● ${title} TODO`),
+        `${title} target follows after one space at ${width}: '${header}'`,
+      );
+    }
+  }
 }
 
 // ─── C5: fitHeaderRow keeps one row and drops duration first ────────
 
 {
-  // Everything fits: pieces are unchanged.
+  // Everything fits: pieces are unchanged with natural title spacing.
   const full = fitHeaderRow(
-    { marker: "●", title: "Read", target: "src/a.ts", badges: ["[truncated]"], right: "5ms" },
+    { marker: "●", title: "Read", target: "src/a.ts", right: "5ms" },
     120,
   );
-  assert.deepEqual(full, { title: "Read", target: "src/a.ts", badges: ["[truncated]"], right: "5ms" });
+  assert.deepEqual(full, { title: "Read", target: "src/a.ts", right: "5ms" });
 
   // A long target is truncated with …; the duration stays.
   const longTarget = fitHeaderRow(
@@ -236,48 +279,45 @@ const EXPECTED_TITLES = {
   assert.match(longTarget.target, /…$/, "text target is end-truncated");
   assert.ok(visibleWidth(`● Bash ${longTarget.target}`) + 3 + visibleWidth("5ms") <= 80);
 
-  // The duration is the first item dropped when space runs out.
-  const cramped = fitHeaderRow(
+  // Titles are never padded or column-truncated: an over-long title keeps
+  // its natural width and the duration is the first element dropped.
+  const roomy = fitHeaderRow(
     { marker: "●", title: "T".repeat(50), target: "some-target", right: "5ms" },
     64,
   );
-  assert.equal(cramped.right, undefined, "duration is dropped first");
-  assert.equal(cramped.target, "some-target", "target survives when duration drops");
+  assert.equal(roomy.title, "T".repeat(50), "an over-long title keeps its natural width");
+  assert.equal(roomy.right, undefined, "the duration drops before the title truncates");
+  assert.equal(roomy.target, "some-target", "the target survives when the duration drops");
 
-  // Then the inline summary elides before any badge is reduced.
+  // The inline summary elides in place before the duration drops.
   const summaryCramped = fitHeaderRow(
-    { marker: "●", title: "T".repeat(30), target: "some-target", badges: ["[cancelling]"], right: "5ms", inlineSummary: "8 results · 2 not shown" },
+    { marker: "●", title: "T".repeat(30), target: "some-target", right: "5ms", inlineSummary: "8 results · 2 not shown" },
     64,
   );
-  assert.equal(summaryCramped.right, undefined, "duration drops first");
-  assert.deepEqual(summaryCramped.badges, ["[cancelling]"], "the badge survives");
+  assert.equal(summaryCramped.right, "5ms", "the summary elides before the duration drops");
   assert.ok(summaryCramped.inlineSummary && summaryCramped.inlineSummary.includes("…"), "the inline summary elides in place");
-  assert.equal(summaryCramped.target, "some-ta…", "the target truncates only as the final resort");
+  assert.equal(summaryCramped.target, "some-tar…", "the target truncates only as the final resort");
 
-  // When the summary cannot fit at all, it drops before any badge is reduced.
+  // When the summary cannot fit at all, it drops; the target survives.
   const summaryDropped = fitHeaderRow(
-    { marker: "●", title: "T".repeat(44), target: "t", badges: ["[cancelling]"], inlineSummary: "a very long inline outcome summary that cannot fit" },
+    {
+      marker: "●",
+      title: "T".repeat(56),
+      target: "t",
+      inlineSummary: "a very long inline outcome summary that cannot fit",
+    },
     64,
   );
-  assert.equal(summaryDropped.inlineSummary, undefined, "the inline summary drops before the badge");
-  assert.deepEqual(summaryDropped.badges, ["[cancelling]"], "the badge survives the summary drop");
+  assert.equal(summaryDropped.inlineSummary, undefined, "the inline summary drops when it cannot fit");
+  assert.equal(summaryDropped.target, "t", "the minimal target survives the summary drop");
 
-  // Then all but the highest-priority badge.
-  const badgeCramped = fitHeaderRow(
-    { marker: "●", title: "T".repeat(30), target: "some-target", badges: ["[cancelling]", "[retrying]"], right: "5ms" },
-    64,
-  );
-  assert.equal(badgeCramped.right, undefined);
-  assert.deepEqual(badgeCramped.badges, ["[cancelling]"], "only the highest-priority badge survives");
-  assert.equal(badgeCramped.target, "some-target");
-
-  // Compact tier drops the duration and keeps at most one badge by default.
+  // Compact tier drops the duration by default.
   const compact = fitHeaderRow(
-    { marker: "●", title: "Subagent", target: "explorer", badges: ["[cancelling]", "[partial]"], right: "4.0s" },
+    { marker: "●", title: "Subagent", target: "explorer", right: "4.0s" },
     63,
   );
   assert.equal(compact.right, undefined, "compact drops the duration");
-  assert.deepEqual(compact.badges, ["[cancelling]"], "compact keeps the highest-priority badge");
+  assert.equal(compact.target, "explorer", "compact keeps the natural title and target");
 
   // A path target is elided in the middle and keeps its file name.
   const pathTarget = fitHeaderRow(
@@ -289,10 +329,10 @@ const EXPECTED_TITLES = {
   // Every candidate stays bounded, even at degenerate widths.
   for (const width of widths) {
     const fitted = fitHeaderRow(
-      { marker: "●", title: "Structural search", target: "src/display/components.ts", targetKind: "path", badges: ["[truncated]"], right: "1.3s" },
+      { marker: "●", title: "Structural search", target: "src/display/components.ts", targetKind: "path", right: "1.3s" },
       width,
     );
-    const left = `● ${fitted.title}${fitted.target ? ` ${fitted.target}` : ""}${fitted.badges.map((badge) => ` ${badge}`).join("")}`;
+    const left = `● ${fitted.title}${fitted.target ? ` ${fitted.target}` : ""}`;
     const total = visibleWidth(left) + (fitted.right ? 3 + visibleWidth(fitted.right) : 0);
     assert.ok(total <= width || width < 30, `fitted header bounded at ${width} (got ${total})`);
   }
@@ -337,8 +377,10 @@ const EXPECTED_TITLES = {
   const lines = call.render(80).map((line) => stripVTControlCharacters(line));
   assert.match(lines[0], /^● Bash /, "bash header carries the sentence-case title");
   assert.match(lines[0], /…/, "long command is truncated on the header row");
+  assert.equal(lines.length, 1, "a running non-mutation call keeps exactly one row");
   for (const line of lines.slice(1)) {
-    assert.match(line, /^[│└]/, "every line after the header is a railed body line");
+    assert.match(line, /^ {2}/, "every line after the header carries the quiet two-cell body indent");
+    assert.doesNotMatch(line, /^[│└├]/, "no tree rails remain on body lines");
   }
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "done" }], details: {} },
@@ -381,7 +423,8 @@ const EXPECTED_TITLES = {
   assert.doesNotMatch(compact, /12ms/, "compact drops the duration");
 }
 
-// ─── C7: a bounded or truncated result carries the truncated badge ───
+// ─── C7: qualifiers never render header badges or body notices ──────
+
 {
   const description = {
     version: 1,
@@ -395,23 +438,28 @@ const EXPECTED_TITLES = {
   };
   const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(80);
   const header = stripVTControlCharacters(lines[0]);
-  assert.match(header, /\[truncated\]/, "truncated result carries the header badge");
+  assert.doesNotMatch(header, /\[/, `the header stays badge-free: '${header}'`);
+  assert.doesNotMatch(
+    stripVTControlCharacters(lines.join("\n")),
+    /\[(truncated|partial|bounded|cancelling|retrying|projected|needs input)\]/,
+    "no qualifier badge renders anywhere",
+  );
   assert.doesNotMatch(
     stripVTControlCharacters(lines.join("\n")),
     /output truncated by display budget/,
-    "the truncation notice is the badge, not a body row",
+    "no truncation notice renders as a body row",
   );
 
-  // A qualifier set by the adapter and the flag do not duplicate the badge.
-  const deduped = new OperationalDisplayComponent(
+  // A qualifier set by the adapter renders no badge either.
+  const qualified = stripVTControlCharacters(new OperationalDisplayComponent(
     { ...description, qualifiers: ["truncated"] },
     DEFAULT_DISPLAY_POLICY,
     plainTheme,
     { expanded: false },
-  ).render(120).join("\n");
-  assert.equal((deduped.match(/\[truncated\]/g) ?? []).length, 1, "the truncated badge renders once");
+  ).render(120).join("\n"));
+  assert.doesNotMatch(qualified, /\[truncated\]/, "an adapter-set qualifier renders no badge");
 
-  // Production path: a bounded Pi read result carries the badge.
+  // Production path: a bounded Pi read result stays badge-free.
   const runtime = newRuntime();
   const decorated = decorateBuiltinDefinition(createReadToolDefinition(TMP), TMP, () => runtime);
   const args = { path: "src/display/components.ts" };
@@ -423,10 +471,10 @@ const EXPECTED_TITLES = {
     makeCtx(args, {}, { executionStarted: true, lastComponent: call, isError: false }),
   );
   const resultHeader = stripVTControlCharacters(result.render(80)[0]);
-  assert.match(resultHeader, /\[truncated\]/, "bounded read result carries the truncated badge");
+  assert.doesNotMatch(resultHeader, /\[truncated\]/, "a bounded read result renders no truncated badge");
   runtime.dispose();
 
-  // The search-family boundedness signals raise the same badge: paged
+  // The search-family boundedness signals stay badge-free too: paged
   // pdf_search results with more matches available, and the codegraph
   // output budget.
   const stub = (name) => ({
@@ -452,10 +500,10 @@ const EXPECTED_TITLES = {
     plainTheme,
     makeCtx({ path: "reports/q3.pdf", query: "needle" }, {}, { executionStarted: true, isError: false }),
   );
-  assert.match(
+  assert.doesNotMatch(
     stripVTControlCharacters(pdfResult.render(80)[0]),
     /\[truncated\]/,
-    "a paged pdf_search result with more matches available carries the truncated badge",
+    "a paged pdf_search result renders no truncated badge",
   );
   pdfRuntime.dispose();
   const codegraphRuntime = newRuntime();
@@ -469,10 +517,10 @@ const EXPECTED_TITLES = {
     plainTheme,
     makeCtx({ operation: "explore", query: "auth" }, {}, { executionStarted: true, isError: false }),
   );
-  assert.match(
+  assert.doesNotMatch(
     stripVTControlCharacters(codegraphResult.render(80)[0]),
     /\[truncated\]/,
-    "a codegraph result bounded by the output budget carries the truncated badge",
+    "a codegraph result bounded by the output budget renders no badge",
   );
   codegraphRuntime.dispose();
 }
@@ -505,11 +553,19 @@ const EXPECTED_TITLES = {
           lines.every((line) => visibleWidth(line) <= width),
           `${description.tool}/${themeName}/${width} exceeded ${width}`,
         );
+        // Collapsed non-mutation entries are exactly one row; any body line
+        // carries the quiet two-cell indent instead of tree rails.
         for (const line of lines.slice(1)) {
+          const plain = stripVTControlCharacters(line);
           assert.match(
-            stripVTControlCharacters(line),
-            /^[│└]/,
-            `${description.tool}/${themeName}/${width} keeps one header row`,
+            plain,
+            /^( {2}|$)/,
+            `${description.tool}/${themeName}/${width} body lines carry the quiet indent`,
+          );
+          assert.doesNotMatch(
+            plain,
+            /^[│└├]/,
+            `${description.tool}/${themeName}/${width} renders no tree rails`,
           );
         }
       }

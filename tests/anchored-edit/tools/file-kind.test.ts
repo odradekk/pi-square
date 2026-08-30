@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
 import { MAX_BYTES } from "../../../src/anchored-edit/constants";
-import { withTempFile, withTempBytes, setupIntegrationTest, useTestHome } from "../support/fixtures";
+import { withTempFile, withTempBytes, setupIntegrationTest } from "../support/fixtures";
 
-const home = useTestHome();
 
 describe("file kind guards in tools", () => {
   it("edit decodes invalid utf-8 as replacement chars and writes them back as utf-8", async () => {
@@ -98,7 +97,7 @@ describe("file kind guards in tools", () => {
   it("edit rejects empty file deletion", async () => {
     await withTempFile("empty.txt", "a\n", async ({ cwd }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("a\n", home.testPath);
+      const hashes = await lineHashes("a\n");
 
       await expect(
         editTool.execute(
@@ -114,14 +113,15 @@ describe("file kind guards in tools", () => {
       ).rejects.toThrow(/E_WOULD_EMPTY/);
     });
   });
-  it("read rejects files over the byte limit with E_FILE_TOO_LARGE", async () => {
+  it("read refuses files over the byte limit with E_FILE_TOO_LARGE content", async () => {
     await withTempFile("huge.txt", "x", async ({ cwd, path }) => {
       const { truncate } = await import("fs/promises");
       await truncate(path, MAX_BYTES + 1);
       const { ctx, readTool } = setupIntegrationTest(cwd);
-      await expect(
-        readTool.execute("r1", { path: "huge.txt" }, undefined, undefined, ctx),
-      ).rejects.toThrow(/E_FILE_TOO_LARGE/);
+      const result = await readTool.execute("r1", { path: "huge.txt" }, undefined, undefined, ctx);
+      expect(result.content[0].text).toContain("[E_READ_FAILED]");
+      expect(result.content[0].text).toContain("E_FILE_TOO_LARGE");
+      expect(result.content[0].text).toContain("for very large files use write");
     });
   });
 });

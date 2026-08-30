@@ -291,13 +291,13 @@ export function renderDisplayDiffLines(
   const rendered = split
     ? renderSplit(lines, safe, theme)
     : renderUnified(lines, safe, theme);
-  const maximum = options.expanded ? policy.expandedMaxLines : policy.previewLines;
+  const maximum = options.expanded ? policy.expandedMaxLines : policy.diffCollapsedLines;
   const bounded = maximum === 0 ? [] : rendered.slice(0, maximum);
   const omitted = Math.max(0, rendered.length - bounded.length);
   const output = description.projected
     ? [padVisible(theme.fg("warning", "PROJECTED PREVIEW"), safe), ...bounded]
     : bounded;
-  if (omitted > 0) output.push(padVisible(theme.fg("muted", `\u2026 +${omitted} diff lines`), safe));
+  if (omitted > 0) output.push(padVisible(theme.fg("muted", `⋯ +${omitted} diff lines`), safe));
   return output;
 }
 

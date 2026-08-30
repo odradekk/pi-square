@@ -8,7 +8,8 @@ import jiti from "jiti";
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
-const { loadProjectHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { getServed, recordServed } = await load("../../src/anchored-edit/served.ts");
 const {
   listOwnerPartitions,
@@ -44,7 +45,7 @@ function sleep(ms) {
 }
 
 async function childOwners() {
-  const store = await loadProjectHashStore(workspace, PARENT_OWNER);
+  const store = await openStore(PARENT_OWNER);
   try {
     return listOwnerPartitions(store)
       .filter((p) => p.owner !== PARENT_OWNER)
@@ -55,7 +56,7 @@ async function childOwners() {
 }
 
 async function ownerHasServed(owner, path) {
-  const store = await loadProjectHashStore(workspace, owner);
+  const store = await openStore(owner);
   try {
     return Boolean(getServed(store, path));
   } finally {
@@ -71,7 +72,10 @@ mkdirSync(workspace, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
+const sessionDir = join(workspace, ".test-session");
+const storeDir = anchoredStoreDir(sessionDir, workspace);
 const ctx = { cwd: workspace };
+const openStore = (owner) => loadAnchoredHashStore(storeDir, owner);
 const source = join(workspace, "source.txt");
 
 try {
@@ -80,10 +84,10 @@ try {
   // A resumed child keeps its served records under its own owner, so it can
   // edit a range it was shown before it became inactive without reading again:
   // reconciliation with the child retained never evicts it.
-  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
+  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir);
   const firstRead = await childRead.execute("read", { path: "source.txt" }, undefined, undefined, ctx);
   const anchors = readRows(firstRead.content).map((row) => row.hash);
-  const replace = createChildAnchoredReplaceTool(workspace, CHILD_ONE);
+  const replace = createChildAnchoredReplaceTool(workspace, CHILD_ONE, sessionDir);
   const replaceResult = await replace.execute(
     "replace",
     { path: "source.txt", remove_from: anchors[1], remove_to: anchors[2], replacement_text: "BETA2" },
@@ -94,17 +98,17 @@ try {
 
   // Mark the child inactive and reconcile with its artifacts retained: the
   // partition must survive so resume finds its records.
-  const retained = await reconcileChildPartitions(workspace, new Set([CHILD_ONE]));
+  const retained = await reconcileChildPartitions(workspace, new Set([CHILD_ONE]), sessionDir);
   assert.deepEqual(retained.evicted, [], "a retained child partition is never evicted");
   assert.ok(await ownerHasServed(CHILD_ONE, source), "the served record survives reconciliation");
 
   // Dropping one child's records leaves the parent's and other children's
   // records intact.
-  const secondRead = createChildAnchoredReadTool(workspace, CHILD_TWO);
+  const secondRead = createChildAnchoredReadTool(workspace, CHILD_TWO, sessionDir);
   await secondRead.execute("read-two", { path: "source.txt" }, undefined, undefined, ctx);
-  const parentRead = createChildAnchoredReadTool(workspace, PARENT_OWNER);
+  const parentRead = createChildAnchoredReadTool(workspace, PARENT_OWNER, sessionDir);
   await parentRead.execute("read-parent", { path: "source.txt" }, undefined, undefined, ctx);
-  await dropChildPartition(workspace, CHILD_ONE);
+  await dropChildPartition(workspace, CHILD_ONE, sessionDir);
   assert.ok(!(await ownerHasServed(CHILD_ONE, source)), "the dropped child's served record is gone");
   assert.ok(await ownerHasServed(CHILD_TWO, source), "another child's records are intact");
   assert.ok(await ownerHasServed(PARENT_OWNER, source), "the parent's records are intact");
@@ -112,7 +116,7 @@ try {
   // Reconcile against a retained set that excludes an existing partition drops
   // it: records go with their artifacts even when the drop did not run at
   // deletion time.
-  const reconciledEmpty = await reconcileChildPartitions(workspace, new Set([CHILD_ONE]));
+  const reconciledEmpty = await reconcileChildPartitions(workspace, new Set([CHILD_ONE]), sessionDir);
   assert.ok(reconciledEmpty.evicted.includes(CHILD_TWO), "an orphan partition (artifacts gone) is evicted on reconcile");
   assert.ok(!(await ownerHasServed(CHILD_TWO, source)), "the orphan's records are dropped with its artifacts");
 
@@ -124,7 +128,7 @@ try {
   const seeds = [];
   for (let i = 0; i < MAX_RETAINED_CHILD_PARTITIONS + 4; i++) {
     const owner = `subagent_00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
-    const store = await loadProjectHashStore(workspace, owner);
+    const store = await openStore(owner);
     try {
       upsertSnapshot(store, file, "checksum", 1, [`AAA`]);
       recordServed(store, file, ["AAA"]);
@@ -134,7 +138,7 @@ try {
     seeds.push(owner);
     await sleep(3);
   }
-  const reconciledBound = await reconcileChildPartitions(workspace, new Set(seeds));
+  const reconciledBound = await reconcileChildPartitions(workspace, new Set(seeds), sessionDir);
   const remaining = await childOwners();
   assert.equal(remaining.length, MAX_RETAINED_CHILD_PARTITIONS, "the bound limits retained child partitions");
   assert.deepEqual(
@@ -148,7 +152,7 @@ try {
   const alive = join(workspace, "alive.txt");
   writeFileSync(alive, "alive\n");
   for (const owner of [PARENT_OWNER, CHILD_ONE]) {
-    const store = await loadProjectHashStore(workspace, owner);
+    const store = await openStore(owner);
     try {
       upsertSnapshot(store, alive, "checksum-alive", 1, ["BBB"]);
       recordServed(store, alive, ["BBB"]);
@@ -158,9 +162,9 @@ try {
       store.release();
     }
   }
-  await pruneMissingForAllOwners(workspace);
+  await pruneMissingForAllOwners(workspace, sessionDir);
   for (const owner of [PARENT_OWNER, CHILD_ONE]) {
-    const store = await loadProjectHashStore(workspace, owner);
+    const store = await openStore(owner);
     try {
       const served = getServed(store, alive);
       const goneServed = getServed(store, join(workspace, "gone.txt"));
@@ -182,7 +186,7 @@ try {
     const { createSubagentId, ensureArtifactsDir, initializeSessionFile, writeRunState, recordParentSessionRun, deleteParentSessionRun, artifactsDirFor } =
       await load("../../src/subagents/artifacts.ts");
     const delId = createSubagentId();
-    const seedStore = await loadProjectHashStore(workspace, delId);
+    const seedStore = await openStore(delId);
     try {
       recordServed(seedStore, source, ["DDD"]);
     } finally {
@@ -237,7 +241,7 @@ try {
     writeRunState(dir, runDetails);
     recordParentSessionRun("parent-session", delId);
 
-    deleteParentSessionRun("parent-session", delId);
+    deleteParentSessionRun("parent-session", delId, sessionDir);
     assert.equal(existsSync(dir), false, "the child's artifacts are dropped");
     let partitionDropped = false;
     for (let i = 0; i < 100 && !partitionDropped; i++) {

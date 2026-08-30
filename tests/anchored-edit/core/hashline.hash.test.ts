@@ -6,19 +6,17 @@ import {
 	AnchorMismatchError,
 } from "../../../src/anchored-edit/hashline";
 import { splitLines } from "../../../src/anchored-edit/utils";
-import { useTestHome } from "../support/fixtures";
-const home = useTestHome();
 
 describe("strict hashline contract", () => {
 	it("preserves internal spaces when hashing", async () => {
-		const hashes = await lineHashes("a b", home.testPath);
-		const hashes2 = await lineHashes("ab", home.testPath);
+		const hashes = await lineHashes("a b");
+		const hashes2 = await lineHashes("ab");
 		expect(hashes[0]).not.toBe(hashes2[0]);
 	});
 
 	it("trims trailing spaces when hashing", async () => {
-		const hashes = await lineHashes("value  ", home.testPath);
-		const hashes2 = await lineHashes("value", home.testPath);
+		const hashes = await lineHashes("value  ");
+		const hashes2 = await lineHashes("value");
 		expect(hashes[0]).toBe(hashes2[0]);
 	});
 
@@ -38,7 +36,7 @@ describe("strict hashline contract", () => {
 
 describe("perfect hashing", () => {
 	it("returns one hash per line, indexed 0-based by line number", async () => {
-		const hashes = await lineHashes("alpha\nbeta\ngamma", home.testPath);
+		const hashes = await lineHashes("alpha\nbeta\ngamma");
 		expect(hashes).toHaveLength(3);
 		expect(hashes[0]).toMatch(/^[A-Za-z0-9]{3}$/);
 		expect(hashes[1]).toMatch(/^[A-Za-z0-9]{3}$/);
@@ -51,7 +49,7 @@ describe("perfect hashing", () => {
 			"import { baz } from 'qux';",
 			"import { foo } from 'bar';",
 		].join("\n");
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		expect(hashes[0]).not.toBe(hashes[2]);
 		expect(hashes[0]).not.toBe(hashes[1]);
 		expect(hashes[1]).not.toBe(hashes[2]);
@@ -66,7 +64,7 @@ describe("perfect hashing", () => {
 			"  return 2;",
 			"}",
 		].join("\n");
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		expect(hashes[2]).not.toBe(hashes[5]);
 	});
 
@@ -76,7 +74,7 @@ describe("perfect hashing", () => {
 			"const y = 2;",
 			"const x = 1;",
 		].join("\n");
-		const hashes = await lineHashes(file, home.testPath);
+		const hashes = await lineHashes(file);
 		const result = applyEdit(file, { hash_bounds: [{ hash: hashes[2]! }, { hash: hashes[2]! }], content_lines: ["const x = 999;"] });
     expect(result.content).toBe("const x = 1;\nconst y = 2;\nconst x = 999;");
 	});
@@ -97,7 +95,7 @@ describe("perfect hashing", () => {
 
 	it("rejects an ambiguous hash with [E_AMBIGUOUS_ANCHOR] (synthetic collision)", async () => {
 		const file = "alpha\nbeta\ngamma\ndelta";
-		const realHashes = await lineHashes(file, home.testPath);
+		const realHashes = await lineHashes(file);
 		const forgedHashes = [...realHashes];
 		forgedHashes[2] = realHashes[0]!;
 
@@ -123,7 +121,7 @@ describe("perfect hashing", () => {
 
 	it("carries the candidate hashes of ambiguous feedback for serving", async () => {
 		const file = "alpha\nbeta\ngamma\ndelta";
-		const realHashes = await lineHashes(file, home.testPath);
+		const realHashes = await lineHashes(file);
 		const forgedHashes = [...realHashes];
 		forgedHashes[2] = realHashes[0]!;
 
@@ -156,7 +154,7 @@ describe("perfect hashing", () => {
 			Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n"),
 		];
 		for (const file of files) {
-			const hashes = await lineHashes(file, home.testPath);
+			const hashes = await lineHashes(file);
 			const unique = new Set(hashes);
 			expect(
 				unique.size,
@@ -168,7 +166,7 @@ describe("perfect hashing", () => {
 	it("hash array length matches line count for edge cases", async () => {
 		const cases = ["", "\n", "a", "a\n", "a\nb\nc\n"];
 		for (const file of cases) {
-			const hashes = await lineHashes(file, home.testPath);
+			const hashes = await lineHashes(file);
 			expect(hashes).toHaveLength(splitLines(file).length);
 		}
 	});

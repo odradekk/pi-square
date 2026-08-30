@@ -70,7 +70,7 @@ const SESSION = {
   // Secret prompt text never rendered
   const callText = stripVTControlCharacters(call.render(100).join("\n"));
   assert.doesNotMatch(callText, /deployment password/, "secret prompt text never rendered");
-  assert.match(callText, /\[needs input\]/, "masked prompt indicator shown as needs-input badge");
+  assert.doesNotMatch(callText, /\[needs input\]/, "no needs input badge renders");
   runtime.dispose();
 }
 
@@ -214,7 +214,9 @@ const SESSION = {
   const args = { operation: "secret_input", session: "ssh-a1b2c3d4", prompt: "Enter password" };
   const details = { version: 1, operation: "secret_input", status: "error", code: "NO_ACTIVE_COMMAND", message: "Secret SSH input requires a running foreground command" };
   const result = renderResult(decorated, args, details, "Error: no active command", { isError: true, expanded: true });
-  const text = stripVTControlCharacters(result.render(80).join("\n"));
+  // Wide-tier column so the full failure sentence fits beside the natural
+  // title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.match(text, /^●/, "no active command renders ×");
   assert.match(text, /running foreground command/i, "error message visible");
 
@@ -229,7 +231,8 @@ const SESSION = {
   const args = { operation: "connect", profile: "prod", target: "web1" };
   const details = { version: 1, operation: "connect", status: "success", code: "CONNECTED", message: `Connected ssh-a1b2c3d4 to deploy@10.0.0.1:22`, session: { ...SESSION, commandState: "idle" } };
   const result = renderResult(decorated, args, details, "Welcome to Ubuntu\n$", { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.match(text, /^●/, "connect success renders ✓");
   assert.match(text, /deploy@10\.0\.0\.1:22/, "endpoint visible in summary row");
   assert.doesNotMatch(text, /password|passphrase|private.key|BEGIN.*KEY/i, "no credentials in connect success");
@@ -280,7 +283,9 @@ const SESSION = {
   const args = { operation: "command", session: "ssh-a1b2c3d4", command: "long-task", waitMs: 10000 };
   const details = { version: 1, operation: "command", status: "error", code: "SESSION_DISCONNECTED", message: "SSH session disconnected before the command completed", session: { ...SESSION, state: "disconnected", disconnectReason: "Connection reset by peer" } };
   const result = renderResult(decorated, args, details, "partial output", { isError: true, expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full failure sentence fits beside the natural
+  // title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.match(text, /^●/, "disconnected command renders × (not ×)");
   assert.match(text, /SSH session disconnected/, "disconnect reason visible via error message");
 

@@ -121,9 +121,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(text, /fn main\(\)/, "expanded preserves text-match snippet content");
   // Ranking order
   assert.ok(text.indexOf("owner/name") < text.indexOf("other/repo"), "expanded preserves ranking order");
-  // Rate limit and incomplete indicators were in the Summary section (C8-pruned);
-  // pagination hasMore now raises the [truncated] badge.
-  assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
+  // Rate limit and incomplete indicators were in the Summary section
+  // (pruned); pagination hasMore raises no header badge in the calm grammar.
+  assert.doesNotMatch(text, /\[truncated\]/, "pagination hasMore renders no truncated badge");
 
   runtime.dispose();
 }
@@ -182,10 +182,12 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { operation: "read", repo: "owner/name", path: "src/index.ts", ref: "main", line: 1, limit: 200 };
   const details = { tool: "read", phase: "done", repo: "owner/name", path: "src/index.ts", ref: "main", resolvedPath: "src/index.ts", sha: "abcdef1234567890", size: 1024, binary: false, line: 1, limit: 200, returnedLines: 50, totalLines: 150, hasMore: true, rate: { limit: 5000, remaining: 4999, used: 1 } };
   const result = renderResult(decorated, args, details, "1: import { foo } from 'bar';", { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full target and summary fit beside the natural
+  // title.
+  const text = stripVTControlCharacters(result.render(200).join("\n"));
   assert.match(text, /owner\/name:src\/index\.ts/, "target preserves repo and path");
   assert.match(text, /lines 1-50 of 150 · continue at line 51/, "summary row states returned lines and continuation");
-  assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }
@@ -240,7 +242,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   assert.match(text, /index\.ts/, "expanded preserves entry path");
   assert.match(text, /index\.ts/, "expanded preserves file entry path (relative to browse path)");
   assert.match(text, /utils\//, "expanded shows directory with trailing slash");
-  assert.match(text, /\[truncated\]/, "pagination hasMore raises the truncated badge");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }
@@ -254,7 +256,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { tool: "tree", phase: "done", repo: "owner/name", ref: "main", depth: 1, offset: 0, limit: 100, returned: 100, hasMore: true, remoteTruncated: true, requestBudgetExhausted: false, requestsUsed: 1, entries: [], rate: { limit: 5000, remaining: 4999 } };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /\[truncated\]/, "expanded shows the truncated badge for directory-limit and pagination");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }

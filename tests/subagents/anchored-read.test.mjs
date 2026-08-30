@@ -9,7 +9,8 @@ import jiti from "jiti";
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 const { transformAnchoredReadContent } = await load("../../src/anchored-edit/read-transform.ts");
-const { loadProjectHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { getServed, recordServed } = await load("../../src/anchored-edit/served.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 const { __testables } = await load("../../src/subagents/session.ts");
@@ -39,6 +40,10 @@ mkdirSync(workspace, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
+const sessionDir = join(workspace, ".test-session");
+const storeDir = anchoredStoreDir(sessionDir, workspace);
+const openStore = (owner) => loadAnchoredHashStore(storeDir, owner);
+
 try {
   const source = join(workspace, "source.txt");
   writeFileSync(source, "first\nmiddle\nlast\n");
@@ -50,7 +55,7 @@ try {
   // The child read carries the built-in read name, keeps Pi's native renderers,
   // and carries no pi-square display shell, so child tool construction needs no
   // parent display runtime.
-  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
+  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir);
   assert.equal(childRead.name, "read", "the anchored read is offered under the built-in read name");
   assert.equal(childRead.renderShell, undefined, "child read carries no pi-square display shell");
   assert.equal(typeof childRead.renderCall, "function", "child read keeps Pi's native call renderer");
@@ -70,6 +75,8 @@ try {
     [{ type: "text", text: "factory content" }],
     { path: "source.txt" },
     workspace,
+    undefined,
+    { sessionDir },
   );
   const childResult = await childRead.execute("child-read", { path: "source.txt" }, undefined, undefined, { cwd: workspace });
   const childRows = readRows(childResult.content);
@@ -107,7 +114,7 @@ try {
     { path: "../outside.txt" },
     workspace,
     "parent",
-    { confineToWorkspace: false },
+    { confineToWorkspace: false, sessionDir },
   );
   assert.match(childOutside.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "the child read serves external rows with anchors");
   assert.deepEqual(
@@ -143,11 +150,11 @@ try {
   // same anchors in their own partitions — isolation is per-partition, not
   // per-anchor secrecy.)
   {
-    const childServed = getServed(await loadProjectHashStore(workspace, CHILD_ONE), realpathSync(join(root, "outside.txt")));
+    const childServed = getServed(await openStore(CHILD_ONE), realpathSync(join(root, "outside.txt")));
     assert.ok(childServed && childServed.size > 0, "the child's external read records served rows under the child owner");
     writeFileSync(join(root, "child-only.txt"), "child only\nsecond");
     await childRead.execute("child-only", { path: "../child-only.txt" }, undefined, undefined, { cwd: workspace });
-    const parentOfChildOnly = getServed(await loadProjectHashStore(workspace, PARENT_OWNER), realpathSync(join(root, "child-only.txt")));
+    const parentOfChildOnly = getServed(await openStore(PARENT_OWNER), realpathSync(join(root, "child-only.txt")));
     assert.equal(parentOfChildOnly, undefined, "a file only the child read has no served rows under the parent owner");
   }
 
@@ -158,27 +165,27 @@ try {
   // Served rows are recorded under the child's own owner in the shared store,
   // and each owner's partition never mixes with another's.
   assert.ok(
-    getServed(await loadProjectHashStore(workspace, CHILD_ONE), source),
+    getServed(await openStore(CHILD_ONE), source),
     "the child read records served rows under the child owner",
   );
-  const secondChild = createChildAnchoredReadTool(workspace, CHILD_TWO);
+  const secondChild = createChildAnchoredReadTool(workspace, CHILD_TWO, sessionDir);
   await secondChild.execute("child-two", { path: "source.txt" }, undefined, undefined, { cwd: workspace });
   assert.ok(
-    getServed(await loadProjectHashStore(workspace, CHILD_TWO), source),
+    getServed(await openStore(CHILD_TWO), source),
     "the second child records its own served rows",
   );
 
   // A write into one owner's partition never leaks into another owner's.
-  await recordServed(await loadProjectHashStore(workspace, CHILD_TWO), source, ["aaa"]);
+  await recordServed(await openStore(CHILD_TWO), source, ["aaa"]);
   assert.ok(
-    getServed(await loadProjectHashStore(workspace, CHILD_ONE), source)
-      && !getServed(await loadProjectHashStore(workspace, CHILD_ONE), source).has("aaa"),
+    getServed(await openStore(CHILD_ONE), source)
+      && !getServed(await openStore(CHILD_ONE), source).has("aaa"),
     "a second child's served write stays in its own partition",
   );
 
   // The store keeps one served partition per owner: parent, child one, child two.
   const { DatabaseSync } = await import("node:sqlite");
-  const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+  const store = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
   try {
     const owners = store.prepare("SELECT owner, COUNT(*) AS count FROM served GROUP BY owner").all();
     const byOwner = Object.fromEntries(owners.map((row) => [row.owner, row.count]));
@@ -198,6 +205,7 @@ try {
     builtInTools: ["read", "write"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(assembled.definitions.length, 1, "a writable child with anchored editing gets the anchored read");
   assert.equal(assembled.definitions[0].name, "read", "the appended tool is the anchored read");
@@ -208,6 +216,7 @@ try {
     builtInTools: ["read", "ls"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(readOnly.definitions.length, 0, "read-only roles (read but no write/edit) receive no anchored read");
 
@@ -217,6 +226,7 @@ try {
     builtInTools: ["write"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(writableWithoutRead.definitions.length, 0, "a child that did not request read gets no anchored read");
 
@@ -226,6 +236,7 @@ try {
     builtInTools: ["read", "write"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(disabled.definitions.length, 0, "disabled anchored editing adds no anchored tools");
 

@@ -5,13 +5,12 @@ import { isWithinWorkspace } from "../core/paths.ts";
 import { loadFileKindAndText } from "./file-kind.ts";
 import { readNormFile } from "./file-reader.ts";
 import { resolveTarget } from "./fs-write.ts";
-import { loadHashStoreAt } from "./hash-store.ts";
 import { MAX_HASH_LINES } from "./hashline/index.ts";
-import { projectHashStorePath, toCwd } from "./paths.ts";
+import { anchoredStoreDir, toCwd } from "./paths.ts";
 import { fmtReadPreview } from "./read.ts";
 import { recordServed } from "./served.ts";
 import { errCode } from "./utils.ts";
-import { PARENT_OWNER } from "./workspace-support.ts";
+import { PARENT_OWNER, loadAnchoredHashStore } from "./workspace-support.ts";
 import { pruneMissingForAllOwners } from "./partitions.ts";
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];
@@ -55,8 +54,14 @@ function readParams(value: unknown): { path: string; offset?: number; limit?: nu
  */
 export interface AnchoredReadPathOptions {
   confineToWorkspace?: boolean;
+  /**
+   * Persistent session directory of the initiating session, used to locate the
+   * anchor store (`<sessionDir>/anchored-edit/`). Undefined or "" selects the
+   * throwaway temp-directory fallback for non-persisted sessions. Child
+   * compositions pass the parent session's directory captured at assembly time.
+   */
+  sessionDir?: string;
 }
-
 interface ResolvedReadTarget {
   workspaceRoot: string;
   absolutePath: string;
@@ -109,10 +114,9 @@ export async function guardAnchoredRead(
   return undefined;
 }
 
-export async function initializeAnchoredReadStore(cwd: string): Promise<void> {
-  await pruneMissingForAllOwners(cwd);
+export async function initializeAnchoredReadStore(cwd: string, sessionDir?: string): Promise<void> {
+  await pruneMissingForAllOwners(cwd, sessionDir);
 }
-
 export async function transformAnchoredReadContent(
   content: ReadModelContent,
   value: unknown,
@@ -153,12 +157,12 @@ export async function transformAnchoredReadContent(
 
   try {
     // Native path authority (#185): the store stays attributed to the
-    // initiating workspace even for external targets, so served rows for the
+    // initiating session even for external targets, so served rows for the
     // same external file in two workspaces never mix.
-    const store = await loadHashStoreAt(projectHashStorePath(resolved.workspaceRoot), {
+    const store = await loadAnchoredHashStore(
+      anchoredStoreDir(options.sessionDir, resolved.workspaceRoot),
       owner,
-      migrateLegacy: false,
-    });
+    );
     try {
       const normalized = await readNormFile(params.path, resolved.workspaceRoot, {
         preloadedFile: file,
@@ -169,7 +173,6 @@ export async function transformAnchoredReadContent(
         normalized.normalized,
         { offset: params.offset, limit: params.limit },
         normalized.fileHashes,
-        normalized.absolutePath,
       );
       recordServed(store, normalized.absolutePath, preview.servedHashes);
       const text = normalized.hadUtf8DecodeErrors

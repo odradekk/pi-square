@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { assertReq, buildToolDef } from "../../../src/anchored-edit/replace";
+import { assertReq } from "../../../src/anchored-edit/replace";
+import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
+import { PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
+import { withTempDir, makeTestCtx } from "../support/fixtures";
+
+function replaceTool(cwd: string) {
+  return createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false, false);
+}
 
 describe("assertReq", () => {
 	it("throws for non-record input", () => {
@@ -58,32 +65,34 @@ describe("assertReq", () => {
 
 describe("anchor validation order", () => {
 	it("rejects malformed anchors before any file I/O", async () => {
-		const tool = buildToolDef();
-		await expect(
-			tool.execute(
-				"e1",
-				{
-					path: "does-not-exist.ts",
-					remove_from: "abcd", remove_to: "abcd",
-					replacement_text: "x",
-				},
-				undefined,
-				undefined,
-				{ cwd: "/tmp" } as any,
-			),
-		).rejects.toThrow(/^\[E_BAD_REF\]/);
+		await withTempDir("anchor-order-", async (cwd) => {
+			const tool = replaceTool(cwd);
+			await expect(
+				tool.execute(
+					"e1",
+					{
+						path: "does-not-exist.ts",
+						remove_from: "abcd", remove_to: "abcd",
+						replacement_text: "x",
+					},
+					undefined,
+					undefined,
+					makeTestCtx(cwd),
+				),
+			).rejects.toThrow(/^\[E_BAD_REF\]/);
+		});
 	});
 });
 
 describe("prepareArguments normalization", () => {
 	it("passes through non-record input unchanged", () => {
-		const tool = buildToolDef();
+		const tool = replaceTool("/tmp");
 		expect(tool.prepareArguments!(null)).toBe(null);
 		expect(tool.prepareArguments!("raw")).toBe("raw");
 	});
 
 	it("passes replacement_text through as a string", () => {
-		const tool = buildToolDef();
+		const tool = replaceTool("/tmp");
 		const prepared = tool.prepareArguments!({
 			path: "test.txt",
 			remove_from: "AAA", remove_to: "BBB",
@@ -93,7 +102,7 @@ describe("prepareArguments normalization", () => {
 	});
 
 	it("normalizes file_path to path", () => {
-		const tool = buildToolDef();
+		const tool = replaceTool("/tmp");
 		const prepared = tool.prepareArguments!({
 			file_path: "test.txt",
 			remove_from: "AAA", remove_to: "BBB",

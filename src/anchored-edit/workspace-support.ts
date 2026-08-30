@@ -1,15 +1,18 @@
 import { loadHashStoreAt, type HashStoreHandle } from "./hash-store.ts";
-import { projectHashStorePath } from "./paths.ts";
+import { anchoredHashStorePath } from "./paths.ts";
 
 export const PARENT_OWNER = "parent";
 
-export async function loadProjectHashStore(
-  workspaceRoot: string,
+/**
+ * Opens the anchored hash store rooted at the session-resolved store
+ * directory (`anchoredStoreDir`), under the given owner partition.
+ */
+export async function loadAnchoredHashStore(
+  storeDir: string,
   owner: string = PARENT_OWNER,
 ): Promise<HashStoreHandle> {
-  return loadHashStoreAt(projectHashStorePath(workspaceRoot), {
+  return loadHashStoreAt(anchoredHashStorePath(storeDir), {
     owner,
-    migrateLegacy: false,
   });
 }
 

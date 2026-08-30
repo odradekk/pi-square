@@ -1,47 +1,32 @@
-import { homedir } from "os";
-import { fileURLToPath } from "url";
-import { dirname, join, posix, win32 } from "path";
-
+import { createHash } from "node:crypto";
+import { homedir, tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { join, posix, win32 } from "node:path";
 
 function homeBase(): string {
   const envHome = process.env.HOME;
   return envHome && envHome.length > 0 ? envHome : homedir();
 }
 
-function configBase(): string {
-  if (process.platform !== "win32") {
-    const xdg = process.env.XDG_CONFIG_HOME;
-    if (xdg && xdg.length > 0) return xdg;
-  }
-  return join(homeBase(), ".config");
+/**
+ * Directory holding the anchored-edit hash store and lock area for one
+ * session. The store lives inside the session's own directory
+ * (`<sessionDir>/anchored-edit/`), alongside the session files of its
+ * workspace, so every session of one workspace shares one store and lock area
+ * while two workspaces never share either. A session without a persistent
+ * directory (for example a print-mode in-memory session) falls back to a
+ * throwaway area under the OS temp directory keyed by the workspace root; the
+ * store is a recoverable cache, so losing it only costs one fresh read.
+ */
+export function anchoredStoreDir(sessionDir: string | undefined, workspaceRoot: string): string {
+  const dir = sessionDir?.trim();
+  if (dir) return join(dir, "anchored-edit");
+  const key = createHash("sha256").update(workspaceRoot).digest("hex").slice(0, 16);
+  return join(tmpdir(), "pi-square-anchored-edit", key);
 }
 
-export function configDir(): string {
-  return join(configBase(), "pi-hashline-edit-pro");
-}
-
-export function configPath(): string {
-  return join(configDir(), "config.json");
-}
-
-export function hashStorePath(): string {
-  return join(configDir(), "hash-store.sqlite");
-}
-
-export function projectHashStorePath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".pi", "anchored-edit", "hash-store.sqlite");
-}
-
-export function projectHashStoreDir(workspaceRoot: string): string {
-  return dirname(projectHashStorePath(workspaceRoot));
-}
-
-export function legacyHashStorePath(): string {
-  return join(configDir(), "hash-store.json");
-}
-
-export function hashStoreDir(): string {
-  return dirname(hashStorePath());
+export function anchoredHashStorePath(storeDir: string): string {
+  return join(storeDir, "hash-store.sqlite");
 }
 
 /**

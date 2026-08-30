@@ -20,16 +20,27 @@ const { initHasher, _lineHashesPure } = await load("../../src/anchored-edit/hash
 const { acquireFileLock, lockFilePath } = await load("../../src/anchored-edit/file-lock.ts");
 const { resolveTarget } = await load("../../src/anchored-edit/fs-write.ts");
 const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-edit/workspace-replace.ts");
-const { loadProjectHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 const { recordServed } = await load("../../src/anchored-edit/served.ts");
 
 const helperPath = join(dirname(fileURLToPath(import.meta.url)), "cross-process-lock-helper.mjs");
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const root = mkdtempSync(join(tmpdir(), "pi-square-write-lock-"));
 const workspace = join(root, "workspace");
 mkdirSync(workspace, { recursive: true });
+
+const sessionDir = join(workspace, ".test-session");
+const storeDir = anchoredStoreDir(sessionDir, workspace);
+const sessionCtx = {
+  cwd: workspace,
+  sessionManager: {
+    getSessionDir: () => sessionDir,
+    getSessionId: () => "test-session",
+    getSessionFile: () => undefined,
+  },
+};
 
 await initHasher();
 
@@ -38,12 +49,12 @@ function hashesOf(content) {
 }
 
 function lockDir() {
-  return join(workspace, ".pi", "anchored-edit", "locks");
+  return join(storeDir, "locks");
 }
 
 async function canonicalLockPath(file) {
   const target = await resolveTarget(join(workspace, file));
-  return lockFilePath(workspace, target);
+  return lockFilePath(storeDir, target);
 }
 
 function lockDirFiles() {
@@ -103,7 +114,7 @@ function kill(child) {
 }
 
 async function holdLock(file) {
-  const job = spawnJob({ mode: "hold", workspace, path: file });
+  const job = spawnJob({ mode: "hold", workspace, sessionDir, path: file });
   const result = await waitResult(job.resultPath);
   assert.equal(result.locked, true, `holder acquired the lock on ${file}`);
   return job;
@@ -128,7 +139,7 @@ try {
   writeFileSync(join(workspace, "d1.txt"), "one\n");
   writeFileSync(join(workspace, "d2.txt"), "two\n");
   const h1 = await holdLock("d1.txt");
-  const h2Job = spawnJob({ mode: "hold", workspace, path: "d2.txt" });
+  const h2Job = spawnJob({ mode: "hold", workspace, sessionDir, path: "d2.txt" });
   const h2Result = await waitResult(h2Job.resultPath);
   assert.equal(h2Result.locked, true, "a second file acquires its own lock while the first is held");
   await kill(h1.child);
@@ -156,7 +167,7 @@ try {
   // (and the parent) sees the artefact. ---
   writeFileSync(join(workspace, "observed.txt"), "one\n");
   const observer = await holdLock("observed.txt");
-  const probeJob = spawnJob({ mode: "probe", workspace, path: "observed.txt" });
+  const probeJob = spawnJob({ mode: "probe", workspace, sessionDir, path: "observed.txt" });
   const probe = await waitResult(probeJob.resultPath);
   assert.equal(probe.exists, true, "a separate process observes the held lock");
   assert.ok(probe.content.includes(`"pid":${observer.child.pid}`), "the observed lock names the holding process");
@@ -171,6 +182,7 @@ try {
   const contender = spawnJob({
     mode: "replace",
     workspace,
+    sessionDir,
     path: "same.txt",
     removeFrom: middle,
     removeTo: middle,
@@ -198,6 +210,7 @@ try {
   const reclaimJob = spawnJob({
     mode: "replace",
     workspace,
+    sessionDir,
     path: "stale.txt",
     removeFrom: middle,
     removeTo: middle,
@@ -216,7 +229,7 @@ try {
   // with the recoverable stale-range code and leaves the file untouched; once
   // the lock is free, the same edit applies. ---
   writeFileSync(join(workspace, "second-session.txt"), "alpha\nbeta\ngamma\n");
-  const secondStore = await loadProjectHashStore(workspace, PARENT_OWNER);
+  const secondStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
   const secondHashes = hashesOf("alpha\nbeta\ngamma\n");
   recordServed(secondStore, join(workspace, "second-session.txt"), secondHashes);
   secondStore.release();
@@ -225,6 +238,7 @@ try {
   const secondReplace = spawnJob({
     mode: "replace",
     workspace,
+    sessionDir,
     path: "second-session.txt",
     removeFrom: secondHashes[1],
     removeTo: secondHashes[1],
@@ -242,6 +256,7 @@ try {
   const secondReplace2 = spawnJob({
     mode: "replace",
     workspace,
+    sessionDir,
     path: "second-session.txt",
     removeFrom: secondHashes[1],
     removeTo: secondHashes[1],
@@ -263,6 +278,7 @@ try {
   const lockedWrite = spawnJob({
     mode: "write",
     workspace,
+    sessionDir,
     path: "childwrite.txt",
     content: "after\n",
     owner: "subagent_write",
@@ -279,6 +295,7 @@ try {
   const freeWrite = spawnJob({
     mode: "write",
     workspace,
+    sessionDir,
     path: "childwrite.txt",
     content: "after\n",
     owner: "subagent_write",
@@ -299,8 +316,8 @@ try {
   rmSync(lockDir(), { recursive: true, force: true });
   writeFileSync(join(workspace, "coexist.txt"), "l1\nl2\nl3\nl4\n");
   const coexHashes = hashesOf("l1\nl2\nl3\nl4\n");
-  const replace = createAnchoredReplaceToolDefinition(workspace);
-  const ctx = { cwd: workspace };
+  const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, undefined, sessionDir);
+  const ctx = sessionCtx;
   const [r1, r2] = await Promise.all([
     replace.execute(
       "replace",
@@ -334,9 +351,17 @@ try {
   );
   assert.ok(!lockDirFiles().length, "no lock artefacts remain after the concurrent replaces");
 
-  // --- Criterion 9/9: lock artefacts are excluded from version control. ---
-  const gitignore = readFileSync(join(repoRoot, ".gitignore"), "utf8");
-  assert.match(gitignore, /anchored-edit\/locks\//, ".gitignore excludes the lock artefacts");
+  // --- Criterion 9/9: lock artefacts live under the session directory, so the
+  // workspace never carries version-control-visible anchored-edit state. ---
+  assert.equal(
+    lockDir(),
+    join(sessionDir, "anchored-edit", "locks"),
+    "locks live under the session directory beside the store",
+  );
+  assert.ok(
+    !existsSync(join(workspace, ".pi", "anchored-edit")),
+    "the workspace keeps no anchored-edit state directory",
+  );
 
   console.log("cross-process write lock tests: OK");
 } finally {

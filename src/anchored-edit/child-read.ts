@@ -27,17 +27,23 @@ import { withAnchoredReadGuidelines, withAnchoredReadTransform } from "./read-to
  * @param owner Anchor-store owner the child's served rows are recorded under.
  *   Required: an omitted owner would silently mix a child's rows into the parent
  *   partition, which is exactly the isolation this feature exists to provide.
+ * @param sessionDir The parent session's persistent session directory, used to
+ *   locate the anchor store. Required because the child session's own directory
+ *   is its artifacts directory, not the workspace session directory; an empty
+ *   value selects the throwaway temp-directory fallback of a non-persisted
+ *   parent session.
  */
 export function createChildAnchoredReadTool(
   cwd: string,
   owner: string,
+  sessionDir: string,
 ): ToolDefinition {
   const definition = createReadToolDefinition(cwd);
   const anchored = withAnchoredReadTransform(
     definition,
     cwd,
     (content, value, executionCwd) =>
-      transformAnchoredReadContent(content, value, executionCwd, owner, { confineToWorkspace: false }),
+      transformAnchoredReadContent(content, value, executionCwd, owner, { confineToWorkspace: false, sessionDir }),
     (params, executionCwd) => guardAnchoredRead(params, executionCwd, { confineToWorkspace: false }),
   );
   return withAnchoredReadGuidelines(anchored, { confineToWorkspace: false });

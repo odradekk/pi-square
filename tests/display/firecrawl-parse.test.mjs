@@ -152,7 +152,8 @@ const baseDetails = {
   const args = { path: "doc.pdf", pages: "1, 3-5, 10", mode: "auto", timeout: 30000, max_tokens: 12000 };
   // Use expanded to see the Pages and Upload sections
   const result = renderResult(decorated, args, { ...baseDetails }, "# Parsed PDF\n\ncontent", { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   // The "# Parsed PDF" header is stripped; cleaned content shows in the Pages section
   assert.match(text, /content/, "expanded shows the parsed body");
   assert.match(text, /5 pages · 250 KB uploaded · 4800 tokens/, "summary row shows page count, upload size, and tokens");
@@ -250,7 +251,7 @@ const baseDetails = {
   // Expanded — truncation indicator should be reachable
   const expandedResult = renderResult(decorated, args, details, "# Parsed PDF", { expanded: true });
   const expandedText = stripVTControlCharacters(expandedResult.render(100).join("\n"));
-  assert.match(expandedText, /\[truncated\]/, "expanded shows the truncated badge for the oversized result");
+  assert.doesNotMatch(expandedText, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }

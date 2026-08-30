@@ -28,9 +28,11 @@ test("null input produces empty canonical config with no changes", () => {
 
 // ─── 2. Canonical defaults are correct ─────────────────────────────
 
-test("canonical defaults are preview, nine rows, unified diff, full motion at 120 ms", () => {
+test("canonical defaults are preview, five rows, metadata off, unified diff, full motion at 120 ms", () => {
   assert.equal(DEFAULT_DISPLAY_POLICY.resultMode, "preview");
-  assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 9);
+  assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 5);
+  assert.equal(DEFAULT_DISPLAY_POLICY.showMetadata, false);
+  assert.equal(DEFAULT_DISPLAY_POLICY.diffCollapsedLines, 12);
   assert.equal(DEFAULT_DISPLAY_POLICY.diffView, "unified");
   assert.equal(MOTION_FULL_INTERVAL_MS, 120);
   assert.equal(MOTION_REDUCED_INTERVAL_MS, 1_000);

@@ -98,10 +98,11 @@ function renderResult(decorated, args, details, opts = {}) {
     version: 1, phase: "reviewing", totalQuestions: 3, answeredCount: 2, skippedCount: 1,
   };
   const result = renderResult(decorated, ARGS_3Q, progressDetails, { isPartial: true, expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // A wide-tier width leaves room for the full target and summary unelided.
+  const text = stripVTControlCharacters(result.render(120).join("\n"));
   assert.match(text, /^●/, "reviewing progress shows the running fallback marker");
   assert.match(text.split("\n")[0], /3 questions/, "reviewing progress keeps the question count target");
-  assert.match(text.split("\n")[0], /\[partial\]/, "reviewing progress carries the partial badge");
+  assert.doesNotMatch(text.split("\n")[0], /\[partial\]/, "reviewing progress renders no partial badge");
 
   runtime.dispose();
 }

@@ -34,16 +34,13 @@ interface RenderContext {
 }
 
 /**
- * Tree-style section title: `├─ TitleName` in muted tone, original case.
- * The branch prefix replaces the tree rail that components.ts applies to
- * other body lines, so the caller must skip rail application for lines
- * whose stripped content starts with `├─`.
+ * Quiet section title: the title carries the grouping, while the component
+ * adds the shared two-cell evidence indent. No branch or rule prefix is used.
  */
 function titleLine(title: string, context: RenderContext): string {
   const label = truncateCodePoints(sanitizeDisplayLine(title), MAX_SECTION_TITLE_CODE_POINTS);
-  return context.theme.fg("muted", `\u251c\u2500 ${label}`);
+  return context.theme.fg("muted", label);
 }
-
 function wrap(prefix: string, text: string, tone: DisplayTone | undefined, context: RenderContext): string[] {
   const content = truncateCodePoints(sanitizeDisplayText(text), MAX_SECTION_TEXT_CODE_POINTS);
   const effectivePrefix = prefix.startsWith(" ") ? `  ${prefix}` : `  ${prefix}`;
@@ -64,12 +61,12 @@ function renderText(block: Extract<DisplaySectionBlock, { kind: "text" }>, conte
   return wrap("", block.text, block.tone, context);
 }
 
-function boundVisual(lines: string[], maximum: number, context: RenderContext, marker = "lines omitted"): string[] {
+function boundVisual(lines: string[], maximum: number, context: RenderContext, marker = "lines"): string[] {
   const cap = Math.max(0, Math.floor(maximum));
   if (lines.length <= cap) return lines;
   return [
     ...lines.slice(0, cap).map((line) => padVisible(line, context.width)),
-    padVisible(context.theme.fg("muted", `... ${lines.length - cap} ${marker}`), context.width),
+    padVisible(context.theme.fg("muted", `⋯ +${lines.length - cap} ${marker}`), context.width),
   ];
 }
 
@@ -322,8 +319,8 @@ function renderBlock(block: DisplaySectionBlock, context: RenderContext, expande
 function renderSection(section: DisplaySection, context: RenderContext, expanded: boolean, showTitle: boolean): string[] {
   const blocks = section.blocks.filter((block) => expanded || block.kind !== "markdown");
   if (blocks.length === 0) return [];
-  // C9: the label-led rule separates two or more sections. A lone section
-  // attaches its content directly under the header rail.
+  // A quiet title separates evidence groups only when multiple groups exist,
+  // or when the caller needs a lone failure group labelled explicitly.
   const lines = showTitle ? [titleLine(section.title, context)] : [];
   for (const [index, block] of blocks.entries()) {
     if (index > 0) lines.push(padVisible("", context.width));
@@ -338,15 +335,16 @@ export function renderDisplaySections(
   theme: Theme,
   width: number,
   expanded: boolean,
+  forceTitles = false,
 ): string[] {
   const context: RenderContext = { theme, width: Math.max(1, Math.floor(width)), policy };
   const selected = sections
     .filter((section) => expanded || section.compact === true)
-    // C8: an expanded section that only restates the header is not rendered.
+    // Sections that only restate the header are not rendered.
     .filter((section) => !RESTATING_SECTION_TITLES.has(section.title.trim().toLowerCase()))
     // A conditional section counts only when it is present in this mode.
     .filter((section) => section.blocks.some((block) => expanded || block.kind !== "markdown"));
-  const showTitles = selected.length >= 2;
+  const showTitles = forceTitles || selected.length >= 2;
   const lines: string[] = [];
   for (const [index, section] of selected.entries()) {
     if (index > 0) lines.push(padVisible("", context.width));

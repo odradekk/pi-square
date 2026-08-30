@@ -5,9 +5,10 @@ import {
   _lineHashesPure,
   lineHashes,
 } from "../../../src/anchored-edit/hashline";
-import { useTestHome } from "../support/fixtures";
+import { useTestHome, useScratchStore } from "../support/fixtures";
 
 const home = useTestHome();
+const { store: scratchStore } = useScratchStore();
 
 function gcd(a: number, b: number): number {
   while (b !== 0) {
@@ -56,7 +57,7 @@ describe("hash probe stride", () => {
 
   it("spreads blank lines through the store path", async () => {
     const content = Array.from({ length: 20 }, () => "").join("\n");
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await lineHashes(content);
     for (let i = 1; i < hashes.length; i++) {
       expect(allCharsDiffer(hashes[i - 1]!, hashes[i]!)).toBe(true);
     }
@@ -70,18 +71,18 @@ describe("hash probe stride", () => {
       "",
       "const c = 3;",
     ].join("\n");
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await lineHashes(content);
     expect(new Set(hashes).size).toBe(hashes.length);
   });
 
   it("continues the stride sequence for appended identical lines via stable mapping", async () => {
     const oldContent = Array.from({ length: 10 }, () => "").join("\n");
-    const oldHashes = await lineHashes(oldContent, home.testPath);
+    const oldHashes = await lineHashes(oldContent);
     const newContent = Array.from({ length: 11 }, () => "").join("\n");
     const newHashes = await lineHashes(newContent, home.testPath, {
       content: oldContent,
       hashes: oldHashes,
-    });
+    }, scratchStore());
     for (let i = 1; i < newHashes.length; i++) {
       expect(allCharsDiffer(newHashes[i - 1]!, newHashes[i]!)).toBe(true);
     }

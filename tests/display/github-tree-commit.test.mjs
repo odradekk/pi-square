@@ -125,10 +125,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
     entries: [{ path: "src/z-last.ts", type: "file", size: 100 }],
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.match(text, /50 of 200 entries/, "summary shows returned/total count");
   assert.match(text, /continue at offset 100/, "summary shows pagination continuation");
-  assert.match(text, /\[truncated\]/, "pagination indicator visible via badge");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }
@@ -145,7 +146,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const truncResult = renderResult(decorated, { operation: "tree", repo: "o/n", ref: "main" }, truncDetails, "content", { expanded: true });
   const truncText = stripVTControlCharacters(truncResult.render(100).join("\n"));
-  assert.match(truncText, /\[truncated\]/, "remote truncation visible via badge");
+  assert.doesNotMatch(truncText, /\[truncated\]/, "no truncated badge renders");
   assert.doesNotMatch(truncText, /requestBudget/, "request budget not shown when only remote truncated");
 
   // Request budget exhausted only
@@ -155,7 +156,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const budgetResult = renderResult(decorated, { operation: "tree", repo: "o/n", ref: "main" }, budgetDetails, "content", { expanded: true });
   const budgetText = stripVTControlCharacters(budgetResult.render(100).join("\n"));
-  assert.match(budgetText, /\[truncated\]/, "request budget exhaustion visible via badge");
+  assert.doesNotMatch(budgetText, /\[truncated\]/, "no truncated badge renders");
   assert.doesNotMatch(budgetText, /remoteTruncated/, "remote truncation not shown when only budget exhausted");
 
   // Both at once
@@ -165,7 +166,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const bothResult = renderResult(decorated, { operation: "tree", repo: "o/n", ref: "main" }, bothDetails, "content", { expanded: true });
   const bothText = stripVTControlCharacters(bothResult.render(100).join("\n"));
-  assert.match(bothText, /\[truncated\]/, "remote truncation and budget both visible via badge");
+  assert.doesNotMatch(bothText, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }
@@ -276,10 +277,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
     files: Array.from({ length: 10 }, (_, i) => ({ filename: `f${i}.ts`, status: "modified", additions: 5, deletions: 2, changes: 7, patchState: "included" })),
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
-  const text = stripVTControlCharacters(result.render(120).join("\n"));
+  // Full wide-tier column so the summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(200).join("\n"));
   assert.match(text, /10 files/, "returned count visible in summary");
   assert.match(text, /continue at page 3/, "pagination visible in summary");
-  assert.match(text, /\[truncated\]/, "pagination indicator visible via badge");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }

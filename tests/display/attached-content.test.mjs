@@ -26,10 +26,10 @@ const plainTheme = {
   inverse(text) { return String(text); },
 };
 
-// ─── 1. Default policy: preview with 9 body rows ─────────────────────
+// ─── 1. Default policy: preview with 5 body rows ─────────────────────
 
 assert.equal(DEFAULT_DISPLAY_POLICY.resultMode, "preview", "default resultMode must be preview");
-assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 9, "default previewLines must be 9");
+assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 5, "default previewLines must be 5");
 
 // ─── 2. Head/tail preservation: source-line-accurate omission ────────
 
@@ -78,11 +78,11 @@ const preview = new BoundedPreview(previewText, 9, plainTheme, 0, true);
 const previewLines = preview.render(80);
 // Should produce head lines + omission + tail lines
 const plain = previewLines.map((l) => stripVTControlCharacters(l));
-assert.ok(plain.some((l) => /source lines hidden/.test(l)), "must show 'source lines hidden' omission text");
+assert.ok(plain.some((l) => /⋯ \+\d+ lines/.test(l)), "must show the ⋯ +N lines omission count row");
 assert.ok(plain.some((l) => /content line 1/.test(l)), "head must include first line");
 assert.ok(plain.some((l) => /content line 30/.test(l)), "tail must include last line");
 
-// ─── 4. Tree rails on body content ───────────────────────────────────
+// ─── 4. Quiet body indentation ──────────────────────────────────────
 
 const description = {
   version: 1,
@@ -107,16 +107,12 @@ const plainRendered = rendered.map((l) => stripVTControlCharacters(l));
 // First line is the header (starts with marker)
 assert.match(plainRendered[0], /^✓/);
 
-// Body lines start with │ (continuation) or └─ (last)
+// Body lines carry the quiet two-cell indent; no tree rails render.
 const bodyLines = plainRendered.slice(1);
 assert.ok(bodyLines.length > 0, "must have body lines");
-for (let i = 0; i < bodyLines.length; i++) {
-  const isLast = i === bodyLines.length - 1;
-  if (isLast) {
-    assert.match(bodyLines[i], /^└─/, "last body line must start with └─");
-  } else {
-    assert.match(bodyLines[i], /^│/, `body line ${i} must start with │`);
-  }
+for (const line of bodyLines) {
+  assert.match(line, /^ {2}/, "every body line carries the quiet two-cell indent");
+  assert.doesNotMatch(line, /^[│└├]/, "no tree rail prefixes render");
 }
 
 // No body content → no tree rails
@@ -128,9 +124,9 @@ const noBody = new OperationalDisplayComponent(
 );
 const noBodyLines = noBody.render(80);
 assert.equal(noBodyLines.length, 1, "no body content means header only");
-assert.doesNotMatch(stripVTControlCharacters(noBodyLines[0]), /[│└]/, "header line must not have tree rail");
+assert.doesNotMatch(stripVTControlCharacters(noBodyLines[0]), /[│└├]/, "header line carries no rail glyphs");
 
-// ─── 5. Tree-rail width bounds at all breakpoints ────────────────────
+// ─── 5. Width bounds at all breakpoints ─────────────────────────────
 
 const widths = [39, 40, 63, 64, 80, 99, 100, 120];
 const states = ["pending", "partial", "success", "warning", "error", "aborted"];

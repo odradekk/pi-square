@@ -349,7 +349,7 @@ function createProductionServices(
     },
     deleteHistory(id) {
       try {
-        deleteParentSessionRun(parentSessionId, id);
+        deleteParentSessionRun(parentSessionId, id, ctx.sessionManager?.getSessionDir?.() ?? "");
         // Deleting the history states that this result is no longer wanted, so
         // it also leaves the pending delivery set.
         state.background.delivery?.remove(id);

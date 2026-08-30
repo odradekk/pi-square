@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { writeFile } from "fs/promises";
 import { join } from "path";
-import register from "../../../src/anchored-edit/index";
-import { makeFakePiRegistry, withTempFile } from "../support/fixtures";
+import { setupIntegrationTest, withTempFile } from "../support/fixtures";
 
 const minimalPng = Buffer.from(
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -15,16 +14,14 @@ describe("read tool image delegation", () => {
 			const path = join(cwd, "test.png");
 			await writeFile(path, minimalPng);
 
-			const { pi, getTool } = makeFakePiRegistry();
-			register(pi);
-			const readTool = getTool("read");
+			const { ctx, readTool } = setupIntegrationTest(cwd);
 
 			const result = await readTool.execute(
 				"r1",
 				{ path: "test.png" },
 				undefined,
 				undefined,
-				{ cwd } as any,
+				ctx,
 			);
 
 			expect(result.content).toBeDefined();
@@ -39,16 +36,14 @@ describe("read tool image delegation", () => {
 			const path = join(cwd, fileName);
 			await writeFile(path, minimalPng);
 
-			const { pi, getTool } = makeFakePiRegistry();
-			register(pi);
-			const readTool = getTool("read");
+			const { ctx, readTool } = setupIntegrationTest(cwd);
 
 			const result = await readTool.execute(
 				"r1",
 				{ path: fileName },
 				undefined,
 				undefined,
-				{ cwd } as any,
+				ctx,
 			);
 
 			expect(result.content).toBeDefined();

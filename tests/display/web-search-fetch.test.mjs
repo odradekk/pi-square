@@ -383,7 +383,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     pages: [{ url: "https://example.com/huge-page", title: "Huge Page", lines: 500, retried: false, tokens: 50000, usage: "50000 tokens", start: 0, end: 10000 }] };
   const result = renderResult(decorated, args, details, "## Huge Page\n\n[content truncated]...", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /\[truncated\]/, "remote and output truncation raise the truncated badge when expanded");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }

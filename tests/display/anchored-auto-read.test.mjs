@@ -14,6 +14,17 @@ const root = mkdtempSync(join(tmpdir(), "pi-square-anchored-auto-read-"));
 const workspace = join(root, "workspace");
 mkdirSync(workspace, { recursive: true });
 
+const sessionDir = join(workspace, ".test-session");
+const storePath = join(sessionDir, "anchored-edit", "hash-store.sqlite");
+const sessionCtx = {
+  cwd: workspace,
+  sessionManager: {
+    getSessionDir: () => sessionDir,
+    getSessionId: () => "test-session",
+    getSessionFile: () => undefined,
+  },
+};
+
 try {
   const source = join(workspace, "source.txt");
   writeFileSync(source, "before\n", "utf8");
@@ -34,7 +45,7 @@ try {
   for (const handler of events.get("tool_call") ?? []) {
     await handler(
       { toolName: "write", toolCallId: "write-1", input: { path: "source.txt", content: "after\n" } },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   writeFileSync(source, "after\n", "utf8");
@@ -49,7 +60,7 @@ try {
         details: undefined,
         isError: false,
       },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   assert.ok(result, "a changed write returns an augmented result");
@@ -60,7 +71,7 @@ try {
   for (const handler of events.get("tool_call") ?? []) {
     await handler(
       { toolName: "write", toolCallId: "write-unchanged", input: { path: "source.txt", content: "after\n" } },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   let unchanged;
@@ -74,7 +85,7 @@ try {
         details: undefined,
         isError: false,
       },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   assert.equal(unchanged, undefined, "an unchanged write does not append anchors");
@@ -90,10 +101,10 @@ try {
     { path: "../outside-auto.txt" },
     workspace,
     "parent",
-    { confineToWorkspace: false },
+    { confineToWorkspace: false, sessionDir },
   );
   {
-    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const store = new DatabaseSync(storePath, { timeout: 500 });
     try {
       const row = store.prepare("SELECT hashes FROM served WHERE path = ?").get(realpathSync(external));
       assert.ok(row, "the pre-write external read seeds a served row");
@@ -105,7 +116,7 @@ try {
   for (const handler of events.get("tool_call") ?? []) {
     await handler(
       { toolName: "write", toolCallId: "write-external", input: { path: "../outside-auto.txt", content: "after\n" } },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   writeFileSync(external, "after\n", "utf8");
@@ -120,7 +131,7 @@ try {
         details: undefined,
         isError: false,
       },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   assert.ok(externalResult, "a changed external write returns an augmented result");
@@ -130,7 +141,7 @@ try {
     // With autoRead on, the write clears the pre-write served row and then
     // records the post-write anchors, so the row reflects the new content:
     // the pre-write anchor is gone and the fresh one is served.
-    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const store = new DatabaseSync(storePath, { timeout: 500 });
     try {
       const row = store.prepare("SELECT hashes FROM served WHERE path = ?").get(realpathSync(external));
       assert.ok(row, "the external served row exists after the write");
@@ -172,12 +183,12 @@ try {
       { path: "../outside-cleared.txt" },
       workspace,
       "parent",
-      { confineToWorkspace: false },
+      { confineToWorkspace: false, sessionDir },
     );
     for (const handler of plainEvents.get("tool_call") ?? []) {
       await handler(
         { toolName: "write", toolCallId: "write-external-cleared", input: { path: "../outside-cleared.txt", content: "after\n" } },
-        { cwd: workspace },
+        sessionCtx,
       );
     }
     writeFileSync(clearedExternal, "after\n", "utf8");
@@ -192,11 +203,11 @@ try {
           details: undefined,
           isError: false,
         },
-        { cwd: workspace },
+        sessionCtx,
       );
     }
     assert.equal(clearedResult, undefined, "disabled auto-read appends nothing");
-    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const store = new DatabaseSync(storePath, { timeout: 500 });
     try {
       assert.equal(
         store.prepare("SELECT COUNT(*) AS count FROM served WHERE path = ?").get(realpathSync(clearedExternal)).count,
@@ -214,7 +225,7 @@ try {
   for (const handler of events.get("tool_call") ?? []) {
     await handler(
       { toolName: "write", toolCallId: "write-external-new", input: { path: "../outside-new.txt", content: "fresh\n" } },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   // The Pi write factory has created the file by the time tool_result fires.
@@ -230,7 +241,7 @@ try {
         details: undefined,
         isError: false,
       },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   assert.ok(externalNew, "a new external file write returns an augmented result");
@@ -239,7 +250,7 @@ try {
   for (const handler of events.get("tool_call") ?? []) {
     await handler(
       { toolName: "write", toolCallId: "write-external-failed", input: { path: "../outside-auto.txt", content: "nope\n" } },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   let failedExternal;
@@ -253,7 +264,7 @@ try {
         details: undefined,
         isError: true,
       },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   assert.equal(failedExternal, undefined, "a failed external write keeps its native result");
@@ -267,7 +278,7 @@ try {
   for (const handler of disabledEvents.get("tool_call") ?? []) {
     await handler(
       { toolName: "write", toolCallId: "write-disabled", input: { path: "source.txt", content: "disabled\n" } },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   writeFileSync(source, "disabled\n", "utf8");
@@ -282,7 +293,7 @@ try {
         details: undefined,
         isError: false,
       },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   assert.equal(disabled, undefined, "disabled auto-read does not append anchors");
@@ -291,7 +302,7 @@ try {
   for (const handler of events.get("tool_call") ?? []) {
     await handler(
       { toolName: "write", toolCallId: "write-bounded", input: { path: "source.txt", content: manyLines } },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   writeFileSync(source, manyLines, "utf8");
@@ -306,7 +317,7 @@ try {
         details: undefined,
         isError: false,
       },
-      { cwd: workspace },
+      sessionCtx,
     );
   }
   const boundedText = bounded.content[1].text;

@@ -117,15 +117,15 @@ describe("chained edit anchors", () => {
         undefined,
         ctx,
       );
-      await expect(
-        editTool.execute(
+              const refusal = await editTool.execute(
           "e2-stale",
           { path: "stale.ts", remove_from: betaRef, remove_to: betaRef, replacement_text: "BETA-AGAIN" },
           undefined,
           undefined,
           ctx,
-        ),
-      ).rejects.toThrow(/stale anchor/);
+        );
+        expect(refusal.details.status).toBe("warning");
+        expect(refusal.content[0].text).toMatch(/stale anchor/i);
 
       const alphaEdit = await editTool.execute(
         "e3",

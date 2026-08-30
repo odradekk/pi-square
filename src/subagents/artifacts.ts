@@ -225,7 +225,7 @@ export function listParentSessionRuns(parentSessionId: string): SubagentRunDetai
     .sort((a, b) => b.startedAt - a.startedAt);
 }
 
-export function deleteParentSessionRun(parentSessionId: string, id: string): void {
+export function deleteParentSessionRun(parentSessionId: string, id: string, sessionDir?: string): void {
   assertValidSubagentId(id, "persistence");
   const details = tryReadRunState(artifactsDirFor(id));
   if (!details || (details.originParentSessionId !== parentSessionId && details.lastParentSessionId !== parentSessionId)) {
@@ -242,7 +242,7 @@ export function deleteParentSessionRun(parentSessionId: string, id: string): voi
     // The child's anchor-store partition follows its artifacts: drop it as a
     // best-effort cleanup now, and the parent-session reconciliation in
     // subagents guarantees it if this process exits before the drop completes.
-    dropChildPartition(details.cwd, id).catch((error) => {
+    dropChildPartition(details.cwd, id, sessionDir).catch((error) => {
       console.error(`Failed to drop anchor-store partition for ${id}:`, error);
     });
     const path = parentIndexPath(parentSessionId);

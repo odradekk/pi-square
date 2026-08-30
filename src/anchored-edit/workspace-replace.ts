@@ -10,8 +10,8 @@ import { safeSnapId } from "./file-reader.ts";
 import { AnchorMismatchError, RangeStaleError, parseHashRef, HASH_SEP } from "./hashline/index.ts";
 import { MAX_RANGE_STALE_LINES } from "./constants.ts";
 import { acquireFileLock, lockFilePath } from "./file-lock.ts";
-import { loadProjectHashStore, outsideWorkspaceError, PARENT_OWNER } from "./workspace-support.ts";
-import { toCwd } from "./paths.ts";
+import { loadAnchoredHashStore, outsideWorkspaceError, PARENT_OWNER } from "./workspace-support.ts";
+import { anchoredStoreDir, toCwd } from "./paths.ts";
 import type { HashStore } from "./hash-store.ts";
 import {
   assertReq,
@@ -141,6 +141,13 @@ async function lockTimeoutRefusal(
  *   locks (accepted last-write-wins, matching Pi's native cross-workspace
  *   behavior). `replace` still edits existing files only; `write` remains the
  *   creation path.
+ * @param sessionDir Persistent session directory used to locate the anchor
+ *   store (`<sessionDir>/anchored-edit/`). When undefined, the executing
+ *   session's own directory is read from the execution context (the parent
+ *   case). Child compositions pass the parent session's directory captured at
+ *   assembly time, because a child session's own directory is its artifacts
+ *   directory, not the workspace session directory. An empty value selects the
+ *   throwaway temp-directory fallback for non-persisted sessions.
  */
 export function createAnchoredReplaceToolDefinition(
   fallbackCwd: string,
@@ -148,6 +155,7 @@ export function createAnchoredReplaceToolDefinition(
   owner: string = PARENT_OWNER,
   requireServed: boolean = false,
   confineToWorkspace: boolean = true,
+  sessionDir?: string,
 ): WorkspaceReplaceDefinition {
   return {
     name: "replace",
@@ -159,10 +167,12 @@ export function createAnchoredReplaceToolDefinition(
     prepareArguments: makePrepareArguments(),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const cwd = ctx?.cwd ?? fallbackCwd;
+      const effectiveSessionDir = sessionDir ?? ctx?.sessionManager?.getSessionDir?.() ?? "";
       const canonical = normReq(params);
       assertReq(canonical, { allowMissingPath: true });
       const workspace = resolveWorkspacePath(cwd, ".");
-      const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
+      const storeDir = anchoredStoreDir(effectiveSessionDir, workspace.workspaceRoot);
+      const store = await loadAnchoredHashStore(storeDir, owner);
       try {
         const resolution = isRec(canonical)
           ? await resolveMissingPath(canonical, store)
@@ -183,7 +193,7 @@ export function createAnchoredReplaceToolDefinition(
         return withFileMutationQueue(mutationTargetPath, async () => {
           abortIf(signal);
           const lock = await acquireFileLock(
-            lockFilePath(workspace.workspaceRoot, mutationTargetPath),
+            lockFilePath(storeDir, mutationTargetPath),
             { signal },
           );
           if (!lock) {

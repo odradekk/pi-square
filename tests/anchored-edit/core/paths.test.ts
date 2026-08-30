@@ -1,60 +1,55 @@
 import { describe, expect, it } from "vitest";
-import { homedir } from "os";
-import { join, dirname } from "path";
-import { configDir, configPath, hashStorePath, hashStoreDir } from "../../../src/anchored-edit/paths";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { anchoredStoreDir, anchoredHashStorePath } from "../../../src/anchored-edit/paths";
 
-describe("configDir", () => {
-  it("returns the config directory under home when XDG_CONFIG_HOME is unset", () => {
-    const previousXdg = process.env.XDG_CONFIG_HOME;
-    delete process.env.XDG_CONFIG_HOME;
-    try {
-      expect(configDir()).toBe(join(homedir(), ".config", "pi-hashline-edit-pro"));
-    } finally {
-      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = previousXdg;
-    }
+const root = join(tmpdir(), "pi-square-anchored-paths");
+
+describe("anchoredStoreDir", () => {
+  it("places the store inside the session's own directory", () => {
+    expect(anchoredStoreDir(join(root, "session-a"), root)).toBe(
+      join(root, "session-a", "anchored-edit"),
+    );
   });
 
-  it.skipIf(process.platform === "win32")("uses XDG_CONFIG_HOME when set", () => {
-    const previousXdg = process.env.XDG_CONFIG_HOME;
-    process.env.XDG_CONFIG_HOME = "/custom/xdg";
-    try {
-      expect(configDir()).toBe(join("/custom/xdg", "pi-hashline-edit-pro"));
-    } finally {
-      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = previousXdg;
-    }
+  it("falls back to the OS temp directory when the session has no persistent directory", () => {
+    const fallback = anchoredStoreDir(undefined, root);
+    const key = createHash("sha256").update(root).digest("hex").slice(0, 16);
+    expect(fallback).toBe(join(tmpdir(), "pi-square-anchored-edit", key));
   });
 
-  it("ignores an empty XDG_CONFIG_HOME", () => {
-    const previousXdg = process.env.XDG_CONFIG_HOME;
-    process.env.XDG_CONFIG_HOME = "";
-    try {
-      expect(configDir()).toBe(join(homedir(), ".config", "pi-hashline-edit-pro"));
-    } finally {
-      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = previousXdg;
-    }
+  it("treats an empty or whitespace-only session directory as absent", () => {
+    expect(anchoredStoreDir("", root)).toBe(anchoredStoreDir(undefined, root));
+    expect(anchoredStoreDir("   ", root)).toBe(anchoredStoreDir(undefined, root));
   });
-});
 
-describe("configPath", () => {
-  it("returns the config file path", () => {
-    const path = configPath();
-    expect(path).toBe(join(configDir(), "config.json"));
+  it("keys the fallback by the workspace root, so two workspaces never share a throwaway store", () => {
+    const a = anchoredStoreDir(undefined, join(root, "ws-a"));
+    const b = anchoredStoreDir(undefined, join(root, "ws-b"));
+    expect(a).not.toBe(b);
   });
-});
 
-describe("hashStorePath", () => {
-  it("returns the hash store file path", () => {
-    const path = hashStorePath();
-    expect(path).toBe(join(configDir(), "hash-store.sqlite"));
+  it("is stable for the same inputs", () => {
+    expect(anchoredStoreDir(undefined, root)).toBe(anchoredStoreDir(undefined, root));
+    expect(anchoredStoreDir(join(root, "s"), root)).toBe(anchoredStoreDir(join(root, "s"), root));
+  });
+
+  it("keeps the session directory authoritative over the workspace root", () => {
+    // Two different workspaces whose sessions share one session directory
+    // resolve the same store: the session directory, not the workspace,
+    // owns the store location.
+    const sessionDir = join(root, "shared-session");
+    expect(anchoredStoreDir(sessionDir, join(root, "ws-a"))).toBe(
+      anchoredStoreDir(sessionDir, join(root, "ws-b")),
+    );
   });
 });
 
-describe("hashStoreDir", () => {
-  it("returns the directory of the hash store path", () => {
-    const dir = hashStoreDir();
-    expect(dir).toBe(dirname(hashStorePath()));
+describe("anchoredHashStorePath", () => {
+  it("names the hash-store database inside the store directory", () => {
+    expect(anchoredHashStorePath(join(root, "anchored-edit"))).toBe(
+      join(root, "anchored-edit", "hash-store.sqlite"),
+    );
   });
 });

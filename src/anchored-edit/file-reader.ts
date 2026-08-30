@@ -62,32 +62,34 @@ export interface ReadNormOptions {
   accessMode?: number;
   preloadedFile?: LFile;
   maxLines?: number;
-  store?: HashStore;
+  /** Explicit store keeping the file's hashes stable across reads; required so
+   *  no call site can fall back to an implicit global store. */
+  store: HashStore;
   noPersist?: boolean;
 }
 
 export async function readNormFile(
   path: string,
   cwd: string,
-  options?: ReadNormOptions,
+  options: ReadNormOptions,
 ): Promise<NormFile> {
   const absolutePath = toCwd(path, cwd);
   const resolvedPath = await resolveTarget(absolutePath);
-  const signal = options?.signal;
-  const accessMode = options?.accessMode ?? constants.R_OK;
+  const signal = options.signal;
+  const accessMode = options.accessMode ?? constants.R_OK;
 
   abortIf(signal);
   await valAccess(resolvedPath, path, accessMode);
 
   abortIf(signal);
-  const file = options?.preloadedFile ?? (await loadFileKindAndText(resolvedPath, { maxLines: options?.maxLines, displayPath: path }));
+  const file = options.preloadedFile ?? (await loadFileKindAndText(resolvedPath, { maxLines: options.maxLines, displayPath: path }));
   valKind(file, path);
   abortIf(signal);
   const { bom, text: rawContent } = stripBOM(file.text);
   const originalEnding = detectEnding(rawContent);
   const normalized = toLF(rawContent);
 
-  if (options?.maxLines !== undefined) {
+  if (options.maxLines !== undefined) {
     const lineCount = visLines(normalized).length;
     if (lineCount > options.maxLines) {
       throw new Error(
@@ -96,7 +98,7 @@ export async function readNormFile(
     }
   }
 
-  const fileHashes = await lineHashes(normalized, resolvedPath, undefined, options?.store, options?.noPersist !== true);
+  const fileHashes = await lineHashes(normalized, resolvedPath, undefined, options.store, options.noPersist !== true);
   return {
     absolutePath: resolvedPath,
     normalized,

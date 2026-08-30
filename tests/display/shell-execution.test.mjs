@@ -191,7 +191,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const args = { command: "Get-Content huge.log" };
   const result = renderResult(decorated, args, { exitCode: 0, truncated: true, flavor: "pwsh", version: "7.4.0", durationMs: 100 }, "last few lines of output", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /\[truncated\]/, "truncated output is distinctly marked via the badge");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }

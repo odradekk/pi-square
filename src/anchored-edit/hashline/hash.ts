@@ -1,6 +1,5 @@
 import { splitLines } from "../utils";
 import {
-  loadHashStore,
   type HashStore,
   getSnapshot,
   upsertSnapshot,
@@ -111,8 +110,13 @@ export async function lineHashes(
   if (!path) {
     return _lineHashesPure(content);
   }
-
-  const hashStore = store ?? await loadHashStore();
+  // The snapshot store is what keeps hashes stable across reads and edits, so
+  // a pathed call without an explicit store is a programming error, not a case
+  // to serve from some implicit global.
+  if (!store) {
+    throw new Error("[E_STORE] lineHashes requires an explicit store when a path is provided.");
+  }
+  const hashStore = store;
 
   if (previous) {
     const newHashes = mapStableHashes(

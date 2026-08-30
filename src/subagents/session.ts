@@ -366,12 +366,12 @@ function isWritableChild(builtInTools: string[]): boolean {
  */
 function appendChildAnchoredRead(
   customTools: { definitions: ToolDefinition[] },
-  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string },
+  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string; sessionDir: string },
 ): void {
   if (!options.anchoredEditing) return;
   if (!options.builtInTools.includes("read")) return;
   if (!isWritableChild(options.builtInTools)) return;
-  customTools.definitions.push(createChildAnchoredReadTool(options.cwd, options.owner));
+  customTools.definitions.push(createChildAnchoredReadTool(options.cwd, options.owner, options.sessionDir));
 }
 
 /**
@@ -385,11 +385,11 @@ function appendChildAnchoredRead(
  */
 function appendChildAnchoredEdit(
   customTools: { definitions: ToolDefinition[] },
-  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string },
+  options: { anchoredEditing?: boolean; builtInTools: string[]; cwd: string; owner: string; sessionDir: string },
 ): boolean {
   if (!options.anchoredEditing) return false;
   if (!options.builtInTools.includes("edit")) return false;
-  customTools.definitions.push(createChildAnchoredReplaceTool(options.cwd, options.owner));
+  customTools.definitions.push(createChildAnchoredReplaceTool(options.cwd, options.owner, options.sessionDir));
   return true;
 }
 
@@ -403,12 +403,12 @@ function appendChildAnchoredEdit(
  */
 function appendChildAnchoredWrite(
   customTools: { definitions: ToolDefinition[] },
-  options: { anchoredEditing?: boolean; anchoredAutoRead?: boolean; builtInTools: string[]; cwd: string; owner: string },
+  options: { anchoredEditing?: boolean; anchoredAutoRead?: boolean; builtInTools: string[]; cwd: string; owner: string; sessionDir: string },
 ): boolean {
   if (!options.anchoredEditing) return false;
   if (!options.builtInTools.includes("write")) return false;
   customTools.definitions.push(
-    createChildAnchoredWriteTool(options.cwd, options.owner, () => options.anchoredAutoRead ?? true),
+    createChildAnchoredWriteTool(options.cwd, options.owner, options.sessionDir, () => options.anchoredAutoRead ?? true),
   );
   return true;
 }
@@ -864,12 +864,14 @@ export async function runSubagentTask(input: {
     builtInTools: resolvedTools.builtInTools,
     cwd,
     owner: input.id,
+    sessionDir: input.ctx.sessionManager?.getSessionDir?.() ?? "",
   });
   const editReplaced = appendChildAnchoredEdit(customTools, {
     anchoredEditing: input.anchoredEditing,
     builtInTools: resolvedTools.builtInTools,
     cwd,
     owner: input.id,
+    sessionDir: input.ctx.sessionManager?.getSessionDir?.() ?? "",
   });
   appendChildAnchoredWrite(customTools, {
     anchoredEditing: input.anchoredEditing,
@@ -877,6 +879,7 @@ export async function runSubagentTask(input: {
     builtInTools: resolvedTools.builtInTools,
     cwd,
     owner: input.id,
+    sessionDir: input.ctx.sessionManager?.getSessionDir?.() ?? "",
   });
   const childToolAllowlist = resolveChildToolAllowlist(resolvedTools.builtInTools, editReplaced);
   const selectedSkillNames = (input.definition?.skills ?? []).map((item) => item.trim()).filter(Boolean);
@@ -1114,12 +1117,14 @@ export async function resumeSubagentTask(input: {
       builtInTools: resolvedTools.builtInTools,
       cwd: runCwd,
       owner: input.id,
+      sessionDir: input.ctx.sessionManager?.getSessionDir?.() ?? "",
     });
     const editReplaced = appendChildAnchoredEdit(customTools, {
       anchoredEditing: input.anchoredEditing,
       builtInTools: resolvedTools.builtInTools,
       cwd: runCwd,
       owner: input.id,
+      sessionDir: input.ctx.sessionManager?.getSessionDir?.() ?? "",
     });
     appendChildAnchoredWrite(customTools, {
       anchoredEditing: input.anchoredEditing,
@@ -1127,6 +1132,7 @@ export async function resumeSubagentTask(input: {
       builtInTools: resolvedTools.builtInTools,
       cwd: runCwd,
       owner: input.id,
+      sessionDir: input.ctx.sessionManager?.getSessionDir?.() ?? "",
     });
     const childToolAllowlist = resolveChildToolAllowlist(resolvedTools.builtInTools, editReplaced);
     const selectedSkillNames = persisted.agent?.skills ?? [];

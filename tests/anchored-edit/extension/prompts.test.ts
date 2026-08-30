@@ -3,8 +3,6 @@ import { dirname, join, resolve, sep } from "path";
 import { fileURLToPath } from "url";
 import { describe, expect, it } from "vitest";
 import { loadGuide } from "../../../src/anchored-edit/prompts";
-import { regRead } from "../../../src/anchored-edit/read";
-import { makeFakePiRegistry } from "../support/fixtures";
 
 function collectTsFiles(dir: string): string[] {
   const out: string[] = [];
@@ -81,17 +79,6 @@ describe("prompt guidelines", () => {
     );
     expect(content).toContain("call again after any edit");
     expect(content).not.toContain("{{AUTO_READ_NOTE}}");
-  });
-});
-
-describe("read tool guidelines", () => {
-  it("always includes the re-read note for fresh anchors after edits", () => {
-    const { pi, getTool } = makeFakePiRegistry();
-    regRead(pi);
-    const tool = getTool("read");
-    const guidelines = tool.promptGuidelines as string[];
-    expect(guidelines.some((g) => g.includes("call again after any edit"))).toBe(true);
-    expect(guidelines.some((g) => g.includes("call before `replace`"))).toBe(true);
   });
 });
 

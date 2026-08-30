@@ -744,7 +744,7 @@ export default function registerDisplayBuiltins(
     const anchoredReadEnabled = controller.config?.anchoredEditing?.enabled === true;
     if (anchoredReadEnabled) {
       try {
-        await initializeAnchoredReadStore(ctx.cwd);
+        await initializeAnchoredReadStore(ctx.cwd, ctx.sessionManager?.getSessionDir?.() ?? "");
       } catch (error) {
         diagnostics.push(`Anchored read store unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -766,8 +766,8 @@ export default function registerDisplayBuiltins(
       // the initiating workspace keeps the snapshot/served state and lock area
       // for external targets.
       const readContentTransform = anchoredRead
-        ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string) =>
-          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { confineToWorkspace: false })
+        ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string, sessionDir: string) =>
+          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { confineToWorkspace: false, sessionDir })
         : undefined;
       pi.registerTool(decorateBuiltinDefinition(
         anchoredRead ? withAnchoredReadGuidelines(definition, { confineToWorkspace: false }) : definition,

@@ -13,11 +13,11 @@ import { errCode } from "./utils";
  * against the now-current content or is refused recoverably against current
  * anchors.
  *
- * The lock is a file under `.pi/anchored-edit/locks/` named by the SHA-256 of
- * the canonical target path, so parallel edits to different files never
- * contend. The file records the owning process id and acquire time; a lock
- * whose owning process no longer exists is reclaimed on the next attempt
- * rather than blocking indefinitely.
+ * The lock is a file under the session store directory's `locks/`
+ * subdirectory named by the SHA-256 of the canonical target path, so parallel
+ * edits to different files never contend. The file records the owning process
+ * id and acquire time; a lock whose owning process no longer exists is
+ * reclaimed on the next attempt rather than blocking indefinitely.
  */
 
 function readEnvMs(name: string, fallback: number): number {
@@ -73,11 +73,11 @@ function lockFileName(targetPath: string): string {
   return `${createHash("sha256").update(targetPath).digest("hex")}.lock`;
 }
 
-/** Canonical location of the lock file for one target file in a workspace. */
-export function lockFilePath(workspaceRoot: string, targetPath: string): string {
-  return join(workspaceRoot, ".pi", "anchored-edit", "locks", lockFileName(targetPath));
+/** Canonical location of the lock file for one target file under the session's
+ *  anchored store directory (`anchoredStoreDir`). */
+export function lockFilePath(storeDir: string, targetPath: string): string {
+  return join(storeDir, "locks", lockFileName(targetPath));
 }
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }

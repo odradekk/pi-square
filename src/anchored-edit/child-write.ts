@@ -4,9 +4,9 @@ import { resolveWorkspacePath } from "../core/paths.ts";
 import { renderAutoReadAnchors } from "./auto-read.ts";
 import { resolveTarget } from "./fs-write.ts";
 import { acquireFileLock, fileLockedMessage, lockFilePath } from "./file-lock.ts";
-import { toCwd } from "./paths.ts";
+import { anchoredStoreDir, toCwd } from "./paths.ts";
 import { clearServed } from "./served.ts";
-import { loadProjectHashStore } from "./workspace-support.ts";
+import { loadAnchoredHashStore } from "./workspace-support.ts";
 
 type GenericToolDefinition = ToolDefinition<any, any, any>;
 
@@ -41,6 +41,11 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
  * @param cwd The child's working directory; Pi's factory resolves writes from it.
  * @param owner Anchor-store owner whose served rows the write clears. Required
  *   so a child's write never clears another agent's served record.
+ * @param sessionDir The parent session's persistent session directory, used to
+ *   locate the anchor store and lock area. Required because the child session's
+ *   own directory is its artifacts directory, not the workspace session
+ *   directory; an empty value selects the throwaway temp-directory fallback of
+ *   a non-persisted parent session.
  * @param autoRead Whether a successful changed write appends the bounded
  *   fresh-anchor appendix. The parent session resolves the agent-only
  *   `anchoredEditing.autoRead` configuration when assembling the child tools;
@@ -49,6 +54,7 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
 export function createChildAnchoredWriteTool(
   cwd: string,
   owner: string,
+  sessionDir: string,
   autoRead: () => boolean = () => true,
 ): GenericToolDefinition {
   const base = createWriteToolDefinition(cwd);
@@ -57,10 +63,11 @@ export function createChildAnchoredWriteTool(
     async execute(toolCallId, params: { path: string; content: string }, signal, onUpdate, ctx) {
       const workspace = resolveWorkspacePath(cwd, ".");
       const path = await resolveTarget(toCwd(params.path, cwd));
+      const storeDir = anchoredStoreDir(sessionDir, workspace.workspaceRoot);
       // The child write also takes the cross-process write lock, so a child
       // write and a parent (or another session's) replace on the same file can
       // never interleave; one wins and the other is refused or waits.
-      const lock = await acquireFileLock(lockFilePath(workspace.workspaceRoot, path), { signal });
+      const lock = await acquireFileLock(lockFilePath(storeDir, path), { signal });
       if (!lock) {
         throw new Error(fileLockedMessage(params.path, "write"));
       }
@@ -83,7 +90,7 @@ export function createChildAnchoredWriteTool(
           // needs no separate per-file mutation queue here (wrapping the clear
           // in one would invert lock order against replace and could deadlock a
           // same-process contender).
-          const store = await loadProjectHashStore(workspace.workspaceRoot, owner);
+          const store = await loadAnchoredHashStore(storeDir, owner);
           try {
             clearServed(store, path);
             if (!autoRead() || !changed) return result;

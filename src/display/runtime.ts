@@ -65,6 +65,7 @@ export class DisplayRuntime {
     return new OperationalDisplayComponent(description, effective.policy, theme, {
       ...options,
       colorAvailable: this.colorAvailable,
+      motion: this.scheduler.mode,
     });
   }
 
@@ -77,6 +78,7 @@ export class DisplayRuntime {
     component.update(description, this.policyFor(description.tool, description.family).policy, theme, {
       ...options,
       colorAvailable: this.colorAvailable,
+      motion: this.scheduler.mode,
     });
   }
 

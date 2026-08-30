@@ -115,7 +115,7 @@ assert.ok(collapsedBackgrounds.includes("toolSuccessBg"), "done result keeps Pi'
 
 // ─── 3. Collapsed entry uses the operational grammar ─────────────────
 
-assert.match(collapsed, /✓ Subagent explorer/, "marker, title, and target");
+assert.match(collapsed, /✓ Subagent\s+explorer/, "marker, stable title column, and target");
 // C4 revision: the collapsed notification is one row; the result preview is
 // visible only when expanded. The inline summary states the outcome.
 assert.doesNotMatch(collapsed, /Finding/, "collapsed hides the result preview");
@@ -227,8 +227,8 @@ assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u, "no em
     bg(color, text) { batchBackgrounds.push(color); return String(text); },
   }), 80).join("\n");
 
-  assert.match(batchCollapsed, /✓ Subagent explorer/, "the first run keeps its own canonical description");
-  assert.match(batchCollapsed, /× Subagent oracle/, "the second run keeps its own state marker");
+  assert.match(batchCollapsed, /✓ Subagent\s+explorer/, "the first run keeps its own canonical description");
+  assert.match(batchCollapsed, /× Subagent\s+oracle/, "the second run keeps its own state marker");
   assert.ok(batchBackgrounds.includes("toolErrorBg"), "a batch with a failed run uses the error shell");
 
   for (const width of [40, 80, 120]) {

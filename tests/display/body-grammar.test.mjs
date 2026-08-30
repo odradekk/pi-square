@@ -375,8 +375,8 @@ function assertNoTrailingEmptyRow(lines, label) {
     80,
     true,
   ).map((line) => stripVTControlCharacters(line));
-  const notice = lines.find((line) => line.includes("lines omitted"));
-  assert.ok(notice, "a bounded code section states the omitted lines");
+  const notice = lines.find((line) => /⋯ \+\d+ lines/.test(line));
+  assert.ok(notice, "a bounded code section states the omitted lines as a count row");
   assert.ok(!/^\s*\d+\s{2}/.test(notice), "the truncation notice carries no line number");
 }
 

@@ -6,14 +6,14 @@ import { renderDisplayDiffLines } from "./diff";
 import { renderDisplaySections } from "./sections";
 import { boundedHeadTailLines, contentColumnWidth, fitHeaderRow, padVisible, rightPriorityRows, wrapHanging } from "./layout";
 import { sanitizeDisplayLine, sanitizeDisplayText, truncateCodePoints } from "./sanitize";
-import { styleBadge, styleRule, styleOperational, styleTitle, styleTone } from "./theme";
+import { styleRule, styleOperational, styleRunningPulse, styleTitle, styleTone } from "./theme";
 import {
   BULLET_MARKER,
   FALLBACK_MARKERS,
   FALLBACK_WARNING_MARKER,
-  QUALIFIER_BADGES,
-  QUALIFIER_BADGE_ORDER,
+  RUNNING_PULSE_PERIOD_MS,
   type DisplayDescriptionV1,
+  type DisplayMotion,
   type DisplayPolicy,
   type DisplaySection,
   type ResolvedOperationalState,
@@ -26,8 +26,7 @@ const MAX_METADATA_VALUE_CODE_POINTS = 1_024;
 const MAX_ROWS = 64;
 const MAX_ROW_CODE_POINTS = 16_384;
 const MAX_PREVIEW_CODE_POINTS = 256_000;
-const MAX_ERROR_CODE_POINTS = 8_192;
-
+const BODY_INDENT_CELLS = 2;
 function logicalLines(prefix: string, content: string, width: number): string[] {
   const safeWidth = Math.max(1, Math.floor(width));
   const continuation = " ".repeat(Math.min(safeWidth, visibleWidth(prefix)));
@@ -148,7 +147,7 @@ export class BoundedPreview implements Component {
       const totalOmitted = Math.max(0, allVisual.length - visible.length) + Math.max(0, this.omittedLines);
       const lines = visible.map((line) => padVisible(styleTone(this.theme, "default", line), safeWidth));
       if (totalOmitted > 0) {
-        lines.push(padVisible(this.theme.fg("muted", `\u2026 +${totalOmitted} lines`), safeWidth));
+        lines.push(padVisible(this.theme.fg("muted", `⋯ +${totalOmitted} lines`), safeWidth));
       }
       return lines;
     }
@@ -166,11 +165,11 @@ export class BoundedPreview implements Component {
       if (allVisual.length <= cap) {
         return allVisual.map((line) => padVisible(styleTone(this.theme, "default", line), safeWidth));
       }
-      // Reserve one line for the `… N earlier lines` notice.
+      // Reserve one line for the earlier-lines count.
       const visible = allVisual.slice(-(cap - 1));
       const earlier = allVisual.length - visible.length;
       return [
-        padVisible(this.theme.fg("muted", `\u2026 ${earlier} earlier lines`), safeWidth),
+        padVisible(this.theme.fg("muted", `⋯ +${earlier} earlier lines`), safeWidth),
         ...visible.map((line) => padVisible(styleTone(this.theme, "default", line), safeWidth)),
       ];
     }
@@ -178,7 +177,7 @@ export class BoundedPreview implements Component {
     const lines = result.headLines.map((line) => styleTone(this.theme, "default", line));
     const totalOmitted = result.hiddenSourceLines + Math.max(0, this.omittedLines);
     if (totalOmitted > 0) {
-      lines.push(padVisible(this.theme.fg("muted", `... ${totalOmitted} source lines hidden`), safeWidth));
+      lines.push(padVisible(this.theme.fg("muted", `⋯ +${totalOmitted} lines`), safeWidth));
     }
     lines.push(...result.tailLines.map((line) => styleTone(this.theme, "default", line)));
     return lines;
@@ -228,12 +227,19 @@ function lifecycleMarker(state: ResolvedOperationalState, colorAvailable: boolea
   return FALLBACK_MARKERS[state.lifecycle];
 }
 
+function pulsePhase(nowMs: number): number {
+  return (nowMs % RUNNING_PULSE_PERIOD_MS) / RUNNING_PULSE_PERIOD_MS;
+}
+
 export interface OperationalDisplayOptions {
   readonly expanded: boolean;
   /** Whether the terminal can display color. Defaults to `false`. */
   readonly colorAvailable?: boolean;
+  /** Effective display motion. Defaults to `off` for deterministic direct rendering. */
+  readonly motion?: DisplayMotion;
+  /** Test seam for deterministic running-pulse phases. */
+  readonly pulseNowMs?: number;
 }
-
 export const OPERATIONAL_DISPLAY_COMPONENT_SYMBOL = Symbol.for("@odradekk/pi-square.display.component.v1");
 
 export class OperationalDisplayComponent implements Component {
@@ -286,19 +292,26 @@ export class OperationalDisplayComponent implements Component {
     // Content-column rule (wide tier): entries render at
     // max(60, floor(0.6 × viewport)) cells, left-aligned. Below the wide
     // tier an entry keeps full width. The column applies uniformly to the
-    // header, body, sections, preview, and diff so expansion never causes a
-    // horizontal jump.
+    // header, evidence body, sections, preview, and diff so expansion never
+    // causes a horizontal jump.
     const column = contentColumnWidth(safe);
     const description = this.description;
     const opState = resolveState(description);
     const colorAvailable = this.options.colorAvailable ?? false;
     const markerText = lifecycleMarker(opState, colorAvailable);
-    const rail = styleOperational(
-      this.theme,
-      opState.lifecycle,
-      opState.qualifiers,
-      markerText,
-    );
+    const motion = this.options.motion ?? "off";
+    const rail = colorAvailable && motion === "full" && opState.lifecycle === "running"
+      ? styleRunningPulse(
+        this.theme,
+        markerText,
+        pulsePhase(this.options.pulseNowMs ?? Date.now()),
+      )
+      : styleOperational(
+        this.theme,
+        opState.lifecycle,
+        opState.qualifiers,
+        markerText,
+      );
     const titleText = truncateCodePoints(
       sanitizeDisplayLine(description.title || description.tool),
       MAX_TITLE_CODE_POINTS,
@@ -306,9 +319,6 @@ export class OperationalDisplayComponent implements Component {
     const targetText = description.target
       ? truncateCodePoints(sanitizeDisplayLine(description.target), MAX_TARGET_CODE_POINTS)
       : undefined;
-    const orderedBadges = QUALIFIER_BADGE_ORDER
-      .filter((qualifier) => opState.qualifiers.includes(qualifier))
-      .map((qualifier) => ({ qualifier, label: `[${QUALIFIER_BADGES[qualifier]!}]` }));
     const progress = progressText(description);
 
     const isCall = description.phase === "call";
@@ -326,29 +336,19 @@ export class OperationalDisplayComponent implements Component {
       && !isError
       && !isAborted;
 
-    // Inline muted outcome summary (C4 revision): a terminal collapsed entry
-    // carries its outcome sentence (or one-sentence failure message) inside
-    // the single row, between the target and the right-side badges. The
-    // mutation family keeps its bounded body below the row as the sole
-    // exception. Failed and aborted entries fall back to the error sentence.
-    // A running or queued entry carries its live progress message in the same
-    // slot; the execution tail never renders in the collapsed row.
+    // The row always carries the outcome: terminal entries state the result
+    // (or the one-sentence failure), while active entries state live progress.
+    // The expanded body is reserved for evidence and never repeats the row.
     let inlineSummary: string | undefined;
     // True when the live progress message moved into the inline summary slot;
-    // the right element then keeps only the duration so the one row never
-    // renders the same progress text twice.
+    // the right element then keeps only the duration so the row never renders
+    // the same progress text twice.
     let progressInline = false;
-    if (terminal && collapsed && !hidden) {
-      // A failure states the one-sentence message inline; a success carries
-      // the outcome sentence. The failure message takes priority so a
-      // preview fallback never masks an error.
+    if (terminal && !hidden) {
       inlineSummary = isError || isAborted
         ? (errorSentenceText(description) ?? summarySentence(description))
         : (summarySentence(description) ?? errorSentenceText(description));
-    } else if (!terminal && collapsed && !hidden) {
-      // A running or queued entry carries its live progress message (or, for
-      // execution tools, the running outcome summary) in the same slot; the
-      // execution tail never renders in the collapsed row.
+    } else if (!terminal && !hidden) {
       if (progress) {
         inlineSummary = progress;
         progressInline = true;
@@ -364,61 +364,64 @@ export class OperationalDisplayComponent implements Component {
       progressInline ? undefined : progress,
     ].filter((part): part is string => Boolean(part)).join(" · ") || undefined;
 
-    // C5: the header is always exactly one row. The target is truncated (a
-    // path target is elided in the middle), the right element drops first at
-    // compact widths, then the inline summary, then all but the
-    // highest-priority badge. Nothing wraps.
     const fitted = fitHeaderRow({
       marker: markerText,
       title: titleText,
       ...(targetText ? { target: targetText, targetKind: description.targetKind ?? "text" } : {}),
-      badges: orderedBadges.map((badge) => badge.label),
       ...(rightText ? { right: rightText } : {}),
       ...(inlineSummary ? { inlineSummary } : {}),
     }, column, safe);
     const title = styleTitle(this.theme, fitted.title);
     const target = fitted.target ? ` ${this.theme.fg("muted", fitted.target)}` : "";
+    const inlineTone = isError
+      ? "error"
+      : isWarning
+        ? "warning"
+        : terminal
+          ? "default"
+          : "muted";
     const inline = fitted.inlineSummary
-      ? ` ${this.theme.fg("muted", fitted.inlineSummary)}`
+      ? ` ${styleTone(this.theme, inlineTone, fitted.inlineSummary)}`
       : "";
-    const badges = fitted.badges
-      .map((label, index) => ` ${styleBadge(this.theme, orderedBadges[index]!.qualifier, label)}`)
-      .join("");
-    const left = `${rail} ${title}${target}${inline}${badges}`;
+    const left = `${rail} ${title}${target}${inline}`;
     const header = fitted.right
       ? `${left}${padToRight(left, fitted.right, column)}`
       : left;
     const lines = [header];
 
-    // Body content renders at a reduced width to accommodate tree rails.
-    // Each body line receives a │ continuation or └─ last-line prefix.
-    const TREE_RAIL_WIDTH = 3;
-    const bodyWidth = Math.max(1, column - TREE_RAIL_WIDTH);
+    // Evidence body: a shared two-cell indent replaces tree rails. Structured
+    // sections own their deeper content indentation; blank separators stay
+    // blank so groups have breathing room without decorative rules.
+    const bodyWidth = Math.max(1, column - BODY_INDENT_CELLS);
     const body: string[] = [];
+    const replaceDiffOnly = description.tool === "replace";
 
-    // The key=value metadata row only renders expanded. The collapsed body
-    // states the same outcome in one summary row (C4).
-    if (this.policy.showMetadata && this.options.expanded && description.metadata?.length) {
+    // Metadata is opt-in and stays one muted row; replace is diff-only and
+    // never renders metadata, even when the policy field is enabled.
+    if (
+      this.policy.showMetadata
+      && this.options.expanded
+      && !replaceDiffOnly
+      && description.metadata?.length
+    ) {
       const selectedFields = description.metadata.slice(0, MAX_METADATA_FIELDS);
       const fields = selectedFields.map((field) => {
         const label = truncateCodePoints(sanitizeDisplayLine(field.label), 64);
         const value = truncateCodePoints(sanitizeDisplayLine(field.value), MAX_METADATA_VALUE_CODE_POINTS);
-        return `${this.theme.fg("dim", `${label}=`)}${styleTone(this.theme, field.tone, value)}`;
+        return `${label}=${value}`;
       });
       if (description.metadata.length > selectedFields.length) {
-        fields.push(this.theme.fg("muted", `${description.metadata.length - selectedFields.length} fields omitted`));
+        fields.push(`${description.metadata.length - selectedFields.length} fields omitted`);
       }
-      body.push(...(
-        this.policy.wordWrap
-          ? wrapHanging("  ", fields.join(" · "), bodyWidth)
-          : logicalLines("  ", fields.join(" · "), bodyWidth)
+      body.push(padVisible(
+        this.theme.fg("muted", truncateToWidth(fields.join(" · "), bodyWidth, "…")),
+        bodyWidth,
       ));
     }
 
-    // Flat rows carry call and running state. A terminal result states its
-    // outcome through the inline summary instead. C4 revision: rows render
-    // only when expanded; a collapsed entry is exactly one row.
-    if (this.options.expanded && !hidden && description.rows?.length) {
+    // Flat rows are expanded evidence only. A terminal result states its
+    // outcome in the header rather than repeating it below.
+    if (this.options.expanded && !hidden && !replaceDiffOnly && description.rows?.length) {
       const selectedRows = description.rows.slice(0, MAX_ROWS);
       for (const row of selectedRows) {
         const indent = " ".repeat(Math.min(8, Math.max(0, Math.floor(row.indent ?? 2))));
@@ -434,74 +437,65 @@ export class OperationalDisplayComponent implements Component {
         ));
       }
       if (description.rows.length > selectedRows.length) {
-        body.push(padVisible(this.theme.fg("muted", `${description.rows.length - selectedRows.length} rows omitted`), bodyWidth));
+        body.push(padVisible(this.theme.fg("muted", `⋯ +${description.rows.length - selectedRows.length} rows`), bodyWidth));
       }
     }
 
     if (collapsed && !hidden && MUTATION_FAMILY_TOOLS.has(description.tool)) {
-      // C4 revision: the mutation family (edit, replace, write) is
-      // the only exception to the one-row collapsed entry. It keeps a
-      // bounded diff/preview body below the row in every state — including
-      // the running call, where write shows its projected preview and edit
-      // shows its pending edits — so file mutations stay reviewable without
-      // expanding.
+      // The mutation family is the only collapsed-entry body exception:
+      // edit/write keep their bounded preview/diff, while replace renders
+      // exactly one authoritative diff payload.
       body.push(...this.mutationFamilyBody(description, isError, bodyWidth));
     } else if (this.options.expanded) {
       const showPreview = this.options.expanded
         || this.policy.resultMode === "preview";
-      // C6: an expanded failure carries the raw platform text exactly once,
-      // as an ERROR section that joins the section flow (so C9 counts it).
-      const errorSection: DisplaySection[] = this.options.expanded
-        && isError
+      // An expanded failure carries the raw platform text exactly once as an
+      // Error section. The one-sentence message stays in the header.
+      const errorSection: DisplaySection[] = isError
         && description.errorRaw
         && description.errorRaw !== description.error
         && !(description.sections ?? []).some((section) => section.title.trim().toLowerCase() === "error")
         ? [{ title: "Error", blocks: [{ kind: "text", text: description.errorRaw }] }]
         : [];
-      const visibleSections = [...(description.sections ?? []), ...errorSection];
-      const showStructuredSections = showPreview || (visibleSections.length > 0 && this.policy.resultMode === "summary");
-      // Render structured sections; fall back to flat preview when sections
-      // produce no visible output (e.g. non-compact sections in collapsed mode).
-      const sectionLines = showStructuredSections && visibleSections.length > 0
-        ? renderDisplaySections(visibleSections, this.policy, this.theme, bodyWidth, this.options.expanded)
-        : [];
-      if (sectionLines.length > 0) {
-        body.push(...sectionLines);
-      } else if (showPreview && description.preview) {
-        body.push(...this.previewBodyLines(description, this.options.expanded ? this.policy.expandedMaxLines : this.policy.previewLines, bodyWidth));
-      }
-      if (showPreview && description.diff) {
-        body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
-      }
-      // C4: the expanded body closes with the summary row.
-      // Execution tools are a C4 exception — their summary always renders.
-      if (terminal && this.options.expanded && (!isError || description.family === "execution")) {
-        body.push(...this.summaryBodyRow(description, true));
-      }
-    }
 
-    // The one-sentence failure message renders inline in the collapsed row;
-    // the error body row only appears when expanded (and the raw platform
-    // text renders as the expanded ERROR section).
-    if (description.error && this.options.expanded) {
-      const message = truncateCodePoints(sanitizeDisplayText(description.error), MAX_ERROR_CODE_POINTS);
-      body.push(...(
-        this.policy.wordWrap
-          ? wrapHanging("  ", this.theme.fg("error", message), bodyWidth)
-          : logicalLines("  ", this.theme.fg("error", message), bodyWidth)
-      ));
+      if (replaceDiffOnly) {
+        if (errorSection.length > 0) {
+          body.push(...renderDisplaySections(errorSection, this.policy, this.theme, bodyWidth, true, true));
+        } else if (!isError && description.diff) {
+          body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
+        }
+      } else {
+        const visibleSections = [...(description.sections ?? []), ...errorSection];
+        const showStructuredSections = showPreview || (visibleSections.length > 0 && this.policy.resultMode === "summary");
+        // Render structured sections; fall back to flat preview when sections
+        // produce no visible output (e.g. non-compact sections in collapsed mode).
+        const sectionLines = showStructuredSections && visibleSections.length > 0
+          ? renderDisplaySections(
+            visibleSections,
+            this.policy,
+            this.theme,
+            bodyWidth,
+            this.options.expanded,
+            visibleSections.length === 1 && errorSection.length === 1,
+          )
+          : [];
+        if (sectionLines.length > 0) {
+          body.push(...sectionLines);
+        } else if (showPreview && description.preview) {
+          body.push(...this.previewBodyLines(description, this.options.expanded ? this.policy.expandedMaxLines : this.policy.previewLines, bodyWidth));
+        }
+        if (showPreview && description.diff) {
+          body.push(...renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options));
+        }
+      }
     }
 
     // The body never ends with an empty row.
     while (body.length > 0 && stripVTControlCharacters(body.at(-1)!).trim() === "") body.pop();
 
-    // Apply tree rails: │ for continuation, └─ for the final body line.
-    // Section title lines already carry their ├─ branch prefix from
-    // renderDisplaySections, so they are not re-railed.
     for (let i = 0; i < body.length; i++) {
-      const isLast = i === body.length - 1;
-      if (stripVTControlCharacters(body[i]!).startsWith("\u251c\u2500")) continue;
-      body[i] = (isLast ? "\u2514\u2500 " : "\u2502  ") + body[i]!;
+      const blank = stripVTControlCharacters(body[i]!).trim() === "";
+      body[i] = blank ? "" : `${" ".repeat(BODY_INDENT_CELLS)}${body[i]!}`;
     }
     lines.push(...body);
 
@@ -535,25 +529,9 @@ export class OperationalDisplayComponent implements Component {
     return preview.render(bodyWidth);
   }
 
-  /** C4 one-row outcome sentence; falls back to the first flat row. */
-  private summaryBodyRow(description: DisplayDescriptionV1, terminal: boolean, notShown = 0): string[] {
-    let text = description.summary ?? (terminal ? description.rows?.[0]?.text : undefined);
-    if (text && notShown > 0) {
-      text = `${text} · ${notShown} not shown`;
-    } else if (!text && notShown > 0) {
-      text = `${notShown} not shown`;
-    }
-    return text
-      ? [`  ${this.theme.fg("muted", truncateCodePoints(sanitizeDisplayLine(text), MAX_ROW_CODE_POINTS))}`]
-      : [];
-  }
-
   /**
-   * C4/C6 mutation-family collapsed body: the only exception to the
-   * one-row collapsed entry. edit, replace, and write keep a
-   * bounded diff/preview body below the row so file mutations stay
-   * reviewable without expanding. The outcome summary already sits inline
-   * in the row, so this body never appends a summary row. A failed
+   * Mutation-family collapsed body: edit and write keep a bounded
+   * preview/diff body; replace renders only its authoritative diff. A failed
    * mutation renders no payload body; the failure sentence is inline.
    */
   private mutationFamilyBody(
@@ -562,6 +540,11 @@ export class OperationalDisplayComponent implements Component {
     bodyWidth: number,
   ): string[] {
     if (isError) return [];
+    if (description.tool === "replace") {
+      return description.diff
+        ? renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options)
+        : [];
+    }
     const body: string[] = [];
     if (this.policy.resultMode === "preview") {
       const collapsedSections = renderDisplaySections(description.sections ?? [], this.policy, this.theme, bodyWidth, false);

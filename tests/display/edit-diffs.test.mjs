@@ -78,14 +78,14 @@ const longPatch = [
 
 const collapsed = renderDisplayDiffLines(
   { path: "big.ts", patch: longPatch },
-  { ...DEFAULT_DISPLAY_POLICY, previewLines: 5 },
+  { ...DEFAULT_DISPLAY_POLICY, diffCollapsedLines: 5 },
   plainTheme,
   80,
   { expanded: false },
 );
 const collapsedText = collapsed.join("\n");
-assert.match(collapsedText, /\u2026 \+\d+ diff lines/, "collapsed must report omitted diff lines");
-assert.ok(collapsed.length <= 6, "collapsed bounded by previewLines + omission marker");
+assert.match(collapsedText, /⋯ \+\d+ diff lines/, "collapsed must report omitted diff lines");
+assert.ok(collapsed.length <= 6, "collapsed bounded by diffCollapsedLines + omission count row");
 
 // Expanded shows everything
 const expandedDiff = renderDisplayDiffLines(
@@ -274,6 +274,72 @@ const editDesc = {
 for (const width of widths) {
   const lines = new OperationalDisplayComponent(editDesc, DEFAULT_DISPLAY_POLICY, plainTheme, { expanded: false }).render(width);
   assert.ok(lines.every((line) => visibleWidth(line) <= width), `edit diff bounded at ${width}`);
+}
+// ─── 7b. Replace renders only its authoritative diff body ───────────
+
+{
+  const replaceOnly = {
+    version: 1,
+    tool: "replace",
+    family: "filesystem",
+    lifecycle: "completed",
+    title: "Replace",
+    target: "src/file.ts",
+    targetKind: "path",
+    summary: "1 range replaced · +1/-1 lines",
+    metadata: [{ label: "path", value: "src/file.ts" }],
+    rows: [{ text: "1 range replaced" }],
+    sections: [{ title: "Details", blocks: [{ kind: "text", text: "section evidence" }], compact: true }],
+    preview: { text: "preview payload" },
+    diff: {
+      path: "src/file.ts",
+      patch: "--- a/src/file.ts\n+++ b/src/file.ts\n@@ -1 +1 @@\n-old\n+new\n",
+    },
+    durationMs: 4,
+  };
+  // Metadata is explicitly enabled and must still never render for replace:
+  // the diff is the only authoritative evidence body, collapsed or expanded.
+  const replacePolicy = { ...DEFAULT_DISPLAY_POLICY, showMetadata: true };
+  for (const expanded of [false, true]) {
+    const lines = new OperationalDisplayComponent(replaceOnly, replacePolicy, plainTheme, { expanded }).render(80)
+      .map((line) => stripVTControlCharacters(line));
+    const header = lines[0];
+    const body = lines.slice(1).join("\n");
+    assert.match(header, /1 range replaced · \+1\/-1 lines/, `the replace row states the outcome (expanded=${expanded})`);
+    assert.doesNotMatch(body, /preview payload/, `replace never renders its preview payload (expanded=${expanded})`);
+    assert.doesNotMatch(body, /section evidence/, `replace never renders sections (expanded=${expanded})`);
+    assert.doesNotMatch(body, /path=src\/file\.ts/, `replace never renders metadata rows (expanded=${expanded})`);
+    assert.doesNotMatch(body, /1 range replaced/, `the expanded body never repeats the row summary (expanded=${expanded})`);
+    assert.match(body, /- old/, `replace renders the authoritative removed line (expanded=${expanded})`);
+    assert.match(body, /\+ new/, `replace renders the authoritative added line (expanded=${expanded})`);
+    assert.ok(
+      lines.slice(1).every((line) => /- old|\+ new/.test(line) || line.trim() === ""),
+      `replace body lines are diff lines only (expanded=${expanded})`,
+    );
+  }
+
+  // A failed replace keeps the one-sentence header and expands to an Error
+  // section; no diff body renders in either state.
+  const failedReplace = {
+    ...replaceOnly,
+    lifecycle: "failed",
+    error: "Could not open file",
+    errorRaw: "EACCES raw platform detail",
+    summary: undefined,
+    rows: [],
+    sections: [],
+    preview: undefined,
+  };
+  const failedCollapsed = new OperationalDisplayComponent(failedReplace, replacePolicy, plainTheme, { expanded: false })
+    .render(80).map((line) => stripVTControlCharacters(line));
+  assert.equal(failedCollapsed.length, 1, "a failed collapsed replace renders exactly one row");
+  assert.match(failedCollapsed[0], /Could not open file/, "the one-sentence failure stays in the header row");
+  const failedExpanded = new OperationalDisplayComponent(failedReplace, replacePolicy, plainTheme, { expanded: true })
+    .render(80).map((line) => stripVTControlCharacters(line));
+  const failedBody = failedExpanded.slice(1).join("\n");
+  assert.equal((failedBody.match(/EACCES raw platform detail/g) ?? []).length, 1, "the raw platform text renders once, expanded");
+  assert.match(failedBody, /Error/, "the expanded failure carries the Error section title");
+  assert.doesNotMatch(failedBody, /- old|\+ new/, "a failed replace renders no diff body");
 }
 
 // ─── 8. Model-facing execute unchanged ───────────────────────────────

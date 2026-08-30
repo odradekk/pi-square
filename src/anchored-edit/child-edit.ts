@@ -32,7 +32,12 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
  * @param cwd The child's working directory.
  * @param owner Anchor-store owner the child's replace uses. Required so a
  *   child's records never mix with the parent's or another child's.
+ * @param sessionDir The parent session's persistent session directory, used to
+ *   locate the anchor store. Required because the child session's own directory
+ *   is its artifacts directory, not the workspace session directory; an empty
+ *   value selects the throwaway temp-directory fallback of a non-persisted
+ *   parent session.
  */
-export function createChildAnchoredReplaceTool(cwd: string, owner: string): GenericToolDefinition {
-  return createAnchoredReplaceToolDefinition(cwd, () => true, owner, true, false) as GenericToolDefinition;
+export function createChildAnchoredReplaceTool(cwd: string, owner: string, sessionDir: string): GenericToolDefinition {
+  return createAnchoredReplaceToolDefinition(cwd, () => true, owner, true, false, sessionDir) as GenericToolDefinition;
 }
