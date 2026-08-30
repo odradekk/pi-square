@@ -71,9 +71,10 @@ export function styleTone(theme: Theme, tone: DisplayTone | undefined, text: str
 }
 
 export function styleTitle(theme: Theme, text: string): string {
-  // State-only hue: tool titles move to the neutral text token so color
-  // marks operational state only (marker and diff added/removed lines).
-  return theme.fg("text", theme.bold(text));
+  // Two-level hue: identity carries color through the `toolTitle` token, the
+  // same token the manager and config-guide headers already use. State hue
+  // stays on the marker and diff lines; targets and body text stay neutral.
+  return theme.fg("toolTitle", theme.bold(text));
 }
 
 export function styleRule(theme: Theme, text: string): string {

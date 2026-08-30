@@ -4,7 +4,7 @@
 
 Accepted design specification. Implemented across every renderer-owned surface.
 
-The architectural boundary is recorded in [ADR 0001](../adr/0001-use-claude-structured-operational-interface.md). Canonical domain terms are defined in the repository [context glossary](../../CONTEXT.md). Deliberate differences from the reference implementation are listed in [Accepted deviations](#accepted-deviations).
+The architectural boundary was recorded in [ADR 0001](../adr/0001-use-claude-structured-operational-interface.md), now superseded by [ADR 0012](../adr/0012-self-defined-calm-palette.md). ADR 0012 retires the Claude-derived justification, the terracotta palette, and the state-only hue rule; the structural grammar in this specification is unaffected and stays in force through [ADR 0008](../adr/0008-single-row-collapsed-entries-content-column.md). The Claude-referenced framing that remains below this line is historical and awaits a separate rewrite. Canonical domain terms are defined in the repository [context glossary](../../CONTEXT.md). Deliberate differences from the reference implementation are listed in [Accepted deviations](#accepted-deviations).
 
 ## Reference baseline
 
@@ -61,7 +61,7 @@ All templates share:
 - English fixed UI labels, badges, and omission messages; user content remains in its original language;
 - Pi standard semantic theme tokens rather than required private tokens or hard-coded colors.
 
-Bundled themes should tune the standard tokens toward Claude's rust-orange emphasis, dim gray chrome, red failures, and green additions or permissions. Third-party themes retain their own semantic colors.
+Bundled themes tune the standard tokens toward a warm neutral reading ladder, a low-chroma indigo accent, and low-chroma semantic hues, under the palette gates recorded in ADR 0012. Third-party themes retain their own semantic colors.
 
 ## Template model
 
@@ -167,9 +167,10 @@ expanding. Payloads of every other tool are visible only when the entry is
 expanded. In the wide layout tier (viewport of 100 columns or more) an entry
 renders at `max(60, floor(0.6 × viewport))` cells, left-aligned; below the wide
 tier it keeps full width, and expanded entries keep the same column so
-expansion never causes a horizontal jump. Hue marks operational state only:
-tool titles and targets use neutral text tones while the state marker, qualifier
-badges, and diff added/removed lines carry semantic state tokens.
+expansion never causes a horizontal jump. Hue carries two levels: the state
+marker, qualifier badges, and diff added/removed lines take semantic state
+tokens, while tool titles take the identity token; targets, outcome summaries,
+and body text stay neutral.
 
 The new defaults are:
 

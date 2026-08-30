@@ -11,16 +11,16 @@ The renderer-owned presentation surfaces for operational activity, including too
 _Avoid_: frontend, whole TUI, chat UI
 
 **Native shell**:
-A Pi-owned outer container whose rendering is not exposed to pi-square, such as the shell around native confirmations, notifications, or background custom messages. Claude-like styling applies to pi-square-owned content inside it, not to the shell itself.
+A Pi-owned outer container whose rendering is not exposed to pi-square, such as the shell around native confirmations, notifications, or background custom messages. The calm operational display applies to pi-square-owned content inside it, not to the shell itself.
 _Avoid_: operational interface, custom workflow
 
-**Claude-like visual language**:
-A presentation language recognizably based on the official Claude Code experience through information hierarchy, typography, semantic color, symbols, spacing, and state expression. It does not imply adopting Claude Code's conversation or input surfaces.
-_Avoid_: Claude clone, Claude theme, pixel-perfect copy
-
 **Calm operational display**:
-The fixed low-noise expression of the Claude-like visual language: a tool row answers what ran, what it acted on, and how it ended, while optional body space carries evidence rather than repeated status. Color marks operational state and diff changes, not decoration.
-_Avoid_: dense console, decorated cards, free-form tool output
+pi-square's own low-noise presentation language for the operational interface, defined across information hierarchy, typography, semantic color, symbols, spacing, and state expression. A tool row answers what ran, what it acted on, and how it ended, while optional body space carries evidence rather than repeated status. It does not extend to Pi's conversation or input surfaces.
+_Avoid_: dense console, decorated cards, free-form tool output, Claude-like visual language
+
+**Two-level hue**:
+The rule that color carries exactly two kinds of meaning in the calm operational display: operational state, on the state marker and diff added or removed lines; and identity, on tool titles, the brand mark, links, and interactive focus. Targets, evidence bodies, and prose stay neutral, and no element is colored for decoration.
+_Avoid_: state-only hue, accent styling, syntax highlighting
 
 **Evidence body**:
 The optional content below a tool row that carries reviewable evidence such as matches, command output, fetched content, or a diff. It does not restate the row's outcome or identity.
@@ -43,7 +43,7 @@ An additional condition such as warning, retrying, cancelling, truncated, projec
 _Avoid_: lifecycle, free-form status
 
 **State marker**:
-The fixed visual symbol that represents an operational state within the Claude-like visual language. Claude's core markers may be extended when pi-square must preserve additional operational-state distinctions.
+The fixed visual symbol that represents an operational state within the calm operational display. The marker set may be extended when pi-square must preserve additional operational-state distinctions.
 _Avoid_: status, state
 
 **Collapsed entry**:
