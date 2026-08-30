@@ -31,7 +31,10 @@ writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
 }, null, 2) + "\n");
 
 const settingsManager = SettingsManager.create(cwd, agentDir);
-const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+// noSkills suppresses the host's default skill discovery (Pi 0.84.2 always
+// auto-loads ~/.agents/skills); a package-contributed skill path still loads
+// and trips the zero-skills assertion below.
+const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true });
 await resourceLoader.reload();
 const created = await createAgentSession({
   cwd,
