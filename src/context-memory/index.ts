@@ -55,12 +55,8 @@ export default function registerContextMemory(
   const apiInterfaces = dependencies.apiInterfaces ?? apiInterfacesPresent;
   let controller: ContextMemoryController | undefined;
 
-  const submitMemory = createSubmitMemoryToolDefinition({
-    isDueRun: () => controller?.isDueRun() ?? false,
-  });
-  const readMemorySource = createReadMemorySourceToolDefinition({
-    hasMemory: () => controller?.hasMemory() ?? false,
-  });
+  const submitMemory = createSubmitMemoryToolDefinition();
+  const readMemorySource = createReadMemorySourceToolDefinition();
   // Registered once at extension load; both stay out of the active tool list
   // until a later slice activates them through the controller.
   pi.registerTool(decorateInternalTool(submitMemory, dependencies.displayRuntimeProvider));

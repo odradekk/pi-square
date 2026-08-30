@@ -16,6 +16,14 @@ import { Type } from "typebox";
 /** One submitted Memory block is at most 16 KiB canonical UTF-8 (#215). */
 export const MEMORY_BLOCK_MAX_BYTES = 16 * 1024;
 
+/**
+ * Provider-visible bound only. JSON Schema `maxLength` counts characters, not
+ * bytes, and a block within the byte cap can never hold more characters than
+ * bytes, so this rejects nothing the byte rule accepts while keeping the
+ * schema finite. The canonical byte check arrives with #218.
+ */
+const MEMORY_BLOCK_MAX_CHARS = MEMORY_BLOCK_MAX_BYTES;
+
 export const SUBMIT_MEMORY_TOOL_NAME = "submit_memory";
 export const READ_MEMORY_SOURCE_TOOL_NAME = "read_memory_source";
 
@@ -23,7 +31,7 @@ export const SubmitMemoryParamsSchema = Type.Object({
   markdown: Type.String({
     description: "The Memory block body as free-form Markdown",
     minLength: 1,
-    maxLength: MEMORY_BLOCK_MAX_BYTES,
+    maxLength: MEMORY_BLOCK_MAX_CHARS,
   }),
 }, {
   additionalProperties: false,
@@ -48,13 +56,7 @@ function memoryError(code: string, sentence: string): never {
   throw new Error(`${code}: ${sentence}`);
 }
 
-export interface SubmitMemoryDependencies {
-  /** Whether a due run currently accepts a submission; the shell never opens one. */
-  isDueRun(): boolean;
-}
-
 export function createSubmitMemoryToolDefinition(
-  dependencies: SubmitMemoryDependencies,
 ): ToolDefinition<typeof SubmitMemoryParamsSchema, Record<string, never>> {
   return {
     name: SUBMIT_MEMORY_TOOL_NAME,
@@ -65,22 +67,13 @@ export function createSubmitMemoryToolDefinition(
     parameters: SubmitMemoryParamsSchema,
     executionMode: "sequential",
     async execute() {
-      if (dependencies.isDueRun()) {
-        // The due-run submission window opens with #218; the shell never reaches this.
-        memoryError("SUBMIT_NOT_DUE", "the due-run submission window is not open in this version");
-      }
+      // The due-run submission window opens with #218; the shell never opens one.
       memoryError("SUBMIT_NOT_DUE", "no Context Memory compression is due in this run");
     },
   };
 }
 
-export interface ReadMemorySourceDependencies {
-  /** Whether valid non-empty current Memory exists; the shell never derives Memory. */
-  hasMemory(): boolean;
-}
-
 export function createReadMemorySourceToolDefinition(
-  dependencies: ReadMemorySourceDependencies,
 ): ToolDefinition<typeof ReadMemorySourceParamsSchema, Record<string, never>> {
   return {
     name: READ_MEMORY_SOURCE_TOOL_NAME,
@@ -90,10 +83,7 @@ export function createReadMemorySourceToolDefinition(
       + "Available only while valid Context Memory exists on the current branch.",
     parameters: ReadMemorySourceParamsSchema,
     async execute() {
-      if (dependencies.hasMemory()) {
-        // Source rendering and paging arrive with #217; the shell never reaches this.
-        memoryError("MEMORY_NOT_AVAILABLE", "Memory source reading is not available in this version");
-      }
+      // Memory derivation and source paging arrive with #217; the shell derives none.
       memoryError("MEMORY_NOT_AVAILABLE", "no valid Context Memory is available on the current branch");
     },
   };

@@ -263,7 +263,7 @@ try {
   }));
   const memoryProject = loadConfig(projectDir);
   assert.equal(memoryProject.diagnostics.length, 1);
-  assert.match(memoryProject.diagnostics[0].message, /contextMemory is agent-only configuration/);
+  assert.match(memoryProject.diagnostics[0].message, /config ignored/);
   assert.equal(memoryProject.config.contextMemory.enabled, true, "the agent layer keeps sole authority");
   assert.equal(memoryProject.config.display.project, undefined, "the project layer is dropped atomically");
 

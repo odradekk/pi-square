@@ -52,16 +52,6 @@ export class ContextMemoryController {
     return this.config;
   }
 
-  /** The shell never opens a due run; #218 replaces this with real due tracking. */
-  isDueRun(): boolean {
-    return false;
-  }
-
-  /** The shell never derives Memory; #217 replaces this with compaction parsing. */
-  hasMemory(): boolean {
-    return false;
-  }
-
   /**
    * Synchronize the owned active-tool names while preserving every other
    * active tool selected by Pi or another pi-square module. In the baseline

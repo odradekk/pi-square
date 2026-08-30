@@ -55,7 +55,11 @@ for (const entry of DISPLAY_CATALOG) {
       tool: entry.name,
       family: entry.family,
       ...stateMap[status],
-      title: entry.name.toUpperCase(),
+      // Stand-in for the display title, capped at the longest title the
+      // adapter actually produces ("Resume subagent"). The raw catalog name is
+      // not a title any tool renders, and an 18-character one would shrink the
+      // header budget below anything production reaches.
+      title: entry.name.toUpperCase().slice(0, 15),
       target: "src/target\x1b]0;owned\x07.ts",
       metadata: [{ label: "count", value: "12" }, { label: "api_key", value: "api_key=secret-value" }],
       rows: status === "success" ? [] : [{ text: status === "error" ? "Bearer hidden-token" : `${status} state` }],
@@ -78,10 +82,7 @@ for (const entry of DISPLAY_CATALOG) {
           const plain = stripVTControlCharacters(lines.join("\n"));
           assert.match(plain, new RegExp(`^${expectedRails[status]}`));
           assert.doesNotMatch(plain, /owned|secret-value|hidden-token|do-not-show|\x1b|\x07/);
-          // At the narrowest widths a long catalog title (read_memory_source)
-          // middle-elides the sentence; the redaction marker survives whole or
-          // as its elided tail — the secret itself never renders.
-          if (status === "error") assert.match(plain, /\[REDACTED\]|…TED\]/, "errors must remain visible and redacted under every result mode");
+          if (status === "error") assert.match(plain, /\[REDACTED\]/, "errors must remain visible and redacted under every result mode");
         }
       }
     }

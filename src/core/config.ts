@@ -165,7 +165,11 @@ const ContextMemoryThresholdSchema = Type.Union([
   }, { additionalProperties: false }),
 ]);
 
-/** Agent layer only: a project layer declaring `contextMemory` is rejected atomically. */
+/**
+ * Agent layer only, like `ssh` and `anchoredEditing`: `ProjectConfigLayerSchema`
+ * omits `contextMemory` and forbids additional properties, so a project layer
+ * declaring it is rejected atomically and never enables or alters the feature.
+ */
 const ContextMemoryAgentSchema = Type.Object({
   enabled: Type.Optional(Type.Boolean()),
   compressionThreshold: Type.Optional(ContextMemoryThresholdSchema),
@@ -361,7 +365,6 @@ function legacyConfirmCommandsPath(value: unknown): string | undefined {
 function readLayer<T extends TSchema>(
   path: string,
   schema: T,
-  options: { projectForbiddenFields?: readonly string[] } = {},
 ): { value?: Static<T>; diagnostics: DiagnosticMessage[]; shadowMindsDeclared?: boolean; unreadable?: boolean } {
   if (!existsSync(path)) return { diagnostics: [] };
   let value: unknown;
@@ -397,17 +400,6 @@ function readLayer<T extends TSchema>(
       )],
       shadowMindsDeclared,
     };
-  }
-  for (const field of options.projectForbiddenFields ?? []) {
-    if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, field)) {
-      return {
-        diagnostics: [diagnostic(
-          "warning",
-          `pi-square config ignored at ${path}: ${field} is agent-only configuration and cannot be set in a project layer; remove it there and set it in the agent layer`,
-        )],
-        shadowMindsDeclared,
-      };
-    }
   }
   if (!Value.Check(schema, value)) {
     const first = [...Value.Errors(schema, value)][0];
@@ -473,6 +465,7 @@ function normalizeSsh(layer: AgentConfigLayer["ssh"]): SshConfig {
     })),
   };
 }
+
 function normalizeContextMemory(
   layer: AgentConfigLayer["contextMemory"],
   base: ContextMemoryConfig,
@@ -486,6 +479,7 @@ function normalizeContextMemory(
     memoryBudgetPercent: layer.memoryBudgetPercent ?? base.memoryBudgetPercent,
   };
 }
+
 function semanticDisplayError(layer: { display?: DisplayLayerConfig }): string | undefined {
   const display = layer.display;
   if (!display?.tools) return undefined;
@@ -577,9 +571,7 @@ export function loadConfig(cwd: string): { config: PiSquareConfig; diagnostics: 
     }
   }
 
-  const projectLayer = readLayer(projectPath, ProjectConfigLayerSchema, {
-    projectForbiddenFields: ["contextMemory"],
-  });
+  const projectLayer = readLayer(projectPath, ProjectConfigLayerSchema);
   diagnostics.push(...projectLayer.diagnostics);
   shadowMindsInvalid ||= projectLayer.unreadable === true || (projectLayer.shadowMindsDeclared === true && projectLayer.value === undefined);
   if (projectLayer.value) {
