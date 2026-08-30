@@ -48,6 +48,10 @@ The five canonical triage roles map directly to same-named GitHub labels. See `d
 
 This is a single-context repo with `CONTEXT.md` at the root and ADRs in `docs/adr/`. See `docs/agents/domain.md`.
 
+### Ticket dispatch and acceptance
+
+Dispatching a `ready-for-agent` ticket to a worktree agent, accepting the pull request it opens, and landing it. See `docs/ticket-sop.md`.
+
 ## Rules and Constraints
 
 - Preserve the Node.js 24 and Pi 0.84.2 runtime contract unless the change explicitly updates compatibility and documentation.
