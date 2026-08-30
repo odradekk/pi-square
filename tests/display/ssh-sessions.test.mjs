@@ -74,7 +74,8 @@ function page(overrides = {}) {
 
   const details = { version: 1, operation: "connect", status: "success", code: "CONNECTED", message: `Connected ${SESSION.id} to deploy@10.0.0.1:22`, session: SESSION, output: page() };
   const result = renderResult(decorated, args, details, "Welcome to Ubuntu 22.04\n$", { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.match(text, /^●/, "connect success renders completed marker");
   assert.match(text, /deploy@10\.0\.0\.1:22/, "connect summary shows endpoint");
   assert.match(text, /Connected/, "connect summary shows session connected state");
@@ -96,7 +97,7 @@ function page(overrides = {}) {
   const details = { version: 1, operation: "command", status: "running", code: "COMMAND_RUNNING", message: "Remote command is running", session: { ...SESSION, commandState: "running" }, output: page({ hasMore: true }) };
   const result = renderResult(decorated, args, details, "total 48\ndrwxr-xr-x 2 root root 4096\n-rw-r--r-- 1 root root 1234 syslog", { expanded: true, isPartial: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /\[partial\]/, "running command shows partial badge");
+  assert.doesNotMatch(text, /\[partial\]/, "no partial badge renders");
   assert.match(text, /total 48/, "command output visible in expanded");
 
   runtime.dispose();
@@ -182,7 +183,9 @@ function page(overrides = {}) {
   const args = { operation: "command", session: "ssh-a1b2c3d4", command: "long-running-task", waitMs: 10000 };
   const details = { version: 1, operation: "command", status: "error", code: "SESSION_DISCONNECTED", message: "SSH session disconnected before the command completed", session: { ...SESSION, state: "disconnected", disconnectReason: "Connection reset by peer" }, output: page({ cursor: 100 }) };
   const result = renderResult(decorated, args, details, "partial output", { expanded: true, isError: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full failure sentence fits beside the natural
+  // title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.match(text, /^●/, "disconnected command renders failed marker");
   assert.match(text, /SSH session disconnected/, "disconnected state visible via error message");
 
@@ -313,7 +316,7 @@ function page(overrides = {}) {
   // C7: metadata renders only when expanded.
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const callText = stripVTControlCharacters(call.render(100).join("\n"));
-  assert.match(callText, /\[needs input\]/, "secret_input shows needs-input badge");
+  assert.doesNotMatch(callText, /\[needs input\]/, "no needs input badge renders");
   assert.doesNotMatch(callText, /deployment password/, "secret prompt text never rendered in call");
 
   // Success — secret never appears in content or display

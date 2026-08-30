@@ -18,6 +18,18 @@ _Avoid_: operational interface, custom workflow
 A presentation language recognizably based on the official Claude Code experience through information hierarchy, typography, semantic color, symbols, spacing, and state expression. It does not imply adopting Claude Code's conversation or input surfaces.
 _Avoid_: Claude clone, Claude theme, pixel-perfect copy
 
+**Calm operational display**:
+The fixed low-noise expression of the Claude-like visual language: a tool row answers what ran, what it acted on, and how it ended, while optional body space carries evidence rather than repeated status. Color marks operational state and diff changes, not decoration.
+_Avoid_: dense console, decorated cards, free-form tool output
+
+**Evidence body**:
+The optional content below a tool row that carries reviewable evidence such as matches, command output, fetched content, or a diff. It does not restate the row's outcome or identity.
+_Avoid_: payload dump, metadata block, second summary
+
+**Running pulse**:
+The subtle brightness oscillation of the running state marker in full-color, full-motion sessions. It is a lifecycle cue only and becomes static when color or full motion is unavailable.
+_Avoid_: spinner, glyph animation, animated progress bar
+
 **Operational state**:
 The actual semantic condition of operational work, formed from one lifecycle and any compatible qualifiers. It is independent of how that condition is drawn.
 _Avoid_: icon state, display status
@@ -35,11 +47,11 @@ The fixed visual symbol that represents an operational state within the Claude-l
 _Avoid_: status, state
 
 **Collapsed entry**:
-The resting presentation of a tool entry in the operational interface: exactly one row that carries the state marker, title, target, outcome summary, qualifier badges, and elapsed duration. The mutation family is the only exception.
+The resting presentation of a tool entry in the operational interface: exactly one row that carries the state marker, title, target, outcome summary, and elapsed duration. The mutation family is the only exception.
 _Avoid_: folded card, multi-row summary
 
 **Mutation family**:
-The three tools whose collapsed entries keep a bounded payload body below the header row: edit, replace, and write. Every other tool's collapsed entry is a single row; its payload is visible only when expanded.
+The three tools whose collapsed entries keep a bounded evidence body below the header row: edit, replace, and write. Replace has the narrowest shape: its successful evidence body is the authoritative diff only; every non-mutation tool keeps its evidence body visible only when expanded.
 _Avoid_: payload tools, edit tools
 
 **Content column**:

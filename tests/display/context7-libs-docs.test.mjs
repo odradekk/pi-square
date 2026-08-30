@@ -314,7 +314,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
     estimatedTokens: 200, phase: "done",
   };
   const result = renderResult(decorated, args, details, "content", { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   // Summary row shows snippet counts, token budget, and omitted count
   assert.match(text, /1 code and 1 info snippets/, "summary shows code and info snippet counts");
   assert.match(text, /200 of 12000 tokens/, "summary shows token budget");
@@ -390,7 +391,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  // Libs: the activity summary/badges should NOT contain the candidate
+  // Libs: the activity summary should NOT contain the candidate
   // descriptions or arbitrary remote metadata in the header line
   const libsDecorated = decorateInternalTool(makeDef("libs"), () => runtime);
   const libsArgs = { libraryName: "react", query: "context", mode: "quality", limit: 5 };

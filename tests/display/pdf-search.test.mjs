@@ -192,9 +192,10 @@ function renderResult(decorated, args, details, opts = {}) {
   const args = { path: "reports/q3.pdf", query: "revenue", limit: 1 };
   const details = baseDetails({ limit: 1, returned: 1, totalMatches: 5, hasMore: true, cacheHit: true, matches: [baseDetails().matches[0]] });
   const result = renderResult(decorated, args, details, { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.match(text, /5 matches on 1 of 12 pages/, "the summary row states total matches and the page budget");
-  assert.match(text, /\[truncated\]/, "hasMore raises the truncated badge");
+  assert.doesNotMatch(text, /\[truncated\]/, "no truncated badge renders");
 
   runtime.dispose();
 }
@@ -317,13 +318,13 @@ function renderResult(decorated, args, details, opts = {}) {
   assert.match(okText, /^✓/, "collapsed success keeps the lifecycle marker visible");
   assert.match(okText, /PDF search/, "collapsed success keeps the identity/title visible");
   assert.match(okText, /revenue/, "collapsed success keeps the target/query visible");
-  assert.match(okText, /2 matches on 2 …pages in q3\.pdf/, "collapsed success shows the inline summary with match counts");
+  assert.match(okText, /2 matches on 2 …pages in q3\.pdf/, "collapsed success shows the inline summary with match counts through elision");
 
   const errDetails = baseDetails({ phase: "done", status: "error", errorCode: "PDF_TOO_LARGE", error: "PDF exceeds the 50 MB safety limit", matches: [], returned: undefined, totalMatches: undefined });
   const errCollapsed = renderResult(decorated, args, errDetails, { text: "Error: PDF exceeds the 50 MB safety limit", isError: true, expanded: false });
   const errText = stripVTControlCharacters(errCollapsed.render(100).join("\n"));
   assert.match(errText, /^×/, "collapsed error keeps the failed marker visible");
-  assert.match(errText, /PDF exceeds the…MB safety limit/, "collapsed error keeps the error message visible");
+  assert.match(errText, /PDF exceeds the…MB safety limit/, "collapsed error keeps the error message visible through elision");
 
   // Expanded-only content (Query section) must not leak into collapsed view.
   assert.doesNotMatch(okText, /QUERY ───/, "collapsed view omits the non-compact Query section");
@@ -340,14 +341,15 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = baseDetails({ limit: 1, returned: 1, totalMatches: 5, hasMore: true, matches: [baseDetails().matches[0]] });
 
   const expanded = renderResult(decorated, args, details, { expanded: true });
-  const expandedText = stripVTControlCharacters(expanded.render(100).join("\n"));
-  assert.match(expandedText, /\[truncated\]/, "hasMore raises the truncated badge when expanded");
+  // Wide-tier column so the full summary fits beside the natural title.
+  const expandedText = stripVTControlCharacters(expanded.render(160).join("\n"));
+  assert.doesNotMatch(expandedText, /\[truncated\]/, "no truncated badge renders");
   assert.match(expandedText.replace(/\s+/g, " "), /5 matches on 1 of 12 pages/, "match and page counts reach the expanded summary");
 
   const collapsed = renderResult(decorated, args, details, { expanded: false });
   const collapsedText = stripVTControlCharacters(collapsed.render(100).join("\n"));
-  assert.match(collapsedText, /\[truncated\]/, "the truncated badge is also visible collapsed");
-  assert.match(collapsedText, /5 matches…in q3\.pdf/, "the inline summary states the counts collapsed");
+  assert.doesNotMatch(collapsedText, /\[truncated\]/, "no truncated badge renders");
+  assert.match(collapsedText, /5 matches on 1 …pages in q3\.pdf/, "the inline summary states the counts collapsed through elision");
 
   runtime.dispose();
 }

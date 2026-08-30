@@ -105,7 +105,7 @@ function makeSearchDef(name) {
   const decorated = decorateBuiltinDefinition(createGrepToolDefinition(TMP), TMP, () => runtime);
   const call = decorated.renderCall({ pattern: "TODO", path: "." }, plainTheme, makeCtx({ pattern: "TODO", path: "." }, {}, { argsComplete: true, executionStarted: true }));
   const text = stripVTControlCharacters(call.render(80).join("\n"));
-  assert.match(text, /Grep TODO/, "call target shows the pattern");
+  assert.match(text, new RegExp(`^● Grep TODO`), "call target shows the pattern after the natural title");
 
   runtime.dispose();
 }
@@ -146,7 +146,7 @@ function makeSearchDef(name) {
   assert.doesNotMatch(callText, /case=/, "call body has no case metadata");
   assert.doesNotMatch(callText, /literal=/, "call body has no literal metadata");
   assert.doesNotMatch(callText, /context=/, "call body has no context metadata");
-  assert.match(callText, /Grep TODO/, "call header shows the pattern target");
+  assert.match(callText, new RegExp(`● Grep TODO`), "call header shows the pattern target after the natural title");
 
   const result = decorated.renderResult(
     { content: [{ type: "text", text: "a.ts:1:const x = 1;" }], details: {} },

@@ -90,7 +90,9 @@ function renderResult(decorated, args, details, opts = {}) {
   // visible only when expanded.
   assert.equal(collapsed.render(80).length, 1, "collapsed delegate renders exactly one row");
   assert.doesNotMatch(collapsedText, /display adapters/, "collapsed hides the result preview");
-  assert.match(collapsedText, /done · 6 turns · 2\.4k tokens · \$0\.020 · run abcdef12/, "collapsed inline summary states the outcome");
+  assert.match(collapsedText, /done · 6 turns/, "collapsed inline summary states the outcome head");
+  assert.match(collapsedText, /2\.4k/, "collapsed inline summary states the token total");
+  assert.match(collapsedText, /\$0\.020 · run abcdef12/, "collapsed inline summary keeps the cost and run id tail");
 
   const expanded = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
@@ -146,7 +148,7 @@ function renderResult(decorated, args, details, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 5. Cancelling shows ● (running) with a cancelling badge ──────
+// ─── 5. Cancelling shows ● (running) without qualifier badges ────
 
 {
   const runtime = newRuntime();
@@ -156,7 +158,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isPartial: false });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "cancelling delegate shows the running bullet");
-  assert.match(text.split("\n")[0], /\[cancelling\]/, "cancelling carries the cancelling badge");
+  assert.doesNotMatch(text.split("\n")[0], /\[cancelling\]/, "no cancelling badge renders");
 
   runtime.dispose();
 }
@@ -170,12 +172,13 @@ function renderResult(decorated, args, details, opts = {}) {
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^!/, "completed with retries renders the warning fallback marker");
-  assert.match(text, /done · 6 turns · 2\.4k tokens · \$0\.020 · run abcdef12/, "completion summary still visible");
+  assert.match(text, /done · 6 turns/, "completion summary head still visible");
+  assert.match(text, /\$0\.020 · run abcdef12/, "completion summary tail still visible");
 
   runtime.dispose();
 }
 
-// ─── 6b. Active retry during partial shows the retrying badge ─────
+// ─── 6b. Active retry during partial renders no retrying badge ────
 
 {
   const runtime = newRuntime();
@@ -184,7 +187,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isPartial: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "active retry shows the running bullet");
-  assert.match(text.split("\n")[0], /\[retrying\]/, "active retry carries the retrying badge");
+  assert.doesNotMatch(text.split("\n")[0], /\[retrying\]/, "no retrying badge renders");
 
   runtime.dispose();
 }
@@ -196,7 +199,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const result = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text.split("\n")[0], /^✓ Subagent explorer/, "title is Subagent, target is the agent name");
+  assert.match(text.split("\n")[0], new RegExp(`^✓ Subagent explorer`), "title is Subagent, target is the agent name after the natural title");
 
   runtime.dispose();
 }
@@ -208,11 +211,11 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateSubagentTool(makeDef("resume"), () => runtime);
   const result = renderResult(decorated, ARGS_RESUME, RUN_DETAILS, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text.split("\n")[0], /^✓ Resume abcdef12/, "resume title is Resume, target is the short id");
+  assert.match(text.split("\n")[0], new RegExp(`^✓ Resume abcdef12`), "resume title is Resume, target is the short id after the natural title");
 
   const call = decorated.renderCall(ARGS_RESUME, plainTheme, makeCtx(ARGS_RESUME, {}, { argsComplete: true, executionStarted: true }));
   const callText = stripVTControlCharacters(call.render(80).join("\n"));
-  assert.match(callText.split("\n")[0], /Resume abcdef12/, "resume call header states the short id");
+  assert.match(callText.split("\n")[0], new RegExp(`^● Resume abcdef12`), "resume call header states the short id after the natural title");
   assert.match(callText, /Continue exploring/, "resume call shows the task");
 
   runtime.dispose();

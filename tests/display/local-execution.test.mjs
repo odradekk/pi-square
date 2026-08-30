@@ -53,10 +53,10 @@ function context(args, overrides = {}) {
 let runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true } });
 for (const [name, args, expected] of [
   ["pdf_search", { path: "manual.pdf", query: "retention", limit: 5 }, /retention/],
-  ["codegraph", { operation: "explore", projectPath: ".", query: "runtime", maxFiles: 5 }, /explore/],
+  ["codegraph", { operation: "explore", projectPath: ".", query: "runtime", maxFiles: 5 }, /CodeGraph explore/],
   ["bash", { command: "printf 'hello'", timeout: 10 }, /printf 'hello'/],
   ["pwsh", { command: "Get-ChildItem", timeoutMs: 1000 }, /Get-ChildItem/],
-  ["ssh", { operation: "secret_input", session: "session-1", prompt: "credential", data: "never-show" }, /\[needs input\]/],
+  ["ssh", { operation: "secret_input", session: "session-1", prompt: "credential", data: "never-show" }, /secret_input/],
 ]) {
   const original = definition(name);
   const decorated = decorateInternalTool(original, () => runtime);

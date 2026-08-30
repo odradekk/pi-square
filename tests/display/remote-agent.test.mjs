@@ -129,7 +129,8 @@ const running = subagent.renderResult(
 assert.match(running, /explorer/);
 // C4 revision: the collapsed running entry is one row; the inline summary
 // states the running outcome, and the live text is visible only expanded.
-assert.match(running, /running · 1 turns so far/, "collapsed running shows the inline outcome");
+assert.match(running, /running · 1 turns/, "collapsed running shows the inline outcome head");
+  assert.match(running, /run 12345678/, "collapsed running keeps the run id tail through elision");
 assert.doesNotMatch(running, /scanning repository|found 3 matches/, "collapsed running hides the live text");
 // Activity rows never appear in the collapsed body
 assert.doesNotMatch(running, /Activity/);
@@ -159,7 +160,7 @@ const webExpanded = webSearch.renderResult({
 }, { expanded: true, isPartial: false }, theme, context({ queries: ["Pi coding agent GitHub repository"], limit: 5 }, { expanded: true })).render(100);
 const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works/pi"));
 assert.ok(webExpanded[0]?.startsWith("● Web search"), "tool header remains flush-left");
-assert.ok(resultTitleLine?.startsWith("│") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under a tree rail");
+assert.ok(resultTitleLine?.startsWith("  ") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under the quiet body indent");
 
 for (const child of createChildTools([
   "search", "fetch", "libs", "docs", "github_search", "github_read", "github_tree", "github_commit",

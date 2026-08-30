@@ -68,13 +68,13 @@ for (const diffView of ["unified", "split"]) {
 
 const bounded = renderDisplayDiffLines(
   { path: "many", before: Array.from({ length: 30 }, (_, i) => `old ${i}`).join("\n"), after: "new" },
-  { ...DEFAULT_DISPLAY_POLICY, diffView: "unified", previewLines: 4 },
+  { ...DEFAULT_DISPLAY_POLICY, diffView: "unified", diffCollapsedLines: 4 },
   plainTheme,
   80,
   { expanded: false },
 );
-assert.ok(bounded.length <= 5);
-assert.match(bounded.at(-1), /\u2026 \+\d+ diff lines/);
+assert.ok(bounded.length <= 5, "collapsed diffs bound by diffCollapsedLines plus the count row");
+assert.match(bounded.at(-1), /⋯ \+\d+ diff lines/, "the collapsed diff states its omitted count");
 
 const oversized = renderDisplayDiffLines(
   { path: "large", before: "x".repeat(1_000_001), after: "y" },

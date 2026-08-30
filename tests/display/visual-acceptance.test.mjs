@@ -15,7 +15,6 @@ const {
   FALLBACK_MARKERS,
   FALLBACK_WARNING_MARKER,
   OPERATIONAL_QUALIFIERS,
-  QUALIFIER_BADGES,
 } = await load("../../src/display/types.ts");
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
@@ -516,7 +515,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 }
 
-// ── 16. Every marker is one cell and every qualifier has a visible badge ──
+// ── 16. Every marker is one cell and qualifiers never render badges ──
 
 {
   assert.equal(visibleWidth(BULLET_MARKER), 1, "BULLET_MARKER must measure one cell");
@@ -544,14 +543,15 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
         assert.match(plain, /!/, `warning qualifier must show the ! marker in ${themeName}`);
         continue;
       }
-      assert.ok(
-        plain.includes(`[${QUALIFIER_BADGES[qualifier]}]`),
-        `${qualifier} must render a visible badge in ${themeName}`,
+      assert.doesNotMatch(
+        plain,
+        /\[[a-z ]+\]/,
+        `${qualifier} must render no header badge in ${themeName}`,
       );
     }
   }
 
-  // Compact layouts keep the highest-priority badge and drop the duration.
+  // Compact layouts drop the duration first; qualifiers stay invisible.
   const compact = stripVTControlCharacters(new OperationalDisplayComponent(
     {
       version: 1,
@@ -567,8 +567,8 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
     darkTheme,
     { expanded: false },
   ).render(63).join("\n"));
-  assert.match(compact, /\[cancelling\]/, "compact keeps the action-critical badge");
-  assert.doesNotMatch(compact, /\[partial\]/, "compact drops lower-priority badges");
+  assert.match(compact, /^● Subagent explorer/, "compact keeps the natural marker, title, and target");
+  assert.doesNotMatch(compact, /\[/, "compact renders no qualifier badges");
   assert.doesNotMatch(compact, /4\.0s/, "duration is the first header item dropped");
 }
 

@@ -83,11 +83,13 @@ function strip(lines) {
     plainTheme,
     makeCtx({ path: "src/parser.ts", offset: 20, limit: 5 }),
   );
-  const rendered = strip(result.render(80));
+  // Wide-tier column so the full target and summary fit beside the natural
+  // title.
+  const rendered = strip(result.render(160));
   assert.match(rendered, /src\/parser\.ts:20-24/, "header shows windowed range");
   assert.match(rendered, /5 of 177 lines/, "summary shows returned of total");
   assert.match(rendered, /continue at offset 25/, "summary shows next offset");
-  assert.match(rendered, /\[truncated\]/, "truncated badge present");
+  assert.doesNotMatch(rendered, /\[truncated\]/, "no truncated badge renders");
   runtime.dispose();
 }
 
@@ -280,11 +282,12 @@ function strip(lines) {
   );
   const rendered = strip(result.render(80));
   assert.match(rendered, /line 0/, "first row visible");
-  assert.match(rendered, /line 8/, "preview shows first rows");
+  assert.match(rendered, /line 4/, "preview shows the first five rows");
+  assert.doesNotMatch(rendered, /line 5/, "the sixth row drops under the five-row default");
   assert.doesNotMatch(rendered, /line 39/, "last row not visible (no tail)");
   assert.doesNotMatch(rendered, /hidden/, "no head/tail hidden message");
-  assert.match(rendered, /… \+\d+ lines/, "overflow uses … +N lines format");
-  assert.match(rendered, /\[truncated\]/, "truncated badge present");
+  assert.match(rendered, /⋯ \+35 lines/, "overflow uses the ⋯ +N lines count row");
+  assert.doesNotMatch(rendered, /\[truncated\]/, "no truncated badge renders");
   runtime.dispose();
 }
 
@@ -387,10 +390,11 @@ function strip(lines) {
     plainTheme,
     makeCtx({ path: "big.txt" }),
   );
-  const rendered = strip(result.render(80));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const rendered = strip(result.render(160));
   assert.match(rendered, /50 of 500 lines/, "byte-truncated summary shows correct counts");
   assert.match(rendered, /continue at offset 51/, "byte-truncated summary shows next offset");
-  assert.match(rendered, /\[truncated\]/, "truncated badge present");
+  assert.doesNotMatch(rendered, /\[truncated\]/, "no truncated badge renders");
   assert.doesNotMatch(rendered, /Showing lines/, "byte-limit hint stripped from content");
   runtime.dispose();
 }

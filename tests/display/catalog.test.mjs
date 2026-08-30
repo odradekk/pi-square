@@ -32,6 +32,7 @@ const {
   LAYOUT_REGULAR_MAX_COLUMNS,
   MOTION_FULL_INTERVAL_MS,
   MOTION_REDUCED_INTERVAL_MS,
+  RUNNING_PULSE_PERIOD_MS,
   OPERATIONAL_LIFECYCLES,
   OPERATIONAL_QUALIFIERS,
   BULLET_MARKER,
@@ -184,14 +185,14 @@ assert.ok(
 // ── Default values match plan ────────────────────────────────────────
 
 assert.equal(DEFAULT_DISPLAY_POLICY.resultMode, "preview");
-assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 9);
+assert.equal(DEFAULT_DISPLAY_POLICY.previewLines, 5);
 assert.equal(DEFAULT_DISPLAY_POLICY.expandedMaxLines, 4_000);
-assert.equal(DEFAULT_DISPLAY_POLICY.showMetadata, true);
+assert.equal(DEFAULT_DISPLAY_POLICY.showMetadata, false);
 assert.equal(DEFAULT_DISPLAY_POLICY.showDuration, true);
 assert.equal(DEFAULT_DISPLAY_POLICY.wordWrap, true);
 assert.equal(DEFAULT_DISPLAY_POLICY.diffView, "unified");
 assert.equal(DEFAULT_DISPLAY_POLICY.diffSplitMinWidth, 120);
-assert.equal(DEFAULT_DISPLAY_POLICY.diffCollapsedLines, 24);
+assert.equal(DEFAULT_DISPLAY_POLICY.diffCollapsedLines, 12);
 assert.equal(DEFAULT_DISPLAY_MOTION, "full");
 
 // ── Policy fields exhaustive ─────────────────────────────────────────
@@ -213,6 +214,7 @@ assert.equal(LAYOUT_COMPACT_MAX_COLUMNS, 63);
 assert.equal(LAYOUT_REGULAR_MAX_COLUMNS, 99);
 assert.equal(MOTION_FULL_INTERVAL_MS, 120);
 assert.equal(MOTION_REDUCED_INTERVAL_MS, 1_000);
+assert.equal(RUNNING_PULSE_PERIOD_MS, 1_600);
 
 // ── Six families ─────────────────────────────────────────────────────
 

@@ -259,7 +259,7 @@ function newRuntime() {
   assert.match(expandedText, /src\//, "expanded shows directory with trailing slash");
   assert.ok(!expandedText.includes("Entries"), "a lone Entries section draws no title rule (C9)");
   assert.ok(!expandedText.includes("DIRECTORY"), "expanded prunes the restating DIRECTORY section (C8)");
-  assert.match(expandedText, /^✓ List \./, "expanded header target shows the directory");
+  assert.match(expandedText, new RegExp(`^✓ List \.`), "expanded header target shows the directory after the natural title");
 
   runtime.dispose();
 }

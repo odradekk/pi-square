@@ -431,10 +431,45 @@ try {
     ctx(),
   );
   const sectionText = stripVTControlCharacters(sectionResult.render(80).join("\n"));
-  assert.match(sectionText, /total=42/, "count metadata visible");
+  // Metadata is opt-in: the default policy renders no key=value row.
+  assert.doesNotMatch(sectionText, /total=42/, "count metadata stays off by default");
   assert.match(sectionText, /output/, "preview text visible");
   // No internal DisplaySection titles leaked (they would show as section headings)
   assert.doesNotMatch(sectionText, /SUMMARY|REQUEST|RESULTS|CODE|OUTPUT/, "internal section titles not exposed through v1 adapter");
+
+  // Explicitly enabled metadata renders as one muted key=value row.
+  const metaConfig = structuredClone(DEFAULT_CONFIG);
+  metaConfig.display.agent = { path: "/tmp/adapter-bridge-test.json", config: { defaults: { showMetadata: true } } };
+  const runtimeMeta = new DisplayRuntime(metaConfig, { environment: { isTTY: false, test: true } });
+  installGlobalDisplayRuntime(runtimeMeta);
+  const metaTool = makeTool("section_test_meta");
+  decorateToolForDisplay(metaTool, {
+    version: 1,
+    title: "Section Tool",
+    family: "filesystem",
+    fields: [
+      { kind: "count", source: "details", path: ["total"], phase: "result" },
+      { kind: "preview", source: "result", path: ["text"], phase: "result" },
+    ],
+  });
+  const metaResult = metaTool.renderResult(
+    { content: [{ type: "text", text: "output" }], details: { total: 42 } },
+    { expanded: true, isPartial: false },
+    plainTheme,
+    ctx(),
+  );
+  const metaLines = metaResult.render(80).map((line) => stripVTControlCharacters(line));
+  assert.equal(
+    metaLines.filter((line) => line.includes("total=42")).length,
+    1,
+    "explicitly enabled count metadata renders exactly one row",
+  );
+  assert.match(
+    metaLines.find((line) => line.includes("total=42")) ?? "",
+    /^ {2}total=42/,
+    "the metadata row is an indented key=value row",
+  );
+  runtimeMeta.dispose();
 
   runtime11.dispose();
 

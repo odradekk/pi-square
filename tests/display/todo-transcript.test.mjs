@@ -71,7 +71,8 @@ const DETAILS = {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "list" }, DETAILS, { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   // Completed → ✓, in-progress/current → ●, pending → ○
   assert.match(text, /✓\s+1\s+Explore codebase/, "completed task shows ✓ glyph");
   assert.match(text, /●\s+2\s+Write tests/, "in-progress/current task shows ● glyph");
@@ -90,7 +91,8 @@ const DETAILS = {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "set", todos: [{ text: "A" }] }, DETAILS, { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  // Wide-tier column so the full summary fits beside the natural title.
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.ok(!text.includes("ACTION"), "no ACTION section");
   assert.ok(!text.includes("SUMMARY"), "no SUMMARY section");
   assert.doesNotMatch(text, /\baction=/, "no action= metadata row");
@@ -107,7 +109,7 @@ const DETAILS = {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const result = renderResult(decorated, { action: "list" }, DETAILS, { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.ok(!text.includes("PERSISTENCE"), "no PERSISTENCE section");
   assert.match(text, /✓\s+1\s+Explore codebase/, "task records still render");
   assert.match(text, /1 of 3 done/, "summary row shows counts");
@@ -122,12 +124,12 @@ const DETAILS = {
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const args = { action: "check", id: "todo-2", ids: ["todo-2"], advance: true };
   const result = renderResult(decorated, args, { ...DETAILS, action: "check" }, { expanded: true });
-  const text = stripVTControlCharacters(result.render(100).join("\n"));
+  const text = stripVTControlCharacters(result.render(160).join("\n"));
   assert.doesNotMatch(text, /\baction=/, "no action= metadata");
   assert.doesNotMatch(text, /\bid=/, "no id= metadata");
   assert.doesNotMatch(text, /\badvance=/, "no advance= metadata");
-  // The action word is still visible as the header target instead.
-  assert.match(text.split("\n")[0], /Tasks check/, "header target states the action");
+  // The action word is still visible as the header target after the natural  // title instead.
+  assert.match(text.split("\n")[0], new RegExp(`● Tasks check`), "header target states the action");
 
   runtime.dispose();
 }
@@ -289,7 +291,7 @@ const DETAILS = {
     const result = renderResult(decorated, args, details, { expanded: true });
     const text = stripVTControlCharacters(result.render(80).join("\n"));
     assert.match(text, /^●/, `${opName} renders the bullet marker`);
-    assert.match(text.split("\n")[0], new RegExp(`Tasks ${args.action}`), `${opName} shows the action as the header target`);
+    assert.match(text.split("\n")[0], new RegExp(`● Tasks ${args.action}`), `${opName} shows the action as the header target after the natural title`);
   }
   runtime.dispose();
 }

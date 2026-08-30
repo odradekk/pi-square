@@ -260,7 +260,7 @@ test("collapsed notification keeps the warning marker and no payload", () => {
     { expanded: false },
     plainTheme,
   ), 80).join("\n");
-  assert.match(collapsed, /Subagent worker/, "the run still completes under the success shell");
+  assert.match(collapsed, /Subagent\s+worker/, "the run still completes under the success shell");
   assert.match(collapsed, /anchored refusal/, "the collapsed summary mentions the refusal");
   assert.doesNotMatch(collapsed, /E_RANGE_STALE|remove_from|private/, "the collapsed entry stays bounded and payload-free");
 });

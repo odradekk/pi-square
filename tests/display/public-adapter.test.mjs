@@ -97,7 +97,8 @@ try {
     context(args, state),
   ).render(80).join("\n");
   assert.match(renderedResult, /line one/);
-  assert.match(renderedResult, /items=2/);
+  // Metadata is opt-in: the default policy renders no key=value row.
+  assert.doesNotMatch(renderedResult, /items=2/, "count metadata stays off by default");
   let resultGetterRan = false;
   const accessorResult = { details: { count: 0 } };
   Object.defineProperty(accessorResult, "content", { enumerable: true, get() { resultGetterRan = true; return []; } });
@@ -116,6 +117,26 @@ try {
   assert.equal(queued.renderShell, "self", "runtime replacement must reactivate declared adapters on the same tool object");
   runtime2.dispose();
   assert.equal(queued.renderResult, replacement);
+
+  // Explicitly enabled metadata renders as one key=value row.
+  const metaConfig = structuredClone(DEFAULT_CONFIG);
+  metaConfig.display.agent = { path: "/tmp/public-adapter-test.json", config: { defaults: { showMetadata: true } } };
+  const runtimeMeta = new DisplayRuntime(metaConfig, { environment: { isTTY: false, test: true } });
+  installGlobalDisplayRuntime(runtimeMeta);
+  const metaTool = tool("third_party_meta");
+  decorateToolForDisplay(metaTool, adapter);
+  const metaLines = metaTool.renderResult(
+    { content: [{ type: "text", text: "line one\nline two" }], details: { count: 2 } },
+    { expanded: true, isPartial: false },
+    theme,
+    context(args, state),
+  ).render(80);
+  assert.equal(
+    metaLines.filter((line) => line.includes("items=2")).length,
+    1,
+    "explicitly enabled count metadata renders exactly one row",
+  );
+  runtimeMeta.dispose();
 
   clean();
   const originalCall = () => ({ render: () => ["native call"], invalidate() {} });

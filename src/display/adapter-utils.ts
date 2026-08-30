@@ -46,11 +46,11 @@ export function asRecord(value: unknown): UnknownRecord {
 }
 
 /**
- * Mutation family (C4 revision): the only tools whose collapsed entries keep
- * a bounded diff/preview body below the single row — edit, replace, and
- * write. Anchored replace is covered so anchored editing keeps
- * its diff-forward review experience. Every other tool's collapsed entry is
- * exactly one row; its payload is visible only when expanded.
+ * Mutation family: the only tools whose collapsed entries keep a bounded
+ * evidence body below the single row — edit, replace, and write. Anchored
+ * replace keeps the strictest shape: its body is the authoritative diff only.
+ * Every other tool's collapsed entry is exactly one row; its evidence is
+ * visible only when expanded.
  */
 export const MUTATION_FAMILY_TOOLS: ReadonlySet<string> = new Set([
   "edit",
@@ -112,6 +112,28 @@ export function composeInternalSummary(
   const args = asRecord(argsValue);
   const counts = asRecord(details.counts);
   const page = asRecord(details.page);
+
+  if (name === "replace") {
+    const status = stringOf(details.status)?.toLowerCase();
+    if (status === "warning") {
+      const code = stringOf(details.errorCode);
+      if (code === "E_RANGE_STALE") return "Nothing was modified · stale range";
+      return "Nothing was modified · replace refused";
+    }
+    const metrics = asRecord(details.metrics);
+    const classification = stringOf(metrics.classification);
+    if (classification === "noop") return "No changes";
+    const attempted = numberOf(metrics.edits_attempted);
+    if (attempted !== undefined) {
+      const ranges = `${attempted} ${attempted === 1 ? "range" : "ranges"} replaced`;
+      const added = numberOf(metrics.added_lines);
+      const removed = numberOf(metrics.removed_lines);
+      const changes = added !== undefined || removed !== undefined
+        ? ` · +${added ?? 0}/-${removed ?? 0} lines`
+        : "";
+      return `${ranges}${changes}`;
+    }
+  }
 
   if (name === "todo" && numberOf(counts.total) !== undefined) {
     const parts = [`${counts.total} tasks`];

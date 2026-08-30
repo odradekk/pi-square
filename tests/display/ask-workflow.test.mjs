@@ -126,7 +126,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const call = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
-  assert.match(text.split("\n")[0], /Questions 2 questions/, "call header target states the question count");
+  assert.match(text.split("\n")[0], new RegExp(`^● Questions 2 questions`), "call header target states the question count after the natural title");
   assert.doesNotMatch(text, /Pick a color/, "question text not in the call display");
   assert.doesNotMatch(text, /Pick frameworks/, "question text not in the call display");
 
@@ -188,7 +188,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateInternalTool(makeDef(), () => runtime);
   const running = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const runningText = stripVTControlCharacters(running.render(80).join("\n"));
-  assert.match(runningText.split("\n")[0], /\[needs input\]/, "active wizard carries the needs-input badge");
+  assert.doesNotMatch(runningText.split("\n")[0], /\[needs input\]/, "no needs input badge renders");
   assert.match(runningText, /2 questions/, "question count visible during the wizard");
   const queued = decorated.renderCall(ARGS_2Q, plainTheme, makeCtx(ARGS_2Q, {}, { argsComplete: false, executionStarted: false }));
   const queuedText = stripVTControlCharacters(queued.render(80).join("\n"));
@@ -323,7 +323,7 @@ function renderResult(decorated, args, details, opts = {}) {
   );
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^●/, "progress update shows the running fallback marker");
-  assert.match(text.split("\n")[0], /\[partial\]/, "progress carries the partial badge");
+  assert.doesNotMatch(text.split("\n")[0], /\[partial\]/, "no partial badge renders");
   assert.match(text, /2 questions/, "question count remains visible during progress");
 
   runtime.dispose();

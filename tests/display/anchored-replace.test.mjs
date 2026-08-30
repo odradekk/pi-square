@@ -178,9 +178,13 @@ try {
       showImages: false,
       isError: false,
     },
-  ).render(100).join("\n"));
+  ).render(120).join("\n"));
   assert.match(warningText, /^! Replace/, "anchor refusals render as completed warnings");
-  assert.equal((warningText.match(/Nothing was modified/g) ?? []).length, 1, "the anchored refusal text is rendered once");
+  assert.equal(
+    (warningText.match(/Nothing was modified · stale range/g) ?? []).length,
+    1,
+    "the concise anchored-refusal summary renders once in the header",
+  );
 
   const diffText = stripVTControlCharacters(decoratedReplace.renderResult(
     changed,
