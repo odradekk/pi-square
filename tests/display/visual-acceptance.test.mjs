@@ -412,26 +412,45 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 }
 
-// ── 12b. Bundled themes are a recalibrated matched pair ──────────
+// ── 12b. Bundled themes hold the palette contracts ──────────────
 
 {
   const darkData = JSON.parse(readFileSync(join(root, "themes", "pi-square-theme-dark.json"), "utf8"));
   const lightData = JSON.parse(readFileSync(join(root, "themes", "pi-square-theme-light.json"), "utf8"));
-  // The palette variables are retuned as a pair; every value stays a hex color.
-  for (const [name, themeData] of [["dark", darkData], ["light", lightData]]) {
+  const pair = [["dark", darkData], ["light", lightData]];
+
+  const channel = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const luminance = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => channel(parseInt(hex.slice(i, i + 2), 16) / 255));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  for (const [name, themeData] of pair) {
     for (const [variable, value] of Object.entries(themeData.vars)) {
       assert.match(value, /^#[0-9a-fA-F]{6}$/, `${name} theme var ${variable} is a hex color`);
     }
-  }
-  // The accent family is retained in both themes (terracotta hue ~18-24°).
-  for (const themeData of [darkData, lightData]) {
-    for (const variable of ["accent", "accentStrong"]) {
-      const hex = themeData.vars[variable];
-      const red = parseInt(hex.slice(1, 3), 16);
-      const green = parseInt(hex.slice(3, 5), 16);
-      const blue = parseInt(hex.slice(5, 7), 16);
-      assert.ok(red > green && red > blue, `${variable} keeps a warm terracotta family`);
-    }
+    const v = themeData.vars;
+    // The strong accent must actually be stronger than the base accent against
+    // the theme's own background, in both variants.
+    assert.ok(
+      contrast(v.accentStrong, v.bgBase) > contrast(v.accent, v.bgBase),
+      `${name} accentStrong outranks accent`,
+    );
+    // Success and error stay separable by luminance alone, so red/green color
+    // vision deficiency keeps a second channel beyond hue.
+    const [hi, lo] = [luminance(v.success), luminance(v.error)].sort((x, y) => y - x);
+    assert.ok((hi + 0.05) / (lo + 0.05) >= 1.3, `${name} separates success and error by luminance`);
+    // Hue marks state and identity, never row decoration: the success and error
+    // row backgrounds resolve to the same neutral surface as the pending one.
+    assert.equal(themeData.colors.toolSuccessBg, themeData.colors.toolPendingBg, `${name} success rows stay neutral`);
+    assert.equal(themeData.colors.toolErrorBg, themeData.colors.toolPendingBg, `${name} error rows stay neutral`);
+    // Keywords and strings are the two syntax classes that must never collapse
+    // into one tone; they are the primary scanning boundaries in a code block.
+    assert.notEqual(themeData.colors.syntaxKeyword, themeData.colors.syntaxString, `${name} separates keywords from strings`);
   }
 }
 
@@ -705,7 +724,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 }
 
-// ── 20. Title and target render in neutral tones (state-only hue) ──
+// ── 20. Two-level hue: title carries identity, target stays neutral ──
 
 {
   const description = {
@@ -717,18 +736,18 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
     target: "npm test",
     durationMs: 42,
   };
-  // The dark theme maps toolTitle → accentStrong. The component styles the
-  // title with the text token (neutral), the target with muted.
+  // The component styles the title with the toolTitle token (identity hue)
+  // and the target with muted, so hue separates identity from content.
   const header = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, darkTheme, { expanded: false }).render(120)[0];
   const plain = stripVTControlCharacters(header);
   assert.match(plain, /Bash/, "title present");
   assert.match(plain, /npm test/, "target present");
-  // No accent (state) tone is applied to title or target, while the marker
-  // still carries its lifecycle color. Expectations derive from the theme so
-  // the assertions hold in truecolor and 256-color environments alike.
+  // The marker keeps its lifecycle color, the title takes the identity token,
+  // and the target stays neutral. Expectations derive from the theme so the
+  // assertions hold in truecolor and 256-color environments alike.
   assert.ok(header.includes(darkTheme.fg("success", "\u2713")), "marker uses the success state tone");
-  assert.ok(!header.includes(darkTheme.fg("toolTitle", "Bash")), "title avoids the accent tone");
-  assert.ok(!header.includes(darkTheme.fg("accent", "npm test")), "target avoids the accent tone");
+  assert.ok(header.includes(darkTheme.fg("toolTitle", darkTheme.bold("Bash"))), "title carries the identity tone");
+  assert.ok(header.includes(darkTheme.fg("muted", "npm test")), "target stays neutral");
 }
 
 console.log("visual acceptance tests: OK");
