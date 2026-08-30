@@ -8,7 +8,8 @@ import jiti from "jiti";
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
-const { loadProjectHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { getServed } = await load("../../src/anchored-edit/served.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 const { __testables } = await load("../../src/subagents/session.ts");
@@ -38,10 +39,13 @@ mkdirSync(workspace, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
+const sessionDir = join(workspace, ".test-session");
 const ctx = { cwd: workspace };
+const storeDir = anchoredStoreDir(sessionDir, workspace);
+const openStore = (owner) => loadAnchoredHashStore(storeDir, owner);
 
 async function childReplace(owner) {
-  return createChildAnchoredReplaceTool(workspace, owner);
+  return createChildAnchoredReplaceTool(workspace, owner, sessionDir);
 }
 
 try {
@@ -51,7 +55,7 @@ try {
   // The child editing tool is exactly replace (#187: revert and the undo store
   // are gone), carries the parent's schema, and is renderer-free so child tool
   // construction needs no display runtime.
-  const replace = createChildAnchoredReplaceTool(workspace, CHILD_ONE);
+  const replace = createChildAnchoredReplaceTool(workspace, CHILD_ONE, sessionDir);
   assert.equal(replace.name, "replace", "the child editing tool is the anchored replace");
   assert.equal(replace.renderShell, undefined, "child replace carries no pi-square display shell");
   assert.equal(replace.renderCall, undefined, "child replace stays renderer-free");
@@ -62,7 +66,7 @@ try {
   assert.deepEqual(replace.parameters.required, ["remove_from", "remove_to", "replacement_text"]);
 
   // A child editing a region it read itself succeeds.
-  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
+  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir);
   const readResult = await childRead.execute("child-read", { path: "source.txt" }, undefined, undefined, ctx);
   const anchors = readRows(readResult.content).map((row) => row.hash);
   const ownRegion = await replace.execute(
@@ -77,20 +81,20 @@ try {
   // owner; the parent's partition is not credited with the fresh anchor.
   const freshAnchor = ownRegion.details.diff.match(/([A-Za-z0-9]{3})│BETA2/)?.[1];
   assert.ok(freshAnchor, "the child replace carries a fresh anchor for the changed line");
-  const childServedRows = getServed(await loadProjectHashStore(workspace, CHILD_ONE), source);
+  const childServedRows = getServed(await openStore(CHILD_ONE), source);
   assert.ok(childServedRows?.has(freshAnchor), "the child replace records post-edit rows under the child owner");
-  const parentServedRows = getServed(await loadProjectHashStore(workspace, PARENT_OWNER), source);
+  const parentServedRows = getServed(await openStore(PARENT_OWNER), source);
   assert.ok(!parentServedRows?.has(freshAnchor), "the parent partition is not credited with the child's fresh anchor");
 
   // A child editing a region only the parent read is refused with the
   // recoverable stale-range code: the parent read serves rows under its own
   // owner only, and the child's replace always verifies against its own record.
   writeFileSync(source, "alpha\nbeta\ngamma\ndelta\n");
-  const parentRead = createChildAnchoredReadTool(workspace, PARENT_OWNER);
+  const parentRead = createChildAnchoredReadTool(workspace, PARENT_OWNER, sessionDir);
   const parentResult = await parentRead.execute("parent-read", { path: "source.txt" }, undefined, undefined, ctx);
   const parentAnchors = readRows(parentResult.content).map((row) => row.hash);
 
-  const childTwoReplace = createChildAnchoredReplaceTool(workspace, CHILD_TWO);
+  const childTwoReplace = createChildAnchoredReplaceTool(workspace, CHILD_TWO, sessionDir);
   const refused = await childTwoReplace.execute(
     "child-two",
     { path: "source.txt", remove_from: parentAnchors[1], remove_to: parentAnchors[2], replacement_text: "BETA2" },
@@ -103,7 +107,7 @@ try {
 
   // The refusal made the current range served for that child, so its immediate
   // retry with the same anchors is not refused again.
-  const servedAfterRefusal = getServed(await loadProjectHashStore(workspace, CHILD_TWO), source);
+  const servedAfterRefusal = getServed(await openStore(CHILD_TWO), source);
   assert.ok(servedAfterRefusal && servedAfterRefusal.size > 0, "the refusal serves the current range under the child");
   const retry = await childTwoReplace.execute(
     "child-two-retry",
@@ -117,10 +121,10 @@ try {
   // makes a first child's edit legal.
   const other = join(workspace, "other.txt");
   writeFileSync(other, "one\ntwo\nthree\n");
-  const thirdRead = createChildAnchoredReadTool(workspace, CHILD_TWO);
+  const thirdRead = createChildAnchoredReadTool(workspace, CHILD_TWO, sessionDir);
   const thirdReadResult = await thirdRead.execute("third-read", { path: "other.txt" }, undefined, undefined, ctx);
   const thirdAnchors = readRows(thirdReadResult.content).map((row) => row.hash);
-  const childOneAgain = createChildAnchoredReplaceTool(workspace, CHILD_ONE);
+  const childOneAgain = createChildAnchoredReplaceTool(workspace, CHILD_ONE, sessionDir);
   const thirdRefused = await childOneAgain.execute(
     "child-one",
     { path: "other.txt", remove_from: thirdAnchors[1], remove_to: thirdAnchors[2], replacement_text: "TWO" },
@@ -135,8 +139,8 @@ try {
   // anchors stay recoverable safety refusals rather than tool failures.
   const externalFile = join(root, "external-edit.txt");
   writeFileSync(externalFile, "ext-alpha\next-beta\next-gamma\n");
-  const externalBlind = createChildAnchoredReplaceTool(workspace, CHILD_TWO);
-  const parentExternalRead = createChildAnchoredReadTool(workspace, PARENT_OWNER);
+  const externalBlind = createChildAnchoredReplaceTool(workspace, CHILD_TWO, sessionDir);
+  const parentExternalRead = createChildAnchoredReadTool(workspace, PARENT_OWNER, sessionDir);
   const parentExternalRows = readRows(
     (await parentExternalRead.execute("parent-external-read", { path: "../external-edit.txt" }, undefined, undefined, ctx)).content,
   );
@@ -154,7 +158,7 @@ try {
   assert.match(textOf(blindRefusal.content), /fresh anchors|Current range|Call read/i, "the refusal carries recoverable feedback");
   assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\next-beta\next-gamma\n", "the external file is untouched by the refusal");
 
-  const childExternalRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
+  const childExternalRead = createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir);
   const childExternalRows = readRows(
     (await childExternalRead.execute("child-external-read", { path: "../external-edit.txt" }, undefined, undefined, ctx)).content,
   );
@@ -167,7 +171,7 @@ try {
   assert.equal(externalEdit.details?.status, undefined, "a child editing an external range it read itself succeeds");
   assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\nEDITED\next-gamma\n", "the external file changed as intended");
 
-  const externalServed = getServed(await loadProjectHashStore(workspace, CHILD_ONE), realpathSync(externalFile));
+  const externalServed = getServed(await openStore(CHILD_ONE), realpathSync(externalFile));
   assert.ok(externalServed && externalServed.size > 0, "the external child replace records served rows in the initiating workspace under the child owner");
 
   // A stale external anchor is a recoverable warning with fresh rows.
@@ -223,6 +227,7 @@ try {
     builtInTools: ["read", "write", "edit"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(replaced, true, "a writable child that declares edit replaces the capability");
   assert.deepEqual(
@@ -237,6 +242,7 @@ try {
     builtInTools: ["read", "ls"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(readOnlyReplaced, false, "read-only roles receive no editing capability");
   assert.equal(readOnly.definitions.length, 0, "read-only roles receive no anchored tools");
@@ -247,6 +253,7 @@ try {
     builtInTools: ["read", "write"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(writeOnlyReplaced, false, "a child without the edit capability receives no anchored edit tools");
 
@@ -256,6 +263,7 @@ try {
     builtInTools: ["read", "write", "edit"],
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(disabledReplaced, false, "disabled anchored editing adds no anchored tools");
 
@@ -285,6 +293,7 @@ try {
     builtInTools: generalist.builtInTools,
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(resumedOnReplaced, true, "resume with anchored editing on re-maps the edit capability to the anchored replace");
   const resumedOff = { definitions: [] };
@@ -293,6 +302,7 @@ try {
     builtInTools: generalist.builtInTools,
     cwd: workspace,
     owner: CHILD_ONE,
+    sessionDir,
   });
   assert.equal(resumedOffReplaced, false, "resume with anchored editing off keeps Pi's built-in edit and no anchored tools");
 

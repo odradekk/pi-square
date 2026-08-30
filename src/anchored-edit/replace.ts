@@ -1,20 +1,9 @@
-import { Markdown, Text } from "@earendil-works/pi-tui";
-import type {
-  ExtensionAPI,
-  ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { constants } from "fs";
 import {
-  genDiff,
-  restoreEndings,
   type LineEnding,
 } from "./replace-diff";
-import { readNormFile, safeSnapId } from "./file-reader";
-import { normReq } from "./replace-normalize";
-import { isRec, rejectUnknownFields, abortIf, makePrepareArguments } from "./utils";
-import { resolveTarget, writeAtomic } from "./fs-write";
+import { readNormFile } from "./file-reader";
+import { isRec, rejectUnknownFields } from "./utils";
 import { applyEdit,
   lineHashes,
   resEdit,
@@ -25,27 +14,11 @@ import { applyEdit,
   type HEdit,
   type NEdit,
 } from "./hashline";
-import { toCwd } from "./paths";
 import {
-  buildChanged,
-  buildNoop,
-  type RMeta,
   type RMetrics,
 } from "./replace-response";
-import {
-  buildAppliedText,
-  mkMdTheme,
-  fmtCall,
-  fmtResultMd,
-  getPreviewInput,
-  getResultText,
-  isApplied,
-  type RPreview,
-  type RRState,
-} from "./replace-render";
-import { loadP, loadGuide } from "./prompts";
-import { loadHashStore, findSnapshotPaths, type HashStore } from "./hash-store";
-import { getServed, recordServedSafe, recordServedDiffSafe } from "./served";
+import { findSnapshotPaths, type HashStore } from "./hash-store";
+import { getServed, recordServedSafe } from "./served";
 
 const replacementTextSchema = Type.String({
   description:
@@ -105,8 +78,6 @@ interface PipelineResult {
   totalRemovedLines: number;
 }
 
-const PREVIEW_DEBOUNCE_MS = 150;
-
 const ROOT_KS = new Set(["path", "remove_from", "remove_to", "replacement_text"]);
 
 export function assertReq(request: unknown): asserts request is ReqParams;
@@ -145,7 +116,7 @@ export function assertReq(
 
 export async function resolveMissingPath(
   request: Record<string, unknown>,
-  store?: HashStore,
+  store: HashStore,
 ): Promise<{ path: string; warning: string } | undefined> {
   if (Object.hasOwn(request, "path")) return undefined;
   const from = request.remove_from;
@@ -159,13 +130,7 @@ export async function resolveMissingPath(
       return undefined;
     }
   }
-  let hashStore: HashStore;
-  try {
-    hashStore = store ?? await loadHashStore();
-  } catch {
-    return undefined;
-  }
-  const matches = findSnapshotPaths(hashStore, hashes);
+  const matches = findSnapshotPaths(store, hashes);
   if (matches.length === 1) {
     return {
       path: matches[0]!,
@@ -183,7 +148,8 @@ export async function resolveMissingPath(
 export interface ExecPipelineOptions {
   accessMode?: number;
   signal?: AbortSignal;
-  store?: HashStore;
+  /** Explicit anchor store; required so no call site falls back to an implicit global store. */
+  store: HashStore;
   noPersist?: boolean;
   /**
    * Forces the range-served verification even when the calling owner has no
@@ -236,7 +202,7 @@ function countLineChanges(
 export async function execPipeline(
   params: ReqParams,
   cwd: string,
-  options?: ExecPipelineOptions,
+  options: ExecPipelineOptions,
 ): Promise<PipelineResult> {
 
   const path = params.path;
@@ -251,13 +217,13 @@ export async function execPipeline(
     editWarnings,
   );
 
-  const hashStore = options?.store ?? await loadHashStore();
+  const hashStore = options.store;
   const { normalized: originalNormalized, bom, originalEnding, fileHashes: originalHashes, hadUtf8DecodeErrors, absolutePath } = await readNormFile(
-    path, cwd, { signal: options?.signal, accessMode: options?.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: options?.noPersist },
+    path, cwd, { signal: options.signal, accessMode: options.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: options.noPersist },
   );
 
   const servedRow = await getServed(hashStore, absolutePath);
-  const served = options?.requireServed === true && servedRow === undefined
+  const served = options.requireServed === true && servedRow === undefined
     ? new Set<string>()
     : servedRow;
   let anchorResult: ReturnType<typeof applyEdit>;
@@ -265,13 +231,13 @@ export async function execPipeline(
     anchorResult = applyEdit(
       originalNormalized,
       edit,
-      options?.signal,
+      options.signal,
       originalHashes,
       path,
       served,
     );
   } catch (error) {
-    if (options?.noPersist !== true) {
+    if (options.noPersist !== true) {
       if (error instanceof RangeStaleError) {
         await recordServedSafe(absolutePath, error.rangeHashes, "range-stale feedback", hashStore);
       } else if (error instanceof AnchorMismatchError) {
@@ -284,7 +250,7 @@ export async function execPipeline(
   const result = anchorResult.content;
   const isNoop = result === originalNormalized;
 
-  const noPersist = options?.noPersist;
+  const noPersist = options.noPersist;
   const removedHashes = isNoop
     ? undefined
     : collectRemovedHashes(edit, originalHashes);
@@ -318,269 +284,3 @@ export async function execPipeline(
   };
 }
 
-export async function compPreview(
-  request: unknown,
-  cwd: string,
-): Promise<RPreview> {
-  try {
-    const normalized = normReq(request);
-    assertReq(normalized);
-    const { path, originalNormalized, result, resultHashes, originalHashes } = await execPipeline(
-      normalized,
-      cwd,
-      { accessMode: constants.R_OK, noPersist: true },
-    );
-    if (originalNormalized === result) {
-      return {
-        error: `No changes made to ${path}. The edit produced identical content.`,
-      };
-    }
-
-    return { diff: genDiff(originalNormalized, result, 4, resultHashes, originalHashes).diff };
-  } catch (error: unknown) {
-    return { error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-type ToolDef = ToolDefinition<
-  any,
-  ReplaceDetails,
-  RRState
-> & { renderShell?: "default" | "self" };
-
-export function reuseText(context: any, content: string): Text {
-  const t = context.lastComponent instanceof Text
-    ? context.lastComponent
-    : new Text("", 0, 0);
-  t.setText(content);
-  return t;
-}
-
-export function reuseMarkdown(context: any, content: string, theme: any): Markdown {
-  const m = context.lastComponent instanceof Markdown
-    ? context.lastComponent
-    : new Markdown("", 0, 0, mkMdTheme(theme));
-  m.setText(content);
-  return m;
-}
-
-export function buildToolDef(): ToolDef {
-  const E_DESC = loadP("./prompts/replace.md");
-  const E_SNIPPET = loadP("./prompts/replace-snippet.md");
-  const E_GUIDE = loadGuide("./prompts/replace-guidelines.md");
-
-  const parameters = editToolSchema;
-  return {
-    name: "replace",
-    label: "Replace",
-    description: E_DESC,
-    parameters,
-    promptSnippet: E_SNIPPET,
-    promptGuidelines: E_GUIDE,
-    prepareArguments: makePrepareArguments(),
-    renderShell: "default",
-    renderCall(args, theme, context) {
-      const previewInput = getPreviewInput(args);
-      const cancelPendingPreview = () => {
-        if (context.state.previewTimer) {
-          clearTimeout(context.state.previewTimer);
-          context.state.previewTimer = undefined;
-        }
-      };
-      if (context.executionStarted) {
-        cancelPendingPreview();
-        context.state.argsKey = undefined;
-        context.state.preview = undefined;
-        context.state.previewGeneration =
-          (context.state.previewGeneration ?? 0) + 1;
-      } else if (!context.argsComplete || !previewInput) {
-        cancelPendingPreview();
-        context.state.argsKey = undefined;
-        context.state.preview = undefined;
-        context.state.previewGeneration =
-          (context.state.previewGeneration ?? 0) + 1;
-      } else {
-        const argsKey = JSON.stringify(previewInput);
-        if (context.state.argsKey !== argsKey) {
-          cancelPendingPreview();
-          context.state.argsKey = argsKey;
-          context.state.preview = undefined;
-          const previewGeneration = (context.state.previewGeneration ?? 0) + 1;
-          context.state.previewGeneration = previewGeneration;
-          context.state.previewTimer = setTimeout(() => {
-            context.state.previewTimer = undefined;
-            compPreview(args, context.cwd)
-              .then((preview) => {
-                if (
-                  context.state.argsKey === argsKey &&
-                  context.state.previewGeneration === previewGeneration
-                ) {
-                  context.state.preview = preview;
-                  context.invalidate();
-                }
-              })
-              .catch((err: unknown) => {
-                if (
-                  context.state.argsKey === argsKey &&
-                  context.state.previewGeneration === previewGeneration
-                ) {
-                  context.state.preview = {
-                    error: err instanceof Error ? err.message : String(err),
-                  };
-                  context.invalidate();
-                }
-              });
-          }, PREVIEW_DEBOUNCE_MS);
-        }
-      }
-      const text =
-        (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-      text.setText(
-        fmtCall(
-          getPreviewInput(args) ?? undefined,
-          context.state as RRState,
-          context.expanded,
-          theme,
-        ),
-      );
-      return text;
-    },
-
-    renderResult(result, { isPartial }, theme, context) {
-      if (isPartial) {
-        return reuseText(context, theme.fg("warning", "Editing..."));
-      }
-
-      const typedResult = result as {
-        content?: Array<{ type: string; text?: string }>;
-        details?: ReplaceDetails;
-      };
-      const renderedText = getResultText(typedResult);
-
-      const renderState = context.state as RRState | undefined;
-      if (renderState) {
-        if (renderState.previewTimer) {
-          clearTimeout(renderState.previewTimer);
-          renderState.previewTimer = undefined;
-        }
-        renderState.preview = undefined;
-        renderState.previewGeneration = (renderState.previewGeneration ?? 0) + 1;
-      }
-
-      if (context.isError) {
-        return renderedText
-          ? reuseText(context, `\n${theme.fg("error", renderedText)}`)
-          : new Text("", 0, 0);
-      }
-
-      if (isApplied(typedResult.details)) {
-        const appliedText = buildAppliedText(renderedText, typedResult.details, theme);
-        return appliedText ? reuseText(context, appliedText) : new Text("", 0, 0);
-      }
-
-      if (!renderedText) return new Text("", 0, 0);
-      return reuseMarkdown(context, fmtResultMd(renderedText), theme);
-    },
-
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const canonical = normReq(params);
-      const resolution = isRec(canonical) ? await resolveMissingPath(canonical) : undefined;
-      if (resolution && isRec(canonical)) {
-        canonical.path = resolution.path;
-      }
-      assertReq(canonical);
-
-      const normalizedParams = canonical;
-      const path = normalizedParams.path;
-      const absolutePath = toCwd(path, ctx.cwd);
-      const mutationTargetPath = await resolveTarget(absolutePath);
-      return withFileMutationQueue(mutationTargetPath, async () => {
-        abortIf(signal);
-
-        const {
-          originalNormalized,
-          originalHashes,
-          result,
-          bom,
-          originalEnding,
-          hadUtf8DecodeErrors,
-          warnings,
-          noopEdit,
-          firstChangedLine,
-          lastChangedLine,
-          resultHashes,
-          totalAddedLines,
-          totalRemovedLines,
-        } = await execPipeline(
-          normalizedParams,
-          ctx.cwd,
-          { accessMode: constants.R_OK | constants.W_OK, signal },
-        );
-
-        if (resolution) {
-          warnings.unshift(resolution.warning);
-        }
-
-        const editsAttempted = 1;
-        if (originalNormalized === result) {
-          const noopSnapshotId = await safeSnapId(absolutePath, "noop edit");
-          return buildNoop({
-            path,
-            noopEdit,
-            snapshotId: noopSnapshotId,
-            editMeta: {
-              editsAttempted,
-              noopEditsCount: noopEdit ? 1 : 0,
-              addedLines: 0,
-              removedLines: 0,
-            },
-            warnings,
-          });
-        }
-
-        if (hadUtf8DecodeErrors) {
-          warnings.push(
-            "Non-UTF-8 bytes were shown as U+FFFD; this edit rewrote the file as UTF-8.",
-          );
-        }
-
-        abortIf(signal);
-        abortIf(signal);
-        await writeAtomic(
-          absolutePath,
-          bom + restoreEndings(result, originalEnding),
-        );
-        const updatedSnapshotId = await safeSnapId(absolutePath, "post-edit");
-
-        const editMeta: RMeta = {
-          editsAttempted,
-          noopEditsCount: noopEdit ? 1 : 0,
-          firstChangedLine,
-          lastChangedLine,
-          addedLines: totalAddedLines,
-          removedLines: totalRemovedLines,
-        };
-
-        const successInput = {
-          path,
-          originalNormalized,
-          originalHashes,
-          result,
-          resultHashes,
-          warnings,
-          snapshotId: updatedSnapshotId,
-          editMeta,
-        };
-        const changed = buildChanged(successInput);
-        if (changed.details.diff) {
-          await recordServedDiffSafe(mutationTargetPath, changed.details.diff, "post-edit diff");
-        }
-        return changed;
-      });
-    },
-  };
-}
-
-export function regReplace(pi: ExtensionAPI): void {
-  pi.registerTool(buildToolDef());
-}

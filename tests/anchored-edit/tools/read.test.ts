@@ -1,14 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { fmtRegion } from "../../../src/anchored-edit/hashline";
 import { fmtReadPreview } from "../../../src/anchored-edit/read";
-import { useTestHome, withTempFile, setupIntegrationTest } from "../support/fixtures";
+import { withTempFile, setupIntegrationTest } from "../support/fixtures";
 
-const home = useTestHome();
 
 describe("fmtReadPreview", () => {
   it("returns all lines when no offset or limit given", async () => {
     const text = "alpha\nbeta\ngamma\n";
-    const result = await fmtReadPreview(text, {}, undefined, home.testPath);
+    const result = await fmtReadPreview(text, {}, undefined);
     expect(result.text).toContain("│alpha");
     expect(result.text).toContain("│beta");
     expect(result.text).toContain("│gamma");
@@ -16,7 +15,7 @@ describe("fmtReadPreview", () => {
 
   it("hides the terminal newline sentinel from preview output", async () => {
     const text = "alpha\nbeta\n";
-    const result = await fmtReadPreview(text, {}, undefined, home.testPath);
+    const result = await fmtReadPreview(text, {}, undefined);
     expect(result.text).toContain("│alpha");
     expect(result.text).toContain("│beta");
     const lines = result.text.split("\n");
@@ -26,22 +25,22 @@ describe("fmtReadPreview", () => {
 
   it("keeps continuation hints for partial previews", async () => {
     const text = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
-    const result = await fmtReadPreview(text, { limit: 3 }, undefined, home.testPath);
+    const result = await fmtReadPreview(text, { limit: 3 }, undefined);
     expect(result.text).toContain("[Showing lines 1-3 of 10. Use offset=4 to continue.]");
   });
 
   it("reports when offset is beyond end of content", async () => {
     const text = "a\nb\n";
-    const result = await fmtReadPreview(text, { offset: 5 }, undefined, home.testPath);
+    const result = await fmtReadPreview(text, { offset: 5 }, undefined);
     expect(result.text).toContain("Offset 5 is beyond end of file");
   });
 
   it("rejects fractional offsets", async () => {
-    await expect(fmtReadPreview("a\nb\n", { offset: 1.5 } as any, undefined, home.testPath)).rejects.toThrow("positive integer");
+    await expect(fmtReadPreview("a\nb\n", { offset: 1.5 } as any, undefined)).rejects.toThrow("positive integer");
   });
 
   it("rejects non-positive limits", async () => {
-    await expect(fmtReadPreview("a\nb\n", { limit: 0 } as any, undefined, home.testPath)).rejects.toThrow("positive integer");
+    await expect(fmtReadPreview("a\nb\n", { limit: 0 } as any, undefined)).rejects.toThrow("positive integer");
   });
 });
 
@@ -57,14 +56,16 @@ describe("fmtRegion", () => {
   });
 });
 
-describe("read tool — snapshot failure", () => {
-  it("succeeds and omits snapshotId when the snapshot computation fails", async () => {
+describe("read tool — store resilience", () => {
+  it("succeeds when snapshot persistence fails", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\n", async ({ cwd }) => {
       const { ctx, readTool } = setupIntegrationTest(cwd);
-      const fileReader = await import("../../../src/anchored-edit/file-reader");
+      const hashStore = await import("../../../src/anchored-edit/hash-store");
       const spy = vi
-        .spyOn(fileReader, "safeSnapId")
-        .mockResolvedValue(undefined);
+        .spyOn(hashStore, "upsertSnapshot")
+        .mockImplementation(() => {
+          throw new Error("store down");
+        });
       try {
         const result = await readTool.execute(
           "r1",
@@ -74,7 +75,7 @@ describe("read tool — snapshot failure", () => {
           ctx,
         );
         expect(result.content[0].text).toContain("│aaa");
-        expect(result.details.snapshotId).toBeUndefined();
+        expect(result.content[0].text).toContain("│bbb");
       } finally {
         spy.mockRestore();
       }
@@ -82,18 +83,31 @@ describe("read tool — snapshot failure", () => {
   });
 });
 
-describe("read tool — file_path alias", () => {
-  it("reads a file via the file_path alias", async () => {
+
+describe("read tool — store resilience", () => {
+  it("succeeds when snapshot persistence fails", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\n", async ({ cwd }) => {
       const { ctx, readTool } = setupIntegrationTest(cwd);
-      const result = await readTool.execute(
-        "r1",
-        { file_path: "sample.ts" },
-        undefined,
-        undefined,
-        ctx,
-      );
-      expect(result.content[0].text).toContain("│aaa");
+      const hashStore = await import("../../../src/anchored-edit/hash-store");
+      const spy = vi
+        .spyOn(hashStore, "upsertSnapshot")
+        .mockImplementation(() => {
+          throw new Error("store down");
+        });
+      try {
+        const result = await readTool.execute(
+          "r1",
+          { path: "sample.ts" },
+          undefined,
+          undefined,
+          ctx,
+        );
+        expect(result.content[0].text).toContain("│aaa");
+        expect(result.content[0].text).toContain("│bbb");
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });
+

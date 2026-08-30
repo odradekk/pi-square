@@ -24,8 +24,7 @@ describe("strict hashline tool loop", () => {
         ctx,
       );
 
-      await expect(
-        editTool.execute(
+              const refusal = await editTool.execute(
           "e2",
           {
             path: "sample.ts",
@@ -34,8 +33,9 @@ describe("strict hashline tool loop", () => {
           undefined,
           undefined,
           ctx,
-        ),
-      ).rejects.toThrow(/2 stale anchor.*sample\.ts/);
+        );
+        expect(refusal.details.status).toBe("warning");
+        expect(refusal.content[0].text).toMatch(/stale anchor/i);
 
       const secondRead = await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx);
       const secondText = secondRead.content[0].text as string;

@@ -2,8 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { chmodSync, mkdirSync } from "fs";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import register from "../../../src/anchored-edit/index";
-import { makeFakePiRegistry, withHome } from "../support/fixtures";
+import { setupIntegrationTest, withHome } from "../support/fixtures";
 import { shutdownHashStore } from "../../../src/anchored-edit/hash-store";
 
 const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
@@ -28,15 +27,13 @@ describe.skipIf(isRoot || isWindows)("permission errors", () => {
   });
 
   describe("read tool EACCES", () => {
-    it("throws 'File is not readable' when file has no permissions", async () => {
+    it("propagates the native access failure when file has no permissions", async () => {
       const filePath = join(tempDir, "unreadable.txt");
       writeFileSync(filePath, "secret content", "utf-8");
       chmodSync(filePath, 0o000);
 
       try {
-        const { pi, getTool } = makeFakePiRegistry();
-        register(pi);
-        const readTool = getTool("read");
+        const { ctx, readTool } = setupIntegrationTest(tempDir);
 
         await expect(
           readTool.execute(
@@ -44,9 +41,9 @@ describe.skipIf(isRoot || isWindows)("permission errors", () => {
             { path: filePath },
             undefined,
             undefined,
-            { cwd: tempDir } as any,
+            ctx,
           ),
-        ).rejects.toThrow("File is not readable");
+        ).rejects.toThrow(/EACCES/);
       } finally {
         chmodSync(filePath, 0o644);
       }
@@ -60,9 +57,7 @@ describe.skipIf(isRoot || isWindows)("permission errors", () => {
       chmodSync(filePath, 0o000);
 
       try {
-        const { pi, getTool } = makeFakePiRegistry();
-        register(pi);
-        const editTool = getTool("replace");
+        const { ctx, editTool } = setupIntegrationTest(tempDir);
 
         await expect(
           editTool.execute(
@@ -73,7 +68,7 @@ describe.skipIf(isRoot || isWindows)("permission errors", () => {
             },
             undefined,
             undefined,
-            { cwd: tempDir } as any,
+            ctx,
           ),
         ).rejects.toThrow("File is not writable");
       } finally {

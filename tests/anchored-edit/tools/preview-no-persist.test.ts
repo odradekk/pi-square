@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import { constants } from "node:fs";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { compPreview } from "../../../src/anchored-edit/replace";
-import { loadHashStore, getSnapshot } from "../../../src/anchored-edit/hash-store";
-import { hashStorePath } from "../../../src/anchored-edit/paths";
-import { withTempFile } from "../support/fixtures";
+import { execPipeline } from "../../../src/anchored-edit/replace";
+import { getSnapshot } from "../../../src/anchored-edit/hash-store";
+import { withTempFile, loadTestStore, anchoredStoreFile } from "../support/fixtures";
 
-describe("compPreview no-persist guarantee", () => {
+describe("execPipeline no-persist guarantee", () => {
 
   it("does not persist hypothetical result to hash store", async () => {
     const content = "a\nb\nc\nb\nd\n";
@@ -15,29 +15,33 @@ describe("compPreview no-persist guarantee", () => {
         await (await import("../../../src/anchored-edit/paths")).toCwd("sample.txt", cwd)
       );
 
-      const hashes = await lineHashes(content, absolutePath);
+      const store = await loadTestStore(cwd);
+      try {
+        const hashes = await lineHashes(content, absolutePath, undefined, store);
 
-      const storeBefore = await loadHashStore();
-      const beforeHashes = getSnapshot(storeBefore, absolutePath, content);
-      expect(beforeHashes).toBeDefined();
-      expect(beforeHashes).toEqual(hashes);
-      const bHash = hashes[1]!;
-      const cHash = hashes[2]!;
+        const beforeHashes = getSnapshot(store, absolutePath, content);
+        expect(beforeHashes).toBeDefined();
+        expect(beforeHashes).toEqual(hashes);
+        const bHash = hashes[1]!;
+        const cHash = hashes[2]!;
 
-      const preview = await compPreview(
-        {
-          path: "sample.txt",
-          remove_from: bHash, remove_to: cHash,
-          replacement_text: "B",
-        },
-        cwd,
-      );
-      expect(preview).toHaveProperty("diff");
+        const pipeline = await execPipeline(
+          {
+            path: "sample.txt",
+            remove_from: bHash, remove_to: cHash,
+            replacement_text: "B",
+          },
+          cwd,
+          { accessMode: constants.R_OK, store, noPersist: true },
+        );
+        expect(pipeline.result).toBe("a\nB\nb\nd\n");
 
-      const storeAfter = await loadHashStore();
-      const afterHashes = getSnapshot(storeAfter, absolutePath, content);
-      expect(afterHashes).toBeDefined();
-      expect(afterHashes).toEqual(hashes);
+        const afterHashes = getSnapshot(store, absolutePath, content);
+        expect(afterHashes).toBeDefined();
+        expect(afterHashes).toEqual(hashes);
+      } finally {
+        store.release();
+      }
     });
   });
 
@@ -48,19 +52,24 @@ describe("compPreview no-persist guarantee", () => {
         await (await import("../../../src/anchored-edit/paths")).toCwd("sample.txt", cwd)
       );
 
-      const hashes = await lineHashes(content, absolutePath);
+      const store = await loadTestStore(cwd);
+      try {
+        const hashes = await lineHashes(content, absolutePath, undefined, store);
 
-      await compPreview(
-        {
-          path: "sample.txt",
-          remove_from: hashes[1]!, remove_to: hashes[2]!,
-          replacement_text: "X\nY",
-        },
-        cwd,
-      );
+        await execPipeline(
+          {
+            path: "sample.txt",
+            remove_from: hashes[1]!, remove_to: hashes[2]!,
+            replacement_text: "X\nY",
+          },
+          cwd,
+          { accessMode: constants.R_OK, store, noPersist: true },
+        );
 
-      const store = await loadHashStore();
-      expect(getSnapshot(store, absolutePath, content)).toEqual(hashes);
+        expect(getSnapshot(store, absolutePath, content)).toEqual(hashes);
+      } finally {
+        store.release();
+      }
     });
   });
 
@@ -71,20 +80,26 @@ describe("compPreview no-persist guarantee", () => {
         await (await import("../../../src/anchored-edit/paths")).toCwd("sample.txt", cwd)
       );
 
-      const hashes = await lineHashes(content, absolutePath);
+      const store = await loadTestStore(cwd);
+      try {
+        const hashes = await lineHashes(content, absolutePath, undefined, store);
 
-      const preview = await compPreview(
-        {
-          path: "sample.txt",
-          remove_from: hashes[0]!, remove_to: hashes[2]!,
-          replacement_text: "x",
-        },
-        cwd,
-      );
-      expect(preview).toHaveProperty("diff");
+        const pipeline = await execPipeline(
+          {
+            path: "sample.txt",
+            remove_from: hashes[0]!, remove_to: hashes[2]!,
+            replacement_text: "x",
+          },
+          cwd,
+          { accessMode: constants.R_OK, store, noPersist: true },
+        );
+        expect(pipeline.result).toBeDefined();
 
-      const freshHashes = await lineHashes(content, absolutePath);
-      expect(freshHashes).toEqual(hashes);
+        const freshHashes = await lineHashes(content, absolutePath, undefined, store);
+        expect(freshHashes).toEqual(hashes);
+      } finally {
+        store.release();
+      }
     });
   });
 
@@ -94,25 +109,38 @@ describe("compPreview no-persist guarantee", () => {
       const absolutePath = await (await import("../../../src/anchored-edit/fs-write")).resolveTarget(
         await (await import("../../../src/anchored-edit/paths")).toCwd("sample.txt", cwd)
       );
-      const hashes = await lineHashes(content, absolutePath);
-      const db = new DatabaseSync(hashStorePath(), { defensive: false } as any);
-      db.prepare("UPDATE snapshots SET hashes = ? WHERE path = ?").run('["ZZ", "ZZZZ"]', absolutePath);
-      db.close();
 
-      const preview = await compPreview(
-        {
-          path: "sample.txt",
-          remove_from: hashes[0]!, remove_to: hashes[1]!,
-          replacement_text: "X",
-        },
-        cwd,
-      );
-      expect(preview).toHaveProperty("diff");
+      const store = await loadTestStore(cwd);
+      try {
+        const hashes = await lineHashes(content, absolutePath, undefined, store);
+        store.release();
+        const db = new DatabaseSync(anchoredStoreFile(cwd), { defensive: false } as any);
+        db.prepare("UPDATE snapshots SET hashes = ? WHERE path = ?").run('["ZZ", "ZZZZ"]', absolutePath);
+        db.close();
 
-      const check = new DatabaseSync(hashStorePath(), { defensive: false } as any);
-      const remaining = check.prepare("SELECT COUNT(*) AS n FROM snapshots WHERE path = ?").get(absolutePath) as { n: number };
-      check.close();
-      expect(remaining.n).toBe(1);
+        const previewStore = await loadTestStore(cwd);
+        try {
+          const pipeline = await execPipeline(
+            {
+              path: "sample.txt",
+              remove_from: hashes[0]!, remove_to: hashes[1]!,
+              replacement_text: "X",
+            },
+            cwd,
+            { accessMode: constants.R_OK, store: previewStore, noPersist: true },
+          );
+          expect(pipeline.result).toBeDefined();
+        } finally {
+          previewStore.release();
+        }
+
+        const check = new DatabaseSync(anchoredStoreFile(cwd), { defensive: false } as any);
+        const remaining = check.prepare("SELECT COUNT(*) AS n FROM snapshots WHERE path = ?").get(absolutePath) as { n: number };
+        check.close();
+        expect(remaining.n).toBe(1);
+      } finally {
+        store.release();
+      }
     });
   });
 });

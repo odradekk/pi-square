@@ -48,18 +48,19 @@ describe("snapshotId surface (details-only after W2)", () => {
 
       await writeFile(path, "alpha\nBETA\ngamma\n", "utf-8");
 
-      await expect(
-        editTool.execute(
-          "e1",
-          {
-            path: "sample.ts",
-            remove_from: alphaRef, remove_to: gammaRef, replacement_text: "alpha\nx\ngamma",
-          },
-          undefined,
-          undefined,
-          ctx,
-        ),
-      ).rejects.toThrow(/E_RANGE_STALE/);
+      const refusal = await editTool.execute(
+        "e1",
+        {
+          path: "sample.ts",
+          remove_from: alphaRef, remove_to: gammaRef, replacement_text: "alpha\nx\ngamma",
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refusal.details.status).toBe("warning");
+      expect(refusal.details.errorCode).toMatch(/E_RANGE_STALE|E_STALE_ANCHOR/);
+      expect(refusal.content[0].text).toContain("Nothing was modified");
       expect(await readFile(path, "utf-8")).toBe("alpha\nBETA\ngamma\n");
     });
   });
@@ -111,18 +112,19 @@ describe("snapshotId surface (details-only after W2)", () => {
         ctx,
       );
 
-      await expect(
-        editTool.execute(
-          "e2",
-          {
-            path: "sample.ts",
-            remove_from: betaRef, remove_to: betaRef, replacement_text: "BETA-AGAIN",
-          },
-          undefined,
-          undefined,
-          ctx,
-        ),
-      ).rejects.toThrow(/stale anchor/);
+      const refusal = await editTool.execute(
+        "e2",
+        {
+          path: "sample.ts",
+          remove_from: betaRef, remove_to: betaRef, replacement_text: "BETA-AGAIN",
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refusal.details.status).toBe("warning");
+      expect(refusal.details.errorCode).toBe("E_STALE_ANCHOR");
+      expect(refusal.content[0].text).toContain("Call read() to get fresh anchors");
     });
   });
 });

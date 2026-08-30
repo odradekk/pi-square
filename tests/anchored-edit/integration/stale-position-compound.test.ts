@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { withTempFile, setupIntegrationTest, useTestHome } from "../support/fixtures";
+import { withTempFile, setupIntegrationTest } from "../support/fixtures";
 
-const home = useTestHome();
 
 describe("stale-position compound edits", () => {
   it("rejects stale anchors after a replace", async () => {
@@ -27,7 +26,7 @@ describe("stale-position compound edits", () => {
         ctx,
       );
 
-      const freshHash = (await lineHashes(result.content?.[0]?.text ?? "", home.testPath))?.[4];
+      const freshHash = (await lineHashes(result.content?.[0]?.text ?? ""))?.[4];
       if (freshHash) {
         await editTool.execute(
           "e2",

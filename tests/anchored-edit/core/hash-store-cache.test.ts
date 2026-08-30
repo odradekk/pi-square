@@ -34,8 +34,8 @@ afterAll(async () => {
 
 describe("hash-store — multi-owner cache", () => {
   it("holds a store across an await while another owner opens the same file", async () => {
-    const ownerA = await loadHashStoreAt(storePath, { owner: "A", migrateLegacy: false });
-    await loadHashStoreAt(storePath, { owner: "B", migrateLegacy: false });
+    const ownerA = await loadHashStoreAt(storePath, { owner: "A" });
+    await loadHashStoreAt(storePath, { owner: "B" });
 
     // A's prepared statements must still be usable after B opened the same file.
     upsertSnapshot(ownerA, "/p.ts", contentChecksum("x\n"), splitLines("x\n").length, ["AAA"]);
@@ -45,8 +45,8 @@ describe("hash-store — multi-owner cache", () => {
 
   it("completes concurrent operations under two owners against the same file", async () => {
     const [a, b] = await Promise.all([
-      loadHashStoreAt(storePath, { owner: "A", migrateLegacy: false }),
-      loadHashStoreAt(storePath, { owner: "B", migrateLegacy: false }),
+      loadHashStoreAt(storePath, { owner: "A" }),
+      loadHashStoreAt(storePath, { owner: "B" }),
     ]);
 
     upsertSnapshot(a, "/a.ts", contentChecksum("a\n"), 1, ["AAA"]);
@@ -58,8 +58,8 @@ describe("hash-store — multi-owner cache", () => {
   });
 
   it("reuses the cached database for repeated access under one owner", async () => {
-    const first = await loadHashStoreAt(storePath, { owner: "A", migrateLegacy: false });
-    const second = await loadHashStoreAt(storePath, { owner: "A", migrateLegacy: false });
+    const first = await loadHashStoreAt(storePath, { owner: "A" });
+    const second = await loadHashStoreAt(storePath, { owner: "A" });
 
     expect(second.stmts).toBe(first.stmts);
     first.release();
@@ -68,13 +68,13 @@ describe("hash-store — multi-owner cache", () => {
   });
 
   it("treats a second release of the same handle as a no-op", async () => {
-    const handle = await loadHashStoreAt(storePath, { owner: "A", migrateLegacy: false });
+    const handle = await loadHashStoreAt(storePath, { owner: "A" });
     handle.release();
     handle.release();
     expect(() => handle.release()).not.toThrow();
     expect(openStoreCount()).toBe(1);
 
-    const again = await loadHashStoreAt(storePath, { owner: "A", migrateLegacy: false });
+    const again = await loadHashStoreAt(storePath, { owner: "A" });
     upsertSnapshot(again, "/p.ts", contentChecksum("x\n"), 1, ["AAA"]);
     expect(getSnapshot(again, "/p.ts", "x\n")).toEqual(["AAA"]);
     again.release();
@@ -83,13 +83,13 @@ describe("hash-store — multi-owner cache", () => {
   it("evicts idle databases beyond the bound but never a held one", async () => {
     const held: HashStoreHandle[] = [];
     for (let i = 0; i < OPEN_STORE_LIMIT; i++) {
-      held.push(await loadHashStoreAt(storePath, { owner: `held-${i}`, migrateLegacy: false }));
+      held.push(await loadHashStoreAt(storePath, { owner: `held-${i}` }));
     }
     expect(openStoreCount()).toBe(OPEN_STORE_LIMIT);
 
     // Open and release more owners; the cache must evict idle databases.
     for (let i = 0; i < OPEN_STORE_LIMIT + 2; i++) {
-      const idle = await loadHashStoreAt(storePath, { owner: `idle-${i}`, migrateLegacy: false });
+      const idle = await loadHashStoreAt(storePath, { owner: `idle-${i}` });
       idle.release();
     }
     expect(openStoreCount()).toBeLessThanOrEqual(OPEN_STORE_LIMIT);
@@ -103,7 +103,7 @@ describe("hash-store — multi-owner cache", () => {
 
   it("closes every database on shutdown after a run that used several owners", async () => {
     for (let i = 0; i < 6; i++) {
-      const handle = await loadHashStoreAt(storePath, { owner: `owner-${i}`, migrateLegacy: false });
+      const handle = await loadHashStoreAt(storePath, { owner: `owner-${i}` });
       handle.release();
     }
     expect(openStoreCount()).toBeGreaterThan(0);

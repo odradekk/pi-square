@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { lineHashes, _lineHashesPure, HASH_SPACE } from "../../../src/anchored-edit/hashline";
-import { useTestHome } from "../support/fixtures";
+import { useTestHome, useScratchStore } from "../support/fixtures";
 
 const home = useTestHome();
+const { store: scratchStore } = useScratchStore();
 
 describe("large file stress tests — store path", () => {
   it("handles 10,000 identical lines via store with unique hashes", async () => {
     const line = "}";
     const content = Array.from({ length: 10_000 }, () => line).join("\n");
     const start = performance.now();
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await lineHashes(content);
     const elapsed = performance.now() - start;
 
     expect(hashes).toHaveLength(10_000);
@@ -21,7 +22,7 @@ describe("large file stress tests — store path", () => {
   it("handles 50,000 unique lines via store without timeout", async () => {
     const content = Array.from({ length: 50_000 }, (_, i) => `line${i}`).join("\n");
     const start = performance.now();
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await lineHashes(content);
     const elapsed = performance.now() - start;
 
     expect(hashes).toHaveLength(50_000);
@@ -32,14 +33,14 @@ describe("large file stress tests — store path", () => {
 
   it("cache hit returns identical hashes for repeated content", async () => {
     const content = Array.from({ length: 10_000 }, (_, i) => `line${i}`).join("\n");
-    const first = await lineHashes(content, home.testPath);
-    const second = await lineHashes(content, home.testPath);
+    const first = await lineHashes(content);
+    const second = await lineHashes(content);
     expect(second).toEqual(first);
   }, 60_000);
 
   it("preserves hashes for unchanged lines in a 10,000-line file after small edit", async () => {
     const oldContent = Array.from({ length: 10_000 }, (_, i) => `line${i}`).join("\n");
-    const oldHashes = await lineHashes(oldContent, home.testPath);
+    const oldHashes = await lineHashes(oldContent);
 
     const lines = oldContent.split("\n");
     lines[5000] = "MODIFIED";
@@ -48,7 +49,7 @@ describe("large file stress tests — store path", () => {
     const result = await lineHashes(newContent, home.testPath, {
       content: oldContent,
       hashes: oldHashes,
-    });
+    }, scratchStore());
 
     expect(result).toHaveLength(10_000);
     expect(result[0]).toBe(oldHashes[0]);
@@ -59,7 +60,7 @@ describe("large file stress tests — store path", () => {
 
   it("preserves hashes when prepending 1,000 lines to a 10,000-line file", async () => {
     const oldContent = Array.from({ length: 10_000 }, (_, i) => `line${i}`).join("\n");
-    const oldHashes = await lineHashes(oldContent, home.testPath);
+    const oldHashes = await lineHashes(oldContent);
 
     const prefix = Array.from({ length: 1_000 }, (_, i) => `new${i}`).join("\n");
     const newContent = prefix + "\n" + oldContent;
@@ -67,7 +68,7 @@ describe("large file stress tests — store path", () => {
     const result = await lineHashes(newContent, home.testPath, {
       content: oldContent,
       hashes: oldHashes,
-    });
+    }, scratchStore());
 
     expect(result).toHaveLength(11_000);
     for (let i = 0; i < 10_000; i++) {
@@ -77,7 +78,7 @@ describe("large file stress tests — store path", () => {
 
   it("preserves hashes when appending 1,000 lines to a 10,000-line file", async () => {
     const oldContent = Array.from({ length: 10_000 }, (_, i) => `line${i}`).join("\n");
-    const oldHashes = await lineHashes(oldContent, home.testPath);
+    const oldHashes = await lineHashes(oldContent);
 
     const suffix = Array.from({ length: 1_000 }, (_, i) => `new${i}`).join("\n");
     const newContent = oldContent + "\n" + suffix;
@@ -85,7 +86,7 @@ describe("large file stress tests — store path", () => {
     const result = await lineHashes(newContent, home.testPath, {
       content: oldContent,
       hashes: oldHashes,
-    });
+    }, scratchStore());
 
     expect(result).toHaveLength(11_000);
     for (let i = 0; i < 10_000; i++) {
@@ -123,7 +124,7 @@ describe("large file stress tests — pure path (no store)", () => {
 describe("hash collision stress tests", () => {
   it("assigns unique hashes to 1,000 identical lines via store", async () => {
     const content = Array.from({ length: 1_000 }, () => "same").join("\n");
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await lineHashes(content);
     const unique = new Set(hashes);
     expect(unique.size).toBe(1_000);
   }, 60_000);
@@ -148,7 +149,7 @@ describe("hash collision stress tests", () => {
       content: oldContent,
       hashes: oldHashes,
       removedHashes,
-    });
+    }, scratchStore());
 
     expect(result).toHaveLength(5_000);
     for (const hash of result) {
@@ -164,7 +165,7 @@ describe("hash collision stress tests", () => {
       ...Array.from({ length: 25 }, () => "  return result;"),
     ];
     const content = lines.join("\n");
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await lineHashes(content);
     const unique = new Set(hashes);
     expect(unique.size).toBe(100);
   }, 60_000);
@@ -210,7 +211,7 @@ describe("mapStableHashes — large file stress", () => {
     const result = await lineHashes(newContent, home.testPath, {
       content: oldContent,
       hashes: oldHashes,
-    });
+    }, scratchStore());
 
     expect(result).toHaveLength(newLines.length);
     const unique = new Set(result);
@@ -228,7 +229,7 @@ describe("mapStableHashes — large file stress", () => {
       content: oldContent,
       hashes: oldHashes,
       removedHashes,
-    });
+    }, scratchStore());
 
     expect(result).toHaveLength(3_000);
     const survivors = result.filter((hash) => !removedHashes.has(hash));
@@ -248,7 +249,7 @@ describe("mapStableHashes — large file stress", () => {
       content: oldContent,
       hashes: oldHashes,
       removedHashes,
-    });
+    }, scratchStore());
     const elapsed = performance.now() - start;
     expect(result).toEqual(oldHashes);
     expect(elapsed).toBeLessThan(60_000);

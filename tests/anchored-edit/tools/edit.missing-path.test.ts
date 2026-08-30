@@ -2,13 +2,21 @@ import { describe, expect, it } from "vitest";
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { withTempFile, withTempDir, setupIntegrationTest } from "../support/fixtures";
+import { withTempFile, withTempDir, setupIntegrationTest, loadTestStore } from "../support/fixtures";
 
 describe("replace — missing path resolution", () => {
   it("resolves a missing path when the anchors uniquely identify a file", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\n", path);
+      // Seed the session store the replace tool resolves so the anchors
+      // identify the file for the omitted-path resolution.
+      const store = await loadTestStore(cwd);
+      let hashes: string[];
+      try {
+        hashes = await lineHashes("aaa\nbbb\n", path, undefined, store);
+      } finally {
+        store.release();
+      }
 
       const result = await editTool.execute(
         "e1",
@@ -32,8 +40,14 @@ describe("replace — missing path resolution", () => {
       const second = join(dir, "b.txt");
       await writeFile(first, "same\n", "utf-8");
       await writeFile(second, "same\n", "utf-8");
-      const hashes = await lineHashes("same\n", first);
-      await lineHashes("same\n", second);
+      const store = await loadTestStore(dir);
+      let hashes: string[];
+      try {
+        hashes = await lineHashes("same\n", first, undefined, store);
+        await lineHashes("same\n", second, undefined, store);
+      } finally {
+        store.release();
+      }
 
       await expect(
         editTool.execute(
@@ -66,7 +80,13 @@ describe("replace — missing path resolution", () => {
   it("keeps the resolved path in the post-edit diff", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", path);
+      const store = await loadTestStore(cwd);
+      let hashes: string[];
+      try {
+        hashes = await lineHashes("aaa\nbbb\nccc\n", path, undefined, store);
+      } finally {
+        store.release();
+      }
 
       const result = await editTool.execute(
         "e1",

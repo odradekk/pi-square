@@ -4,14 +4,6 @@ node_modules/
 # CodeGraph index database
 .codegraph/
 
-# Anchored read project state
-.pi/anchored-edit/hash-store.sqlite*
-**/.pi/anchored-edit/hash-store.sqlite*
-
-# Cross-process write lock artefacts
-.pi/anchored-edit/locks/
-**/.pi/anchored-edit/locks/
-
 # Build and test output
 dist/
 build/

@@ -86,7 +86,7 @@ export default function registerSubagents(
     // stale file records behind.
     if (anchoredEditingEnabled(state)) {
       try {
-        await reconcileChildPartitions(ctx.cwd, new Set(listRetainedSubagentIds()));
+        await reconcileChildPartitions(ctx.cwd, new Set(listRetainedSubagentIds()), ctx.sessionManager?.getSessionDir?.() ?? "");
       } catch (error) {
         console.error("Failed to reconcile child anchor-store partitions:", error);
       }

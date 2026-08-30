@@ -5,15 +5,20 @@ type GenericDefinition = ToolDefinition<any, any, any>;
 
 /**
  * Model-content transform applied after the Pi read factory executes. Receives
- * the factory result content, the tool parameters, and the resolved working
- * directory of the executing session.
+ * the factory result content, the tool parameters, the resolved working
+ * directory of the executing session, and the executing session's persistent
+ * session directory ("" for a non-persisted session, which makes the anchor
+ * store fall back to its throwaway temp area). Child compositions ignore the
+ * passed value and substitute the parent session's directory captured at
+ * assembly time, because a child session's own directory is its artifacts
+ * directory, not the workspace session directory.
  */
 export type ReadContentTransform = (
   content: ReadModelContent,
   params: unknown,
   cwd: string,
+  sessionDir: string,
 ) => ReadModelContent | Promise<ReadModelContent>;
-
 /**
  * Optional pre-execution guard. Returning content short-circuits the read
  * factory with that content (used to refuse paths that must not reach the
@@ -76,10 +81,11 @@ export function withAnchoredReadTransform(
     ...definition,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const executionCwd = ctx?.cwd ?? fallbackCwd;
+      const sessionDir = ctx?.sessionManager?.getSessionDir?.() ?? "";
       const guarded = await guard?.(params, executionCwd);
       if (guarded !== undefined) return { content: guarded, details: undefined };
       const result = await execute(toolCallId, params, signal, onUpdate, ctx);
-      const content = await transform(result.content, params, executionCwd);
+      const content = await transform(result.content, params, executionCwd, sessionDir);
       return content === result.content ? result : { ...result, content };
     },
   } as GenericDefinition;

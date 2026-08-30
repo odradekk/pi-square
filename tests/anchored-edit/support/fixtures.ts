@@ -1,17 +1,21 @@
 import { mkdtemp, mkdir, rm, writeFile } from "fs/promises";
+import { realpathSync } from "node:fs";
 import { join } from "path";
 import { beforeAll, afterAll, vi } from "vitest";
-import { _lineHashesPure, initHasher } from "../../../src/anchored-edit/hashline";
 import { Compile } from "typebox/compile";
-import register from "../../../src/anchored-edit/index";
-import { regReplace } from "../../../src/anchored-edit/replace";
-import { shutdownHashStore } from "../../../src/anchored-edit/hash-store";
+import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
+import { _lineHashesPure, initHasher } from "../../../src/anchored-edit/hashline";
+import { anchoredHashStorePath, anchoredStoreDir } from "../../../src/anchored-edit/paths";
+import { loadAnchoredHashStore, PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
+import { withAnchoredReadTransform } from "../../../src/anchored-edit/read-tool";
+import { transformAnchoredReadContent, guardAnchoredRead } from "../../../src/anchored-edit/read-transform";
+import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
+import { loadHashStoreAt, shutdownHashStore, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
 export async function getWritableTempRoot(): Promise<string> {
   const fallback = join(process.cwd(), ".tmp");
   await mkdir(fallback, { recursive: true });
   return fallback;
 }
-
 export async function setupTestHome(): Promise<{
   home: string;
   testPath: string;
@@ -140,6 +144,67 @@ export async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
+/** Session directory convention for tool-level tests: every store and lock the
+ * live surfaces create lands under `<cwd>/.test-session/`, so the existing
+ * `rm(cwd, ...)` cleanups remove it with the temp workspace. */
+export function testSessionDir(cwd: string): string {
+  return join(cwd, ".test-session");
+}
+
+/** Fake execution context matching the session-resolved store contract: the
+ * read wrapper and the replace definition resolve their session directory from
+ * `ctx.sessionManager.getSessionDir()` at execution time. */
+export function makeTestCtx(cwd: string) {
+  return {
+    cwd,
+    sessionManager: {
+      getSessionDir: () => testSessionDir(cwd),
+      getSessionId: () => "test-session",
+      getSessionFile: () => undefined,
+    },
+    ui: { notify() {} },
+  } as any;
+}
+
+/** Anchor-store directory the live surfaces resolve for `makeTestCtx(cwd)`. */
+export function testStoreDir(cwd: string): string {
+  return anchoredStoreDir(testSessionDir(cwd), realpathSync(cwd));
+}
+
+/** A per-file scratch hash store for tests that exercise pathed
+ * `lineHashes` calls (stable mapping), which now require an explicit store.
+ * The store persists nothing the tests assert; it only satisfies the contract. */
+export function useScratchStore(): { store: () => HashStoreHandle } {
+  const state: { handle: HashStoreHandle | undefined } = { handle: undefined };
+  let dir: string | undefined;
+  beforeAll(async () => {
+    dir = await mkdtemp(join(await getWritableTempRoot(), "scratch-store-"));
+    state.handle = await loadHashStoreAt(join(dir, "hash-store.sqlite"), { owner: "parent" });
+  });
+  afterAll(async () => {
+    state.handle?.release();
+    shutdownHashStore();
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+  return {
+    store: () => {
+      if (!state.handle) throw new Error("scratch store not initialized");
+      return state.handle;
+    },
+  };
+}
+
+/** Hash-store database file the live parent surfaces resolve for `cwd`. */
+export function anchoredStoreFile(cwd: string): string {
+  return anchoredHashStorePath(testStoreDir(cwd));
+}
+
+/** Opens the same anchored hash store the live parent surfaces use for `cwd`
+ * under the given owner partition. Callers must `release()` the handle. */
+export async function loadTestStore(cwd: string, owner: string = PARENT_OWNER) {
+  return loadAnchoredHashStore(testStoreDir(cwd), owner);
+}
+
 export function makeFakePiRegistry() {
   const tools = new Map<string, any>();
   return {
@@ -179,34 +244,36 @@ export function makeFakePiRegistry() {
   };
 }
 
-export function makeFakeReplaceRegistry() {
-  const tools = new Map<string, any>();
-  const pi = {
-    registerTool(tool: any) {
-      tools.set(tool.name, tool);
-    },
-    on() {},
-  } as any;
-  regReplace(pi);
-  const tool = tools.get("replace");
-  if (!tool) throw new Error("Tool not registered: replace");
-  return { tool };
+/** The live parent anchored read: Pi's read factory wrapped by the shared
+ * anchor transform and guard, exactly as `src/display/builtins.ts` composes it
+ * (native path authority, session-resolved store). */
+function anchoredReadDefinition(cwd: string) {
+  return withAnchoredReadTransform(
+    createReadToolDefinition(cwd),
+    cwd,
+    (content, value, executionCwd, sessionDir) =>
+      transformAnchoredReadContent(content, value, executionCwd, PARENT_OWNER, {
+        confineToWorkspace: false,
+        sessionDir,
+      }),
+    (params, executionCwd) =>
+      guardAnchoredRead(params, executionCwd, { confineToWorkspace: false }),
+  );
 }
 
 export function setupIntegrationTest(cwd: string) {
   const { pi, getTool } = makeFakePiRegistry();
-  register(pi);
-  const ctx = { cwd, ui: { notify() {} } } as any;
+  pi.registerTool(anchoredReadDefinition(cwd));
+  pi.registerTool(createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false, false));
+  const ctx = makeTestCtx(cwd);
   return { pi, getTool, ctx, readTool: getTool("read"), editTool: getTool("replace") };
 }
 
 export function setupReadTest(cwd: string) {
   const { pi, getTool } = makeFakePiRegistry();
-  register(pi);
-  return { readTool: getTool("read"), ctx: { cwd } as any };
+  pi.registerTool(anchoredReadDefinition(cwd));
+  return { readTool: getTool("read"), ctx: makeTestCtx(cwd) };
 }
-
-
 
 export function getText(result: { content: Array<{ text?: string }> }): string {
   return result.content[0]?.text ?? "";
@@ -231,8 +298,9 @@ export function expectedEditContent(
   return expected;
 }
 
-export async function makeTag(content: string, line: number, path: string): Promise<{ hash: string }> {
-  const { lineHashes } = await import("../../../src/anchored-edit/hashline");
-  const hashes = await lineHashes(content, path);
+/** Deterministic hash for one line of content. Pure hashing: callers tag
+ * content that was never persisted, so no store is involved. */
+export async function makeTag(content: string, line: number): Promise<{ hash: string }> {
+  const hashes = _lineHashesPure(content);
   return { hash: hashes[line - 1]! };
 }

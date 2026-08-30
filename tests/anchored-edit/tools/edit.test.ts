@@ -1,15 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFile } from "fs/promises";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { withTempFile, setupIntegrationTest, useTestHome } from "../support/fixtures";
+import { withTempFile, setupIntegrationTest } from "../support/fixtures";
 
-const home = useTestHome();
 
-describe("regReplace", () => {
+describe("anchored replace tool", () => {
   it("rejects malformed null lines during direct execute without modifying the file", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\n", async ({ cwd }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\n");
 
       await expect(
         editTool.execute(
@@ -29,7 +28,7 @@ describe("regReplace", () => {
   it("accepts multi-line replacement_text with \\n separators", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\n");
 
       const result = await editTool.execute(
         "e1",
@@ -52,7 +51,7 @@ describe("regReplace", () => {
   it("renders details diff while keeping diff out of LLM-visible text", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await editTool.execute(
         "e1",
@@ -74,7 +73,7 @@ describe("regReplace", () => {
   it("autocorrects bare HASH│ prefix in content_lines with a warning", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await editTool.execute(
         "e1",
@@ -97,7 +96,7 @@ describe("regReplace", () => {
   it("autocorrects diff-preview rows in content_lines with a warning", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await editTool.execute(
         "e1",
@@ -120,7 +119,7 @@ describe("regReplace", () => {
   it("autocorrects reversed remove_from/remove_to with correct line counts", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\nddd\n", async ({ cwd }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\nddd\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\nddd\n");
 
       const result = await editTool.execute(
         "e1",
@@ -143,7 +142,7 @@ describe("regReplace", () => {
   it("autocorrects HASH│ rows in remove_from/remove_to with a warning", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await editTool.execute(
         "e1",
@@ -166,11 +165,11 @@ describe("regReplace", () => {
   });
 });
 
-describe("regReplace — robustness", () => {
+describe("anchored replace tool — robustness", () => {
   it("reports success even when the post-edit snapshot fails", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
       const fileReader = await import("../../../src/anchored-edit/file-reader");
       const spy = vi
         .spyOn(fileReader, "safeSnapId")
@@ -200,7 +199,7 @@ describe("regReplace — robustness", () => {
   it("reports success even when the noop-path snapshot fails", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
       const fileReader = await import("../../../src/anchored-edit/file-reader");
       const spy = vi
         .spyOn(fileReader, "safeSnapId")
@@ -228,7 +227,7 @@ describe("regReplace — robustness", () => {
   it("applies the edit even when snapshot persistence fails", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
       const hashStore = await import("../../../src/anchored-edit/hash-store");
       const spy = vi
         .spyOn(hashStore, "upsertSnapshot")

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "fs/promises";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { editToolSchema, regReplace } from "../../../src/anchored-edit/replace";
-import { makeFakePiRegistry, withTempFile, useTestHome } from "../support/fixtures";
-const home = useTestHome();
-
+import { editToolSchema } from "../../../src/anchored-edit/replace";
+import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
+import { PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
+import { makeFakePiRegistry, setupIntegrationTest, withTempFile } from "../support/fixtures";
 describe("editToolSchema", () => {
   it("has path, remove_from, remove_to, and replacement_text at top level", () => {
     const schema = editToolSchema as any;
@@ -19,10 +19,10 @@ describe("editToolSchema", () => {
   });
 });
 
-describe("regReplace", () => {
+describe("anchored replace tool", () => {
   it("registers a tool named 'replace'", () => {
     const { pi, getTool } = makeFakePiRegistry();
-    regReplace(pi);
+    pi.registerTool(createAnchoredReplaceToolDefinition("/tmp", () => true, PARENT_OWNER, false, false));
     const tool = getTool("replace");
     expect(tool).toBeDefined();
     expect(tool.name).toBe("replace");
@@ -31,7 +31,7 @@ describe("regReplace", () => {
 
   it("prepareArguments normalizes file_path to path", () => {
     const { pi, getTool } = makeFakePiRegistry();
-    regReplace(pi);
+    pi.registerTool(createAnchoredReplaceToolDefinition("/tmp", () => true, PARENT_OWNER, false, false));
     const tool = getTool("replace");
     const result = tool.prepareArguments({
       file_path: "test.txt",
@@ -46,10 +46,8 @@ describe("regReplace", () => {
 
   it("replaces a single line via execute", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\nccc\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await tool.execute(
         "e1",
@@ -60,7 +58,7 @@ describe("regReplace", () => {
         },
         undefined,
         undefined,
-        { cwd } as any,
+        ctx,
       );
 
       expect(result.content[0].text).toContain("Successfully replaced in sample.txt");
@@ -70,10 +68,8 @@ describe("regReplace", () => {
 
   it("replaces a range of lines via execute", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\nccc\nddd\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("aaa\nbbb\nccc\nddd\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("aaa\nbbb\nccc\nddd\n");
 
       const result = await tool.execute(
         "e1",
@@ -84,7 +80,7 @@ describe("regReplace", () => {
         },
         undefined,
         undefined,
-        { cwd } as any,
+        ctx,
       );
 
       expect(result.content[0].text).toContain("Successfully replaced in sample.txt");
@@ -94,10 +90,8 @@ describe("regReplace", () => {
 
   it("deletes a line via execute (empty content_lines)", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\nccc\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await tool.execute(
         "e1",
@@ -108,7 +102,7 @@ describe("regReplace", () => {
         },
         undefined,
         undefined,
-        { cwd } as any,
+        ctx,
       );
 
       expect(result.content[0].text).toContain("Successfully replaced in sample.txt");
@@ -118,10 +112,8 @@ describe("regReplace", () => {
 
   it("reports noop when content is unchanged", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\nccc\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await tool.execute(
         "e1",
@@ -132,7 +124,7 @@ describe("regReplace", () => {
         },
         undefined,
         undefined,
-        { cwd } as any,
+        ctx,
       );
 
       expect(result.content[0].text).toContain("No changes made to sample.txt");
@@ -140,34 +132,31 @@ describe("regReplace", () => {
     });
   });
 
-  it("rejects stale anchors with [E_STALE_ANCHOR]", async () => {
+  it("refuses stale anchors with a recoverable [E_STALE_ANCHOR] warning", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
 
-      await expect(
-        tool.execute(
-          "e1",
-          {
-            path: "sample.txt",
-            remove_from: "ZZZ", remove_to: "ZZZ",
-            replacement_text: "x",
-          },
-          undefined,
-          undefined,
-          { cwd } as any,
-        ),
-      ).rejects.toThrow(/E_STALE_ANCHOR/);
+      const result = await tool.execute(
+        "e1",
+        {
+          path: "sample.txt",
+          remove_from: "ZZZ", remove_to: "ZZZ",
+          replacement_text: "x",
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.status).toBe("warning");
+      expect(result.details.errorCode).toBe("E_STALE_ANCHOR");
+      expect(result.content[0].text).toContain("[E_STALE_ANCHOR]");
     });
   });
 
   it("rejects deleting an entire non-empty file", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("aaa\nbbb\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("aaa\nbbb\n");
 
       await expect(
         tool.execute(
@@ -179,7 +168,7 @@ describe("regReplace", () => {
           },
           undefined,
           undefined,
-          { cwd } as any,
+          ctx,
         ),
       ).rejects.toThrow(/E_WOULD_EMPTY/);
     });
@@ -187,10 +176,8 @@ describe("regReplace", () => {
 
   it("rejects unknown fields at top level via schema validation", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\nccc\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       await expect(
         tool.execute(
@@ -203,7 +190,7 @@ describe("regReplace", () => {
           } as any,
           undefined,
           undefined,
-          { cwd } as any,
+          ctx,
         ),
       ).rejects.toThrow(/E_BAD_SHAPE/);
     });
@@ -211,10 +198,8 @@ describe("regReplace", () => {
 
   it("reports metrics with edits_attempted = 1", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\nccc\n", async ({ cwd }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const result = await tool.execute(
         "e1",
@@ -225,7 +210,7 @@ describe("regReplace", () => {
         },
         undefined,
         undefined,
-        { cwd } as any,
+        ctx,
       );
 
       expect(result.details.metrics.edits_attempted).toBe(1);
@@ -235,10 +220,8 @@ describe("regReplace", () => {
 
   it("preserves CRLF line endings", async () => {
     await withTempFile("crlf.txt", "alpha\r\nbeta\r\ngamma\r\n", async ({ cwd, path }) => {
-      const { pi, getTool } = makeFakePiRegistry();
-      regReplace(pi);
-      const tool = getTool("replace");
-      const hashes = await lineHashes("alpha\nbeta\ngamma\n", home.testPath);
+      const { ctx, editTool: tool } = setupIntegrationTest(cwd);
+      const hashes = await lineHashes("alpha\nbeta\ngamma\n");
 
       await tool.execute(
         "e1",
@@ -249,7 +232,7 @@ describe("regReplace", () => {
         },
         undefined,
         undefined,
-        { cwd } as any,
+        ctx,
       );
 
       const content = await readFile(path, "utf-8");

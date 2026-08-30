@@ -13,16 +13,18 @@ const { acquireFileLock, lockFilePath } = await load("../../src/anchored-edit/fi
 const { resolveTarget } = await load("../../src/anchored-edit/fs-write.ts");
 const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-edit/workspace-replace.ts");
 const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 
 async function main() {
   const job = JSON.parse(readFileSync(process.argv[2], "utf8"));
-  const { mode, workspace, path, resultPath } = job;
+  const { mode, workspace, path, resultPath, sessionDir } = job;
   const workspaceRoot = realpathSync(workspace);
+  const storeDir = anchoredStoreDir(sessionDir ?? join(workspace, ".test-session"), workspaceRoot);
 
   async function canonicalLockPath(file) {
     const target = await resolveTarget(resolve(workspaceRoot, file));
-    return lockFilePath(workspaceRoot, target);
+    return lockFilePath(storeDir, target);
   }
 
   if (mode === "hold") {
@@ -38,7 +40,7 @@ async function main() {
   }
 
   if (mode === "replace") {
-    const replace = createAnchoredReplaceToolDefinition(workspace);
+    const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, undefined, sessionDir);
     const result = await replace.execute(
       "replace",
       {
@@ -56,7 +58,7 @@ async function main() {
   }
 
   if (mode === "write") {
-    const write = createChildAnchoredWriteTool(workspace, job.owner ?? "subagent_write");
+    const write = createChildAnchoredWriteTool(workspace, job.owner ?? "subagent_write", sessionDir ?? join(workspace, ".test-session"));
     try {
       const result = await write.execute(
         "write",

@@ -12,8 +12,20 @@ const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayController } = await load("../../src/display/index.ts");
 const { default: registerDisplayBuiltins } = await load("../../src/display/builtins.ts");
 const { default: registerAnchoredReplace } = await load("../../src/anchored-edit/workspace-replace.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 
 const OWN = { path: "/package/src/index.ts", source: "@odradekk/pi-square", scope: "user", origin: "package" };
+
+const storePathOf = (ws) => join(ws, ".test-session", "anchored-edit", "hash-store.sqlite");
+const ctxFor = (cwd, extra = {}) => ({
+  cwd,
+  sessionManager: {
+    getSessionDir: () => join(cwd, ".test-session"),
+    getSessionId: () => "test-session",
+    getSessionFile: () => undefined,
+  },
+  ...extra,
+});
 const BUILTIN = { path: "<builtin>", source: "built-in", scope: "temporary", origin: "top-level" };
 const PROBES = ["pdf_search", "codegraph", "delegate", "todo"];
 const BUILTINS = ["read", "grep", "find", "ls", "edit", "write", "bash"];
@@ -51,7 +63,7 @@ function createHarness(config) {
 async function start(harness, cwd) {
   for (const handler of harness.events.get("session_start") ?? []) {
     await handler({ type: "session_start", reason: "startup" }, {
-      cwd,
+      ...ctxFor(cwd),
       hasUI: false,
       isProjectTrusted() { return false; },
       ui: { setStatus() {} },
@@ -65,6 +77,17 @@ const agentDir = join(root, "agent");
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 mkdirSync(workspace, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
+
+const sessionDir = join(workspace, ".test-session");
+const sessionCtx = {
+  cwd: workspace,
+  sessionManager: {
+    getSessionDir: () => sessionDir,
+    getSessionId: () => "test-session",
+    getSessionFile: () => undefined,
+  },
+};
+
 process.env.PI_CODING_AGENT_DIR = agentDir;
 writeFileSync(join(workspace, "source.txt"), "same\nsame\nthird");
 writeFileSync(join(workspace, "pages.txt"), "one\ntwo\nthree\nfour\nfive");
@@ -91,9 +114,10 @@ try {
   const disabledConfig = { ...DEFAULT_CONFIG, anchoredEditing: { enabled: false, autoRead: true } };
   const off = createHarness(disabledConfig);
   await start(off, workspace);
-  const offResult = await off.definitions.get("read").execute("off", args, undefined, undefined, { cwd: workspace });
+  const offResult = await off.definitions.get("read").execute("off", args, undefined, undefined, sessionCtx);
   assert.deepEqual(offResult.content, expected.content, "explicitly disabled read stays byte-identical to Pi");
-  assert.equal(existsSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite")), false, "explicitly disabled read creates no anchored state");
+  assert.equal(existsSync(storePathOf(workspace)), false, "explicitly disabled read creates no anchored state");
+  assert.equal(existsSync(join(workspace, ".pi", "anchored-edit")), false, "explicitly disabled read never creates the legacy project store directory");
   assert.equal(off.definitions.get("replace"), undefined, "explicitly disabled anchored editing registers no replace tool");
   assert.equal(off.definitions.get("revert"), undefined, "explicitly disabled anchored editing registers no revert tool");
   assert.ok(off.activeTools().includes("edit"), "explicitly disabled editing keeps Pi edit active");
@@ -126,44 +150,44 @@ try {
   const read = on.definitions.get("read");
   assert.ok(read.promptGuidelines.some((guideline) => /Do not invent anchors/.test(guideline)));
   assert.ok(read.promptGuidelines.some((guideline) => /same paths as Pi's built-in read/.test(guideline)), "the parent guideline states native path authority");
-  const first = await read.execute("first", args, undefined, undefined, { cwd: workspace });
-  const second = await read.execute("second", args, undefined, undefined, { cwd: workspace });
+  const first = await read.execute("first", args, undefined, undefined, sessionCtx);
+  const second = await read.execute("second", args, undefined, undefined, sessionCtx);
   assert.equal(first.content[0].text, second.content[0].text, "unchanged files keep anchors across reads");
   const rows = first.content[0].text.split("\n").slice(0, 3);
   const matches = rows.map((row) => /^([A-Za-z0-9]{3})│/.exec(row));
   assert.ok(matches.every(Boolean), "every returned source row has a three-character anchor");
   assert.notEqual(matches[0][1], matches[1][1], "byte-identical lines have distinct anchors");
-  assert.ok(existsSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite")), "anchors persist in the project store");
+  assert.ok(existsSync(storePathOf(workspace)), "anchors persist in the session store");
 
   const firstAnchors = matches.map((match) => match[1]);
   writeFileSync(join(workspace, "source.txt"), "same  \nsame\t\nthird  ");
-  const whitespaceOnly = await read.execute("whitespace", args, undefined, undefined, { cwd: workspace });
+  const whitespaceOnly = await read.execute("whitespace", args, undefined, undefined, sessionCtx);
   const whitespaceAnchors = whitespaceOnly.content[0].text.split("\n").slice(0, 3).map((row) => /^([A-Za-z0-9]{3})│/.exec(row)?.[1]);
   assert.deepEqual(whitespaceAnchors, firstAnchors, "trailing whitespace-only changes preserve anchors");
 
-  const paged = await read.execute("page", { path: "pages.txt", offset: 2, limit: 2 }, undefined, undefined, { cwd: workspace });
+  const paged = await read.execute("page", { path: "pages.txt", offset: 2, limit: 2 }, undefined, undefined, sessionCtx);
   assert.match(paged.content[0].text, /^[A-Za-z0-9]{3}│two\n[A-Za-z0-9]{3}│three\n\n\[Showing lines 2-3 of 5\./);
 
-  const empty = await read.execute("empty", { path: "empty.txt" }, undefined, undefined, { cwd: workspace });
+  const empty = await read.execute("empty", { path: "empty.txt" }, undefined, undefined, sessionCtx);
   assert.match(empty.content[0].text, /File is empty/, "empty files give a specific response");
 
-  const directory = await read.execute("directory", { path: "directory" }, undefined, undefined, { cwd: workspace });
+  const directory = await read.execute("directory", { path: "directory" }, undefined, undefined, sessionCtx);
   assert.match(directory.content[0].text, /Path is a directory.*Use ls/s, "directories have a usable alternative");
 
   // ── Native path authority (#185): the parent anchored read accepts the
   // same paths as Pi 0.84.2's native read, with no workspace-containment
   // refusal. External targets keep the initiating workspace's store.
   writeFileSync(join(root, "outside.txt"), "outside\nsecond");
-  const outside = await read.execute("outside", { path: "../outside.txt" }, undefined, undefined, { cwd: workspace });
+  const outside = await read.execute("outside", { path: "../outside.txt" }, undefined, undefined, sessionCtx);
   assert.match(outside.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "a ../ path outside the workspace reads with anchors");
 
-  const absolute = await read.execute("absolute", { path: join(root, "outside.txt") }, undefined, undefined, { cwd: workspace });
+  const absolute = await read.execute("absolute", { path: join(root, "outside.txt") }, undefined, undefined, sessionCtx);
   assert.match(absolute.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "an absolute path outside the workspace reads with anchors");
 
   const previousHome = process.env.HOME;
   process.env.HOME = root;
   try {
-    const homeRead = await read.execute("home", { path: "~/.outside-home.txt" }, undefined, undefined, { cwd: workspace });
+    const homeRead = await read.execute("home", { path: "~/.outside-home.txt" }, undefined, undefined, sessionCtx);
     assert.match(homeRead.content[0].text, /^[A-Za-z0-9]{3}│from home$/m, "a ~ path expands to the home directory and reads with anchors");
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
@@ -171,10 +195,10 @@ try {
   }
 
   symlinkSync(join(root, "outside.txt"), join(workspace, "linked.txt"));
-  const linked = await read.execute("linked", { path: "linked.txt" }, undefined, undefined, { cwd: workspace });
+  const linked = await read.execute("linked", { path: "linked.txt" }, undefined, undefined, sessionCtx);
   assert.match(linked.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "a workspace symlink to an external target reads its canonical content");
 
-  const externalDirectory = await read.execute("external-directory", { path: "../external-dir" }, undefined, undefined, { cwd: workspace });
+  const externalDirectory = await read.execute("external-directory", { path: "../external-dir" }, undefined, undefined, sessionCtx);
   assert.match(externalDirectory.content[0].text, /Path is a directory.*Use ls/s, "an external directory keeps the named directory response");
 
   await assert.rejects(
@@ -183,33 +207,33 @@ try {
     "Pi's native read throws its own not-found for a missing external path",
   );
   await assert.rejects(
-    () => read.execute("anchored-missing", { path: "../no-such-external.txt" }, undefined, undefined, { cwd: workspace }),
+    () => read.execute("anchored-missing", { path: "../no-such-external.txt" }, undefined, undefined, sessionCtx),
     (error) => error?.code === "ENOENT",
     "a missing external path preserves Pi's native not-found failure",
   );
 
-  const binary = await read.execute("binary", { path: "binary.pdf" }, undefined, undefined, { cwd: workspace });
+  const binary = await read.execute("binary", { path: "binary.pdf" }, undefined, undefined, sessionCtx);
   assert.match(binary.content[0].text, /binary file/, "binary files are refused as text");
 
-  const tiff = await read.execute("tiff", { path: "tiff.bin" }, undefined, undefined, { cwd: workspace });
+  const tiff = await read.execute("tiff", { path: "tiff.bin" }, undefined, undefined, sessionCtx);
   assert.match(tiff.content[0].text, /image\/tiff.*built-in read/s, "non-attachable image formats are refused as binary");
 
-  const looseSignature = await read.execute("loose-signature", { path: "loose-signature.txt" }, undefined, undefined, { cwd: workspace });
+  const looseSignature = await read.execute("loose-signature", { path: "loose-signature.txt" }, undefined, undefined, sessionCtx);
   assert.match(looseSignature.content[0].text, /^[A-Za-z0-9]{3}│BMW is a car company/m, "text resembling a binary signature remains text");
 
-  const tooManyLines = await read.execute("too-many-lines", { path: "too-many-lines.txt" }, undefined, undefined, { cwd: workspace });
+  const tooManyLines = await read.execute("too-many-lines", { path: "too-many-lines.txt" }, undefined, undefined, sessionCtx);
   assert.match(tooManyLines.content[0].text, /E_FILE_TOO_LARGE.*use write/s, "over-limit files name the explicit write path");
 
-  const utf16 = await read.execute("utf16", { path: "utf16.txt" }, undefined, undefined, { cwd: workspace });
+  const utf16 = await read.execute("utf16", { path: "utf16.txt" }, undefined, undefined, sessionCtx);
   assert.match(utf16.content[0].text, /UTF-16LE encoded text.*built-in read/s, "UTF-16 files have a named alternative");
 
-  const long = await read.execute("long", { path: "long.txt" }, undefined, undefined, { cwd: workspace });
+  const long = await read.execute("long", { path: "long.txt" }, undefined, undefined, sessionCtx);
   assert.match(long.content[0].text, /exceeds 200\.0KB/i, "long lines use a bounded response");
 
-  const image = await read.execute("image", { path: "pixel.png" }, undefined, undefined, { cwd: workspace });
+  const image = await read.execute("image", { path: "pixel.png" }, undefined, undefined, sessionCtx);
   assert.ok(image.content.some((part) => part.type === "image"), "supported images retain Pi attachments");
 
-  const storePath = join(workspace, ".pi", "anchored-edit", "hash-store.sqlite");
+  const storePath = storePathOf(workspace);
   const store = new DatabaseSync(storePath, { timeout: 500 });
   try {
     assert.deepEqual(store.prepare("SELECT DISTINCT owner FROM snapshots").all().map((row) => row.owner), ["parent"], "snapshots retain an owner dimension");
@@ -229,7 +253,7 @@ try {
   }
 
   writeFileSync(join(workspace, "removed.txt"), "removed");
-  await read.execute("removed", { path: "removed.txt" }, undefined, undefined, { cwd: workspace });
+  await read.execute("removed", { path: "removed.txt" }, undefined, undefined, sessionCtx);
   rmSync(join(workspace, "removed.txt"));
   const pruning = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true } });
   await start(pruning, workspace);
@@ -252,9 +276,9 @@ try {
   on.controller.dispose();
 
   const corruptWorkspace = join(root, "corrupt-workspace");
-  mkdirSync(join(corruptWorkspace, ".pi", "anchored-edit"), { recursive: true });
+  mkdirSync(join(corruptWorkspace, ".test-session", "anchored-edit"), { recursive: true });
   writeFileSync(join(corruptWorkspace, "source.txt"), "healthy");
-  writeFileSync(join(corruptWorkspace, ".pi", "anchored-edit", "hash-store.sqlite"), "not a database");
+  writeFileSync(join(corruptWorkspace, ".test-session", "anchored-edit", "hash-store.sqlite"), "not a database");
   const rebuilt = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true } });
   const originalConsoleError = console.error;
   const healthErrors = [];
@@ -265,10 +289,31 @@ try {
     console.error = originalConsoleError;
   }
   assert.ok(healthErrors.some((message) => /failed to open, rebuilding/i.test(message)), "a failed health check is reported before rebuilding");
-  const rebuiltResult = await rebuilt.definitions.get("read").execute("rebuilt", { path: "source.txt" }, undefined, undefined, { cwd: corruptWorkspace });
+  const rebuiltResult = await rebuilt.definitions.get("read").execute("rebuilt", { path: "source.txt" }, undefined, undefined, ctxFor(corruptWorkspace));
   assert.match(rebuiltResult.content[0].text, /^[A-Za-z0-9]{3}│healthy/, "a failed store health check rebuilds the store");
-  assert.ok(readdirSync(join(corruptWorkspace, ".pi", "anchored-edit")).some((name) => name.startsWith("hash-store.sqlite.corrupt-")), "a failed store is quarantined");
+  assert.ok(readdirSync(join(corruptWorkspace, ".test-session", "anchored-edit")).some((name) => name.startsWith("hash-store.sqlite.corrupt-")), "a failed store is quarantined");
   rebuilt.controller.dispose();
+
+  // ── A non-persisted session (print mode) has no sessionManager: the store
+  // falls back to the OS temp directory keyed by the workspace root, and an
+  // anchored read still succeeds.
+  {
+    const fallbackWorkspace = join(root, "fallback-workspace");
+    mkdirSync(fallbackWorkspace, { recursive: true });
+    writeFileSync(join(fallbackWorkspace, "fallback.txt"), "fallback\ncontent");
+    const fallbackHarness = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true } });
+    const expectedDir = anchoredStoreDir(undefined, realpathSync(fallbackWorkspace));
+    try {
+      await start(fallbackHarness, fallbackWorkspace);
+      const fallbackRead = fallbackHarness.definitions.get("read");
+      const fallbackResult = await fallbackRead.execute("fallback", { path: "fallback.txt" }, undefined, undefined, { cwd: fallbackWorkspace });
+      assert.match(fallbackResult.content[0].text, /^[A-Za-z0-9]{3}│fallback$/m, "a session without a session directory still reads with anchors");
+      assert.ok(existsSync(join(expectedDir, "hash-store.sqlite")), "the non-persisted session writes its store under the OS temp fallback");
+    } finally {
+      fallbackHarness.controller.dispose();
+      rmSync(expectedDir, { recursive: true, force: true });
+    }
+  }
 
   console.log("anchored read integration tests: OK");
 } finally {

@@ -1,9 +1,7 @@
-import { existsSync } from "fs";
 import { basename, dirname, join } from "path";
-import { readFile, rename, mkdir, stat } from "fs/promises";
+import { rename, mkdir, stat } from "fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { hashStorePath, legacyHashStorePath } from "./paths";
-import { errCode, isRec, splitLines } from "./utils";
+import { errCode, splitLines } from "./utils";
 import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT } from "./constants";
@@ -43,12 +41,6 @@ export interface HashStoreHandle extends HashStore {
 
 export interface HashStoreLoadOptions {
   owner?: string;
-  migrateLegacy?: boolean;
-}
-
-interface LegacySnapshot {
-  content: string;
-  hashes: string[];
 }
 
 export function isValidHashList(value: unknown): value is string[] {
@@ -73,13 +65,6 @@ export function parseHashList(raw: string, onInvalid: () => void): string[] | un
     return undefined;
   }
   return parsed;
-}
-
-function isValidSnapshot(value: unknown): value is LegacySnapshot {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  if (typeof v.content !== "string") return false;
-  return isValidHashList(v.hashes);
 }
 
 export function isCorruptionError(error: unknown): boolean {
@@ -407,7 +392,6 @@ async function openStoreUnlocked(storePath: string, options: HashStoreLoadOption
   await initHasher();
   await mkdir(dirname(storePath), { recursive: true });
 
-  let existed = existsSync(storePath);
   let opened: OpenedDb;
   try {
     opened = openDbWithBusyRetry(storePath, owner);
@@ -415,7 +399,6 @@ async function openStoreUnlocked(storePath: string, options: HashStoreLoadOption
     if (!isCorruptionError(error)) throw error;
     console.error("Hash store failed to open, rebuilding:", error);
     await quarantineStore(storePath, "corrupt");
-    existed = false;
     opened = openDbWithBusyRetry(storePath, owner);
   }
   if (opened.legacy) {
@@ -426,26 +409,16 @@ async function openStoreUnlocked(storePath: string, options: HashStoreLoadOption
     // re-records both.
     shutdownDb(opened.db);
     await quarantineStore(storePath, "old-schema");
-    existed = false;
     opened = openDbWithBusyRetry(storePath, owner);
   }
   if (opened.legacy) throw new Error(`Fresh anchor store ${storePath} reopened as an old schema`);
   if (!isHealthy(opened.db)) {
     shutdownDb(opened.db);
     await quarantineStore(storePath, "corrupt");
-    existed = false;
     opened = openDbWithBusyRetry(storePath, owner);
   }
   if (opened.legacy) throw new Error(`Rebuilt anchor store ${storePath} reopened as an old schema`);
   const { db, stmts } = opened;
-
-  if (!existed && options.migrateLegacy !== false) {
-    try {
-      await migrateLegacy(db);
-    } catch (error) {
-      console.error("Hash store migration failed; continuing without legacy import:", error);
-    }
-  }
 
   const entry: OpenStore = {
     key: storeKey(storePath, owner),
@@ -512,10 +485,6 @@ export function loadHashStoreAt(
   return pending.then(acquireStore);
 }
 
-export function loadHashStore(): Promise<HashStoreHandle> {
-  return loadHashStoreAt(hashStorePath());
-}
-
 export function shutdownHashStore(): void {
   for (const entry of openStores.values()) {
     shutdownDb(entry.db);
@@ -528,72 +497,6 @@ export function shutdownHashStore(): void {
 /** Number of databases currently held open across distinct (store file, owner) pairs. */
 export function openStoreCount(): number {
   return openStores.size;
-}
-
-async function migrateLegacy(db: DatabaseSync): Promise<void> {
-  const legacyPath = legacyHashStorePath();
-  let content: string;
-  try {
-    content = await readFile(legacyPath, "utf-8");
-  } catch (error: unknown) {
-    if (errCode(error) === "ENOENT") return;
-    console.error("Failed to read legacy hash store for migration:", error);
-    return;
-  }
-
-  let parsed: { snapshots?: Record<string, unknown> };
-  try {
-    parsed = JSON.parse(content) as typeof parsed;
-  } catch (error) {
-    console.error("Failed to parse legacy hash store, skipping migration:", error);
-    return;
-  }
-
-  const raw = parsed.snapshots;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
-
-  const rows: [string, string, number, string, number][] = [];
-  for (const [key, value] of Object.entries(raw)) {
-    if (
-      isRec(value) &&
-      Array.isArray(value.hashes) &&
-      new Set(value.hashes).size !== value.hashes.length
-    ) {
-      console.warn(
-        `Skipped legacy snapshot with duplicate hashes for ${key}; it will be re-hashed on next read.`,
-      );
-      continue;
-    }
-    if (!isValidSnapshot(value)) continue;
-    rows.push([
-      key,
-      contentChecksum(value.content),
-      splitLines(value.content).length,
-      JSON.stringify(value.hashes),
-      Date.now(),
-    ]);
-  }
-  if (rows.length > 0) {
-    withBusyRetry(() => {
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const stmt = db.prepare(
-          "INSERT OR REPLACE INTO snapshots (path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?)"
-        );
-        for (const row of rows) stmt.run(...row);
-        db.exec("COMMIT");
-      } catch (e) {
-        try { db.exec("ROLLBACK"); } catch {}
-        throw e;
-      }
-    });
-  }
-
-  try {
-    await rename(legacyPath, `${legacyPath}.bak`);
-  } catch (error) {
-    console.error("Failed to rename legacy hash store after migration:", error);
-  }
 }
 
 function cacheSnapshot(path: string, checksum: string, lineCount: number, hashes: string[]): void {

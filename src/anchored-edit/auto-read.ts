@@ -11,8 +11,9 @@ import { fmtReadPreview } from "./read.ts";
 import { extractWarnings } from "./replace-render.ts";
 import { clearServed, recordServed } from "./served.ts";
 import { errCode, isRec, visLines } from "./utils.ts";
-import { loadProjectHashStore } from "./workspace-support.ts";
-import { toCwd } from "./paths.ts";
+import { loadAnchoredHashStore } from "./workspace-support.ts";
+import type { HashStoreHandle } from "./hash-store.ts";
+import { anchoredStoreDir, toCwd } from "./paths.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
 
 type PendingWrite = {
@@ -20,6 +21,8 @@ type PendingWrite = {
   changed: boolean;
   displayPath: string;
   workspaceRoot: string;
+  /** Session directory captured at tool_call time, used to locate the store. */
+  sessionDir: string;
 };
 
 function writeInput(value: unknown): { path: string; content: string } | undefined {
@@ -34,8 +37,8 @@ export interface AutoReadAnchorsInput {
   displayPath: string;
   /** Initiating workspace root owning the store. */
   workspaceRoot: string;
-  /** Loaded project hash store under the acting owner; the caller releases it. */
-  store: ReturnType<typeof loadProjectHashStore> extends Promise<infer T> ? T : never;
+  /** Loaded anchored hash store under the acting owner; the caller releases it. */
+  store: HashStoreHandle;
 }
 
 /**
@@ -62,7 +65,6 @@ export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promis
       normalized.normalized,
       {},
       normalized.fileHashes,
-      normalized.absolutePath,
       DEFAULT_MAX_BYTES,
       AUTO_READ_MAX,
     );
@@ -107,7 +109,7 @@ export function registerAnchoredAutoRead(
       // cross-workspace behavior).
       const path = await resolveTarget(toCwd(input.path, ctx.cwd));
       let changed = true;
-      const pending: PendingWrite = { path, changed, displayPath: input.path, workspaceRoot: workspace.workspaceRoot };
+      const pending: PendingWrite = { path, changed, displayPath: input.path, workspaceRoot: workspace.workspaceRoot, sessionDir: ctx.sessionManager?.getSessionDir?.() ?? "" };
       pendingWrites.set(event.toolCallId, pending);
       try {
         changed = !Buffer.from(input.content, "utf8").equals(await readFile(path));
@@ -143,7 +145,7 @@ export function registerAnchoredAutoRead(
 
     try {
       return await withFileMutationQueue(pending.path, async () => {
-        const store = await loadProjectHashStore(pending.workspaceRoot);
+        const store = await loadAnchoredHashStore(anchoredStoreDir(pending.sessionDir, pending.workspaceRoot));
         try {
           clearServed(store, pending.path);
           if (!config().anchoredEditing.autoRead || !pending.changed) return;

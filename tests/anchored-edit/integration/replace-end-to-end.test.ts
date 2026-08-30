@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "fs/promises";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { withTempFile, withTempBytes, setupIntegrationTest, useTestHome, getText, extractHash } from "../support/fixtures";
+import { withTempFile, withTempBytes, setupIntegrationTest, getText, extractHash } from "../support/fixtures";
 
-const home = useTestHome();
 
 describe("replace tool — end-to-end", () => {
   it("reads a file and replaces a single line", async () => {
@@ -115,8 +114,7 @@ describe("replace tool — end-to-end", () => {
         ctx,
       );
 
-      await expect(
-        editTool.execute(
+              const refusal = await editTool.execute(
           "e2",
           {
             path: "sample.ts",
@@ -126,8 +124,9 @@ describe("replace tool — end-to-end", () => {
           undefined,
           undefined,
           ctx,
-        ),
-      ).rejects.toThrow(/stale anchor/);
+        );
+        expect(refusal.details.status).toBe("warning");
+        expect(refusal.content[0].text).toMatch(/stale anchor/i);
     });
   });
 
@@ -278,7 +277,7 @@ describe("replace tool — end-to-end", () => {
   it("accepts top-level remove_from/remove_to and replacement_text", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
-      const hashes = await lineHashes("aaa\nbbb\nccc\n", home.testPath);
+      const hashes = await lineHashes("aaa\nbbb\nccc\n");
 
       const editResult = await editTool.execute(
         "e1",

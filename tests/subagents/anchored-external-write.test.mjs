@@ -11,6 +11,7 @@ const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/chil
 const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
 const { lockFilePath, acquireFileLock } = await load("../../src/anchored-edit/file-lock.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 
 const CHILD_ONE = "subagent_00000000-0000-4000-8000-000000000001";
@@ -34,6 +35,8 @@ const root = mkdtempSync(join(tmpdir(), "pi-square-child-anchored-external-write
 const workspace = join(root, "workspace");
 mkdirSync(workspace, { recursive: true });
 
+const sessionDir = join(workspace, ".test-session");
+const storeDir = anchoredStoreDir(sessionDir, workspace);
 const ctx = { cwd: workspace };
 
 try {
@@ -46,10 +49,10 @@ try {
   writeFileSync(external, "one\ntwo\nthree\n", "utf8");
   const canonical = realpathSync(external);
 
-  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE);
+  const childRead = createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir);
   await childRead.execute("seed", { path: "../external-write.txt" }, undefined, undefined, ctx);
 
-  const childWrite = createChildAnchoredWriteTool(workspace, CHILD_ONE);
+  const childWrite = createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir);
   const writeResult = await childWrite.execute(
     "child-write-external",
     { path: "../external-write.txt", content: "one\nTWO\nthree\n" },
@@ -66,7 +69,7 @@ try {
   );
   {
     // The appended anchors are served to the writing child only.
-    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const store = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
     try {
       const fresh = textOf(writeResult.content).match(/([A-Za-z0-9]{3})│TWO/)?.[1];
       assert.ok(fresh, "the fresh anchor is identified");
@@ -79,7 +82,7 @@ try {
 
   // An unchanged external write appends nothing: the pre-write comparison sees
   // identical bytes.
-  const unchangedResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE).execute(
+  const unchangedResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir).execute(
     "child-write-unchanged",
     { path: "../external-write.txt", content: "one\nTWO\nthree\n" },
     undefined,
@@ -93,7 +96,7 @@ try {
   // served rows after a successful changed write, but appends and serves no
   // replacement anchors.
   await childRead.execute("seed-auto-read-off", { path: "../external-write.txt" }, undefined, undefined, ctx);
-  const autoReadOff = await createChildAnchoredWriteTool(workspace, CHILD_ONE, () => false).execute(
+  const autoReadOff = await createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir, () => false).execute(
     "child-write-auto-read-off",
     { path: "../external-write.txt", content: "one\nAUTO-OFF\nthree\n" },
     undefined,
@@ -103,7 +106,7 @@ try {
   assert.match(textOf(autoReadOff.content), /Successfully wrote/);
   assert.doesNotMatch(textOf(autoReadOff.content), /Auto-read/, "autoRead=false appends no child anchors");
   {
-    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const store = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
     try {
       assert.equal(
         store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonical).count,
@@ -118,7 +121,7 @@ try {
   // An unsupported (over-limit) external write keeps the factory result
   // without an anchor appendix: the appendix bounds reject the target.
   const huge = `${"a\n".repeat(240_000)}end`;
-  const hugeResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE).execute(
+  const hugeResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir).execute(
     "child-write-huge",
     { path: "../external-huge.txt", content: huge },
     undefined,
@@ -131,7 +134,7 @@ try {
   // Only the writing child's served rows were cleared; the parent and another
   // child's partitions keep their rows for the same canonical file.
   {
-    const readTwo = createChildAnchoredReadTool(workspace, CHILD_TWO);
+    const readTwo = createChildAnchoredReadTool(workspace, CHILD_TWO, sessionDir);
     await readTwo.execute("seed-two", { path: "../external-write.txt" }, undefined, undefined, ctx);
     await childWrite.execute(
       "child-write-external-again",
@@ -140,7 +143,7 @@ try {
       undefined,
       ctx,
     );
-    const store = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const store = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
     try {
       const childTwoServed = store
         .prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?")
@@ -155,7 +158,7 @@ try {
   // area: while this test process holds the same lock file, the child write
   // refuses recoverably instead of writing past it.
   {
-    const held = await acquireFileLock(lockFilePath(realpathSync(workspace), canonical));
+    const held = await acquireFileLock(lockFilePath(storeDir, canonical));
     try {
       await assert.rejects(
         () => childWrite.execute(
@@ -202,7 +205,7 @@ try {
   try {
     const deniedPath = join(deniedDir, "target.txt");
     await childRead.execute("seed-denied", { path: deniedPath }, undefined, undefined, ctx);
-    const seeded = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const seeded = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
     let seededCount = 0;
     try {
       seededCount = seeded
@@ -224,7 +227,7 @@ try {
       "the unwritable target fails the write",
     );
     assert.equal(readFileSync(deniedPath, "utf8"), "keep\n", "the failed write modified nothing");
-    const afterFail = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+    const afterFail = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
     try {
       const afterFailCount = afterFail
         .prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?")
@@ -240,10 +243,10 @@ try {
   // A child replace and write on the same external file coordinate through the
   // initiating workspace's shared lock (same-workspace discipline, #186 AC7).
   {
-    const childReplace = createChildAnchoredReplaceTool(workspace, CHILD_TWO);
-    const writeTwo = createChildAnchoredWriteTool(workspace, CHILD_TWO);
+    const childReplace = createChildAnchoredReplaceTool(workspace, CHILD_TWO, sessionDir);
+    const writeTwo = createChildAnchoredWriteTool(workspace, CHILD_TWO, sessionDir);
     const rows = readRows(
-      (await createChildAnchoredReadTool(workspace, CHILD_TWO).execute("lock-race-seed", { path: "../external-write.txt" }, undefined, undefined, ctx)).content,
+      (await createChildAnchoredReadTool(workspace, CHILD_TWO, sessionDir).execute("lock-race-seed", { path: "../external-write.txt" }, undefined, undefined, ctx)).content,
     );
     const finalRow = rows.find((row) => row.text === "final");
     assert.ok(finalRow, "the seeded final row exists");

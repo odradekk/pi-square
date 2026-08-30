@@ -18,6 +18,7 @@ const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts"
 const { DEFAULT_CONFIG } = await load("../../src/core/config.ts");
 const { DisplayRuntime } = await load("../../src/display/runtime.ts");
 const { decorateInternalTool } = await load("../../src/display/internal-adapters.ts");
+const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 
 function textOf(content) {
   return content
@@ -50,15 +51,21 @@ const plainTheme = {
 };
 mkdirSync(workspace, { recursive: true });
 
+const sessionDir = join(workspace, ".test-session");
+const storePath = join(sessionDir, "anchored-edit", "hash-store.sqlite");
+const lockDirOf = () => join(sessionDir, "anchored-edit", "locks");
+
 try {
   const source = join(workspace, "source.txt");
   writeFileSync(source, "first\nmiddle\nlast\n", { encoding: "utf8", flag: "w" });
-  await initializeAnchoredReadStore(workspace);
+  await initializeAnchoredReadStore(workspace, sessionDir);
 
   const initialRead = await transformAnchoredReadContent(
     [{ type: "text", text: "factory content" }],
     { path: "source.txt" },
     workspace,
+    undefined,
+    { sessionDir },
   );
   const initialRows = readRows(initialRead);
   const first = initialRows.find((row) => row.text === "first");
@@ -66,7 +73,7 @@ try {
   const last = initialRows.find((row) => row.text === "last");
   assert.ok(first && middle && last, "anchored read serves each source row");
 
-  const replace = createAnchoredReplaceToolDefinition(workspace);
+  const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, undefined, sessionDir);
   const changed = await replace.execute(
     "replace-1",
     {
@@ -95,10 +102,12 @@ try {
     [{ type: "text", text: "factory content" }],
     { path: "silent.txt" },
     workspace,
+    undefined,
+    { sessionDir },
   );
   const silentRow = readRows(silentRead)[0];
   assert.ok(silentRow);
-  const silentReplace = await createAnchoredReplaceToolDefinition(workspace, () => false).execute(
+  const silentReplace = await createAnchoredReplaceToolDefinition(workspace, () => false, undefined, undefined, undefined, sessionDir).execute(
     "replace-silent",
     { path: "silent.txt", remove_from: silentRow.hash, remove_to: silentRow.hash, replacement_text: "after" },
     undefined,
@@ -127,6 +136,8 @@ try {
     [{ type: "text", text: "factory content" }],
     { path: "stale.txt" },
     workspace,
+    undefined,
+    { sessionDir },
   );
   const staleRows = readRows(staleRead);
   const staleFirst = staleRows.find((row) => row.text === "first");
@@ -261,6 +272,8 @@ try {
     [{ type: "text", text: "factory content" }],
     { path: "resolved.txt" },
     workspace,
+    undefined,
+    { sessionDir },
   );
   const target = readRows(resolvedRead).find((row) => row.text === "target");
   assert.ok(target, "anchored read records the only matching path");
@@ -284,6 +297,8 @@ try {
     [{ type: "text", text: "factory content" }],
     { path: "malformed.txt" },
     workspace,
+    undefined,
+    { sessionDir },
   );
   const malformedAnchor = readRows(malformedRead).find((row) => row.text === "malformed");
   assert.ok(malformedAnchor);
@@ -316,12 +331,12 @@ try {
     { path: "../outside.txt" },
     workspace,
     "parent",
-    { confineToWorkspace: false },
+    { confineToWorkspace: false, sessionDir },
   );
   const externalMiddle = readRows(externalRead).find((row) => row.text === "external-middle");
   assert.ok(externalMiddle, "the parent anchored read serves external rows");
 
-  const parentReplace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, false);
+  const parentReplace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, false, sessionDir);
   const externalEdit = await parentReplace.execute(
     "replace-external",
     {
@@ -337,7 +352,7 @@ try {
   assert.equal(externalEdit.details.status, undefined, "an external replace succeeds");
   assert.equal(readFileSync(outside, "utf8"), "outside\nedited externally\n", "the external file is edited in place");
 
-  const externalStore = new DatabaseSync(join(workspace, ".pi", "anchored-edit", "hash-store.sqlite"), { timeout: 500 });
+  const externalStore = new DatabaseSync(storePath, { timeout: 500 });
   try {
     assert.ok(
       externalStore.prepare("SELECT COUNT(*) AS count FROM served WHERE path = ?").get(realpathSync(outside)).count > 0,
@@ -351,7 +366,7 @@ try {
   } finally {
     externalStore.close();
   }
-  const lockDir = join(workspace, ".pi", "anchored-edit", "locks");
+  const lockDir = lockDirOf();
   assert.ok(
     !existsSync(lockDir) || readdirSync(lockDir).length === 0,
     "a completed external replace leaves no lock residue in the initiating workspace",
@@ -379,13 +394,13 @@ try {
   // parent-served external anchor recoverably — the child must read the range
   // itself — instead of refusing the external path.
   {
-    const childComposition = createAnchoredReplaceToolDefinition(workspace, undefined, "subagent_child_probe", true, false);
+    const childComposition = createAnchoredReplaceToolDefinition(workspace, undefined, "subagent_child_probe", true, false, sessionDir);
     const servedChildRead = await transformAnchoredReadContent(
       [{ type: "text", text: "factory content" }],
       { path: "../outside.txt" },
       workspace,
       "subagent_child_probe",
-      { confineToWorkspace: false },
+      { confineToWorkspace: false, sessionDir },
     );
     const servedRow = readRows(servedChildRead).find((row) => row.text === "edited externally");
     assert.ok(servedRow, "the child-surface read serves the external row");

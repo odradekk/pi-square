@@ -1,29 +1,12 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-	createReadTool,
 	formatSize,
 	truncateHead,
 	DEFAULT_MAX_LINES,
 	type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import { MAX_READ_LINE_BYTES } from "./constants";
-import { loadFileKindAndText } from "./file-kind";
-import { readNormFile, safeSnapId } from "./file-reader";
-import { lineHashes, fmtRegion, HASH_SEP, MAX_HASH_LINES } from "./hashline";
-import { toCwd } from "./paths";
-import { abortIf, makePrepareArguments, visLines } from "./utils";
-import { recordServedSafe } from "./served";
-import { loadP, loadGuide } from "./prompts";
-import { valAccess } from "./validation";
-
-const R_DESC = loadP("./prompts/read.md");
-
-const R_SNIPPET = loadP("./prompts/read-snippet.md");
-
-function readGuide(): string[] {
-	return loadGuide("./prompts/read-guidelines.md");
-}
+import { lineHashes, fmtRegion, HASH_SEP } from "./hashline";
+import { visLines } from "./utils";
 
 function normPosInt(
 	value: number | undefined,
@@ -55,7 +38,6 @@ export async function fmtReadPreview(
 	text: string,
 	options: { offset?: number; limit?: number },
 	precomputedHashes?: string[],
-	path?: string,
 	maxLineBytes = MAX_READ_LINE_BYTES,
 	maxTruncLines = DEFAULT_MAX_LINES,
 ): Promise<{ text: string; truncation?: TruncationResult; nextOffset?: number; servedHashes: string[] }> {
@@ -64,7 +46,7 @@ export async function fmtReadPreview(
 	const startLine = normPosInt(options.offset, "offset") ?? 1;
 	if (totalLines === 0) {
 		if (startLine === 1) {
-      const allHashes = precomputedHashes ?? await (path ? lineHashes(text, path) : lineHashes(text));
+      const allHashes = precomputedHashes ?? await lineHashes(text);
       const emptyLineHash = allHashes[0] ?? "";
       return {
 				text: `${emptyLineHash}${HASH_SEP}\n[File is empty. Use replace to insert content.]`,
@@ -88,7 +70,7 @@ export async function fmtReadPreview(
 		? Math.min(startLine - 1 + limit, totalLines)
 		: totalLines;
 	const selected = allLines.slice(startLine - 1, endIdx);
-	const allHashes = precomputedHashes ?? await (path ? lineHashes(text, path) : lineHashes(text));
+	const allHashes = precomputedHashes ?? await lineHashes(text);
 	const selectedHashes = allHashes.slice(startLine - 1, endIdx);
 	const formatted = fmtRegion(selectedHashes, selected);
 	const maxBytes = maxLineBytes;
@@ -158,87 +140,3 @@ export async function fmtReadPreview(
 	};
 }
 
-export function regRead(pi: ExtensionAPI): void {
-	pi.registerTool({
-		name: "read",
-		label: "Read",
-		description: R_DESC,
-		promptSnippet: R_SNIPPET,
-		promptGuidelines: readGuide(),
-		prepareArguments: makePrepareArguments(),
-		parameters: Type.Object({
-			path: Type.String({
-				description: "Path to the file to read (relative or absolute)",
-			}),
-			offset: Type.Optional(
-				Type.Integer({
-					minimum: 1,
-					description: "Line number to start reading from (1-indexed)",
-				}),
-			),
-			limit: Type.Optional(
-				Type.Integer({
-					minimum: 1,
-					description: "Maximum number of lines to read",
-				}),
-			),
-		}, { additionalProperties: false }),
-
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const rawPath = params.path;
-			const absolutePath = toCwd(rawPath, ctx.cwd);
-
-			abortIf(signal);
-			await valAccess(absolutePath, rawPath);
-
-			abortIf(signal);
-			const file = await loadFileKindAndText(absolutePath, { maxLines: MAX_HASH_LINES, displayPath: rawPath });
-			if (file.kind === "image") {
-				const builtinRead = createReadTool(ctx.cwd);
-				const executeBuiltinRead = builtinRead.execute as unknown as (
-					toolCallId: string,
-					input: typeof params,
-					abortSignal: typeof signal,
-					onUpdate: typeof _onUpdate,
-					context: typeof ctx,
-				) => ReturnType<typeof builtinRead.execute>;
-				return executeBuiltinRead(_toolCallId, params, signal, _onUpdate, ctx);
-			}
-      const { normalized, fileHashes, hadUtf8DecodeErrors, absolutePath: resolvedPath } = await readNormFile(
-        rawPath, ctx.cwd, { signal, preloadedFile: file, maxLines: MAX_HASH_LINES },
-      );
-			const preview = await fmtReadPreview(
-				normalized,
-				{
-					offset: params.offset,
-					limit: params.limit,
-				},
-				fileHashes,
-				resolvedPath,
-			);
-			await recordServedSafe(resolvedPath, preview.servedHashes, "read");
-			const snapshotId = await safeSnapId(absolutePath, "read");
-			const previewText =
-				hadUtf8DecodeErrors
-					? `${preview.text}\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]`
-					: preview.text;
-
-			return {
-				content: [{ type: "text", text: previewText }],
-				details: {
-					truncation: preview.truncation,
-					snapshotId,
-					...(preview.nextOffset !== undefined
-						? { nextOffset: preview.nextOffset }
-						: {}),
-					metrics: {
-						truncated: !!preview.truncation,
-						...(preview.nextOffset !== undefined
-							? { next_offset: preview.nextOffset }
-							: {}),
-					},
-				},
-			};
-		},
-	});
-}

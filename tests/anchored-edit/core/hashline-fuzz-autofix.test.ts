@@ -5,9 +5,10 @@ import {
   lastNonEmptyIndex,
   splitLines,
 } from "../../../src/anchored-edit/utils";
-import { useTestHome, expectedEditContent } from "../support/fixtures";
+import { useTestHome, expectedEditContent, useScratchStore } from "../support/fixtures";
 
 const home = useTestHome();
+const { store: scratchStore } = useScratchStore();
 
 const VOCAB = [
   "",
@@ -201,7 +202,7 @@ async function runStep(
   expect(result.content).toBe(expected);
   if (expected === content) {
     expect(result.autoFixes).toBeUndefined();
-    const rehashed = await lineHashes(content, path, { content, hashes });
+    const rehashed = await lineHashes(content, path, { content, hashes }, scratchStore());
     expect(rehashed).toEqual(hashes);
     return { content, hashes, autofixed: fixes.length > 0, noop: true };
   }
@@ -214,7 +215,7 @@ async function runStep(
     expect(result.autoFixes).toBeUndefined();
   }
   const removedHashes = new Set(hashes.slice(s - 1, e));
-  const resultHashes = await lineHashes(expected, path, { content, hashes, removedHashes });
+  const resultHashes = await lineHashes(expected, path, { content, hashes, removedHashes }, scratchStore());
   const newLines = splitLines(expected);
   expect(resultHashes).toHaveLength(newLines.length);
   expect(new Set(resultHashes).size).toBe(resultHashes.length);
@@ -225,7 +226,7 @@ async function runStep(
   for (let i = e; i < lines.length; i++) {
     expect(resultHashes[i + shift]).toBe(hashes[i]);
   }
-  const reloaded = await lineHashes(expected, path);
+  const reloaded = await lineHashes(expected, path, undefined, scratchStore());
   expect(reloaded).toEqual(resultHashes);
   return { content: expected, hashes: resultHashes, autofixed: fixes.length > 0, noop: false };
 }
@@ -238,7 +239,7 @@ describe("fuzz: boundary-dup autocorrection with hash stability", () => {
       const rnd = mulberry32(iter * 32452843 + 5);
       const path = `${home.testPath}-fuzz-${iter}`;
       const content = randContent(rnd);
-      const hashes = await lineHashes(content, path);
+      const hashes = await lineHashes(content, path, undefined, scratchStore());
       const state = await runStep(content, hashes, path, rnd);
       if (!state) continue;
       if (state.autofixed) autofixed++;
@@ -254,7 +255,7 @@ describe("fuzz: boundary-dup autocorrection with hash stability", () => {
       const rnd = mulberry32(iter * 15485867 + 11);
       const path = `${home.testPath}-chain-${iter}`;
       let content = randContent(rnd);
-      let hashes = await lineHashes(content, path);
+      let hashes = await lineHashes(content, path, undefined, scratchStore());
       let edited = 0;
       for (let step = 0; step < 8 && edited < 6; step++) {
         const state = await runStep(content, hashes, path, rnd);
@@ -265,7 +266,7 @@ describe("fuzz: boundary-dup autocorrection with hash stability", () => {
         hashes = state.hashes;
       }
       if (edited >= 2) {
-        const reloaded = await lineHashes(content, path);
+        const reloaded = await lineHashes(content, path, undefined, scratchStore());
         expect(reloaded).toEqual(hashes);
       }
     }

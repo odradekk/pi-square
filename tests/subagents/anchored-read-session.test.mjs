@@ -10,6 +10,7 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 
 const workspace = mkdtempSync(join(tmpdir(), "pi-square-child-read-session-"));
+const sessionDir = join(workspace, ".test-session");
 writeFileSync(join(workspace, "source.txt"), "one\ntwo\nthree");
 
 async function sessionWith(customTools) {
@@ -26,7 +27,7 @@ async function sessionWith(customTools) {
 try {
   // Anchored editing enabled + writable child: the custom anchored read
   // replaces the built-in read, so exactly one read tool is offered.
-  const anchored = await sessionWith([createChildAnchoredReadTool(workspace, "child-one")]);
+  const anchored = await sessionWith([createChildAnchoredReadTool(workspace, "child-one", sessionDir)]);
   const readNames = anchored.getAllTools().map((tool) => tool.name);
   assert.deepEqual(readNames, ["read", "write"], "only one read tool is offered to the child");
   const anchoredRead = anchored.getToolDefinition("read");

@@ -6,9 +6,10 @@ import {
   resEdit,
 } from "../../../src/anchored-edit/hashline";
 import { firstNonEmpty, lastNonEmpty, splitLines } from "../../../src/anchored-edit/utils";
-import { useTestHome, expectedEditContent } from "../support/fixtures";
+import { useTestHome, expectedEditContent, useScratchStore } from "../support/fixtures";
 
 const home = useTestHome();
+const { store: scratchStore } = useScratchStore();
 
 function replayFixes(
 	repl: string[],
@@ -154,7 +155,7 @@ describe("property: single random edit per call", () => {
       const rnd = mulberry32(iter * 7919 + 13);
       const content = randContent(rnd);
       const lines = splitLines(content);
-      const hashes = await lineHashes(content, home.testPath);
+      const hashes = await lineHashes(content);
       const span = randSpan(rnd, lines, [], !content.endsWith("\n"));
       if (!span) continue;
       const edit = resEdit({
@@ -172,7 +173,7 @@ describe("property: single random edit per call", () => {
         content,
         hashes,
         removedHashes,
-      });
+      }, scratchStore());
       assertMappingInvariants(
         lines,
         hashes,
@@ -190,7 +191,7 @@ describe("property: sequential random edits", () => {
       const rnd = mulberry32(iter * 104729 + 7);
       const content = randContent(rnd);
       const lines = splitLines(content);
-      const hashes = await lineHashes(content, home.testPath);
+      const hashes = await lineHashes(content);
       const spans: { s: number; e: number; repl: string[] }[] = [];
       for (let i = 0; i < 3 && spans.length < 3; i++) {
         const span = randSpan(rnd, lines, spans, !content.endsWith("\n"));
@@ -200,7 +201,7 @@ describe("property: sequential random edits", () => {
       let current = content;
       const applied: { s: number; e: number; repl: string[] }[] = [];
       for (const span of [...spans].sort((a, b) => b.s - a.s)) {
-        const currentHashes = await lineHashes(current, home.testPath);
+        const currentHashes = await lineHashes(current);
         const edit = resEdit({
           remove_from: currentHashes[span.s - 1]!,
           remove_to: currentHashes[span.e - 1]!,
@@ -240,7 +241,7 @@ describe("property: sequential random edits", () => {
         content,
         hashes,
         removedHashes,
-      });
+      }, scratchStore());
       assertMappingInvariants(
         lines,
         hashes,
@@ -274,7 +275,7 @@ describe("property: chained stable mapping at every step", () => {
       const chainPath = `${home.testPath}-chain-${iter}`;
       let content = randContent(rnd);
       let lines = splitLines(content);
-      let hashes = await lineHashes(content, chainPath);
+      let hashes = await lineHashes(content, chainPath, undefined, scratchStore());
       let edited = 0;
       for (let step = 0; step < 8 && edited < 6; step++) {
         const span = randSpan(rnd, lines, [], !content.endsWith("\n"));
@@ -300,7 +301,7 @@ describe("property: chained stable mapping at every step", () => {
           content,
           hashes,
           removedHashes,
-        });
+        }, scratchStore());
         expect(nextHashes).toHaveLength(splitLines(expected).length);
         assertMappingInvariants(
           lines,
@@ -315,7 +316,7 @@ describe("property: chained stable mapping at every step", () => {
         edited++;
       }
       if (edited > 0) {
-        const reloaded = await lineHashes(content, chainPath);
+        const reloaded = await lineHashes(content, chainPath, undefined, scratchStore());
         expect(reloaded).toEqual(hashes);
       }
     }
