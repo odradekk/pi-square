@@ -58,8 +58,8 @@ try {
 
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "delegate", "docs", "fetch", "github",
-    "libs", "parse", "pdf_search", "resume", "search", "ssh",
-    "todo",
+    "libs", "parse", "pdf_search", "read_memory_source", "resume", "search",
+    "ssh", "submit_memory", "todo",
   ]);
   assert.ok(childToolNames.includes("codegraph"));
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
@@ -177,12 +177,33 @@ try {
   const factoryRead = createReadToolDefinition(ctx.cwd);
   assert.deepEqual(tools.get("read")?.parameters, factoryRead.parameters, "anchored read must retain Pi's exact read schema");
   assert.equal(tools.get("anchored-edit"), undefined, "anchored editing must not register a second tool");
+
+  // ── Context Memory (#215, #216): two parent-only tools, strict schemas ──
+  const submitMemoryTool = tools.get("submit_memory");
+  const readMemorySourceTool = tools.get("read_memory_source");
+  assert.ok(submitMemoryTool, "submit_memory registers through the extension entrypoint");
+  assert.ok(readMemorySourceTool, "read_memory_source registers through the extension entrypoint");
+  for (const memoryTool of [submitMemoryTool, readMemorySourceTool]) {
+    assert.equal(memoryTool.renderShell, "self", `${memoryTool.name} must use the shared display shell`);
+    assert.equal(typeof memoryTool.renderCall, "function", `${memoryTool.name} must render calls`);
+    assert.equal(typeof memoryTool.renderResult, "function", `${memoryTool.name} must render results`);
+    assert.equal(memoryTool.parameters.type, "object");
+    assert.equal(memoryTool.parameters.anyOf, undefined);
+    assert.equal(memoryTool.parameters.oneOf, undefined);
+    assert.equal(memoryTool.parameters.additionalProperties, false);
+    assert.ok(!childToolNames.includes(memoryTool.name), `${memoryTool.name} must stay parent-only`);
+  }
+  assert.deepEqual(submitMemoryTool.parameters.required, ["markdown"]);
+  assert.deepEqual(Object.keys(submitMemoryTool.parameters.properties), ["markdown"]);
+  assert.deepEqual(readMemorySourceTool.parameters.required, ["block", "page"]);
+  assert.deepEqual(Object.keys(readMemorySourceTool.parameters.properties).sort(), ["block", "page"]);
+
   for (const name of [
     "pdf_search", "codegraph", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
     "github",
-    "ask", "todo", "delegate", "resume",
+    "ask", "todo", "submit_memory", "read_memory_source", "delegate", "resume",
   ]) {
     const tool = tools.get(name);
     assert.equal(tool?.renderShell, "self", `${name} parent tool must use the shared display shell`);

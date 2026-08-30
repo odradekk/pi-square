@@ -26,6 +26,7 @@ function makeInput(overrides = {}) {
       { id: "subagents", label: "subagent catalog", category: "catalog", phase: "dynamic-suffix", text: "## Subagents", details: [{ label: "agents", value: "4" }], turnSeq: 1 },
     ],
     promptOrder: ["native-system", "subagents"],
+    memory: { state: "disabled" },
     systemPromptChars: 600,
     collapsedMessages: { rows: [], hiddenCount: 0, hiddenChars: 0, hiddenStart: -1 },
     totalMessageEntries: 0,
@@ -118,6 +119,57 @@ function makeMessagesInput(overrides = {}) {
   assert.match(text, /tool\(read,write\)/, "verbose shows tool calls");
   // No closing rule
   assert.doesNotMatch(text, /─{20,}/, "verbose has no closing decorative rule");
+}
+
+// ─── 4b. Context Memory memory[] section (#215, #216) ─────────────
+
+{
+  const input = makeMessagesInput();
+  const text = stripVTControlCharacters(renderVerbose(input, plainTheme()));
+  const memoryAt = text.indexOf("memory[]");
+  const systemAt = text.indexOf("systemPrompt");
+  const messagesAt = text.indexOf("messages[]");
+  assert.ok(memoryAt > systemAt && memoryAt < messagesAt,
+    "memory[] sits between the system-prompt section and the message section");
+  const memoryLines = text.split("\n").filter((line) => line.includes("memory[]"));
+  assert.equal(memoryLines.length, 1, "the disabled state renders exactly one bounded line");
+  assert.match(memoryLines[0], /memory\[\]\s+disabled · enable through agent-level contextMemory configuration/);
+}
+
+{
+  for (const [memory, pattern] of [
+    [{ state: "unsupported", reason: "host-version" }, /unsupported Pi host · native compaction unchanged/],
+    [{ state: "unsupported", reason: "host-interfaces" }, /required Pi interfaces unavailable · native compaction unchanged/],
+    [{ state: "no-memory" }, /enabled · no Memory blocks yet/],
+  ]) {
+    const input = makeMessagesInput({ memory });
+    const text = stripVTControlCharacters(renderVerbose(input, plainTheme()));
+    const memoryLines = text.split("\n").filter((line) => line.includes("memory[]"));
+    assert.equal(memoryLines.length, 1, `${memory.state} renders exactly one bounded line`);
+    assert.match(memoryLines[0], pattern);
+  }
+}
+
+// The usage bar keeps its exact five-segment accounting: Memory never adds
+// a bar segment or legend entry (#215).
+{
+  const barInput = {
+    messagesByRole: { user: 400, assistant: 1200, toolResult: 800 },
+  };
+  const disabled = stripVTControlCharacters(renderUsageBar(makeMessagesInput(barInput), plainTheme()));
+  const enabled = stripVTControlCharacters(renderUsageBar(makeMessagesInput({ ...barInput, memory: { state: "no-memory" } }), plainTheme()));
+  assert.equal(disabled, enabled, "the total usage bar is unchanged by Memory state");
+  for (const segment of ["tools", "system", "user", "assistant", "toolResult", "free"]) {
+    assert.ok(disabled.includes(segment), `usage bar keeps the ${segment} segment`);
+  }
+  assert.ok(!/memory/i.test(disabled), "the usage bar never mentions memory");
+}
+
+// Summary mode stays without the memory[] section (#215 scopes it to /context verbose).
+{
+  const input = makeMessagesInput({ memory: { state: "no-memory" } });
+  const text = stripVTControlCharacters(renderSummary(input, plainTheme()));
+  assert.ok(!text.includes("memory[]"), "summary mode has no memory[] section");
 }
 
 // ─── 5. Error state shows error rows in summary ───────────────────

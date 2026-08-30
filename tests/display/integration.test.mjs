@@ -55,7 +55,11 @@ for (const entry of DISPLAY_CATALOG) {
       tool: entry.name,
       family: entry.family,
       ...stateMap[status],
-      title: entry.name.toUpperCase(),
+      // Stand-in for the display title, capped at the longest title the
+      // adapter actually produces ("Resume subagent"). The raw catalog name is
+      // not a title any tool renders, and an 18-character one would shrink the
+      // header budget below anything production reaches.
+      title: entry.name.toUpperCase().slice(0, 15),
       target: "src/target\x1b]0;owned\x07.ts",
       metadata: [{ label: "count", value: "12" }, { label: "api_key", value: "api_key=secret-value" }],
       rows: status === "success" ? [] : [{ text: status === "error" ? "Bearer hidden-token" : `${status} state` }],

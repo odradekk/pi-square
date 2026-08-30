@@ -21,6 +21,10 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   parse: ["path", "pages", "mode", "max_tokens", "timeout"],
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
   // github uses per-operation GITHUB_ARG_FIELDS below, not this flat map.
+  // Context Memory tools (odradekk/pi-square#215): submitted Memory Markdown
+  // and transcript pages must never reach display metadata or previews.
+  submit_memory: [],
+  read_memory_source: [],
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
   delegate: ["agent", "mode", "task", "cwd", "model", "thinkingLevel", "context"],
@@ -33,6 +37,9 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
   docs: ["libraryId"], parse: ["path"], replace: ["path"],
   ask: [], todo: ["action"],
+  // No target field for the Context Memory tools: Memory Markdown must never
+  // become a header target; read_memory_source's composed `block B · page P`
+  // target arrives with its display contract (#217).
   delegate: ["agent"], resume: ["id"],
 });
 
@@ -43,6 +50,7 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", replace: "Replace", github: "GitHub",
   ask: "Questions", todo: "Tasks",
+  submit_memory: "Memory submit", read_memory_source: "Memory source",
   delegate: "Subagent", resume: "Resume subagent",
 });
 
