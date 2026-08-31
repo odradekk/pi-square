@@ -616,6 +616,174 @@ try {
     "submit_memory deactivates after the append handshake",
   );
 
+  // ── #220: the suffix rebuild through Pi's own compaction seam end to end ──
+
+  // A smaller model window (26000) puts the two committed blocks above half
+  // of the 1% Memory budget (130 tokens), so the next due run is the
+  // maintenance rebuild of the newest block. Round-three bulk conversation
+  // carries a fabricated post-compaction usage so Pi's numeric usage is due
+  // while the complete maintenance request still fits the window.
+  let smokeThirdSourceEnd;
+  for (let i = 0; i < 12; i++) {
+    smokeSession.appendMessage({
+      role: "user", content: `smoke third-round request ${i} ` + "maintenance filler ".repeat(16), timestamp: 700 + i * 2,
+    });
+    smokeThirdSourceEnd = smokeSession.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: `smoke third-round answer ${i} ` + "maintenance response filler ".repeat(12) }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 3000, output: 500, cacheRead: 0, cacheWrite: 0, totalTokens: 3500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop", timestamp: 701 + i * 2,
+    });
+  }
+  session.agent.state.model = { provider: "smoke", id: "smoke-model-small", contextWindow: 26000 };
+  session.agent.streamFunction = async () => {
+    throw new Error("the Context Memory takeover must not call the model");
+  };
+  session.agent.state.messages = smokeSession.buildSessionContext().messages;
+  await runner.emit({ type: "agent_settled" });
+  const rebuildDueView = await runContextCommand();
+  assert.match(rebuildDueView, /memory\[\]\s+active/, "/context keeps the active Memory view while due for maintenance");
+  assert.match(rebuildDueView, /next: rebuild/, "/context reports the rebuild as the next operation");
+  assert.match(rebuildDueView, /stable 1\/2/, "/context previews the unchanged single-block prefix");
+
+  const thirdInputResult = await runner.emitInput("smoke: maintain the Memory blocks", undefined, "interactive");
+  assert.equal(thirdInputResult.action, "continue");
+  assert.ok(
+    session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "the due real-user run opens as the maintenance rebuild",
+  );
+
+  const thirdRequestEntry = smokeSession.appendMessage({
+    role: "user", content: "smoke: maintain the Memory blocks", timestamp: 800,
+  });
+  const thirdProjected = smokeSession.buildSessionContext().messages;
+  assert.equal(thirdProjected[0].role, "compactionSummary");
+  assert.equal(thirdProjected[0].summary, composeMemorySummary([smokeBlock, smokeSecondBlock]));
+  const thirdTransformed = await runner.emitContext(thirdProjected);
+  assert.ok(Array.isArray(thirdTransformed), "the maintenance run transforms Pi's real projected request");
+  assert.equal(
+    thirdTransformed[0].summary,
+    composeMemorySummary([smokeBlock]),
+    "the summary message keeps exactly the unchanged first block",
+  );
+  assert.equal(thirdTransformed[1].content, "smoke: ship the first Memory block",
+    "the inserted sources begin at the selected block's first original entry (the prior run's retained request)");
+  const thirdSerialized = JSON.stringify(thirdTransformed);
+  assert.equal((thirdSerialized.match(/smoke second-round request 0/g) ?? []).length, 1,
+    "the selected source entries appear exactly once");
+  assert.ok(thirdSerialized.includes("smoke: ship the second Memory block"),
+    "the raw tail retained by the second compaction stays in the request");
+  const thirdAdvisories = thirdTransformed.filter(
+    (message) => message?.customType === "pi-square.context-memory/advisory",
+  );
+  assert.equal(thirdAdvisories.length, 1, "the maintenance run carries exactly one advisory");
+  assert.ok(thirdAdvisories[0].content.includes("maintenance compression is due"),
+    "the maintenance advisory identifies the rebuild operation");
+  assert.equal(thirdTransformed.at(-2)?.content, "smoke: maintain the Memory blocks",
+    "the advisory sits directly after the current user message");
+
+  const smokeRebuiltBlock = "# Smoke rebuilt block\n\n- the second-round sources and this run in one block";
+  smokeSession.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "text", text: "done — submitting the replacement block" },
+      { type: "toolCall", id: "smoke:submit-rebuild", name: "submit_memory", arguments: { markdown: smokeRebuiltBlock } },
+    ],
+    api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "toolUse", timestamp: 801,
+  });
+  await runner.emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "done — submitting the replacement block" },
+        { type: "toolCall", id: "smoke:submit-rebuild", name: "submit_memory", arguments: { markdown: smokeRebuiltBlock } },
+      ],
+    },
+  });
+  const rebuildSubmitCtx = runner.createCommandContext();
+  const rebuildSubmitResult = await toolByName("submit_memory").execute(
+    "smoke:submit-rebuild",
+    { markdown: smokeRebuiltBlock },
+    undefined,
+    undefined,
+    rebuildSubmitCtx,
+  );
+  assert.equal(rebuildSubmitResult.content[0].text, "Memory candidate accepted; compaction pending.");
+  smokeSession.appendMessage({
+    role: "toolResult", toolCallId: "smoke:submit-rebuild", toolName: "submit_memory",
+    content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 802,
+  });
+
+  await runner.emit({ type: "agent_settled" });
+  for (let i = 0; i < 500 && session.isCompacting; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(!session.isCompacting, "the settle-triggered rebuild compaction finished");
+
+  const smokeCompactionsRebuilt = smokeSession.getBranch().filter((entry) => entry.type === "compaction");
+  assert.equal(smokeCompactionsRebuilt.length, 3, "Pi's own seam saved exactly one more compaction entry");
+  const rebuiltCompactionEntry = smokeCompactionsRebuilt[2];
+  assert.equal(rebuiltCompactionEntry.fromHook, true, "the rebuilt entry carries extension origin");
+  assert.equal(rebuiltCompactionEntry.firstKeptEntryId, thirdRequestEntry,
+    "the maintenance run's real-user request is the retained-tail boundary");
+  assert.equal(
+    rebuiltCompactionEntry.summary,
+    firstCompactionEntry.summary + "\n---\n\n" + smokeRebuiltBlock,
+    "the unselected block stays byte-identical and divergence begins at the first rebuilt block",
+  );
+  assert.deepEqual(rebuiltCompactionEntry.details, {
+    format: MEMORY_FORMAT_TAG,
+    blocks: [
+      secondCompactionEntry.details.blocks[0],
+      { endEntryId: smokeThirdSourceEnd, markdownBytes: Buffer.byteLength(smokeRebuiltBlock, "utf8") },
+    ],
+  }, "Pi round-trips the rebuild directory with the unchanged first entry");
+
+  // The projected provider context renders deterministically after the
+  // rebuild and keeps the first block's rendering byte-identical.
+  const thirdProjection = smokeSession.buildSessionContext().messages;
+  assert.equal(JSON.stringify(smokeSession.buildSessionContext().messages), JSON.stringify(thirdProjection),
+    "repeated rendering after the rebuild is byte-identical");
+  assert.equal(thirdProjection[0].summary, composeMemorySummary([smokeBlock, smokeRebuiltBlock]));
+
+  const rebuiltView = await runContextCommand();
+  assert.match(rebuiltView, /2 blocks/, "/context counts the prefix and replacement blocks");
+  const rebuiltDetailView = await runContextCommand("memory 2");
+  assert.match(rebuiltDetailView, /# Smoke rebuilt block/, "/context memory shows the replacement block Markdown");
+  assert.match(rebuiltDetailView, /smoke second-round request 0/, "/context memory shows the rebuilt block's sources");
+  const rebuiltRead = toolByName("read_memory_source");
+  const rebuiltPages = [];
+  let rebuiltPage = 1;
+  for (;;) {
+    const result = await rebuiltRead.execute(
+      `smoke:memory-source-rebuilt:${rebuiltPage}`,
+      { block: 2, page: rebuiltPage },
+      undefined,
+      undefined,
+      runner.createCommandContext(),
+    );
+    rebuiltPages.push(result.content[1].text);
+    if (!result.details.hasMore) break;
+    rebuiltPage += 1;
+  }
+  assert.match(rebuiltPages[0], /smoke second-round request 0/,
+    "the rebuilt block recovers the selected suffix's original conversation");
+  const rebuiltTranscript = rebuiltPages.join("");
+  assert.match(rebuiltTranscript, /smoke: ship the second Memory block/,
+    "the rebuilt block also covers the raw tail retained by the previous compaction");
+  assert.match(rebuiltTranscript, /smoke third-round request 0/,
+    "the rebuilt block covers the newly accumulated raw tail");
+  assert.ok(!rebuiltTranscript.includes("smoke bulk request 0"),
+    "the unchanged prefix keeps its own sources");
+  assert.ok(
+    !session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "submit_memory deactivates after the rebuild handshake",
+  );
+
   // The fake model and stream stub existed only for the compaction seams; the
   // remaining sections run model-agnostic like the rest of the smoke.
   session.agent.state.model = undefined;

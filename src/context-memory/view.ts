@@ -1,15 +1,17 @@
 /**
- * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #218, #221).
+ * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #218, #219, #220, #221).
  *
  * The controller publishes this bounded snapshot through the registrar's
  * view provider; Prompt Manager renders it as the `/context` `memory[]`
  * section. It is not a system-prompt segment and never enters the system
  * prompt. #217 added the reading states (`opaque`, `active`); #218 adds the
  * submission-handshake states: `due` (threshold reached, the next real-user
- * run authors the first block), `pending` (a candidate was accepted this run
- * and compaction follows), and `committing` (takeover in progress). #221 adds
- * the `ephemeral` marker for in-memory sessions; later slices add the
- * scale-limit state.
+ * run authors the first Memory block), `pending` (a candidate was accepted
+ * this run and compaction follows), and `committing` (takeover in progress).
+ * #221 adds the `ephemeral` marker for in-memory sessions. #220 adds the
+ * `scale-limit` state: Memory sits above half its budget and the complete
+ * maintenance request cannot fit the model window, so the structured
+ * takeover stops and Pi native compaction keeps owning the boundary.
  */
 
 /** Custom-message type of the one ephemeral due-run advisory (#218). */
@@ -33,6 +35,7 @@ export type ContextMemorySnapshot =
   | { readonly state: "pending"; readonly ephemeral?: true }
   | { readonly state: "committing"; readonly ephemeral?: true }
   | { readonly state: "opaque"; readonly ephemeral?: true }
+  | { readonly state: "scale-limit"; readonly ephemeral?: true }
   | {
     readonly state: "active";
     /** Total blocks in current Memory. */

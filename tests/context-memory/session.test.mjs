@@ -711,6 +711,244 @@ try {
     assert.equal(sm.isPersisted(), false, "the append handshake wrote no sidecar");
   }
 
+  // ── #220: the suffix rebuild through the real tree, with exact prefix snapshots ──
+
+  {
+    const sm = SessionManager.inMemory("/project");
+    const firstUser = sm.appendMessage({ role: "user", content: "explore the parser internals", timestamp: 1 });
+    const firstAssistant = sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "the parser walks three bounded phases" }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop", timestamp: 2,
+    });
+    const secondUser = sm.appendMessage({ role: "user", content: "verify the second exchange", timestamp: 3 });
+    const secondAssistant = sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "SECOND-NEEDLE the second exchange is verified exactly" }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop", timestamp: 4,
+    });
+    const keptUser = sm.appendMessage({ role: "user", content: "ship it", timestamp: 5 });
+    const blockAlpha = "# Parser tour\n\n- the parser walks three bounded phases";
+    const blockBeta = "# Second exchange\n\n- " + "b".repeat(7600);
+    const carrying = sm.appendCompaction(
+      composeMemorySummary([blockAlpha, blockBeta]),
+      keptUser,
+      4321,
+      {
+        format: MEMORY_FORMAT_TAG,
+        blocks: [
+          { endEntryId: firstAssistant, markdownBytes: Buffer.byteLength(blockAlpha, "utf8") },
+          { endEntryId: secondAssistant, markdownBytes: Buffer.byteLength(blockBeta, "utf8") },
+        ],
+      },
+      true,
+    );
+
+    // The raw tail accumulated since the carrying compaction.
+    sm.appendMessage({ role: "user", content: "new work after the compaction", timestamp: 6 });
+    const tailAssistant = sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "TAIL-NEEDLE the tail work is finished" }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop", timestamp: 7,
+    });
+
+    const rebuildHarness = harness({
+      enabled: true,
+      compressionThreshold: { tokens: 2500 },
+      memoryBudgetPercent: 1,
+    });
+    const rebuildCtx = commandContext(sm);
+    await rebuildHarness.emit("session_start", { type: "session_start", reason: "resume" }, rebuildCtx);
+    const overHalf = rebuildHarness.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+    assert.equal(overHalf.state, "active");
+    assert.equal(overHalf.blocks, 2);
+    assert.equal(overHalf.nextOperation, "rebuild", "Memory above half budget plans the rebuild");
+    assert.equal(overHalf.stablePrefix, 1, "the shared selection keeps exactly the first block stable");
+
+    await rebuildHarness.emit("input", { type: "input", text: "maintain the memory", source: "interactive" }, rebuildCtx);
+    assert.ok(rebuildHarness.activeTools().includes("submit_memory"),
+      "the due real-user run opens as the maintenance rebuild on the real tree");
+    assert.ok(rebuildHarness.activeTools().includes("read_memory_source"));
+
+    const requestEntry = sm.appendMessage({ role: "user", content: "maintain the memory", timestamp: 8 });
+    const projectedRequest = sm.buildSessionContext().messages;
+    assert.equal(projectedRequest[0].role, "compactionSummary");
+    assert.equal(projectedRequest[0].summary, composeMemorySummary([blockAlpha, blockBeta]));
+    const transformed = await rebuildHarness.emit("context", { type: "context", messages: projectedRequest }, rebuildCtx);
+    assert.ok(transformed?.messages, "the maintenance run transforms Pi's real projected request");
+    assert.equal(transformed.messages[0].summary, composeMemorySummary([blockAlpha]),
+      "the real summary message keeps exactly the unchanged prefix rendering");
+    assert.equal(transformed.messages[1].content, "verify the second exchange",
+      "the selected block's original sources are inserted in source order");
+    assert.deepEqual(
+      transformed.messages[2].content,
+      [{ type: "text", text: "SECOND-NEEDLE the second exchange is verified exactly" }],
+      "the selected block's original assistant message is projected in full",
+    );
+    const serialized = JSON.stringify(transformed.messages);
+    assert.equal((serialized.match(/SECOND-NEEDLE/g) ?? []).length, 1,
+      "the selected source entry appears exactly once");
+    assert.ok(!serialized.includes("b".repeat(200)), "the selected block body never appears beside its sources");
+    for (const tail of ["ship it", "new work after the compaction", "TAIL-NEEDLE the tail work is finished"]) {
+      assert.ok(serialized.includes(tail), `the raw tail stays in the request: ${JSON.stringify(tail)}`);
+    }
+    const advisories = transformed.messages.filter((message) => message?.customType === "pi-square.context-memory/advisory");
+    assert.equal(advisories.length, 1, "exactly one maintenance advisory");
+    assert.ok(advisories[0].content.includes("maintenance compression is due"));
+    assert.equal(transformed.messages.at(-2).content, "maintain the memory",
+      "the advisory sits directly after the current user message");
+
+    const rebuiltBlock = "# Rebuilt exchange\n\n- the second exchange and the accumulated tail in one block";
+    sm.appendMessage({
+      role: "assistant",
+      content: [
+        { type: "text", text: "done — submitting the replacement block" },
+        { type: "toolCall", id: "call-rebuild", name: "submit_memory", arguments: { markdown: rebuiltBlock } },
+      ],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "toolUse", timestamp: 9,
+    });
+    await rebuildHarness.emit("message_end", {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "done — submitting the replacement block" },
+          { type: "toolCall", id: "call-rebuild", name: "submit_memory", arguments: { markdown: rebuiltBlock } },
+        ],
+      },
+    }, rebuildCtx);
+    const accepted = await rebuildHarness.tools.get("submit_memory").execute(
+      "call-rebuild",
+      { markdown: rebuiltBlock },
+      undefined,
+      undefined,
+      rebuildCtx,
+    );
+    assert.equal(accepted.content[0].text, "Memory candidate accepted; compaction pending.");
+    sm.appendMessage({
+      role: "toolResult", toolCallId: "call-rebuild", toolName: "submit_memory",
+      content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 10,
+    });
+    assert.deepEqual(rebuildHarness.registration.snapshot(), { state: "pending", ephemeral: true });
+
+    const compactCalls = [];
+    const settleCtx = { ...rebuildCtx, compact: () => compactCalls.push(true) };
+    await rebuildHarness.emit("agent_settled", { type: "agent_settled" }, settleCtx);
+    assert.equal(compactCalls.length, 1, "the rebuild candidate reaches Pi's seam once");
+
+    const branchBefore = sm.getBranch();
+    const projectedBefore = buildContextEntries(branchBefore, sm.getLeafId());
+    const tokensBefore = projectedBefore.reduce((sum, entry) => sum + Math.max(1, Math.round(JSON.stringify(entry).length / 4)), 0);
+    const takeover = await rebuildHarness.emit("session_before_compact", {
+      type: "session_before_compact",
+      preparation: {
+        firstKeptEntryId: requestEntry,
+        messagesToSummarize: [],
+        turnPrefixMessages: [],
+        isSplitTurn: false,
+        tokensBefore,
+        settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+      },
+      branchEntries: branchBefore,
+      reason: "manual",
+      willRetry: false,
+      signal: undefined,
+    }, rebuildCtx);
+    assert.ok(takeover?.compaction, "the real branch snapshot matches the rebuild candidate");
+    assert.equal(takeover.compaction.firstKeptEntryId, requestEntry);
+    assert.equal(takeover.compaction.tokensBefore, tokensBefore);
+    const prefixRendering = composeMemorySummary([blockAlpha]);
+    assert.equal(takeover.compaction.summary, composeMemorySummary([blockAlpha, rebuiltBlock]));
+    assert.ok(takeover.compaction.summary.startsWith(prefixRendering),
+      "the unselected older block stays byte-identical");
+    assert.equal(takeover.compaction.summary.slice(prefixRendering.length), "\n---\n\n" + rebuiltBlock,
+      "divergence begins exactly at the first rebuilt block");
+    assert.deepEqual(takeover.compaction.details, {
+      format: MEMORY_FORMAT_TAG,
+      blocks: [
+        { endEntryId: firstAssistant, markdownBytes: Buffer.byteLength(blockAlpha, "utf8") },
+        { endEntryId: tailAssistant, markdownBytes: Buffer.byteLength(rebuiltBlock, "utf8") },
+      ],
+    }, "the replacement block extends the source boundary over the suffix sources and the raw tail");
+
+    const savedCompaction = sm.appendCompaction(
+      takeover.compaction.summary,
+      takeover.compaction.firstKeptEntryId,
+      takeover.compaction.tokensBefore,
+      takeover.compaction.details,
+      true,
+    );
+    await rebuildHarness.emit("session_compact", {
+      type: "session_compact",
+      compactionEntry: sm.getBranch().find((entry) => entry.id === savedCompaction),
+      fromExtension: true,
+      reason: "manual",
+      willRetry: false,
+    }, rebuildCtx);
+
+    const committed = rebuildHarness.registration.snapshot({ tokens: 700, contextWindow: 200000 });
+    assert.equal(committed.state, "active");
+    assert.equal(committed.blocks, 2, "the suffix collapsed into one replacement block");
+    assert.equal(committed.stablePrefix, 2);
+    assert.equal(committed.nextOperation, "append");
+
+    // Exact provider-prefix snapshot: repeated rendering is byte-identical,
+    // the unselected block renders byte-identically, and divergence begins
+    // exactly at the first rebuilt block.
+    const projection = sm.buildSessionContext().messages;
+    assert.equal(JSON.stringify(sm.buildSessionContext().messages), JSON.stringify(projection),
+      "repeated rendering after the rebuild is byte-identical");
+    assert.equal(projection[0].role, "compactionSummary");
+    assert.equal(projection[0].summary, prefixRendering + "\n---\n\n" + rebuiltBlock);
+    const carryingEntry = sm.getBranch().find((entry) => entry.id === carrying);
+    assert.ok(projection[0].summary.startsWith(composeMemorySummary([blockAlpha])));
+    assert.ok(carryingEntry.summary.startsWith(composeMemorySummary([blockAlpha])));
+    assert.ok(!projection[0].summary.startsWith(carryingEntry.summary),
+      "the new rendering diverges from the old prefix after the unchanged block");
+
+    // Source recovery: the rebuilt block covers the suffix's original
+    // conversation plus the raw tail; the unchanged prefix keeps its own.
+    const read = rebuildHarness.tools.get("read_memory_source");
+    const pages = [];
+    let page = 1;
+    for (;;) {
+      const result = await read.execute(`r:${page}`, { block: 2, page }, undefined, undefined, rebuildCtx);
+      pages.push(result.content[1].text);
+      if (!result.details.hasMore) break;
+      page += 1;
+    }
+    const rebuiltTranscript = pages.join("");
+    for (const needle of [
+      "verify the second exchange",
+      "SECOND-NEEDLE the second exchange is verified exactly",
+      "ship it",
+      "new work after the compaction",
+      "TAIL-NEEDLE the tail work is finished",
+    ]) {
+      assert.ok(rebuiltTranscript.includes(needle), `the rebuilt block sources preserve ${JSON.stringify(needle)}`);
+    }
+    for (const forbidden of ["explore the parser internals", "three bounded phases", "submit_memory", "Memory candidate accepted"]) {
+      assert.ok(!rebuiltTranscript.includes(forbidden),
+        `the rebuilt block sources never expose ${JSON.stringify(forbidden)}`);
+    }
+    const firstBlockRead = await read.execute("r:first", { block: 1, page: 1 }, undefined, undefined, rebuildCtx);
+    assert.ok(firstBlockRead.content[1].text.includes("explore the parser internals"),
+      "the unchanged prefix keeps its original sources");
+    assert.ok(!firstBlockRead.content[1].text.includes("verify the second exchange"));
+    assert.equal(sm.isPersisted(), false, "the rebuild handshake wrote no sidecar");
+    assert.ok(!rebuiltTranscript.includes(firstUser) && !rebuiltTranscript.includes(secondUser)
+      && !rebuiltTranscript.includes(tailAssistant), "entry ids never surface");
+  }
+
+
   // ── #221: the registrar never subscribes a cancellable session event ──
 
   {

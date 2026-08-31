@@ -261,7 +261,7 @@ function renderSystemSection(
 }
 
 /**
- * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #221): the
+ * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #218, #220, #221): the
  * selected Variant A inline hierarchy, rendered between the system-prompt
  * section and the message section. Inactive states stay one bounded line;
  * active Memory shows state, Memory/budget estimate, block count, stable
@@ -269,7 +269,8 @@ function renderSystemSection(
  * per block. No format versions, entry ranges/IDs, paths, timestamps, or
  * storage details ever appear. Never part of the usage bar — Memory
  * accounting leaves the total usage bar unchanged (#215). Ephemeral
- * in-memory sessions are reported as such (#221).
+ * in-memory sessions are reported as such (#221); the scale-limit line
+ * states that Pi native compaction owns the boundary (#220).
  */
 function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySnapshot): string[] {
   if (memory.state !== "active") {
@@ -288,6 +289,9 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
         break;
       case "opaque":
         description = "opaque · latest compaction is not valid Context Memory · native summary retained";
+        break;
+      case "scale-limit":
+        description = "scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary";
         break;
       case "due":
         description = "due · threshold reached · the next run authors the first Memory block";
