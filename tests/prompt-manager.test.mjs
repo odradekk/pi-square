@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -231,6 +232,44 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
     const { notified } = notifyCapture();
     await contextCommand.handler("memory 1", { hasUI: false });
     assert.equal(notified.length, 0);
+  }
+
+  // ─── #218 handshake states render one bounded line each ───
+
+  for (const [state, needle] of [
+    ["due", /due · threshold reached · the next run authors the first Memory block/],
+    ["pending", /pending · Memory candidate accepted this run · compaction follows at run end/],
+    ["committing", /committing · writing the Memory compaction/],
+  ]) {
+    const stateMemory = { ...contextMemory, snapshot: () => ({ state }) };
+    const loadState = jiti(import.meta.url, { moduleCache: false });
+    const registerState = (await loadState("../src/prompt-manager/index.ts")).default;
+    const stateCommands = new Map();
+    const statePi = {
+      registerCommand(name, options) { stateCommands.set(name, options); },
+      registerShortcut() {},
+      on() {},
+      getAllTools() { return []; },
+    };
+    registerState(statePi, {
+      buildSubagentCatalog: () => ({ id: "subagents", label: "subagent catalog", category: "catalog", phase: "dynamic-suffix", text: "", turnSeq: 1 }),
+      setInheritedSystemCore() {},
+      contextMemory: stateMemory,
+    });
+    const { notified: stateNotified } = notifyCapture();
+    await stateCommands.get("context").handler("", {
+      hasUI: true,
+      sessionManager,
+      getContextUsage: () => ({ tokens: 74223, contextWindow: 200000, percent: 37 }),
+      getSystemPrompt: () => "",
+      ui: { notify: (text) => stateNotified.push({ text }), theme: null },
+    });
+    assert.equal(stateNotified.length, 1);
+    const flat = stripVTControlCharacters(stateNotified[0].text);
+    assert.match(flat, needle, `the ${state} state renders its bounded line`);
+    const memoryLine = flat.split("\n").find((line) => line.includes("memory[]"));
+    assert.ok(memoryLine, `the ${state} state keeps the memory[] section`);
+    assert.ok(memoryLine.length <= 140, `the ${state} line stays bounded`);
   }
 }
 

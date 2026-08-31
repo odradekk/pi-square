@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { MemorySessionReader } from "./derive";
 
 /**
- * The two Context Memory model tools (odradekk/pi-square#215, #216, #217).
+ * The two Context Memory model tools (odradekk/pi-square#215, #216, #217, #218).
  *
  * Both definitions are parent-only, registered once at extension load, and
  * synchronized dynamically by the controller: `submit_memory` activates only
@@ -22,7 +22,7 @@ export const MEMORY_BLOCK_MAX_BYTES = 16 * 1024;
  * Provider-visible bound only. JSON Schema `maxLength` counts characters, not
  * bytes, and a block within the byte cap can never hold more characters than
  * bytes, so this rejects nothing the byte rule accepts while keeping the
- * schema finite. The canonical byte check arrives with #218.
+ * schema finite. The canonical byte check is enforced at execution (#218).
  */
 const MEMORY_BLOCK_MAX_CHARS = MEMORY_BLOCK_MAX_BYTES;
 
@@ -63,6 +63,11 @@ export interface ReadMemorySourceDetails {
   readonly hasMore: boolean;
 }
 
+/** The only details an accepted `submit_memory` call ever returns (#218). */
+export interface SubmitMemoryDetails {
+  readonly accepted: true;
+}
+
 /** One source read handed to the controller by the tool definition. */
 export interface ReadMemorySourceRequest {
   readonly block: number;
@@ -70,9 +75,21 @@ export interface ReadMemorySourceRequest {
 }
 
 /**
- * The executor the registrar supplies: the controller revalidates current
- * Memory against the live session and returns the bounded page or throws one
- * safe short-coded sentence.
+ * The executor the registrar supplies for `submit_memory`: the controller
+ * validates the due run, the sole tool call, and the block body, then stores
+ * the run-scoped candidate bound for compaction takeover, or throws one safe
+ * short-coded sentence (#218).
+ */
+export type SubmitMemoryExecutor = (
+  markdown: string,
+  toolCallId: string,
+  session: MemorySessionReader,
+) => Promise<AgentToolResult<SubmitMemoryDetails>>;
+
+/**
+ * The executor the registrar supplies for `read_memory_source`: the
+ * controller revalidates current Memory against the live session and returns
+ * the bounded page or throws one safe short-coded sentence.
  */
 export type ReadMemorySourceExecutor = (
   request: ReadMemorySourceRequest,
@@ -84,7 +101,8 @@ function memoryError(code: string, sentence: string): never {
 }
 
 export function createSubmitMemoryToolDefinition(
-): ToolDefinition<typeof SubmitMemoryParamsSchema, Record<string, never>> {
+  executor: SubmitMemoryExecutor,
+): ToolDefinition<typeof SubmitMemoryParamsSchema, SubmitMemoryDetails> {
   return {
     name: SUBMIT_MEMORY_TOOL_NAME,
     label: "Memory submit",
@@ -93,10 +111,12 @@ export function createSubmitMemoryToolDefinition(
       + "Available only when a Context Memory compression is due; must be the final and sole tool call of its batch.",
     parameters: SubmitMemoryParamsSchema,
     executionMode: "sequential",
-    async execute() {
-      // The due-run submission window opens with #218; until then the tool
-      // stays inactive and every stray call fails safely.
-      memoryError("SUBMIT_NOT_DUE", "no Context Memory compression is due in this run");
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      const session = (ctx as { sessionManager?: MemorySessionReader }).sessionManager;
+      if (!session) {
+        memoryError("SUBMIT_NOT_DUE", "no Context Memory compression is due in this run");
+      }
+      return executor(params.markdown, toolCallId, session);
     },
   };
 }

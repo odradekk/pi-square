@@ -1,4 +1,4 @@
-import { VERSION } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_COMPACTION_SETTINGS, SettingsManager, VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /**
  * Exact Pi compatibility gate for Context Memory (odradekk/pi-square#215, #216).
@@ -39,19 +39,23 @@ export function apiInterfacesPresent(pi: {
 
 /**
  * The session-time interface set: the public session, compaction, and context
- * surfaces later slices consume. Their absence makes the host unsupported
- * without touching Pi behavior.
+ * and run-boundary surfaces the feature consumes. Their absence makes the
+ * host unsupported without touching Pi behavior.
  */
 export function contextInterfacesPresent(ctx: {
   sessionManager?: unknown;
   compact?: unknown;
   getContextUsage?: unknown;
   getSystemPrompt?: unknown;
+  isIdle?: unknown;
+  hasPendingMessages?: unknown;
 }): boolean {
   return Boolean(ctx.sessionManager)
     && typeof ctx.compact === "function"
     && typeof ctx.getContextUsage === "function"
-    && typeof ctx.getSystemPrompt === "function";
+    && typeof ctx.getSystemPrompt === "function"
+    && typeof ctx.isIdle === "function"
+    && typeof ctx.hasPendingMessages === "function";
 }
 
 /** Exact-version gate first; interface presence second. */
@@ -63,4 +67,19 @@ export function evaluateHostSupport(
   if (version !== SUPPORTED_PI_VERSION) return { supported: false, reason: "host-version" };
   if (!apiPresent || !contextPresent) return { supported: false, reason: "host-interfaces" };
   return { supported: true };
+}
+
+/**
+ * Pi's configured compaction reserve, read through the public SettingsManager
+ * the same way Pi's own compaction boundary does (#218: the effective due
+ * point sits a safety margin below that native boundary). Any settings
+ * failure keeps Pi's documented default.
+ */
+export function resolvePiReserveTokens(cwd: string, projectTrusted: boolean): number {
+  try {
+    const settings = SettingsManager.create(cwd, getAgentDir(), { projectTrusted });
+    return settings.getCompactionSettings().reserveTokens;
+  } catch {
+    return DEFAULT_COMPACTION_SETTINGS.reserveTokens;
+  }
 }

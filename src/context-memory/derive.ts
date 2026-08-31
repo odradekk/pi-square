@@ -39,10 +39,15 @@ export type CurrentMemory =
   };
 
 /** Context Memory protocol artifacts never participate in source streams (#215). */
-const PROTOCOL_TOOL_NAMES: ReadonlySet<string> = new Set([
+export const PROTOCOL_TOOL_NAMES: ReadonlySet<string> = new Set([
   SUBMIT_MEMORY_TOOL_NAME,
   READ_MEMORY_SOURCE_TOOL_NAME,
 ]);
+
+/** Whether a tool name belongs to the two Context Memory protocol tools. */
+export function isProtocolToolName(name: unknown): boolean {
+  return typeof name === "string" && PROTOCOL_TOOL_NAMES.has(name);
+}
 
 interface MessageLike {
   readonly role?: unknown;
@@ -52,10 +57,6 @@ interface MessageLike {
 
 function messageOf(entry: SessionEntry): MessageLike | undefined {
   return entry.type === "message" ? entry.message as MessageLike : undefined;
-}
-
-function isProtocolToolName(name: unknown): boolean {
-  return typeof name === "string" && PROTOCOL_TOOL_NAMES.has(name);
 }
 
 /**

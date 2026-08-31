@@ -29,6 +29,9 @@ function fullSessionContext() {
     compact() {},
     getContextUsage: () => null,
     getSystemPrompt: () => "",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    isProjectTrusted: () => true,
   };
 }
 
@@ -61,6 +64,7 @@ function createHarness(options = {}) {
     configProvider: () => ({ contextMemory: config }),
     displayRuntimeProvider: () => displayRuntime,
     hostVersion,
+    reserveTokens: () => 16384,
   });
   async function emit(name, event = {}, ctx = fullSessionContext()) {
     for (const handler of events.get(name) ?? []) {
