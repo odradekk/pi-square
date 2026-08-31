@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import jiti from "jiti";
-
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 const load = jiti(import.meta.url, { moduleCache: false });
 const registerContextMemory = (await load("../../src/context-memory/index.ts")).default;
 const { effectiveDuePoint } = await load("../../src/context-memory/controller.ts");
@@ -876,12 +876,13 @@ try {
       "the over-cap append stores no candidate; no block is evicted to make it fit");
   }
 
-  // ── #219: Memory above half budget does not open an append run ──
+  // ── #220: Memory above half budget opens the rebuild run, not an append ──
 
   {
     // window 200000 · threshold 5000 · budget 2% = 4000 tokens → half is
     // 2000 tokens (8000 chars). One 8100-char block renders above half, so
-    // the next due run belongs to the suffix rebuild (#220), not append.
+    // the next due run rebuilds the full suffix (#220); its single-block
+    // sources easily fit the window, so the run opens.
     const overHarness = createHarness({
       config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 2 },
     });
@@ -895,14 +896,379 @@ try {
     const overCtx = overHarness.baseContext(session);
     await overHarness.emit("session_start", { type: "session_start", reason: "resume" }, overCtx);
     await overHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, overCtx);
-    assert.ok(!overHarness.activeTools().includes("submit_memory"),
-      "Memory above half budget does not open an append run");
+    assert.ok(overHarness.activeTools().includes("submit_memory"),
+      "Memory above half budget opens the rebuild run instead of an append");
     assert.ok(overHarness.activeTools().includes("read_memory_source"),
       "the reading surface is unaffected by the next-operation choice");
     const snapshot = overHarness.registration.snapshot({ tokens: 12000, contextWindow: 200000 });
     assert.equal(snapshot.state, "active");
     assert.equal(snapshot.nextOperation, "rebuild", "/context reports the rebuild operation");
     assert.equal(snapshot.stablePrefix, 0, "no block stays stable under a full suffix rebuild");
+    const projected = await overHarness.emit("context", { type: "context", messages: [
+      { role: "compactionSummary", summary: composeMemorySummary([big]) },
+      { role: "user", content: "long task", timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "work" }], timestamp: 2 },
+      { role: "user", content: "ship it", timestamp: 3 },
+    ] }, overCtx);
+    assert.ok(projected?.messages, "the rebuild run transforms its first provider request");
+    assert.equal(projected.messages[0].summary, MEMORY_SUMMARY_WRAPPER,
+      "a full rebuild leaves the wrapper-only summary with no selected block");
+    assert.equal(projected.messages[1].content, "long task",
+      "the selected block's original sources are inserted in source order");
+    const advisory = projected.messages.at(-1);
+    assert.equal(advisory.customType, CONTEXT_MEMORY_ADVISORY_TYPE);
+    assert.ok(advisory.content.includes("maintenance compression is due"),
+      "the maintenance advisory identifies the rebuild operation");
+    assert.ok(advisory.content.includes("replace the newest Memory blocks"),
+      "the maintenance advisory states the replacement scope");
+    assert.ok(advisory.content.includes("Do not copy credential values"), "the secret warning stays");
+  }
+
+  // ── #220: the maintenance run — selection, projection, replacement, prefix ──
+
+  {
+    // window 200000 · threshold 5000 · budget 1% = 2000 tokens → half is
+    // 1000 tokens. Three blocks: A (~100 chars) alone renders 124 tokens
+    // (≤ half); A+B renders 1978 tokens (> half). The shortest newest
+    // contiguous suffix whose removal leaves an unchanged prefix at or below
+    // half is therefore [B, C] with prefix [A].
+    const ALPHA = "# Alpha\n\n" + "a".repeat(90);
+    const BETA = "# Beta\n\n" + "b".repeat(7400);
+    const GAMMA = "# Gamma\n\n" + "g".repeat(46);
+    const maintenanceHarness = createHarness({
+      config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 1 },
+    });
+    const session = mutableSession([
+      userEntry("m1", null, "alpha task"),
+      assistantEntry("m2", "m1", [{ type: "text", text: "alpha answer ALPHA-SRC" }]),
+      userEntry("m3", "m2", "beta task"),
+      assistantEntry("m4", "m3", [{ type: "text", text: "beta answer BETA-SRC" }]),
+      userEntry("m5", "m4", "gamma task"),
+      assistantEntry("m6", "m5", [{ type: "text", text: "gamma answer GAMMA-SRC" }]),
+      userEntry("m7", "m6", "ship it"),
+      compactionOf("mc", "m7", "m7", [ALPHA, BETA, GAMMA], ["m2", "m4", "m6"]),
+      userEntry("m8", "mc", "new work after the compaction"),
+      assistantEntry("m9", "m8", [{ type: "text", text: "tail answer TAIL-SRC" }]),
+    ]);
+    const maintenanceCtx = maintenanceHarness.baseContext(session);
+    await maintenanceHarness.emit("session_start", { type: "session_start", reason: "resume" }, maintenanceCtx);
+    const before = maintenanceHarness.registration.snapshot({ tokens: 12000, contextWindow: 200000 });
+    assert.equal(before.state, "active");
+    assert.equal(before.blocks, 3);
+    assert.equal(before.nextOperation, "rebuild");
+    assert.equal(before.stablePrefix, 1, "the unchanged prefix is exactly block A");
+
+    await maintenanceHarness.emit("input", { type: "input", text: "maintain the memory", source: "interactive" }, maintenanceCtx);
+    assert.ok(maintenanceHarness.activeTools().includes("submit_memory"),
+      "the due real-user run opens as the maintenance rebuild");
+    assert.ok(maintenanceHarness.activeTools().includes("read_memory_source"),
+      "the reading surface stays active through the maintenance boundary");
+    assert.deepEqual(
+      maintenanceHarness.activeTools().filter((name) => name !== "submit_memory" && name !== "read_memory_source"),
+      ["read", "bash"],
+      "unrelated active tools keep their identity and order across the maintenance boundary",
+    );
+
+    // The first provider request: Pi's own projection of the live branch.
+    session.__entries.push(userEntry("m10", "m9", "maintain the memory"));
+    const branchLength = session.getBranch().length;
+    const request = buildSessionContext(session.getBranch(), session.getLeafId()).messages;
+    assert.equal(request[0].role, "compactionSummary");
+    assert.equal(request[0].summary, composeMemorySummary([ALPHA, BETA, GAMMA]));
+    const transformed = await maintenanceHarness.emit("context", { type: "context", messages: request }, maintenanceCtx);
+    assert.ok(transformed?.messages, "the maintenance run transforms its first provider request");
+    const projected = transformed.messages;
+    assert.equal(projected[0].role, "compactionSummary");
+    assert.equal(projected[0].summary, composeMemorySummary([ALPHA]),
+      "the summary message keeps exactly the unchanged prefix rendering");
+    assert.ok(projected[0].summary.includes(ALPHA), "the unselected block body survives");
+    assert.ok(!projected[0].summary.includes(BETA) && !projected[0].summary.includes(GAMMA),
+      "the selected summaries leave the request");
+    const serialized = JSON.stringify(projected);
+    assert.equal((serialized.match(/beta task/g) ?? []).length, 1, "every selected source entry is inserted exactly once");
+    assert.equal((serialized.match(/gamma answer GAMMA-SRC/g) ?? []).length, 1);
+    assert.ok(!serialized.includes(BETA.slice(0, 200)), "a selected block body never appears beside its sources");
+    assert.ok(projected[1].role === "user" && projected[1].content === "beta task",
+      "the inserted sources begin at the first selected block's source start");
+    const order = ["beta task", "gamma task", "ship it", "new work after the compaction", "maintain the memory"]
+      .map((needle) => serialized.indexOf(needle));
+    assert.ok(order.every((at, index) => at !== -1 && (index === 0 || at > order[index - 1])),
+      "sources, raw tail, and current request stay in chronological order");
+    const advisory = projected.at(-1);
+    assert.equal(advisory.customType, CONTEXT_MEMORY_ADVISORY_TYPE);
+    assert.ok(advisory.content.includes("maintenance compression is due"),
+      "the maintenance advisory identifies the operation");
+    assert.ok(advisory.content.includes("original conversation"), "the advisory names the source scope");
+    assert.equal(projected.at(-2).content, "maintain the memory",
+      "the advisory sits directly after the current user message");
+    assert.equal(session.getBranch().length, branchLength,
+      "the maintenance projection never persists anything");
+
+    // The projection is one-shot: the next request keeps the full Memory
+    // rendering and receives no second advisory.
+    const secondRequest = buildSessionContext(session.getBranch(), session.getLeafId()).messages;
+    const secondTransformed = await maintenanceHarness.emit("context", { type: "context", messages: secondRequest }, maintenanceCtx);
+    assert.ok(secondTransformed?.messages);
+    assert.equal(secondTransformed.messages[0].summary, composeMemorySummary([ALPHA, BETA, GAMMA]),
+      "later requests carry the unmodified Memory rendering");
+    assert.equal(
+      secondTransformed.messages.filter((message) => message?.customType === CONTEXT_MEMORY_ADVISORY_TYPE).length,
+      0,
+      "later requests never repeat the advisory or re-insert the sources",
+    );
+
+    // The replacement block: complete suffix sources plus the raw tail.
+    const REBUILT = "# Rebuilt\n\n- beta, gamma, and the tail in one block";
+    session.__entries.push(assistantEntry("m11", "m10", [
+      { type: "text", text: "done — submitting the replacement block" },
+      { type: "toolCall", id: "call-rebuild", name: "submit_memory", arguments: { markdown: REBUILT } },
+    ]));
+    session.__entries.push(toolResultEntry("m12", "m11", "submit_memory", "Memory candidate accepted; compaction pending."));
+    await maintenanceHarness.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "text", text: "done — submitting the replacement block" },
+        { type: "toolCall", id: "call-rebuild", name: "submit_memory", arguments: { markdown: REBUILT } },
+      ] },
+    }, maintenanceCtx);
+    const acceptedRebuild = await maintenanceHarness.tools.get("submit_memory")
+      .execute("call-rebuild", { markdown: REBUILT }, undefined, undefined, maintenanceCtx);
+    assert.equal(acceptedRebuild.content[0].text, "Memory candidate accepted; compaction pending.");
+    assert.deepEqual(maintenanceHarness.registration.snapshot(), { state: "pending" });
+
+    await maintenanceHarness.emit("agent_settled", { type: "agent_settled" }, maintenanceCtx);
+    assert.equal(maintenanceHarness.compactCalls.length, 1, "the rebuild candidate reaches Pi's seam once");
+
+    const takeover = await maintenanceHarness.emit("session_before_compact", {
+      type: "session_before_compact",
+      preparation: { firstKeptEntryId: "m10", messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 7777, settings: {} },
+      branchEntries: session.getBranch(),
+      reason: "manual",
+      willRetry: false,
+      signal: undefined,
+    }, maintenanceCtx);
+    assert.ok(takeover?.compaction, "the matching rebuild candidate is consumed");
+    const prefixRendering = composeMemorySummary([ALPHA]);
+    assert.equal(takeover.compaction.summary, composeMemorySummary([ALPHA, REBUILT]));
+    assert.ok(takeover.compaction.summary.startsWith(prefixRendering),
+      "every unselected older block stays byte-identical");
+    assert.equal(takeover.compaction.summary.slice(prefixRendering.length), "\n---\n\n" + REBUILT,
+      "divergence begins exactly at the first rebuilt block");
+    assert.equal(takeover.compaction.firstKeptEntryId, "m10",
+      "the maintenance run's user request becomes the retained-tail boundary");
+    assert.equal(takeover.compaction.tokensBefore, 7777);
+    assert.deepEqual(takeover.compaction.details, {
+      format: MEMORY_FORMAT_TAG,
+      blocks: [
+        { endEntryId: "m2", markdownBytes: Buffer.byteLength(ALPHA, "utf8") },
+        { endEntryId: "m9", markdownBytes: Buffer.byteLength(REBUILT, "utf8") },
+      ],
+    }, "the replacement block extends the source boundary to the last eligible entry before the request");
+
+    session.__entries.push({
+      id: "mc2", parentId: "m12", type: "compaction", timestamp: TS,
+      summary: takeover.compaction.summary, firstKeptEntryId: "m10",
+      tokensBefore: 7777, details: takeover.compaction.details, fromExtension: true,
+    });
+    await maintenanceHarness.emit("session_compact", {
+      type: "session_compact",
+      compactionEntry: session.__entries.at(-1),
+      fromExtension: true,
+      reason: "manual",
+      willRetry: false,
+    }, maintenanceCtx);
+
+    const committed = maintenanceHarness.registration.snapshot({ tokens: 900, contextWindow: 200000 });
+    assert.equal(committed.state, "active");
+    assert.equal(committed.blocks, 2, "the selected suffix collapsed into one replacement block");
+    assert.equal(committed.stablePrefix, 2);
+    assert.equal(committed.nextOperation, "append");
+
+    // The replacement block's sources cover the suffix's original
+    // conversation plus the raw tail; the untouched prefix keeps its own.
+    const inspectedRebuild = maintenanceHarness.registration.inspect({ block: 2, page: 1 }, session);
+    assert.equal(inspectedRebuild.ok, true);
+    for (const needle of ["beta task", "gamma task", "ship it", "new work after the compaction", "tail answer TAIL-SRC"]) {
+      assert.ok(inspectedRebuild.text.includes(needle), `the rebuilt block covers ${JSON.stringify(needle)}`);
+    }
+    for (const forbidden of ["alpha task", "ALPHA-SRC"]) {
+      assert.ok(!inspectedRebuild.text.includes(forbidden), `the rebuilt block never exposes ${JSON.stringify(forbidden)}`);
+    }
+    const inspectedAlpha = maintenanceHarness.registration.inspect({ block: 1, page: 1 }, session);
+    assert.equal(inspectedAlpha.ok, true);
+    assert.ok(inspectedAlpha.text.includes("alpha task"), "the unchanged prefix keeps its original sources");
+  }
+
+  // ── #220: the scale limit — no handshake, native compaction owns the boundary ──
+
+  {
+    // window 200000 · threshold 5000 · budget 1%: A (~100 chars) is the
+    // unchanged prefix and B (~8000 chars) the selected suffix. B's original
+    // source entry is ~720k chars (~180k tokens), so the complete
+    // maintenance request cannot fit under the ten-percent allowance.
+    const scaleHarness = createHarness({
+      config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 1 },
+    });
+    const usage = { tokens: 12000, contextWindow: 200000 };
+    const scaleSession = mutableSession([
+      userEntry("s1", null, "small task"),
+      assistantEntry("s2", "s1", [{ type: "text", text: "small answer" }]),
+      userEntry("s3", "s2", "huge task"),
+      assistantEntry("s4", "s3", [{ type: "text", text: "HUGE-SRC " + "x".repeat(720000) }]),
+      userEntry("s5", "s4", "ship it"),
+      compactionOf("sc", "s5", "s5", ["# Small\n\n" + "a".repeat(90), "# Big\n\n" + "b".repeat(8000)], ["s2", "s4"]),
+    ]);
+    const scaleCtx = { ...scaleHarness.baseContext(scaleSession), getContextUsage: () => usage };
+    await scaleHarness.emit("session_start", { type: "session_start", reason: "resume" }, scaleCtx);
+    assert.deepEqual(scaleHarness.registration.snapshot(), { state: "scale-limit" },
+      "the branch reports its scale limit while due Memory cannot be rebuilt to fit");
+
+    await scaleHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, scaleCtx);
+    assert.ok(!scaleHarness.activeTools().includes("submit_memory"),
+      "the scale limit exposes no submission handshake");
+    assert.ok(scaleHarness.activeTools().includes("read_memory_source"),
+      "the reading surface is unaffected by the scale limit");
+    assert.deepEqual(scaleHarness.registration.snapshot(), { state: "scale-limit" },
+      "the scale-limit report survives the refused input");
+    const native = await scaleHarness.emit("session_before_compact", {
+      type: "session_before_compact",
+      preparation: { firstKeptEntryId: "s5", messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 4321, settings: {} },
+      branchEntries: scaleSession.getBranch(),
+      reason: "threshold",
+      willRetry: false,
+      signal: undefined,
+    }, scaleCtx);
+    assert.equal(native, undefined, "compaction is delegated to Pi native behavior");
+
+    // A model change to a larger window recalculates the threshold and the
+    // Memory budget; no block is deleted or scaled, and the maintenance run
+    // opens on the next real-user input.
+    usage.contextWindow = 400000;
+    await scaleHarness.emit("model_select", {
+      type: "model_select", model: {}, previousModel: undefined, source: "set",
+    }, scaleCtx);
+    const recalculated = scaleHarness.registration.snapshot({ tokens: 12000, contextWindow: 400000 });
+    assert.equal(recalculated.state, "active", "the larger window clears the scale limit");
+    assert.equal(recalculated.blocks, 2, "no block is deleted or scaled by the model change");
+    assert.equal(recalculated.nextOperation, "rebuild");
+    assert.equal(recalculated.stablePrefix, 1);
+    await scaleHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, scaleCtx);
+    assert.ok(scaleHarness.activeTools().includes("submit_memory"),
+      "the maintenance run opens under the recalculated budgets");
+  }
+
+  // ── #220: a rebuild body over the total Memory budget is rejected ──
+
+  {
+    const boundHarness = createHarness({
+      config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 1 },
+    });
+    const session = mutableSession([
+      userEntry("n1", null, "first"),
+      assistantEntry("n2", "n1", [{ type: "text", text: "first answer" }]),
+      userEntry("n3", "n2", "second"),
+      assistantEntry("n4", "n3", [{ type: "text", text: "second answer" }]),
+      userEntry("n5", "n4", "ship it"),
+      compactionOf("nc", "n5", "n5", ["# One\n\n" + "a".repeat(90), "# Two\n\n" + "b".repeat(8000)], ["n2", "n4"]),
+    ]);
+    const boundCtx = boundHarness.baseContext(session);
+    await boundHarness.emit("session_start", { type: "session_start", reason: "resume" }, boundCtx);
+    await boundHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, boundCtx);
+    assert.ok(boundHarness.activeTools().includes("submit_memory"),
+      "the maintenance run opens when the sources fit");
+    session.__entries.push(userEntry("n6", "nc", "ship it"));
+    session.__entries.push(assistantEntry("n7", "n6", [
+      { type: "toolCall", id: "call-bound", name: "submit_memory", arguments: { markdown: "n".repeat(7700) } },
+    ]));
+    await boundHarness.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-bound", name: "submit_memory", arguments: { markdown: "n".repeat(7700) } },
+      ] },
+    }, boundCtx);
+    await assert.rejects(
+      () => boundHarness.tools.get("submit_memory").execute("call-bound", { markdown: "n".repeat(7700) }, undefined, undefined, boundCtx),
+      (error) => {
+        assert.match(error.message, /^BOUND_EXCEEDED: /);
+        assert.ok(!error.message.includes("nnnn"), "the failure never echoes the Memory body");
+        return true;
+      },
+    );
+    assert.notDeepEqual(boundHarness.registration.snapshot(), { state: "pending" },
+      "the rejected rebuild stores no candidate");
+  }
+
+  // ── #220: Memory changing under the maintenance run refuses safely ──
+
+  {
+    const changedHarness = createHarness({
+      config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 1 },
+    });
+    const session = mutableSession([
+      userEntry("x1", null, "one"),
+      assistantEntry("x2", "x1", [{ type: "text", text: "one answer" }]),
+      userEntry("x3", "x2", "two"),
+      assistantEntry("x4", "x3", [{ type: "text", text: "two answer" }]),
+      userEntry("x5", "x4", "ship it"),
+      compactionOf("xc", "x5", "x5", ["# One\n\n" + "a".repeat(90), "# Two\n\n" + "b".repeat(8000)], ["x2", "x4"]),
+    ]);
+    const changedCtx = changedHarness.baseContext(session);
+    await changedHarness.emit("session_start", { type: "session_start", reason: "resume" }, changedCtx);
+    await changedHarness.emit("input", { type: "input", text: "maintain", source: "interactive" }, changedCtx);
+    assert.ok(changedHarness.activeTools().includes("submit_memory"));
+    // The carrying compaction is rewritten in place with a different second
+    // block, so the live Memory no longer matches the frozen selection.
+    const entries = session.getBranch();
+    const carrying = entries.at(-1);
+    const edited = compactionOf("xc", "x5", "x5", ["# One\n\n" + "a".repeat(90), "# Two edited\n\n" + "b".repeat(8000)], ["x2", "x4"]);
+    session.__entries = entries.map((entry) => (entry.id === "xc" ? { ...carrying, ...edited } : entry));
+    session.__entries.push(userEntry("x6", "xc", "maintain"));
+    session.__entries.push(assistantEntry("x7", "x6", [
+      { type: "toolCall", id: "call-changed", name: "submit_memory", arguments: { markdown: "# Fresh" } },
+    ]));
+    await changedHarness.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-changed", name: "submit_memory", arguments: { markdown: "# Fresh" } },
+      ] },
+    }, changedCtx);
+    await assert.rejects(
+      () => changedHarness.tools.get("submit_memory").execute("call-changed", { markdown: "# Fresh" }, undefined, undefined, changedCtx),
+      (error) => {
+        assert.match(error.message, /^MEMORY_CHANGED: /);
+        return true;
+      },
+    );
+    assert.notDeepEqual(changedHarness.registration.snapshot(), { state: "pending" });
+  }
+
+  // ── #220: a maintenance projection failure returns the safe context ──
+
+  {
+    const failureHarness = createHarness({
+      config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 1 },
+    });
+    const session = mutableSession([
+      userEntry("f1", null, "one"),
+      assistantEntry("f2", "f1", [{ type: "text", text: "one answer" }]),
+      userEntry("f3", "f2", "two"),
+      assistantEntry("f4", "f3", [{ type: "text", text: "two answer" }]),
+      userEntry("f5", "f4", "ship it"),
+      compactionOf("fc", "f5", "f5", ["# One\n\n" + "a".repeat(90), "# Two\n\n" + "b".repeat(8000)], ["f2", "f4"]),
+    ]);
+    const failureCtx = failureHarness.baseContext(session);
+    await failureHarness.emit("session_start", { type: "session_start", reason: "resume" }, failureCtx);
+    await failureHarness.emit("input", { type: "input", text: "maintain", source: "interactive" }, failureCtx);
+    assert.ok(failureHarness.activeTools().includes("submit_memory"));
+    // The request carries a foreign compaction summary instead of the
+    // carrying Memory, so the maintenance projection cannot be built.
+    const result = await failureHarness.emit("context", { type: "context", messages: [
+      { role: "compactionSummary", summary: "a foreign native summary" },
+      { role: "user", content: "maintain", timestamp: 1 },
+    ] }, failureCtx);
+    assert.equal(result, undefined, "a maintenance projection failure returns the unmodified context");
+    assert.ok(!failureHarness.activeTools().includes("submit_memory"),
+      "submission is deactivated for the run after the projection failure");
   }
 
   // ── The deterministic fallback estimator flags a large resumed branch ──

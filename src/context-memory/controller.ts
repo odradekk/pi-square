@@ -1,7 +1,12 @@
-import type { AgentToolResult, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_COMPACTION_SETTINGS, buildSessionContext, estimateTokens as estimateMessageTokens } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_COMPACTION_SETTINGS,
+  buildSessionContext,
+  estimateTokens as estimateMessageTokens,
+  sessionEntryToContextMessages,
+} from "@earendil-works/pi-coding-agent";
 import type { ContextMemoryThreshold, ContextMemoryConfig } from "../core/config";
-import { deriveCurrentMemory, isEligibleSourceEntry, type CurrentMemory, type DerivedMemoryBlock, type MemorySessionReader } from "./derive";
+import { deriveCurrentMemory, isEligibleSourceEntry, isProtocolToolName, type CurrentMemory, type DerivedMemoryBlock, type MemorySessionReader } from "./derive";
 import {
   MEMORY_BLOCK_SEPARATOR,
   MEMORY_FORMAT_TAG,
@@ -30,7 +35,7 @@ import {
 } from "./view";
 
 /**
- * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219, #221).
+ * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219, #220, #221).
  *
  * The controller is the highest test seam: tests drive it through the same
  * registrar events and tool surfaces Pi drives and assert externally visible
@@ -50,8 +55,16 @@ import {
  * import, cross-directory copies, and session replacement, ephemeral
  * in-memory sessions run the same behavior with an `ephemeral` snapshot
  * marker and no sidecar, and no cancellable Pi session event is ever
- * subscribed or blocked. The suffix rebuild (#220) extends the same seams
- * later; the compatibility gate and owned active-tool synchronization stay.
+ * subscribed or blocked. #220 rebuilds a recent suffix: while rendered
+ * Memory sits above half its budget the next due run selects the shortest
+ * newest contiguous suffix whose removal leaves an unchanged prefix at or
+ * below half budget, replaces the selected summaries with their complete
+ * original conversation in the one first-request maintenance projection,
+ * and lets the main agent author one replacement block; when that complete
+ * request cannot fit the model window under a ten-percent safety allowance,
+ * the branch reports its scale limit, exposes no submission handshake, and
+ * Pi native compaction keeps owning the boundary. The compatibility gate
+ * and owned active-tool synchronization stay.
  */
 
 /** The only tool names this feature may add to or remove from the active list. */
@@ -93,6 +106,105 @@ function renderedMemoryTokens(markdowns: readonly string[]): number {
   let chars = MEMORY_SUMMARY_WRAPPER.length + MEMORY_BLOCK_SEPARATOR.length * markdowns.length;
   for (const markdown of markdowns) chars += Array.from(markdown).length;
   return Math.ceil(chars / 4);
+}
+
+/**
+ * The unchanged-prefix size of the next maintenance run (#220): the largest
+ * prefix count whose rendered Memory still fits half the budget, making the
+ * suffix after it the shortest newest contiguous suffix whose removal leaves
+ * that prefix at or below half. Measured with the one shared
+ * {@link renderedMemoryTokens} measure; every body is non-empty, so the
+ * prefix grows monotonically with the count.
+ */
+function selectStablePrefixCount(markdowns: readonly string[], halfBudget: number): number {
+  let stable = 0;
+  while (stable < markdowns.length && renderedMemoryTokens(markdowns.slice(0, stable + 1)) <= halfBudget) {
+    stable += 1;
+  }
+  return stable;
+}
+
+/**
+ * Project one original source entry into the maintenance request (#220):
+ * Pi's own `sessionEntryToContextMessages` projection with Context Memory
+ * protocol tool-call parts removed from assistant messages — derivation
+ * already excluded whole protocol artifacts — so the inserted original
+ * conversation never resurrects `submit_memory` or `read_memory_source`
+ * calls. An assistant message left without any eligible part drops.
+ */
+function projectSourceEntry(entry: SessionEntry): unknown[] {
+  const messages: unknown[] = [];
+  for (const message of sessionEntryToContextMessages(entry)) {
+    const record = message as { role?: unknown; content?: unknown } | null;
+    if (record && record.role === "assistant" && Array.isArray(record.content)) {
+      const kept = record.content.filter((part) =>
+        (part as { type?: unknown; name?: unknown } | null)?.type !== "toolCall"
+        || !isProtocolToolName((part as { name?: unknown }).name));
+      if (kept.length === 0) continue;
+      if (kept.length !== record.content.length) {
+        messages.push({ ...record, content: kept });
+        continue;
+      }
+    }
+    messages.push(message);
+  }
+  return messages;
+}
+
+/** Every selected block's original source messages, in source order (#220). */
+function projectedSourceMessages(plan: RebuildPlan): unknown[] {
+  const messages: unknown[] = [];
+  for (const block of plan.suffix) {
+    for (const entry of block.sourceEntries) messages.push(...projectSourceEntry(entry));
+  }
+  return messages;
+}
+
+/**
+ * Whether the complete maintenance request exceeds the model window under
+ * the ten-percent safety allowance (#220): the current context baseline —
+ * numeric Pi usage or the deterministic projection estimate — with the full
+ * Memory summary replaced by the unchanged prefix rendering, every selected
+ * original source entry, the advisory, and the current request added. A
+ * null baseline cannot prove the fit, so it reports the limit. Nothing is
+ * ever truncated, paged, or summarized to make it fit.
+ */
+function maintenanceExceedsWindow(
+  baselineTokens: number | null,
+  plan: RebuildPlan,
+  requestTokens: number,
+  contextWindow: number,
+): boolean {
+  if (baselineTokens === null) return true;
+  let estimate = baselineTokens
+    - estimateTextTokens(plan.fullSummary)
+    + estimateTextTokens(plan.prefixSummary)
+    + estimateTextTokens(MAINTENANCE_RUN_ADVISORY_TEXT)
+    + requestTokens;
+  for (const message of projectedSourceMessages(plan)) {
+    estimate += estimateMessageTokens(message as Parameters<typeof estimateMessageTokens>[0]);
+  }
+  return estimate > contextWindow - Math.round(contextWindow / 10);
+}
+
+/**
+ * The one-request maintenance projection (#220): the request's Memory
+ * summary message keeps exactly the unchanged prefix rendering, every
+ * selected block's original conversation is inserted once in source order
+ * right after it, and the retained raw tail and current request stay
+ * untouched. Returns undefined when the carrying summary is not in the
+ * request, which the transform treats as projection failure.
+ */
+function projectMaintenanceContext(messages: readonly unknown[], plan: RebuildPlan): unknown[] | undefined {
+  const summaryIndex = messages.findIndex((message) => {
+    const record = message as { role?: unknown; summary?: unknown } | null;
+    return record?.role === "compactionSummary" && record.summary === plan.fullSummary;
+  });
+  if (summaryIndex === -1) return undefined;
+  const projected = [...messages];
+  projected[summaryIndex] = { ...(projected[summaryIndex] as Record<string, unknown>), summary: plan.prefixSummary };
+  projected.splice(summaryIndex + 1, 0, ...projectedSourceMessages(plan));
+  return projected;
 }
 
 /** First non-empty line, whitespace-collapsed, code-point-bounded preview. */
@@ -166,12 +278,31 @@ const APPEND_RUN_ADVISORY_TEXT = [
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
 
-/** The frozen due run opened by one real-user input (#218, #219). */
+/**
+ * The fixed one-shot maintenance advisory body (#220): the request carries
+ * the complete original conversation behind the newest Memory blocks in
+ * place of their summaries, and one replacement block must cover that
+ * conversation plus the newly accumulated raw tail while every older block
+ * stays unchanged.
+ */
+const MAINTENANCE_RUN_ADVISORY_TEXT = [
+  "Context Memory: maintenance compression is due for this conversation.",
+  "",
+  "This request shows the original conversation behind the newest Memory blocks in place of their summaries. Complete the user's current task first. When it is done, finish the run with one final and sole tool call: submit_memory, carrying one concise Markdown Memory block that preserves what matters from that original conversation and the work accumulated since — goals, decisions, and open work.",
+  "That block will replace the newest Memory blocks; the older Memory blocks stay unchanged; the current request and everything you do for it stay uncompressed.",
+  "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
+].join("\n");
+
+/** The frozen due run opened by one real-user input (#218, #219, #220). */
 interface DueRunState {
   /** Leaf id at the opening input; the run's user request is the first user entry after it. */
   readonly preRunLeafId: string | null;
-  /** Existing block count frozen at the opening input; selects the append advisory (#219). */
+  /** The frozen operation: a first block or append (#218, #219), or a suffix rebuild (#220). */
+  readonly operation: "append" | "rebuild";
+  /** Blocks kept byte-stable by the run; opens the append advisory scope for a first block or append (#219). */
   readonly existingBlocks: number;
+  /** The frozen maintenance plan; set exactly for a rebuild (#220). */
+  readonly rebuild: RebuildPlan | undefined;
   advisoryDelivered: boolean;
 }
 
@@ -181,14 +312,35 @@ interface MemoryPrefixBlock {
   readonly endEntryId: string;
 }
 
-/** One accepted submission awaiting compaction (#218, #219). Never persisted. */
+/**
+ * The frozen maintenance selection of one due run (#220): the unchanged
+ * prefix, the selected newest blocks the replacement covers together with
+ * their original source entries, and the exact summary renderings the
+ * first-request projection matches and substitutes.
+ */
+interface RebuildPlan {
+  /** Carrying compaction the selection was derived from. */
+  readonly compactionId: string;
+  /** Unselected older blocks kept byte-identical, in order. */
+  readonly prefix: readonly MemoryPrefixBlock[];
+  /** Selected newest blocks replaced by one new block, with their original source entries. */
+  readonly suffix: readonly DerivedMemoryBlock[];
+  /** The exact rendered Memory at selection; identifies the request's summary message. */
+  readonly fullSummary: string;
+  /** The exact rendered prefix; the projection's replacement summary. */
+  readonly prefixSummary: string;
+}
+
+/** One accepted submission awaiting compaction (#218, #219, #220). Never persisted. */
 interface MemoryCandidate {
   /** Leaf at acceptance; navigation since invalidates the candidate. */
   readonly leafId: string;
   readonly toolCallId: string;
-  readonly operation: "append";
-  /** Existing blocks kept byte-identical ahead of the new one; empty for the first block (#219). */
+  readonly operation: "append" | "rebuild";
+  /** Blocks kept byte-identical ahead of the new one; empty for a first block or a full rebuild (#219, #220). */
   readonly prefix: readonly MemoryPrefixBlock[];
+  /** Rebuild: the selected suffix blocks the new one replaces; empty for an append (#220). */
+  readonly replacedSuffix: readonly MemoryPrefixBlock[];
   /** Carrying compaction the prefix was derived from; undefined for the first block. */
   readonly prefixCompactionId: string | undefined;
   /** Inclusive source end: the last eligible entry covered by the new block. */
@@ -230,6 +382,8 @@ export class ContextMemoryController {
   private modelWindow: number | null = null;
   /** In-memory due flag; recomputed at session start, model change, and settle. */
   private due = false;
+  /** The branch is at its scale limit: maintenance cannot fit the window, so Pi native compaction owns it (#220). */
+  private scaleLimited = false;
   /** The due run opened by the current real-user input, if any (#218). */
   private dueRun: DueRunState | undefined;
   /** The single submission transaction slot (#218). */
@@ -268,6 +422,7 @@ export class ContextMemoryController {
     if (this.slot?.phase === "pending") return this.markEphemeral({ state: "pending" });
     if (this.current.kind === "none") return this.markEphemeral(this.due ? { state: "due" } : { state: "no-memory" });
     if (this.current.kind === "opaque") return this.markEphemeral({ state: "opaque" });
+    if (this.scaleLimited) return this.markEphemeral({ state: "scale-limit" });
     return this.markEphemeral(this.activeSnapshot(this.current, usage));
   }
 
@@ -330,10 +485,15 @@ export class ContextMemoryController {
    * Recompute the effective due point and in-memory due flag from the
    * caller's context usage. Numeric Pi usage wins; otherwise one
    * deterministic chars/4 estimate over the projected branch, with submit
-   * artifacts filtered, decides (#215). No counter persists.
+   * artifacts filtered, decides (#215). No counter persists. A due branch
+   * above half its Memory budget also re-proves the maintenance fit, which
+   * reports the scale-limit state when the complete request cannot fit
+   * (#220).
    */
   recomputeDue(ctx: ContextMemoryRunContext): void {
+    this.refresh(ctx.sessionManager);
     this.due = false;
+    this.scaleLimited = false;
     this.modelWindow = null;
     if (!this.operational()) return;
     const usage = ctx.getContextUsage();
@@ -349,6 +509,42 @@ export class ContextMemoryController {
     const tokens = usage && typeof usage.tokens === "number" ? usage.tokens : null;
     const estimate = tokens ?? this.estimateProjectedTokens(ctx.sessionManager);
     this.due = estimate !== null && estimate >= duePoint;
+    if (this.due) this.assessMaintenanceFit(estimate, 0);
+  }
+
+  /**
+   * Recompute the reported scale-limit state for the current derivation
+   * (#220): only due valid Memory above half its budget plans a maintenance
+   * run, and the branch is at its scale limit exactly when that complete
+   * request cannot fit the model window. No block is ever deleted, scaled,
+   * or rewritten to make it fit.
+   */
+  private assessMaintenanceFit(baselineTokens: number | null, requestTokens: number): void {
+    this.scaleLimited = false;
+    if (this.current.kind !== "valid" || this.modelWindow === null) return;
+    const halfBudget = Math.round((this.modelWindow * this.config.memoryBudgetPercent) / 100) / 2;
+    const markdowns = this.current.blocks.map((block) => block.markdown);
+    if (renderedMemoryTokens(markdowns) <= halfBudget) return;
+    const plan = this.rebuildPlan(this.current, halfBudget);
+    this.scaleLimited = maintenanceExceedsWindow(baselineTokens, plan, requestTokens, this.modelWindow);
+  }
+
+  /**
+   * The maintenance selection for current valid Memory above half its
+   * budget (#220): the largest prefix whose rendered Memory still fits half
+   * the budget, so the suffix after it is the shortest newest contiguous
+   * suffix whose removal leaves that unchanged prefix.
+   */
+  private rebuildPlan(memory: Extract<CurrentMemory, { kind: "valid" }>, halfBudget: number): RebuildPlan {
+    const markdowns = memory.blocks.map((block) => block.markdown);
+    const stable = selectStablePrefixCount(markdowns, halfBudget);
+    return {
+      compactionId: memory.compactionId,
+      prefix: memory.blocks.slice(0, stable).map((block) => ({ markdown: block.markdown, endEntryId: block.endEntryId })),
+      suffix: memory.blocks.slice(stable),
+      fullSummary: composeMemorySummary(markdowns),
+      prefixSummary: composeMemorySummary(markdowns.slice(0, stable)),
+    };
   }
 
   /**
@@ -371,13 +567,13 @@ export class ContextMemoryController {
   }
 
   /**
-   * The `input` boundary (#215, #218, #219): only a real-user input may open
+   * The `input` boundary (#215, #218–#220): only a real-user input may open
    * a due handshake, and it activates `submit_memory` before Pi builds the
    * first model request. A steering input during an open run keeps it. A new
    * real-user run clears all transient state first.
    */
   handleInput(
-    event: { readonly source: unknown },
+    event: { readonly source: unknown; readonly text?: unknown },
     ctx: ContextMemoryRunContext,
     pi: Pick<ExtensionAPIForTools, "getActiveTools" | "setActiveTools">,
   ): void {
@@ -387,47 +583,66 @@ export class ContextMemoryController {
     if (this.dueRun !== undefined && !ctx.isIdle()) return;
     this.clearTransient();
     this.synchronizeActiveTools(pi, ctx.sessionManager);
-    // A due run opens for the first block or to append onto valid Memory
-    // still at or below half its budget (#219). Above half budget the suffix
-    // rebuild (#220) owns the next due run; opaque Memory leaves the
-    // structured takeover off entirely.
     if (!this.due) return;
-    const existingBlocks = this.appendableBlockCount();
-    if (existingBlocks === null) return;
-    this.dueRun = {
-      preRunLeafId: ctx.sessionManager.getLeafId?.() ?? null,
-      existingBlocks,
-      advisoryDelivered: false,
-    };
+    const dueRun = this.planDueRun(event, ctx);
+    if (dueRun === null) return;
+    this.dueRun = dueRun;
     this.synchronizeActiveTools(pi, ctx.sessionManager);
   }
 
   /**
-   * The existing block count a due run may append after (#219): zero for the
-   * first block, the live count while rendered Memory still fits half the
-   * configured budget, or null when append is not the planned operation —
-   * opaque Memory, or Memory above half budget whose suffix rebuild (#220)
-   * has not arrived.
+   * Freeze the due run's operation at the opening input (#218–#220): the
+   * first block on a branch with no Memory, an append while rendered Memory
+   * still fits half the configured budget (#219), or the suffix rebuild
+   * above it (#220). `null` opens no run — opaque Memory, an unknown model
+   * window, or the scale limit, where the complete maintenance request
+   * cannot fit the window and Pi native compaction keeps owning the
+   * boundary.
    */
-  private appendableBlockCount(): number | null {
-    if (this.current.kind === "none") return 0;
+  private planDueRun(
+    event: { readonly text?: unknown },
+    ctx: ContextMemoryRunContext,
+  ): DueRunState | null {
+    // A due run that opens is never at the scale limit; only the refused
+    // maintenance input below reports it.
+    this.scaleLimited = false;
+    const preRunLeafId = ctx.sessionManager.getLeafId?.() ?? null;
     if (this.current.kind === "opaque") return null;
     if (this.modelWindow === null) return null;
+    if (this.current.kind === "none") {
+      return { preRunLeafId, operation: "append", existingBlocks: 0, rebuild: undefined, advisoryDelivered: false };
+    }
     const halfBudget = Math.round((this.modelWindow * this.config.memoryBudgetPercent) / 100) / 2;
-    const rendered = renderedMemoryTokens(this.current.blocks.map((block) => block.markdown));
-    return rendered <= halfBudget ? this.current.blocks.length : null;
+    const markdowns = this.current.blocks.map((block) => block.markdown);
+    if (renderedMemoryTokens(markdowns) <= halfBudget) {
+      return { preRunLeafId, operation: "append", existingBlocks: markdowns.length, rebuild: undefined, advisoryDelivered: false };
+    }
+    const plan = this.rebuildPlan(this.current, halfBudget);
+    const usage = ctx.getContextUsage();
+    const numeric = usage && typeof usage.tokens === "number" ? usage.tokens : null;
+    const requestTokens = typeof event.text === "string" ? estimateTextTokens(event.text) : 0;
+    if (maintenanceExceedsWindow(numeric ?? this.estimateProjectedTokens(ctx.sessionManager), plan, requestTokens, this.modelWindow)) {
+      this.scaleLimited = true;
+      return null;
+    }
+    return { preRunLeafId, operation: "rebuild", existingBlocks: plan.prefix.length, rebuild: plan, advisoryDelivered: false };
   }
 
   /**
-   * The ephemeral `context` transform (#215, #218). It never throws. Two
-   * deterministic rules apply while the feature is enabled on a supported
-   * host:
+   * The ephemeral `context` transform (#215, #218, #220). It never throws.
+   * Three deterministic rules apply while the feature is enabled on a
+   * supported host:
    *
    * - `submit_memory` tool-call parts and their paired results leave every
    *   provider-bound request, while ordinary assistant text in the same
    *   message survives and `read_memory_source` artifacts stay visible.
    * - On the first provider request of a due run, one fixed custom advisory
    *   is appended after the current user message and never repeated.
+   * - On the first provider request of a maintenance run only, the Memory
+   *   summary message keeps exactly the unchanged prefix while every
+   *   selected block's complete original conversation is inserted once, in
+   *   source order, ahead of the retained raw tail — selected summaries and
+   *   their sources never appear together (#220).
    *
    * On projection failure it returns the unmodified safe context, deactivates
    * submission for the run, and clears due-run transient state.
@@ -440,8 +655,13 @@ export class ContextMemoryController {
     if (!this.operational()) return undefined;
     const original = event.messages;
     try {
-      const messages = filterSubmitArtifacts(original);
+      let messages = filterSubmitArtifacts(original);
       if (this.dueRun !== undefined && !this.dueRun.advisoryDelivered) {
+        if (this.dueRun.operation === "rebuild") {
+          const maintenance = projectMaintenanceContext(messages, this.dueRun.rebuild!);
+          if (maintenance === undefined) throw new Error("the carrying Memory summary is not in the request");
+          messages = maintenance;
+        }
         let insertAfter = -1;
         for (let i = messages.length - 1; i >= 0; i--) {
           if ((messages[i] as { role?: unknown } | null)?.role === "user") {
@@ -453,7 +673,7 @@ export class ContextMemoryController {
         messages.splice(insertAfter + 1, 0, {
           role: "custom",
           customType: CONTEXT_MEMORY_ADVISORY_TYPE,
-          content: this.dueRun.existingBlocks > 0 ? APPEND_RUN_ADVISORY_TEXT : DUE_RUN_ADVISORY_TEXT,
+          content: this.advisoryText(),
           display: false,
           timestamp: Date.now(),
         });
@@ -467,6 +687,12 @@ export class ContextMemoryController {
       this.synchronizeActiveTools(pi, session);
       return undefined;
     }
+  }
+
+  /** The one advisory body for the frozen operation: maintenance, append, or the first block (#218–#220). */
+  private advisoryText(): string {
+    if (this.dueRun!.operation === "rebuild") return MAINTENANCE_RUN_ADVISORY_TEXT;
+    return this.dueRun!.existingBlocks > 0 ? APPEND_RUN_ADVISORY_TEXT : DUE_RUN_ADVISORY_TEXT;
   }
 
   /**
@@ -553,15 +779,32 @@ export class ContextMemoryController {
     if (sourceEndIndex === -1) {
       fail("SUBMIT_NOT_DUE", "no eligible conversation precedes the current user request");
     }
-    // #219: the new block appends after the existing valid list — derived
-    // live here and re-matched at takeover — or starts the first block on a
-    // branch with no Memory of its own.
+    // #219/#220: the new block extends the existing valid list — an append
+    // keeps every live block, a rebuild keeps the frozen unchanged prefix
+    // and replaces the selected suffix — both derived live here and
+    // re-matched at takeover. A branch with no Memory starts the first block.
     const current = deriveCurrentMemory(session);
     if (current.kind === "opaque") {
       fail("MEMORY_CHANGED", "current Memory is no longer valid structured Context Memory");
     }
     const prefix: MemoryPrefixBlock[] = [];
-    if (current.kind === "valid") {
+    let replacedSuffix: readonly MemoryPrefixBlock[] = [];
+    let prefixCompactionId: string | undefined;
+    if (this.dueRun!.operation === "rebuild") {
+      const plan = this.dueRun!.rebuild!;
+      const selected = [...plan.prefix, ...plan.suffix];
+      if (current.kind !== "valid"
+        || current.compactionId !== plan.compactionId
+        || current.blocks.length !== selected.length
+        || current.blocks.some((block, index) =>
+          block.endEntryId !== selected[index]!.endEntryId
+          || block.markdown !== selected[index]!.markdown)) {
+        fail("MEMORY_CHANGED", "current Memory changed since the maintenance run opened");
+      }
+      prefix.push(...plan.prefix);
+      replacedSuffix = plan.suffix.map((block) => ({ markdown: block.markdown, endEntryId: block.endEntryId }));
+      prefixCompactionId = plan.compactionId;
+    } else if (current.kind === "valid") {
       const lastEndIndex = branch.findIndex(
         (entry) => entry.id === current.blocks[current.blocks.length - 1]!.endEntryId,
       );
@@ -569,6 +812,7 @@ export class ContextMemoryController {
         fail("SUBMIT_NOT_DUE", "no eligible conversation accumulated since the existing Memory blocks");
       }
       for (const block of current.blocks) prefix.push({ markdown: block.markdown, endEntryId: block.endEntryId });
+      prefixCompactionId = current.compactionId;
     }
     const summary = composeMemorySummary([...prefix.map((block) => block.markdown), markdown]);
     const details: MemoryCompactionDetails = {
@@ -594,9 +838,10 @@ export class ContextMemoryController {
     return {
       leafId,
       toolCallId,
-      operation: "append",
+      operation: this.dueRun!.operation,
       prefix,
-      prefixCompactionId: current.kind === "valid" ? current.compactionId : undefined,
+      replacedSuffix,
+      prefixCompactionId,
       sourceEndEntryId: branch[sourceEndIndex]!.id,
       firstKeptEntryId: branch[requestIndex]!.id,
       contextWindow,
@@ -681,23 +926,29 @@ export class ContextMemoryController {
     if (requestIndex === -1 || !isUserMessageEntry(branch[requestIndex])) return mismatch();
     const sourceEndIndex = branch.findIndex((entry) => entry.id === candidate.sourceEndEntryId);
     if (sourceEndIndex === -1 || sourceEndIndex >= requestIndex || !isEligibleSourceEntry(branch[sourceEndIndex])) return mismatch();
-    // The candidate's prefix must still be the exact live Memory: no
+    // The accepted Memory must still be the exact live Memory: no
     // compaction of its own for a first block, or the same carrying
     // compaction with the same ordered blocks and source continuity for an
-    // append (#219).
+    // append (#219) or a suffix rebuild, which additionally re-matches the
+    // selected blocks it replaces (#220).
     const live = deriveCurrentMemory(session);
-    if (candidate.prefix.length === 0) {
+    if (candidate.operation === "append" && candidate.prefix.length === 0) {
       if (live.kind !== "none") return mismatch();
     } else {
       if (live.kind !== "valid" || live.compactionId !== candidate.prefixCompactionId) return mismatch();
-      if (live.blocks.length !== candidate.prefix.length
+      const expected = candidate.operation === "rebuild"
+        ? [...candidate.prefix, ...candidate.replacedSuffix]
+        : candidate.prefix;
+      if (live.blocks.length !== expected.length
         || live.blocks.some((block, index) =>
-          block.endEntryId !== candidate.prefix[index]!.endEntryId
-          || block.markdown !== candidate.prefix[index]!.markdown)) return mismatch();
-      const lastEndIndex = branch.findIndex(
-        (entry) => entry.id === candidate.prefix[candidate.prefix.length - 1]!.endEntryId,
-      );
-      if (lastEndIndex === -1 || lastEndIndex >= sourceEndIndex) return mismatch();
+          block.endEntryId !== expected[index]!.endEntryId
+          || block.markdown !== expected[index]!.markdown)) return mismatch();
+      if (candidate.prefix.length > 0) {
+        const lastEndIndex = branch.findIndex(
+          (entry) => entry.id === candidate.prefix[candidate.prefix.length - 1]!.endEntryId,
+        );
+        if (lastEndIndex === -1 || lastEndIndex >= sourceEndIndex) return mismatch();
+      }
     }
     if (estimateTextTokens(candidate.summary) > Math.round((candidate.contextWindow * this.config.memoryBudgetPercent) / 100)) {
       return mismatch();
@@ -740,6 +991,9 @@ export class ContextMemoryController {
       this.slot = undefined;
       if (confirmed) {
         this.due = false;
+        // The settled recompute ran before the async commit landed; a stale
+        // scale-limit report must not outlive the accepted compaction.
+        this.scaleLimited = false;
       } else {
         ctx.ui?.notify?.(
           "COMPACTION_CONFLICT: compaction did not match the accepted Memory candidate; the submission was discarded",
@@ -879,8 +1133,9 @@ export class ContextMemoryController {
     memory: Extract<CurrentMemory, { kind: "valid" }>,
     usage: ContextMemoryUsageInput | undefined,
   ): ContextMemorySnapshot {
+    const markdowns = memory.blocks.map((block) => block.markdown);
     const blockTokens = memory.blocks.map((block) => estimateTextTokens(block.markdown));
-    const memoryTokens = renderedMemoryTokens(memory.blocks.map((block) => block.markdown));
+    const memoryTokens = renderedMemoryTokens(markdowns);
     const window = usage?.contextWindow;
     const budgetTokens = typeof window === "number" && window > 0
       ? Math.round((window * this.config.memoryBudgetPercent) / 100)
@@ -895,14 +1150,8 @@ export class ContextMemoryController {
         stablePrefix = memory.blocks.length;
       } else {
         nextOperation = "rebuild";
-        let cumulative = 0;
-        let stable = 0;
-        for (const tokens of blockTokens) {
-          if (cumulative + tokens > halfBudget) break;
-          cumulative += tokens;
-          stable += 1;
-        }
-        stablePrefix = stable;
+        // The same shared selection the due run freezes (#220).
+        stablePrefix = selectStablePrefixCount(markdowns, halfBudget);
       }
     }
 

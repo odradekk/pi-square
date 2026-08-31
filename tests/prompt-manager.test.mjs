@@ -240,6 +240,7 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
     ["due", /due · threshold reached · the next run authors the first Memory block/],
     ["pending", /pending · Memory candidate accepted this run · compaction follows at run end/],
     ["committing", /committing · writing the Memory compaction/],
+    ["scale-limit", /scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary/],
   ]) {
     const stateMemory = { ...contextMemory, snapshot: () => ({ state }) };
     const loadState = jiti(import.meta.url, { moduleCache: false });
