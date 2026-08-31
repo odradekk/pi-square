@@ -28,8 +28,11 @@ function writeResult(resultPath, value) {
 async function main() {
   const job = JSON.parse(readFileSync(process.argv[2], "utf8"));
   const { mode, workspace, path, resultPath, sessionDir } = job;
+  if (typeof sessionDir !== "string" || sessionDir.trim() === "") {
+    throw new Error("helper job must provide sessionDir");
+  }
   const workspaceRoot = realpathSync(workspace);
-  const storeDir = anchoredStoreDir(sessionDir ?? join(workspace, ".test-session"), workspaceRoot);
+  const storeDir = anchoredStoreDir(sessionDir, workspaceRoot);
 
   async function canonicalLockPath(file) {
     const target = await resolveTarget(resolve(workspaceRoot, file));
@@ -67,7 +70,7 @@ async function main() {
   }
 
   if (mode === "write") {
-    const write = createChildAnchoredWriteTool(workspace, job.owner ?? "subagent_write", sessionDir ?? join(workspace, ".test-session"));
+    const write = createChildAnchoredWriteTool(workspace, job.owner ?? "subagent_write", sessionDir);
     try {
       const result = await write.execute(
         "write",
