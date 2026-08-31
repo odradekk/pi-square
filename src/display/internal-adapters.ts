@@ -37,9 +37,9 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
   docs: ["libraryId"], parse: ["path"], replace: ["path"],
   ask: [], todo: ["action"],
-  // No target field for the Context Memory tools: Memory Markdown must never
-  // become a header target; read_memory_source's composed `block B · page P`
-  // target arrives with its display contract (#217).
+  // No target field for the Context Memory tools: the workflow adapter
+  // composes read_memory_source's `block B · page P` target itself, and
+  // Memory Markdown must never become a header target (#217).
   delegate: ["agent"], resume: ["id"],
 });
 
@@ -298,7 +298,10 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
         || definition.name === "github"
         || definition.name === "ssh"
         ? createRemoteAdapter(definition.name, base)
-        : definition.name === "ask" || definition.name === "todo"
+        : definition.name === "ask"
+          || definition.name === "todo"
+          || definition.name === "submit_memory"
+          || definition.name === "read_memory_source"
           ? createWorkflowAdapter(definition.name, base)
           : base;
   return decorateToolDefinition(definition, runtime, adapter) as T;

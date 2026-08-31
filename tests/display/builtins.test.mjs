@@ -125,6 +125,60 @@ try {
   assert.doesNotMatch(editResult, /@@/, "no @@ hunk header");
   assert.doesNotMatch(editResult, /PROJECTED/, "edit diff is authoritative, not projected");
 
+
+  // ─── #217: the baseline restore preserves dynamically owned tool names ───
+
+  {
+    const registerDisplayBuiltinsDefault = (await load("../../src/display/builtins.ts")).default;
+    const { DisplayController } = await load("../../src/display/index.ts");
+    const events = new Map();
+    let active = ["read", "edit", "write"];
+    const writes = [];
+    const pi = {
+      registerTool() {},
+      on(name, handler) {
+        const handlers = events.get(name) ?? [];
+        handlers.push(handler);
+        events.set(name, handlers);
+      },
+      getActiveTools() { return [...active]; },
+      setActiveTools(names) { active = [...names]; writes.push([...names]); },
+      getAllTools() { return []; },
+    };
+    const controller = new DisplayController(DEFAULT_CONFIG);
+    registerDisplayBuiltinsDefault(pi, controller, undefined, ["read_memory_source", "submit_memory"]);
+
+    const ctx = {
+      cwd: temp,
+      sessionManager: { getSessionDir: () => temp, getSessionId: () => "s", getSessionFile: () => undefined },
+      hasUI: false,
+      isProjectTrusted() { return false; },
+      ui: { setStatus() {} },
+    };
+    const emit = () => {
+      const handlers = events.get("session_start") ?? [];
+      for (const handler of handlers) return handler({ type: "session_start", reason: "startup" }, ctx);
+    };
+
+    // First start: the baseline is captured without the dynamic names.
+    await emit();
+    assert.ok(!active.includes("read_memory_source"), "the baseline never contains the dynamic names");
+    assert.ok(!active.includes("submit_memory"));
+
+    // A reload after Context Memory activated the read tool: the restore keeps it.
+    active = [...active, "read_memory_source"];
+    await emit();
+    assert.ok(active.includes("read_memory_source"),
+      "the baseline restore preserves a dynamically added owned name");
+    assert.ok(!active.includes("submit_memory"),
+      "an owned name another module removed stays removed");
+
+    // A reload after Context Memory deactivated it again: nothing resurrects.
+    active = active.filter((name) => name !== "read_memory_source");
+    await emit();
+    assert.ok(!active.includes("read_memory_source"), "a dynamically removed owned name stays removed");
+  }
+
   runtime.dispose();
   console.log("display built-in definition and renderer tests: OK");
 } finally {
