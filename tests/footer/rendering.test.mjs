@@ -21,9 +21,14 @@ const themeModulePath = pathToFileURL(join(
 )).href;
 const { loadThemeFromPath } = await import(themeModulePath);
 
+// The footer renders its cwd into width-bounded rows, so the snapshot must not
+// carry the real checkout path: a long worktree path would shift truncation and
+// make the wide-tier session-name assertion depend on the machine (#232).
+const snapshotCwd = "/home/example/pi-square";
+
 function snapshot(overrides = {}) {
   return {
-    cwd: packageRoot,
+    cwd: snapshotCwd,
     branch: "main",
     sessionName: "footer-modernization",
     modelName: "GPT 5.6 Sol",
@@ -117,6 +122,19 @@ for (const file of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) 
       assert.match(plain[1], /HIGH/, `${file} narrow: thinking level on row 2`);
     }
   }
+}
+
+// ─── Wide Loc under width pressure: right-most field drops, right side keeps ─
+{
+  const theme = loadThemeFromPath(join(packageRoot, "themes", "pi-square-theme-dark.json"));
+  const longCwd = "/home/example/orca/workspaces/pi-square/232-path-independence-wrap-coverage";
+  const lines = renderEnhancedFooter(theme, 100, snapshot({ cwd: longCwd }));
+  const row2 = stripVTControlCharacters(lines[1]);
+  assert.ok(visibleWidth(lines[1]) <= 100, "pressured row 2 stays within 100 columns");
+  assert.match(row2, /Loc:/, "pressured row 2 keeps the Loc label");
+  assert.doesNotMatch(row2, /footer-modernization/, "session name drops first under width pressure");
+  assert.match(row2, /\.\.\./, "truncation marker is visible");
+  assert.match(row2, /Context/, "context side keeps priority over Loc");
 }
 
 // ─── Privacy: credential redaction ──────────────────────────────────
