@@ -2,7 +2,7 @@
 // single lock operation in a real OS process so cross-process behaviour is
 // demonstrated with real processes rather than in-process calls. Reads a JSON
 // job file (first argv) and writes its result to the job's `resultPath`.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -15,6 +15,15 @@ const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-e
 const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
+
+// The test polls for the result path's existence and parses it immediately, so
+// the path must only ever appear complete: write a sibling temporary file in
+// the same directory and rename it into place, which is atomic there.
+function writeResult(resultPath, value) {
+  const tempPath = `${resultPath}.${process.pid}.tmp`;
+  writeFileSync(tempPath, JSON.stringify(value));
+  renameSync(tempPath, resultPath);
+}
 
 async function main() {
   const job = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -29,7 +38,7 @@ async function main() {
 
   if (mode === "hold") {
     const lock = await acquireFileLock(await canonicalLockPath(path));
-    writeFileSync(resultPath, JSON.stringify({ locked: lock !== null }));
+    writeResult(resultPath, { locked: lock !== null });
     if (lock) {
       // Keep the event loop alive while holding the lock, until this process
       // is killed by the test (simulating an editor mid-edit).
@@ -53,7 +62,7 @@ async function main() {
       undefined,
       { cwd: workspace },
     );
-    writeFileSync(resultPath, JSON.stringify(result));
+    writeResult(resultPath, result);
     return;
   }
 
@@ -67,9 +76,9 @@ async function main() {
         undefined,
         { cwd: workspace },
       );
-      writeFileSync(resultPath, JSON.stringify({ ok: true, result }));
+      writeResult(resultPath, { ok: true, result });
     } catch (error) {
-      writeFileSync(resultPath, JSON.stringify({ ok: false, error: error.message }));
+      writeResult(resultPath, { ok: false, error: error.message });
     }
     return;
   }
@@ -84,7 +93,7 @@ async function main() {
     } catch {
       // absent
     }
-    writeFileSync(resultPath, JSON.stringify({ exists, content }));
+    writeResult(resultPath, { exists, content });
     return;
   }
 
