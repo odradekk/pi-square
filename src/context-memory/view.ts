@@ -1,5 +1,5 @@
 /**
- * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #218).
+ * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #218, #221).
  *
  * The controller publishes this bounded snapshot through the registrar's
  * view provider; Prompt Manager renders it as the `/context` `memory[]`
@@ -7,8 +7,9 @@
  * prompt. #217 added the reading states (`opaque`, `active`); #218 adds the
  * submission-handshake states: `due` (threshold reached, the next real-user
  * run authors the first block), `pending` (a candidate was accepted this run
- * and `committing` (takeover in progress). #221 adds the `ephemeral` marker
- * for in-memory sessions; later slices add the scale-limit state.
+ * and compaction follows), and `committing` (takeover in progress). #221 adds
+ * the `ephemeral` marker for in-memory sessions; later slices add the
+ * scale-limit state.
  */
 
 /** Custom-message type of the one ephemeral due-run advisory (#218). */
