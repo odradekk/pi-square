@@ -1,5 +1,5 @@
 ---
-"@odradekk/pi-square": minor
+"@odradekk/pi-square": patch
 ---
 
 Harden the Context Memory native-fallback boundary
