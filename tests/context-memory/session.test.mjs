@@ -35,11 +35,14 @@ function harness(config = ENABLED_CONFIG) {
     displayRuntimeProvider: () => {
       throw new Error("display runtime is not needed for in-memory session derivation");
     },
+    reserveTokens: () => 16384,
   });
   return {
     tools, registration, activeTools: () => [...active],
     async emit(name, event, ctx) {
-      for (const handler of events.get(name) ?? []) await handler(event, ctx);
+      let last;
+      for (const handler of events.get(name) ?? []) last = await handler(event, ctx);
+      return last;
     },
   };
 }
@@ -53,6 +56,9 @@ function commandContext(sessionManager) {
     compact() {},
     getContextUsage: () => ({ tokens: 40000, contextWindow: 200000, percent: 20 }),
     getSystemPrompt: () => "",
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    isProjectTrusted: () => true,
   };
 }
 
@@ -192,6 +198,176 @@ try {
   // The ephemeral session wrote nothing to disk.
   assert.equal(sm.isPersisted(), false);
   assert.equal(sm.getSessionFile(), undefined);
+
+  // ── #218: the first Memory block through the full handshake on a real tree ──
+
+  {
+    const dueSession = SessionManager.inMemory("/project");
+    const oldUser = dueSession.appendMessage({ role: "user", content: "explore the parser internals", timestamp: 1 });
+    const oldAssistant = dueSession.appendMessage({
+      role: "assistant",
+      content: [
+        { type: "text", text: "the parser walks three bounded phases" },
+        { type: "toolCall", id: "call-old", name: "read", arguments: { path: "src/parser.ts" } },
+      ],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "toolUse", timestamp: 2,
+    });
+    dueSession.appendMessage({
+      role: "toolResult", toolCallId: "call-old", toolName: "read",
+      content: [{ type: "text", text: "export function parse() {}" }], isError: false, timestamp: 3,
+    });
+    // A stale submit artifact from an earlier failed handshake stays on the
+    // branch but never enters the provider-bound estimate or block sources.
+    dueSession.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call-stale", name: "submit_memory", arguments: { markdown: "# stale" } }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "toolUse", timestamp: 4,
+    });
+    dueSession.appendMessage({
+      role: "toolResult", toolCallId: "call-stale", toolName: "submit_memory",
+      content: [{ type: "text", text: "SUBMIT_NOT_DUE: no Context Memory compression is due in this run" }], isError: true, timestamp: 5,
+    });
+
+    const dueHarness = harness({
+      enabled: true,
+      compressionThreshold: { tokens: 2500 },
+      memoryBudgetPercent: 1,
+    });
+    const dueCtx = {
+      ...commandContext(dueSession),
+      getContextUsage: () => ({ tokens: 30000, contextWindow: 200000, percent: 15 }),
+    };
+    await dueHarness.emit("session_start", { type: "session_start", reason: "startup" }, dueCtx);
+    assert.deepEqual(dueHarness.registration.snapshot(), { state: "due" });
+
+    await dueHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, dueCtx);
+    assert.ok(dueHarness.activeTools().includes("submit_memory"),
+      "the real-user input activates submit_memory on the real session");
+
+    const requestEntry = dueSession.appendMessage({ role: "user", content: "ship it", timestamp: 6 });
+    const submitAssistant = dueSession.appendMessage({
+      role: "assistant",
+      content: [
+        { type: "text", text: "done — submitting the first Memory block" },
+        { type: "toolCall", id: "call-first", name: "submit_memory", arguments: { markdown: "# Parser tour" } },
+      ],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "toolUse", timestamp: 7,
+    });
+    await dueHarness.emit("message_end", {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "done — submitting the first Memory block" },
+          { type: "toolCall", id: "call-first", name: "submit_memory", arguments: { markdown: "# Parser tour" } },
+        ],
+      },
+    }, dueCtx);
+
+    const body = "# Parser tour\n\n- the parser walks three bounded phases\n- sources recover through read_memory_source";
+    const acceptedResult = await dueHarness.tools.get("submit_memory").execute(
+      "call-first",
+      { markdown: body },
+      undefined,
+      undefined,
+      dueCtx,
+    );
+    assert.equal(acceptedResult.content[0].text, "Memory candidate accepted; compaction pending.");
+    assert.equal(acceptedResult.terminate, true);
+    dueSession.appendMessage({
+      role: "toolResult", toolCallId: "call-first", toolName: "submit_memory",
+      content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 8,
+    });
+    assert.deepEqual(dueHarness.registration.snapshot(), { state: "pending" });
+
+    const compactCalls = [];
+    const settleCtx = { ...dueCtx, compact: () => compactCalls.push(true) };
+    await dueHarness.emit("agent_settled", { type: "agent_settled" }, settleCtx);
+    assert.equal(compactCalls.length, 1, "settle hands the candidate to Pi's compaction seam once");
+
+    // Drive the takeover exactly like Pi's AgentSession does: a real
+    // preparation from the real branch, the returned compaction appended
+    // through the real SessionManager, and the saved entry observed.
+    const branchBefore = dueSession.getBranch();
+    const byId = new Map(branchBefore.map((entry) => [entry.id, entry]));
+    const projectedBefore = buildContextEntries(branchBefore, dueSession.getLeafId());
+    const tokensBefore = projectedBefore.reduce((sum, entry) => sum + Math.max(1, Math.round(JSON.stringify(entry).length / 4)), 0);
+    const takeover = await dueHarness.emit("session_before_compact", {
+      type: "session_before_compact",
+      preparation: {
+        firstKeptEntryId: requestEntry,
+        messagesToSummarize: [],
+        turnPrefixMessages: [],
+        isSplitTurn: false,
+        tokensBefore,
+        settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+      },
+      branchEntries: branchBefore,
+      reason: "manual",
+      willRetry: false,
+      signal: undefined,
+    }, dueCtx);
+    assert.ok(takeover?.compaction, "the real branch snapshot matches the candidate");
+    assert.equal(takeover.compaction.firstKeptEntryId, requestEntry,
+      "the current real user entry becomes firstKeptEntryId");
+    assert.equal(takeover.compaction.tokensBefore, tokensBefore,
+      "the takeover carries Pi's preparation token accounting");
+
+    const savedId = dueSession.appendCompaction(
+      takeover.compaction.summary,
+      takeover.compaction.firstKeptEntryId,
+      takeover.compaction.tokensBefore,
+      takeover.compaction.details,
+      true,
+    );
+    const savedEntry = byId.has(savedId) ? undefined : dueSession.getBranch().find((entry) => entry.id === savedId);
+    assert.ok(savedEntry, "the real SessionManager saved the compaction entry");
+    await dueHarness.emit("session_compact", {
+      type: "session_compact",
+      compactionEntry: savedEntry,
+      fromExtension: true,
+      reason: "manual",
+      willRetry: false,
+    }, dueCtx);
+
+    const committed = dueHarness.registration.snapshot({ tokens: 800, contextWindow: 200000 });
+    assert.equal(committed.state, "active");
+    assert.equal(committed.blocks, 1);
+    assert.ok(dueHarness.activeTools().includes("read_memory_source"),
+      "the committed block opens the reading surface");
+    assert.ok(!dueHarness.activeTools().includes("submit_memory"));
+
+    // Pi projects the saved compaction plus the kept tail — the run stays recent.
+    const projected = buildContextEntries(dueSession.getEntries(), dueSession.getLeafId());
+    assert.equal(projected[0].type, "compaction");
+    assert.equal(projected[0].id, savedId);
+    assert.equal(projected[1].id, requestEntry);
+    assert.deepEqual(
+      projected.slice(1).map((entry) => entry.type),
+      ["message", "message", "message"],
+      "the whole current run stays uncompressed after the compaction",
+    );
+
+    // The block covers every eligible old entry before the request; the two
+    // stale submit artifacts never become source evidence.
+    const inspected = dueHarness.registration.inspect({ block: 1, page: 1 }, dueSession);
+    assert.equal(inspected.ok, true);
+    assert.ok(inspected.text.includes(body), "the block body survives byte-exact");
+    assert.ok(inspected.text.includes("explore the parser internals"), "the first eligible entry opens block 1");
+    assert.ok(inspected.text.includes("export function parse() {}"), "the tool result recovers");
+    assert.ok(!inspected.text.includes("# stale"), "stale submit artifacts stay out of the sources");
+    assert.ok(!inspected.text.includes("call-stale"), "protocol call ids never surface");
+    assert.ok(!inspected.text.includes(oldUser) && !inspected.text.includes(oldAssistant) && !inspected.text.includes(submitAssistant),
+      "entry ids never surface");
+    assert.equal(dueSession.isPersisted(), false, "the handshake wrote no sidecar");
+    assert.equal(dueSession.getSessionFile(), undefined);
+  }
 
   console.log("context-memory session tests: OK");
 } catch (error) {

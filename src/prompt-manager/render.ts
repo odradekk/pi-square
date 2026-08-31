@@ -288,6 +288,15 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
       case "opaque":
         description = "opaque · latest compaction is not valid Context Memory · native summary retained";
         break;
+      case "due":
+        description = "due · threshold reached · the next run authors the first Memory block";
+        break;
+      case "pending":
+        description = "pending · Memory candidate accepted this run · compaction follows at run end";
+        break;
+      case "committing":
+        description = "committing · writing the Memory compaction";
+        break;
     }
     return [
       RAIL_CONT +

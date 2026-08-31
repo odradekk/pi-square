@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PiSquareConfig } from "../core/config";
 import { decorateInternalTool } from "../display/internal-adapters";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
@@ -9,6 +9,7 @@ import {
   contextInterfacesPresent,
   evaluateHostSupport,
   resolveHostVersion,
+  resolvePiReserveTokens,
 } from "./host";
 import {
   createReadMemorySourceToolDefinition,
@@ -17,8 +18,8 @@ import {
 import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./view";
 
 /**
- * Context Memory registrar (odradekk/pi-square#215, #216, #217) — the module's
- * single external interface.
+ * Context Memory registrar (odradekk/pi-square#215, #216, #217, #218) — the
+ * module's single external interface.
  *
  * One call installs the feature's event handlers and the two parent-only
  * tool definitions (decorated through the shared display adapter) and
@@ -30,10 +31,11 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
  * Default-off: with no `contextMemory` agent configuration the feature
  * installs no context transform, no compaction takeover, no active model
  * tool, no persistent file, no footer, and no widget — only the inactive
- * tool registrations and the bounded `/context` state line. #217 adds the
- * reading surface: `read_memory_source` activates while strictly valid
- * non-empty current Memory exists on the current leaf, and the provider
- * exposes read-only human inspection.
+ * tool registrations and the bounded `/context` state line. #217 added the
+ * reading surface; #218 adds the first-block submission handshake: due
+ * detection at the `input` boundary, the one ephemeral advisory through the
+ * `context` transform, the run-scoped `submit_memory` candidate, and
+ * compaction takeover through `session_before_compact`/`session_compact`.
  */
 
 /** The owned tool names other pi-square modules must let this module synchronize. */
@@ -48,6 +50,8 @@ export interface ContextMemoryDependencies {
   readonly hostVersion?: () => string;
   /** Injectable registration-time interface probe for deterministic tests. */
   readonly apiInterfaces?: (pi: ExtensionAPI) => boolean;
+  /** Injectable Pi compaction-reserve source for deterministic tests. */
+  readonly reserveTokens?: (cwd: string, projectTrusted: boolean) => number;
 }
 
 /** The read-only view provider consumed by Prompt Manager. */
@@ -70,18 +74,24 @@ export default function registerContextMemory(
 ): ContextMemoryRegistration {
   const hostVersion = dependencies.hostVersion ?? resolveHostVersion;
   const apiInterfaces = dependencies.apiInterfaces ?? apiInterfacesPresent;
+  const reserveTokensOf = dependencies.reserveTokens ?? resolvePiReserveTokens;
   let controller: ContextMemoryController | undefined;
 
-  // The read tool resolves its executor through the registrar so the
-  // definition stays registered once while execution follows the
+  // Both tools resolve their executor through the registrar so the
+  // definitions stay registered once while execution follows the
   // session-scoped controller (and fails safely before a session exists).
+  const submitMemory = createSubmitMemoryToolDefinition((markdown, toolCallId, session) => {
+    if (!controller) {
+      throw new Error("SUBMIT_NOT_DUE: no Context Memory compression is due in this run");
+    }
+    return controller.submitCandidate(markdown, toolCallId, session);
+  });
   const readMemorySource = createReadMemorySourceToolDefinition((request, session) => {
     if (!controller) {
       throw new Error("MEMORY_NOT_AVAILABLE: no valid Context Memory is available on the current branch");
     }
     return controller.readSource(request, session);
   });
-  const submitMemory = createSubmitMemoryToolDefinition();
   pi.registerTool(decorateInternalTool(submitMemory, dependencies.displayRuntimeProvider));
   pi.registerTool(decorateInternalTool(readMemorySource, dependencies.displayRuntimeProvider));
 
@@ -94,20 +104,65 @@ export default function registerContextMemory(
       config: dependencies.configProvider().contextMemory,
       support: evaluateHostSupport(hostVersion(), apiInterfaces(pi), contextInterfacesPresent(ctx)),
     });
-    // Baseline active-tool state plus #217 reading derivation: remove only
-    // the owned names and re-add `read_memory_source` when current Memory is
-    // strictly valid and non-empty. Pi and other pi-square modules keep every
-    // other active tool they selected.
+    controller.adoptRuntime(reserveTokensOf(ctx.cwd, ctx.isProjectTrusted()));
+    // Baseline active-tool state plus the reading derivation; the due flag
+    // starts from the resumed branch so a loaded session can be due already.
+    controller.recomputeDue(ctx);
     controller.synchronizeActiveTools(pi, sessionReaderOf(ctx));
+  });
+
+  // The due handshake opens only at a real-user input boundary, before Pi
+  // builds the first model request (#218).
+  pi.on("input", async (event, ctx) => {
+    controller?.handleInput(event, ctx, pi);
+  });
+
+  // One ephemeral advisory on the first provider request of a due run; the
+  // transform exists only in the request and never persists (#218).
+  pi.on("context", async (event, ctx) => {
+    const transformed = controller?.transformContext(event, pi, sessionReaderOf(ctx));
+    return transformed === undefined ? undefined : { messages: transformed.messages as ContextEvent["messages"] };
+  });
+
+  // The sole-tool-call check reads the most recent assistant batch (#218).
+  pi.on("message_end", async (event) => {
+    controller?.noteAssistantToolBatch((event as { message?: unknown }).message);
+  });
+
+  // An aborted run discards its transient handshake state (#215).
+  pi.on("agent_end", async (event) => {
+    const messages = (event as { messages?: unknown }).messages;
+    if (!Array.isArray(messages)) return;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i] as { role?: unknown; stopReason?: unknown } | undefined;
+      if (message?.role !== "assistant") continue;
+      if (message.stopReason === "aborted") controller?.noteAbortedRun();
+      return;
+    }
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    controller?.handleSettled(ctx, pi);
+  });
+
+  // Model changes recompute every budget and invalidate the handshake (#215).
+  pi.on("model_select", async (_event, ctx) => {
+    controller?.invalidateTransient(pi, sessionReaderOf(ctx), ctx);
   });
 
   // Re-derive after tree navigation and after any compaction completes: both
   // can change which compaction is the latest on the current leaf path.
   pi.on("session_tree", async (_event, ctx) => {
-    controller?.synchronizeActiveTools(pi, sessionReaderOf(ctx));
+    controller?.invalidateTransient(pi, sessionReaderOf(ctx));
   });
-  pi.on("session_compact", async (_event, ctx) => {
-    controller?.synchronizeActiveTools(pi, sessionReaderOf(ctx));
+  pi.on("session_compact", async (event, ctx) => {
+    controller?.confirmCompaction(event, ctx, pi, sessionReaderOf(ctx));
+  });
+
+  // The takeover consumes a matching candidate through Pi's public
+  // compaction seam; any mismatch leaves native compaction untouched (#218).
+  pi.on("session_before_compact", async (event, ctx) => {
+    return controller?.consumeCompaction(event, sessionReaderOf(ctx));
   });
 
   pi.on("session_shutdown", async () => {

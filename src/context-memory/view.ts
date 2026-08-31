@@ -1,15 +1,18 @@
 /**
- * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217).
+ * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #218).
  *
  * The controller publishes this bounded snapshot through the registrar's
  * view provider; Prompt Manager renders it as the `/context` `memory[]`
  * section. It is not a system-prompt segment and never enters the system
- * prompt. #217 adds the reading states: `opaque` for a native, unknown,
- * malformed, or over-bound latest compaction, and `active` for strictly valid
- * current Memory with its ordered block rows. Later slices extend the union
- * with the due/pending and scale-limit states.
+ * prompt. #217 added the reading states (`opaque`, `active`); #218 adds the
+ * submission-handshake states: `due` (threshold reached, the next real-user
+ * run authors the first block), `pending` (a candidate was accepted this run
+ * and compaction follows), and `committing` (takeover in progress). Later
+ * slices add the scale-limit state.
  */
 
+/** Custom-message type of the one ephemeral due-run advisory (#218). */
+export const CONTEXT_MEMORY_ADVISORY_TYPE = "pi-square.context-memory/advisory";
 
 /** One chronological block row in the active view: bounded, no identifiers. */
 export interface ContextMemoryBlockRow {
@@ -25,6 +28,9 @@ export type ContextMemorySnapshot =
   | { readonly state: "disabled" }
   | { readonly state: "unsupported"; readonly reason: "host-version" | "host-interfaces" }
   | { readonly state: "no-memory" }
+  | { readonly state: "due" }
+  | { readonly state: "pending" }
+  | { readonly state: "committing" }
   | { readonly state: "opaque" }
   | {
     readonly state: "active";
