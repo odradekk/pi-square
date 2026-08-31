@@ -76,6 +76,7 @@
     "smoke": "node ./tests/smoke.mjs",
     "package:check": "npm pack --dry-run --json | node ./scripts/verify-pack.mjs",
     "eval:codegraph": "node ./tests/codegraph/eval.mjs",
+    "qualify:context-memory": "node ./tests/context-memory/qualification/qualify.mjs",
     "bench:frames": "node ./tests/display/frame-cost.mjs",
     "changeset": "changeset",
     "changeset:status": "changeset status",
