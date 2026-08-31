@@ -271,6 +271,52 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
     assert.ok(memoryLine, `the ${state} state keeps the memory[] section`);
     assert.ok(memoryLine.length <= 140, `the ${state} line stays bounded`);
   }
+
+  // ─── #221: ephemeral sessions are clearly reported in every state ───
+
+  for (const [label, memory] of [
+    ["no-memory", { state: "no-memory", ephemeral: true }],
+    ["active", {
+      state: "active",
+      blocks: 1,
+      rows: [{ preview: "Repo tour", tokens: 12, sources: 3 }],
+      stablePrefix: 1,
+      nextOperation: "append",
+      memoryTokens: 24,
+      budgetTokens: 20000,
+      currentTokens: 74223,
+      contextWindow: 200000,
+      ephemeral: true,
+    }],
+  ]) {
+    const loadEphemeral = jiti(import.meta.url, { moduleCache: false });
+    const registerEphemeral = (await loadEphemeral("../src/prompt-manager/index.ts")).default;
+    const ephemeralCommands = new Map();
+    const ephemeralPi = {
+      registerCommand(name, options) { ephemeralCommands.set(name, options); },
+      registerShortcut() {},
+      on() {},
+      getAllTools() { return []; },
+    };
+    registerEphemeral(ephemeralPi, {
+      buildSubagentCatalog: () => ({ id: "subagents", label: "subagent catalog", category: "catalog", phase: "dynamic-suffix", text: "", turnSeq: 1 }),
+      setInheritedSystemCore() {},
+      contextMemory: { snapshot: () => memory },
+    });
+    const { notified: ephemeralNotified } = notifyCapture();
+    await ephemeralCommands.get("context").handler("", {
+      hasUI: true,
+      sessionManager,
+      getContextUsage: () => ({ tokens: 74223, contextWindow: 200000, percent: 37 }),
+      getSystemPrompt: () => "",
+      ui: { notify: (text) => ephemeralNotified.push(text), theme: null },
+    });
+    assert.equal(ephemeralNotified.length, 1);
+    const flatEphemeral = stripVTControlCharacters(ephemeralNotified[0]);
+    const ephemeralLine = flatEphemeral.split("\n").find((line) => line.includes("memory[]"));
+    assert.ok(ephemeralLine, `the ${label} state keeps the memory[] section`);
+    assert.match(ephemeralLine, /ephemeral session/, `the ${label} state reports the ephemeral session`);
+  }
 }
 
 console.log("prompt manager tests: OK");

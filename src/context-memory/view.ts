@@ -7,8 +7,8 @@
  * prompt. #217 added the reading states (`opaque`, `active`); #218 adds the
  * submission-handshake states: `due` (threshold reached, the next real-user
  * run authors the first block), `pending` (a candidate was accepted this run
- * and compaction follows), and `committing` (takeover in progress). Later
- * slices add the scale-limit state.
+ * and `committing` (takeover in progress). #221 adds the `ephemeral` marker
+ * for in-memory sessions; later slices add the scale-limit state.
  */
 
 /** Custom-message type of the one ephemeral due-run advisory (#218). */
@@ -27,11 +27,11 @@ export interface ContextMemoryBlockRow {
 export type ContextMemorySnapshot =
   | { readonly state: "disabled" }
   | { readonly state: "unsupported"; readonly reason: "host-version" | "host-interfaces" }
-  | { readonly state: "no-memory" }
-  | { readonly state: "due" }
-  | { readonly state: "pending" }
-  | { readonly state: "committing" }
-  | { readonly state: "opaque" }
+  | { readonly state: "no-memory"; readonly ephemeral?: true }
+  | { readonly state: "due"; readonly ephemeral?: true }
+  | { readonly state: "pending"; readonly ephemeral?: true }
+  | { readonly state: "committing"; readonly ephemeral?: true }
+  | { readonly state: "opaque"; readonly ephemeral?: true }
   | {
     readonly state: "active";
     /** Total blocks in current Memory. */
@@ -50,6 +50,7 @@ export type ContextMemorySnapshot =
     readonly currentTokens: number | null;
     /** Current model context window, when reported. */
     readonly contextWindow: number | null;
+    readonly ephemeral?: true;
   };
 
 /** Snapshot published before a session starts and after shutdown. */
@@ -61,3 +62,12 @@ export const CONTEXT_MEMORY_DISABLED_SNAPSHOT: ContextMemorySnapshot = Object.fr
  * visible clip marker; the total block count always stays visible.
  */
 export const CONTEXT_MEMORY_MAX_VIEW_ROWS = 64;
+
+/**
+ * Whether the snapshot was derived on an ephemeral in-memory session (#221):
+ * the feature runs identically there, `/context` reports it, and no file or
+ * sidecar is ever created.
+ */
+export function isEphemeralMemorySnapshot(memory: ContextMemorySnapshot): boolean {
+  return (memory as { readonly ephemeral?: true }).ephemeral === true;
+}

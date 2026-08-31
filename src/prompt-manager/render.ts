@@ -1,4 +1,4 @@
-import type { ContextMemorySnapshot } from "../context-memory/view";
+import { isEphemeralMemorySnapshot, type ContextMemorySnapshot } from "../context-memory/view";
 import type { PromptManagerSegment } from "./types";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ByRoleChars, CollapsedEntries, MessageEntrySummary } from "./decompose";
@@ -261,14 +261,15 @@ function renderSystemSection(
 }
 
 /**
- * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217): the
+ * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #221): the
  * selected Variant A inline hierarchy, rendered between the system-prompt
  * section and the message section. Inactive states stay one bounded line;
  * active Memory shows state, Memory/budget estimate, block count, stable
  * prefix, next operation, current usage, and one bounded chronological row
  * per block. No format versions, entry ranges/IDs, paths, timestamps, or
  * storage details ever appear. Never part of the usage bar — Memory
- * accounting leaves the total usage bar unchanged (#215).
+ * accounting leaves the total usage bar unchanged (#215). Ephemeral
+ * in-memory sessions are reported as such (#221).
  */
 function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySnapshot): string[] {
   if (memory.state !== "active") {
@@ -298,6 +299,9 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
         description = "committing · writing the Memory compaction";
         break;
     }
+    if (isEphemeralMemorySnapshot(memory)) {
+      description += " · ephemeral session";
+    }
     return [
       RAIL_CONT +
       paint(theme, "text", "memory[]") +
@@ -323,6 +327,12 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
       paint(theme, "muted", `stable ${memory.stablePrefix}/${memory.blocks}`),
       ` ${paint(theme, "dim", "· next:")} `,
       paint(theme, "text", memory.nextOperation),
+    );
+  }
+  if (isEphemeralMemorySnapshot(memory)) {
+    headParts.push(
+      ` ${paint(theme, "dim", "·")} `,
+      paint(theme, "muted", "ephemeral session"),
     );
   }
   lines.push(RAIL_CONT + paint(theme, "text", "memory[]") + "     " + headParts.join(""));

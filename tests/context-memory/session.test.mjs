@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import jiti from "jiti";
 import { SessionManager, buildContextEntries } from "@earendil-works/pi-coding-agent";
 
@@ -10,11 +13,65 @@ const { MEMORY_TRANSCRIPT_HEADER } = await load("../../src/context-memory/transc
 const ENABLED_CONFIG = { enabled: true, compressionThreshold: { percent: 30 }, memoryBudgetPercent: 10 };
 
 /**
- * #217 Pi in-memory session integration: derivation, source recovery, and
- * active-tool synchronization against Pi's real SessionManager tree — real
- * uuids, real append semantics, no filesystem writes.
+ * #217/#218/#221 Pi SessionManager integration: derivation, source recovery,
+ * active-tool synchronization, and the first-block handshake against Pi's real
+ * in-memory SessionManager tree; #221 adds the branch-private lifecycle over
+ * real persisted files — resume leaf derivation, `/tree` navigation, fork,
+ * clone, import-like copies, cross-directory duplicates, session replacement,
+ * and ephemeral sessions — always with real uuids, real append semantics, and
+ * no Context Memory filesystem write anywhere.
  */
 
+/** The two-block carrying-compaction fixture shared by every lifecycle section. */
+function seedValidMemorySession(sm) {
+  sm.appendMessage({ role: "user", content: "walk me through the repo structure", timestamp: 1 });
+  sm.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "text", text: "one entry point registers each feature module" },
+      { type: "toolCall", id: "call-seed-read", name: "read", arguments: { path: "src/index.ts" } },
+    ],
+    stopReason: "toolUse", timestamp: 2,
+  });
+  const firstResult = sm.appendMessage({
+    role: "toolResult", toolCallId: "call-seed-read", toolName: "read",
+    content: [{ type: "text", text: "export default register()" }], isError: false, timestamp: 3,
+  });
+  const secondUser = sm.appendMessage({ role: "user", content: "now fix the login flow", timestamp: 4 });
+  const secondAssistant = sm.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "the session cookie was set after the redirect" }],
+    stopReason: "stop", timestamp: 5,
+  });
+  const keptUser = sm.appendMessage({ role: "user", content: "ship it", timestamp: 6 });
+  const blockBodies = [
+    "# Repo tour\n\n- index.ts registers each feature module",
+    "# Login fix\n\n- session cookie set before the redirect",
+  ];
+  const compactionId = sm.appendCompaction(
+    composeMemorySummary(blockBodies),
+    keptUser,
+    9000,
+    {
+      format: MEMORY_FORMAT_TAG,
+      blocks: [
+        { endEntryId: firstResult, markdownBytes: Buffer.byteLength(blockBodies[0], "utf8") },
+        { endEntryId: secondAssistant, markdownBytes: Buffer.byteLength(blockBodies[1], "utf8") },
+      ],
+    },
+    true,
+  );
+  return { secondUser, keptUser, compactionId };
+}
+
+/** Rewrite a session JSONL file the way an external in-place edit would. */
+function rewriteSessionFile(file, mutate) {
+  const entries = readFileSync(file, "utf8").split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
+  mutate(entries);
+  writeFileSync(file, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+}
 function harness(config = ENABLED_CONFIG) {
   const tools = new Map();
   const events = new Map();
@@ -38,7 +95,7 @@ function harness(config = ENABLED_CONFIG) {
     reserveTokens: () => 16384,
   });
   return {
-    tools, registration, activeTools: () => [...active],
+    tools, events, registration, activeTools: () => [...active],
     async emit(name, event, ctx) {
       let last;
       for (const handler of events.get(name) ?? []) last = await handler(event, ctx);
@@ -166,7 +223,7 @@ try {
   await session.emit("session_tree", { type: "session_tree", newLeafId: secondUser, oldLeafId: sm.getLeafId() }, ctx);
   assert.ok(!session.activeTools().includes("read_memory_source"),
     "navigating before the compaction leaves no current Memory");
-  assert.deepEqual(session.registration.snapshot(), { state: "no-memory" });
+  assert.deepEqual(session.registration.snapshot(), { state: "no-memory", ephemeral: true });
   await assert.rejects(
     () => read.execute("s:gone", { block: 1, page: 1 }, undefined, undefined, ctx),
     (error) => {
@@ -192,7 +249,7 @@ try {
     reason: "manual",
     willRetry: false,
   }, ctx);
-  assert.deepEqual(session.registration.snapshot(), { state: "opaque" });
+  assert.deepEqual(session.registration.snapshot(), { state: "opaque", ephemeral: true });
   assert.ok(!session.activeTools().includes("read_memory_source"));
 
   // The ephemeral session wrote nothing to disk.
@@ -242,7 +299,7 @@ try {
       getContextUsage: () => ({ tokens: 30000, contextWindow: 200000, percent: 15 }),
     };
     await dueHarness.emit("session_start", { type: "session_start", reason: "startup" }, dueCtx);
-    assert.deepEqual(dueHarness.registration.snapshot(), { state: "due" });
+    assert.deepEqual(dueHarness.registration.snapshot(), { state: "due", ephemeral: true });
 
     await dueHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, dueCtx);
     assert.ok(dueHarness.activeTools().includes("submit_memory"),
@@ -284,7 +341,7 @@ try {
       role: "toolResult", toolCallId: "call-first", toolName: "submit_memory",
       content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 8,
     });
-    assert.deepEqual(dueHarness.registration.snapshot(), { state: "pending" });
+    assert.deepEqual(dueHarness.registration.snapshot(), { state: "pending", ephemeral: true });
 
     const compactCalls = [];
     const settleCtx = { ...dueCtx, compact: () => compactCalls.push(true) };
@@ -367,6 +424,323 @@ try {
       "entry ids never surface");
     assert.equal(dueSession.isPersisted(), false, "the handshake wrote no sidecar");
     assert.equal(dueSession.getSessionFile(), undefined);
+  }
+
+
+  // ── #221: the registrar never subscribes a cancellable session event ──
+
+  {
+    const subscribed = [...session.events.keys()];
+    for (const cancellable of ["session_before_switch", "session_before_fork", "session_before_tree"]) {
+      assert.ok(!subscribed.includes(cancellable),
+        `${cancellable} stays unsubscribed so Context Memory can never block it`);
+    }
+  }
+
+  // ── #221: real persisted files — resume, fork, clone, import, replacement ──
+
+  const lifecycleRoot = mkdtempSync(join(tmpdir(), "pi-square-memory-lifecycle-"));
+  try {
+    const dirA = join(lifecycleRoot, "project-a");
+    const dirB = join(lifecycleRoot, "project-b");
+    const dirD = join(lifecycleRoot, "imports");
+    mkdirSync(dirA, { recursive: true });
+    mkdirSync(dirD, { recursive: true });
+
+    // Resume derives from the leaf Pi opens, never from a remembered leaf.
+    {
+      const source = SessionManager.create("/proj-a", dirA);
+      const seed = seedValidMemorySession(source);
+      source.branch(seed.secondUser);
+      await session.emit("session_tree", {
+        type: "session_tree", newLeafId: seed.secondUser, oldLeafId: source.getLeafId(),
+      }, commandContext(source));
+      assert.equal(session.registration.snapshot().state, "no-memory",
+        "the persisted branch before the compaction carries no Memory");
+
+      await session.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, commandContext(source));
+      assert.deepEqual(session.registration.snapshot(), { state: "disabled" },
+        "shutdown clears the controller entirely");
+
+      const sourceFile = source.getSessionFile();
+      const resumed = SessionManager.open(sourceFile, dirA);
+      assert.equal(resumed.getLeafId(), seed.compactionId,
+        "Pi reopens the file at its last entry, on the carrying path");
+      await session.emit("session_start", {
+        type: "session_start", reason: "resume", previousSessionFile: sourceFile,
+      }, commandContext(resumed));
+      const resumedSnapshot = session.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+      assert.equal(resumedSnapshot.state, "active",
+        "resume follows Pi's reopened leaf instead of restoring the navigated (no-Memory) leaf");
+      assert.equal(resumedSnapshot.blocks, 2);
+      assert.equal(resumedSnapshot.ephemeral, undefined, "a persisted session is not marked ephemeral");
+      assert.ok(session.activeTools().includes("read_memory_source"));
+      const resumedRead = await session.tools.get("read_memory_source").execute(
+        "s:resumed", { block: 1, page: 1 }, undefined, undefined, commandContext(resumed),
+      );
+      assert.match(resumedRead.content[1].text, /walk me through the repo structure/);
+    }
+
+    // Parent and forked copy evolve independently despite identical entry ids.
+    {
+      const sourceFile = join(dirA, readdirSync(dirA).find((name) => name.endsWith(".jsonl")));
+      assert.ok(sourceFile, "the seeded source file exists");
+      const forked = SessionManager.forkFrom(sourceFile, "/proj-b", dirB);
+      assert.equal(forked.getHeader().parentSession, sourceFile,
+        "Pi records the origin path in the copied header");
+      assert.equal(forked.getHeader().cwd, "/proj-b");
+      assert.deepEqual(
+        forked.getBranch().map((entry) => entry.id),
+        SessionManager.open(sourceFile, dirA).getBranch().map((entry) => entry.id),
+        "the fork carries the copied active path with duplicate entry ids",
+      );
+
+      // The copy diverges on its own: a native compaction appended only to it.
+      forked.appendMessage({ role: "user", content: "diverge", timestamp: 9 });
+      const divergence = SessionManager.open(sourceFile, dirA);
+      const keptFromSource = divergence.getBranch().find((entry) => entry.type === "message"
+        && entry.message.role === "user" && entry.message.content === "ship it");
+      forked.appendCompaction("A plain native summary on the copy.", keptFromSource.id, 4000, undefined, false);
+      const forkHarness = harness();
+      await forkHarness.emit("session_start", {
+        type: "session_start", reason: "fork", previousSessionFile: sourceFile,
+      }, commandContext(forked));
+      assert.deepEqual(forkHarness.registration.snapshot(), { state: "opaque" },
+        "the diverged copy degrades to opaque through its own latest compaction");
+      assert.ok(!forkHarness.activeTools().includes("read_memory_source"));
+
+      // The parent, reopened with the same duplicate ids, still derives its own Memory.
+      const parentHarness = harness();
+      await parentHarness.emit("session_start", { type: "session_start", reason: "resume" }, commandContext(divergence));
+      const parentSnapshot = parentHarness.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+      assert.equal(parentSnapshot.state, "active");
+      assert.equal(parentSnapshot.blocks, 2);
+    }
+
+    // A fork stays self-contained: derivation and source reads survive losing the origin.
+    {
+      const sourceFile = join(dirA, readdirSync(dirA).find((name) => name.endsWith(".jsonl")));
+      const fork1 = SessionManager.forkFrom(sourceFile, "/proj-b", dirB);
+      assert.equal(fork1.getHeader().parentSession, sourceFile);
+      rmSync(sourceFile, { force: true });
+      const fork1Harness = harness();
+      await fork1Harness.emit("session_start", {
+        type: "session_start", reason: "fork", previousSessionFile: sourceFile,
+      }, commandContext(fork1));
+      const fork1Snapshot = fork1Harness.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+      assert.equal(fork1Snapshot.state, "active");
+      assert.equal(fork1Snapshot.blocks, 2);
+      assert.ok(fork1Harness.activeTools().includes("read_memory_source"));
+      const fork1Read = await fork1Harness.tools.get("read_memory_source").execute(
+        "s:fork1", { block: 2, page: 1 }, undefined, undefined, commandContext(fork1),
+      );
+      assert.match(fork1Read.content[1].text, /now fix the login flow/,
+        "source recovery resolves inside the copied tree without the origin file");
+    }
+
+    // A clone (createBranchedSession) copies exactly the chosen active path.
+    {
+      const cloneSrc = SessionManager.create("/proj-clone", dirA);
+      const cloneSeed = seedValidMemorySession(cloneSrc);
+      const cloneSrcFile = cloneSrc.getSessionFile();
+
+      const carryingClone = SessionManager.open(cloneSrcFile, dirA);
+      const cloneFile = carryingClone.createBranchedSession(cloneSeed.compactionId);
+      assert.ok(cloneFile, "the persisted clone wrote its own session file");
+      assert.equal(carryingClone.getLeafId(), cloneSeed.compactionId);
+      const cloneHarness = harness();
+      await cloneHarness.emit("session_start", { type: "session_start", reason: "fork" }, commandContext(carryingClone));
+      const cloneSnapshot = cloneHarness.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+      assert.equal(cloneSnapshot.state, "active", "the cloned active path carries its Memory self-contained");
+      assert.equal(cloneSnapshot.blocks, 2);
+      assert.ok(cloneHarness.activeTools().includes("read_memory_source"));
+
+      const earlyClone = SessionManager.open(cloneSrcFile, dirA);
+      earlyClone.createBranchedSession(cloneSeed.secondUser);
+      assert.equal(earlyClone.getLeafId(), cloneSeed.secondUser);
+      const earlyHarness = harness();
+      await earlyHarness.emit("session_start", { type: "session_start", reason: "fork" }, commandContext(earlyClone));
+      assert.deepEqual(earlyHarness.registration.snapshot(), { state: "no-memory" },
+        "a clone taken before the compaction inherits nothing");
+      assert.ok(!earlyHarness.activeTools().includes("read_memory_source"));
+    }
+
+    // A fork from a source whose active path predates the compaction inherits nothing.
+    {
+      const preSource = SessionManager.create("/proj-pre", dirA);
+      const preSeed = seedValidMemorySession(preSource);
+      preSource.branch(preSeed.secondUser);
+      preSource.appendMessage({ role: "user", content: "parallel work without Memory", timestamp: 9 });
+      preSource.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop", timestamp: 10,
+      });
+      const preFork = SessionManager.forkFrom(preSource.getSessionFile(), "/proj-b", dirB);
+      const preHarness = harness();
+      await preHarness.emit("session_start", { type: "session_start", reason: "fork" }, commandContext(preFork));
+      assert.deepEqual(preHarness.registration.snapshot(), { state: "no-memory" },
+        "the forked copy of a pre-compaction path carries no Memory");
+      assert.ok(!preHarness.activeTools().includes("read_memory_source"));
+      const preSourceHarness = harness();
+      await preSourceHarness.emit("session_start", { type: "session_start", reason: "resume" }, commandContext(preSource));
+      assert.equal(preSourceHarness.registration.snapshot().state, "no-memory",
+        "the source itself derives from its actual pre-compaction leaf");
+    }
+
+    // Imported and cross-directory copies validate only their own tree.
+    {
+      const copySrc = SessionManager.create("/proj-copy", dirA);
+      seedValidMemorySession(copySrc);
+      const copyFile = copySrc.getSessionFile();
+
+      const importedFile = join(dirD, "imported.jsonl");
+      cpSync(copyFile, importedFile);
+      const imported = SessionManager.open(importedFile, dirD, "/changed-cwd");
+      assert.equal(imported.getCwd(), "/changed-cwd", "an imported copy may run under a different cwd");
+
+      const reheadedFile = join(dirD, "reheaded.jsonl");
+      cpSync(copyFile, reheadedFile);
+      rewriteSessionFile(reheadedFile, (entries) => {
+        const header = entries.find((entry) => entry.type === "session");
+        header.id = "reheaded-session-id";
+        header.cwd = "/moved-elsewhere";
+      });
+      const reheaded = SessionManager.open(reheadedFile, dirD);
+
+      // Duplicate entry ids live in three open files at once; each derivation
+      // resolves only its own tree.
+      const originalReopened = SessionManager.open(copyFile, dirA);
+      for (const [label, manager] of [["imported", imported], ["reheaded", reheaded], ["original", originalReopened]]) {
+        const localHarness = harness();
+        await localHarness.emit("session_start", { type: "session_start", reason: "resume" }, commandContext(manager));
+        const localSnapshot = localHarness.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+        assert.equal(localSnapshot.state, "active", `the ${label} copy derives its own valid Memory`);
+        assert.equal(localSnapshot.blocks, 2);
+        assert.ok(localHarness.activeTools().includes("read_memory_source"), `the ${label} copy opens the read tool`);
+      }
+
+      // An in-place corrupted compaction on a copy degrades only the feature.
+      const corruptedFile = join(dirD, "corrupted.jsonl");
+      cpSync(copyFile, corruptedFile);
+      rewriteSessionFile(corruptedFile, (entries) => {
+        const compaction = entries.find((entry) => entry.type === "compaction");
+        compaction.summary = composeMemorySummary(["# Tampered\n\n- the byte directory no longer matches"]);
+      });
+      const corrupted = SessionManager.open(corruptedFile, dirD);
+      const corruptedHarness = harness();
+      await corruptedHarness.emit("session_start", { type: "session_start", reason: "resume" }, commandContext(corrupted));
+      assert.deepEqual(corruptedHarness.registration.snapshot(), { state: "opaque" },
+        "a corrupted compaction degrades Context Memory only");
+      assert.ok(!corruptedHarness.activeTools().includes("read_memory_source"));
+      const usable = buildContextEntries(corrupted.getEntries(), corrupted.getLeafId());
+      assert.equal(usable[0].type, "compaction",
+        "the corrupted copy remains usable as ordinary Pi context");
+    }
+
+    // Ephemeral sessions: the same behavior in memory, reported as ephemeral.
+    {
+      const ephemeral = SessionManager.inMemory("/project");
+      const ephSeed = seedValidMemorySession(ephemeral);
+      const ephHarness = harness();
+      await ephHarness.emit("session_start", { type: "session_start", reason: "startup" }, commandContext(ephemeral));
+      const ephSnapshot = ephHarness.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+      assert.equal(ephSnapshot.state, "active");
+      assert.equal(ephSnapshot.ephemeral, true, "an ephemeral session is clearly reported");
+
+      ephemeral.branch(ephSeed.secondUser);
+      await ephHarness.emit("session_tree", {
+        type: "session_tree", newLeafId: ephSeed.secondUser, oldLeafId: ephemeral.getLeafId(),
+      }, commandContext(ephemeral));
+      assert.deepEqual(ephHarness.registration.snapshot(), { state: "no-memory", ephemeral: true });
+      ephemeral.branch(ephSeed.compactionId);
+      await ephHarness.emit("session_tree", {
+        type: "session_tree", newLeafId: ephSeed.compactionId, oldLeafId: ephemeral.getLeafId(),
+      }, commandContext(ephemeral));
+      assert.equal(ephHarness.registration.snapshot().state, "active");
+
+      // The in-memory clone follows the same path-copying semantics.
+      const ephCarry = SessionManager.inMemory("/project");
+      const carrySeed = seedValidMemorySession(ephCarry);
+      ephCarry.createBranchedSession(carrySeed.compactionId);
+      const carryHarness = harness();
+      await carryHarness.emit("session_start", { type: "session_start", reason: "fork" }, commandContext(ephCarry));
+      assert.equal(carryHarness.registration.snapshot({ tokens: 40000, contextWindow: 200000 }).state, "active");
+
+      const ephEarly = SessionManager.inMemory("/project");
+      const earlySeed = seedValidMemorySession(ephEarly);
+      ephEarly.createBranchedSession(earlySeed.secondUser);
+      const ephEarlyHarness = harness();
+      await ephEarlyHarness.emit("session_start", { type: "session_start", reason: "fork" }, commandContext(ephEarly));
+      assert.deepEqual(ephEarlyHarness.registration.snapshot(), { state: "no-memory", ephemeral: true });
+
+      assert.equal(ephemeral.getSessionFile(), undefined, "the ephemeral session created no file");
+    }
+
+    // Session replacement: transient state never survives into the next session.
+    {
+      const repSource = SessionManager.inMemory("/project");
+      repSource.appendMessage({ role: "user", content: "explore the lifecycle", timestamp: 1 });
+      repSource.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "the lifecycle follows the leaf" }],
+        stopReason: "stop", timestamp: 2,
+      });
+      const repHarness = harness({
+        enabled: true,
+        compressionThreshold: { tokens: 2500 },
+        memoryBudgetPercent: 1,
+      });
+      const repCtx = {
+        ...commandContext(repSource),
+        getContextUsage: () => ({ tokens: 30000, contextWindow: 200000, percent: 15 }),
+      };
+      await repHarness.emit("session_start", { type: "session_start", reason: "startup" }, repCtx);
+      assert.deepEqual(repHarness.registration.snapshot(), { state: "due", ephemeral: true });
+      await repHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, repCtx);
+      assert.ok(repHarness.activeTools().includes("submit_memory"));
+      repSource.appendMessage({ role: "user", content: "ship it", timestamp: 3 });
+      await repHarness.emit("message_end", {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call-rep", name: "submit_memory", arguments: { markdown: "# Replacement" } }],
+        },
+      }, repCtx);
+      await repHarness.tools.get("submit_memory").execute(
+        "call-rep", { markdown: "# Replacement\n\n- transient state dies with the session" },
+        undefined, undefined, repCtx,
+      );
+      assert.equal(repHarness.registration.snapshot().state, "pending");
+
+      await repHarness.emit("session_shutdown", { type: "session_shutdown", reason: "new" }, repCtx);
+      const replacement = SessionManager.inMemory("/project");
+      await repHarness.emit("session_start", { type: "session_start", reason: "new" }, commandContext(replacement));
+      assert.deepEqual(repHarness.registration.snapshot(), { state: "due", ephemeral: true },
+        "replacement discards the pending candidate and re-derives the new session");
+      assert.ok(!repHarness.activeTools().includes("submit_memory"),
+        "submit_memory stays inactive until the new session opens its own due run");
+      const compacts = [];
+      await repHarness.emit("agent_settled", { type: "agent_settled" }, {
+        ...commandContext(replacement),
+        compact: () => compacts.push(true),
+      });
+      assert.equal(compacts.length, 0, "a replaced session never compacts the discarded candidate");
+    }
+
+    // Context Memory created no sidecar, lock, journal, or cache anywhere.
+    {
+      const stray = [];
+      const walk = (dir) => {
+        for (const item of readdirSync(dir, { withFileTypes: true })) {
+          const path = join(dir, item.name);
+          if (item.isDirectory()) walk(path);
+          else if (!item.name.endsWith(".jsonl")) stray.push(path);
+        }
+      };
+      walk(lifecycleRoot);
+      assert.deepEqual(stray, [],
+        "only ordinary Pi session files exist; Context Memory wrote no sidecar");
+    }
+  } finally {
+    rmSync(lifecycleRoot, { recursive: true, force: true });
   }
 
   console.log("context-memory session tests: OK");

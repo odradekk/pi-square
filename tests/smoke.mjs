@@ -291,6 +291,8 @@ try {
   const enabledContextView = await runContextCommand();
   assert.match(enabledContextView, /enabled · no Memory blocks yet/,
     "the enabled/no-Memory state renders through /context");
+  assert.match(enabledContextView, /ephemeral session/,
+    "the in-memory smoke session is reported as ephemeral (#221)");
 
   // ── #218: the first Memory block through the full handshake, with Pi's own
   // compaction seam consuming the candidate end to end ──
@@ -408,6 +410,7 @@ try {
   const committedContextView = await runContextCommand();
   assert.match(committedContextView, /memory\[\]\s+active/, "/context shows the committed Memory");
   assert.match(committedContextView, /1 block/, "/context counts the committed block");
+  assert.match(committedContextView, /ephemeral session/, "committed Memory still reports the ephemeral session");
   assert.ok(
     session.agent.state.tools.some((tool) => tool.name === "read_memory_source"),
     "the committed block activates read_memory_source end to end",

@@ -14,10 +14,17 @@ import { READ_MEMORY_SOURCE_TOOL_NAME, SUBMIT_MEMORY_TOOL_NAME } from "./tools";
  * only on the carrying compaction's own ancestor path.
  */
 
-/** The minimal read-only Pi session surface derivation consumes. */
+/**
+ * The minimal read-only Pi session surface derivation consumes (#221 adds the
+ * ephemeral marker surface; readers that do not expose persistence are treated
+ * as persisted). Only the live tree is read — never `parentSession`, the
+ * session header, or any origin file — so copied and imported trees stay
+ * self-contained.
+ */
 export interface MemorySessionReader {
   getLeafId?(): string | null;
   getBranch(fromId?: string): readonly SessionEntry[];
+  isPersisted?(): boolean;
 }
 
 /** One derived Memory block: its exact Markdown plus its original source entries. */
