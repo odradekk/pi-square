@@ -22,14 +22,16 @@ function setup() {
     getThinkingLevel() { return "high"; },
   };
   registerFooter(pi);
+  // The footer renders the session cwd into width-bounded rows; a fixed
+  // synthetic path keeps the layout independent of the checkout (#232).
   const ctx = {
     mode: "tui",
-    cwd: packageRoot,
+    cwd: "/home/example/pi-square",
     model: { id: "gpt-test", name: "GPT Test", provider: "test", reasoning: true, contextWindow: 100_000 },
     modelRegistry: { isUsingOAuth() { return false; } },
     sessionManager: {
       getEntries() { return []; },
-      getCwd() { return packageRoot; },
+      getCwd() { return "/home/example/pi-square"; },
       getSessionName() { return "lifecycle"; },
     },
     getContextUsage() { return { percent: 25, contextWindow: 100_000 }; },

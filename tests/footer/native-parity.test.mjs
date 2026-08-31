@@ -40,11 +40,15 @@ const entries = [{
     },
   },
 }];
+// Both footers render the session cwd into width-bounded rows and the parity
+// assertions expect the project name, so the fixture must carry a fixed
+// synthetic path instead of the real checkout root (#232).
 const sessionManager = {
   getEntries() { return entries; },
-  getCwd() { return packageRoot; },
+  getCwd() { return "/home/example/pi-square"; },
   getSessionName() { return "native-parity"; },
 };
+
 // Pi 0.84.2 resolves the footer subscription marker through
 // modelRuntime.isUsingSubscription, while an extension can only recompose it
 // from the registry. Both fakes report the same answer so the parity assertion
