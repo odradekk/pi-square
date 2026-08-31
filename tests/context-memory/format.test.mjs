@@ -92,6 +92,40 @@ function item(endEntryId, markdownBytes) {
   assert.deepEqual(parsedRound, [multibyte, body2], "multibyte bodies round-trip exactly");
 }
 
+// ─── #219: appending preserves every existing byte exactly ─────────
+
+{
+  const body1 = "# First\n\n- exact bytes survive an append";
+  const body2 = "# Second\n\n- appended after the unchanged prefix";
+  const body3 = "# Third\n\n— multibyte tail —";
+  const one = composeMemorySummary([body1]);
+  const two = composeMemorySummary([body1, body2]);
+  const three = composeMemorySummary([body1, body2, body3]);
+
+  // Append-only divergence: each longer rendering keeps the complete
+  // previous rendering as its exact byte prefix and adds only the separator
+  // plus the new body after it.
+  assert.ok(two.startsWith(one), "appending keeps the previous rendering byte-identical");
+  assert.ok(three.startsWith(two), "a repeated append keeps the two-block rendering byte-identical");
+  assert.equal(two.slice(one.length), MEMORY_BLOCK_SEPARATOR + body2,
+    "divergence begins exactly at the separator before the new body");
+  assert.equal(three.slice(two.length), MEMORY_BLOCK_SEPARATOR + body3);
+
+  // The first directory entries are carried unchanged; each append adds
+  // exactly one ordered item.
+  const bytes = (text) => Buffer.byteLength(text, "utf8");
+  const dirOne = directory(item("e3", bytes(body1)));
+  const dirTwo = directory(item("e3", bytes(body1)), item("e7", bytes(body2)));
+  const dirThree = directory(item("e3", bytes(body1)), item("e7", bytes(body2)), item("e9", bytes(body3)));
+  assert.deepEqual(dirTwo.blocks.slice(0, 1), dirOne.blocks, "existing directory entries stay byte-identical");
+  assert.deepEqual(dirThree.blocks.slice(0, 2), dirTwo.blocks);
+  assert.equal(dirThree.blocks.length, 3, "the append adds exactly one directory item");
+
+  // Repeated rendering of the same list is byte-identical (compose is
+  // deterministic; no timestamps or dynamic identifiers participate).
+  assert.equal(composeMemorySummary([body1, body2, body3]), three);
+}
+
 {
   const body = "# one";
   const valid = directory(item("e1", Buffer.byteLength(body, "utf8")));

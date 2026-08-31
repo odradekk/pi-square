@@ -30,7 +30,7 @@ import {
 } from "./view";
 
 /**
- * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218).
+ * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219).
  *
  * The controller is the highest test seam: tests drive it through the same
  * registrar events and tool surfaces Pi drives and assert externally visible
@@ -42,9 +42,11 @@ import {
  * pre-native safety clamp, the one ephemeral tail advisory through Pi's
  * context transform, the run-scoped `submit_memory` candidate slot, and
  * compaction takeover through `session_before_compact` with exact
- * `session_compact` confirmation. Appending further blocks (#219) and the
- * suffix rebuild (#220) extend the same seams later; the compatibility gate
- * and owned active-tool synchronization stay.
+ * `session_compact` confirmation. #219 appends further blocks onto existing
+ * valid Memory with a byte-stable prefix: the append advisory, the
+ * multi-block candidate directory, and the takeover's exact prefix match.
+ * The suffix rebuild (#220) extends the same seams later; the compatibility
+ * gate and owned active-tool synchronization stay.
  */
 
 /** The only tool names this feature may add to or remove from the active list. */
@@ -75,6 +77,17 @@ function fail(code: string, sentence: string): never {
 /** Deterministic chars/4 text estimate used consistently for Memory comparisons. */
 function estimateTextTokens(text: string): number {
   return Math.ceil(Array.from(text).length / 4);
+}
+
+/**
+ * Deterministic chars/4 estimate of the complete rendered Memory — wrapper,
+ * one separator per block, every body — the single measure the half-budget
+ * rule, the `/context` estimate, and the submission budget share (#219).
+ */
+function renderedMemoryTokens(markdowns: readonly string[]): number {
+  let chars = MEMORY_SUMMARY_WRAPPER.length + MEMORY_BLOCK_SEPARATOR.length * markdowns.length;
+  for (const markdown of markdowns) chars += Array.from(markdown).length;
+  return Math.ceil(chars / 4);
 }
 
 /** First non-empty line, whitespace-collapsed, code-point-bounded preview. */
@@ -126,7 +139,7 @@ export function effectiveDuePoint(
   return duePoint;
 }
 
-/** The fixed one-shot due-run advisory body (#215: append instruction, source scope, secret warning). */
+/** The fixed one-shot first-block advisory body (#215, #218: append instruction, source scope, secret warning). */
 const DUE_RUN_ADVISORY_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
@@ -135,19 +148,44 @@ const DUE_RUN_ADVISORY_TEXT = [
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
 
-/** The frozen due run opened by one real-user input (#218). */
+/**
+ * The fixed one-shot append advisory body (#219): the new block covers the
+ * conversation accumulated since the existing blocks and is appended after
+ * them, keeping every existing block unchanged.
+ */
+const APPEND_RUN_ADVISORY_TEXT = [
+  "Context Memory: compression is due for this conversation.",
+  "",
+  "Complete the user's current task first. When it is done, finish the run with one final and sole tool call: submit_memory, carrying one concise Markdown Memory block that preserves what matters from the conversation since the existing Memory blocks — goals, decisions, and open work.",
+  "That block will be appended after the existing Memory blocks, which stay unchanged; the current request and everything you do for it stay uncompressed.",
+  "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
+].join("\n");
+
+/** The frozen due run opened by one real-user input (#218, #219). */
 interface DueRunState {
   /** Leaf id at the opening input; the run's user request is the first user entry after it. */
   readonly preRunLeafId: string | null;
+  /** Existing block count frozen at the opening input; selects the append advisory (#219). */
+  readonly existingBlocks: number;
   advisoryDelivered: boolean;
 }
 
-/** One accepted submission awaiting compaction (#218). Never persisted. */
+/** One existing block kept byte-identical ahead of a newly appended block (#219). */
+interface MemoryPrefixBlock {
+  readonly markdown: string;
+  readonly endEntryId: string;
+}
+
+/** One accepted submission awaiting compaction (#218, #219). Never persisted. */
 interface MemoryCandidate {
   /** Leaf at acceptance; navigation since invalidates the candidate. */
   readonly leafId: string;
   readonly toolCallId: string;
   readonly operation: "append";
+  /** Existing blocks kept byte-identical ahead of the new one; empty for the first block (#219). */
+  readonly prefix: readonly MemoryPrefixBlock[];
+  /** Carrying compaction the prefix was derived from; undefined for the first block. */
+  readonly prefixCompactionId: string | undefined;
   /** Inclusive source end: the last eligible entry covered by the new block. */
   readonly sourceEndEntryId: string;
   /** Retained-tail boundary: the real user entry that began the due run. */
@@ -316,9 +354,9 @@ export class ContextMemoryController {
   }
 
   /**
-   * The `input` boundary (#215, #218): only a real-user input may open a due
-   * handshake, and it activates `submit_memory` before Pi builds the first
-   * model request. A steering input during an open run keeps it. A new
+   * The `input` boundary (#215, #218, #219): only a real-user input may open
+   * a due handshake, and it activates `submit_memory` before Pi builds the
+   * first model request. A steering input during an open run keeps it. A new
    * real-user run clears all transient state first.
    */
   handleInput(
@@ -332,14 +370,35 @@ export class ContextMemoryController {
     if (this.dueRun !== undefined && !ctx.isIdle()) return;
     this.clearTransient();
     this.synchronizeActiveTools(pi, ctx.sessionManager);
-    // #218 opens the handshake only for the first block; appending onto
-    // existing Memory (#219) and the suffix rebuild (#220) arrive later.
-    if (!this.due || this.current.kind !== "none") return;
+    // A due run opens for the first block or to append onto valid Memory
+    // still at or below half its budget (#219). Above half budget the suffix
+    // rebuild (#220) owns the next due run; opaque Memory leaves the
+    // structured takeover off entirely.
+    if (!this.due) return;
+    const existingBlocks = this.appendableBlockCount();
+    if (existingBlocks === null) return;
     this.dueRun = {
       preRunLeafId: ctx.sessionManager.getLeafId?.() ?? null,
+      existingBlocks,
       advisoryDelivered: false,
     };
     this.synchronizeActiveTools(pi, ctx.sessionManager);
+  }
+
+  /**
+   * The existing block count a due run may append after (#219): zero for the
+   * first block, the live count while rendered Memory still fits half the
+   * configured budget, or null when append is not the planned operation —
+   * opaque Memory, or Memory above half budget whose suffix rebuild (#220)
+   * has not arrived.
+   */
+  private appendableBlockCount(): number | null {
+    if (this.current.kind === "none") return 0;
+    if (this.current.kind === "opaque") return null;
+    if (this.modelWindow === null) return null;
+    const halfBudget = Math.round((this.modelWindow * this.config.memoryBudgetPercent) / 100) / 2;
+    const rendered = renderedMemoryTokens(this.current.blocks.map((block) => block.markdown));
+    return rendered <= halfBudget ? this.current.blocks.length : null;
   }
 
   /**
@@ -377,7 +436,7 @@ export class ContextMemoryController {
         messages.splice(insertAfter + 1, 0, {
           role: "custom",
           customType: CONTEXT_MEMORY_ADVISORY_TYPE,
-          content: DUE_RUN_ADVISORY_TEXT,
+          content: this.dueRun.existingBlocks > 0 ? APPEND_RUN_ADVISORY_TEXT : DUE_RUN_ADVISORY_TEXT,
           display: false,
           timestamp: Date.now(),
         });
@@ -477,25 +536,50 @@ export class ContextMemoryController {
     if (sourceEndIndex === -1) {
       fail("SUBMIT_NOT_DUE", "no eligible conversation precedes the current user request");
     }
-    const summary = composeMemorySummary([markdown]);
+    // #219: the new block appends after the existing valid list — derived
+    // live here and re-matched at takeover — or starts the first block on a
+    // branch with no Memory of its own.
+    const current = deriveCurrentMemory(session);
+    if (current.kind === "opaque") {
+      fail("MEMORY_CHANGED", "current Memory is no longer valid structured Context Memory");
+    }
+    const prefix: MemoryPrefixBlock[] = [];
+    if (current.kind === "valid") {
+      const lastEndIndex = branch.findIndex(
+        (entry) => entry.id === current.blocks[current.blocks.length - 1]!.endEntryId,
+      );
+      if (lastEndIndex === -1 || sourceEndIndex <= lastEndIndex) {
+        fail("SUBMIT_NOT_DUE", "no eligible conversation accumulated since the existing Memory blocks");
+      }
+      for (const block of current.blocks) prefix.push({ markdown: block.markdown, endEntryId: block.endEntryId });
+    }
+    const summary = composeMemorySummary([...prefix.map((block) => block.markdown), markdown]);
     const details: MemoryCompactionDetails = {
       format: MEMORY_FORMAT_TAG,
-      blocks: [{
-        endEntryId: branch[sourceEndIndex]!.id,
-        markdownBytes: Buffer.byteLength(markdown, "utf8"),
-      }],
+      blocks: [
+        ...prefix.map((block) => ({
+          endEntryId: block.endEntryId,
+          markdownBytes: Buffer.byteLength(block.markdown, "utf8"),
+        })),
+        {
+          endEntryId: branch[sourceEndIndex]!.id,
+          markdownBytes: Buffer.byteLength(markdown, "utf8"),
+        },
+      ],
     };
     if (parseMemoryDetails(details) === undefined) {
       fail("BOUND_EXCEEDED", "the Memory directory exceeds the persisted format bounds");
     }
     const contextWindow = this.windowForBudget();
     if (estimateTextTokens(summary) > Math.round((contextWindow * this.config.memoryBudgetPercent) / 100)) {
-      fail("BOUND_EXCEEDED", "the Memory block exceeds the configured Memory budget");
+      fail("BOUND_EXCEEDED", "the Memory blocks exceed the configured Memory budget");
     }
     return {
       leafId,
       toolCallId,
       operation: "append",
+      prefix,
+      prefixCompactionId: current.kind === "valid" ? current.compactionId : undefined,
       sourceEndEntryId: branch[sourceEndIndex]!.id,
       firstKeptEntryId: branch[requestIndex]!.id,
       contextWindow,
@@ -580,8 +664,24 @@ export class ContextMemoryController {
     if (requestIndex === -1 || !isUserMessageEntry(branch[requestIndex])) return mismatch();
     const sourceEndIndex = branch.findIndex((entry) => entry.id === candidate.sourceEndEntryId);
     if (sourceEndIndex === -1 || sourceEndIndex >= requestIndex || !isEligibleSourceEntry(branch[sourceEndIndex])) return mismatch();
-    // The first block still compresses a branch with no compaction of its own.
-    if (deriveCurrentMemory(session).kind !== "none") return mismatch();
+    // The candidate's prefix must still be the exact live Memory: no
+    // compaction of its own for a first block, or the same carrying
+    // compaction with the same ordered blocks and source continuity for an
+    // append (#219).
+    const live = deriveCurrentMemory(session);
+    if (candidate.prefix.length === 0) {
+      if (live.kind !== "none") return mismatch();
+    } else {
+      if (live.kind !== "valid" || live.compactionId !== candidate.prefixCompactionId) return mismatch();
+      if (live.blocks.length !== candidate.prefix.length
+        || live.blocks.some((block, index) =>
+          block.endEntryId !== candidate.prefix[index]!.endEntryId
+          || block.markdown !== candidate.prefix[index]!.markdown)) return mismatch();
+      const lastEndIndex = branch.findIndex(
+        (entry) => entry.id === candidate.prefix[candidate.prefix.length - 1]!.endEntryId,
+      );
+      if (lastEndIndex === -1 || lastEndIndex >= sourceEndIndex) return mismatch();
+    }
     if (estimateTextTokens(candidate.summary) > Math.round((candidate.contextWindow * this.config.memoryBudgetPercent) / 100)) {
       return mismatch();
     }
@@ -763,11 +863,7 @@ export class ContextMemoryController {
     usage: ContextMemoryUsageInput | undefined,
   ): ContextMemorySnapshot {
     const blockTokens = memory.blocks.map((block) => estimateTextTokens(block.markdown));
-    const renderedChars = memory.blocks.reduce(
-      (sum, block) => sum + Array.from(block.markdown).length,
-      MEMORY_SUMMARY_WRAPPER.length + MEMORY_BLOCK_SEPARATOR.length * memory.blocks.length,
-    );
-    const memoryTokens = Math.ceil(renderedChars / 4);
+    const memoryTokens = renderedMemoryTokens(memory.blocks.map((block) => block.markdown));
     const window = usage?.contextWindow;
     const budgetTokens = typeof window === "number" && window > 0
       ? Math.round((window * this.config.memoryBudgetPercent) / 100)
