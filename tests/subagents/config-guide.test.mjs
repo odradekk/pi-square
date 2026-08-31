@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { stripVTControlCharacters } from "node:util";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import jiti from "jiti";
@@ -40,6 +40,29 @@ const plainTheme = {
   bold(text) { return String(text); },
 };
 
+// The guide embeds package-layer file paths in width-bounded rendered output,
+// so a fixture carrying the real checkout root makes the wrap point — and with
+// it every contiguity assertion — depend on where the repository sits (#232).
+// Rewrite the real root to a fixed synthetic one short enough that the current
+// assertions hold with margin, and keep a deliberately long one for wrap cases.
+const syntheticGuideRoot = "/opt/pi-square";
+const longGuideRoot = "/home/example/orca/workspaces/pi-square/232-path-independence-wrap-coverage";
+
+function withPackageRoot(registry, root) {
+  const rewrite = (filePath) => (
+    filePath === packageRoot || filePath.startsWith(packageRoot + sep)
+      ? join(root, relative(packageRoot, filePath))
+      : filePath
+  );
+  return {
+    ...registry,
+    definitions: registry.definitions.map((definition) => ({
+      ...definition,
+      layers: definition.layers.map((layer) => ({ ...layer, filePath: rewrite(layer.filePath) })),
+    })),
+  };
+}
+
 function plain(component, width = 80) {
   return component.render(width).map((line) => stripVTControlCharacters(line)).join("\n");
 }
@@ -62,7 +85,8 @@ test("guide builder is bounded, source-aware, and excludes prompt bodies and the
 });
 
 test("collapsed guide is one native-style summary and expanded guide reveals bounded metadata", () => {
-  const guide = buildSubagentConfigGuide(discoverSubagents(cleanCwd), cleanCwd);
+  const registry = withPackageRoot(discoverSubagents(cleanCwd), syntheticGuideRoot);
+  const guide = buildSubagentConfigGuide(registry, syntheticGuideRoot);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
   assert.match(collapsed, /✓ ● Config guide/);
   assert.match(collapsed, /6 definitions/);
@@ -75,6 +99,26 @@ test("collapsed guide is one native-style summary and expanded guide reveals bou
   assert.match(expanded, /promptVersion: 2/);
   assert.match(expanded, /explorer\.yaml/);
   assert.match(expanded, /collapse/);
+});
+
+test("deliberately long definition paths wrap within the display width instead of overflowing", () => {
+  const registry = withPackageRoot(discoverSubagents(cleanCwd), longGuideRoot);
+  const guide = buildSubagentConfigGuide(registry, syntheticGuideRoot);
+  const plainLines = renderSubagentConfigGuide(guide, { expanded: true }, plainTheme)
+    .render(80)
+    .map((line) => stripVTControlCharacters(line));
+  const joined = plainLines.map((line) => line.trimEnd()).join("");
+  const longPaths = registry.definitions.flatMap(
+    (definition) => definition.layers
+      .filter((layer) => layer.filePath.startsWith(longGuideRoot + sep))
+      .map((layer) => ({ name: definition.name, filePath: layer.filePath })),
+  );
+  assert.ok(longPaths.length > 0, "fixture must carry at least one deliberately long path");
+  for (const { name, filePath } of longPaths) {
+    assert.ok(filePath.length > 80, `${name} fixture path exceeds the 80-column width`);
+    assert.ok(plainLines.every((line) => !line.includes(filePath)), `${name} path never fits intact on one line`);
+    assert.ok(joined.includes(filePath), `${name} path survives the wrap piecewise`);
+  }
 });
 
 test("guide renderer is unframed, uses semantic text tokens, and sanitizes damaged content", () => {

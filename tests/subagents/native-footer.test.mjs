@@ -61,7 +61,9 @@ const session = {
         },
       }];
     },
-    getCwd() { return packageRoot; },
+    // Pi's native footer renders the cwd into width-bounded rows; a fixed
+    // synthetic path keeps the row-1 assertion independent of the checkout (#232).
+    getCwd() { return "/home/example/pi-square"; },
     getSessionName() { return "native-footer"; },
   },
   getContextUsage() { return { percent: 75, contextWindow: 200_000 }; },
