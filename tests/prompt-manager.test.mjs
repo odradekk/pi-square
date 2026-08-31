@@ -236,13 +236,15 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
 
   // ─── #218 handshake states render one bounded line each ───
 
-  for (const [state, needle] of [
-    ["due", /due · threshold reached · the next run authors the first Memory block/],
-    ["pending", /pending · Memory candidate accepted this run · compaction follows at run end/],
-    ["committing", /committing · writing the Memory compaction/],
-    ["scale-limit", /scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary/],
+  for (const [state, needle, memory] of [
+    ["due", /due · threshold reached · the next run authors the first Memory block/, { state: "due" }],
+    ["pending", /pending · Memory candidate accepted this run · compaction follows at run end/, { state: "pending" }],
+    ["committing", /committing · writing the Memory compaction/, { state: "committing" }],
+    ["scale-limit", /scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary/, { state: "scale-limit" }],
+    ["opaque", /opaque · latest compaction is not valid Context Memory · native summary retained/, { state: "opaque" }],
+    ["unsupported", /unsupported Pi host · native compaction unchanged/, { state: "unsupported", reason: "host-version" }],
   ]) {
-    const stateMemory = { ...contextMemory, snapshot: () => ({ state }) };
+    const stateMemory = { ...contextMemory, snapshot: () => memory };
     const loadState = jiti(import.meta.url, { moduleCache: false });
     const registerState = (await loadState("../src/prompt-manager/index.ts")).default;
     const stateCommands = new Map();

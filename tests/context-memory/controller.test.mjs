@@ -256,6 +256,69 @@ try {
   await disabledUnsupported.emit("session_start", { type: "session_start", reason: "startup" });
   assert.deepEqual(disabledUnsupported.registration.snapshot(), { state: "disabled" });
 
+  // ── #222: an unsupported host exposes no partial advisory, activation, filtering, or takeover ──
+
+  {
+    const gated = createHarness({ config: ENABLED_CONFIG, hostVersion: () => "0.85.0" });
+    const gatedSession = validMemoryBranch();
+    const gatedCtx = {
+      ...fullSessionContext(),
+      sessionManager: gatedSession,
+      getContextUsage: () => ({ tokens: 30000, contextWindow: 200000, percent: 15 }),
+    };
+    const compactCalls = [];
+    gatedCtx.compact = () => compactCalls.push(true);
+    const notified = [];
+    gatedCtx.ui = { notify: (text, level) => notified.push({ text, level }) };
+
+    await gated.emit("session_start", { type: "session_start", reason: "startup" }, gatedCtx);
+    await gated.emit("input", { type: "input", text: "ship it", source: "interactive" }, gatedCtx);
+    assert.ok(!gated.activeToolsRef().includes("submit_memory"),
+      "a real-user input on an unsupported host never activates the submission tool");
+    assert.ok(!gated.activeToolsRef().includes("read_memory_source"),
+      "valid Memory on an unsupported host never activates the reading tool");
+
+    const request = [
+      { role: "user", content: "old task", timestamp: 1 },
+      { role: "assistant", content: [
+        { type: "text", text: "kept text" },
+        { type: "toolCall", id: "call-gated", name: "submit_memory", arguments: { markdown: "# gated" } },
+      ], timestamp: 2 },
+      { role: "toolResult", toolCallId: "call-gated", toolName: "submit_memory", content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], timestamp: 3 },
+      { role: "user", content: "ship it", timestamp: 4 },
+    ];
+    const contextHandler = gated.events.get("context")[0];
+    const transformed = await contextHandler({ type: "context", messages: request }, gatedCtx);
+    assert.equal(transformed, undefined,
+      "an unsupported host leaves the provider request untouched — no advisory and no artifact filtering");
+
+    const beforeCompactHandler = gated.events.get("session_before_compact")[0];
+    const takeover = await beforeCompactHandler({
+      type: "session_before_compact",
+      preparation: { firstKeptEntryId: "e6", messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 4321, settings: {} },
+      branchEntries: gatedSession.getBranch(),
+      reason: "manual",
+      willRetry: false,
+      signal: undefined,
+    }, gatedCtx);
+    assert.equal(takeover, undefined, "an unsupported host never takes over a compaction");
+
+    const nativeEntry = {
+      id: "c-native", parentId: "e6", type: "compaction", timestamp: TS,
+      summary: "a plain native summary", firstKeptEntryId: "e6", tokensBefore: 4321, fromExtension: false,
+    };
+    await gated.emit("session_compact", {
+      type: "session_compact", compactionEntry: nativeEntry, fromExtension: false, reason: "manual", willRetry: false,
+    }, gatedCtx);
+    await gated.emit("agent_settled", { type: "agent_settled" }, gatedCtx);
+    assert.equal(compactCalls.length, 0, "an unsupported host never requests a compaction");
+    assert.deepEqual(notified, [], "an unsupported host emits no diagnostic");
+    assert.deepEqual(gated.activeToolsRef(), ["read", "bash"],
+      "an unsupported host strips only the owned names and keeps every other active tool");
+    assert.deepEqual(gated.registration.snapshot(), { state: "unsupported", reason: "host-version" },
+      "the snapshot keeps reporting the unsupported host");
+  }
+
   // ── Tool execution outside any active window fails safely ──
 
   await assert.rejects(

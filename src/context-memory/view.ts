@@ -12,6 +12,10 @@
  * `scale-limit` state: Memory sits above half its budget and the complete
  * maintenance request cannot fit the model window, so the structured
  * takeover stops and Pi native compaction keeps owning the boundary.
+ * #222 records the phase survival rule: `pending` and `committing` report
+ * until Pi's seam confirms or clears the slot, and a compaction that never
+ * starts or never saves keeps the phase visible — with no write and no
+ * blocked native compaction — until the next run boundary clears it.
  */
 
 /** Custom-message type of the one ephemeral due-run advisory (#218). */
