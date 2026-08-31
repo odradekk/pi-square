@@ -18,7 +18,7 @@ import {
 import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./view";
 
 /**
- * Context Memory registrar (odradekk/pi-square#215, #216, #217, #218) — the
+ * Context Memory registrar (odradekk/pi-square#215, #216, #217, #218, #221) — the
  * module's single external interface.
  *
  * One call installs the feature's event handlers and the two parent-only
@@ -36,6 +36,12 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
  * detection at the `input` boundary, the one ephemeral advisory through the
  * `context` transform, the run-scoped `submit_memory` candidate, and
  * compaction takeover through `session_before_compact`/`session_compact`.
+ * #221 completes the branch-private lifecycle: the registrar subscribes none
+ * of Pi's cancellable `session_before_switch`/`session_before_fork`/
+ * `session_before_tree` events, so Context Memory can never block resume,
+ * tree navigation, fork, clone, import, or session replacement, and every
+ * session boundary re-derives from Pi's actual current leaf on the live
+ * session the new runtime owns.
  */
 
 /** The owned tool names other pi-square modules must let this module synchronize. */

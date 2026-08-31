@@ -30,7 +30,7 @@ import {
 } from "./view";
 
 /**
- * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219).
+ * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219, #221).
  *
  * The controller is the highest test seam: tests drive it through the same
  * registrar events and tool surfaces Pi drives and assert externally visible
@@ -45,8 +45,13 @@ import {
  * `session_compact` confirmation. #219 appends further blocks onto existing
  * valid Memory with a byte-stable prefix: the append advisory, the
  * multi-block candidate directory, and the takeover's exact prefix match.
- * The suffix rebuild (#220) extends the same seams later; the compatibility
- * gate and owned active-tool synchronization stay.
+ * #221 completes the branch-private lifecycle: derivation always follows
+ * Pi's actual current leaf across resume, tree navigation, fork, clone,
+ * import, cross-directory copies, and session replacement, ephemeral
+ * in-memory sessions run the same behavior with an `ephemeral` snapshot
+ * marker and no sidecar, and no cancellable Pi session event is ever
+ * subscribed or blocked. The suffix rebuild (#220) extends the same seams
+ * later; the compatibility gate and owned active-tool synchronization stay.
  */
 
 /** The only tool names this feature may add to or remove from the active list. */
@@ -215,6 +220,8 @@ export class ContextMemoryController {
   private readonly config: ContextMemoryConfig;
   private readonly support: HostSupport;
   private current: CurrentMemory;
+  /** Whether the current session is ephemeral (in-memory, unpersisted) (#221). */
+  private ephemeralSession = false;
   /** The carrying compaction the active `read_memory_source` window was opened against. */
   private activeCompactionId: string | undefined;
   /** Pi's configured compaction reserve, captured at session start (#218). */
@@ -257,15 +264,25 @@ export class ContextMemoryController {
   snapshot(usage?: ContextMemoryUsageInput): ContextMemorySnapshot {
     if (!this.config.enabled) return { state: "disabled" };
     if (!this.support.supported) return { state: "unsupported", reason: this.support.reason };
-    if (this.slot?.phase === "committing") return { state: "committing" };
-    if (this.slot?.phase === "pending") return { state: "pending" };
-    if (this.current.kind === "none") return this.due ? { state: "due" } : { state: "no-memory" };
-    if (this.current.kind === "opaque") return { state: "opaque" };
-    return this.activeSnapshot(this.current, usage);
+    if (this.slot?.phase === "committing") return this.markEphemeral({ state: "committing" });
+    if (this.slot?.phase === "pending") return this.markEphemeral({ state: "pending" });
+    if (this.current.kind === "none") return this.markEphemeral(this.due ? { state: "due" } : { state: "no-memory" });
+    if (this.current.kind === "opaque") return this.markEphemeral({ state: "opaque" });
+    return this.markEphemeral(this.activeSnapshot(this.current, usage));
+  }
+
+  /**
+   * Mark snapshots derived on an ephemeral in-memory session (#221): the
+   * feature runs identically there, `/context` reports it, and nothing is
+   * written. Readers that do not expose persistence are treated as persisted.
+   */
+  private markEphemeral<T extends { readonly state: string; readonly ephemeral?: true }>(snapshot: T): T {
+    return { ...snapshot, ...(this.ephemeralSession ? { ephemeral: true } : {}) };
   }
 
   /** Re-derive current Memory from the live session tree. */
   refresh(session: MemorySessionReader): void {
+    this.ephemeralSession = session.isPersisted?.() === false;
     this.current = deriveCurrentMemory(session);
   }
 
