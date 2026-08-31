@@ -1,0 +1,14 @@
+---
+"@odradekk/pi-square": minor
+---
+
+Append Memory blocks with a byte-stable prefix
+
+Turns the one-block Context Memory tracer into the normal multi-block operating mode (odradekk/pi-square#219, parent spec #215). The feature stays default-off; the recent-suffix rebuild under the half-budget rule arrives with #220.
+
+- A later due run appends one new block after the existing list, covering exactly the eligible raw prefix accumulated since the last block's source end before that run's user request. A due run opens only while rendered Memory sits at or below half the configured budget (one deterministic chars/4 measure shared by the half-budget rule, `/context`, and the submission budget); above half budget the suffix rebuild (#220) owns the next run and the structured takeover stays off, as it does for opaque Memory.
+- The append advisory identifies the append operation and the newly accumulated source scope without exposing entry IDs; the first-block advisory is unchanged and never reused for appends.
+- The candidate composes through the single `composeMemorySummary` path: existing wrapper text, block Markdown, block ordering, and directory entries stay byte-identical, and the new block adds exactly one ordered directory item. The 16 KiB block bound, the configured total Memory budget, and the 64 KiB details serialization cap reject a submission rather than truncating or evicting content.
+- The `session_before_compact` takeover exactly matches the live prefix — same carrying compaction, same ordered blocks, source continuity past the last existing end — before returning the composed wrapper/summary/directory with the current real-user entry as `firstKeptEntryId`; any mismatch still falls back to Pi native compaction without `cancel`. The complete latest Pi compaction carries all current blocks and the older Memory compaction remains history, never simultaneously active context.
+- `submit_memory` call parts and paired results keep leaving every provider-bound request while ordinary assistant text survives; `read_memory_source` artifacts stay usable in their current run and are excluded from every later block-source stream. Dynamic tool activation is stable across the append boundaries and preserves every unrelated active tool.
+- Deterministic coverage adds repeated-append traces through the registrar harness and Pi's real in-memory SessionManager, exact provider-prefix snapshots proving identical repeated rendering and append-only divergence after the old block prefix, artifact-filtering, budget and details-cap rejections, active-tool coexistence, and an end-to-end second append through Pi's own `AgentSession.compact()` in the smoke suite.
