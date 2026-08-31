@@ -726,6 +726,8 @@ export default function registerDisplayBuiltins(
   pi: ExtensionAPI,
   controller: DisplayController,
   setAnchoredReadAvailable?: (available: boolean) => void,
+  /** Tool names whose current active state survives the baseline restore (#217). */
+  dynamicToolNames: readonly string[] = [],
 ): void {
   let activeToolBaseline: readonly string[] | undefined;
   pi.on("session_start", async (_event, ctx) => {
@@ -787,6 +789,13 @@ export default function registerDisplayBuiltins(
     const restoredActive = anchoredReadAvailable
       ? activeToolBaseline.filter((name) => name !== "edit")
       : [...activeToolBaseline];
+    // Dynamically owned tool names (Context Memory, #217): another module
+    // synchronizes them before this handler on the same event, so `active`
+    // already reflects their intended state. The baseline restore keeps that
+    // selection instead of reverting it to the stale capture.
+    for (const name of dynamicToolNames) {
+      if (active.includes(name) && !restoredActive.includes(name)) restoredActive.push(name);
+    }
     if (!sameNames(restoredActive, pi.getActiveTools())) pi.setActiveTools(restoredActive);
     setAnchoredReadAvailable?.(anchoredReadAvailable);
     if (losing.length > 0) {
