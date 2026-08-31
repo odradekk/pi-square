@@ -59,6 +59,8 @@ const suites = [
   "display/subagent-manager-display.test.mjs",
   "config.test.mjs",
   "context-memory/controller.test.mjs",
+  "context-memory/format.test.mjs",
+  "context-memory/session.test.mjs",
   "core/workspace-path.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",

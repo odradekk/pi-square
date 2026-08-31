@@ -116,4 +116,122 @@ assert.match(rendered, /│/);
 assert.match(rendered, /\[REDACTED\]/);
 assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secret|owned|╭|╰/);
 
+
+// ─── /context memory command delegation (#217) ─────────────────────
+
+{
+  const load2 = jiti(import.meta.url, { moduleCache: false });
+  const registerPromptManager = (await load2("../src/prompt-manager/index.ts")).default;
+
+  const commands = new Map();
+  const pi = {
+    registerCommand(name, options) { commands.set(name, options); },
+    registerShortcut() {},
+    on() {},
+    getAllTools() { return []; },
+  };
+
+  const inspectCalls = [];
+  let snapshotCalls = 0;
+  const contextMemory = {
+    snapshot(usage) {
+      snapshotCalls += 1;
+      return usage && usage.contextWindow === 200000
+        ? {
+          state: "active",
+          blocks: 2,
+          rows: [{ preview: "Fix login flow", tokens: 812, sources: 14 }],
+          stablePrefix: 2,
+          nextOperation: "append",
+          memoryTokens: 900,
+          budgetTokens: 20000,
+          currentTokens: 74223,
+          contextWindow: 200000,
+        }
+        : { state: "no-memory" };
+    },
+    inspect(request, session) {
+      inspectCalls.push({ request, session });
+      if (request.block === 9) return { ok: false, sentence: "Block 9 is outside the current Memory block list (1–2)." };
+      return { ok: true, text: `DETAIL block ${request.block} page ${request.page} for session ${session === sessionManager ? "live" : "other"}` };
+    },
+  };
+
+  const sessionManager = { getLeafId: () => "leaf", getBranch: () => [] };
+  registerPromptManager(pi, {
+    buildSubagentCatalog: () => ({ id: "subagents", label: "subagent catalog", category: "catalog", phase: "dynamic-suffix", text: "", turnSeq: 1 }),
+    setInheritedSystemCore() {},
+    contextMemory,
+  });
+
+  const contextCommand = commands.get("context");
+  assert.ok(contextCommand, "the /context command is registered");
+
+  function notifyCapture() {
+    const notified = [];
+    return {
+      notified,
+      ctx: {
+        hasUI: true,
+        sessionManager,
+        getContextUsage: () => ({ tokens: 74223, contextWindow: 200000, percent: 37 }),
+        getSystemPrompt: () => "",
+        ui: { notify: (text, kind) => notified.push({ text, kind }), theme: null },
+      },
+    };
+  }
+
+  // The overview form keeps the full snapshot behavior.
+  {
+    const { notified, ctx } = notifyCapture();
+    await contextCommand.handler("", ctx);
+    assert.equal(notified.length, 1);
+    assert.match(notified[0].text, /Prompt Manager/, "the overview still renders the snapshot");
+    assert.ok(inspectCalls.length === 0, "the overview never inspects Memory");
+    assert.ok(snapshotCalls > 0, "the overview reads the memory snapshot with usage");
+  }
+
+  // The memory form delegates read-only inspection with the live session.
+  {
+    const { notified, ctx } = notifyCapture();
+    await contextCommand.handler("memory 2", ctx);
+    assert.deepEqual(inspectCalls.at(-1), { request: { block: 2, page: 1 }, session: sessionManager },
+      "omitted page defaults to one and the live session reader is forwarded");
+    assert.equal(notified.length, 1);
+    assert.match(notified[0].text, /DETAIL block 2 page 1 for session live/);
+    assert.equal(notified[0].kind, "info");
+  }
+
+  {
+    const { notified, ctx } = notifyCapture();
+    await contextCommand.handler("memory 3 4", ctx);
+    assert.deepEqual(inspectCalls.at(-1).request, { block: 3, page: 4 });
+    assert.match(notified[0].text, /DETAIL block 3 page 4/);
+  }
+
+  // Refusals surface the provider sentence without throwing.
+  {
+    const { notified, ctx } = notifyCapture();
+    await contextCommand.handler("memory 9", ctx);
+    assert.match(notified[0].text, /Context Memory: Block 9 is outside/);
+  }
+
+  // Invalid syntax shows one fixed usage line and never inspects.
+  {
+    const before = inspectCalls.length;
+    const { notified, ctx } = notifyCapture();
+    await contextCommand.handler("memory banana", ctx);
+    assert.equal(inspectCalls.length, before, "invalid syntax never inspects");
+    assert.equal(notified.length, 1);
+    assert.match(notified[0].text, /Usage: \/context \[memory <block> \[page\]\]/);
+  }
+
+  // No UI: no notify at all.
+  {
+    const { notified } = notifyCapture();
+    await contextCommand.handler("memory 1", { hasUI: false });
+    assert.equal(notified.length, 0);
+  }
+}
+
 console.log("prompt manager tests: OK");

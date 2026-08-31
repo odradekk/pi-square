@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ContextMemoryRegistration } from "../context-memory";
 import { byRoleChars, collapseEntries, summarizeEntries } from "./decompose";
 import {
+  parseContextCommandArgs,
   renderByMode,
   renderUsageBar,
   renderVerbose,
@@ -102,7 +103,10 @@ export default function registerPromptManager(
       tools,
       segments: snapshot.segments,
       promptOrder: snapshot.promptOrder,
-      memory: dependencies.contextMemory.snapshot(),
+      memory: dependencies.contextMemory.snapshot({
+        tokens: typeof usage?.tokens === "number" ? usage.tokens : null,
+        contextWindow: typeof usage?.contextWindow === "number" ? usage.contextWindow : null,
+      }),
       systemPromptChars: charCount(systemPromptText),
       collapsedMessages: collapsed,
       totalMessageEntries: summarized.length,
@@ -160,8 +164,26 @@ export default function registerPromptManager(
 
   pi.registerCommand("context", {
     description: "Show context usage and the full Prompt Manager snapshot.",
-    handler: async (_args: unknown, ctx: any) => {
+    handler: async (args: unknown, ctx: any) => {
       if (!ctx?.hasUI) return;
+      const parsed = parseContextCommandArgs(args);
+      if (parsed.kind === "invalid") {
+        ctx.ui.notify(
+          "Usage: /context [memory <block> [page]] — block and page are 1-based positions in the current Memory block list.",
+          "info",
+        );
+        return;
+      }
+      if (parsed.kind === "memory") {
+        // Read-only human inspection delegating entirely to the Context
+        // Memory provider: no model call, no session write (#217).
+        const inspected = dependencies.contextMemory.inspect(
+          { block: parsed.block, page: parsed.page },
+          ctx?.sessionManager,
+        );
+        ctx.ui.notify(inspected.ok ? inspected.text : `Context Memory: ${inspected.sentence}`, "info");
+        return;
+      }
       const input = buildViewInput(ctx);
       const theme = wrapTheme(ctx);
       ctx.ui.notify(`${renderUsageBar(input, theme)}\n\n${renderVerbose(input, theme)}`, "info");

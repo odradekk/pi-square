@@ -1,16 +1,18 @@
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { MemorySessionReader } from "./derive";
 
 /**
- * The two Context Memory model tools (odradekk/pi-square#215, #216).
+ * The two Context Memory model tools (odradekk/pi-square#215, #216, #217).
  *
  * Both definitions are parent-only, registered once at extension load, and
- * inactive in the baseline state: `submit_memory` activates only during a due
- * real-user run (#218) and `read_memory_source` only while valid non-empty
- * current Memory exists (#217). Neither name may appear in any child, Shadow,
- * or subagent catalog. Executing either tool outside its active window fails
- * with one safe sentence beginning with its stable short code; neither message
- * echoes Memory Markdown, ranges, identifiers, or raw arguments.
+ * synchronized dynamically by the controller: `submit_memory` activates only
+ * during a due real-user run (#218) and `read_memory_source` only while
+ * strictly valid non-empty current Memory exists (#217). Neither name may
+ * appear in any child, Shadow, or subagent catalog. Executing either tool
+ * outside its active window fails with one safe sentence beginning with its
+ * stable short code; neither message echoes Memory Markdown, ranges,
+ * identifiers, or raw arguments.
  */
 
 /** One submitted Memory block is at most 16 KiB canonical UTF-8 (#215). */
@@ -52,6 +54,31 @@ export const ReadMemorySourceParamsSchema = Type.Object({
   description: "Read one page of a Memory block's original conversation",
 });
 
+/** The only paging details `read_memory_source` ever returns (#215). */
+export interface ReadMemorySourceDetails {
+  readonly block: number;
+  readonly totalBlocks: number;
+  readonly page: number;
+  readonly totalPages: number;
+  readonly hasMore: boolean;
+}
+
+/** One source read handed to the controller by the tool definition. */
+export interface ReadMemorySourceRequest {
+  readonly block: number;
+  readonly page: number;
+}
+
+/**
+ * The executor the registrar supplies: the controller revalidates current
+ * Memory against the live session and returns the bounded page or throws one
+ * safe short-coded sentence.
+ */
+export type ReadMemorySourceExecutor = (
+  request: ReadMemorySourceRequest,
+  session: MemorySessionReader,
+) => Promise<AgentToolResult<ReadMemorySourceDetails>>;
+
 function memoryError(code: string, sentence: string): never {
   throw new Error(`${code}: ${sentence}`);
 }
@@ -67,14 +94,16 @@ export function createSubmitMemoryToolDefinition(
     parameters: SubmitMemoryParamsSchema,
     executionMode: "sequential",
     async execute() {
-      // The due-run submission window opens with #218; the shell never opens one.
+      // The due-run submission window opens with #218; until then the tool
+      // stays inactive and every stray call fails safely.
       memoryError("SUBMIT_NOT_DUE", "no Context Memory compression is due in this run");
     },
   };
 }
 
 export function createReadMemorySourceToolDefinition(
-): ToolDefinition<typeof ReadMemorySourceParamsSchema, Record<string, never>> {
+  executor?: ReadMemorySourceExecutor,
+): ToolDefinition<typeof ReadMemorySourceParamsSchema, ReadMemorySourceDetails> {
   return {
     name: READ_MEMORY_SOURCE_TOOL_NAME,
     label: "Memory source",
@@ -82,9 +111,16 @@ export function createReadMemorySourceToolDefinition(
       "Read one bounded page of the original conversation behind a Memory block. "
       + "Available only while valid Context Memory exists on the current branch.",
     parameters: ReadMemorySourceParamsSchema,
-    async execute() {
-      // Memory derivation and source paging arrive with #217; the shell derives none.
-      memoryError("MEMORY_NOT_AVAILABLE", "no valid Context Memory is available on the current branch");
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!executor) {
+        // No controller: no session-scoped Memory exists.
+        memoryError("MEMORY_NOT_AVAILABLE", "no valid Context Memory is available on the current branch");
+      }
+      const session = (ctx as { sessionManager?: MemorySessionReader }).sessionManager;
+      if (!session) {
+        memoryError("MEMORY_NOT_AVAILABLE", "no valid Context Memory is available on the current branch");
+      }
+      return executor({ block: params.block, page: params.page }, session);
     },
   };
 }

@@ -1,3 +1,4 @@
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { InternalToolDisplayAdapter } from "./tool-renderer";
 import {
   asArray,
@@ -37,7 +38,7 @@ function todoErrorSentence(details: UnknownRecord, args: UnknownRecord): string 
     case "TODO_EMPTY": return "No task list exists";
     case "TODO_TOO_MANY": return "A list holds at most 20 items";
     case "TODO_PERSIST_ERROR": return "Task list could not be saved";
-    default: return stringOf(errorObj.message) ?? "Task operation failed";
+    default: return stringOf(errorObj.message) ?? "Tool operation failed";
   }
 }
 
@@ -78,7 +79,7 @@ function todoTasksSection(details: UnknownRecord): DisplaySection | undefined {
   if (items.length === 0) return undefined;
   const records: DisplayRecordItem[] = items.map((value, index) => {
     const item = asRecord(value);
-    const status = stringOf(item.status) ?? "pending";
+    const status = stringOf(item.status) ?? "";
     const isCurrent = currentId !== undefined && stringOf(item.id) === currentId;
     const glyph = todoGlyph(status, isCurrent);
     const customId = stringOf(item.id);
@@ -131,6 +132,32 @@ function askAnswersSection(details: UnknownRecord): DisplaySection | undefined {
   return { title: "Answers", blocks: [{ kind: "records", items: records }] };
 }
 
+// ─── context memory (#215, #217) ───────────────────────────────────
+
+/** Human sentence for a coded Memory error ("CODE: sentence" throws). */
+function memoryErrorSentence(text: string): string {
+  const match = /^[A-Z][A-Z0-9_]*: (.+)$/s.exec(text);
+  return match ? match[1]! : (text.split("\n", 1)[0] ?? "Memory operation failed");
+}
+
+/** Bounded `block B · page P` target for the source-reading tool. */
+function memorySourceTarget(block: unknown, page: unknown): string | undefined {
+  const blockNumber = numberOf(block);
+  const pageNumber = numberOf(page);
+  return blockNumber !== undefined && pageNumber !== undefined
+    ? `block ${blockNumber} · page ${pageNumber}`
+    : undefined;
+}
+
+/** The transcript page body: result content item 1 (between header and hint). */
+function memoryPageTexts(result: AgentToolResult<unknown>): string[] {
+  return Array.isArray(result.content)
+    ? result.content
+      .filter((item): item is { type: "text"; text: string } => item?.type === "text" && typeof (item as { text?: unknown }).text === "string")
+      .map((item) => item.text)
+    : [];
+}
+
 // ─── lifecycle helpers ─────────────────────────────────────────────
 
 function todoLifecycle(
@@ -177,6 +204,28 @@ export function createWorkflowAdapter(
           lifecycle: todoLifecycle(context, "call", false),
           title: "Tasks",
           target: stringOf(source.action) ?? undefined,
+          metadata: [],
+          sections: [],
+        });
+      }
+
+      // ── submit_memory ──: neutral target only; never the Markdown body.
+      if (name === "submit_memory") {
+        return baseDescription(description, {
+          lifecycle: context.executionStarted ? "running" : context.argsComplete ? "pending" : "queued",
+          title: "Memory submit",
+          target: "candidate",
+          metadata: [],
+          sections: [],
+        });
+      }
+
+      // ── read_memory_source ──: composed `block B · page P` target.
+      if (name === "read_memory_source") {
+        return baseDescription(description, {
+          lifecycle: context.executionStarted ? "running" : context.argsComplete ? "pending" : "queued",
+          title: "Memory source",
+          target: memorySourceTarget(source.block, source.page),
           metadata: [],
           sections: [],
         });
@@ -288,6 +337,74 @@ export function createWorkflowAdapter(
           sections: answersSection ? [answersSection] : [],
           rows: [],
           summary,
+        });
+      }
+
+      // ── submit_memory ──
+      if (name === "submit_memory") {
+        // One neutral collapsed row: fixed pending outcome, no Markdown/body
+        // preview even when expanded (#215 display contract).
+        if (isError) {
+          const sentence = memoryErrorSentence(text);
+          return baseDescription(description, {
+            lifecycle: "failed",
+            title: "Memory submit",
+            target: "candidate",
+            metadata: [],
+            sections: [],
+            rows: [],
+            summary: sentence,
+            error: sentence,
+            errorRaw: text,
+          });
+        }
+        return baseDescription(description, {
+          lifecycle: "completed",
+          title: "Memory submit",
+          target: "candidate",
+          metadata: [],
+          sections: [],
+          rows: [],
+          summary: "Memory candidate accepted; compaction pending",
+        });
+      }
+
+      // ── read_memory_source ──
+      if (name === "read_memory_source") {
+        const argsRecord = asRecord(context.args);
+        const target = memorySourceTarget(details.block ?? argsRecord.block, details.page ?? argsRecord.page);
+        if (isError) {
+          const sentence = memoryErrorSentence(text);
+          return baseDescription(description, {
+            lifecycle: "failed",
+            title: "Memory source",
+            target,
+            metadata: [],
+            sections: [],
+            rows: [],
+            summary: sentence,
+            error: sentence,
+            errorRaw: text,
+          });
+        }
+        const page = numberOf(details.page) ?? 1;
+        const totalPages = numberOf(details.totalPages) ?? 1;
+        const hasMore = details.hasMore === true;
+        const summary = `page ${page} of ${totalPages}${hasMore ? " · more pages" : ""}`;
+        const texts = memoryPageTexts(result);
+        // The transcript page is evidence: visible only in the expanded entry.
+        const sections: DisplaySection[] = options.expanded && texts.length > 1
+          ? [{ title: "Source", blocks: [{ kind: "text", text: texts[1]! }] }]
+          : [];
+        return baseDescription(description, {
+          lifecycle: "completed",
+          title: "Memory source",
+          target,
+          metadata: [],
+          sections,
+          rows: [],
+          summary,
+          truncated: hasMore,
         });
       }
 

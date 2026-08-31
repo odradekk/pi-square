@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +11,10 @@ import {
   SettingsManager,
   initTheme,
 } from "@earendil-works/pi-coding-agent";
+import jiti from "jiti";
+
+const smokeLoad = jiti(import.meta.url, { moduleCache: false });
+const { MEMORY_FORMAT_TAG, composeMemorySummary } = await smokeLoad("../src/context-memory/format.ts");
 
 // The /context command handler reads ctx.ui.theme; initialize the theme
 // registry the way an interactive session would.
@@ -41,12 +46,15 @@ const settingsManager = SettingsManager.create(cwd, agentDir);
 // and trips the zero-skills assertion below.
 const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true });
 await resourceLoader.reload();
+// The shared in-memory session the smoke run drives; #217 appends a real
+// compaction entry to it for the Context Memory reading surface.
+const smokeSession = SessionManager.inMemory();
 const created = await createAgentSession({
   cwd,
   agentDir,
   resourceLoader,
   settingsManager,
-  sessionManager: SessionManager.inMemory(),
+  sessionManager: smokeSession,
 });
 
 try {
@@ -251,15 +259,15 @@ try {
 
   const contextCommand = runner.getCommand("context");
   assert.ok(contextCommand, "/context remains the sole Context Memory surface owner");
-  async function runContextCommand() {
+  async function runContextCommand(args = "") {
     const notified = [];
     const commandCtx = runner.createCommandContext();
-    await contextCommand.handler("", {
+    await contextCommand.handler(args, {
       ...commandCtx,
       hasUI: true,
       ui: { ...commandCtx.ui, notify: (text) => notified.push(text) },
     });
-    return notified.join("\n");
+    return stripVTControlCharacters(notified.join("\n"));
   }
   const defaultContextView = await runContextCommand();
   assert.match(defaultContextView, /memory\[\]/, "/context renders the memory[] section");
@@ -279,6 +287,76 @@ try {
   const enabledContextView = await runContextCommand();
   assert.match(enabledContextView, /enabled · no Memory blocks yet/,
     "the enabled/no-Memory state renders through /context");
+
+  // ── #217: a valid compaction on the current leaf opens the reading surface ──
+
+  const memoryUser = smokeSession.appendMessage({
+    role: "user", content: "smoke: walk me through the workspace", timestamp: 1,
+  });
+  const memoryAssistant = smokeSession.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "the workspace holds the pi-square extension" }],
+    api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "stop", timestamp: 2,
+  });
+  const memoryKept = smokeSession.appendMessage({
+    role: "user", content: "smoke: ship it", timestamp: 3,
+  });
+  const memoryBody = "# Smoke Memory\n\n- one block covering the tour exchange";
+  smokeSession.appendCompaction(
+    composeMemorySummary([memoryBody]),
+    memoryKept,
+    900,
+    {
+      format: MEMORY_FORMAT_TAG,
+      blocks: [{ endEntryId: memoryAssistant, markdownBytes: Buffer.byteLength(memoryBody, "utf8") }],
+    },
+    true,
+  );
+
+  await runner.emit({ type: "session_start", reason: "config-change" });
+  assert.ok(
+    session.agent.state.tools.some((tool) => tool.name === "read_memory_source"),
+    "valid current Memory activates read_memory_source end to end",
+  );
+  assert.ok(
+    !session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "submit_memory stays inactive without a due run (#218)",
+  );
+
+  const activeContextView = await runContextCommand();
+  assert.match(activeContextView, /memory\[\]\s+active/, "/context shows the active Memory state");
+  assert.match(activeContextView, /1 block/, "/context counts the Memory blocks");
+  assert.match(activeContextView, /# Smoke Memory/, "/context previews the block chronologically");
+  assert.match(activeContextView, /2 sources/, "/context shows the safe source count");
+
+  const memoryDetailView = await runContextCommand("memory 1");
+  assert.match(memoryDetailView, /# Smoke Memory/, "/context memory shows the full block Markdown");
+  assert.match(memoryDetailView, /smoke: walk me through the workspace/, "/context memory shows a source page");
+  assert.match(memoryDetailView, /read-only · current session only · visible in terminal scrollback/,
+    "/context memory states the inspection boundary");
+
+  const invalidDetailView = await runContextCommand("memory banana");
+  assert.match(invalidDetailView, /Usage: \/context \[memory <block> \[page\]\]/,
+    "invalid /context memory syntax shows one usage line");
+
+  const commandCtx = runner.createCommandContext();
+  const memorySourceResult = await toolByName("read_memory_source").execute(
+    "smoke:memory-source",
+    { block: 1, page: 1 },
+    undefined,
+    undefined,
+    commandCtx,
+  );
+  assert.match(memorySourceResult.content[0].text, /^Memory source · block 1 of 1 · page 1 of \d+$/);
+  assert.match(memorySourceResult.content[1].text, /smoke: walk me through the workspace/);
+  assert.ok(!memorySourceResult.content[1].text.includes(memoryUser),
+    "the real tool page never exposes entry ids");
+  assert.deepEqual(
+    Object.keys(memorySourceResult.details).sort(),
+    ["block", "hasMore", "page", "totalBlocks", "totalPages"],
+  );
 
   writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
     version: 2,

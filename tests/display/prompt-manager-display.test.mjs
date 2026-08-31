@@ -4,6 +4,7 @@ import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const {
+  parseContextCommandArgs,
   renderMinimal,
   renderSummary,
   renderVerbose,
@@ -163,6 +164,157 @@ function makeMessagesInput(overrides = {}) {
     assert.ok(disabled.includes(segment), `usage bar keeps the ${segment} segment`);
   }
   assert.ok(!/memory/i.test(disabled), "the usage bar never mentions memory");
+}
+
+// ─── 4c. Context Memory active and opaque states (#217) ────────────
+
+const activeMemory = {
+  state: "active",
+  blocks: 3,
+  rows: [
+    { preview: "Fix login flow", tokens: 812, sources: 14 },
+    { preview: "DB migration notes", tokens: 1105, sources: 9 },
+    { preview: "Review feedback", tokens: 480, sources: 6 },
+  ],
+  stablePrefix: 3,
+  nextOperation: "append",
+  memoryTokens: 2400,
+  budgetTokens: 20000,
+  currentTokens: 74223,
+  contextWindow: 200000,
+};
+
+{
+  const input = makeMessagesInput({ memory: activeMemory });
+  const text = stripVTControlCharacters(renderVerbose(input, plainTheme()));
+  const lines = text.split("\n");
+  const memoryAt = text.indexOf("memory[]");
+  const systemAt = text.indexOf("systemPrompt");
+  const messagesAt = text.indexOf("messages[]");
+  assert.ok(memoryAt > systemAt && memoryAt < messagesAt,
+    "active memory[] keeps its position between systemPrompt and messages[]");
+
+  const header = lines.find((line) => line.includes("memory[]"));
+  assert.ok(header, "the active header line exists");
+  assert.match(header, /active/);
+  assert.match(header, /~2\.40k tok/);
+  assert.match(header, /20\.0k budget/);
+  assert.match(header, /3 blocks/);
+  assert.match(header, /stable 3\/3/);
+  assert.match(header, /next: append/);
+
+  const usage = lines.find((line) => line.includes("usage "));
+  assert.ok(usage, "the usage line exists");
+  assert.match(usage, /usage 74\.2k \/ 200\.0k window/);
+
+  const rowOne = lines.find((line) => line.includes("Fix login flow"));
+  assert.ok(rowOne, "the first block row exists");
+  assert.match(rowOne, /1\./);
+  assert.match(rowOne, /812 tok/);
+  assert.match(rowOne, /14 sources/);
+  const rowTwo = lines.find((line) => line.includes("DB migration notes"));
+  assert.ok(rowTwo && rowTwo.includes("1.10k tok"), "the second row shows its token estimate");
+  assert.ok(rowTwo.indexOf("Fix login flow") === undefined || true);
+
+  // Chronological order: row 1 appears before row 2 which appears before row 3.
+  const order = ["Fix login flow", "DB migration notes", "Review feedback"]
+    .map((needle) => text.indexOf(needle));
+  assert.ok(order[0] < order[1] && order[1] < order[2], "block rows follow source chronology");
+
+  // The default view carries no internals.
+  const memoryBlock = text.slice(text.indexOf("memory[]"), text.indexOf("messages[]"));
+  for (const forbidden of ["pi-square.context-memory", "endEntryId", "/home/", ".jsonl", "e5", "wrapper", "2026-"]) {
+    assert.ok(!memoryBlock.includes(forbidden), `the active view never shows ${JSON.stringify(forbidden)}`);
+  }
+}
+
+{
+  // Unknown budget omits the stable prefix and next operation.
+  const input = makeMessagesInput({
+    memory: {
+      ...activeMemory,
+      budgetTokens: null,
+      contextWindow: null,
+      currentTokens: null,
+      stablePrefix: null,
+      nextOperation: null,
+    },
+  });
+  const text = stripVTControlCharacters(renderVerbose(input, plainTheme()));
+  const header = text.split("\n").find((line) => line.includes("memory[]"));
+  assert.match(header, /budget unknown/);
+  assert.ok(!header.includes("stable"), "no stable prefix without a budget");
+  assert.ok(!header.includes("next:"), "no next operation without a budget");
+  assert.ok(!text.split("\n").some((line) => line.includes("usage ")), "no usage line without usage data");
+}
+
+{
+  // Above half budget the next operation flips to rebuild with a bounded prefix.
+  const input = makeMessagesInput({
+    memory: { ...activeMemory, memoryTokens: 18000, nextOperation: "rebuild", stablePrefix: 1 },
+  });
+  const header = stripVTControlCharacters(renderVerbose(input, plainTheme()))
+    .split("\n").find((line) => line.includes("memory[]"));
+  assert.match(header, /next: rebuild/);
+  assert.match(header, /stable 1\/3/);
+}
+
+{
+  // More blocks than rendered rows clips with a visible marker.
+  const many = {
+    ...activeMemory,
+    blocks: 5,
+    rows: activeMemory.rows.slice(0, 3),
+  };
+  const text = stripVTControlCharacters(renderVerbose(makeMessagesInput({ memory: many }), plainTheme()));
+  assert.match(text, /⋯ \+2 more blocks/);
+}
+
+{
+  // Control characters in a preview are sanitized before rendering.
+  const dirty = {
+    ...activeMemory,
+    rows: [{ preview: "bad\u001b]0;owned\u0007 label", tokens: 5, sources: 1 }],
+  };
+  const text = stripVTControlCharacters(renderVerbose(makeMessagesInput({ memory: dirty }), plainTheme()));
+  const memoryBlock = text.slice(text.indexOf("memory[]"), text.indexOf("messages[]"));
+  assert.ok(!/[\u0000-\u0008\u000e-\u001f]/.test(memoryBlock), "no raw control characters in the memory section");
+  assert.ok(!memoryBlock.includes("owned"), "OSC payloads do not survive preview cleaning");
+}
+
+{
+  const input = makeMessagesInput({ memory: { state: "opaque" } });
+  const text = stripVTControlCharacters(renderVerbose(input, plainTheme()));
+  const memoryLines = text.split("\n").filter((line) => line.includes("memory[]"));
+  assert.equal(memoryLines.length, 1, "the opaque state renders exactly one bounded line");
+  assert.match(
+    memoryLines[0],
+    /opaque · latest compaction is not valid Context Memory · native summary retained/,
+  );
+}
+
+{
+  // Active Memory leaves the total usage bar byte-identical (#215).
+  const barInput = { messagesByRole: { user: 400, assistant: 1200, toolResult: 800 } };
+  const without = stripVTControlCharacters(renderUsageBar(makeMessagesInput(barInput), plainTheme()));
+  const withActive = stripVTControlCharacters(
+    renderUsageBar(makeMessagesInput({ ...barInput, memory: activeMemory }), plainTheme()),
+  );
+  assert.equal(without, withActive, "the usage bar ignores the Memory state entirely");
+}
+
+// ─── 4d. /context argument parsing (#217) ─────────────────────────
+
+{
+  assert.deepEqual(parseContextCommandArgs(""), { kind: "overview" });
+  assert.deepEqual(parseContextCommandArgs("   "), { kind: "overview" });
+  assert.deepEqual(parseContextCommandArgs(undefined), { kind: "overview" });
+  assert.deepEqual(parseContextCommandArgs(7), { kind: "overview" });
+  assert.deepEqual(parseContextCommandArgs("memory 2"), { kind: "memory", block: 2, page: 1 });
+  assert.deepEqual(parseContextCommandArgs("  memory   3   4  "), { kind: "memory", block: 3, page: 4 });
+  for (const bad of ["memory", "memory 0", "memory -1", "memory x", "memory 2 0", "memory 2 3 4", "memory 2 x", "other 3", "memory 1.5"]) {
+    assert.deepEqual(parseContextCommandArgs(bad), { kind: "invalid" }, `${JSON.stringify(bad)} is invalid`);
+  }
 }
 
 // Summary mode stays without the memory[] section (#215 scopes it to /context verbose).
