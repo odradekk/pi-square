@@ -102,7 +102,7 @@ export function classifyDivergenceBoundary(arm, layout, sharedBytes, oldBlockCou
 
 function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount }) {
   const declared = adapter.describePins();
-  return {
+  const pins = {
     provider: declared.provider,
     model: declared.model,
     adapterCacheReporting: declared.cacheReporting,
@@ -125,7 +125,16 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount }) {
       ttlMs,
       rule: "every probe must follow its arm prime within ttlMs; a later probe classifies its group ttl-stale",
     },
+    priceNote: declared.priceNote,
   };
+  // A real adapter that cannot apply the pinned settings in full (for example
+  // #248's temperature omission on claude-sonnet-5) records the omission in
+  // its pins; an adapter that applies them records nothing, so the dry-run
+  // report shape is unchanged.
+  if (Array.isArray(declared.settingsOmissions) && declared.settingsOmissions.length > 0) {
+    pins.settingsOmissions = declared.settingsOmissions;
+  }
+  return pins;
 }
 
 function rowOf(record, evidence) {
