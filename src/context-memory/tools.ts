@@ -102,7 +102,7 @@ export function createSubmitMemoryToolDefinition(
 }
 
 export function createReadMemorySourceToolDefinition(
-  executor?: ReadMemorySourceExecutor,
+  executor: ReadMemorySourceExecutor,
 ): ToolDefinition<typeof ReadMemorySourceParamsSchema, ReadMemorySourceDetails> {
   return {
     name: READ_MEMORY_SOURCE_TOOL_NAME,
@@ -112,10 +112,6 @@ export function createReadMemorySourceToolDefinition(
       + "Available only while valid Context Memory exists on the current branch.",
     parameters: ReadMemorySourceParamsSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (!executor) {
-        // No controller: no session-scoped Memory exists.
-        memoryError("MEMORY_NOT_AVAILABLE", "no valid Context Memory is available on the current branch");
-      }
       const session = (ctx as { sessionManager?: MemorySessionReader }).sessionManager;
       if (!session) {
         memoryError("MEMORY_NOT_AVAILABLE", "no valid Context Memory is available on the current branch");

@@ -38,7 +38,7 @@ function todoErrorSentence(details: UnknownRecord, args: UnknownRecord): string 
     case "TODO_EMPTY": return "No task list exists";
     case "TODO_TOO_MANY": return "A list holds at most 20 items";
     case "TODO_PERSIST_ERROR": return "Task list could not be saved";
-    default: return stringOf(errorObj.message) ?? "Tool operation failed";
+    default: return stringOf(errorObj.message) ?? "Task operation failed";
   }
 }
 
@@ -79,7 +79,7 @@ function todoTasksSection(details: UnknownRecord): DisplaySection | undefined {
   if (items.length === 0) return undefined;
   const records: DisplayRecordItem[] = items.map((value, index) => {
     const item = asRecord(value);
-    const status = stringOf(item.status) ?? "";
+    const status = stringOf(item.status) ?? "pending";
     const isCurrent = currentId !== undefined && stringOf(item.id) === currentId;
     const glyph = todoGlyph(status, isCurrent);
     const customId = stringOf(item.id);

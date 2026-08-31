@@ -84,8 +84,6 @@ interface ResolvedPage {
 }
 
 type PageResolution =
-  | { readonly kind: "no-memory" }
-  | { readonly kind: "changed" }
   | { readonly kind: "block" }
   | { readonly kind: "page"; readonly totalPages: number }
   | { readonly kind: "ok"; readonly resolved: ResolvedPage };
@@ -228,9 +226,6 @@ export class ContextMemoryController {
     }
     const resolution = this.resolvePage(memory, request);
     switch (resolution.kind) {
-      case "no-memory":
-      case "changed":
-        return { ok: false, sentence: "No valid Context Memory is available on the current branch." };
       case "block":
         return { ok: false, sentence: `Block ${request.block} is outside the current Memory block list (1–${memory.blocks.length}).` };
       case "page":

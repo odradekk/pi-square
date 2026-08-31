@@ -137,6 +137,10 @@ export function parseMemorySummary(
     offset += separatorBytes.length;
     if (offset + item.markdownBytes > bytes.length) return undefined;
     const body = bytes.subarray(offset, offset + item.markdownBytes).toString("utf8");
+    // A boundary that splits a code point decodes to U+FFFD, which would be a
+    // silent repair. Re-encoding a split body never matches its declared byte
+    // count, so this rejects the compaction instead of guessing (#215).
+    if (Buffer.byteLength(body, "utf8") !== item.markdownBytes) return undefined;
     if (!isValidMemoryBlockBody(body)) return undefined;
     bodies.push(body);
     offset += item.markdownBytes;
