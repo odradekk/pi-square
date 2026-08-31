@@ -1287,6 +1287,251 @@ try {
     assert.deepEqual(estimator.registration.snapshot(), { state: "due" },
       "null usage falls back to the deterministic estimate and flags the large branch");
   }
+  // ── #222: a compaction Pi never started keeps the slot pending until the next run boundary ──
+
+  {
+    const stall = createHarness();
+    const stallSession = mutableSession(preRunBranch());
+    const stallCtx = stall.baseContext(stallSession);
+    await stall.emit("session_start", { type: "session_start", reason: "startup" }, stallCtx);
+    await stall.emit("input", { type: "input", text: "ship it", source: "interactive" }, stallCtx);
+    appendDueRun(stallSession, BLOCK);
+    await stall.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
+      ] },
+    }, stallCtx);
+    await stall.tools.get("submit_memory").execute("call-submit", { markdown: BLOCK }, undefined, undefined, stallCtx);
+
+    // Settle offers the candidate; Pi's compact() refuses ("session too
+    // small") and never emits session_before_compact. Nothing committed and
+    // nothing was lost, so the phase stays visible without any diagnostic.
+    await stall.emit("agent_settled", { type: "agent_settled" }, stallCtx);
+    assert.equal(stall.compactCalls.length, 1, "settle still offers the candidate to Pi's seam once");
+    assert.deepEqual(stall.registration.snapshot(), { state: "pending" },
+      "a compaction that never started leaves the slot reporting pending");
+    assert.equal(stall.notified.length, 0, "a refused compaction is not a conflict");
+    await assert.rejects(
+      () => stall.tools.get("submit_memory").execute("call-submit", { markdown: BLOCK }, undefined, undefined, stallCtx),
+      (error) => {
+        assert.match(error.message, /^SUBMIT_NOT_DUE: /);
+        return true;
+      },
+      "the settled run refuses any further submission while the slot survives",
+    );
+
+    // The next real-user run is the stated recovery boundary.
+    await stall.emit("input", { type: "input", text: "next task", source: "interactive" }, stallCtx);
+    assert.notDeepEqual(stall.registration.snapshot(), { state: "pending" },
+      "the next run boundary clears the stalled candidate");
+    stallSession.__entries.push(userEntry("e7", "e6", "next task"));
+    stallSession.__entries.push(assistantEntry("e8", "e7", [
+      { type: "toolCall", id: "call-fresh", name: "submit_memory", arguments: { markdown: "# Fresh block" } },
+    ]));
+    await stall.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-fresh", name: "submit_memory", arguments: { markdown: "# Fresh block" } },
+      ] },
+    }, stallCtx);
+    const recovered = await stall.tools.get("submit_memory")
+      .execute("call-fresh", { markdown: "# Fresh block" }, undefined, undefined, stallCtx);
+    assert.equal(recovered.content[0].text, "Memory candidate accepted; compaction pending.",
+      "the fresh run accepts a new candidate after the boundary");
+  }
+
+  // ── #222: a takeover whose save never landed keeps committing until the next run boundary ──
+
+  {
+    const lost = createHarness();
+    const lostSession = mutableSession(preRunBranch());
+    const lostCtx = lost.baseContext(lostSession);
+    await lost.emit("session_start", { type: "session_start", reason: "startup" }, lostCtx);
+    await lost.emit("input", { type: "input", text: "ship it", source: "interactive" }, lostCtx);
+    appendDueRun(lostSession, BLOCK);
+    await lost.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
+      ] },
+    }, lostCtx);
+    await lost.tools.get("submit_memory").execute("call-submit", { markdown: BLOCK }, undefined, undefined, lostCtx);
+    await lost.emit("agent_settled", { type: "agent_settled" }, lostCtx);
+    const takeover = await lost.emit("session_before_compact", beforeCompactEvent(lostSession), lostCtx);
+    assert.ok(takeover?.compaction);
+
+    // Pi's save threw after the takeover, so session_compact never fires.
+    assert.deepEqual(lost.registration.snapshot(), { state: "committing" },
+      "a takeover whose save never landed keeps the committing phase visible");
+    await assert.rejects(
+      () => lost.tools.get("submit_memory").execute("call-submit", { markdown: BLOCK }, undefined, undefined, lostCtx),
+      (error) => {
+        assert.match(error.message, /^SUBMIT_NOT_DUE: /);
+        return true;
+      },
+      "the settled run refuses any further submission while the slot survives",
+    );
+
+    // The next real-user run clears the committing slot and a fresh candidate is accepted.
+    await lost.emit("input", { type: "input", text: "next task", source: "interactive" }, lostCtx);
+    assert.deepEqual(lost.registration.snapshot(), { state: "due" },
+      "the next run boundary clears the committing slot");
+    lostSession.__entries.push(userEntry("e7", "e6", "next task"));
+    lostSession.__entries.push(assistantEntry("e8", "e7", [
+      { type: "toolCall", id: "call-fresh", name: "submit_memory", arguments: { markdown: "# Fresh block" } },
+    ]));
+    await lost.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-fresh", name: "submit_memory", arguments: { markdown: "# Fresh block" } },
+      ] },
+    }, lostCtx);
+    const recovered = await lost.tools.get("submit_memory")
+      .execute("call-fresh", { markdown: "# Fresh block" }, undefined, undefined, lostCtx);
+    assert.equal(recovered.content[0].text, "Memory candidate accepted; compaction pending.");
+  }
+
+  // ── #222: a committing slot is never rewritten by a later compaction retry ──
+
+  {
+    const retry = createHarness();
+    const retrySession = mutableSession(preRunBranch());
+    const retryCtx = retry.baseContext(retrySession);
+    await retry.emit("session_start", { type: "session_start", reason: "startup" }, retryCtx);
+    await retry.emit("input", { type: "input", text: "ship it", source: "interactive" }, retryCtx);
+    appendDueRun(retrySession, BLOCK);
+    await retry.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
+      ] },
+    }, retryCtx);
+    await retry.tools.get("submit_memory").execute("call-submit", { markdown: BLOCK }, undefined, undefined, retryCtx);
+    await retry.emit("agent_settled", { type: "agent_settled" }, retryCtx);
+    const consumed = await retry.emit("session_before_compact", beforeCompactEvent(retrySession), retryCtx);
+    assert.ok(consumed?.compaction);
+
+    // Pi retries compaction after the failed save: the committing slot never
+    // returns a second takeover, so the retry stays Pi native.
+    const second = await retry.emit("session_before_compact", beforeCompactEvent(retrySession), retryCtx);
+    assert.equal(second, undefined, "a committing slot is never rewritten");
+    assert.equal(second?.cancel, undefined);
+
+    // The retry's native entry closing is one bounded conflict, never a false commit.
+    retrySession.__entries.push({
+      id: "c-native", parentId: "e6", type: "compaction", timestamp: TS,
+      summary: "native summary after the failed save", firstKeptEntryId: "e4", tokensBefore: 4321, fromExtension: false,
+    });
+    await retry.emit("session_compact", {
+      type: "session_compact",
+      compactionEntry: retrySession.__entries.at(-1),
+      fromExtension: false,
+      reason: "manual",
+      willRetry: false,
+    }, retryCtx);
+    assert.equal(retry.notified.length, 1, "one bounded conflict diagnostic");
+    assert.match(retry.notified[0].text, /^COMPACTION_CONFLICT: /);
+    assert.equal(retry.notified[0].level, "warning");
+    assert.deepEqual(retry.registration.snapshot(), { state: "opaque" },
+      "the discarded candidate never claims commit");
+    const after = await retry.emit("session_before_compact", beforeCompactEvent(retrySession), retryCtx);
+    assert.equal(after, undefined, "the cleared slot never produces another takeover");
+  }
+
+  // ── #222: manual, threshold, and overflow compaction stay native without a candidate ──
+
+  {
+    for (const reason of ["manual", "threshold", "overflow"]) {
+      const native = createHarness();
+      const nativeSession = mutableSession(preRunBranch());
+      const nativeCtx = native.baseContext(nativeSession);
+      await native.emit("session_start", { type: "session_start", reason: "startup" }, nativeCtx);
+      const result = await native.emit("session_before_compact", beforeCompactEvent(nativeSession), nativeCtx);
+      assert.equal(result, undefined, `a ${reason} compaction without a candidate stays Pi native`);
+      assert.equal(result?.cancel, undefined, `${reason} compaction is never cancelled`);
+    }
+  }
+
+  // ── #222: Pi's post-run threshold/overflow compaction consumes the candidate before settle ──
+
+  {
+    for (const reason of ["threshold", "overflow"]) {
+      const auto = createHarness();
+      const autoSession = mutableSession(preRunBranch());
+      const autoCtx = auto.baseContext(autoSession);
+      await auto.emit("session_start", { type: "session_start", reason: "startup" }, autoCtx);
+      await auto.emit("input", { type: "input", text: "ship it", source: "interactive" }, autoCtx);
+      appendDueRun(autoSession, BLOCK);
+      await auto.emit("message_end", {
+        type: "message_end",
+        message: { role: "assistant", content: [
+          { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
+        ] },
+      }, autoCtx);
+      await auto.tools.get("submit_memory").execute("call-submit", { markdown: BLOCK }, undefined, undefined, autoCtx);
+
+      // The auto-compaction fires before settle, so no ctx.compact() was requested.
+      const takeover = await auto.emit("session_before_compact", {
+        ...beforeCompactEvent(autoSession),
+        reason,
+      }, autoCtx);
+      assert.ok(takeover?.compaction, `a ${reason} compaction consumes the matching candidate`);
+      assert.equal(takeover.cancel, undefined, `the ${reason} takeover never cancels`);
+      assert.equal(auto.compactCalls.length, 0, "the candidate was consumed without a settle-triggered request");
+      const compactEvent = appendCompactionEntry(autoSession, takeover.compaction, true);
+      await auto.emit("session_compact", { ...compactEvent, reason }, autoCtx);
+      const committed = auto.registration.snapshot({ tokens: 900, contextWindow: 200000 });
+      assert.equal(committed.state, "active", `the ${reason} takeover confirms exactly`);
+      assert.equal(committed.blocks, 1);
+    }
+  }
+
+  // ── #222: a mismatching extension-origin saved entry is a conflict, not a commit ──
+
+  {
+    const foreign = createHarness();
+    const foreignSession = mutableSession(preRunBranch());
+    const foreignCtx = foreign.baseContext(foreignSession);
+    await foreign.emit("session_start", { type: "session_start", reason: "startup" }, foreignCtx);
+    await foreign.emit("input", { type: "input", text: "ship it", source: "interactive" }, foreignCtx);
+    appendDueRun(foreignSession, BLOCK);
+    await foreign.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
+      ] },
+    }, foreignCtx);
+    await foreign.tools.get("submit_memory").execute("call-submit", { markdown: BLOCK }, undefined, undefined, foreignCtx);
+    await foreign.emit("agent_settled", { type: "agent_settled" }, foreignCtx);
+    const consumed = await foreign.emit("session_before_compact", beforeCompactEvent(foreignSession), foreignCtx);
+    assert.ok(consumed?.compaction);
+
+    // Another extension's takeover wins the save with a different summary.
+    const otherEntry = {
+      id: "c-other", parentId: "e6", type: "compaction", timestamp: TS,
+      summary: "another extension's compaction summary", firstKeptEntryId: "e4", tokensBefore: 4321,
+      fromExtension: true,
+    };
+    foreignSession.__entries.push(otherEntry);
+    await foreign.emit("session_compact", {
+      type: "session_compact", compactionEntry: otherEntry, fromExtension: true, reason: "manual", willRetry: false,
+    }, foreignCtx);
+    assert.equal(foreign.notified.length, 1, "one bounded conflict diagnostic");
+    assert.match(foreign.notified[0].text, /^COMPACTION_CONFLICT: /);
+    assert.ok(!foreign.notified[0].text.includes(BLOCK), "the diagnostic never echoes the Memory body");
+    assert.equal(foreign.notified[0].level, "warning");
+
+    // No rewrite, no retry, no false commit: the cleared slot stays cleared.
+    const after = await foreign.emit("session_before_compact", beforeCompactEvent(foreignSession), foreignCtx);
+    assert.equal(after, undefined, "the discarded candidate is never rewritten");
+    await foreign.emit("agent_settled", { type: "agent_settled" }, foreignCtx);
+    assert.equal(foreign.compactCalls.length, 1, "the discarded candidate is never re-offered");
+    assert.deepEqual(foreign.registration.snapshot(), { state: "opaque" },
+      "the competing entry stays ordinary opaque Pi context");
+    assert.ok(!foreign.activeTools().includes("read_memory_source"));
+  }
+
   console.log("context-memory submit tests: OK");
 } catch (error) {
   console.error(error);

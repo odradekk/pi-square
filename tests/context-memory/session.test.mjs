@@ -1247,6 +1247,117 @@ try {
       assert.equal(compacts.length, 0, "a replaced session never compacts the discarded candidate");
     }
 
+    // Crash residue (#222): restart trusts only complete valid Pi compaction
+    // entries; a dead run's submit artifacts never replay as pending work.
+    {
+      const crashSource = SessionManager.create("/proj-crash", dirA);
+      crashSource.appendMessage({ role: "user", content: "explore the deployment flow", timestamp: 1 });
+      crashSource.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "the deploy script pushes then verifies" }],
+        stopReason: "stop", timestamp: 2,
+      });
+      crashSource.appendMessage({ role: "user", content: "ship it", timestamp: 3 });
+      // The persisted residue of a run that submitted and died before compaction.
+      crashSource.appendMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-crash", name: "submit_memory", arguments: { markdown: "# Residue\n\n- never committed" } }],
+        stopReason: "toolUse", timestamp: 4,
+      });
+      crashSource.appendMessage({
+        role: "toolResult", toolCallId: "call-crash", toolName: "submit_memory",
+        content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 5,
+      });
+      const crashFile = crashSource.getSessionFile();
+      const reopened = SessionManager.open(crashFile, dirA);
+
+      const crashHarness = harness({
+        enabled: true,
+        compressionThreshold: { tokens: 2500 },
+        memoryBudgetPercent: 1,
+      });
+      const crashCtx = {
+        ...commandContext(reopened),
+        getContextUsage: () => ({ tokens: 30000, contextWindow: 200000, percent: 15 }),
+      };
+      await crashHarness.emit("session_start", {
+        type: "session_start", reason: "resume", previousSessionFile: crashFile,
+      }, crashCtx);
+      const residue = crashHarness.registration.snapshot();
+      assert.equal(residue.state, "due", "restart replays nothing: no Memory exists and the branch is due");
+      assert.equal(residue.ephemeral, undefined);
+      assert.ok(!crashHarness.activeTools().includes("read_memory_source"),
+        "the residue created no Memory");
+      await assert.rejects(
+        () => crashHarness.tools.get("submit_memory").execute(
+          "call-crash", { markdown: "# Residue\n\n- never committed" }, undefined, undefined, crashCtx,
+        ),
+        (error) => {
+          assert.match(error.message, /^SUBMIT_NOT_DUE: /);
+          return true;
+        },
+        "a historical submit artifact is not pending work",
+      );
+
+      // A fresh real-user run authors the real first block instead.
+      await crashHarness.emit("input", { type: "input", text: "compress now", source: "interactive" }, crashCtx);
+      assert.ok(crashHarness.activeTools().includes("submit_memory"));
+      const freshUser = reopened.appendMessage({ role: "user", content: "compress now", timestamp: 6 });
+      reopened.appendMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-fresh", name: "submit_memory", arguments: { markdown: "# Deploy tour" } }],
+        stopReason: "toolUse", timestamp: 7,
+      });
+      await crashHarness.emit("message_end", {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call-fresh", name: "submit_memory", arguments: { markdown: "# Deploy tour" } }],
+        },
+      }, crashCtx);
+      const fresh = await crashHarness.tools.get("submit_memory").execute(
+        "call-fresh",
+        { markdown: "# Deploy tour\n\n- the deploy script pushes then verifies" },
+        undefined, undefined, crashCtx,
+      );
+      assert.equal(fresh.content[0].text, "Memory candidate accepted; compaction pending.");
+      const compactCalls = [];
+      await crashHarness.emit("agent_settled", { type: "agent_settled" }, {
+        ...crashCtx,
+        compact: () => compactCalls.push(true),
+      });
+      assert.equal(compactCalls.length, 1);
+      const crashTakeover = await crashHarness.emit("session_before_compact", {
+        type: "session_before_compact",
+        preparation: {
+          firstKeptEntryId: freshUser, messagesToSummarize: [], turnPrefixMessages: [],
+          isSplitTurn: false, tokensBefore: 6000, settings: {},
+        },
+        branchEntries: reopened.getBranch(),
+        reason: "manual",
+        willRetry: false,
+        signal: undefined,
+      }, crashCtx);
+      assert.ok(crashTakeover?.compaction, "the fresh candidate matches the reopened tree");
+      const savedCrash = reopened.appendCompaction(
+        crashTakeover.compaction.summary, crashTakeover.compaction.firstKeptEntryId,
+        crashTakeover.compaction.tokensBefore, crashTakeover.compaction.details, true,
+      );
+      const savedCrashEntry = reopened.getBranch().find((entry) => entry.id === savedCrash);
+      await crashHarness.emit("session_compact", {
+        type: "session_compact", compactionEntry: savedCrashEntry, fromExtension: true, reason: "manual", willRetry: false,
+      }, crashCtx);
+      const committed = crashHarness.registration.snapshot({ tokens: 900, contextWindow: 200000 });
+      assert.equal(committed.state, "active");
+      assert.equal(committed.blocks, 1);
+      const residueInspected = crashHarness.registration.inspect({ block: 1, page: 1 }, reopened);
+      assert.equal(residueInspected.ok, true);
+      assert.ok(residueInspected.text.includes("# Deploy tour"), "the fresh block committed byte-exact");
+      assert.ok(!residueInspected.text.includes("# Residue"),
+        "the dead run's submitted Markdown never became Memory");
+      assert.ok(!residueInspected.text.includes("never committed"),
+        "the dead run's submitted body never enters any source stream");
+    }
+
     // Context Memory created no sidecar, lock, journal, or cache anywhere.
     {
       const stray = [];
@@ -1263,6 +1374,103 @@ try {
     }
   } finally {
     rmSync(lifecycleRoot, { recursive: true, force: true });
+  }
+
+  // ── #222: the complete handshake performs no direct filesystem write ──
+
+  {
+    const fs = (await import("node:fs")).default;
+    const violations = [];
+    const restores = [];
+    const guard = (object, label, names) => {
+      for (const name of names) {
+        const original = object[name];
+        if (typeof original !== "function") continue;
+        restores.push(() => { object[name] = original; });
+        object[name] = (...args) => { violations.push(`${label}${String(name)}(${String(args[0])})`); };
+      }
+    };
+    try {
+      guard(fs, "fs:", [
+        "writeFileSync", "appendFileSync", "openSync", "createWriteStream",
+        "renameSync", "copyFileSync", "truncateSync", "rmSync", "mkdirSync",
+      ]);
+      guard(fs.promises, "fs/promises:", [
+        "writeFile", "appendFile", "open", "rename", "truncate", "rm", "mkdir", "cp",
+      ]);
+
+      const ioSession = SessionManager.inMemory("/project");
+      ioSession.appendMessage({ role: "user", content: "explore the storage boundary", timestamp: 1 });
+      ioSession.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "pi owns every session write" }],
+        stopReason: "stop", timestamp: 2,
+      });
+      const ioHarness = harness({
+        enabled: true,
+        compressionThreshold: { tokens: 2500 },
+        memoryBudgetPercent: 1,
+      });
+      const ioCtx = {
+        ...commandContext(ioSession),
+        getContextUsage: () => ({ tokens: 30000, contextWindow: 200000, percent: 15 }),
+      };
+      await ioHarness.emit("session_start", { type: "session_start", reason: "startup" }, ioCtx);
+      await ioHarness.emit("input", { type: "input", text: "ship it", source: "interactive" }, ioCtx);
+      const ioRequest = ioSession.appendMessage({ role: "user", content: "ship it", timestamp: 3 });
+      ioSession.appendMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-io", name: "submit_memory", arguments: { markdown: "# Storage" } }],
+        stopReason: "toolUse", timestamp: 4,
+      });
+      await ioHarness.emit("message_end", {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call-io", name: "submit_memory", arguments: { markdown: "# Storage" } }],
+        },
+      }, ioCtx);
+      const ioAccepted = await ioHarness.tools.get("submit_memory").execute(
+        "call-io", { markdown: "# Storage\n\n- pi owns every session write" }, undefined, undefined, ioCtx,
+      );
+      assert.equal(ioAccepted.content[0].text, "Memory candidate accepted; compaction pending.");
+      ioSession.appendMessage({
+        role: "toolResult", toolCallId: "call-io", toolName: "submit_memory",
+        content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 5,
+      });
+      const contextHandler = ioHarness.events.get("context")[0];
+      const ioTransformed = await contextHandler(
+        { type: "context", messages: ioSession.buildSessionContext().messages }, ioCtx,
+      );
+      assert.ok(ioTransformed && Array.isArray(ioTransformed.messages), "the advisory transform ran under the guard");
+      await ioHarness.emit("agent_settled", { type: "agent_settled" }, ioCtx);
+      const ioTakeover = await ioHarness.emit("session_before_compact", {
+        type: "session_before_compact",
+        preparation: {
+          firstKeptEntryId: ioRequest, messagesToSummarize: [], turnPrefixMessages: [],
+          isSplitTurn: false, tokensBefore: 4000, settings: {},
+        },
+        branchEntries: ioSession.getBranch(),
+        reason: "manual",
+        willRetry: false,
+        signal: undefined,
+      }, ioCtx);
+      assert.ok(ioTakeover?.compaction);
+      const ioSaved = ioSession.appendCompaction(
+        ioTakeover.compaction.summary, ioTakeover.compaction.firstKeptEntryId,
+        ioTakeover.compaction.tokensBefore, ioTakeover.compaction.details, true,
+      );
+      const ioSavedEntry = ioSession.getBranch().find((entry) => entry.id === ioSaved);
+      await ioHarness.emit("session_compact", {
+        type: "session_compact", compactionEntry: ioSavedEntry, fromExtension: true, reason: "manual", willRetry: false,
+      }, ioCtx);
+      await ioHarness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ioCtx);
+      assert.equal(ioHarness.registration.snapshot({ tokens: 900, contextWindow: 200000 }).state, "disabled",
+        "the full handshake and teardown ran under the write guard");
+    } finally {
+      for (const restore of restores.reverse()) restore();
+    }
+    assert.deepEqual(violations, [],
+      "the complete handshake attempts no direct filesystem mutation — Pi's SessionManager is the only session writer");
   }
 
   console.log("context-memory session tests: OK");

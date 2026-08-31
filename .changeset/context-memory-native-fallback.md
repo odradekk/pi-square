@@ -1,0 +1,11 @@
+---
+"@odradekk/pi-square": minor
+---
+
+Harden the Context Memory native-fallback boundary
+
+Completes the hardened-fallback slice for experimental, default-off Context Memory (odradekk/pi-square#222, parent spec #215) on top of the six landed slices. Most guarantees already held; this change states the missing rules and locks every one of them behind regression coverage.
+
+- The transaction slot's survival rule is now explicit: `pending`/`committing` survive only until Pi's compaction seam confirms or clears them or the next run boundary does. Pi 0.84.2 exposes no compaction-failure event to extensions, so a compaction that never starts (`ctx.compact()` refusing before `session_before_compact`) or never saves (Pi's write throwing after the takeover) leaves the phase honestly reported — nothing commits, nothing is lost, native compaction is never blocked — and the next real-user input, tree/model invalidation, reload or session replacement, or shutdown clears the slot deterministically. No timeout, no retry loop, no persisted state was added.
+- The single-writer boundary is documented: Pi's `SessionManager` stays the only session-file writer, one writer per session file is the supported model, same-file multi-process writing is explicitly unsupported, and forked or cloned session files remain the parallel workflow.
+- New regression coverage pins what was already true and the newly stated rules: a stalled pending slot and a committing slot whose save never landed both recover at the next run boundary and refuse submissions meanwhile; a committing slot is never rewritten by a compaction retry and its native closing is one bounded `COMPACTION_CONFLICT`; manual, threshold, and overflow compaction stay Pi native without a candidate, threshold/overflow compaction consumes a matching candidate before settle, and no takeover ever returns `cancel`; a mismatching extension-origin saved entry is a conflict, not a commit; restart trusts only complete valid Pi compaction entries and never replays historical submit artifacts as pending work; an unsupported host exposes no partial advisory, tool activation, filtering, or takeover; the complete handshake performs no direct filesystem write; and `/context` renders the `opaque` and `unsupported` state lines beside the other bounded states.

@@ -35,7 +35,7 @@ import {
 } from "./view";
 
 /**
- * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219, #220, #221).
+ * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219, #220, #221, #222).
  *
  * The controller is the highest test seam: tests drive it through the same
  * registrar events and tool surfaces Pi drives and assert externally visible
@@ -63,7 +63,12 @@ import {
  * and lets the main agent author one replacement block; when that complete
  * request cannot fit the model window under a ten-percent safety allowance,
  * the branch reports its scale limit, exposes no submission handshake, and
- * Pi native compaction keeps owning the boundary. The compatibility gate
+ * Pi native compaction keeps owning the boundary. #222 hardens the
+ * native-fallback boundary around the existing guarantees: the transaction
+ * slot leaves `pending`/`committing` only through Pi's seam or the next run
+ * boundary, and Pi's `SessionManager` stays the only session-file writer —
+ * one writer per session file, with forked or cloned session files as the
+ * supported parallel workflow. The compatibility gate
  * and owned active-tool synchronization stay.
  */
 
@@ -353,7 +358,19 @@ interface MemoryCandidate {
   readonly details: MemoryCompactionDetails;
 }
 
-/** The single in-memory transaction slot (#215: phases `pending` and `committing`). */
+/**
+ * The single in-memory transaction slot (#215: phases `pending` and
+ * `committing`; never queued, overwritten, retried, or persisted).
+ *
+ * The slot leaves a phase only through Pi's seam or a run boundary (#222):
+ * exact `session_compact` confirmation, a takeover mismatch, or the next
+ * real-user input, tree/model invalidation, reload or session replacement,
+ * or shutdown. Pi 0.84.2 exposes no compaction-failure event to extensions
+ * — `compaction_end` stays on the internal subscribe channel — so a
+ * compaction that never starts or never saves leaves the slot reporting its
+ * phase without writing anything or blocking native compaction, until the
+ * next run boundary clears it.
+ */
 interface TransactionSlot {
   phase: "pending" | "committing";
   readonly candidate: MemoryCandidate;
@@ -861,9 +878,11 @@ export class ContextMemoryController {
 
   /**
    * `agent_settled` (#215, #218): a pending candidate is committed through
-   * Pi's public compaction seam exactly once — no autonomous model turn.
-   * The due run closes, `submit_memory` deactivates, and the due flag is
-   * recomputed from current usage.
+   * Pi's public compaction seam exactly once per qualifying settle — no
+   * autonomous model turn. The due run closes, `submit_memory` deactivates,
+   * and the due flag is recomputed from current usage. A candidate Pi never
+   * took stays in the slot and may be offered again at a later qualifying
+   * settle; otherwise it survives only until the next run boundary (#222).
    */
   handleSettled(
     ctx: ContextMemoryRunContext,
