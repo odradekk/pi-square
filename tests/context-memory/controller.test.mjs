@@ -34,6 +34,7 @@ function fullSessionContext() {
     isProjectTrusted: () => true,
   };
 }
+
 function createHarness(options = {}) {
   const {
     config = SUPPORTED_CONFIG,

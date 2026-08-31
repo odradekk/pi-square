@@ -14,6 +14,7 @@ import {
 import jiti from "jiti";
 
 const smokeLoad = jiti(import.meta.url, { moduleCache: false });
+const { MEMORY_FORMAT_TAG } = await smokeLoad("../src/context-memory/format.ts");
 
 // The /context command handler reads ctx.ui.theme; initialize the theme
 // registry the way an interactive session would.
@@ -297,11 +298,12 @@ try {
   // A large real conversation pushes the deterministic estimate past the due
   // point; the fake model carries the window and would fail loudly if the
   // takeover ever tried a summarization call.
+  let smokeSourceEndEntry;
   for (let i = 0; i < 40; i++) {
     smokeSession.appendMessage({
       role: "user", content: `smoke bulk request ${i} ` + "context filler ".repeat(24), timestamp: 100 + i * 2,
     });
-    smokeSession.appendMessage({
+    smokeSourceEndEntry = smokeSession.appendMessage({
       role: "assistant",
       // No usage payload: Pi's estimator then measures the whole projected
       // conversation instead of trusting a fabricated last-assistant count.
@@ -396,6 +398,12 @@ try {
   assert.equal(smokeCompactions[0].firstKeptEntryId, smokeRequestEntry,
     "the current real-user request is the retained-tail boundary");
   assert.equal(smokeCompactions[0].summary.endsWith(smokeBlock), true, "the saved summary carries the block byte-exact");
+  // The byte directory is the fourth field confirmation compares; without this
+  // a details round-trip failure would only surface as a silent conflict.
+  assert.deepEqual(smokeCompactions[0].details, {
+    format: MEMORY_FORMAT_TAG,
+    blocks: [{ endEntryId: smokeSourceEndEntry, markdownBytes: Buffer.byteLength(smokeBlock, "utf8") }],
+  }, "Pi round-trips the byte directory the compaction confirmation compares");
 
   const committedContextView = await runContextCommand();
   assert.match(committedContextView, /memory\[\]\s+active/, "/context shows the committed Memory");
