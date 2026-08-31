@@ -31,6 +31,8 @@
     "themes",
     "docs/shadow-minds.md",
     "docs/adr/0011-shadow-minds.md",
+    "docs/context-memory.md",
+    "docs/adr/0013-context-memory.md",
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
