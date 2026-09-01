@@ -26,11 +26,12 @@ The agent starts with none of the dispatcher's context, so the launch prompt car
 Review the pull request rather than the working tree: it is pushed, and CI has run on the same commits you are reading.
 
 1. Read every changed file — `gh pr diff <number>` for the change, then the surrounding code for whatever the diff alone cannot settle.
-2. Walk the ticket's acceptance criteria one at a time and record the evidence for each. A criterion with no evidence is not met.
-3. Run the gates yourself against the branch. CI is a second opinion, not the review.
-4. Baseline every failure before attributing it to the change. See Baselining.
-5. Account for each commit that falls outside the ticket. An agent that repairs a pre-existing defect to make its own gate runnable is doing the right thing; confirm the defect reproduces on `origin/main` and that the repair landed in its own commit.
-6. Report findings ranked by user impact and state plainly whether the change is mergeable.
+2. Read every touched block comment as prose, not as a diff. An appended sentence that swallows an adjacent line leaves both sides of the hunk looking plausible, so the break shows only when the finished comment is read end to end. This has happened three times so far, once inverting a documented safety guarantee into its opposite.
+3. Walk the ticket's acceptance criteria one at a time and record the evidence for each. A criterion with no evidence is not met.
+4. Run the gates yourself against the branch. CI is a second opinion, not the review.
+5. Baseline every failure before attributing it to the change. See Baselining.
+6. Account for each commit that falls outside the ticket. An agent that repairs a pre-existing defect to make its own gate runnable is doing the right thing; confirm the defect reproduces on `origin/main` and that the repair landed in its own commit.
+7. Report findings ranked by user impact and state plainly whether the change is mergeable.
 
 ## Baselining
 
