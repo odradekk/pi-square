@@ -238,7 +238,8 @@ async function runScriptedSession({ arm, replies, turns }) {
   for (const body of bodies) assert.ok(!("temperature" in body), "no temperature is ever sent");
   assert.equal(transport.requests[0].url, "https://ccr.bearfamily.us/v1/messages");
   assert.equal(transport.requests[0].init.headers["x-api-key"], PRIMARY_KEY);
-  assert.match(transport.requests[0].init.headers.authorization, /^Bearer /);
+  assert.ok(!("authorization" in transport.requests[0].init.headers),
+    "the anthropic path carries the credential once, in x-api-key only");
 
   // Active-tool synchronization: baseline only before Memory exists, the
   // submit tool during the due run, the reading tool after compaction.

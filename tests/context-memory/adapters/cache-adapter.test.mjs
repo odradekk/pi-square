@@ -5,7 +5,12 @@ import { fileURLToPath } from "node:url";
 import { SYSTEM_PROMPT, TOOLS, composeRequest } from "../cache-experiment/fixture.mjs";
 import { estimateTokens } from "../cache-experiment/evidence.mjs";
 import { runExperiment } from "../cache-experiment/runner.mjs";
-import { CACHE_PROVIDER_PRICES, createCacheProviderAdapter } from "./cache-provider.mjs";
+import {
+  CACHE_PROVIDER_PRICES,
+  PREFILL_CONTINUATION_USER_TEXT,
+  buildClaudeCacheRequest,
+  createCacheProviderAdapter,
+} from "./cache-provider.mjs";
 
 /**
  * Offline unit coverage for the credentialed provider-cache adapter (#248).
@@ -147,7 +152,8 @@ function captureTransport(handler) {
   assert.equal(transport.requests.length, 1);
   assert.equal(transport.requests[0].url, "https://ccr.bearfamily.us/v1/messages");
   assert.equal(transport.requests[0].init.headers["x-api-key"], KEY);
-  assert.equal(transport.requests[0].init.headers.authorization, `Bearer ${KEY}`);
+  assert.ok(!("authorization" in transport.requests[0].init.headers),
+    "the anthropic path carries the credential once, in x-api-key only");
   assert.equal(transport.requests[0].init.headers["anthropic-version"], "2023-06-01");
 
   const body = JSON.parse(transport.requests[0].init.body);
@@ -194,6 +200,40 @@ function captureTransport(handler) {
   await adapter.send(experimentRequest(2, "nonce", "probe"), {});
   assert.ok(!summaryOf(noncePrime + 1).startsWith(summaryOf(noncePrime)),
     "the negative control's summary diverges inside the earliest block");
+}
+
+// ─── no request ends with an assistant turn (no prefill rejection) ───
+
+{
+  // claude-sonnet-5 rejects assistant message prefill; every probe tail ends
+  // with the release-notes assistant turn, so the reconstruction closes the
+  // conversation with one fixed user continuation. Cover every arm and both
+  // roles through the pure builder.
+  const continuationCount = (wire) => wire.body.messages.filter(
+    (message) => message.content?.[0]?.text === PREFILL_CONTINUATION_USER_TEXT,
+  ).length;
+  for (const arm of ["stable", "nonce", "native"]) {
+    for (const role of ["prime", "probe"]) {
+      const wire = buildClaudeCacheRequest(experimentRequest(3, arm, role));
+      assert.notEqual(wire.body.messages.at(-1).role, "assistant",
+        `${arm}.${role} must end with a user turn (the gateway rejects assistant prefill)`);
+      assert.equal(continuationCount(wire), role === "probe" ? 1 : 0,
+        role === "probe"
+          ? `${arm}.${role} gains exactly one fixed continuation turn`
+          : `${arm}.${role} already ends with a user turn and gains nothing`);
+    }
+  }
+  // The full probe shape, pinned: the prime's seven messages, the probe's
+  // extra user+assistant tail pair, then the fixed continuation.
+  const stableProbe = buildClaudeCacheRequest(experimentRequest(3, "stable", "probe"));
+  assert.deepEqual(stableProbe.body.messages.map((message) => message.role), [
+    "user", "user", "assistant", "user", "assistant", "user", "user",
+    "user", "assistant", "user",
+  ]);
+  assert.equal(stableProbe.body.messages.at(-1).content[0].text, PREFILL_CONTINUATION_USER_TEXT);
+  // The continuation is one constant, never per-request variability.
+  const nonceProbe = buildClaudeCacheRequest(experimentRequest(4, "nonce", "probe"));
+  assert.equal(nonceProbe.body.messages.at(-1).content[0].text, PREFILL_CONTINUATION_USER_TEXT);
 }
 
 // ─── SSE parsing: usage, cache, retention, and first-token timing ────

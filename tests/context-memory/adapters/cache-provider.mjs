@@ -20,7 +20,11 @@ import { boundedErrorText, realTransport } from "./transport.mjs";
  *   — the content block containing that byte offset carries
  *   `cache_control: {type: "ephemeral"}` and nothing else does. Caching is
  *   matched at content-block boundaries, so the summary block (whose end the
- *   fixture pins as the breakpoint) is always one whole block.
+ *   fixture pins as the breakpoint) is always one whole block. When the
+ *   reconstructed conversation ends with an assistant turn — every probe
+ *   tail does — one fixed user continuation closes it, because claude-sonnet-5
+ *   rejects assistant message prefill; that constant turn sits entirely after
+ *   the breakpoint and never varies per request.
  * - `temperature` is omitted although the pinned settings carry 0:
  *   `claude-sonnet-5` rejects `temperature` (issue #248's probed facts), so
  *   the pinned settings cannot be fully applied on any model that caches.
@@ -54,6 +58,16 @@ const BASE_URL_ENV = "CCR_CLAUDE_BASE_URL";
 const BASE_URL_DEFAULT = "https://ccr.bearfamily.us";
 /** `SETTINGS.maxOutputTokens` from the pinned fixture; the only settings applied verbatim. */
 const MAX_OUTPUT_TOKENS = 512;
+/**
+ * The fixed user continuation appended when the reconstructed conversation
+ * ends with an assistant turn: claude-sonnet-5 rejects assistant message
+ * prefill ("The conversation must end with a user message"), and every probe
+ * tail ends with the release-notes assistant turn. The text is a constant by
+ * construction — it sits entirely after the cache breakpoint (the summary's
+ * end), so it cannot perturb any measured byte, and it must never vary per
+ * request.
+ */
+export const PREFILL_CONTINUATION_USER_TEXT = "Continue.";
 const REPORT_STRING_MAX = 240;
 const PRICE_NOTE_MAX = 240;
 
@@ -134,6 +148,13 @@ export function buildClaudeCacheRequest(request) {
       messages.push({ role: message.role, content: [block] });
       blockByElement.set(segment.element, block);
     }
+  }
+
+  // The gateway's model rejects assistant message prefill, and every probe's
+  // tail ends with an assistant turn; one fixed user continuation closes the
+  // conversation. Primes already end with a user turn and gain nothing.
+  if (messages.at(-1)?.role === "assistant") {
+    messages.push({ role: "user", content: [{ type: "text", text: PREFILL_CONTINUATION_USER_TEXT }] });
   }
 
   const covered = request.cacheControl.coveredBytes;
@@ -300,8 +321,9 @@ export function createCacheProviderAdapter(options = {}) {
         headers: {
           "content-type": "application/json",
           "anthropic-version": "2023-06-01",
+          // One credential header only: x-api-key is verified against the
+          // gateway; the OpenAI path is the sole Bearer user.
           "x-api-key": key,
-          authorization: `Bearer ${key}`,
         },
         body: JSON.stringify(body),
       });

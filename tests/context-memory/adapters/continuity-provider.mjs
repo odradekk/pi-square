@@ -467,8 +467,9 @@ function createProviderSession({ script, arm, transport }) {
       headers = {
         "content-type": "application/json",
         "anthropic-version": "2023-06-01",
+        // One credential header only: x-api-key is verified against the
+        // gateway; the OpenAI path is the sole Bearer user.
         "x-api-key": key,
-        authorization: `Bearer ${key}`,
       };
       body = {
         model: arm.model,
