@@ -51,6 +51,7 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
  * subscribes none of Pi's cancellable `session_before_switch`/
  * `session_before_fork`/`session_before_tree` events, so Context Memory can
  * never block resume, tree navigation, fork, clone, import, or session
+ * replacement, and every session boundary re-derives from Pi's actual
  * current leaf on the live session the new runtime owns. #254 adds the
  * bounded Config Guide: `/context <request>` receives one custom-message
  * guide with computed current values ahead of the unchanged user request,
