@@ -140,7 +140,6 @@ export function pinEnvironment({ adapterDeclaration, salt = DEFAULT_MATRIX_SALT 
     },
     package: { name: pkg.name, version: pkg.version },
     pi: {
-      supported: host.SUPPORTED_PI_VERSION,
       package: pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] ?? null,
       running: host.resolveHostVersion(),
     },

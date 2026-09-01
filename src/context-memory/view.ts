@@ -15,7 +15,10 @@
  * #222 records the phase survival rule: `pending` and `committing` report
  * until Pi's seam confirms or clears the slot, and a compaction that never
  * starts or never saves keeps the phase visible — with no write and no
- * blocked native compaction — until the next run boundary clears it.
+ * blocked native compaction — until the next run boundary clears it. #255
+ * replaces the exact-version gate with capability detection: `unsupported`
+ * now always means missing required interfaces, and the running host version
+ * rides along as informational reporting only.
  */
 
 /** Custom-message type of the one ephemeral due-run advisory (#218). */
@@ -33,7 +36,17 @@ export interface ContextMemoryBlockRow {
 
 export type ContextMemorySnapshot =
   | { readonly state: "disabled" }
-  | { readonly state: "unsupported"; readonly reason: "host-version" | "host-interfaces" }
+  | {
+    readonly state: "unsupported";
+    /** Missing required interfaces is the only unsupported cause (#255). */
+    readonly reason: "host-interfaces";
+    /**
+     * Running host Pi version, attached by the registrar for informational
+     * reporting in `/context` (#255); never gates activation and is absent
+     * from controller-internal snapshots.
+     */
+    readonly hostVersion?: string;
+  }
   | { readonly state: "no-memory"; readonly ephemeral?: true }
   | { readonly state: "due"; readonly ephemeral?: true }
   | { readonly state: "pending"; readonly ephemeral?: true }

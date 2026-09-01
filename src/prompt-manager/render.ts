@@ -280,8 +280,10 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
         description = "disabled · enable through agent-level contextMemory configuration";
         break;
       case "unsupported":
-        description = memory.reason === "host-version"
-          ? "unsupported Pi host · native compaction unchanged"
+        // Capability detection (#255): the only unsupported cause is missing
+        // interfaces; the running host version rides along as information.
+        description = typeof memory.hostVersion === "string"
+          ? `unsupported Pi host ${memory.hostVersion} · required interfaces unavailable · native compaction unchanged`
           : "required Pi interfaces unavailable · native compaction unchanged";
         break;
       case "no-memory":

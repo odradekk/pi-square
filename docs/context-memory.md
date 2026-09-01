@@ -41,11 +41,16 @@ The entire `contextMemory` section is **agent-only**, like `ssh` and
 the feature. Unknown fields and invalid combinations are rejected strictly —
 values are never normalized, clamped, or silently defaulted.
 
-Context Memory runs only on the exact supported Pi version (0.84.2) with the
-required public session, compaction, context, tool, and active-tool interfaces
-present. On any other host, both tools stay inactive, no advisory or
-compaction takeover is installed, `/context` reports `unsupported`, and Pi
-native compaction is untouched.
+Activation is decided by capability detection, not by a Pi version: Context
+Memory runs on any host that exposes the required public session, compaction,
+context, tool, and active-tool interfaces, whatever version string that host
+reports. A host missing any required interface keeps both tools inactive,
+installs no advisory or compaction takeover, and leaves Pi native compaction
+and the active tool set untouched; `/context` reports `unsupported` there and
+names the running host version. The host version never gates activation:
+interface semantics that drift from what the feature expects are absorbed by
+the runtime validation and native-fallback paths (candidate revalidation,
+compaction confirmation, strict format parsing), never by a version check.
 
 ## How Memory is stored
 
@@ -220,7 +225,7 @@ unchanged — Memory accounting never alters it.
 | State | `/context` line |
 | --- | --- |
 | `disabled` | `disabled · enable through agent-level contextMemory configuration` |
-| `unsupported` | `unsupported Pi host · native compaction unchanged` (or `required Pi interfaces unavailable · native compaction unchanged`) |
+| `unsupported` | `unsupported Pi host <version> · required interfaces unavailable · native compaction unchanged` — the running host version is reported, never used to gate |
 | `no-memory` | `enabled · no Memory blocks yet` |
 | `due` | `due · threshold reached · the next run authors the first Memory block` |
 | `pending` | `pending · Memory candidate accepted this run · compaction follows at run end` |

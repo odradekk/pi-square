@@ -1,22 +1,28 @@
 import { DEFAULT_COMPACTION_SETTINGS, SettingsManager, VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /**
- * Exact Pi compatibility gate for Context Memory (odradekk/pi-square#215, #216).
+ * Capability-detection host gate for Context Memory (odradekk/pi-square#215, #216, #255).
  *
- * V1 supports only the pinned Pi contract. Activation requires the exact
- * supported host version plus the presence of the required public session,
- * compaction, context, tool, and active-tool interfaces. An unsupported host
- * leaves Pi native compaction and the active tool set unchanged.
+ * Activation is decided by interface presence alone: a Pi host that exposes
+ * the required public session, compaction, context, tool, and active-tool
+ * interfaces activates the feature on any version, because every check
+ * consumes an interface the host itself provides. A host missing any
+ * interface is unsupported and leaves Pi native compaction and the active
+ * tool set unchanged. There is deliberately no minimum version floor and no
+ * pinned equality test: hosts older than the interfaces fail the interface
+ * check on their own, and interface semantics are absorbed by the runtime
+ * validation and native-fallback paths rather than by a version string.
  */
-
-/** The single Pi version this feature is qualified against. */
-export const SUPPORTED_PI_VERSION = "0.84.2";
 
 export type HostSupport =
   | { readonly supported: true }
-  | { readonly supported: false; readonly reason: "host-version" | "host-interfaces" };
+  | { readonly supported: false; readonly reason: "host-interfaces" };
 
-/** Resolve the running host Pi version through its public VERSION export. */
+/**
+ * The running host Pi version through its public VERSION export. Purely
+ * informational — reported by `/context` and the qualification report; it
+ * never gates activation.
+ */
 export function resolveHostVersion(): string {
   return typeof VERSION === "string" ? VERSION : String(VERSION ?? "unknown");
 }
@@ -58,13 +64,11 @@ export function contextInterfacesPresent(ctx: {
     && typeof ctx.hasPendingMessages === "function";
 }
 
-/** Exact-version gate first; interface presence second. */
+/** Interface presence alone decides activation; the host version never does. */
 export function evaluateHostSupport(
-  version: string,
   apiPresent: boolean,
   contextPresent: boolean,
 ): HostSupport {
-  if (version !== SUPPORTED_PI_VERSION) return { supported: false, reason: "host-version" };
   if (!apiPresent || !contextPresent) return { supported: false, reason: "host-interfaces" };
   return { supported: true };
 }
