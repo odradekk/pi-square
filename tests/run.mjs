@@ -66,6 +66,8 @@ const suites = [
   "context-memory/cache-experiment/experiment.test.mjs",
   "context-memory/continuity/fixtures.test.mjs",
   "context-memory/continuity/runner.test.mjs",
+  "context-memory/adapters/continuity-adapter.test.mjs",
+  "context-memory/adapters/cache-adapter.test.mjs",
   "core/workspace-path.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",
