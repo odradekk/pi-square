@@ -74,7 +74,7 @@ operation. Ephemeral in-memory sessions run identically with no file at all.
 
 ### Native fallback is the failure mode, and there is a scale endpoint
 
-Every unsupported case — an unqualified Pi host, an opaque latest compaction,
+Every unsupported case — a host missing required interfaces, an opaque latest compaction,
 a projection failure, a mismatched or competing takeover, a compaction that
 never starts or saves, a non-positive due point, or a Memory budget not
 strictly smaller than it — falls back to Pi native compaction untouched. The
@@ -116,8 +116,14 @@ message, and deletion stays the ordinary Pi session boundary.
   as ordinary summaries.
 - Same-file multi-process writing stays unsupported, exactly as for plain Pi;
   parallel work must use forked or cloned session files.
-- The exact-version host gate (Pi 0.84.2) leaves every other host on native
-  compaction until the feature is explicitly requalified.
+- Activation is capability-detected, not version-pinned (#255): any host
+  exposing the required interfaces activates the feature. The residual risk —
+  a future Pi keeping an interface while changing its semantics — is absorbed
+  by the runtime validation and native-fallback paths (candidate
+  revalidation, compaction confirmation, strict format parsing), never by
+  guessing, while the deterministic qualification corpus stays qualified
+  against the repository's pinned Pi version and records the host version it
+  ran on.
 
 ## Out of scope
 
