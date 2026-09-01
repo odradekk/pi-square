@@ -95,7 +95,9 @@ export default function registerContextMemory(
     if (!controller) {
       throw new Error("SUBMIT_NOT_DUE: no Context Memory compression is due in this run");
     }
-    return controller.submitCandidate(markdown, toolCallId, session);
+    // `pi` rides along so acceptance can deactivate submit_memory for the rest
+    // of the due run before the next request is built (#253).
+    return controller.submitCandidate(markdown, toolCallId, session, pi);
   });
   const readMemorySource = createReadMemorySourceToolDefinition((request, session) => {
     if (!controller) {

@@ -382,7 +382,11 @@ try {
   );
   assert.equal(submitResult.content[0].text, "Memory candidate accepted; compaction pending.");
   assert.deepEqual(submitResult.details, { accepted: true });
-  assert.equal(submitResult.terminate, true);
+  assert.equal(submitResult.terminate, undefined, "the accepted submission no longer ends the run (#253)");
+  assert.ok(
+    !session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "acceptance deactivates submit_memory for the rest of the due run",
+  );
   smokeSession.appendMessage({
     role: "toolResult", toolCallId: "smoke:submit-first", toolName: "submit_memory",
     content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 402,

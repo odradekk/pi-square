@@ -235,7 +235,10 @@ try {
   assert.equal(advisory.customType, CONTEXT_MEMORY_ADVISORY_TYPE);
   assert.equal(advisory.display, false, "the advisory is non-display");
   assert.ok(advisory.content.includes("submit_memory"), "the advisory names the submission tool");
-  assert.ok(advisory.content.includes("final and sole tool call"), "the advisory demands the sole final call");
+  assert.ok(advisory.content.includes("sole tool call of its batch"), "the advisory demands the sole tool call of its batch");
+  assert.ok(advisory.content.includes("Complete the user's current task first"), "the advisory still requires the task first");
+  assert.ok(advisory.content.includes("continue the same run"), "the advisory keeps the run running after the submission");
+  assert.ok(!advisory.content.includes("finish the run"), "the advisory no longer ends the run with the submission");
   assert.ok(advisory.content.includes("conversation before this run"), "the advisory states the append scope");
   assert.ok(advisory.content.includes("Do not copy credential values"), "the advisory carries the secret warning");
   const laterRequest = [...firstRequest, advisory, { role: "assistant", content: [{ type: "text", text: "working" }] }];
@@ -309,9 +312,13 @@ try {
   const accepted = await submit.execute("call-submit", { markdown: BLOCK }, undefined, undefined, ctx);
   assert.deepEqual(accepted.content, [{ type: "text", text: "Memory candidate accepted; compaction pending." }]);
   assert.deepEqual(accepted.details, { accepted: true });
-  assert.equal(accepted.terminate, true, "the accepted submission terminates the tool batch");
+  assert.equal(accepted.terminate, undefined, "the accepted submission no longer ends the run (#253)");
   assert.deepEqual(Object.keys(accepted.details), ["accepted"]);
   assert.deepEqual(harness.registration.snapshot(), { state: "pending" });
+  assert.ok(!harness.activeTools().includes("submit_memory"),
+    "acceptance deactivates submit_memory for the rest of the due run");
+  assert.ok(harness.activeTools().includes("read"),
+    "unrelated active tools keep their identity after acceptance");
 
   // A duplicate submission while the slot is pending is refused.
   await assert.rejects(
@@ -321,6 +328,24 @@ try {
       return true;
     },
   );
+
+  // ── #253: the run continues after the acknowledgement ──
+
+  // The model keeps working in the same run: further ordinary entries land on
+  // the branch after the accepted submission, and the candidate stays pending
+  // exactly as before.
+  session.__entries.push(assistantEntry("e7", "e6", [
+    { type: "text", text: "still working — the run did not end with the submission" },
+    { type: "toolCall", id: "call-read-late", name: "read", arguments: { path: "x" } },
+  ]));
+  session.__entries.push(toolResultEntry("e8", "e7", "read", "late run evidence"));
+  session.__entries.push(assistantEntry("e9", "e8", [{ type: "text", text: "the task is complete" }]));
+  await harness.emit("message_end", {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "the task is complete" }] },
+  }, ctx);
+  assert.deepEqual(harness.registration.snapshot(), { state: "pending" },
+    "the candidate stays pending while the run continues");
 
   // ── Settle triggers the manual compaction exactly once ──
 
@@ -363,6 +388,13 @@ try {
   assert.ok(derived.text.includes(BLOCK), "the block body survives byte-exact");
   assert.ok(derived.text.includes("walk me through the repo"), "block 1 covers the first eligible entry");
   assert.equal(harness.compactCalls.length, 1, "no further compaction is triggered");
+  const committedProjection = buildSessionContext(session.getBranch(), session.getLeafId()).messages;
+  assert.ok(committedProjection.some((message) => Array.isArray(message.content)
+    && message.content.some((part) => part?.text === "late run evidence")),
+    "post-submission work stays uncompressed after the kept boundary");
+  assert.ok(committedProjection.some((message) => Array.isArray(message.content)
+    && message.content.some((part) => part?.text === "the task is complete")),
+    "the post-acknowledgement answer stays in the retained tail");
 
   // ── Safe fallback: no candidate means native compaction proceeds ──
 
@@ -373,6 +405,41 @@ try {
     await fallback.emit("session_start", { type: "session_start", reason: "startup" }, nativeCtx);
     const result = await fallback.emit("session_before_compact", beforeCompactEvent(nativeSession), nativeCtx);
     assert.equal(result, undefined, "no candidate returns no custom compaction");
+  }
+
+  // ── #253: a run that exhausts the margin before submitting falls back to Pi native compaction ──
+
+  {
+    // The due point sits a fixed margin below Pi's native compaction boundary
+    // (window − reserve − ten percent of the window), so post-submission work
+    // is bounded by that margin. A due run that keeps working past the
+    // boundary without ever submitting meets Pi's own post-run threshold
+    // check: `session_before_compact` carries no candidate, native compaction
+    // proceeds, and the foreign entry closes the due run.
+    const margin = createHarness();
+    const marginSession = mutableSession(preRunBranch());
+    const marginCtx = margin.baseContext(marginSession);
+    await margin.emit("session_start", { type: "session_start", reason: "startup" }, marginCtx);
+    await margin.emit("input", { type: "input", text: "ship it", source: "interactive" }, marginCtx);
+    assert.ok(margin.activeTools().includes("submit_memory"), "the due run opens");
+    marginSession.__entries.push(userEntry("e4", "e3", "ship it"));
+    marginSession.__entries.push(assistantEntry("e5", "e4", [
+      { type: "text", text: "still working past the margin without submitting" },
+    ]));
+    const native = await margin.emit("session_before_compact", beforeCompactEvent(marginSession), marginCtx);
+    assert.equal(native, undefined, "no submission means no custom compaction is offered");
+    const nativeEntry = {
+      id: "c-native", parentId: "e5", type: "compaction", timestamp: TS,
+      summary: "a plain native summary", firstKeptEntryId: "e4", tokensBefore: 4321, fromExtension: false,
+    };
+    marginSession.__entries.push(nativeEntry);
+    await margin.emit("session_compact", {
+      type: "session_compact", compactionEntry: nativeEntry, fromExtension: false, reason: "threshold", willRetry: false,
+    }, marginCtx);
+    assert.ok(!margin.activeTools().includes("submit_memory"),
+      "the foreign compaction closes the due run whose submission window is gone");
+    assert.deepEqual(margin.registration.snapshot(), { state: "opaque" },
+      "the branch degrades to the ordinary opaque native summary");
   }
 
   // ── Safe fallback: a branch mismatch clears the slot without cancel ──

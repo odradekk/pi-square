@@ -96,12 +96,16 @@ compression happens inside an ordinary real-user run:
    opens a due run. Its first provider request carries one short ephemeral
    advisory (custom message type `pi-square.context-memory/advisory`,
    non-display) appended after your message. The advisory instructs the agent
-   to finish your task first, then end the run with one final and sole
-   `submit_memory` tool call carrying the new block, and not to copy
-   credentials, private keys, access tokens, or other secrets into it. The
-   advisory exists only in that request: it is never persisted, never repeated,
-   and never nags if ignored. A steering input during the open run keeps it;
-   a new real-user run discards the previous transient state first.
+   to finish your task first, then make `submit_memory` the sole tool call of
+   its batch carrying the new block, then continue the same run and deliver
+   its answer, and not to copy credentials, private keys, access tokens, or
+   other secrets into the block. The submission does not end the run: the
+   agent receives the acknowledgement and keeps working, so a long task that
+   crosses a compression threshold runs to completion instead of stopping at
+   the moment of compression. The advisory exists only in that request: it is
+   never persisted, never repeated, and never nags if ignored. A steering
+   input during the open run keeps it; a new real-user run discards the
+   previous transient state first.
 3. **Append or rebuild — the half-budget rule.** While the rendered Memory is
    at or below half the configured budget, the next run **appends**: the new
    block covers the conversation accumulated since the existing blocks, and
@@ -117,14 +121,23 @@ compression happens inside an ordinary real-user run:
    tool call of its assistant message, validates the body bounds and the
    total Memory budget, and returns the fixed acknowledgement
    `Memory candidate accepted; compaction pending.` with `accepted: true` —
-   the acknowledgement never claims persistence. The call terminates the
-   model's tool batch.
+   the acknowledgement never claims persistence. The call does not end the
+   run: the model continues in the same turn, and every later request in the
+   run carries neither the submit tool-call parts nor their paired result
+   while the run keeps the current request and all of its work uncompressed.
+   Exactly one submission is taken per due run — a block covers one
+   continuous range of entries, so a second block in the same run has no
+   defined boundary — and `submit_memory` leaves the model's tool list for
+   the rest of the due run at acceptance, so a repeat call cannot be spent on
+   a guaranteed refusal.
 5. **Commit.** At the end of the run, pi-square offers the accepted candidate
    through Pi's public compaction seam; no second model call is made. The
-   committed compaction keeps the whole current run — your request and all of
-   its work — uncompressed (`firstKeptEntryId` is the user entry that began
-   the run). Success is confirmed only when Pi actually saved the expected
-   compaction entry; a competing or mismatched compaction discards the
+   committed compaction keeps the whole current run — your request, the
+   submission, and all work appended after it — uncompressed
+   (`firstKeptEntryId` is the user entry that began the run, and
+   post-submission work falls after that kept boundary). Success is confirmed
+   only when Pi actually saved the expected compaction entry; a competing or
+   mismatched compaction discards the
    candidate with one bounded `COMPACTION_CONFLICT` notice instead of
    retrying or rewriting.
 
@@ -132,6 +145,19 @@ A candidate survives only until Pi's compaction seam confirms or clears it or
 the next run boundary clears it. If a compaction never starts or never saves,
 the pending or committing phase stays visible in `/context` without writing
 anything and without blocking native compaction.
+
+**The bound on post-submission work.** Because the run continues after a
+submission, its further output competes with the distance left before Pi's
+own compaction boundary. That distance is fixed by construction: the
+effective due point sits at least ten percent of the model window below the
+native boundary (window minus Pi's configured compaction reserve minus ten
+percent of the window), so a due run opens with at least that margin
+remaining. A run whose post-submission work exhausts the margin before it
+settles simply meets Pi's own compaction check — the existing safe fallback.
+With an accepted candidate pending, Pi's compaction seam consumes it and the
+Memory compaction commits as usual; with no candidate submitted, Pi native
+compaction proceeds and its foreign entry closes the due run. Nothing is
+truncated or force-settled to stay inside the margin.
 
 ## The scale endpoint
 
@@ -179,7 +205,8 @@ stable short code — `MEMORY_NOT_AVAILABLE`, `BLOCK_OUT_OF_RANGE`,
 echo Memory Markdown, ranges, or identifiers.
 
 Both tools are dynamically active only in their windows. `submit_memory`
-exists in the model's tool list only during an open due run;
+exists in the model's tool list only during an open due run that has not yet
+accepted its one submission — acceptance removes it for the rest of the run;
 `read_memory_source` only while valid non-empty Memory exists. Neither ever
 appears in a child, Shadow, or subagent catalog, and pi-square removes and
 re-adds only these two owned names, preserving every other active tool.

@@ -95,9 +95,11 @@ function createFakeSession({ script, defects }) {
   }
 
   /**
-   * The scripted model: one turn becomes one or two assistant beats plus their
-   * tool work. A due turn's final beat carries the sole `submit_memory` call;
-   * a source-recovery final task reads the Memory source first, then answers.
+   * The scripted model: one turn becomes up to three assistant beats plus
+   * their tool work. A due turn carries the sole `submit_memory` call in its
+   * own beat and then — after the pending acknowledgement, in the same run —
+   * the turn's final answer; a source-recovery final task reads the Memory
+   * source first, then answers.
    */
   function beatsFor(turn) {
     const defectsFor = defects.filter((defect) => defect.turn === turn.id);
@@ -113,7 +115,11 @@ function createFakeSession({ script, defects }) {
       beats.push({ text: fake.preToolText ?? "", toolCalls: fake.toolCalls });
       if (fake.finalText) beats.push({ text: fake.finalText });
     } else if (fake.submit && !skipSubmit) {
-      beats.push({ text: fake.finalText ?? "", submit: { body: fake.submit } });
+      // #253 run shape: the model finishes the task work, makes the sole
+      // submit_memory call, receives the pending acknowledgement, and then
+      // continues the same run to deliver the turn's answer.
+      beats.push({ text: "Task work complete; submitting the Memory block before the final answer.", submit: { body: fake.submit } });
+      beats.push({ text: fake.finalText ?? "" });
     } else {
       beats.push({ text: fake.finalText ?? "" });
     }

@@ -36,6 +36,10 @@ import { boundedErrorText, realTransport } from "./transport.mjs";
  * is structural — a block read through its last page returned the block's
  * complete original conversation, and the fixture tests pin that every
  * expected exact value lives inside its expected block.
+ * - A due turn follows the #253 run shape: the model's sole submit_memory
+ * call is answered by the pending acknowledgement, then exactly one
+ * continuation exchange runs in the same turn before it ends
+ * deterministically — mirroring the run continuing after a submission.
  * - Message translation is Pi's own `convertToLlm` followed by a minimal
  * wire mapping (`custom` and `compactionSummary` become user text inside
  * `convertToLlm`; `toolResult` becomes Anthropic `tool_result` blocks or
@@ -534,7 +538,7 @@ function createProviderSession({ script, arm, transport }) {
       // has already been recorded, so the controller's sole-batch check sees
       // exactly [toolCallId] — the same ordering the scripted adapter keeps.
       try {
-        const result = await submit.execute(
+        await submit.execute(
           toolCallId,
           { markdown: typeof call.arguments?.markdown === "string" ? call.arguments.markdown : "" },
           undefined,
@@ -543,7 +547,10 @@ function createProviderSession({ script, arm, transport }) {
         );
         session.append(toolResultMessageEntry(nextId(`${turn.id}-r`), session.getLeafId(), toolCallId, SUBMIT, PENDING_ACK, false));
         evidence.toolCalls.push(SUBMIT);
-        if (result?.terminate) return "submitted";
+        // #253: a resolved submit is an accepted candidate. The run does not
+        // end here — the controller has deactivated the tool for the rest of
+        // the due run, so exactly one submission can succeed per run.
+        return "submitted";
       } catch (error) {
         session.append(toolResultMessageEntry(nextId(`${turn.id}-r`), session.getLeafId(), toolCallId, SUBMIT, boundedMessage(error), true));
         evidence.toolCalls.push(SUBMIT);
@@ -632,6 +639,15 @@ function createProviderSession({ script, arm, transport }) {
       session.append(userEntry(userId, session.getLeafId(), turn.user));
       requestEntryId = userId;
 
+      // #253 run shape: a successful submission no longer ends the run. The
+      // model receives the pending acknowledgement and continues in the same
+      // run, so the loop grants exactly one continuation exchange after an
+      // accepted submission and then ends the turn deterministically. Exactly
+      // one submission per due run still holds — the controller deactivates
+      // submit_memory at acceptance, so it is absent from every later
+      // per-request tool list, and a hallucinated repeat only yields the
+      // controller's refusal as an error tool result.
+      let continuationPending = false;
       for (let exchange = 1; exchange <= MAX_EXCHANGES; exchange += 1) {
         if (exchange === MAX_EXCHANGES) {
           evidence.error = boundedMessage(
@@ -649,7 +665,11 @@ function createProviderSession({ script, arm, transport }) {
         for (const call of reply.toolCalls) {
           if (await executeToolCall(turn, call, evidence) === "submitted") submitted = true;
         }
-        if (submitted) break; // submit_memory terminates its batch (#218)
+        if (submitted) {
+          continuationPending = true;
+        } else if (continuationPending) {
+          break;
+        }
       }
       if (evidence.assistantText.length > ASSISTANT_TEXT_CAP) {
         evidence.assistantText = evidence.assistantText.slice(0, ASSISTANT_TEXT_CAP);

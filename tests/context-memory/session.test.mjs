@@ -336,7 +336,9 @@ try {
       dueCtx,
     );
     assert.equal(acceptedResult.content[0].text, "Memory candidate accepted; compaction pending.");
-    assert.equal(acceptedResult.terminate, true);
+    assert.equal(acceptedResult.terminate, undefined, "the accepted submission no longer ends the run (#253)");
+    assert.ok(!dueHarness.activeTools().includes("submit_memory"),
+      "acceptance deactivates submit_memory for the rest of the due run");
     dueSession.appendMessage({
       role: "toolResult", toolCallId: "call-first", toolName: "submit_memory",
       content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 8,

@@ -35,12 +35,21 @@ session tree with entry IDs.
 Compression happens inside a real-user run, not beside it. When usage reaches
 the configured threshold, the next run's first provider request carries one
 ephemeral, non-display advisory (`pi-square.context-memory/advisory`) that
-instructs the agent to finish the user's task first and then end the run with
-one final, sole `submit_memory` call carrying the new Memory block. The
-current main agent already understands the task, so no background summarizer,
-observer, child session, or extra model call authors continuity. Nothing is
-persisted from the advisory — no counter, timer, or queued work — and the
-feature never wakes the agent on its own.
+instructs the agent to finish the user's task first and then make one sole
+`submit_memory` call carrying the new Memory block — and then continue the
+same run (#253): the submission returns the pending acknowledgement without
+ending the run, the model keeps working and delivers its answer, and
+compaction commits at the run's natural settle exactly as before. Ending the
+run at the submission bought nothing (compaction is settle-driven) and cost
+real work whenever the model submitted early; one submission per due run is
+enforced by deactivating the tool at acceptance, because a block covers one
+continuous entry range and a second block in the same run has no defined
+boundary. Post-submission work is bounded by the fixed margin between the
+due point and Pi's native compaction boundary; a run that exhausts it falls
+back to the native path. The current main agent already understands the task,
+so no background summarizer, observer, child session, or extra model call
+authors continuity. Nothing is persisted from the advisory — no counter,
+timer, or queued work — and the feature never wakes the agent on its own.
 
 ### Ordered blocks with an explicit byte directory
 

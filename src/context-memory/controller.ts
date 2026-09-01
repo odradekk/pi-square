@@ -35,7 +35,7 @@ import {
 } from "./view";
 
 /**
- * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219, #220, #221, #222).
+ * The session-scoped Context Memory controller (odradekk/pi-square#215, #216, #217, #218, #219, #220, #221, #222, #253).
  *
  * The controller is the highest test seam: tests drive it through the same
  * registrar events and tool surfaces Pi drives and assert externally visible
@@ -68,7 +68,14 @@ import {
  * slot leaves `pending`/`committing` only through Pi's seam or the next run
  * boundary, and Pi's `SessionManager` stays the only session-file writer —
  * one writer per session file, with forked or cloned session files as the
- * supported parallel workflow. The compatibility gate
+ * supported parallel workflow. #253 decouples the submission from the run's
+ * end: an accepted candidate no longer terminates the tool batch, the model
+ * continues the same run after the pending acknowledgement, `submit_memory`
+ * deactivates for the rest of the due run so exactly one submission is
+ * taken, and post-submission work stays uncompressed because it falls after
+ * the kept boundary — bounded by the fixed margin between the due point and
+ * Pi's native compaction boundary, with the existing native fallback owning
+ * a run that exhausts that margin before settling. The compatibility gate
  * and owned active-tool synchronization stay.
  */
 
@@ -261,39 +268,41 @@ export function effectiveDuePoint(
   return duePoint;
 }
 
-/** The fixed one-shot first-block advisory body (#215, #218: append instruction, source scope, secret warning). */
+/** The fixed one-shot first-block advisory body (#215, #218, #253: append instruction, source scope, secret warning). */
 const DUE_RUN_ADVISORY_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
-  "Complete the user's current task first. When it is done, finish the run with one final and sole tool call: submit_memory, carrying one concise Markdown Memory block that preserves what matters from the conversation before this run — goals, decisions, and open work.",
+  "Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the conversation before this run — goals, decisions, and open work. After the acknowledgement, continue the same run and deliver your answer to the user.",
   "That block will replace the older conversation as compressed context; the current request and everything you do for it stay uncompressed.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
 
 /**
- * The fixed one-shot append advisory body (#219): the new block covers the
- * conversation accumulated since the existing blocks and is appended after
- * them, keeping every existing block unchanged.
+ * The fixed one-shot append advisory body (#219, #253): the new block covers
+ * the conversation accumulated since the existing blocks and is appended
+ * after them, keeping every existing block unchanged. The submission no
+ * longer ends the run — the model continues in the same run afterwards.
  */
 const APPEND_RUN_ADVISORY_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
-  "Complete the user's current task first. When it is done, finish the run with one final and sole tool call: submit_memory, carrying one concise Markdown Memory block that preserves what matters from the conversation since the existing Memory blocks — goals, decisions, and open work.",
+  "Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the conversation since the existing Memory blocks — goals, decisions, and open work. After the acknowledgement, continue the same run and deliver your answer to the user.",
   "That block will be appended after the existing Memory blocks, which stay unchanged; the current request and everything you do for it stay uncompressed.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
 
 /**
- * The fixed one-shot maintenance advisory body (#220): the request carries
- * the complete original conversation behind the newest Memory blocks in
- * place of their summaries, and one replacement block must cover that
+ * The fixed one-shot maintenance advisory body (#220, #253): the request
+ * carries the complete original conversation behind the newest Memory blocks
+ * in place of their summaries, and one replacement block must cover that
  * conversation plus the newly accumulated raw tail while every older block
- * stays unchanged.
+ * stays unchanged. The submission no longer ends the run — the model
+ * continues in the same run afterwards.
  */
 const MAINTENANCE_RUN_ADVISORY_TEXT = [
   "Context Memory: maintenance compression is due for this conversation.",
   "",
-  "This request shows the original conversation behind the newest Memory blocks in place of their summaries. Complete the user's current task first. When it is done, finish the run with one final and sole tool call: submit_memory, carrying one concise Markdown Memory block that preserves what matters from that original conversation and the work accumulated since — goals, decisions, and open work.",
+  "This request shows the original conversation behind the newest Memory blocks in place of their summaries. Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from that original conversation and the work accumulated since — goals, decisions, and open work. After the acknowledgement, continue the same run and deliver your answer to the user.",
   "That block will replace the newest Memory blocks; the older Memory blocks stay unchanged; the current request and everything you do for it stay uncompressed.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
@@ -309,6 +318,14 @@ interface DueRunState {
   /** The frozen maintenance plan; set exactly for a rebuild (#220). */
   readonly rebuild: RebuildPlan | undefined;
   advisoryDelivered: boolean;
+  /**
+   * Whether this due run already accepted one submission (#253). One block
+   * covers one continuous entry range, so a due run takes exactly one
+   * submission; after it `submit_memory` leaves the active tool list for the
+   * rest of the run so the model cannot spend a call on a guaranteed
+   * `COMPACTION_BUSY` refusal.
+   */
+  submitted: boolean;
 }
 
 /** One existing block kept byte-identical ahead of a newly appended block (#219). */
@@ -461,10 +478,11 @@ export class ContextMemoryController {
   /**
    * Synchronize the owned active-tool names while preserving every other
    * active tool selected by Pi or another pi-square module. `submit_memory`
-   * is active exactly while a due real-user run is open (#218);
-   * `read_memory_source` is active exactly while enabled on a supported host
-   * with strictly valid non-empty current Memory (#217). Returns the owned
-   * names removed from the active list.
+   * is active exactly while a due real-user run is open and has not yet
+   * accepted its one submission (#218, #253) — acceptance deactivates it for
+   * the rest of the run; `read_memory_source` is active exactly while enabled
+   * on a supported host with strictly valid non-empty current Memory (#217).
+   * Returns the owned names removed from the active list.
    */
   synchronizeActiveTools(
     pi: Pick<ExtensionAPIForTools, "getActiveTools" | "setActiveTools">,
@@ -479,7 +497,7 @@ export class ContextMemoryController {
       && this.current.kind === "valid"
       && this.current.blocks.length > 0;
     if (readActive) desired.push(READ_MEMORY_SOURCE_TOOL_NAME);
-    if (this.dueRun !== undefined) desired.push(SUBMIT_MEMORY_TOOL_NAME);
+    if (this.dueRun !== undefined && !this.dueRun.submitted) desired.push(SUBMIT_MEMORY_TOOL_NAME);
     this.activeCompactionId = readActive && this.current.kind === "valid" ? this.current.compactionId : undefined;
     const changed = active.length !== desired.length || active.some((name, index) => name !== desired[index]);
     if (changed) pi.setActiveTools(desired);
@@ -627,12 +645,12 @@ export class ContextMemoryController {
     if (this.current.kind === "opaque") return null;
     if (this.modelWindow === null) return null;
     if (this.current.kind === "none") {
-      return { preRunLeafId, operation: "append", existingBlocks: 0, rebuild: undefined, advisoryDelivered: false };
+      return { preRunLeafId, operation: "append", existingBlocks: 0, rebuild: undefined, advisoryDelivered: false, submitted: false };
     }
     const halfBudget = Math.round((this.modelWindow * this.config.memoryBudgetPercent) / 100) / 2;
     const markdowns = this.current.blocks.map((block) => block.markdown);
     if (renderedMemoryTokens(markdowns) <= halfBudget) {
-      return { preRunLeafId, operation: "append", existingBlocks: markdowns.length, rebuild: undefined, advisoryDelivered: false };
+      return { preRunLeafId, operation: "append", existingBlocks: markdowns.length, rebuild: undefined, advisoryDelivered: false, submitted: false };
     }
     const plan = this.rebuildPlan(this.current, halfBudget);
     const usage = ctx.getContextUsage();
@@ -642,7 +660,7 @@ export class ContextMemoryController {
       this.scaleLimited = true;
       return null;
     }
-    return { preRunLeafId, operation: "rebuild", existingBlocks: plan.prefix.length, rebuild: plan, advisoryDelivered: false };
+    return { preRunLeafId, operation: "rebuild", existingBlocks: plan.prefix.length, rebuild: plan, advisoryDelivered: false, submitted: false };
   }
 
   /**
@@ -733,16 +751,20 @@ export class ContextMemoryController {
   }
 
   /**
-   * Execute one `submit_memory` call (#218): validate the due run, the sole
-   * tool call, the transaction slot, and the block body, then store the
-   * run-scoped candidate. Returns the fixed pending acknowledgement and
-   * terminates the tool batch; compaction itself happens later through Pi's
-   * seam. Throws one safe short-coded sentence and never echoes Markdown.
+   * Execute one `submit_memory` call (#218, #253): validate the due run, the
+   * sole tool call, the transaction slot, and the block body, then store the
+   * run-scoped candidate. Returns the fixed pending acknowledgement without
+   * ending the run — the model keeps working in the same run, and
+   * `submit_memory` leaves the active tool list for the rest of the due run
+   * (one submission per run; a block covers one continuous entry range).
+   * Compaction itself happens later through Pi's seam at the run's natural
+   * settle. Throws one safe short-coded sentence and never echoes Markdown.
    */
   async submitCandidate(
     markdown: string,
     toolCallId: string,
     session: MemorySessionReader,
+    tools?: Pick<ExtensionAPIForTools, "getActiveTools" | "setActiveTools">,
   ): Promise<AgentToolResult<{ accepted: true }>> {
     if (!this.operational() || this.dueRun === undefined) {
       fail("SUBMIT_NOT_DUE", "no Context Memory compression is due in this run");
@@ -752,17 +774,18 @@ export class ContextMemoryController {
     }
     const batch = this.lastToolBatch;
     if (batch === undefined || !batch.includes(toolCallId) || batch.length > 1) {
-      fail("SUBMIT_NOT_SOLE_TOOL", "submit_memory must be the final and only tool call in its batch");
+      fail("SUBMIT_NOT_SOLE_TOOL", "submit_memory must be the sole tool call in its batch");
     }
     if (!isValidMemoryBlockBody(markdown)) {
       fail("BOUND_EXCEEDED", "the Memory block body exceeds the size or content bounds");
     }
     const candidate = this.bindCandidate(markdown, toolCallId, session);
     this.slot = { phase: "pending", candidate };
+    this.dueRun.submitted = true;
+    if (tools) this.synchronizeActiveTools(tools, session);
     return {
       content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }],
       details: { accepted: true },
-      terminate: true,
     };
   }
 
