@@ -882,16 +882,40 @@ export async function areaSafeFallback(recorder) {
     assert.equal(native, undefined, "the takeover leaves opaque Memory to Pi native compaction");
   });
 
+  await recorder.check(A, "host-version-never-gates", "uncertainty-promotion", async () => {
+    const session = fakeTree([
+      ...preRunBranch("v"),
+      userEntry("v4", "v3", "ship it"),
+      memoryCompaction("vc", "v4", { firstKeptEntryId: "v4", ends: ["v3"], bodies: [`# ${MARKER} versioned`] }),
+    ]);
+    const harness = createHarness({ hostVersion: () => "0.91.0-qualifier.2" });
+    const ctx = harness.baseContext(session);
+    await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const snapshot = harness.registration.snapshot();
+    assert.notEqual(snapshot.state, "unsupported", "a host version alone can never make the feature unsupported");
+    assert.ok(harness.activeTools().includes(READ),
+      "valid Memory on an arbitrary host version activates the reading tool");
+  });
+
   await recorder.check(A, "unsupported-host-exposes-nothing", "uncertainty-promotion", async () => {
     const session = fakeTree([
       ...preRunBranch("g"),
       userEntry("g4", "g3", "ship it"),
       memoryCompaction("gc", "g4", { firstKeptEntryId: "g4", ends: ["g3"], bodies: [`# ${MARKER} gated`] }),
     ]);
-    const harness = createHarness({ hostVersion: () => "0.85.0" });
+    const harness = createHarness();
     const ctx = harness.baseContext(session);
-    await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-    assert.deepEqual(harness.registration.snapshot(), { state: "unsupported", reason: "host-version" });
+    // Missing interfaces — the only unsupported cause (#255) — observed at
+    // session_start; later events reuse the full context.
+    await harness.emit(
+      "session_start",
+      { type: "session_start", reason: "startup" },
+      { ...ctx, compact: undefined, getContextUsage: undefined },
+    );
+    const snapshot = harness.registration.snapshot();
+    assert.equal(snapshot.state, "unsupported");
+    assert.equal(snapshot.reason, "host-interfaces");
+    assert.equal(typeof snapshot.hostVersion, "string", "the unsupported snapshot reports the running host version");
     await harness.emit("input", { type: "input", text: "ship it", source: "interactive" }, ctx);
     assert.ok(!harness.activeTools().includes(SUBMIT));
     assert.ok(!harness.activeTools().includes(READ));
@@ -928,7 +952,10 @@ export async function areaSafeFallback(recorder) {
     delete ctx.compact;
     delete ctx.getContextUsage;
     await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-    assert.deepEqual(harness.registration.snapshot(), { state: "unsupported", reason: "host-interfaces" });
+    const snapshot = harness.registration.snapshot();
+    assert.equal(snapshot.state, "unsupported");
+    assert.equal(snapshot.reason, "host-interfaces");
+    assert.equal(typeof snapshot.hostVersion, "string", "the unsupported snapshot reports the running host version");
   });
 
   await recorder.check(A, "disabled-configuration-inert", "uncertainty-promotion", async () => {

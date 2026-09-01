@@ -78,6 +78,16 @@ function provenance() {
   };
 }
 
+/**
+ * The repository's pinned Pi version — the host the corpus was qualified
+ * against. Activation itself is decided by interface presence on any version
+ * (#255), so qualification and activation are recorded separately.
+ */
+function qualifiedAgainstPi() {
+  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
+  return pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] ?? "unknown";
+}
+
 function areaSummaries(checks) {
   const order = AREAS.map(([name]) => name);
   const byArea = new Map(order.map((name) => [name, { area: name, checks: 0, failed: 0 }]));
@@ -142,8 +152,8 @@ async function main() {
     git: provenanceData,
     runtime: {
       node: process.version,
-      supportedPi: host.SUPPORTED_PI_VERSION,
       runningPi: host.resolveHostVersion(),
+      qualifiedAgainstPi: qualifiedAgainstPi(),
     },
     profiles: {
       window: 200_000,
@@ -194,7 +204,7 @@ async function main() {
       + `${provenanceData.branchDirty ? " (working tree dirty)" : " (clean)"}`,
   );
   lines.push(`corpus: tests/context-memory/qualification digest ${provenanceData.corpusDigest.slice(0, 12)}`);
-  lines.push(`runtime: node ${process.version} · pi ${report.runtime.runningPi} (supported ${report.runtime.supportedPi})`);
+  lines.push(`runtime: node ${process.version} · pi ${report.runtime.runningPi} (qualified against ${report.runtime.qualifiedAgainstPi}; activation by interface presence, not version)`);
   lines.push("areas:");
   for (const summary of report.areas) {
     lines.push(`  ${summary.area.padEnd(22)} ${String(summary.checks).padStart(3)} checks  ${summary.failed} failed`);

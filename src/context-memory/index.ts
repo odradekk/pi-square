@@ -57,7 +57,10 @@ export interface ContextMemoryDependencies {
   readonly configProvider: () => Pick<PiSquareConfig, "contextMemory">;
   /** Shared operational display runtime used to decorate both tool definitions. */
   readonly displayRuntimeProvider: DisplayRuntimeProvider;
-  /** Injectable host Pi version for deterministic unsupported-host tests. */
+  /**
+   * Injectable host Pi version for deterministic unsupported-host reporting;
+   * informational only — activation never depends on it (#255).
+   */
   readonly hostVersion?: () => string;
   /** Injectable registration-time interface probe for deterministic tests. */
   readonly apiInterfaces?: (pi: ExtensionAPI) => boolean;
@@ -113,7 +116,7 @@ export default function registerContextMemory(
   pi.on("session_start", async (_event, ctx) => {
     controller = new ContextMemoryController({
       config: dependencies.configProvider().contextMemory,
-      support: evaluateHostSupport(hostVersion(), apiInterfaces(pi), contextInterfacesPresent(ctx)),
+      support: evaluateHostSupport(apiInterfaces(pi), contextInterfacesPresent(ctx)),
     });
     controller.adoptRuntime(reserveTokensOf(ctx.cwd, ctx.isProjectTrusted()));
     // Baseline active-tool state plus the reading derivation; the due flag
@@ -182,7 +185,12 @@ export default function registerContextMemory(
 
   return {
     snapshot(usage?: ContextMemoryUsageInput): ContextMemorySnapshot {
-      return controller?.snapshot(usage) ?? CONTEXT_MEMORY_DISABLED_SNAPSHOT;
+      const snapshot = controller?.snapshot(usage) ?? CONTEXT_MEMORY_DISABLED_SNAPSHOT;
+      // The unsupported snapshot carries the running host version so `/context`
+      // reports what the user is on; the version never gates anything (#255).
+      return snapshot.state === "unsupported"
+        ? { ...snapshot, hostVersion: hostVersion() }
+        : snapshot;
     },
     inspect(
       request: { readonly block: number; readonly page: number },

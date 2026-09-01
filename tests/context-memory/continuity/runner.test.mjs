@@ -98,8 +98,7 @@ async function runWithDefects(scenario, variant, defects) {
   assert.equal(typeof pins.implementation.dirty, "boolean");
   assert.equal(pins.package.name, "@odradekk/pi-square");
   assert.match(pins.package.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(pins.pi.supported, "0.84.2");
-  assert.equal(pins.pi.package, "0.84.2");
+  assert.equal(pins.pi.package, "0.84.2", "the pinned package version records what the corpus was qualified against");
   assert.equal(pins.config.contextMemory.enabled, true);
   assert.equal(pins.config.modelWindow, 200_000);
   for (const arm of ["primary", "secondary"]) {

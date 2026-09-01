@@ -216,7 +216,9 @@ export function createHarness(options = {}) {
     displayRuntimeProvider: () => {
       throw new Error("the qualification corpus never renders");
     },
-    hostVersion: hostVersion ?? (() => host.SUPPORTED_PI_VERSION),
+    // The corpus runs on the real installed host version; activation must not
+    // depend on it, and the report records what it ran on (#255).
+    hostVersion: hostVersion ?? host.resolveHostVersion,
     reserveTokens: () => reserveTokens,
   });
   function baseContext(session, overrides = {}) {

@@ -139,7 +139,7 @@ function makeMessagesInput(overrides = {}) {
 
 {
   for (const [memory, pattern] of [
-    [{ state: "unsupported", reason: "host-version" }, /unsupported Pi host · native compaction unchanged/],
+    [{ state: "unsupported", reason: "host-interfaces", hostVersion: "0.91.0" }, /unsupported Pi host 0\.91\.0 · required interfaces unavailable · native compaction unchanged/],
     [{ state: "unsupported", reason: "host-interfaces" }, /required Pi interfaces unavailable · native compaction unchanged/],
     [{ state: "no-memory" }, /enabled · no Memory blocks yet/],
   ]) {

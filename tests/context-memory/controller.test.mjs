@@ -4,7 +4,6 @@ import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const registerContextMemory = (await load("../../src/context-memory/index.ts")).default;
-const { SUPPORTED_PI_VERSION } = await load("../../src/context-memory/host.ts");
 const { OWNED_TOOL_NAMES } = await load("../../src/context-memory/controller.ts");
 const { MEMORY_FORMAT_TAG, composeMemorySummary } = await load("../../src/context-memory/format.ts");
 const { MEMORY_TRANSCRIPT_HEADER } = await load("../../src/context-memory/transcript.ts");
@@ -38,7 +37,8 @@ function fullSessionContext() {
 function createHarness(options = {}) {
   const {
     config = SUPPORTED_CONFIG,
-    hostVersion = () => SUPPORTED_PI_VERSION,
+    // Deterministic fixture version; activation must not depend on it (#255).
+    hostVersion = () => "0.84.2",
     activeTools = ["read", "bash", "submit_memory", "read_memory_source"],
     displayRuntime = defaultDisplayRuntime,
   } = options;
@@ -220,9 +220,7 @@ try {
   await harness.emit("session_shutdown", { type: "session_shutdown", reason: "shutdown" });
   assert.deepEqual(harness.registration.snapshot(), { state: "disabled" });
 
-  // ── Compatibility gate: exact supported host and required interfaces ──
-
-  assert.equal(SUPPORTED_PI_VERSION, "0.84.2");
+  // ── Compatibility gate: interface presence alone decides activation (#255) ──
 
   const enabledSupported = createHarness({ config: ENABLED_CONFIG });
   await enabledSupported.emit("session_start", { type: "session_start", reason: "startup" });
@@ -230,14 +228,24 @@ try {
   assert.ok(!enabledSupported.activeToolsRef().includes("read_memory_source"),
     "no valid Memory means read_memory_source stays inactive");
 
-  const unsupportedVersion = createHarness({ config: ENABLED_CONFIG, hostVersion: () => "0.85.0" });
-  await unsupportedVersion.emit("session_start", { type: "session_start", reason: "startup" });
-  assert.deepEqual(
-    unsupportedVersion.registration.snapshot(),
-    { state: "unsupported", reason: "host-version" },
+  // The host version never gates activation: every version string activates
+  // while the required interfaces are present (#255).
+  for (const version of ["0.84.1", "0.85.0", "1.0.0-beta.3"]) {
+    const otherVersion = createHarness({ config: ENABLED_CONFIG, hostVersion: () => version });
+    await otherVersion.emit("session_start", { type: "session_start", reason: "startup" });
+    assert.deepEqual(otherVersion.registration.snapshot(), { state: "no-memory" },
+      `a host reporting ${version} with every interface present activates`);
+  }
+
+  // Valid Memory on a different host version still activates the reading tool.
+  const otherVersionMemory = createHarness({ config: ENABLED_CONFIG, hostVersion: () => "0.85.0" });
+  await otherVersionMemory.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    { ...fullSessionContext(), sessionManager: validMemoryBranch() },
   );
-  assert.deepEqual(unsupportedVersion.activeToolsRef(), ["read", "bash"],
-    "an unsupported host keeps both tools inactive while preserving Pi's active tools");
+  assert.ok(otherVersionMemory.activeToolsRef().includes("read_memory_source"),
+    "valid Memory on a different host version activates the reading tool");
 
   const missingInterfaces = createHarness({ config: ENABLED_CONFIG });
   await missingInterfaces.emit(
@@ -247,19 +255,27 @@ try {
   );
   assert.deepEqual(
     missingInterfaces.registration.snapshot(),
-    { state: "unsupported", reason: "host-interfaces" },
+    { state: "unsupported", reason: "host-interfaces", hostVersion: "0.84.2" },
   );
+  assert.deepEqual(missingInterfaces.activeToolsRef(), ["read", "bash"],
+    "an unsupported host keeps both tools inactive while preserving Pi's active tools");
 
-  // A disabled configuration stays disabled even on a supported host, and
-  // host-version wins over interface order in the reported reason.
-  const disabledUnsupported = createHarness({ hostVersion: () => "0.83.0" });
-  await disabledUnsupported.emit("session_start", { type: "session_start", reason: "startup" });
+  // A disabled configuration stays disabled regardless of host support.
+  const disabledUnsupported = createHarness({ config: SUPPORTED_CONFIG });
+  await disabledUnsupported.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    { ...fullSessionContext(), compact: undefined, getContextUsage: undefined },
+  );
   assert.deepEqual(disabledUnsupported.registration.snapshot(), { state: "disabled" });
 
   // ── #222: an unsupported host exposes no partial advisory, activation, filtering, or takeover ──
 
   {
-    const gated = createHarness({ config: ENABLED_CONFIG, hostVersion: () => "0.85.0" });
+    // Unsupported now means missing interfaces (#255): session_start observes
+    // a context without compact/getContextUsage, while every later event uses
+    // the full context — the captured gate must hold for the session either way.
+    const gated = createHarness({ config: ENABLED_CONFIG });
     const gatedSession = validMemoryBranch();
     const gatedCtx = {
       ...fullSessionContext(),
@@ -271,7 +287,11 @@ try {
     const notified = [];
     gatedCtx.ui = { notify: (text, level) => notified.push({ text, level }) };
 
-    await gated.emit("session_start", { type: "session_start", reason: "startup" }, gatedCtx);
+    await gated.emit(
+      "session_start",
+      { type: "session_start", reason: "startup" },
+      { ...gatedCtx, compact: undefined, getContextUsage: undefined },
+    );
     await gated.emit("input", { type: "input", text: "ship it", source: "interactive" }, gatedCtx);
     assert.ok(!gated.activeToolsRef().includes("submit_memory"),
       "a real-user input on an unsupported host never activates the submission tool");
@@ -315,8 +335,8 @@ try {
     assert.deepEqual(notified, [], "an unsupported host emits no diagnostic");
     assert.deepEqual(gated.activeToolsRef(), ["read", "bash"],
       "an unsupported host strips only the owned names and keeps every other active tool");
-    assert.deepEqual(gated.registration.snapshot(), { state: "unsupported", reason: "host-version" },
-      "the snapshot keeps reporting the unsupported host");
+    assert.deepEqual(gated.registration.snapshot(), { state: "unsupported", reason: "host-interfaces", hostVersion: "0.84.2" },
+      "the snapshot keeps reporting the unsupported host with its version");
   }
 
   // ── Tool execution outside any active window fails safely ──
