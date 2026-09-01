@@ -59,6 +59,7 @@ function createHarness(options = {}) {
       active = [...names];
       activeToolWrites.push([...names]);
     },
+    registerMessageRenderer() {},
   };
   const registration = registerContextMemory(pi, {
     configProvider: () => ({ contextMemory: config }),

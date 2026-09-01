@@ -144,6 +144,7 @@ try {
   assert.equal(commands.has("prompt-inspect"), false);
   assert.deepEqual([...shortcuts.keys()], ["alt+i"]);
   assert.deepEqual([...renderers.keys()], [
+    "pi-square.context-memory/config-guide",
     "pi-square.subagent-notification",
     "pi-square.subagent-config-guide",
     "pi-square.shadow-config-guide",

@@ -86,6 +86,7 @@ function harness(config = ENABLED_CONFIG) {
     getAllTools() { return [...tools.values()]; },
     getActiveTools() { return [...active]; },
     setActiveTools(names) { active = [...names]; },
+    registerMessageRenderer() {},
   };
   const registration = registerContextMemory(pi, {
     configProvider: () => ({ contextMemory: config }),

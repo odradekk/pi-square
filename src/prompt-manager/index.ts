@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ContextMemoryRegistration } from "../context-memory";
+import { CONTEXT_MEMORY_CONFIG_GUIDE_TYPE, type ContextMemoryRegistration } from "../context-memory";
 import { byRoleChars, collapseEntries, summarizeEntries } from "./decompose";
 import {
   parseContextCommandArgs,
@@ -163,13 +163,33 @@ export default function registerPromptManager(
   });
 
   pi.registerCommand("context", {
-    description: "Show context usage and the full Prompt Manager snapshot.",
+    description: "Show context usage and the Prompt Manager snapshot, or ask Pi to help configure Context Memory.",
     handler: async (args: unknown, ctx: any) => {
-      if (!ctx?.hasUI) return;
+      const rawRequest = typeof args === "string" ? args : "";
       const parsed = parseContextCommandArgs(args);
+      // `/context <request>` injects the bounded Config Guide custom message
+      // ahead of the unchanged user request (#254): only the user message
+      // triggers the parent turn, the guide writes nothing by itself, and
+      // configuration work runs through the ordinary file tools.
+      if (parsed.kind === "request") {
+        const usage = ctx?.getContextUsage?.();
+        const guide = dependencies.contextMemory.configGuide({
+          tokens: typeof usage?.tokens === "number" ? usage.tokens : null,
+          contextWindow: typeof usage?.contextWindow === "number" ? usage.contextWindow : null,
+        });
+        pi.sendMessage({
+          customType: CONTEXT_MEMORY_CONFIG_GUIDE_TYPE,
+          content: guide.content,
+          display: true,
+          details: guide.details,
+        }, { deliverAs: "followUp" });
+        pi.sendUserMessage(rawRequest, { deliverAs: "followUp" });
+        return;
+      }
+      if (!ctx?.hasUI) return;
       if (parsed.kind === "invalid") {
         ctx.ui.notify(
-          "Usage: /context [memory <block> [page]] — block and page are 1-based positions in the current Memory block list.",
+          "Usage: /context [memory <block> [page]] or /context <request> — block and page are 1-based positions in the current Memory block list; any other text asks Pi to help configure Context Memory.",
           "info",
         );
         return;
@@ -189,7 +209,6 @@ export default function registerPromptManager(
       ctx.ui.notify(`${renderUsageBar(input, theme)}\n\n${renderVerbose(input, theme)}`, "info");
     },
   });
-
   pi.registerShortcut("alt+i", {
     description: "Cycle Prompt Manager display (off -> minimal -> summary -> verbose)",
     handler: async (ctx: any) => {

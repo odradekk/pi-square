@@ -312,9 +312,23 @@ const activeMemory = {
   assert.deepEqual(parseContextCommandArgs(7), { kind: "overview" });
   assert.deepEqual(parseContextCommandArgs("memory 2"), { kind: "memory", block: 2, page: 1 });
   assert.deepEqual(parseContextCommandArgs("  memory   3   4  "), { kind: "memory", block: 3, page: 4 });
-  for (const bad of ["memory", "memory 0", "memory -1", "memory x", "memory 2 0", "memory 2 3 4", "memory 2 x", "other 3", "memory 1.5"]) {
+  for (const bad of ["memory", "memory 0", "memory -1", "memory x", "memory 2 0", "memory 2 3 4", "memory 2 x", "memory 1.5"]) {
     assert.deepEqual(parseContextCommandArgs(bad), { kind: "invalid" }, `${JSON.stringify(bad)} is invalid`);
   }
+}
+
+// ─── 4d'. natural-language requests (#254) ────────────────────────
+
+{
+  // Anything that is not the overview or the memory form is a request whose
+  // text is trimmed but otherwise unchanged; malformed `memory …` syntax
+  // keeps the fixed usage line so #217 behavior is unchanged.
+  assert.deepEqual(parseContextCommandArgs("other 3"), { kind: "request", text: "other 3" });
+  assert.deepEqual(parseContextCommandArgs("compress later"), { kind: "request", text: "compress later" });
+  assert.deepEqual(
+    parseContextCommandArgs("  let Memory hold more, please  "),
+    { kind: "request", text: "let Memory hold more, please" },
+  );
 }
 
 // Summary mode stays without the memory[] section (#215 scopes it to /context verbose).

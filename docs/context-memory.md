@@ -334,6 +334,30 @@ Both threshold forms are exclusive: declaring both keys, neither key, or a
 scalar shorthand is rejected. The Memory budget must remain strictly smaller
 than the effective due point or structured takeover stays off for that model.
 
+### Configuring through `/context <request>`
+
+Any `/context` argument other than the read-only `memory <block> [page]`
+form is treated as a natural-language configuration request ("compress
+later", "let Memory hold more", "turn it off"). The command injects one
+bounded Config Guide custom message ahead of your unchanged request; only
+your message starts the parent turn, and the guide itself writes nothing.
+Consultations are answered without changing any file.
+
+The guide carries computed current values for the running model, not
+formulas: the active configuration, the model's declared context window,
+Pi's compaction reserve, the resulting effective due point, the resulting
+Memory budget, the half-budget that decides append versus rebuild, and
+whether structured takeover is currently armed. It states the silent-disable
+rule (a Memory budget at or above the effective due point disables takeover
+without any error or diagnostic) and gives the agent the arithmetic to check
+a proposed value before writing it. Because `contextMemory` is agent-layer
+only, the agent edits only the agent-level file through the ordinary read,
+write, and replace tools — writing the section into a project-level
+`.pi/config/pi-square.json` would reject that entire project configuration —
+and there is no Context-Memory-specific write tool or bespoke confirmation
+flow. Configuration changes take effect at the next session start and never
+rewrite existing Memory blocks.
+
 ## Limitations
 
 - Experimental: the wrapper format, advisories, tool contracts, and

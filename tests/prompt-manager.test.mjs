@@ -234,6 +234,76 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
     assert.equal(notified.length, 0);
   }
 
+  // ─── /context <request> injects the Config Guide (#254) ──────────
+
+  {
+    const { CONTEXT_MEMORY_CONFIG_GUIDE_TYPE } = await load2("../src/context-memory/index.ts");
+    const requestCommands = new Map();
+    const sentMessages = [];
+    const sentUserMessages = [];
+    const requestPi = {
+      registerCommand(name, options) { requestCommands.set(name, options); },
+      registerShortcut() {},
+      on() {},
+      getAllTools() { return []; },
+      sendMessage(message, options) { sentMessages.push({ message, options }); },
+      sendUserMessage(text, options) { sentUserMessages.push({ text, options }); },
+    };
+    const guideCalls = [];
+    registerPromptManager(requestPi, {
+      buildSubagentCatalog: () => ({ id: "subagents", label: "subagent catalog", category: "catalog", phase: "dynamic-suffix", text: "", turnSeq: 1 }),
+      setInheritedSystemCore() {},
+      contextMemory: {
+        snapshot: () => ({ state: "no-memory" }),
+        inspect() { throw new Error("the request form never inspects Memory"); },
+        configGuide(usage) {
+          guideCalls.push(usage);
+          return {
+            content: "GUIDE CONTENT with computed values",
+            details: { version: 1, enabled: true, takeoverActive: true },
+          };
+        },
+      },
+    });
+    const requestCommand = requestCommands.get("context");
+
+    const inspectBefore = inspectCalls.length;
+    const { notified, ctx } = notifyCapture();
+    await requestCommand.handler("make it compress later", ctx);
+    assert.equal(guideCalls.length, 1, "the guide is built exactly once");
+    assert.deepEqual(guideCalls[0], { tokens: 74223, contextWindow: 200000 }, "the guide reads the live usage");
+    assert.equal(sentMessages.length, 1, "exactly one custom message is sent");
+    assert.equal(sentMessages[0].message.customType, CONTEXT_MEMORY_CONFIG_GUIDE_TYPE);
+    assert.equal(sentMessages[0].message.content, "GUIDE CONTENT with computed values");
+    assert.deepEqual(sentMessages[0].message.details, { version: 1, enabled: true, takeoverActive: true });
+    assert.equal(sentMessages[0].message.display, true, "the guide renders through its message renderer");
+    assert.deepEqual(sentMessages[0].options, { deliverAs: "followUp" });
+    assert.equal(sentUserMessages.length, 1, "exactly one user message is sent");
+    assert.equal(sentUserMessages[0].text, "make it compress later", "the user request is unchanged");
+    assert.deepEqual(sentUserMessages[0].options, { deliverAs: "followUp" });
+    assert.ok(sentMessages[0] !== sentUserMessages[0]);
+    assert.equal(notified.length, 0, "the request form notifies nothing");
+    assert.equal(inspectCalls.length, inspectBefore, "the request form never inspects Memory");
+
+    // Whitespace-only padding never reaches the guide; real text is sent raw.
+    sentMessages.length = 0;
+    sentUserMessages.length = 0;
+    await requestCommand.handler("   ", ctx);
+    assert.equal(sentMessages.length, 0, "blank input renders the overview instead");
+    assert.equal(sentUserMessages.length, 0);
+    await requestCommand.handler("  turn it off  ", ctx);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentUserMessages[0].text, "  turn it off  ", "the raw request string is forwarded unmodified");
+
+    // The request form works without a UI: it sends messages, it never notifies.
+    sentMessages.length = 0;
+    sentUserMessages.length = 0;
+    await requestCommand.handler("disable it", { hasUI: false, getContextUsage: () => undefined });
+    assert.equal(sentMessages.length, 1);
+    assert.deepEqual(guideCalls.at(-1), { tokens: null, contextWindow: null }, "missing usage degrades to nulls");
+    assert.equal(sentUserMessages.length, 1);
+  }
+
   // ─── #218 handshake states render one bounded line each ───
 
   for (const [state, needle, memory] of [
