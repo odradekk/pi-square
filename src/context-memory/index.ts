@@ -1,9 +1,15 @@
-import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_COMPACTION_SETTINGS, type ContextEvent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PiSquareConfig } from "../core/config";
 import { decorateInternalTool } from "../display/internal-adapters";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import { ContextMemoryController, type ContextMemoryUsageInput } from "./controller";
 import type { MemorySessionReader } from "./derive";
+import {
+  buildContextMemoryConfigGuide,
+  CONTEXT_MEMORY_CONFIG_GUIDE_TYPE,
+  renderContextMemoryConfigGuide,
+  type ContextMemoryConfigGuideMessage,
+} from "./config-guide";
 import {
   apiInterfacesPresent,
   contextInterfacesPresent,
@@ -45,12 +51,15 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
  * subscribes none of Pi's cancellable `session_before_switch`/
  * `session_before_fork`/`session_before_tree` events, so Context Memory can
  * never block resume, tree navigation, fork, clone, import, or session
- * replacement, and every session boundary re-derives from Pi's actual
- * current leaf on the live session the new runtime owns.
+ * current leaf on the live session the new runtime owns. #254 adds the
+ * bounded Config Guide: `/context <request>` receives one custom-message
+ * guide with computed current values ahead of the unchanged user request,
+ * registered here together with its message renderer.
  */
 
 /** The owned tool names other pi-square modules must let this module synchronize. */
 export { OWNED_TOOL_NAMES as CONTEXT_MEMORY_OWNED_TOOL_NAMES } from "./controller";
+export { CONTEXT_MEMORY_CONFIG_GUIDE_TYPE };
 
 export interface ContextMemoryDependencies {
   /** Current effective pi-square configuration (carries `contextMemory`). */
@@ -77,6 +86,12 @@ export interface ContextMemoryRegistration {
     request: { readonly block: number; readonly page: number },
     session: MemorySessionReader,
   ): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly sentence: string };
+  /**
+   * Bounded Config Guide message for `/context <request>` (#254): computed
+   * current values for the running model. Builds the message only; the
+   * command layer owns sending it ahead of the unchanged user request.
+   */
+  configGuide(usage?: ContextMemoryUsageInput): ContextMemoryConfigGuideMessage;
 }
 
 export default function registerContextMemory(
@@ -87,6 +102,10 @@ export default function registerContextMemory(
   const apiInterfaces = dependencies.apiInterfaces ?? apiInterfacesPresent;
   const reserveTokensOf = dependencies.reserveTokens ?? resolvePiReserveTokens;
   let controller: ContextMemoryController | undefined;
+  // Pi's compaction reserve for the current session, captured where the
+  // controller adopts it: the Config Guide needs the same number the due
+  // point was computed against (#254).
+  let sessionReserveTokens: number = DEFAULT_COMPACTION_SETTINGS.reserveTokens;
 
   // Both tools resolve their executor through the registrar so the
   // definitions stay registered once while execution follows the
@@ -104,6 +123,7 @@ export default function registerContextMemory(
     return controller.readSource(request, session);
   });
   pi.registerTool(decorateInternalTool(submitMemory, dependencies.displayRuntimeProvider));
+  pi.registerMessageRenderer(CONTEXT_MEMORY_CONFIG_GUIDE_TYPE, renderContextMemoryConfigGuide);
   pi.registerTool(decorateInternalTool(readMemorySource, dependencies.displayRuntimeProvider));
 
   function sessionReaderOf(ctx: { sessionManager?: unknown }): MemorySessionReader {
@@ -115,7 +135,8 @@ export default function registerContextMemory(
       config: dependencies.configProvider().contextMemory,
       support: evaluateHostSupport(hostVersion(), apiInterfaces(pi), contextInterfacesPresent(ctx)),
     });
-    controller.adoptRuntime(reserveTokensOf(ctx.cwd, ctx.isProjectTrusted()));
+    sessionReserveTokens = reserveTokensOf(ctx.cwd, ctx.isProjectTrusted());
+    controller.adoptRuntime(sessionReserveTokens);
     // Baseline active-tool state plus the reading derivation; the due flag
     // starts from the resumed branch so a loaded session can be due already.
     controller.recomputeDue(ctx);
@@ -178,9 +199,24 @@ export default function registerContextMemory(
 
   pi.on("session_shutdown", async () => {
     controller = undefined;
+    sessionReserveTokens = DEFAULT_COMPACTION_SETTINGS.reserveTokens;
   });
 
   return {
+    /**
+     * Bounded Config Guide for `/context <request>` (#254): computed current
+     * values for the running model, built from the controller's effective
+     * configuration and host gate plus the captured Pi reserve. Writes
+     * nothing and never calls the model.
+     */
+    configGuide(usage?: ContextMemoryUsageInput): ContextMemoryConfigGuideMessage {
+      return buildContextMemoryConfigGuide({
+        config: controller?.memoryConfig ?? dependencies.configProvider().contextMemory,
+        support: controller?.hostSupport,
+        contextWindow: usage && typeof usage.contextWindow === "number" ? usage.contextWindow : null,
+        reserveTokens: sessionReserveTokens,
+      });
+    },
     snapshot(usage?: ContextMemoryUsageInput): ContextMemorySnapshot {
       return controller?.snapshot(usage) ?? CONTEXT_MEMORY_DISABLED_SNAPSHOT;
     },

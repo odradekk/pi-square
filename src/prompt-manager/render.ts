@@ -377,26 +377,33 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
 /**
  * Parse `/context` view arguments: empty shows the overview; the read-only
  * `memory <block> [page]` form (1-based, page defaulting to 1) inspects one
- * Memory block without a model call or session write (#217).
+ * Memory block without a model call or session write (#217); any other
+ * non-empty text is a natural-language configuration request that receives
+ * the bounded Context Memory Config Guide (#254). Malformed `memory …`
+ * syntax keeps the fixed usage line so existing behavior is unchanged.
  */
 export type ContextCommand =
   | { readonly kind: "overview" }
   | { readonly kind: "memory"; readonly block: number; readonly page: number }
+  | { readonly kind: "request"; readonly text: string }
   | { readonly kind: "invalid" };
 
 export function parseContextCommandArgs(args: unknown): ContextCommand {
   const text = typeof args === "string" ? args.trim() : "";
   if (text.length === 0) return { kind: "overview" };
   const parts = text.split(/\s+/);
-  if (parts.length < 2 || parts.length > 3 || parts[0] !== "memory") return { kind: "invalid" };
-  const block = Number(parts[1]);
-  if (!Number.isInteger(block) || block < 1) return { kind: "invalid" };
-  let page = 1;
-  if (parts.length === 3) {
-    page = Number(parts[2]);
-    if (!Number.isInteger(page) || page < 1) return { kind: "invalid" };
+  if (parts[0] === "memory") {
+    const block = parts.length >= 2 ? Number(parts[1]) : NaN;
+    if (!Number.isInteger(block) || block < 1) return { kind: "invalid" };
+    let page = 1;
+    if (parts.length >= 3) {
+      page = Number(parts[2]);
+      if (!Number.isInteger(page) || page < 1) return { kind: "invalid" };
+    }
+    if (parts.length > 3) return { kind: "invalid" };
+    return { kind: "memory", block, page };
   }
-  return { kind: "memory", block, page };
+  return { kind: "request", text };
 }
 
 function roleColor(role: string, inLlmContext: boolean): string {
