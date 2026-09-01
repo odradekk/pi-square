@@ -125,16 +125,19 @@ try {
     const preSession = buildContextMemoryConfigGuide({ config, support: undefined, contextWindow: WINDOW, reserveTokens: RESERVE });
     assert.match(preSession.content, /Structured takeover currently: off — no session is active yet/);
 
-    for (const reason of ["host-version", "host-interfaces"]) {
-      const unsupported = buildContextMemoryConfigGuide({
-        config,
-        support: { supported: false, reason },
-        contextWindow: WINDOW,
-        reserveTokens: RESERVE,
-      });
-      assert.equal(unsupported.details.takeoverActive, false);
-      assert.match(unsupported.content, /Structured takeover currently: off — .+ Pi native compaction owns the boundary/);
-    }
+    // A missing required interface is the only unsupported cause (#255): the
+    // host version never gates activation, so no version reason exists.
+    const unsupported = buildContextMemoryConfigGuide({
+      config,
+      support: { supported: false, reason: "host-interfaces" },
+      contextWindow: WINDOW,
+      reserveTokens: RESERVE,
+    });
+    assert.equal(unsupported.details.takeoverActive, false);
+    assert.match(
+      unsupported.content,
+      /Structured takeover currently: off — a required Pi interface is unavailable, so Pi native compaction owns the boundary/,
+    );
   }
 
   // ── Configuration contract sentences the ticket fixes ──────────────

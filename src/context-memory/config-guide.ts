@@ -84,9 +84,9 @@ function buildTakeoverSentence(input: ContextMemoryConfigGuideInput, duePoint: n
   if (!input.config.enabled) return "off — the feature is disabled in configuration";
   if (input.support === undefined) return "off — no session is active yet";
   if (!input.support.supported) {
-    return input.support.reason === "host-version"
-      ? "off — the running Pi host is not the one supported version, so Pi native compaction owns the boundary"
-      : "off — a required Pi interface is unavailable, so Pi native compaction owns the boundary";
+    // Capability detection (#255): a missing required interface is the only
+    // unsupported cause, and the host version never gates activation.
+    return "off — a required Pi interface is unavailable, so Pi native compaction owns the boundary";
   }
   if (input.contextWindow === null) {
     return "off — the current model's context window is unknown, so the due point cannot be computed";
