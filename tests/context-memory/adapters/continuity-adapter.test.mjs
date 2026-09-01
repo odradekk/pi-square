@@ -211,6 +211,7 @@ async function runScriptedSession({ arm, replies, turns }) {
         name: "submit_memory",
         args: { markdown: "# Memory one\n\n- established the working context for the run" },
       }]),
+      anthropicText("Submitted; the task is complete and this run's answer stands."),
       anthropicTools("", [{ id: "toolu_src1", name: "read_memory_source", args: { block: 1, page: 1 } }]),
       anthropicText("We established the working context for the run."),
     ],
@@ -221,6 +222,8 @@ async function runScriptedSession({ arm, replies, turns }) {
   assert.equal(evidence[0].assistantText, "Context established.");
   assert.equal(evidence[0].advisory, false);
   assert.deepEqual(evidence[1].toolCalls, ["read", "submit_memory"]);
+  assert.ok(evidence[1].assistantText.includes("this run's answer stands"),
+    "the post-acknowledgement continuation is delivered in the same turn (#253)");
   // The submit was accepted (message_end before execute, sole batch, same id):
   // only an accepted candidate produces the takeover the compression records.
   assert.deepEqual(evidence[1].compression, { turn: "t2", turnIndex: null, operation: "append", blocksBefore: 0, blocksAfter: 1 });
@@ -246,15 +249,29 @@ async function runScriptedSession({ arm, replies, turns }) {
   const toolNames = (body) => body.tools.map((tool) => tool.name);
   assert.deepEqual(toolNames(bodies[0]), ["read", "bash"]);
   assert.ok(toolNames(bodies[1]).includes("submit_memory"), "the due run activates submit_memory");
-  assert.ok(toolNames(bodies[3]).includes("read_memory_source"), "valid Memory activates read_memory_source");
-  assert.ok(!toolNames(bodies[3]).includes("submit_memory"), "no due run after compaction");
+  // The continuation request after the accepted submission (#253): the run
+  // continues, submit_memory has left the offered tool list, and its
+  // tool_use/tool_result pair has left the provider-bound messages while the
+  // submitting assistant text survives.
+  assert.ok(!toolNames(bodies[3]).includes("submit_memory"),
+    "acceptance deactivates submit_memory for the rest of the due run");
+  const continuationBlocks = bodies[3].messages.flatMap((message) =>
+    Array.isArray(message.content) ? message.content : []);
+  assert.ok(!continuationBlocks.some((part) => part?.type === "tool_use" && part.name === "submit_memory"),
+    "the submit tool_use leaves the continuation request");
+  assert.ok(!continuationBlocks.some((part) => part?.type === "tool_result" && part.content === "Memory candidate accepted; compaction pending."),
+    "the paired submit result leaves the continuation request");
+  assert.ok(continuationBlocks.some((part) => part?.type === "text" && part.text === "Done — submitting the Memory block."),
+    "ordinary assistant text survives its message");
+  assert.ok(toolNames(bodies[4]).includes("read_memory_source"), "valid Memory activates read_memory_source");
+  assert.ok(!toolNames(bodies[4]).includes("submit_memory"), "no due run after compaction");
 
   // The Context Memory schemas pass through verbatim, and the adapter's own
   // read/bash tools are offered with one named literally `bash`.
   const reference = createHarness({ config: QUALIFICATION_CONFIG });
   const submitTool = bodies[1].tools.find((tool) => tool.name === "submit_memory");
   assert.deepEqual(submitTool.input_schema, reference.tools.get("submit_memory").parameters);
-  const readSourceTool = bodies[3].tools.find((tool) => tool.name === "read_memory_source");
+  const readSourceTool = bodies[4].tools.find((tool) => tool.name === "read_memory_source");
   assert.deepEqual(readSourceTool.input_schema, reference.tools.get("read_memory_source").parameters);
   const bashTool = bodies[0].tools.find((tool) => tool.name === "bash");
   assert.equal(bashTool.name, "bash");
@@ -270,7 +287,7 @@ async function runScriptedSession({ arm, replies, turns }) {
   assert.equal(readResult.is_error, true, "the filesystem-less read tool reports an honest error");
 
   // The committed Memory rides the next request as Pi's compaction summary.
-  const probeUserTexts = bodies[3].messages
+  const probeUserTexts = bodies[4].messages
     .filter((message) => message.role === "user" && typeof message.content === "string")
     .map((message) => message.content);
   assert.ok(probeUserTexts.some((text) => text.includes("<summary>") && text.includes("Memory one")),
@@ -417,6 +434,7 @@ async function runScriptedSession({ arm, replies, turns }) {
       openaiReply("Secondary context established."),
       openaiReply("Running the command.", [{ id: "call_bash1", name: "bash", args: { command: "ls" } }]),
       openaiReply("Done — submitting.", [{ id: "call_sub1", name: "submit_memory", args: { markdown: "# Secondary memory\n\n- the secondary arm submitted" } }]),
+      openaiReply("Submitted; completing this run's answer."),
       openaiReply("The secondary arm recap."),
     ],
   });
@@ -438,6 +456,16 @@ async function runScriptedSession({ arm, replies, turns }) {
   const toolMessage = bodies[2].messages.find((message) => message.role === "tool");
   assert.equal(toolMessage.tool_call_id, "call_bash1");
   assert.match(toolMessage.content, /attaches no shell/);
+  // The post-acknowledgement continuation request (#253): the run continues,
+  // submit_memory has left the offered tools, and its wire pair is filtered.
+  assert.ok(!bodies[3].tools.map((tool) => tool.function.name).includes("submit_memory"),
+    "acceptance deactivates submit_memory for the rest of the due run");
+  const continuationCalls = bodies[3].messages
+    .flatMap((message) => message.tool_calls ?? [])
+    .map((call) => call.function.name);
+  assert.ok(!continuationCalls.includes("submit_memory"), "the submit tool_call leaves the continuation request");
+  assert.ok(!bodies[3].messages.some((message) => message.role === "tool" && message.content === "Memory candidate accepted; compaction pending."),
+    "the paired submit result leaves the continuation request");
 }
 
 // ─── a missing secondary base URL fails explicitly, not with a guess ──

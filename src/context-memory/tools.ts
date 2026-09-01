@@ -37,7 +37,7 @@ export const SubmitMemoryParamsSchema = Type.Object({
   }),
 }, {
   additionalProperties: false,
-  description: "Submit one Memory block as the final and sole tool call of a due compression run",
+  description: "Submit one Memory block as the sole tool call of a due compression run",
 });
 
 export const ReadMemorySourceParamsSchema = Type.Object({
@@ -108,7 +108,8 @@ export function createSubmitMemoryToolDefinition(
     label: "Memory submit",
     description:
       "Submit one Markdown Memory block for the current compression run. "
-      + "Available only when a Context Memory compression is due; must be the final and sole tool call of its batch.",
+      + "Available only when a Context Memory compression is due and no block was accepted yet this run; "
+      + "must be the sole tool call of its batch. The run continues after the acknowledgement.",
     parameters: SubmitMemoryParamsSchema,
     executionMode: "sequential",
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {

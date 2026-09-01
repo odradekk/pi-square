@@ -129,7 +129,9 @@ export async function areaFirstAppend(recorder, artifacts) {
     assert.equal(advisory.display, false, "the advisory is non-display");
     artifacts.advisories.first = advisory.content;
     assert.ok(advisory.content.includes(SUBMIT));
-    assert.ok(advisory.content.includes("final and sole tool call"));
+    assert.ok(advisory.content.includes("sole tool call of its batch"));
+    assert.ok(advisory.content.includes("continue the same run"), "the advisory keeps the run running after the submission (#253)");
+    assert.ok(!advisory.content.includes("finish the run"), "the advisory no longer ends the run with the submission");
     assert.ok(advisory.content.includes("Do not copy credential values"));
     const later = [...request, advisory, { role: "assistant", content: [] }];
     const second = await harness.emit("context", { type: "context", messages: later }, ctx);
@@ -185,8 +187,23 @@ export async function areaFirstAppend(recorder, artifacts) {
     assert.deepEqual(accepted.content, [{ type: "text", text: PENDING_ACK }]);
     assert.deepEqual(accepted.details, { accepted: true });
     assert.deepEqual(Object.keys(accepted.details), ["accepted"]);
-    assert.equal(accepted.terminate, true, "the accepted submission terminates the tool batch");
+    assert.equal(accepted.terminate, undefined, "the accepted submission no longer ends the run (#253)");
     assert.deepEqual(harness.registration.snapshot(), { state: "pending" });
+    assert.ok(!harness.activeTools().includes(SUBMIT),
+      "acceptance deactivates submit_memory for the rest of the due run");
+    assert.deepEqual(
+      harness.activeTools().filter((name) => name !== SUBMIT),
+      ["read", "bash"],
+      "unrelated active tools keep their identity and order after acceptance",
+    );
+    // The run continues after the acknowledgement: further ordinary entries
+    // land after the accepted submission and the candidate stays pending.
+    session.append(assistantEntry("e7", session.parentId(), [
+      { type: "text", text: `${MARKER} still working — the run did not end with the submission` },
+    ]));
+    session.append(toolResultEntry("e8", session.parentId(), "read", `${MARKER} late run evidence`));
+    assert.deepEqual(harness.registration.snapshot(), { state: "pending" },
+      "the candidate stays pending while the run continues");
     await assert.rejects(
       () => harness.tools.get(SUBMIT).execute("call-1", { markdown: BLOCK_FIRST }, undefined, undefined, ctx),
       (error) => { assert.match(error.message, /^COMPACTION_BUSY: /); return true; },
@@ -240,7 +257,11 @@ export async function areaFirstAppend(recorder, artifacts) {
     assert.equal(projected[0].summary, format.composeMemorySummary([BLOCK_FIRST]));
     assert.equal(projected[1].role, "user");
     assert.equal(projected[1].content, "ship it", "the run's user request is the retained-tail boundary");
-    assert.equal(projected.length, 4, "the whole current run stays uncompressed after the compaction");
+    assert.equal(projected.length, 6, "the whole current run — including the post-submission work — stays uncompressed");
+    assert.ok(JSON.stringify(projected.slice(2)).includes(`${MARKER} still working`),
+      "the post-acknowledgement continuation stays in the retained tail (#253)");
+    assert.ok(JSON.stringify(projected.slice(2)).includes(`${MARKER} late run evidence`),
+      "post-submission tool evidence stays in the retained tail (#253)");
   });
 
   await recorder.check(A, "protocol-artifact-filtering", "negative-constraint", async () => {
@@ -250,12 +271,14 @@ export async function areaFirstAppend(recorder, artifacts) {
     assert.ok(!serialized.includes(SUBMIT), "submit call parts and results leave provider-bound requests");
     assert.ok(!serialized.includes(PENDING_ACK), "paired submit results leave the request");
     assert.ok(serialized.includes("ship it"), "the current request survives");
-    assert.equal(transformed.messages.length, 3, "only the paired submit result drops as a whole message");
+    assert.equal(transformed.messages.length, 5, "only the paired submit result drops as a whole message");
     assert.deepEqual(
-      transformed.messages.at(-1).content,
+      transformed.messages[2].content,
       [{ type: "text", text: `${MARKER} done — submitting the Memory block` }],
       "ordinary assistant text survives its message",
     );
+    assert.ok(serialized.includes(`${MARKER} still working`),
+      "the post-acknowledgement continuation reaches later requests (#253)");
   });
 }
 
@@ -1491,7 +1514,10 @@ export async function areaExactPrefix(recorder, artifacts) {
     }
     for (const text of texts) {
       assert.ok(text.includes(SUBMIT), "the advisory names the submission tool");
-      assert.ok(text.includes("final and sole tool call"));
+      assert.ok(text.includes("sole tool call of its batch"), "the sole-call requirement stays (#253)");
+      assert.ok(text.includes("Complete the user's current task first"), "the task-first requirement stays (#253)");
+      assert.ok(text.includes("continue the same run"), "the run continues after the submission (#253)");
+      assert.ok(!text.includes("finish the run"), "no advisory ends the run with the submission (#253)");
       assert.ok(text.includes("Do not copy credential values"), "the secret warning stays");
       assert.ok(!text.includes(MARKER), "advisories are package-owned text with no fixture content");
       assert.ok(!text.includes("e4") && !text.includes("u1") && !text.includes("m10"), "no entry ids leak into advisories");
