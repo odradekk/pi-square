@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MARKER, SEVERE_CLASSES, boundedMessage, createRecorder, host } from "./harness.mjs";
 import {
@@ -46,10 +46,16 @@ const AREAS = [
   ["boundary-fixtures", areaBoundaryFixtures],
 ];
 
+/**
+ * Each file is keyed by its repository-relative path with POSIX separators,
+ * never by the absolute checkout path, so the digest pins content and layout
+ * only: the same commit digests identically at any working location (#250).
+ * Both inputs derive from REPO_ROOT, so the relative form always exists.
+ */
 function digestOf(paths) {
   const hash = createHash("sha256");
   for (const path of [...paths].sort()) {
-    hash.update(path);
+    hash.update(relative(REPO_ROOT, path).split(sep).join("/"));
     hash.update("\0");
     hash.update(readFileSync(path));
     hash.update("\0");
