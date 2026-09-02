@@ -200,6 +200,7 @@ export async function runExperiment({
   groupCount = GROUP_COUNT,
   order = REQUEST_ORDER,
   generatedAt = () => new Date().toISOString(),
+  onEvent,
 }) {
   const integrity = { ok: true, orderMatchesPin: true, divergenceInvariantsOk: true, providerErrors: 0, failures: [] };
   const fail = (message) => {
@@ -215,10 +216,12 @@ export async function runExperiment({
 
   const records = new Map(); // `${group}|${arm}.${role}` -> record
   let aborted = false;
+  let requestIndex = 0;
   execute:
   for (let group = 1; group <= groupCount; group += 1) {
     for (const step of order) {
       const [arm, role] = step.split(".");
+      requestIndex += 1;
       if (minRequestGapMs > 0) await clock.sleep(minRequestGapMs);
       const composed = composeRequest({ group, arm, role });
       const digest = payloadDigest(composed.payload);
@@ -245,7 +248,9 @@ export async function runExperiment({
         );
       } catch (error) {
         integrity.providerErrors += 1;
-        fail(`group ${group} ${arm}.${role}: the adapter threw (${String(error?.message ?? error).slice(0, 120)})`);
+        const message = `the adapter threw (${String(error?.message ?? error).slice(0, 120)})`;
+        fail(`group ${group} ${arm}.${role}: ${message}`);
+        onEvent?.({ type: "request", group, arm, role, index: requestIndex, total: groupCount * order.length, error: message });
         aborted = true;
         break execute;
       }
@@ -253,9 +258,16 @@ export async function runExperiment({
       if (problem) {
         integrity.providerErrors += 1;
         fail(`group ${group} ${arm}.${role}: ${problem}`);
+        onEvent?.({ type: "request", group, arm, role, index: requestIndex, total: groupCount * order.length, error: problem });
         aborted = true;
         break execute;
       }
+      onEvent?.({
+        type: "request", group, arm, role, index: requestIndex, total: groupCount * order.length,
+        cacheRead: report.cache?.read ?? 0, cacheWrite: report.cache?.write ?? 0,
+        uncached: report.usage?.inputTokens ?? 0,
+        ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMs,
+      });
       records.set(`${group}|${step}`, {
         group,
         arm,

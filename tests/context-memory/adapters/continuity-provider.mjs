@@ -248,7 +248,12 @@ export function toOpenAiMessages(systemPrompt, llmMessages) {
         .map((part) => part.text)
         .join("");
       const toolCalls = (message.content ?? []).filter((part) => part?.type === "toolCall");
+      const reasoning = (message.content ?? [])
+        .filter((part) => part?.type === "thinking")
+        .map((part) => part.thinking)
+        .join("");
       const wire = { role: "assistant", content: text.length > 0 ? text : null };
+      if (reasoning.length > 0) wire.reasoning_content = reasoning;
       if (toolCalls.length > 0) {
         wire.tool_calls = toolCalls.map((call) => ({
           id: call.id,
@@ -322,6 +327,11 @@ function parseAnthropicReply(body) {
 function parseOpenAiReply(body) {
   const message = body?.choices?.[0]?.message;
   const text = typeof message?.content === "string" ? message.content : "";
+  // Thinking-mode models (deepseek-v4-pro) refuse a follow-up request whose
+  // assistant turn dropped the reasoning they produced. Carry it as Pi's own
+  // `thinking` part so it survives the session entry and the projection, and
+  // put it back on the wire in `toOpenAiMessages`.
+  const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content : "";
   const toolCalls = (Array.isArray(message?.tool_calls) ? message.tool_calls : [])
     .map((call) => ({
       id: String(call?.id ?? ""),
@@ -335,6 +345,7 @@ function parseOpenAiReply(body) {
     stopReason: typeof body?.choices?.[0]?.finish_reason === "string" ? body.choices[0].finish_reason : "stop",
     usage: { input: usage.prompt_tokens ?? 0, output: usage.completion_tokens ?? 0, cacheRead: 0, cacheWrite: 0 },
     parts: [
+      ...(reasoning ? [{ type: "thinking", thinking: reasoning }] : []),
       ...(text ? [{ type: "text", text }] : []),
       ...toolCalls.map((call) => ({ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments })),
     ],

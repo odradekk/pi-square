@@ -3,11 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fakeClock, simulatedCacheAdapter } from "./fake-provider.mjs";
 import { runExperiment } from "./runner.mjs";
+import { cacheProgress } from "../progress.mjs";
 
 /**
  * The provider-cache experiment command (#225, adapters from #248):
  *
- *   npm run experiment:provider-cache [-- --dry-run] [--json] [--adapter <adapter-module.mjs>]
+ *   npm run experiment:provider-cache [-- --dry-run] [--json] [--quiet] [--adapter <adapter-module.mjs>]
  *
  * Dry-run is the default: the simulated prefix-cache adapter and a fake clock,
  * no credential, no network call. Credentialed execution passes
@@ -24,14 +25,15 @@ import { runExperiment } from "./runner.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORT_DIR = join(HERE, "report");
-const USAGE = "usage: npm run experiment:provider-cache [-- --dry-run] [--json] [--adapter <adapter-module.mjs>]";
+const USAGE = "usage: npm run experiment:provider-cache [-- --dry-run] [--json] [--quiet] [--adapter <adapter-module.mjs>]";
 
 function parseArgs(argv) {
-  const options = { json: false, adapterPath: null };
+  const options = { json: false, adapterPath: null, quiet: false };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === "--dry-run") continue;
     else if (flag === "--json") options.json = true;
+    else if (flag === "--quiet") options.quiet = true;
     else if (flag === "--real") {
       console.error(
         "Credentialed execution is #227, which supplies the credentials and the verdict. This command ships the"
@@ -84,7 +86,10 @@ async function main() {
     clock = fakeClock();
     adapter = simulatedCacheAdapter({ clock, ttlMs: 300_000 });
   }
-  const { json, humanText, exitCode } = await runExperiment({ adapter, clock });
+  // Live per-request progress on stderr for the credentialed run; the dry run
+  // is instantaneous, and --quiet turns it off entirely.
+  const onEvent = options.quiet || options.adapterPath === null ? undefined : cacheProgress();
+  const { json, humanText, exitCode } = await runExperiment({ adapter, clock, onEvent });
 
   mkdirSync(REPORT_DIR, { recursive: true });
   const jsonPath = join(REPORT_DIR, "provider-cache-experiment.json");

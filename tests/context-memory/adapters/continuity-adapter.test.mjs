@@ -249,22 +249,23 @@ async function runScriptedSession({ arm, replies, turns }) {
   const toolNames = (body) => body.tools.map((tool) => tool.name);
   assert.deepEqual(toolNames(bodies[0]), ["read", "bash"]);
   assert.ok(toolNames(bodies[1]).includes("submit_memory"), "the due run activates submit_memory");
-  // The continuation request after the accepted submission (#253): the run
-  // continues, submit_memory has left the offered tool list, and its
-  // tool_use/tool_result pair has left the provider-bound messages while the
-  // submitting assistant text survives.
+  // The continuation request after the accepted submission (#253). The
+  // submitting exchange is the request tail while the run continues, so the
+  // whole tool_use/tool_result pair passes through: filtering it would end the
+  // request on an assistant turn, and filtering half of it would leave an
+  // unpaired tool result. Both shapes were rejected by the real gateways and
+  // voided a scored run (#227).
   assert.ok(!toolNames(bodies[3]).includes("submit_memory"),
     "acceptance deactivates submit_memory for the rest of the due run");
   const continuationBlocks = bodies[3].messages.flatMap((message) =>
     Array.isArray(message.content) ? message.content : []);
-  assert.ok(!continuationBlocks.some((part) => part?.type === "tool_use" && part.name === "submit_memory"),
-    "the submit tool_use leaves the continuation request");
-  // The submitting assistant message is the tail while the run continues, so
-  // its paired result is retained rather than dropped: a request ending on an
-  // assistant turn is rejected as an assistant prefill by the real gateway,
-  // which voided one scored run (#227).
-  assert.ok(continuationBlocks.some((part) => part?.type === "tool_result" && part.content === "Memory candidate accepted; compaction pending."),
-    "the paired submit result is retained as the tail so the request does not end on an assistant turn");
+  const trailingUse = continuationBlocks.find((part) => part?.type === "tool_use" && part.name === "submit_memory");
+  const trailingResult = continuationBlocks.find((part) => part?.type === "tool_result"
+    && part.content === "Memory candidate accepted; compaction pending.");
+  assert.ok(trailingUse, "the trailing submit tool_use is retained");
+  assert.ok(trailingResult, "its paired tool_result is retained");
+  assert.equal(trailingResult.tool_use_id, trailingUse.id,
+    "the retained pair is id-linked, which both wire formats require");
   assert.notEqual(bodies[3].messages.at(-1).role, "assistant",
     "no continuation request ends with an assistant turn");
   assert.ok(continuationBlocks.some((part) => part?.type === "text" && part.text === "Done — submitting the Memory block."),
@@ -469,9 +470,15 @@ async function runScriptedSession({ arm, replies, turns }) {
   const continuationCalls = bodies[3].messages
     .flatMap((message) => message.tool_calls ?? [])
     .map((call) => call.function.name);
-  assert.ok(!continuationCalls.includes("submit_memory"), "the submit tool_call leaves the continuation request");
-  assert.ok(bodies[3].messages.some((message) => message.role === "tool" && message.content === "Memory candidate accepted; compaction pending."),
-    "the paired submit result is retained as the tail so the request does not end on an assistant turn");
+  assert.ok(continuationCalls.includes("submit_memory"), "the trailing submit tool_call is retained");
+  const trailingToolMessage = bodies[3].messages.find((message) => message.role === "tool"
+    && message.content === "Memory candidate accepted; compaction pending.");
+  assert.ok(trailingToolMessage, "its paired tool message is retained");
+  const trailingWireCall = bodies[3].messages
+    .flatMap((message) => message.tool_calls ?? [])
+    .find((call) => call.function.name === "submit_memory");
+  assert.equal(trailingToolMessage.tool_call_id, trailingWireCall.id,
+    "the retained pair is id-linked; OpenAI rejects a tool message without its call");
   assert.notEqual(bodies[3].messages.at(-1).role, "assistant",
     "no continuation request ends with an assistant turn");
 }

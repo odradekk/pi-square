@@ -201,7 +201,7 @@ function normalizeAdapter(adapter) {
 }
 
 /** Execute and score exactly one planned run through the adapter seam. */
-export async function executeRun({ adapter, run }) {
+export async function executeRun({ adapter, run, onEvent }) {
   const scenario = SCENARIOS.find((entry) => entry.id === run.scenario);
   if (!scenario) throw new Error(`unknown scenario ${run.scenario}`);
   const script = buildScript(scenario, run.variant);
@@ -210,7 +210,9 @@ export async function executeRun({ adapter, run }) {
   let adapterError = null;
   try {
     for (const turn of script.turns) {
-      evidence.push(await session.runTurn(turn));
+      const record = await session.runTurn(turn);
+      evidence.push(record);
+      onEvent?.({ type: "turn", run, turn: turn.id, kind: turn.kind, index: evidence.length, total: script.turns.length, record });
     }
   } catch (error) {
     // An adapter that crashes mid-run is a failed run, never a silent skip:
@@ -403,17 +405,23 @@ function pct(value) {
  * trail that makes favorable rerun selection visible: re-running the same
  * pins cannot silently replace an earlier failed verdict.
  */
-export async function runQualification({ adapter, reportDir, salt = DEFAULT_MATRIX_SALT, mode = "dry-run" }) {
+export async function runQualification({ adapter, reportDir, salt = DEFAULT_MATRIX_SALT, mode = "dry-run", onEvent }) {
   const normalized = normalizeAdapter(adapter);
   const runs = planRuns({ salt });
   const pins = pinEnvironment({ adapterDeclaration: normalized.declaration, salt });
   const runScores = [];
   const evidences = [];
-  for (const run of runs) {
-    const { score, evidence } = await executeRun({ adapter: normalized, run });
+  onEvent?.({ type: "matrix-start", total: runs.length });
+  for (let index = 0; index < runs.length; index += 1) {
+    const run = runs[index];
+    const startedAt = Date.now();
+    onEvent?.({ type: "run-start", run, index, total: runs.length });
+    const { score, evidence } = await executeRun({ adapter: normalized, run, onEvent });
     runScores.push(score);
     evidences.push(evidence);
+    onEvent?.({ type: "run-end", run, index, total: runs.length, score, elapsedMs: Date.now() - startedAt });
   }
+  onEvent?.({ type: "matrix-end", total: runs.length });
 
   let report = buildReport({ mode, adapterId: normalized.declaration.id, pins, runScores, evidences });
 

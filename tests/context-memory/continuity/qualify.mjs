@@ -2,6 +2,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createFakeAdapter } from "./fake-model.mjs";
 import { runQualification } from "./runner.mjs";
+import { continuityProgress } from "../progress.mjs";
 
 /**
  * The Context Memory continuity qualification command (#224).
@@ -22,10 +23,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORT_DIR = join(HERE, "report");
 
 function parseArgs(argv) {
-  const options = { json: false, adapterPath: null };
+  const options = { json: false, adapterPath: null, quiet: false };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === "--json") options.json = true;
+    else if (flag === "--quiet") options.quiet = true;
     else if (flag === "--adapter") {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) {
@@ -36,7 +38,7 @@ function parseArgs(argv) {
       index += 1;
     } else {
       console.error(`unknown argument: ${flag}`);
-      console.error("usage: qualify.mjs [--json] [--adapter <adapter-module.mjs>]");
+      console.error("usage: qualify.mjs [--json] [--quiet] [--adapter <adapter-module.mjs>]");
       process.exit(2);
     }
   }
@@ -70,7 +72,10 @@ async function main() {
     mode = "real";
   }
 
-  const { report, json, markdown } = await runQualification({ adapter, reportDir: REPORT_DIR, mode });
+  // Live progress on stderr for the long credentialed run; the dry run is
+  // fast enough that it only adds noise, and --quiet turns it off entirely.
+  const onEvent = options.quiet || mode !== "real" ? undefined : continuityProgress();
+  const { report, json, markdown } = await runQualification({ adapter, reportDir: REPORT_DIR, mode, onEvent });
   if (options.json) console.log(json);
   else console.log(markdown.trimEnd());
   process.exitCode = report.result === "pass" ? 0 : 1;

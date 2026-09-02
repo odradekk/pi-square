@@ -1261,16 +1261,40 @@ function sameMemoryDetails(actual: unknown, expected: MemoryCompactionDetails): 
  * exclude them.
  */
 function filterSubmitArtifacts(messages: readonly unknown[]): unknown[] {
+  // The submitting exchange is the request tail while the run continues
+  // (#253). Filtering it would end the request on an assistant turn, which
+  // providers reject as an assistant prefill, and filtering only half of it
+  // leaves an unpaired tool result that both wire formats reject outright.
+  // So the trailing pair passes through whole; every older submit artifact
+  // still leaves the request.
+  const isSubmitResult = (m: unknown): boolean =>
+    (m as { role?: unknown; toolName?: unknown } | null)?.role === "toolResult"
+    && (m as { toolName?: unknown }).toolName === SUBMIT_MEMORY_TOOL_NAME;
+  const hasSubmitCall = (m: unknown): boolean => {
+    const record = m as { role?: unknown; content?: unknown } | null;
+    return record?.role === "assistant" && Array.isArray(record.content)
+      && record.content.some((part) =>
+        (part as { type?: unknown; name?: unknown } | null)?.type === "toolCall"
+        && (part as { name?: unknown }).name === SUBMIT_MEMORY_TOOL_NAME);
+  };
+  let keepFrom = messages.length;
+  if (messages.length >= 2 && isSubmitResult(messages[messages.length - 1]) && hasSubmitCall(messages[messages.length - 2])) {
+    keepFrom = messages.length - 2;
+  } else if (messages.length >= 1 && hasSubmitCall(messages[messages.length - 1])) {
+    keepFrom = messages.length - 1;
+  }
+
   const filtered: unknown[] = [];
-  let lastDroppedResult: unknown;
-  for (const message of messages) {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (index >= keepFrom) {
+      filtered.push(message);
+      continue;
+    }
     const record = message as { role?: unknown; content?: unknown; toolName?: unknown } | null;
     if (!record) continue;
     if (record.role === "toolResult") {
-      if (record.toolName === SUBMIT_MEMORY_TOOL_NAME) {
-        lastDroppedResult = message;
-        continue;
-      }
+      if (record.toolName === SUBMIT_MEMORY_TOOL_NAME) continue;
       filtered.push(message);
       continue;
     }
@@ -1286,14 +1310,6 @@ function filterSubmitArtifacts(messages: readonly unknown[]): unknown[] {
     }
     filtered.push(message);
   }
-  // The submitting assistant message is the request tail while the run
-  // continues (#253), and dropping its paired result would end the request on
-  // an assistant turn — which providers reject as an assistant prefill. Put
-  // that one result back so the tail is a tool result: the model sees the
-  // acknowledgement for the call it just made, and every older submit
-  // artifact still leaves the request.
-  const tail = filtered.at(-1) as { role?: unknown } | undefined;
-  if (tail?.role === "assistant" && lastDroppedResult !== undefined) filtered.push(lastDroppedResult);
   return filtered;
 }
 
