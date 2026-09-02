@@ -16,6 +16,8 @@ const { lockBarrier } = __lockTestables;
 
 afterEach(() => {
   lockBarrier.markerHeld = undefined;
+  lockBarrier.markerClaimed = undefined;
+  lockBarrier.markerTaken = undefined;
   lockBarrier.afterTake = undefined;
   vi.unstubAllEnvs();
 });
@@ -32,7 +34,9 @@ function lockPathIn(dir: string): string {
 
 async function residue(dir: string): Promise<string[]> {
   const entries = await readdir(join(dir, "locks")).catch(() => [] as string[]);
-  return entries.filter((name) => name.includes(".retired-") || name.endsWith(".rm") || name.startsWith(".publish-"));
+  return entries.filter(
+    (name) => name.includes(".retired-") || name.endsWith(".rm") || name.includes(".rm.claim.") || name.startsWith(".publish-"),
+  );
 }
 
 /** Publishes a complete owner record for `pid` at a path, the way a real
@@ -66,6 +70,15 @@ function budget(ms: number) {
   return { deadlineAt: Date.now() + ms, pollMs: 5 };
 }
 
+function rmSyncSafe(path: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require("node:fs").rmSync(path, { force: true });
+  } catch {
+    // best-effort cleanup
+  }
+}
+
 describe("lock record validation (#264: strict schema, fail closed)", () => {
   it("accepts a complete record and rejects every incomplete or malformed variant", () => {
     const { isCompleteOwnerRecord } = __lockTestables;
@@ -92,6 +105,11 @@ describe("lock record validation (#264: strict schema, fail closed)", () => {
     expect(isCompleteOwnerRecord({ ...complete, startTime: "not-a-proc-start-time" })).toBe(false);
     expect(isCompleteOwnerRecord({ ...complete, startTime: "12x4" })).toBe(false);
     expect(isCompleteOwnerRecord({ ...complete, startTime: 123 })).toBe(false);
+    // A pid outside the representable OS range is malformed ownership, not a
+    // process to probe (#264 review).
+    expect(isCompleteOwnerRecord({ ...complete, pid: 4_194_305 })).toBe(false);
+    expect(isCompleteOwnerRecord({ ...complete, pid: Number.MAX_SAFE_INTEGER })).toBe(false);
+    expect(isCompleteOwnerRecord({ ...complete, pid: 4_194_304 })).toBe(true);
     expect(isCompleteOwnerRecord({ pid: 42 })).toBe(false);
     expect(isCompleteOwnerRecord("not an object")).toBe(false);
     expect(isCompleteOwnerRecord(null)).toBe(false);
@@ -180,6 +198,34 @@ describe("dead-owner determination (#264: positive proof only)", () => {
       expect(await residue(dir)).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("only ESRCH proves death through the liveness probe; unexpected probe errors fail closed (#264 review)", () => {
+    const { isOwnerGone } = __lockTestables;
+    const record = {
+      v: 1 as const,
+      token: "t",
+      pid: process.pid,
+      hostname: hostname(),
+      acquiredAt: Date.now(),
+    };
+    const killSpy = vi.spyOn(process, "kill");
+    try {
+      killSpy.mockImplementation(() => {
+        throw Object.assign(new Error("probe failed"), { code: "EIO" });
+      });
+      expect(isOwnerGone(record), "an unexpected probe error is never death").toBe(false);
+      killSpy.mockImplementation(() => {
+        throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+      });
+      expect(isOwnerGone(record), "ESRCH is a definitive death proof").toBe(true);
+      killSpy.mockImplementation(() => {
+        throw Object.assign(new Error("not ours"), { code: "EPERM" });
+      });
+      expect(isOwnerGone(record), "EPERM means alive").toBe(false);
+    } finally {
+      killSpy.mockRestore();
     }
   });
 
@@ -305,6 +351,105 @@ describe("stale verifier versus live successor (#264 P1: exclusion never breaks)
     }
   });
 
+  it("a release that finds the removal marker busy retries and never permanently leaks the lock (#264 P1)", async () => {
+    const dir = await freshDir("release-busy");
+    try {
+      // A dead prior lock and a stale verifier paused inside its marker-held
+      // phase, exactly the reviewer's interleaving.
+      const dead = deadPid();
+      await installRecord(lockPathIn(dir), { pid: dead, hostname: hostname(), token: "prior-token" });
+      const verified = await stat(lockPathIn(dir));
+      const successorLock = await acquireFileLock(lockPathIn(dir), { waitMs: 2000, pollMs: 10 });
+      expect(successorLock).not.toBeNull();
+      const successor = successorLock!;
+
+      let releaseVerifier!: () => void;
+      const verifierAtMarker = new Promise<void>((resolveAtMarker) => {
+        lockBarrier.markerHeld = () => {
+          resolveAtMarker();
+          return new Promise<void>((resolveRelease) => { releaseVerifier = resolveRelease; });
+        };
+      });
+      const staleRemoval = __lockTestables.removeVerifiedLockFile(lockPathIn(dir), verified, "prior-token", budget(10_000));
+      await verifierAtMarker;
+
+      // The successor releases while the marker is held: every attempt is
+      // busy, and a single-shot release would permanently leak the lock.
+      const release = successor.release();
+      expect(existsSync(lockPathIn(dir)), "the lock is still held while the marker is occupied").toBe(true);
+
+      releaseVerifier();
+      // One-shot barrier: the retried release must not park on it.
+      lockBarrier.markerHeld = undefined;
+      const staleOutcome = await staleRemoval;
+      expect(staleOutcome).toBe("foreign");
+      await release;
+
+      // The retried release removed the lock: a subsequent acquisition
+      // succeeds, and nothing is left behind.
+      expect(existsSync(lockPathIn(dir))).toBe(false);
+      const third = await acquireFileLock(lockPathIn(dir), { waitMs: 500, pollMs: 10 });
+      expect(third, "a later acquisition succeeds after the retried release").not.toBeNull();
+      await third!.release();
+      expect(await residue(dir)).toEqual([]);
+    } finally {
+      lockBarrier.markerHeld = undefined;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a release whose every attempt stays busy exhausts its budget safely with an explicit record (#264 P1)", async () => {
+    const dir = await freshDir("release-exhaust");
+    vi.stubEnv("PI_SQUARE_RELEASE_BUDGET_MS", "80");
+    try {
+      const dead = deadPid();
+      await installRecord(lockPathIn(dir), { pid: dead, hostname: hostname(), token: "prior-token" });
+      const verified = await stat(lockPathIn(dir));
+      const successorLock = await acquireFileLock(lockPathIn(dir), { waitMs: 2000, pollMs: 10 });
+      const successor = successorLock!;
+
+      // The stale verifier stays parked in its marker-held phase for the
+      // whole release budget.
+      let releaseVerifier!: () => void;
+      const verifierAtMarker = new Promise<void>((resolveAtMarker) => {
+        lockBarrier.markerHeld = () => {
+          resolveAtMarker();
+          return new Promise<void>((resolveRelease) => { releaseVerifier = resolveRelease; });
+        };
+      });
+      const staleRemoval = __lockTestables.removeVerifiedLockFile(lockPathIn(dir), verified, "prior-token", budget(10_000));
+      await verifierAtMarker;
+
+      const errors: unknown[] = [];
+      const errorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args); });
+      try {
+        await successor.release();
+      } finally {
+        errorSpy.mockRestore();
+      }
+      expect(
+        errors.some((args) => String((args as unknown[])[0]).includes("removal marker stayed busy")),
+        "the exhausted release records the safe failure explicitly",
+      ).toBe(true);
+      // Safe failure: the lock file remains (reclaimed once this process is
+      // gone) and no protocol residue was left behind.
+      expect(existsSync(lockPathIn(dir))).toBe(true);
+
+      releaseVerifier();
+      // One-shot barrier: nothing after this may park on it.
+      lockBarrier.markerHeld = undefined;
+      const staleOutcome = await staleRemoval;
+      expect(staleOutcome).toBe("foreign");
+      const entries = await residue(dir);
+      expect(entries.filter((name) => name !== undefined)).toEqual([]);
+      rmSyncSafe(lockPathIn(dir));
+    } finally {
+      lockBarrier.markerHeld = undefined;
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("a live holder's own release still removes exactly its own file", async () => {
     const dir = await freshDir("release-own");
     try {
@@ -314,6 +459,91 @@ describe("stale verifier versus live successor (#264 P1: exclusion never breaks)
       expect(existsSync(lockPathIn(dir))).toBe(false);
       expect(await residue(dir)).toEqual([]);
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("removal marker claim races (#264 P1)", () => {
+  it("a losing stale reclaimer never displaces the winner's live marker, and no concurrent remover enters", async () => {
+    const dir = await freshDir("claim-race");
+    try {
+      const marker = __lockTestables.markerPath(lockPathIn(dir));
+      // A dead remover's marker record.
+      await installRecord(marker, { pid: deadPid(), hostname: hostname(), token: "dead-marker" });
+
+      // R1 wins the claim and pauses at the claim barrier (before the take).
+      let releaseR1!: () => void;
+      const r1Claimed = new Promise<void>((resolveClaimed) => {
+        lockBarrier.markerClaimed = () => {
+          resolveClaimed();
+          return new Promise<void>((resolveRelease) => { releaseR1 = resolveRelease; });
+        };
+      });
+      const budgetR1 = budget(10_000);
+      const r1 = __lockTestables.acquireRemovalMarker(lockPathIn(dir), budgetR1);
+      await r1Claimed;
+
+      // R2 — the delayed stale reclaimer that read the same dead marker —
+      // cannot win the claim and must back off without touching the marker.
+      const r2 = await __lockTestables.acquireRemovalMarker(lockPathIn(dir), budget(200));
+      expect(r2, "the losing reclaimer is busy and never becomes a holder").toBeUndefined();
+      const markerDuringRace = JSON.parse(await readFile(marker, "utf8")) as { token: string };
+      expect(markerDuringRace.token, "the dead marker was never displaced mid-race").toBe("dead-marker");
+
+      releaseR1();
+      const r1Handle = await r1;
+      expect(r1Handle, "the claim winner becomes the marker holder").toBeDefined();
+      const afterRace = JSON.parse(await readFile(marker, "utf8")) as { token: string };
+      expect(afterRace.token).toBe(r1Handle!.token);
+
+      // A later remover sees the live holder and stays busy; releasing the
+      // marker leaves the path clean with no residue.
+      const r3 = await __lockTestables.acquireRemovalMarker(lockPathIn(dir), budget(100));
+      expect(r3).toBeUndefined();
+      await __lockTestables.releaseRemovalMarker(lockPathIn(dir), r1Handle!);
+      expect(existsSync(marker)).toBe(false);
+      expect(await residue(dir)).toEqual([]);
+    } finally {
+      lockBarrier.markerClaimed = undefined;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a fresh remover that wins the take-to-publish gap becomes the sole holder; the claimant backs off with no residue", async () => {
+    const dir = await freshDir("claim-gap");
+    try {
+      const marker = __lockTestables.markerPath(lockPathIn(dir));
+      await installRecord(marker, { pid: deadPid(), hostname: hostname(), token: "dead-marker" });
+
+      // R1 pauses after taking the dead marker, while the marker path is
+      // empty; a fresh remover R3 publishes and wins the path in the gap.
+      let releaseR1!: () => void;
+      const r1Taken = new Promise<void>((resolveTaken) => {
+        lockBarrier.markerTaken = () => {
+          resolveTaken();
+          return new Promise<void>((resolveRelease) => { releaseR1 = resolveRelease; });
+        };
+      });
+      const r1 = __lockTestables.acquireRemovalMarker(lockPathIn(dir), budget(10_000));
+      await r1Taken;
+
+      const freshRecord = __lockTestables.currentOwnerRecord();
+      const freshIdentity = await __lockTestables.publishOwnerRecord(marker, JSON.stringify(freshRecord));
+      expect(freshIdentity, "the fresh remover won the empty path in the gap").toBeDefined();
+
+      releaseR1();
+      const r1Handle = await r1;
+      expect(r1Handle, "the claimant backs off instead of double-holding").toBeUndefined();
+      const sole = JSON.parse(await readFile(marker, "utf8")) as { token: string };
+      expect(sole.token, "the fresh remover is the sole holder").toBe(freshRecord.token);
+
+      // Clean up the fresh remover's marker; nothing is left behind.
+      await __lockTestables.releaseRemovalMarker(lockPathIn(dir), { token: freshRecord.token, identity: freshIdentity! });
+      expect(existsSync(marker)).toBe(false);
+      expect(await residue(dir)).toEqual([]);
+    } finally {
+      lockBarrier.markerTaken = undefined;
       await rm(dir, { recursive: true, force: true });
     }
   });

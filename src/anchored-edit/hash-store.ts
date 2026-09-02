@@ -113,7 +113,7 @@ export interface HashStoreHandle {
    * rolls the whole transaction back, so the previous version's rows remain
    * and cannot authorize anything against the new bytes.
    */
-  publishWrite(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void;
+  publishWrite(input: { path: string; content?: string; hashes?: string[]; servedHashes?: string[] }): void;
   /** Every owner partition in this store with its newest activity. */
   listOwners(): OwnerPartition[];
   /** Deletes every row of one owner partition as a single transaction and
@@ -455,19 +455,26 @@ class HashStoreHandleImpl implements HashStoreHandle {
     cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
   }
 
-  publishWrite(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void {
+  publishWrite(input: { path: string; content?: string; hashes?: string[]; servedHashes?: string[] }): void {
     const entry = this.requireOpen();
-    const checksum = contentChecksum(input.content);
-    const lineCount = splitLines(input.content).length;
+    const withSnapshot = input.content !== undefined && input.hashes !== undefined && input.hashes.length > 0;
+    const checksum = withSnapshot ? contentChecksum(input.content!) : undefined;
+    const lineCount = withSnapshot ? splitLines(input.content!).length : 0;
     const updatedAt = Date.now();
     this.withTransaction(() => {
-      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
+      if (withSnapshot) {
+        entry.stmts.upsertSnapshot(this.owner, input.path, checksum!, lineCount, JSON.stringify(input.hashes), updatedAt);
+      }
+      // The clearing is the contract: every successful write replaces the
+      // path's served rows for exactly the written content version.
       entry.stmts.clearServed(this.owner, input.path);
-      if (input.servedHashes && input.servedHashes.length > 0) {
+      if (input.servedHashes && input.servedHashes.length > 0 && checksum !== undefined) {
         entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
       }
     });
-    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
+    if (withSnapshot) {
+      cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum!, lineCount, input.hashes!);
+    }
   }
 
   listOwners(): OwnerPartition[] {
@@ -520,41 +527,74 @@ function inspectLegacyStore(db: DatabaseSync): boolean {
   try {
     const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
     if (versionRow?.value !== String(HASH_STORE_VERSION)) return true;
-    return !hasCurrentSchemaShape(db);
+    return !hasCurrentSchemaShape(db, tables.map((row) => String(row.name)));
   } catch {
     return true;
   }
 }
 
-const CURRENT_SCHEMA_COLUMNS: Record<string, string[]> = {
-  snapshots: ["owner", "path", "checksum", "line_count", "hashes", "updated_at"],
-  served: ["owner", "path", "hash", "content_hash", "updated_at"],
+interface ExpectedColumn {
+  name: string;
+  type: string;
+  notNull: boolean;
+  /** 1-based primary-key position, 0 when the column is not part of the key. */
+  pk: number;
+}
+
+/** The exact current layout: every expected table with its exact columns,
+ *  declared types, NOT NULL flags, and primary keys. A database claiming the
+ *  current version must match this shape completely and contain no other
+ *  owned tables (any extra table — including every undo-bearing layout — is
+ *  an incompatible legacy layout). */
+const CURRENT_SCHEMA_TABLES: Record<string, ExpectedColumn[]> = {
+  meta: [
+    { name: "key", type: "TEXT", notNull: false, pk: 1 },
+    { name: "value", type: "TEXT", notNull: true, pk: 0 },
+  ],
+  snapshots: [
+    { name: "owner", type: "TEXT", notNull: true, pk: 1 },
+    { name: "path", type: "TEXT", notNull: true, pk: 2 },
+    { name: "checksum", type: "TEXT", notNull: true, pk: 0 },
+    { name: "line_count", type: "INTEGER", notNull: true, pk: 0 },
+    { name: "hashes", type: "TEXT", notNull: true, pk: 0 },
+    { name: "updated_at", type: "INTEGER", notNull: true, pk: 0 },
+  ],
+  served: [
+    { name: "owner", type: "TEXT", notNull: true, pk: 1 },
+    { name: "path", type: "TEXT", notNull: true, pk: 2 },
+    { name: "hash", type: "TEXT", notNull: true, pk: 3 },
+    { name: "content_hash", type: "TEXT", notNull: true, pk: 0 },
+    { name: "updated_at", type: "INTEGER", notNull: true, pk: 0 },
+  ],
 };
 
-/** Strict shape check for a database claiming the current version: every
- *  current table exists with exactly the current column set and primary key.
- *  Any deviation is an incompatible layout that is quarantined whole rather
- *  than probed statement-by-statement later. */
-function hasCurrentSchemaShape(db: DatabaseSync): boolean {
-  for (const [table, expectedColumns] of Object.entries(CURRENT_SCHEMA_COLUMNS)) {
-    let columns: Array<{ name?: unknown; pk?: unknown }>;
+/** Strict shape check for a database claiming the current version. Any
+ *  deviation — a missing or extra owned table, a renamed/missing/extra
+ *  column, a changed type or nullability, a different primary key — is an
+ *  incompatible layout that is quarantined whole rather than probed
+ *  statement-by-statement later. */
+function hasCurrentSchemaShape(db: DatabaseSync, ownedTables: string[]): boolean {
+  const allowed = new Set(Object.keys(CURRENT_SCHEMA_TABLES));
+  if (ownedTables.some((table) => !allowed.has(table))) return false;
+  for (const [table, expected] of Object.entries(CURRENT_SCHEMA_TABLES)) {
+    let columns: Array<{ name?: unknown; type?: unknown; notnull?: unknown; pk?: unknown }>;
     try {
-      columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown; pk?: unknown }>;
+      columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown; type?: unknown; notnull?: unknown; pk?: unknown }>;
     } catch {
       return false;
     }
-    const names = columns.map((column) => String(column.name));
-    if (names.length !== expectedColumns.length) return false;
-    for (let i = 0; i < expectedColumns.length; i += 1) {
-      if (names[i] !== expectedColumns[i]) return false;
-    }
-    const primaryKey = columns
-      .filter((column) => Number(column.pk) > 0)
-      .sort((a, b) => Number(a.pk) - Number(b.pk))
-      .map((column) => String(column.name));
-    const expectedKey = table === "snapshots" ? ["owner", "path"] : ["owner", "path", "hash"];
-    if (primaryKey.length !== expectedKey.length || primaryKey.some((name, i) => name !== expectedKey[i])) {
-      return false;
+    if (columns.length !== expected.length) return false;
+    for (let i = 0; i < expected.length; i += 1) {
+      const column = columns[i]!;
+      const want = expected[i]!;
+      if (
+        String(column.name) !== want.name
+        || String(column.type).toUpperCase() !== want.type
+        || (Number(column.notnull) !== 0) !== want.notNull
+        || Number(column.pk) !== want.pk
+      ) {
+        return false;
+      }
     }
   }
   return true;

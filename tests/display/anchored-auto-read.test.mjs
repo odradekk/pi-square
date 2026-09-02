@@ -6,7 +6,6 @@ import { DatabaseSync } from "node:sqlite";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { contentChecksum } = await load("../../src/anchored-edit/hashline/hasher.ts");
 const { createParentAnchoredWrite, registerAnchoredAutoRead } = await load("../../src/anchored-edit/auto-read.ts");
 const { createWriteToolDefinition } = await load("@earendil-works/pi-coding-agent");
 const { transformAnchoredReadContent } = await load("../../src/anchored-edit/read-transform.ts");
@@ -203,17 +202,12 @@ try {
     assert.equal(clearedResult, undefined, "disabled auto-read appends nothing");
     const store = new DatabaseSync(storePath, { timeout: 500 });
     try {
-      // autoRead=false publishes nothing: the pre-write version's row remains
-      // as a stale barrier, and no row authorizes the written version (#264).
+      // autoRead=false appends no anchors, but the successful write still
+      // clears the served rows in its single post-commit transaction (#264).
       assert.equal(
-        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = 'parent' AND path = ? AND content_hash != ?").get(realpathSync(clearedExternal), contentChecksum("after\n")).count,
-        1,
-        "a successful autoRead=false external write keeps the previous version's stale row",
-      );
-      assert.equal(
-        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = 'parent' AND path = ? AND content_hash = ?").get(realpathSync(clearedExternal), contentChecksum("after\n")).count,
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = 'parent' AND path = ?").get(realpathSync(clearedExternal)).count,
         0,
-        "no row authorizes the autoRead=false written version",
+        "a successful external write clears served state for the canonical file in the initiating workspace",
       );
     } finally {
       store.close();

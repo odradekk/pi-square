@@ -58,9 +58,11 @@ lock waits directly, and the child write composition runs the public factory
 execution inside an AsyncLocalStorage signal context (its declared
 exception). The parent write has no execution wrapper — the seam authorized
 by this record is only the injected filesystem operation — and the
-`WriteOperations` seam carries no signal parameter, so the parent write's
-lock wait is bounded by its session budget, classifies as `E_FILE_LOCKED`,
-and its cancellation responsiveness stays the factory's own abort checks.
+`WriteOperations` seam carries no signal parameter, so the parent write
+performs one immediate lock attempt (a zero-wait boundary): a busy target
+classifies as `E_FILE_LOCKED` at once with the file untouched, no
+cancellable wait exists to outlive an abort, and cancellation
+responsiveness stays the factory's own abort checks.
 `[E_RANGE_STALE]` is reserved for validation
 performed after the lock is acquired against a file that no longer matches
 the served range; it keeps returning the current range with fresh anchors
@@ -93,15 +95,17 @@ version binding above — leaves the pre-mutation state unable to authorize
 another replace until a new read republishes current rows. The anchored
 write operations hold the same discipline with one stronger mechanism: the
 write's state publication is a single `publishWrite` transaction that
-replaces the previous served rows for exactly the written content version,
-so any post-commit failure rolls the whole transaction back — the previous
+clears the previous served rows and installs the written content version's
+rows (only when the agent-only auto-read setting serves fresh anchors), so
+any post-commit failure rolls the whole transaction back — the previous
 version's rows survive untouched, are stale against the written bytes, and
 refuse every old anchor (unchanged rows included) until a fresh read. A
 store failure after the write is therefore reported as a unified bounded
 `[E_STATE_UNAVAILABLE]` note on the truthful success, never as a failed
-write and never as a state that still authorizes old anchors. An
-auto-read-off or unchanged write publishes nothing and leaves the previous
-version's rows as the same stale barrier.
+write and never as a state that still authorizes old anchors. Auto-read-
+off, unchanged, and empty writes publish the same clearing transaction with
+no new rows: the write-state clearing contract holds for every successful
+write, and only a failed publication leaves the stale barrier.
 
 ### One owner-aware store schema
 
@@ -152,13 +156,20 @@ touched nothing: the canonical lock path is never emptied behind a live
 successor, so no third writer can slip in and no restore window exists. A
 taken file whose identity or token mismatches (defense-in-depth against a
 non-protocol actor) is restored with a no-clobber link within the shared
-budget, never destroyed. A marker whose holder died is reclaimed the same
-positive-death way as a dead lock — no new marker can publish while it
-exists, so its verified removal is exact; a live marker makes the removal
-attempt busy and the caller's bounded loop retries. All removal and marker
-waits share the calling acquire's deadline and cancellation and end in the
-classified `[E_FILE_LOCKED]` outcome; a release-time removal runs under its
-own bounded budget and only logs on failure.
+budget, never destroyed. A marker whose holder died is reclaimed through a per-dead-token
+claim: a reclaimer must first win an exclusive claim file named after the
+dead marker's unique token (one link winner), and only the claim winner
+ever takes the marker path — so two stale reclaimers of the same dead
+marker can never race a check-then-rename on the marker, and a live marker
+installed by another reclaimer is never displaced. If a fresh remover wins
+the empty path in the claimant's take-to-publish gap, the claimant backs
+off: exactly one holder exists at every instant. A live marker makes the
+removal attempt busy and the caller's bounded loop retries; a release
+retries busy within its bounded release budget and records an explicit safe
+failure on exhaustion (the lock file remains and is reclaimed once the
+process is gone). All removal and marker waits share the calling acquire's
+deadline and cancellation and end in the classified `[E_FILE_LOCKED]`
+outcome.
 
 A lock held by a confirmed-live or unverifiable owner (foreign host, reused
 pid, malformed record) is never reclaimed because time elapsed; a crashed
@@ -255,7 +266,8 @@ now simply covers one more incompatible layout.
    the public `WriteOperations` contract of the pinned Pi version; the plain
    filesystem write performed when anchored editing is disabled or the
    availability gate is closed is unaffected. Because that seam carries no
-   AbortSignal, a parent write cancelled while waiting on the lock completes
-   its bounded wait first (classified `E_FILE_LOCKED`, nothing written) — a
-   small cancellation-latency cost accepted to keep the parent factory's
-   execution unwrapped.
+   AbortSignal, the parent write performs one immediate lock attempt: a
+   cross-process holder makes the write refuse with `E_FILE_LOCKED`
+   immediately instead of waiting out a budget — a small contention-retry
+   cost accepted to keep the parent factory's execution unwrapped and to
+   make cancellation leakage structurally impossible.

@@ -37,3 +37,4 @@ tests/context-memory/continuity/report/
 
 # Provider-cache experiment report (generated build artifact, #225)
 tests/context-memory/cache-experiment/report/
+.tmp/

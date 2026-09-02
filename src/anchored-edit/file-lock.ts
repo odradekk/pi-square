@@ -43,9 +43,12 @@ import { identityOf, sameNodeIdentity, type FileIdentity } from "../core/safe-wr
  * a stale verifier: the verifier re-reads the canonical record under the
  * marker, finds a different token, and walks away having touched nothing.
  *
- * A marker whose holder died is reclaimed the same positive-death way as a
- * dead lock: while the old marker exists no new marker can be published, so
- * its verified removal is exact. All removal waits share the calling
+ * A marker whose holder died is reclaimed through a per-dead-token claim:
+ * reclaimers must first win an exclusive claim file named after the dead
+ * marker's unique token, and only the claim winner ever takes the marker
+ * path — so two stale reclaimers can never race a check-then-rename on the
+ * marker itself, and a live marker installed by another reclaimer is never
+ * displaced. All removal waits share the calling
  * acquire's deadline and cancellation and end in the same classified
  * `E_FILE_LOCKED` outcome (or, for a release, a logged best-effort
  * failure) — never an unbounded or un-cancellable wait.
@@ -67,8 +70,11 @@ function readEnvMs(name: string, fallback: number): number {
 const DEFAULT_LOCK_WAIT_MS = readEnvMs("PI_SQUARE_LOCK_WAIT_MS", 3000);
 const DEFAULT_LOCK_POLL_MS = 40;
 /** Bound for a release-time removal (no caller budget): bounded, never
- *  unbounded, and failures are logged rather than thrown. */
-const RELEASE_REMOVAL_BUDGET_MS = readEnvMs("PI_SQUARE_RELEASE_BUDGET_MS", 10_000);
+ *  unbounded, and failures are logged rather than thrown. Read per call so
+ *  deployments (and tests) can tighten it without a reload. */
+function releaseBudgetMs(): number {
+  return readEnvMs("PI_SQUARE_RELEASE_BUDGET_MS", 10_000);
+}
 
 export interface FileLock {
   /** Releases the lock through the verified-removal protocol. Best-effort
@@ -144,13 +150,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
-/** POSIX signal-0 liveness probe; on Windows EPERM means "exists but not ours". */
-function processIsAlive(pid: number): boolean {
+/** Upper bound of a Linux pid (`pid_max` ceiling, 2^22): a record naming a
+ *  pid above it is malformed ownership, not a process to probe. */
+const MAX_REPRESENTABLE_PID = 4_194_304;
+
+type Liveness = "alive" | "dead" | "unknown";
+
+/**
+ * POSIX signal-0 liveness probe. ESRCH is the only definitive death proof;
+ * EPERM means alive (exists but not ours, Windows included); every other
+ * error (EINVAL for an invalid pid, EIO, ...) is *unknown* and fails closed
+ * — it is never treated as death.
+ */
+function probeLiveness(pid: number): Liveness {
   try {
     process.kill(pid, 0);
-    return true;
+    return "alive";
   } catch (error) {
-    return errCode(error) === "EPERM";
+    const code = errCode(error);
+    if (code === "ESRCH") return "dead";
+    if (code === "EPERM") return "alive";
+    return "unknown";
   }
 }
 
@@ -190,6 +210,7 @@ function isCompleteOwnerRecord(value: unknown): value is LockOwnerRecord {
     && typeof record.pid === "number"
     && Number.isInteger(record.pid)
     && record.pid > 0
+    && record.pid <= MAX_REPRESENTABLE_PID
     && typeof record.hostname === "string"
     && record.hostname.length > 0
     && typeof record.acquiredAt === "number"
@@ -222,7 +243,9 @@ function isOwnerGone(owner: LockOwnerRecord): boolean {
     const current = readStartTime(owner.pid);
     if (current !== undefined) return current !== owner.startTime;
   }
-  return !processIsAlive(owner.pid);
+  // Only a definitive ESRCH (or the start-time reuse proof above) counts as
+  // death; alive and unknown both fail closed.
+  return probeLiveness(owner.pid) === "dead";
 }
 
 interface LockFileInfo {
@@ -349,22 +372,8 @@ async function removeVerifiedLockFile(
     // between the re-verify and the take. The taken file is foreign —
     // restore it under its name, never destroy it, bounded by the shared
     // budget.
-    for (;;) {
-      try {
-        await link(retiredPath, lockPath);
-        await rm(retiredPath, { force: true }).catch(() => {});
-        return "foreign";
-      } catch (error) {
-        if (errCode(error) !== "EEXIST") throw error;
-      }
-      if (budgetSpent(budget)) {
-        console.error(
-          `Anchored lock removal could not restore a foreign lock file at ${lockPath}; left at ${retiredPath}.`,
-        );
-        return "foreign";
-      }
-      await sleep(budget.pollMs);
-    }
+    await restoreForeignFile(retiredPath, lockPath, budget);
+    return "foreign";
   } finally {
     await releaseRemovalMarker(lockPath, marker).catch((error) => {
       console.error(`Failed to release anchored lock removal marker for ${lockPath}:`, error);
@@ -373,32 +382,142 @@ async function removeVerifiedLockFile(
 }
 
 /**
- * Acquires the per-target removal marker under the shared budget. A marker
- * left by a provably dead remover is reclaimed first (while it exists no new
- * marker can be published, so its verified removal is exact); a live or
+ * Releases a held lock by running the verified-removal protocol and retrying
+ * while the removal marker is busy, within the bounded release budget. A
+ * single busy attempt must never leak the lock file for the process
+ * lifetime; exhausting the budget logs an explicit safe failure (the lock
+ * file remains and is reclaimed once this process is gone).
+ */
+async function releaseWithRetry(lockPath: string, identity: FileIdentity, token: string): Promise<void> {
+  const deadlineAt = Date.now() + releaseBudgetMs();
+  for (;;) {
+    const outcome = await removeVerifiedLockFile(lockPath, identity, token, {
+      deadlineAt,
+      pollMs: DEFAULT_LOCK_POLL_MS,
+    });
+    if (outcome !== "busy") return;
+    if (Date.now() >= deadlineAt) {
+      console.error(
+        `Failed to release anchored lock ${lockPath}: the removal marker stayed busy for the whole release budget. The lock file remains and will be reclaimed after this process exits.`,
+      );
+      return;
+    }
+    await sleep(DEFAULT_LOCK_POLL_MS);
+  }
+}
+
+function claimPathFor(lockPath: string, deadToken: string): string {
+  return `${markerPath(lockPath)}.claim.${deadToken}`;
+}
+
+/**
+ * Acquires the per-target removal marker under the shared budget. A live or
  * unverifiable marker yields undefined — "busy" — and the caller retries
  * within its own budget.
+ *
+ * A marker left by a provably dead remover is reclaimed through a per-dead-
+ * token claim: the reclaimer must first win an exclusive claim file named
+ * after the dead marker's unique token, and only the claim winner ever takes
+ * the marker path. Two stale reclaimers of the same dead marker cannot both
+ * act (one claim name, one link winner), so a delayed reclaimer can never
+ * rename-take the live marker another reclaimer installed — the claim breaks
+ * the check-then-rename recursion instead of repeating it. If the claim
+ * winner's own marker publish loses the empty path to a fresh remover that
+ * arrived in the take-to-publish gap, the winner backs off: exactly one
+ * holder exists at every instant, and a live marker is never displaced.
  */
 async function acquireRemovalMarker(
   lockPath: string,
   budget: WaitBudget,
 ): Promise<{ token: string; identity: FileIdentity } | undefined> {
   const path = markerPath(lockPath);
-  for (;;) {
-    if (budgetSpent(budget)) return undefined;
+  {
     const record = currentOwnerRecord();
     const identity = await publishOwnerRecord(path, JSON.stringify(record));
     if (identity) return { token: record.token, identity };
-    const existing = await readLockInfo(path);
-    if (existing.owner && existing.identity && isOwnerGone(existing.owner)) {
-      // Reclaim the dead remover's marker. While it exists, no other marker
-      // can be published, so the take is exact; failure just retries.
-      await removeExactFile(path, existing.identity, existing.owner.token, budget).catch(() => {});
-      continue;
-    }
+  }
+  const existing = await readLockInfo(path);
+  if (!(existing.owner && existing.identity && isOwnerGone(existing.owner))) {
     // A live remover holds the marker (or it is unverifiable — same
     // treatment): back off to the caller's bounded loop.
     return undefined;
+  }
+  if (budgetSpent(budget)) return undefined;
+
+  // Claim the dead marker's reclamation exclusively.
+  const deadToken = existing.owner.token;
+  const claimPath = claimPathFor(lockPath, deadToken);
+  const claimRecord = currentOwnerRecord();
+  const claimIdentity = await publishOwnerRecord(claimPath, JSON.stringify(claimRecord));
+  if (!claimIdentity) return undefined; // another reclaimer won the claim
+  try {
+    await __lockTestables.lockBarrier.markerClaimed?.(lockPath, claimPath);
+    if (budgetSpent(budget)) return undefined;
+    // Re-read under the claim: only the claim winner writes the marker path,
+    // so the marker must still be the exact dead record read above.
+    const now = await readLockInfo(path);
+    if (!(now.owner && now.identity && now.owner.token === deadToken)) {
+      return undefined; // replaced or gone between the read and the claim
+    }
+
+    // Take the dead marker. The claim makes this take exclusive, so the
+    // taken file is the verified dead record; a mismatch is a non-protocol
+    // actor and is restored, never deleted.
+    const retiredPath = join(dirname(path), `.retired-${randomUUID()}.tmp`);
+    try {
+      await rename(path, retiredPath);
+    } catch (error) {
+      if (errCode(error) === "ENOENT") return undefined;
+      throw error;
+    }
+    await __lockTestables.lockBarrier.markerTaken?.(lockPath, retiredPath);
+    const retiredInfo = await readLockInfo(retiredPath).catch(() => ({ owner: undefined, identity: undefined, token: undefined }) as LockFileInfo);
+    if (
+      retiredInfo.identity === undefined
+      || !sameNodeIdentity(retiredInfo.identity, now.identity!)
+      || retiredInfo.token !== deadToken
+    ) {
+      if (retiredInfo.identity !== undefined) {
+        await restoreForeignFile(retiredPath, path, budget);
+      }
+      return undefined;
+    }
+
+    // Publish our own marker into the now-empty path. A fresh remover may
+    // have won this gap; losing the link means exactly that, and we back off
+    // leaving it the sole holder. Either way the dead file is safe to delete.
+    const ownIdentity = await publishOwnerRecord(path, JSON.stringify(claimRecord));
+    await rm(retiredPath, { force: true }).catch(() => {});
+    if (!ownIdentity) return undefined;
+    return { token: claimRecord.token, identity: ownIdentity };
+  } finally {
+    // The claim file is uniquely ours (named after the dead token, won by
+    // this process): verified-own removal, best-effort.
+    await removeExactFile(claimPath, claimIdentity, claimRecord.token, {
+      deadlineAt: Date.now() + releaseBudgetMs(),
+      pollMs: DEFAULT_LOCK_POLL_MS,
+    }).catch((error) => {
+      console.error(`Failed to release anchored lock removal claim ${claimPath}:`, error);
+    });
+  }
+}
+
+/** Restores a taken foreign file under its name with a no-clobber link,
+ *  bounded by the shared budget; never destroys it. */
+async function restoreForeignFile(retiredPath: string, targetPath: string, budget: WaitBudget): Promise<void> {
+  for (;;) {
+    try {
+      await link(retiredPath, targetPath);
+      await rm(retiredPath, { force: true }).catch(() => {});
+      return;
+    } catch (error) {
+      if (errCode(error) !== "EEXIST") throw error;
+    }
+    if (budgetSpent(budget)) {
+      console.error(`Anchored lock removal could not restore a foreign file at ${targetPath}; left at ${retiredPath}.`);
+      return;
+    }
+    await sleep(budget.pollMs);
   }
 }
 
@@ -410,7 +529,7 @@ async function releaseRemovalMarker(
   marker: { token: string; identity: FileIdentity },
 ): Promise<void> {
   await removeExactFile(markerPath(lockPath), marker.identity, marker.token, {
-    deadlineAt: Date.now() + RELEASE_REMOVAL_BUDGET_MS,
+    deadlineAt: Date.now() + releaseBudgetMs(),
     pollMs: DEFAULT_LOCK_POLL_MS,
   });
 }
@@ -445,20 +564,7 @@ async function removeExactFile(
     return;
   }
   // Defense-in-depth: restore rather than destroy, within the budget.
-  for (;;) {
-    try {
-      await link(retiredPath, path);
-      await rm(retiredPath, { force: true }).catch(() => {});
-      return;
-    } catch (error) {
-      if (errCode(error) !== "EEXIST") throw error;
-    }
-    if (budgetSpent(budget)) {
-      console.error(`Anchored lock removal could not restore a foreign file at ${path}; left at ${retiredPath}.`);
-      return;
-    }
-    await sleep(budget.pollMs);
-  }
+  await restoreForeignFile(retiredPath, path, budget);
 }
 
 /**
@@ -488,9 +594,10 @@ export async function acquireFileLock(
 
   let delayMs = 1;
   for (;;) {
-    // Cancellation and deadline exhaustion are the same classified outcome:
-    // the boundary was not entered and nothing was modified.
-    if (budgetSpent(budget)) return null;
+    // One immediate publish attempt happens even at a zero budget: the
+    // parent write uses a zero-wait boundary (its seam carries no
+    // AbortSignal, so it never enters a cancellable wait), and a busy target
+    // is classified E_FILE_LOCKED at once.
     let identity: FileIdentity | undefined;
     try {
       identity = await publishOwnerRecord(lockPath, ownerRaw);
@@ -504,10 +611,7 @@ export async function acquireFileLock(
     if (identity) {
       return {
         release: () =>
-          removeVerifiedLockFile(lockPath, identity!, owner.token, {
-            deadlineAt: Date.now() + RELEASE_REMOVAL_BUDGET_MS,
-            pollMs: DEFAULT_LOCK_POLL_MS,
-          })
+          releaseWithRetry(lockPath, identity!, owner.token)
             .then(() => undefined)
             .catch((error) => {
               // Release is best-effort after committed work: log, never throw
@@ -516,6 +620,10 @@ export async function acquireFileLock(
             }),
       };
     }
+    // Cancellation and deadline exhaustion are the same classified outcome:
+    // the boundary was not entered and nothing was modified. Checked after
+    // the publish attempt so a zero budget still performs exactly one try.
+    if (budgetSpent(budget)) return null;
     const info = await readLockInfo(lockPath);
     if (info.owner && info.identity && isOwnerGone(info.owner)) {
       // The dead owner's file still blocks every publisher. Remove it under
@@ -539,6 +647,8 @@ export async function acquireFileLock(
  */
 export const __lockTestables = {
   removeVerifiedLockFile,
+  acquireRemovalMarker,
+  releaseRemovalMarker,
   publishOwnerRecord,
   currentOwnerRecord,
   isOwnerGone,
@@ -546,6 +656,8 @@ export const __lockTestables = {
   markerPath,
   lockBarrier: {
     markerHeld: undefined as ((lockPath: string) => Promise<void>) | undefined,
+    markerClaimed: undefined as ((lockPath: string, claimPath: string) => Promise<void>) | undefined,
+    markerTaken: undefined as ((lockPath: string, retiredPath: string) => Promise<void>) | undefined,
     afterTake: undefined as ((lockPath: string, retiredPath: string) => Promise<void>) | undefined,
   },
 };

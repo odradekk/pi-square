@@ -679,6 +679,79 @@ describe("operation boundary — store robustness (#264)", () => {
     });
   });
 
+  it("quarantines a current-version store that still carries the removed undo table (#264 review)", async () => {
+    await withTempDir("boundary-v8-undo-", async (cwd) => {
+      const { mkdtemp, rm, readdir } = await import("fs/promises");
+      const dir = await mkdtemp(join(cwd, "store-"));
+      const storePath = join(dir, "hash-store.sqlite");
+      try {
+        // Correct v8 meta/snapshots/served plus a leftover undo table: every
+        // undo-bearing layout is incompatible and must be quarantined whole.
+        const { DatabaseSync } = await import("node:sqlite");
+        const fake = new DatabaseSync(storePath);
+        fake.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+        fake.exec(
+          "CREATE TABLE snapshots (owner TEXT NOT NULL, path TEXT NOT NULL, checksum TEXT NOT NULL, line_count INTEGER NOT NULL, hashes TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner, path))",
+        );
+        fake.exec(
+          "CREATE TABLE served (owner TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, content_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner, path, hash))",
+        );
+        fake.exec("CREATE TABLE undo (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
+        fake.prepare("INSERT INTO meta (key, value) VALUES ('version', '8')").run();
+        fake.close();
+
+        const view = await loadHashStoreAt(storePath, "parent");
+        expect(view.getSnapshot("/p.ts", "x\n")).toBeUndefined();
+        const { contentChecksum } = await import("../../../src/anchored-edit/hashline/hasher");
+        const { splitLines } = await import("../../../src/anchored-edit/utils");
+        view.upsertSnapshot("/p.ts", contentChecksum("x\n"), splitLines("x\n").length, ["BBB"]);
+        expect(view.getSnapshot("/p.ts", "x\n")).toEqual(["BBB"]);
+        view.release();
+
+        const entries = await readdir(dir);
+        expect(entries.filter((name) => name.includes(".old-schema-"))).toHaveLength(1);
+        expect(entries.includes("hash-store.sqlite")).toBe(true);
+      } finally {
+        shutdownHashStore();
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("quarantines a current-version store whose meta table lacks the primary key (#264 review)", async () => {
+    await withTempDir("boundary-v8-meta-", async (cwd) => {
+      const { mkdtemp, rm, readdir } = await import("fs/promises");
+      const dir = await mkdtemp(join(cwd, "store-"));
+      const storePath = join(dir, "hash-store.sqlite");
+      try {
+        // meta without PRIMARY KEY: the version upsert's ON CONFLICT clause
+        // would fail at open time if the shape were not validated first.
+        const { DatabaseSync } = await import("node:sqlite");
+        const fake = new DatabaseSync(storePath);
+        fake.exec("CREATE TABLE meta (key TEXT, value TEXT NOT NULL)");
+        fake.exec(
+          "CREATE TABLE snapshots (owner TEXT NOT NULL, path TEXT NOT NULL, checksum TEXT NOT NULL, line_count INTEGER NOT NULL, hashes TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner, path))",
+        );
+        fake.exec(
+          "CREATE TABLE served (owner TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, content_hash TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner, path, hash))",
+        );
+        fake.prepare("INSERT INTO meta (key, value) VALUES ('version', '8')").run();
+        fake.close();
+
+        // Quarantine-and-rebuild, not an ON CONFLICT SQL error.
+        const view = await loadHashStoreAt(storePath, "parent");
+        expect(view.getSnapshot("/p.ts", "x\n")).toBeUndefined();
+        view.release();
+
+        const entries = await readdir(dir);
+        expect(entries.filter((name) => name.includes(".old-schema-"))).toHaveLength(1);
+      } finally {
+        shutdownHashStore();
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("keeps rows and cache consistent when a pruning delete fails mid-transaction", async () => {
     await withTempDir("boundary-prune-fail-", async (cwd) => {
       const { mkdtemp, rm } = await import("fs/promises");
@@ -848,6 +921,82 @@ describe("operation boundary — write post-commit failure keeps old anchors una
   });
 });
 
+describe("operation boundary — write-state clearing contract (#264 review)", () => {
+  async function servedRowCount(cwd: string, canonical: string): Promise<number> {
+    const { DatabaseSync } = await import("node:sqlite");
+    const { anchoredHashStorePath } = await import("../../../src/anchored-edit/paths");
+    const db = new DatabaseSync(anchoredHashStorePath(anchoredStoreDir(testSessionDir(cwd), cwd)), { timeout: 500 });
+    try {
+      return (db.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?").get(PARENT_OWNER, canonical) as { count: number }).count;
+    } finally {
+      db.close();
+    }
+  }
+
+  it("every successful parent write clears served rows in one publication: unchanged, autoRead-off, and empty writes; failures keep state", async () => {
+    await withTempDir("boundary-write-clear-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const fixtures = await import("../support/fixtures");
+      const { readTool } = fixtures.setupIntegrationTest(cwd);
+      const ctx = fixtures.makeTestCtx(cwd);
+      const canonical = await (await import("../../../src/anchored-edit/fs-write")).resolveTarget(path);
+
+      // Seed served rows through a real read.
+      await readTool.execute("r1", { path: "sample.txt" }, undefined, undefined, ctx);
+      expect(await servedRowCount(cwd, canonical)).toBe(3);
+
+      // Unchanged write (autoRead on): cleared, no fresh anchors appended.
+      {
+        const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+        const result = await runWrite("w1", { path: "sample.txt", content: SAMPLE });
+        expect(textOf(result.content)).not.toContain("Auto-read");
+        expect(await servedRowCount(cwd, canonical), "an unchanged write still clears served rows").toBe(0);
+      }
+
+      // Changed write with autoRead off: cleared, nothing re-served.
+      await readTool.execute("r2", { path: "sample.txt" }, undefined, undefined, ctx);
+      expect(await servedRowCount(cwd, canonical)).toBe(3);
+      {
+        const { runWrite } = setupParentWrite(cwd, { autoRead: false });
+        const result = await runWrite("w2", { path: "sample.txt", content: "aaa\nOFF\nccc\n" });
+        expect(textOf(result.content)).not.toContain("Auto-read");
+        expect(await servedRowCount(cwd, canonical), "an autoRead-off write clears served rows in the same transaction").toBe(0);
+      }
+
+      // Empty write: the degenerate preview serves exactly the empty file's
+      // single placeholder row — for the written (empty) version, with every
+      // previous row cleared.
+      await readTool.execute("r3", { path: "sample.txt" }, undefined, undefined, ctx);
+      expect(await servedRowCount(cwd, canonical)).toBe(3);
+      {
+        const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+        await runWrite("w3", { path: "sample.txt", content: "" });
+        const { DatabaseSync } = await import("node:sqlite");
+        const { anchoredHashStorePath } = await import("../../../src/anchored-edit/paths");
+        const { contentChecksum } = await import("../../../src/anchored-edit/hashline/hasher");
+        const db = new DatabaseSync(anchoredHashStorePath(anchoredStoreDir(testSessionDir(cwd), cwd)), { timeout: 500 });
+        try {
+          const rows = db.prepare("SELECT content_hash FROM served WHERE owner = ? AND path = ?").all(PARENT_OWNER, canonical) as Array<{ content_hash: string }>;
+          expect(rows).toHaveLength(1);
+          expect(rows[0]!.content_hash, "the empty write serves exactly the empty version's placeholder row").toBe(contentChecksum(""));
+        } finally {
+          db.close();
+        }
+      }
+
+      // A failed write keeps the served state intact.
+      await readTool.execute("r4", { path: "sample.txt" }, undefined, undefined, ctx);
+      expect(await servedRowCount(cwd, canonical)).toBeGreaterThan(0);
+      {
+        const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+        await expect(runWrite("w4", { path: "sample.txt/child", content: "nope\n" })).rejects.toThrow();
+        expect(await servedRowCount(cwd, canonical), "a failed write leaves served state intact").toBeGreaterThan(0);
+      }
+    });
+  });
+});
+
 describe("operation boundary — cancellation during the lock wait (#264 P1)", () => {
   it("an aborted replace wait reports E_FILE_LOCKED without modifying the file", async () => {
     await withTempDir("boundary-cancel-replace-", async (cwd) => {
@@ -883,7 +1032,7 @@ describe("operation boundary — cancellation during the lock wait (#264 P1)", (
     });
   });
 
-  it("a parent write whose lock wait exhausts its budget reports E_FILE_LOCKED without writing the file", async () => {
+  it("a parent write aborted while another editor holds the lock never writes: zero-wait classification (#264 P1)", async () => {
     await withTempDir("boundary-cancel-write-", async (cwd) => {
       const path = join(cwd, "sample.txt");
       await writeFile(path, SAMPLE, "utf-8");
@@ -893,22 +1042,39 @@ describe("operation boundary — cancellation during the lock wait (#264 P1)", (
       const holder = await (await import("../../../src/anchored-edit/operations")).enterTargetBoundary(storeDir, target, { waitMs: 5000 });
       expect(holder).not.toBeNull();
       try {
-        const operations = await import("../../../src/anchored-edit/operations");
-        const writeSession = operations.createAnchoredWriteSession({
-          cwd,
-          owner: PARENT_OWNER,
-          sessionDir: testSessionDir(cwd),
-          autoRead: () => true,
-          lockWaitMs: 150,
-        });
-        // The parent write has no execution wrapper (ADR-0014), so its lock
-        // wait is bounded by the session's budget and classifies as
-        // E_FILE_LOCKED; the factory's own abort checks stay Pi's.
-        await expect(writeSession.operations.writeFile(path, "written\n")).rejects.toThrow("[E_FILE_LOCKED]");
+        // The production parent composition: the seam carries no AbortSignal
+        // and there is no execution wrapper, so the parent write performs one
+        // immediate lock attempt — it never enters a cancellable wait. The
+        // reviewer's interleaving (abort during what a waiting design would
+        // still be waiting on) therefore cannot write-then-fail: the busy
+        // target classifies as E_FILE_LOCKED at once and the bytes are
+        // untouched, whatever the abort timing.
+        const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+
+        // A call aborted before the factory runs keeps Pi's own abort
+        // semantics and never reaches the filesystem.
+        const aborted = new AbortController();
+        aborted.abort();
+        await expect(runWrite("w1-aborted", { path: "sample.txt", content: "AFTER\n" }, aborted.signal))
+          .rejects.toThrow("Operation aborted");
         expect(await readFile(path, "utf-8")).toBe(SAMPLE);
+
+        // The reviewer's interleaving — abort at 50ms while a waiting design
+        // would still be waiting until the holder releases at 150ms — cannot
+        // write-then-fail: with no cancellable wait, the contended write
+        // settles as E_FILE_LOCKED within the first event-loop turns, long
+        // before any later abort or release, and the bytes are untouched.
+        await expect(runWrite("w1", { path: "sample.txt", content: "AFTER\n" })).rejects.toThrow("[E_FILE_LOCKED]");
+        expect(await readFile(path, "utf-8"), "a contended parent write never modifies the file").toBe(SAMPLE);
       } finally {
         await holder!.release();
       }
+
+      // With the lock free again, the same write succeeds — the refusal was
+      // classified contention, not a broken surface.
+      const { runWrite: retryWrite } = setupParentWrite(cwd, { autoRead: false });
+      await retryWrite("w2", { path: "sample.txt", content: "AFTER\n" });
+      expect(await readFile(path, "utf-8")).toBe("AFTER\n");
     });
   });
 

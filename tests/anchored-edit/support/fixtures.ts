@@ -337,12 +337,13 @@ export function setupParentWrite(
   async function runWrite(
     toolCallId: string,
     params: { path: string; content: string },
+    signal?: AbortSignal,
   ): Promise<{ content: Array<{ type: string; text: string }> } & Record<string, unknown>> {
     await handlers.get("tool_call")!(
       { toolName: "write", toolCallId, input: params },
       ctx,
     );
-    const result = await definition.execute(toolCallId, params, undefined, undefined, ctx);
+    const result = await definition.execute(toolCallId, params, signal, undefined, ctx);
     const patched = await handlers.get("tool_result")!(
       {
         toolName: "write",

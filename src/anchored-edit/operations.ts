@@ -652,13 +652,19 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
         let appendix: string | undefined;
         try {
           // Publication happens while the boundary is still held, as ONE
-          // repository transaction that replaces the previous served rows
-          // for exactly this content version. Any failure rolls the whole
-          // transaction back, so the previous version's rows remain and —
-          // being version-bound — cannot authorize a replace against the
-          // written bytes; the model sees the unified bounded note.
+          // repository transaction per successful write: the served rows for
+          // the written content version replace every previous row (the
+          // write-state clearing contract), with new rows only when the
+          // agent-only auto-read setting serves fresh anchors for a changed,
+          // supported target. Any failure rolls the whole transaction back,
+          // so the previous version's rows remain and — being version-bound —
+          // cannot authorize a replace against the written bytes; the model
+          // sees the unified bounded note and a fresh read repairs.
           const store = await loadAnchoredHashStore(session.storeDir, input.owner);
           try {
+            let servedHashes: string[] | undefined;
+            let snapshotHashes: string[] = [];
+            let snapshotContent: string | undefined;
             if (input.autoRead() && changed) {
               const rendered = await renderAutoReadAnchors({
                 path: canonicalPath,
@@ -666,21 +672,18 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
                 workspaceRoot: session.workspaceRoot,
                 store,
               });
-              if (rendered !== undefined && rendered.servedHashes.length > 0) {
+              if (rendered !== undefined) {
                 appendix = rendered.text;
-                store.publishWrite({
-                  path: canonicalPath,
-                  content: rendered.content,
-                  hashes: rendered.hashes,
-                  servedHashes: rendered.servedHashes,
-                });
+                servedHashes = rendered.servedHashes.length > 0 ? rendered.servedHashes : undefined;
+                snapshotHashes = rendered.hashes;
+                snapshotContent = rendered.content;
               }
-              // Otherwise (unsupported target, or a degenerate empty preview)
-              // nothing is published: the previous version's rows remain and,
-              // being version-bound, authorize nothing against the written
-              // bytes until a fresh read republishes current rows. The same
-              // holds deliberately for auto-read-off and unchanged writes.
             }
+            store.publishWrite({
+              path: canonicalPath,
+              ...(snapshotContent !== undefined ? { content: snapshotContent, hashes: snapshotHashes } : {}),
+              ...(servedHashes !== undefined ? { servedHashes } : {}),
+            });
           } finally {
             store.release();
           }
@@ -711,5 +714,3 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
     },
   };
 }
-
-

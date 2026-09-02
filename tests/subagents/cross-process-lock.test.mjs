@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -59,6 +59,13 @@ function readStartTimeOf(pid) {
   } catch {
     return undefined;
   }
+}
+
+/** A real, dead pid: spawn a process that exits immediately and wait for it. */
+function deadPid() {
+  const result = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+  assert.equal(result.status, 0);
+  return result.pid;
 }
 
 function lockDir() {
@@ -164,13 +171,13 @@ try {
   // reclaimed rather than blocking indefinitely; foreign-host ownership is
   // unverifiable and fails closed. ---
   const deadLocalPath = await canonicalLockPath("stale-inproc.txt");
-  writeFileSync(deadLocalPath, JSON.stringify({ v: 1, token: "dead-local", pid: 2_147_483_647, hostname: hostname(), acquiredAt: Date.now() - 1000 }));
+  writeFileSync(deadLocalPath, JSON.stringify({ v: 1, token: "dead-local", pid: deadPid(), hostname: hostname(), acquiredAt: Date.now() - 1000 }));
   const reclaimInProc = await acquireFileLock(deadLocalPath, { waitMs: 200 });
   assert.ok(reclaimInProc, "a lock owned by a confirmed-dead local pid is reclaimed");
   await reclaimInProc.release();
 
   const foreignPath = await canonicalLockPath("foreign-host.txt");
-  writeFileSync(foreignPath, JSON.stringify({ v: 1, token: "foreign", pid: 2_147_483_647, hostname: "definitely-not-this-host", acquiredAt: Date.now() - 3_600_000 }));
+  writeFileSync(foreignPath, JSON.stringify({ v: 1, token: "foreign", pid: deadPid(), hostname: "definitely-not-this-host", acquiredAt: Date.now() - 3_600_000 }));
   const foreignRefusal = await acquireFileLock(foreignPath, { waitMs: 150 });
   assert.equal(foreignRefusal, null, "a foreign-host lock is never reclaimed, only waited on");
   rmSync(foreignPath, { force: true });
@@ -210,7 +217,7 @@ try {
   // recorded identity no longer names the successor's inode (#264).
   {
     const successorPath = await canonicalLockPath("successor.txt");
-    const priorRecord = { v: 1, token: "prior-token", pid: 2_147_483_647, hostname: hostname(), acquiredAt: Date.now() - 1_000 };
+    const priorRecord = { v: 1, token: "prior-token", pid: deadPid(), hostname: hostname(), acquiredAt: Date.now() - 1_000 };
     writeFileSync(successorPath, JSON.stringify(priorRecord));
     const priorIdentity = statSync(successorPath);
     const successor = await acquireFileLock(successorPath, { waitMs: 300 });
