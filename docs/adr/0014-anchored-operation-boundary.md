@@ -51,35 +51,60 @@ cannot enter the boundary returns `[E_FILE_LOCKED]` instead of unanchored
 content presented as anchored evidence.
 
 `[E_FILE_LOCKED]` means failure to enter the operation boundary (bounded
-wait exhausted or cancelled). `[E_RANGE_STALE]` is reserved for validation
+wait exhausted or cancelled): an aborted lock wait resolves as classified
+contention, never an unclassified throw, and the cancelled operation changes
+nothing. The executing tool call's AbortSignal reaches every lock wait —
+replace and read carry it directly, and the anchored write compositions run
+the public factory execution inside an AsyncLocalStorage signal context
+because the `WriteOperations` seam has no signal parameter. `[E_RANGE_STALE]`
+is reserved for validation
 performed after the lock is acquired against a file that no longer matches
 the served range; it keeps returning the current range with fresh anchors
 and serving those rows for the immediate retry. The child `requireServed`
 gate is unchanged.
 
-### Replace: pure preparation, atomic publication
+### Replace: pure preparation, version-bound authorization, atomic publication
 
 Replace preparation resolves and validates the range and computes the
-replacement without changing persistent or cached state. The filesystem
-commit is the irreversible point. After it, the candidate snapshot and the
-diff's served rows are published in one repository transaction while the
-lock is still held. A post-commit publication failure never reports that the
-file was not changed: the result keeps the truthful mutation success,
-suppresses fresh anchors, emits a bounded `[E_STATE_UNAVAILABLE]` warning
-directing a fresh read, and leaves the pre-mutation state unable to
-authorize another replace — stale served rows plus changed bytes are refused
-until a new read republishes them.
+replacement without changing persistent or cached state. Authorization is
+bound to the content version: every served row records the checksum of the
+exact content it was served for, and a replace may verify a range only
+against rows recorded for the file's current version. Rows recorded for any
+other version authorize nothing — for every owner, parent included — so an
+external modification (or a mutation whose publication failed, or a process
+that died at that boundary) invalidates the previous authorization until a
+fresh read republishes current rows. Validation failures carry the observed
+content out of preparation (`ReplaceValidationError`) so the coordinator
+publishes the refusal's feedback rows version-bound from inside the
+boundary: the model's immediate retry with the fresh anchors verifies, while
+the older version stays unusable.
+
+The filesystem commit is the irreversible point. After it, the candidate
+snapshot and the diff's served rows are published in one repository
+transaction while the lock is still held. A post-commit publication failure
+never reports that the file was not changed: the result keeps the truthful
+mutation success, suppresses fresh anchors, emits a bounded
+`[E_STATE_UNAVAILABLE]` warning directing a fresh read, and — through the
+version binding above — leaves the pre-mutation state unable to authorize
+another replace until a new read republishes current rows. The anchored
+write operations hold the same discipline: everything after their
+filesystem write is post-commit, so a store failure there is reported as a
+bounded actionable note on the truthful success, never as a failed write,
+and the write's signal is checked before any filesystem effect (a cancelled
+wait writes nothing).
 
 ### One owner-aware store schema
 
-The anchor store (schema version 7) has exactly one owner-aware layout; the
+The anchor store (schema version 8) has exactly one owner-aware layout; the
 owner identity is required by the type and the repository API, so the former
 ownerless current-version shape is unrepresentable. One ref-counted physical
 connection is cached per store path, and callers receive typed owner views.
 Snapshot caches are scoped by physical store, owner, and canonical target;
 store eviction, owner deletion, quarantine, and shutdown invalidate only the
 state they own and never close a connection with an active borrower. Served
-hashes are row-level and merge conflict-free; owner deletion, multi-path
+hashes are row-level, version-bound, and merge conflict-free: each
+publication merges the rows for exactly one content version and drops other
+versions' rows for the path in the same transaction. Owner deletion, multi-path
 pruning, and the post-commit publication are explicit transactions. Path
 pruning returns absence only for genuine missing-path errors — permission
 and resource failures preserve rows and surface bounded diagnostics. Every
@@ -87,16 +112,38 @@ incompatible non-empty layout, including the former ownerless
 current-version shape, is quarantined whole with its sidecars and rebuilt
 fresh; there is no data migration.
 
-### Lock ownership and reclamation
+### Lock ownership, publication, and verified removal
 
 Lock creation publishes a complete owner record (random token, pid, host,
 and process start time where the platform provides it) atomically by writing
 an exclusive temporary file and hard-linking it into place, so no observer
-ever sees a partial lock. Release and reclaim verify the token and the file
-identity through the same-node unlink. A lock held by a confirmed-live or
-unverifiable owner (foreign host, reused pid, malformed record) is never
-reclaimed because time elapsed; a crashed local owner is reclaimed after a
-positive determination that the recorded process is gone. The operation key
+ever sees a partial lock; publication failure outside the held case
+(EEXIST) propagates — there is no writable fallback that could expose a
+partial lock name. A record is attributable only when it satisfies the
+complete schema; malformed and pre-token records are unverifiable ownership
+and fail closed.
+
+Removal never unlinks by path after a check. It takes the file atomically
+with `rename` to a unique retirement name, then deletes it only when *both*
+proofs hold: the taken file's node identity matches the identity the remover
+verified beforehand, and the unique acquisition token inside the taken
+record matches the token of the record that was verified. The second proof
+exists because inode reuse inside one coarse birthtime window can falsify
+identity alone. On a mismatch — a racing reclaimer retired the verified file
+and a successor installed in between, or an inode was reused — the taken
+file is foreign: it is restored with a no-clobber hard link as soon as the
+lock path is free (a bounded wait that ends by preserving the file at its
+retirement name and surfacing the displacement), and a foreign lock is never
+destroyed or clobbered. Because a live owner is never reclaimed, a holder's
+own release always finds exactly its own file.
+
+A lock held by a confirmed-live or unverifiable owner (foreign host, reused
+pid, malformed record) is never reclaimed because time elapsed; a crashed
+local owner is reclaimed only after a positive determination that the
+recorded process is gone: the recorded start time differs from the current
+one for that pid (a reused pid proves the original died), or the operating
+system confirms the pid is dead. An unreadable start time falls back to the
+liveness probe; an ambiguous read is never proof of death. The operation key
 is the canonical target path; for an already-existing file with multiple
 hard links it is the file's stable identity, so hard-link aliases inside one
 workspace lock area coordinate. Different initiating workspaces keep
@@ -107,8 +154,15 @@ separate lock areas by construction.
 The contributor rule that parent built-in overrides never wrap Pi `write`
 execution is narrowed: arbitrary execution wrappers remain forbidden, but an
 anchored write may inject the minimal supported filesystem operation needed
-to join the same queue-then-lock protocol; display decoration stays
-independent of execution. The parent write result keeps Pi's factory
+to join the same queue-then-lock protocol, and the registered write
+definition adds exactly one execution-entry gate — when the anchored surface
+is unavailable at execution time (another extension owns the built-in, or
+the anchor store could not be initialized), execution falls back completely
+to the plain native factory, so a half-activated anchored write (locked,
+store-writing, but not observable as ours) cannot exist; the gate also runs
+the factory execution in the write-signal context so cancellation reaches
+the injected lock wait. Result, error, and renderer semantics stay the
+factory's own. Display decoration stays independent of execution. The parent write result keeps Pi's factory
 wording, and the auto-read appendix is presented by the tool-result
 observer from the outcome the injected operation already published — the
 observer no longer participates in the state transaction. `replace` returns
@@ -160,9 +214,16 @@ now simply covers one more incompatible layout.
    stays contended (bounded refusal) until the file is removed. This is the
    fail-closed consequence of not treating elapsed age as proof of death.
 4. The lock-file name is derived from the operation key (canonical path or
-   stable inode identity); stores and locks from before version 7 are
-   quarantined/replaced on first open, so no in-place migration exists.
-5. The parent write's filesystem seam means an anchored session depends on
+   stable inode identity); stores from before version 8 are quarantined on
+   first open and pre-version-8 lock files are unverifiable ownership that
+   fails closed, so no in-place migration exists.
+5. Version-bound authorization is deliberately stricter than the historical
+   behavior: a replace whose target was modified externally — even outside
+   the replaced range, with unchanged anchor lines — is refused with
+   `[E_RANGE_STALE]` until a fresh read. The refusal carries fresh anchors
+   whose immediate retry applies, so the cost is one refused call, not a
+   lost edit.
+6. The parent write's filesystem seam means an anchored session depends on
    the public `WriteOperations` contract of the pinned Pi version; the
-   factory fallback (plain factory when anchored editing is disabled) is
-   unaffected.
+   plain-factory fallback (anchored editing disabled, or the execution-entry
+   gate closed) is unaffected.
