@@ -84,6 +84,9 @@ function createFakeSession({ script, defects }) {
   const compressions = [];
   const abandonedPatterns = (script.oracle.branch?.abandoned ?? []).flatMap((entry) => entry.patterns);
   let blocks = script.seed?.blockCount ?? 0;
+  // #265: the body of the block submitted at the run's due boundary, so the
+  // compression event can carry the model-authored Memory into evidence.
+  let submittedBody = null;
   let requestEntryId = null;
   let idCounter = 0;
   let started = false;
@@ -188,6 +191,7 @@ function createFakeSession({ script, defects }) {
       const toolCallId = toolCallParts[index].id;
       if (call.kind === "submit") {
         const submit = harness.tools.get(SUBMIT);
+        submittedBody = typeof call.arguments?.markdown === "string" ? call.arguments.markdown : "";
         await submit.execute(toolCallId, call.arguments, undefined, undefined, ctx);
         session.append(toolResultEntry(nextId(`${turn.id}-r`), session.getLeafId(), SUBMIT, PENDING_ACK));
         evidence.toolCalls.push(SUBMIT);
@@ -290,7 +294,11 @@ function createFakeSession({ script, defects }) {
             operation: blocks === 0 || blocksAfter > blocks ? "append" : "rebuild",
             blocksBefore: blocks,
             blocksAfter,
+            // #265: the block body this scripted model authored at the
+            // boundary, retained with the event for real-mode evidence.
+            block: submittedBody,
           });
+          submittedBody = null;
           blocks = blocksAfter;
           evidence.compression = compressions[compressions.length - 1];
           if (abandonedPatterns.length > 0) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MARKER, SEVERE_CLASSES } from "../qualification/harness.mjs";
@@ -13,7 +13,10 @@ import {
   executeRun,
   runQualification,
   runLabel,
+  attemptFileNames,
+  attemptFilePaths,
   REPORT_SCHEMA,
+  EVIDENCE_SCHEMA,
 } from "./runner.mjs";
 import { evaluateGates } from "./oracles.mjs";
 
@@ -118,10 +121,11 @@ async function runWithDefects(scenario, variant, defects) {
 
 {
   const reportDir = mkdtempSync(join(tmpdir(), "continuity-report-"));
-  const { report, json, markdown } = await runQualification({
+  const attempt = await runQualification({
     adapter: createFakeAdapter(),
     reportDir,
   });
+  const { report, json, markdown } = attempt;
 
   assert.equal(report.result, "pass", "the clean dry-run passes every gate");
   assert.equal(report.mode, "dry-run");
@@ -150,10 +154,17 @@ async function runWithDefects(scenario, variant, defects) {
     assert.ok(run.ok, `${run.run} is clean`);
   }
 
-  // Files: bounded JSON + Markdown report plus the append-only attempts log.
+  // Files: one per-attempt bounded JSON + Markdown report pair plus the
+  // append-only attempts log; a dry-run writes no evidence file (#265).
   const files = readdirSync(reportDir).sort();
-  assert.deepEqual(files, ["attempts.jsonl", "continuity-qualification.json", "continuity-qualification.md"]);
-  assert.equal(JSON.parse(readFileSync(join(reportDir, "continuity-qualification.json"), "utf8")).result, "pass");
+  assert.equal(files.length, 3, "one attempt writes exactly the report pair and the attempts log");
+  assert.ok(files.includes("attempts.jsonl"), "the attempts log is written");
+  const writtenFirst = attempt;
+  assert.ok(!files.some((name) => name.startsWith("continuity-evidence-")), "a dry-run writes no evidence file");
+  assert.ok(!files.some((name) => name === "continuity-qualification.json" || name === "continuity-qualification.md"),
+    "no execution writes to the legacy fixed report names that overwrote earlier attempts (#265)");
+  assert.equal(writtenFirst.files.evidence, null, "the dry-run result reports no evidence path");
+  assert.equal(JSON.parse(readFileSync(writtenFirst.files.reportJson, "utf8")).result, "pass");
   assert.ok(markdown.includes("# Context Memory continuity qualification"));
 
   // Privacy: no fixture marker, no padding runs, in either artifact.
@@ -162,8 +173,10 @@ async function runWithDefects(scenario, variant, defects) {
     assert.equal(text.match(/(.)\1{63}/), null, "the report never contains fixture padding runs");
   }
 
-  // A second execution appends a second attempts line with a stable pins digest.
+  // A second execution appends a second attempts line with a stable pins
+  // digest and leaves the first attempt's report untouched on disk (#265).
   const firstLine = JSON.parse(readFileSync(join(reportDir, "attempts.jsonl"), "utf8").split("\n")[0]);
+  const firstJsonBefore = readFileSync(writtenFirst.files.reportJson, "utf8");
   const second = await runQualification({ adapter: createFakeAdapter(), reportDir });
   const lines = readFileSync(join(reportDir, "attempts.jsonl"), "utf8").trim().split("\n");
   assert.equal(lines.length, 2, "attempts are append-only");
@@ -171,6 +184,10 @@ async function runWithDefects(scenario, variant, defects) {
   assert.equal(secondLine.pinsDigest, firstLine.pinsDigest, "identical environments keep one pins digest");
   assert.equal(secondLine.result, second.report.result);
   assert.equal(second.report.result, "pass");
+  assert.notEqual(second.files.reportJson, writtenFirst.files.reportJson, "the second attempt writes its own report names");
+  assert.equal(readFileSync(writtenFirst.files.reportJson, "utf8"), firstJsonBefore,
+    "the second execution never overwrites the first attempt's report");
+  assert.equal(readdirSync(reportDir).length, 5, "two attempts leave two report pairs plus the attempts log");
 }
 
 // ─── Every severe failure class is caught, separately ──────────────
@@ -500,14 +517,15 @@ async function runWithDefects(scenario, variant, defects) {
       },
     };
     const reportDir = mkdtempSync(join(tmpdir(), "continuity-leak-"));
-    const { report, json } = await runQualification({ adapter: leaking, reportDir });
+    const leakingRun = await runQualification({ adapter: leaking, reportDir });
+    const { report, json } = leakingRun;
     assert.equal(report.result, "fail");
     assert.ok(report.failures.some((failure) => failure.id === "report-privacy"), "the self-check flags the leak");
     assert.ok(!json.includes(MARKER), "the masked artifact carries no marker");
     assert.equal(json.match(/q{64}/), null, "the masked artifact carries no padding run");
-    const writtenJson = readFileSync(join(reportDir, "continuity-qualification.json"), "utf8");
+    const writtenJson = readFileSync(leakingRun.files.reportJson, "utf8");
     assert.ok(!writtenJson.includes(MARKER), "the written JSON artifact is masked too");
-    const writtenMarkdown = readFileSync(join(reportDir, "continuity-qualification.md"), "utf8");
+    const writtenMarkdown = readFileSync(leakingRun.files.reportMarkdown, "utf8");
     assert.ok(!writtenMarkdown.includes(MARKER), "the written Markdown artifact is masked too");
     assert.equal(writtenMarkdown.match(/q{64}/), null, "the written Markdown artifact carries no padding run");
     const attempts = JSON.parse(readFileSync(join(reportDir, "attempts.jsonl"), "utf8").trim());
@@ -531,6 +549,123 @@ async function runWithDefects(scenario, variant, defects) {
   );
   assert.deepEqual(FAKE_ADAPTER_DECLARATION.requiredEnv, [], "the dry-run adapter needs no credentials");
   assert.equal(typeof runLabel(RUN("exact-work", "middle")), "string");
+}
+
+// ─── Fact-based scoring: alternates accepted, corruption still caught ──
+
+{
+  const { scoreRun } = await import("./oracles.mjs");
+  const { buildScript } = await import("./scenarios.mjs");
+  const script = buildScript(SCENARIOS.find((s) => s.id === "branch-isolation"), "middle");
+  const run = RUN("branch-isolation", "middle");
+  const turn = (id, text) => ({
+    turn: id, kind: "probe", advisory: false, assistantText: text, assistantChars: text.length,
+    requestChars: 10, toolCalls: [], sourceReads: [], compression: null, memoryPurity: null, error: null,
+  });
+  const answerFor = (id) => script.turns.find((entry) => entry.id === id)?.fake?.finalText ?? "";
+  const schedule = script.turns
+    .filter((entry) => entry.fake?.submit)
+    .map((entry, index) => ({ turn: entry.id, turnIndex: script.turns.indexOf(entry), operation: index === 0 ? "append" : "rebuild" }));
+
+  // #265: the same facts stated in other words — "backed by Redis" for
+  // "Redis-backed", "a partition count of 16" for "16 partitions" — recall
+  // at the probes and satisfy the final task, with no severe failure.
+  const rephrasedText = "Retained design: backed by Redis, owned by data-platform, a partition count of 16, serials from the QCORPUS-SER-1180 allocator.";
+  const rephrased = script.turns.map((entry) => turn(
+    entry.id,
+    entry.id === "t7-probe" || entry.id === "t10-probe" || entry.id === "t12-final" ? rephrasedText : answerFor(entry.id),
+  ));
+  const rephrasedScore = scoreRun({ run, evidence: rephrased, oracle: script.oracle, stats: { compressions: schedule } });
+  assert.equal(rephrasedScore.critical.matched, rephrasedScore.critical.total, "rephrased facts score full critical recall");
+  assert.equal(rephrasedScore.continuity.matched, rephrasedScore.continuity.total, "rephrased facts score full continuity recall");
+  assert.equal(rephrasedScore.finalTask, true, "the final task accepts its facts in other words");
+  assert.equal(rephrasedScore.ok, true, "a model phrasing every fact differently passes outright");
+
+  // The widening never admits corruption: the same rephrased probe with a
+  // wrong value after an earlier match across the rebuild stays severe drift,
+  // and the per-probe outcome records the phrasing that matched.
+  const corrupted = script.turns.map((entry) => turn(
+    entry.id,
+    entry.id === "t10-probe"
+      ? "Retained design: backed by Redis, owned by data-platform, exactly 32 partitions, serials from the QCORPUS-SER-1180 allocator."
+      : entry.id === "t7-probe" ? rephrasedText : answerFor(entry.id),
+  ));
+  const corruptedScore = scoreRun({ run, evidence: corrupted, oracle: script.oracle, stats: { compressions: schedule } });
+  assert.equal(corruptedScore.severe["recursive-drift"], 1, "a corrupted value stays severe drift beside the alternates");
+  assert.equal(
+    corruptedScore.itemStatuses.find((item) => item.id === "backing-store").probes[0].matchedPattern,
+    "backed by Redis",
+    "the per-probe outcome carries the phrasing that matched",
+  );
+
+  // A malformed final-task declaration fails loudly rather than permissively.
+  assert.throws(
+    () => scoreRun({
+      run,
+      evidence: rephrased,
+      oracle: { ...script.oracle, finalTask: { turn: "t12-final", requires: ["16 partitions"] } },
+      stats: { compressions: schedule },
+    }),
+    /phrasing sets/,
+  );
+}
+
+// ─── Durable per-attempt reports and retained evidence (#265) ──────
+
+{
+  const reportDir = mkdtempSync(join(tmpdir(), "continuity-durable-"));
+
+  // Real mode through the scripted adapter — no credential, no network —
+  // writes one evidence file per attempt beside its report.
+  const real = await runQualification({ adapter: createFakeAdapter(), reportDir, mode: "real" });
+  assert.notEqual(real.files.evidence, null, "a real-mode execution writes an evidence file");
+  const evidence = JSON.parse(readFileSync(real.files.evidence, "utf8"));
+  assert.equal(evidence.schema, EVIDENCE_SCHEMA);
+  assert.equal(evidence.mode, "real");
+  assert.equal(evidence.pinsDigest, real.report.pins.pinsDigest, "the evidence file is tied to its attempt's pins");
+  assert.equal(evidence.runs.length, 16);
+  const firstRun = evidence.runs[0];
+  const probe = firstRun.turns.find((record) => record.kind === "probe");
+  assert.ok(probe.assistantText.length > 0, "the evidence retains the model's answer text per probe");
+  assert.ok(firstRun.turns.some((record) => record.toolCalls.includes("submit_memory")), "the evidence retains the tool calls made");
+  const matchedItem = firstRun.items.find((entry) => entry.status === "matched");
+  assert.ok(
+    matchedItem.probes.some((outcome) => outcome.outcome === "matched" && typeof outcome.matchedPattern === "string"),
+    "per-item outcomes record the phrasing that matched",
+  );
+  assert.equal(firstRun.memoryBlocks.length, 3, "the evidence retains every Memory block the model authored");
+  assert.ok(firstRun.memoryBlocks.every((block) => typeof block.body === "string" && block.body.length > 0),
+    "each retained Memory block carries its body");
+  assert.deepEqual(firstRun.memoryBlocks.map((block) => block.operation), ["append", "rebuild", "rebuild"]);
+  assert.equal(firstRun.finalTask.met, true);
+
+  // The bounded report written beside the evidence stays body-free.
+  const reportJson = readFileSync(real.files.reportJson, "utf8");
+  assert.ok(!reportJson.includes(MARKER), "the report beside the evidence carries no fixture content");
+
+  // A later dry-run never overwrites the real-mode report or its evidence.
+  const dry = await runQualification({ adapter: createFakeAdapter(), reportDir });
+  assert.equal(dry.files.evidence, null, "a dry-run writes no evidence file");
+  assert.equal(JSON.parse(readFileSync(real.files.evidence, "utf8")).pinsDigest, evidence.pinsDigest,
+    "the real-mode evidence survives the dry-run untouched");
+  assert.equal(readFileSync(real.files.reportJson, "utf8"), reportJson,
+    "the real-mode report survives the dry-run untouched");
+  const names = readdirSync(reportDir).sort();
+  assert.equal(names.length, 6, "two attempts leave two report pairs, one evidence file, and the log");
+  assert.equal(names.filter((name) => name.startsWith("continuity-evidence-")).length, 1,
+    "exactly one evidence file exists and it belongs to the real attempt");
+
+  // Two attempts sharing one timestamp still take their own names: the
+  // suffix loop keeps every attempt under files no later execution reuses.
+  const stamp = "2026-09-02T10:15:30.123Z";
+  assert.equal(attemptFileNames(stamp).reportJson, "continuity-qualification-2026-09-02T10-15-30-123Z.json");
+  assert.equal(attemptFileNames(stamp).evidence, "continuity-evidence-2026-09-02T10-15-30-123Z.json");
+  const collideDir = mkdtempSync(join(tmpdir(), "continuity-collide-"));
+  const names0 = attemptFileNames(stamp);
+  writeFileSync(join(collideDir, names0.reportJson), "{}\n");
+  const collided = attemptFilePaths(collideDir, stamp);
+  assert.ok(collided.reportJson.endsWith("-2.json"), "a taken stamp shifts to the next free suffix");
+  assert.ok(collided.evidence.endsWith("-2.json"), "the evidence file shifts with its report");
 }
 
 console.log("continuity runner: all checks passed");

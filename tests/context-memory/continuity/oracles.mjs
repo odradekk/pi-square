@@ -1,7 +1,7 @@
 import { SEVERE_CLASSES } from "../qualification/harness.mjs";
 
 /**
- * The deterministic continuity oracle engine (#224, revised by #261).
+ * The deterministic continuity oracle engine (#224, revised by #261 and #265).
  *
  * Scoring reads exactly two inputs: the predeclared oracle of one scenario
  * script and the bounded run evidence captured by an adapter. There is no LLM
@@ -9,6 +9,14 @@ import { SEVERE_CLASSES } from "../qualification/harness.mjs";
  * containment over the recorded assistant answers of declared probe turns —
  * deliberately dumb, so it can only under-approximate model quality, never
  * excuse it.
+ *
+ * #265: the oracle scores facts, not phrasings. Every scored fact carries a
+ * predeclared set of phrasings — recall succeeds when ANY phrasing of the
+ * fact appears — and each element of the final task's `requires` is the same
+ * kind of phrasing set for one required fact. The alternates are derived
+ * only from the fact's own structure and established domain synonyms, and
+ * the fixture tests assert no accepting phrasing matches its item's
+ * corruption vocabulary, so the widening can never admit a corrupted value.
  *
  * #261: the instrument scores recall, not prose style or verbosity. Every
  * scored turn's fixture question asks for exactly the items scored there, so
@@ -94,13 +102,17 @@ export function scoreRun({ run, evidence, oracle, stats }) {
         // in the run — can only be a miss, never a pass. Fixture validity
         // (probes referencing scripted turns) is enforced by the fixture tests.
         if (!turnIndex.has(probeId)) {
-          outcomes.push({ probeId, outcome: "missed" });
+          outcomes.push({ probeId, outcome: "missed", matchedPattern: null });
           continue;
         }
         const text = textOfTurn(evidence, probeId);
-        const isMatched = item.requires.some((pattern) => contains(text, pattern));
+        // #265: recall accepts any phrasing of the fact; the phrasing that
+        // matched is recorded so the retained evidence shows the reviewer
+        // exactly what the machine read.
+        const matchedPattern = item.requires.find((pattern) => contains(text, pattern)) ?? null;
+        const isMatched = matchedPattern !== null;
         const isCorrupted = !isMatched && (item.corruptsWith ?? []).some((pattern) => contains(text, pattern));
-        outcomes.push({ probeId, outcome: isMatched ? "matched" : isCorrupted ? "corrupted" : "missed" });
+        outcomes.push({ probeId, outcome: isMatched ? "matched" : isCorrupted ? "corrupted" : "missed", matchedPattern });
       }
       // Recursive drift: a matched probe followed by a failed probe with a
       // suffix rebuild between them — the summarization-of-summaries boundary.
@@ -133,7 +145,9 @@ export function scoreRun({ run, evidence, oracle, stats }) {
         status = "matched";
         matched += 1;
       }
-      itemStatuses.push({ family, id: item.id, status });
+      // #265: per-probe outcomes with the matching phrasing ride along for
+      // the retained evidence; the bounded report reads only the status.
+      itemStatuses.push({ family, id: item.id, status, probes: outcomes });
     }
     return { total: items.length, matched };
   };
@@ -252,7 +266,19 @@ export function scoreRun({ run, evidence, oracle, stats }) {
   // the forbidden-claims family's job; the final task itself is judged only
   // on its required elements.
   const finalText = textOfTurn(evidence, oracle.finalTask.turn);
-  const finalTaskMet = oracle.finalTask.requires.every((pattern) => contains(finalText, pattern));
+  // #265: each element of the final task's `requires` is one required fact's
+  // phrasing set — the same footing as a probe — so the final answer must
+  // match every fact through any of its phrasings. A malformed declaration
+  // fails loudly rather than scoring permissively, like the trap guard.
+  for (const phrasings of oracle.finalTask.requires) {
+    if (!Array.isArray(phrasings) || phrasings.length === 0
+      || phrasings.some((pattern) => typeof pattern !== "string" || pattern.length === 0)) {
+      throw new Error("final task requires must be a non-empty array of phrasing sets (arrays of non-empty strings)");
+    }
+  }
+  const finalTaskPatterns = oracle.finalTask.requires
+    .map((phrasings) => phrasings.find((pattern) => contains(finalText, pattern)) ?? null);
+  const finalTaskMet = finalTaskPatterns.every((pattern) => pattern !== null);
   if (!finalTaskMet) {
     failures.push({
       family: "final-task-incomplete",
@@ -300,6 +326,9 @@ export function scoreRun({ run, evidence, oracle, stats }) {
     itemStatuses,
     traps,
     finalTask: finalTaskMet,
+    // #265: per-fact matching phrasings for the retained evidence only; the
+    // bounded report reads `finalTask` alone.
+    finalTaskPatterns,
     schedule: { appends, rebuilds, valid: scheduleValid },
     hardCheckFailures,
     failures,
