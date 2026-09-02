@@ -1,7 +1,7 @@
 import { abortIf, splitLines } from "../utils";
 import { _lineHashesPure, HASH_SEP } from "./hash";
 import {
-	valEdit,
+	resolveRange,
 	stripBarePrefixes,
 	stripDiffPrefixes,
 	swapReversedRanges,
@@ -147,7 +147,7 @@ export function applyEdit(
 	precomputedHashes?: string[],
 	filePath?: string,
 	servedHashes?: ReadonlySet<string>,
-	): {
+): {
 	content: string;
 	firstChangedLine: number | undefined;
 	lastChangedLine: number | undefined;
@@ -167,16 +167,14 @@ export function applyEdit(
 		warnings,
 	);
 
-	const { resolved: initialResolved, mismatches, boundaryDups } = valEdit(
-		prefixFixed,
-		lineIndex.fileLines,
-		fileHashes,
-		warnings,
-		signal,
-	);
-	if (mismatches.length || !initialResolved) {
+	// Anchors are resolved and validated exactly once; correction and
+	// application below consume the resolved indices without re-resolving,
+	// because removing duplicate boundary lines never changes the file or its
+	// hashes.
+	const resolution = resolveRange(prefixFixed, lineIndex.fileLines, fileHashes, signal);
+	if (!resolution.ok) {
 		const feedback = fmtMismatchWithHashes(
-			mismatches,
+			resolution.mismatches,
 			lineIndex.fileLines,
 			fileHashes,
 			filePath,
@@ -186,17 +184,13 @@ export function applyEdit(
 
 	warnUnicodeEsc(prefixFixed, warnings);
 
-	let resolved = initialResolved;
+	let resolved = resolution.resolved;
 	let autoFixes: AutoFix[] | undefined;
-	if (boundaryDups.length > 0) {
+	if (resolution.boundaryDups.length > 0) {
 		autoFixes = [];
-		const correctedEdit: HEdit = {
-			...prefixFixed,
-			content_lines: [...prefixFixed.content_lines],
-		};
 		const seen = new Set<number>();
 		const uniqueDups: BDup[] = [];
-		for (const dup of boundaryDups) {
+		for (const dup of resolution.boundaryDups) {
 			if (seen.has(dup.replacementLineIndex)) continue;
 			seen.add(dup.replacementLineIndex);
 			uniqueDups.push(dup);
@@ -204,29 +198,14 @@ export function applyEdit(
 		const dupsByIndex = uniqueDups.sort(
 			(a, b) => b.replacementLineIndex - a.replacementLineIndex,
 		);
+		const correctedLines = [...resolved.content_lines];
 		for (const dup of dupsByIndex) {
 			const idx = dup.replacementLineIndex;
-			if (idx < 0 || idx >= correctedEdit.content_lines.length) continue;
-			const removed = correctedEdit.content_lines.splice(idx, 1)[0];
+			if (idx < 0 || idx >= correctedLines.length) continue;
+			const removed = correctedLines.splice(idx, 1)[0];
 			autoFixes.push({ kind: dup.kind, removedLine: removed, removedLineIndex: idx });
 		}
-		const correctedResult = valEdit(
-			correctedEdit,
-			lineIndex.fileLines,
-			fileHashes,
-			warnings,
-			signal,
-		);
-		if (correctedResult.mismatches.length || !correctedResult.resolved) {
-			const feedback = fmtMismatchWithHashes(
-				correctedResult.mismatches,
-				lineIndex.fileLines,
-				fileHashes,
-				filePath,
-			);
-			throw new AnchorMismatchError(feedback.text, feedback.hashes);
-		}
-		resolved = correctedResult.resolved;
+		resolved = { ...resolved, content_lines: correctedLines };
 	}
 
 	if (servedHashes) {

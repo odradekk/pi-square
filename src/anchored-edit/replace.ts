@@ -1,24 +1,22 @@
 import { Type } from "typebox";
 import {
-  type LineEnding,
+	type LineEnding,
 } from "./replace-diff";
 import { readNormFile } from "./file-reader";
 import { isRec, rejectUnknownFields } from "./utils";
-import { applyEdit,
-  lineHashes,
-  resEdit,
-  parseHashRef,
-  MAX_HASH_LINES,
-  RangeStaleError,
-  AnchorMismatchError,
-  type HEdit,
-  type NEdit,
+import {
+	applyEdit,
+	lineHashes,
+	resEdit,
+	parseHashRef,
+	MAX_HASH_LINES,
+	type HEdit,
+	type NEdit,
 } from "./hashline";
 import {
-  type RMetrics,
+	type RMetrics,
 } from "./replace-response";
-import { findSnapshotPaths, type HashStore } from "./hash-store";
-import { getServed, recordServedSafe } from "./served";
+import { type HashStoreHandle } from "./hash-store";
 
 const replacementTextSchema = Type.String({
   description:
@@ -59,9 +57,12 @@ export type ReplaceDetails = {
   metrics?: RMetrics;
   status?: "warning";
   errorCode?: string;
+  /** Structured warnings from the executor; the model result and operational
+   *  display consume this instead of parsing rendered prose. */
+  warnings?: string[];
 };
 
-interface PipelineResult {
+export interface PipelineResult {
   path: string;
   originalNormalized: string;
   result: string;
@@ -116,7 +117,7 @@ export function assertReq(
 
 export async function resolveMissingPath(
   request: Record<string, unknown>,
-  store: HashStore,
+  store: HashStoreHandle,
 ): Promise<{ path: string; warning: string } | undefined> {
   if (Object.hasOwn(request, "path")) return undefined;
   const from = request.remove_from;
@@ -130,7 +131,7 @@ export async function resolveMissingPath(
       return undefined;
     }
   }
-  const matches = findSnapshotPaths(store, hashes);
+  const matches = store.findSnapshotPaths(hashes);
   if (matches.length === 1) {
     return {
       path: matches[0]!,
@@ -145,12 +146,11 @@ export async function resolveMissingPath(
   return undefined;
 }
 
-export interface ExecPipelineOptions {
+export interface PrepareOptions {
   accessMode?: number;
   signal?: AbortSignal;
   /** Explicit anchor store; required so no call site falls back to an implicit global store. */
-  store: HashStore;
-  noPersist?: boolean;
+  store: HashStoreHandle;
   /**
    * Forces the range-served verification even when the calling owner has no
    * served record for the path. A missing record then behaves as an empty set,
@@ -199,12 +199,20 @@ function countLineChanges(
   };
 }
 
-export async function execPipeline(
+/**
+ * Pure replace preparation: resolves and validates the range and computes the
+ * replacement content and hashes without changing persistent or cached state.
+ * The candidate snapshot is committed only after the filesystem write
+ * succeeds (see `publishMutation`, called from the operation boundary while
+ * the target exclusion is still held). Validation failures throw
+ * `RangeStaleError`/`AnchorMismatchError`; the caller publishes the shown
+ * feedback rows from inside the boundary.
+ */
+export async function prepareReplace(
   params: ReqParams,
   cwd: string,
-  options: ExecPipelineOptions,
+  options: PrepareOptions,
 ): Promise<PipelineResult> {
-
   const path = params.path;
 
   const editWarnings: string[] = [];
@@ -219,38 +227,25 @@ export async function execPipeline(
 
   const hashStore = options.store;
   const { normalized: originalNormalized, bom, originalEnding, fileHashes: originalHashes, hadUtf8DecodeErrors, absolutePath } = await readNormFile(
-    path, cwd, { signal: options.signal, accessMode: options.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: options.noPersist },
+    path, cwd, { signal: options.signal, accessMode: options.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: true },
   );
 
-  const servedRow = await getServed(hashStore, absolutePath);
+  const servedRow = await getServedSet(hashStore, absolutePath);
   const served = options.requireServed === true && servedRow === undefined
     ? new Set<string>()
     : servedRow;
-  let anchorResult: ReturnType<typeof applyEdit>;
-  try {
-    anchorResult = applyEdit(
-      originalNormalized,
-      edit,
-      options.signal,
-      originalHashes,
-      path,
-      served,
-    );
-  } catch (error) {
-    if (options.noPersist !== true) {
-      if (error instanceof RangeStaleError) {
-        await recordServedSafe(absolutePath, error.rangeHashes, "range-stale feedback", hashStore);
-      } else if (error instanceof AnchorMismatchError) {
-        await recordServedSafe(absolutePath, error.feedbackHashes, "anchor-mismatch feedback", hashStore);
-      }
-    }
-    throw error;
-  }
+  const anchorResult = applyEdit(
+    originalNormalized,
+    edit,
+    options.signal,
+    originalHashes,
+    path,
+    served,
+  );
 
   const result = anchorResult.content;
   const isNoop = result === originalNormalized;
 
-  const noPersist = options.noPersist;
   const removedHashes = isNoop
     ? undefined
     : collectRemovedHashes(edit, originalHashes);
@@ -260,7 +255,7 @@ export async function execPipeline(
         content: originalNormalized,
         hashes: originalHashes,
         removedHashes,
-      }, hashStore, noPersist !== true);
+      }, hashStore, false);
   const warnings = [...editWarnings, ...(anchorResult.warnings ?? [])];
   const { totalAddedLines, totalRemovedLines } = countLineChanges(
     edit, originalHashes, isNoop, anchorResult.autoFixes?.length ?? 0,
@@ -284,3 +279,8 @@ export async function execPipeline(
   };
 }
 
+function getServedSet(store: HashStoreHandle, path: string): Set<string> | undefined {
+  return store.getServed(path);
+}
+
+export { RangeStaleError, AnchorMismatchError } from "./hashline";

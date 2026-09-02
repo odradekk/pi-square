@@ -16,6 +16,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { setBannerDisplayDiagnostic } from "../banner";
+import type { ParentAnchoredWrite } from "../anchored-edit/auto-read";
 import { guardAnchoredRead, initializeAnchoredReadStore, transformAnchoredReadContent } from "../anchored-edit/read-transform";
 import { PARENT_OWNER } from "../anchored-edit/workspace-support";
 import {
@@ -728,6 +729,13 @@ export default function registerDisplayBuiltins(
   setAnchoredReadAvailable?: (available: boolean) => void,
   /** Tool names whose current active state survives the baseline restore (#217). */
   dynamicToolNames: readonly string[] = [],
+  /** Parent anchored-write integration (#264). When anchored editing is
+   *  enabled, the parent write definition is constructed from Pi's public
+   *  factory with the anchored write operation injected through its supported
+   *  filesystem-operation seam, so the write joins the same queue-then-lock
+   *  protocol as replace and the child writes. Arbitrary execution wrappers
+   *  remain forbidden; only this seam is used. */
+  parentAnchoredWrite?: ParentAnchoredWrite,
 ): void {
   let activeToolBaseline: readonly string[] | undefined;
   pi.on("session_start", async (_event, ctx) => {
@@ -756,7 +764,19 @@ export default function registerDisplayBuiltins(
       createFindToolDefinition(ctx.cwd),
       createLsToolDefinition(ctx.cwd),
       createEditToolDefinition(ctx.cwd),
-      createWriteToolDefinition(ctx.cwd),
+      // Narrow anchored parent-write seam (#264): the factory definition stays
+      // factory-faithful (name, parameters, prompt, abort checks, success
+      // wording, filesystem error semantics); only the supported filesystem
+      // operations are injected so the write enters the same queue-then-lock
+      // boundary as anchored replace and the child writes.
+      anchoredReadEnabled && parentAnchoredWrite
+        ? createWriteToolDefinition(ctx.cwd, {
+          operations: parentAnchoredWrite.operationsFor(
+            ctx.cwd,
+            ctx.sessionManager?.getSessionDir?.() ?? "",
+          ),
+        })
+        : createWriteToolDefinition(ctx.cwd),
       ...settings.definitions,
     ];
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
@@ -769,14 +789,14 @@ export default function registerDisplayBuiltins(
       // for external targets.
       const readContentTransform = anchoredRead
         ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string, sessionDir: string) =>
-          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { confineToWorkspace: false, sessionDir })
+          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { sessionDir })
         : undefined;
       pi.registerTool(decorateBuiltinDefinition(
-        anchoredRead ? withAnchoredReadGuidelines(definition, { confineToWorkspace: false }) : definition,
+        anchoredRead ? withAnchoredReadGuidelines(definition) : definition,
         ctx.cwd,
         () => controller.runtime,
         readContentTransform,
-        anchoredRead ? (params: unknown, executionCwd: string) => guardAnchoredRead(params, executionCwd, { confineToWorkspace: false }) : undefined,
+        anchoredRead ? (params: unknown, executionCwd: string) => guardAnchoredRead(params, executionCwd) : undefined,
       ));
     }
     const owner = ownSource(pi);

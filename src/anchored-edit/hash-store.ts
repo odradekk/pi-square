@@ -6,21 +6,6 @@ import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT } from "./constants";
 import { acquireFileLock } from "./file-lock";
-type SqlParams = (string | number)[];
-
-interface Prepared {
-  get: (...params: SqlParams) => Record<string, unknown> | undefined;
-  allPaths: (...params: SqlParams) => Record<string, unknown>[];
-  allHashes: (...params: SqlParams) => Record<string, unknown>[];
-  deleteOne: (...params: SqlParams) => void;
-  upsert: (...params: SqlParams) => void;
-  servedGet: (...params: SqlParams) => Record<string, unknown> | undefined;
-  servedUpsert: (...params: SqlParams) => void;
-  servedDelete: (...params: SqlParams) => void;
-  /** Owner-agnostic partition operations; present only on scoped stores. */
-  listOwners?: () => Record<string, unknown>[];
-  deleteOwner?: (owner: string) => void;
-}
 
 export interface OwnerPartition {
   owner: string;
@@ -28,19 +13,42 @@ export interface OwnerPartition {
   updatedAt: number;
 }
 
-export interface HashStore {
-  readonly stmts: Prepared;
+interface SnapshotCacheEntry {
+  checksum: string;
+  lineCount: number;
+  hashes: string[];
+}
+
+/**
+ * Typed, owner-scoped view over one physical anchor store. Every runtime
+ * caller binds a required owner; an ownerless store can no longer be
+ * constructed, so the former two-schemas-under-one-version state is
+ * unrepresentable. Snapshot lookups, served merges, owner deletion, and path
+ * pruning are typed repository operations here; SQL parameter order never
+ * spreads through callers.
+ */
+export interface HashStoreHandle {
   readonly engine: "node:sqlite";
-  readonly owner: string | undefined;
-}
-
-export interface HashStoreHandle extends HashStore {
-  /** Releases this store acquisition so the underlying database can be evicted when idle. Safe to call once; later calls are no-ops. */
+  /** Required owner identity this view reads and writes under. */
+  readonly owner: string;
+  /** Releases this acquisition so the underlying database can be evicted when idle. Safe to call repeatedly. */
   release(): void;
-}
-
-export interface HashStoreLoadOptions {
-  owner?: string;
+  /** Snapshot hashes for exact (path, content) under this owner, reading the
+   *  store-owned cache first. Deletes a corrupt row when `deleteCorrupt`. */
+  getSnapshot(path: string, content: string, deleteCorrupt?: boolean): string[] | undefined;
+  upsertSnapshot(path: string, checksum: string, lineCount: number, hashes: string[]): void;
+  deleteSnapshot(path: string): void;
+  /** Drops this owner's cached snapshot for the path (no database change). */
+  invalidateSnapshotCache(path: string): void;
+  /** Served hash set for the path under this owner, or undefined when absent. */
+  getServed(path: string): Set<string> | undefined;
+  /** Conflict-safe row-level merge; also refreshes the rows' activity timestamp. */
+  mergeServed(path: string, hashes: string[]): void;
+  clearServed(path: string): void;
+  /** Every path with a snapshot or served row under this owner. */
+  allPaths(): string[];
+  /** Snapshot paths under this owner whose stored hashes contain every given hash. */
+  findSnapshotPaths(hashes: string[]): string[];
 }
 
 export function isValidHashList(value: unknown): value is string[] {
@@ -114,52 +122,73 @@ function withBusyRetry<T>(fn: () => T): T {
 
 type OpenedDb =
   | { db: DatabaseSync; legacy: true }
-  | { db: DatabaseSync; stmts: Prepared; legacy: false };
+  | { db: DatabaseSync; legacy: false };
 
-function openDbWithBusyRetry(storePath: string, owner: string | undefined): OpenedDb {
-  return withBusyRetry(() => openDb(storePath, owner));
+function openDbWithBusyRetry(storePath: string): OpenedDb {
+  return withBusyRetry(() => openDb(storePath));
 }
 
 let exitHandlerRegistered = false;
-interface SnapshotCacheEntry {
-  checksum: string;
-  lineCount: number;
-  hashes: string[];
+
+/** Cache key for one owner's snapshot of one path inside a store entry. */
+function snapshotCacheKey(owner: string, path: string): string {
+  return `${owner}\u0000${path}`;
 }
-const snapshotCache = new Map<string, SnapshotCacheEntry>();
-export const SNAPSHOT_CACHE_LIMIT = 256;
 
 interface OpenStore {
   key: string;
   path: string;
-  owner: string | undefined;
   db: DatabaseSync;
-  stmts: Prepared;
+  stmts: StoreStatements;
   refs: number;
   lastUsed: number;
+  /** Snapshot cache owned by this physical store, scoped by owner and path. */
+  snapshots: Map<string, SnapshotCacheEntry>;
+}
+
+interface StoreStatements {
+  getVersion: () => string | undefined;
+  setVersion: (version: string) => void;
+  getSnapshot: (owner: string, path: string, checksum: string, lineCount: number) => string | undefined;
+  upsertSnapshot: (owner: string, path: string, checksum: string, lineCount: number, hashes: string, updatedAt: number) => void;
+  deleteSnapshot: (owner: string, path: string) => void;
+  servedRows: (owner: string, path: string) => string[];
+  mergeServed: (owner: string, path: string, hashes: string[], updatedAt: number) => void;
+  clearServed: (owner: string, path: string) => void;
+  allPaths: (owner: string) => string[];
+  allHashes: (owner: string) => { path: string; hashes: string }[];
+  listOwners: () => { owner: string; updated_at: number }[];
+  deleteOwnerRows: (owner: string) => void;
 }
 
 /**
- * Bound on how many databases the module holds open at once across distinct
- * (store file, owner) pairs. When the cache exceeds this bound, the
- * least-recently-used database with no in-flight caller is closed. A database
- * that an in-flight caller still holds (refs > 0) is never closed, so the
- * bound is a soft cap under concurrent load.
+ * Bound on how many distinct store files the module holds open at once. The
+ * cache holds one entry per physical store path (all owners share it); when
+ * the cache exceeds this bound, the least-recently-used database with no
+ * in-flight view is closed. A database an in-flight view still holds
+ * (refs > 0) is never closed, so the bound is a soft cap under concurrent
+ * load.
  */
 export const OPEN_STORE_LIMIT = 4;
+
+/** Per-store bound on cached snapshots across all owners of one store. */
+export const SNAPSHOT_CACHE_LIMIT = 256;
 
 const openStores = new Map<string, OpenStore>();
 const openingStores = new Map<string, Promise<OpenStore>>();
 let openTick = 0;
 
-function storeKey(path: string, owner: string | undefined): string {
-  return `${path}\u0000${owner ?? ""}`;
-}
-
-function acquireStore(entry: OpenStore): HashStoreHandle {
+function acquireView(entry: OpenStore, owner: string): HashStoreHandle {
   entry.refs += 1;
   entry.lastUsed = ++openTick;
-  return new HashStoreHandleImpl(entry);
+  return new HashStoreHandleImpl(entry, owner);
+}
+
+function dropOwnerCache(entry: OpenStore, owner: string): void {
+  const prefix = `${owner}\u0000`;
+  for (const key of entry.snapshots.keys()) {
+    if (key.startsWith(prefix)) entry.snapshots.delete(key);
+  }
 }
 
 function maybeEvict(): void {
@@ -174,21 +203,21 @@ function maybeEvict(): void {
     }
     if (!idleLru) break;
     openStores.delete(idleLru.key);
+    idleLru.snapshots.clear();
     shutdownDb(idleLru.db);
   }
 }
 
 class HashStoreHandleImpl implements HashStoreHandle {
   readonly engine = "node:sqlite" as const;
-  readonly owner: string | undefined;
-  readonly stmts: Prepared;
-  private readonly entry: OpenStore;
+  readonly owner: string;
+  /** @internal Physical store entry backing this view. */
+  readonly entry: OpenStore;
   private released = false;
 
-  constructor(entry: OpenStore) {
+  constructor(entry: OpenStore, owner: string) {
     this.entry = entry;
-    this.owner = entry.owner;
-    this.stmts = entry.stmts;
+    this.owner = owner;
   }
 
   release(): void {
@@ -198,29 +227,147 @@ class HashStoreHandleImpl implements HashStoreHandle {
     maybeEvict();
   }
 
-  /** @internal Runs a mutation inside a transaction on this store's database. */
-  withTransaction(fn: () => void): void {
+  /** @internal The store entry, verified open. */
+  requireOpen(): OpenStore {
     if (!this.entry.db.isOpen) {
       throw new Error("Hash store is not open; transactional update aborted");
     }
+    return this.entry;
+  }
+
+  getSnapshot(path: string, content: string, deleteCorrupt = true): string[] | undefined {
+    const entry = this.requireOpen();
+    const checksum = contentChecksum(content);
+    const lineCount = splitLines(content).length;
+    const key = snapshotCacheKey(this.owner, path);
+    const cached = entry.snapshots.get(key);
+    if (cached && cached.checksum === checksum && cached.lineCount === lineCount) {
+      entry.snapshots.delete(key);
+      entry.snapshots.set(key, cached);
+      return cached.hashes.slice();
+    }
+    const raw = entry.stmts.getSnapshot(this.owner, path, checksum, lineCount);
+    if (raw === undefined) return undefined;
+    const parsed = parseHashList(raw, () => {
+      if (deleteCorrupt) entry.stmts.deleteSnapshot(this.owner, path);
+      entry.snapshots.delete(key);
+    });
+    if (!parsed) return undefined;
+    cacheSnapshot(entry, key, checksum, lineCount, parsed);
+    return parsed;
+  }
+
+  upsertSnapshot(path: string, checksum: string, lineCount: number, hashes: string[]): void {
+    const entry = this.requireOpen();
     withBusyRetry(() => {
-      this.entry.db.exec("BEGIN IMMEDIATE");
+      entry.stmts.upsertSnapshot(this.owner, path, checksum, lineCount, JSON.stringify(hashes), Date.now());
+    });
+    cacheSnapshot(entry, snapshotCacheKey(this.owner, path), checksum, lineCount, hashes);
+  }
+
+  deleteSnapshot(path: string): void {
+    const entry = this.requireOpen();
+    withBusyRetry(() => {
+      entry.stmts.deleteSnapshot(this.owner, path);
+    });
+    entry.snapshots.delete(snapshotCacheKey(this.owner, path));
+  }
+
+  invalidateSnapshotCache(path: string): void {
+    this.entry.snapshots.delete(snapshotCacheKey(this.owner, path));
+  }
+
+  getServed(path: string): Set<string> | undefined {
+    const entry = this.requireOpen();
+    const rows = entry.stmts.servedRows(this.owner, path);
+    if (rows.length === 0) return undefined;
+    for (const hash of rows) {
+      if (!HASH_RE.test(hash)) {
+        // Same repair semantics the JSON-array layout had: an invalid served
+        // payload for a path is discarded and re-recorded by the next read.
+        entry.stmts.clearServed(this.owner, path);
+        return undefined;
+      }
+    }
+    return new Set(rows);
+  }
+
+  mergeServed(path: string, hashes: string[]): void {
+    if (hashes.length === 0) return;
+    const entry = this.requireOpen();
+    withBusyRetry(() => {
+      entry.stmts.mergeServed(this.owner, path, hashes, Date.now());
+    });
+  }
+
+  clearServed(path: string): void {
+    const entry = this.requireOpen();
+    withBusyRetry(() => {
+      entry.stmts.clearServed(this.owner, path);
+    });
+  }
+
+  allPaths(): string[] {
+    return this.requireOpen().stmts.allPaths(this.owner);
+  }
+
+  findSnapshotPaths(hashes: string[]): string[] {
+    const rows = this.requireOpen().stmts.allHashes(this.owner);
+    const matches: string[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.hashes) as unknown;
+        if (!isValidHashList(parsed)) continue;
+        if (hashes.every((h) => parsed.includes(h))) matches.push(row.path);
+      } catch {
+        continue;
+      }
+    }
+    return matches;
+  }
+
+  /** @internal Runs a mutation inside one transaction on this store's database. */
+  withTransaction(fn: () => void): void {
+    const entry = this.requireOpen();
+    withBusyRetry(() => {
+      entry.db.exec("BEGIN IMMEDIATE");
       try {
         fn();
-        this.entry.db.exec("COMMIT");
+        entry.db.exec("COMMIT");
       } catch (e) {
-        try { this.entry.db.exec("ROLLBACK"); } catch {}
+        try { entry.db.exec("ROLLBACK"); } catch {}
         throw e;
       }
     });
   }
 }
+
+function cacheSnapshot(
+  entry: OpenStore,
+  key: string,
+  checksum: string,
+  lineCount: number,
+  hashes: string[],
+): void {
+  entry.snapshots.delete(key);
+  entry.snapshots.set(key, { checksum, lineCount, hashes: hashes.slice() });
+  if (entry.snapshots.size > SNAPSHOT_CACHE_LIMIT) {
+    const oldest = entry.snapshots.keys().next().value;
+    if (oldest !== undefined) entry.snapshots.delete(oldest);
+  }
+}
+
+/**
+ * One owner-aware schema for every store. Any non-empty database whose
+ * recorded version is not the current one — including the former ownerless
+ * current-version layout and every undo-bearing store — is legacy and is
+ * quarantined whole by the loader.
+ */
 function inspectLegacyStore(db: DatabaseSync): boolean {
   const tables = db.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
   ).all() as Array<{ name?: unknown }>;
   if (tables.length === 0) return false;
-  if (tables.some((row) => row.name === "undo")) return true;
   if (!tables.some((row) => row.name === "meta")) return true;
   try {
     const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
@@ -230,16 +377,16 @@ function inspectLegacyStore(db: DatabaseSync): boolean {
   }
 }
 
-function openDb(storePath: string, owner: string | undefined): OpenedDb {
+function openDb(storePath: string): OpenedDb {
   const db = new DatabaseSync(storePath, {
     timeout: HASH_STORE_BUSY_TIMEOUT,
   });
   try {
-    // Inspect before any PRAGMA that can create sidecars, DDL, or version write:
-    // an older non-empty database is quarantined in its original schema rather
-    // than being partially migrated before it is renamed aside.
+    // Inspect before any PRAGMA that can create sidecars, DDL, or version
+    // write: an older non-empty database is quarantined in its original
+    // schema rather than being partially migrated before it is renamed aside.
     if (inspectLegacyStore(db)) return { db, legacy: true };
-    return buildStore(db, owner);
+    return buildStore(db);
   } catch (error) {
     try {
       db.close();
@@ -248,31 +395,9 @@ function openDb(storePath: string, owner: string | undefined): OpenedDb {
   }
 }
 
-function buildStore(
-  db: DatabaseSync,
-  owner: string | undefined,
-): { db: DatabaseSync; stmts: Prepared; legacy: false } {
-  const scoped = owner !== undefined;
-  const ownerColumn = scoped ? "owner TEXT NOT NULL, " : "";
-  const pathColumn = scoped ? "path TEXT NOT NULL, " : "path TEXT PRIMARY KEY, ";
-  const primaryKey = scoped ? ", PRIMARY KEY(owner, path)" : "";
-  const ownerWhere = scoped ? "owner = ? AND " : "";
-  const ownerValues = scoped ? "?, " : "";
-  const ownerColumns = scoped ? "owner, " : "";
-  const withOwner = (params: SqlParams): SqlParams => scoped ? [owner!, ...params] : params;
+function buildStore(db: DatabaseSync): { db: DatabaseSync; legacy: false } {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
-  db.exec(
-    "CREATE TABLE IF NOT EXISTS snapshots (" +
-      ownerColumn +
-      pathColumn +
-      "checksum TEXT NOT NULL, " +
-      "line_count INTEGER NOT NULL, " +
-      "hashes TEXT NOT NULL, " +
-      "updated_at INTEGER NOT NULL" +
-      primaryKey +
-    ")"
-  );
   db.exec(
     "CREATE TABLE IF NOT EXISTS meta (" +
       "key TEXT PRIMARY KEY, " +
@@ -280,70 +405,97 @@ function buildStore(
     ")"
   );
   db.exec(
-    "CREATE TABLE IF NOT EXISTS served (" +
-      ownerColumn +
-      pathColumn +
+    "CREATE TABLE IF NOT EXISTS snapshots (" +
+      "owner TEXT NOT NULL, " +
+      "path TEXT NOT NULL, " +
+      "checksum TEXT NOT NULL, " +
+      "line_count INTEGER NOT NULL, " +
       "hashes TEXT NOT NULL, " +
-      "updated_at INTEGER NOT NULL" +
-      primaryKey +
+      "updated_at INTEGER NOT NULL, " +
+      "PRIMARY KEY(owner, path)" +
+    ")"
+  );
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS served (" +
+      "owner TEXT NOT NULL, " +
+      "path TEXT NOT NULL, " +
+      "hash TEXT NOT NULL, " +
+      "updated_at INTEGER NOT NULL, " +
+      "PRIMARY KEY(owner, path, hash)" +
     ")"
   );
   // A current database reaches this point; an empty database receives the
-  // undo-free schema and its first version row. Older non-empty databases were
-  // detected before DDL and are quarantined untouched.
+  // owner-aware schema and its first version row. Older non-empty databases
+  // were detected before DDL and are quarantined untouched.
   db.prepare(
     "INSERT INTO meta (key, value) VALUES ('version', ?) " +
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(String(HASH_STORE_VERSION));
-  const conflictTarget = scoped ? "owner, path" : "path";
-  const getStmt = db.prepare(
-    `SELECT hashes FROM snapshots WHERE ${ownerWhere}path = ? AND checksum = ? AND line_count = ?`
+  return { db, legacy: false };
+}
+
+function buildStatements(db: DatabaseSync): StoreStatements {
+  const getVersionStmt = db.prepare("SELECT value FROM meta WHERE key = 'version'");
+  const setVersionStmt = db.prepare(
+    "INSERT INTO meta (key, value) VALUES ('version', ?) " +
+    "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   );
-  const allStmt = db.prepare(scoped
-    ? "SELECT path FROM snapshots WHERE owner = ? UNION SELECT path FROM served WHERE owner = ?"
-    : "SELECT path FROM snapshots UNION SELECT path FROM served");
-  const allHashesStmt = db.prepare(`SELECT path, hashes FROM snapshots${scoped ? " WHERE owner = ?" : ""}`);
-  const delStmt = db.prepare(`DELETE FROM snapshots WHERE ${ownerWhere}path = ?`);
-  const upsertStmt = db.prepare(
-    `INSERT INTO snapshots (${ownerColumns}path, checksum, line_count, hashes, updated_at) VALUES (${ownerValues}?, ?, ?, ?, ?) ` +
-    `ON CONFLICT(${conflictTarget}) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at`
+  const getSnapshotStmt = db.prepare(
+    "SELECT hashes FROM snapshots WHERE owner = ? AND path = ? AND checksum = ? AND line_count = ?"
   );
-  const servedGetStmt = db.prepare(`SELECT hashes FROM served WHERE ${ownerWhere}path = ?`);
-  const servedUpsertStmt = db.prepare(
-    `INSERT INTO served (${ownerColumns}path, hashes, updated_at) VALUES (${ownerValues}?, ?, ?) ` +
-    `ON CONFLICT(${conflictTarget}) DO UPDATE SET hashes = excluded.hashes, updated_at = excluded.updated_at`
+  const upsertSnapshotStmt = db.prepare(
+    "INSERT INTO snapshots (owner, path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+    "ON CONFLICT(owner, path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at"
   );
-  const servedDelStmt = db.prepare(`DELETE FROM served WHERE ${ownerWhere}path = ?`);
-  const ownerListStmt = scoped ? db.prepare(
+  const deleteSnapshotStmt = db.prepare("DELETE FROM snapshots WHERE owner = ? AND path = ?");
+  const servedRowsStmt = db.prepare("SELECT hash FROM served WHERE owner = ? AND path = ?");
+  // Row-level conflict-safe merge: concurrent additions under one owner union
+  // instead of one read-modify-write replacing the other. The timestamp
+  // refresh keeps partition activity tied to real anchored use even when the
+  // added hashes were already present.
+  const mergeServedBase = db.prepare(
+    "INSERT INTO served (owner, path, hash, updated_at) VALUES (?, ?, ?, ?) " +
+    "ON CONFLICT(owner, path, hash) DO UPDATE SET updated_at = excluded.updated_at"
+  );
+  const clearServedStmt = db.prepare("DELETE FROM served WHERE owner = ? AND path = ?");
+  const allPathsStmt = db.prepare(
+    "SELECT path FROM snapshots WHERE owner = ? UNION SELECT path FROM served WHERE owner = ?"
+  );
+  const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots WHERE owner = ?");
+  const ownerListStmt = db.prepare(
     "SELECT owner, MAX(updated_at) AS updated_at FROM (" +
     "SELECT owner, updated_at FROM snapshots " +
     "UNION ALL SELECT owner, updated_at FROM served" +
     ") GROUP BY owner"
-  ) : undefined;
-  const deleteOwnerSnapshotsStmt = scoped ? db.prepare("DELETE FROM snapshots WHERE owner = ?") : undefined;
-  const deleteOwnerServedStmt = scoped ? db.prepare("DELETE FROM served WHERE owner = ?") : undefined;
-  const stmts: Prepared = {
-    get: (...params) => getStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
-    allPaths: (...params) => allStmt.all(...(scoped ? [owner!, owner!, ...params] : params)) as Record<string, unknown>[],
-    allHashes: (...params) => allHashesStmt.all(...withOwner(params)) as Record<string, unknown>[],
-    deleteOne: (...params) => { withBusyRetry(() => { delStmt.run(...withOwner(params)); }); },
-    upsert: (...params) => { withBusyRetry(() => { upsertStmt.run(...withOwner(params)); }); },
-    servedGet: (...params) => servedGetStmt.get(...withOwner(params)) as Record<string, unknown> | undefined,
-    servedUpsert: (...params) => { withBusyRetry(() => { servedUpsertStmt.run(...withOwner(params)); }); },
-    servedDelete: (...params) => { withBusyRetry(() => { servedDelStmt.run(...withOwner(params)); }); },
-    ...(scoped && ownerListStmt && deleteOwnerSnapshotsStmt && deleteOwnerServedStmt
-      ? {
-          listOwners: () => ownerListStmt.all() as Record<string, unknown>[],
-          deleteOwner: (owner: string) => {
-            withBusyRetry(() => {
-              deleteOwnerSnapshotsStmt.run(owner);
-              deleteOwnerServedStmt.run(owner);
-            });
-          },
-        }
-      : {}),
+  );
+  const deleteOwnerStmt = db.prepare("DELETE FROM snapshots WHERE owner = ?");
+  const deleteOwnerServedStmt = db.prepare("DELETE FROM served WHERE owner = ?");
+  return {
+    getVersion: () => (getVersionStmt.get() as { value?: string } | undefined)?.value,
+    setVersion: (version) => { setVersionStmt.run(version); },
+    getSnapshot: (owner, path, checksum, lineCount) =>
+      (getSnapshotStmt.get(owner, path, checksum, lineCount) as { hashes?: string } | undefined)?.hashes,
+    upsertSnapshot: (owner, path, checksum, lineCount, hashes, updatedAt) => {
+      upsertSnapshotStmt.run(owner, path, checksum, lineCount, hashes, updatedAt);
+    },
+    deleteSnapshot: (owner, path) => { deleteSnapshotStmt.run(owner, path); },
+    servedRows: (owner, path) =>
+      (servedRowsStmt.all(owner, path) as { hash?: string }[]).map((row) => String(row.hash)),
+    mergeServed: (owner, path, hashes, updatedAt) => {
+      for (const hash of hashes) {
+        mergeServedBase.run(owner, path, hash, updatedAt);
+      }
+    },
+    clearServed: (owner, path) => { clearServedStmt.run(owner, path); },
+    allPaths: (owner) =>
+      (allPathsStmt.all(owner, owner) as { path?: string }[]).map((row) => String(row.path)),
+    allHashes: (owner) => allHashesStmt.all(owner) as { path: string; hashes: string }[],
+    listOwners: () => ownerListStmt.all() as { owner: string; updated_at: number }[],
+    deleteOwnerRows: (owner) => {
+      deleteOwnerStmt.run(owner);
+      deleteOwnerServedStmt.run(owner);
+    },
   };
-  return { db, stmts, legacy: false };
 }
 
 function isHealthy(db: DatabaseSync): boolean {
@@ -387,56 +539,57 @@ function shutdownDb(db: DatabaseSync): void {
   db.close();
 }
 
-async function openStoreUnlocked(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
-  const owner = options.owner;
+async function openStoreUnlocked(storePath: string): Promise<OpenStore> {
   await initHasher();
   await mkdir(dirname(storePath), { recursive: true });
 
   let opened: OpenedDb;
   try {
-    opened = openDbWithBusyRetry(storePath, owner);
+    opened = openDbWithBusyRetry(storePath);
   } catch (error) {
     if (!isCorruptionError(error)) throw error;
     console.error("Hash store failed to open, rebuilding:", error);
     await quarantineStore(storePath, "corrupt");
-    opened = openDbWithBusyRetry(storePath, owner);
+    opened = openDbWithBusyRetry(storePath);
   }
   if (opened.legacy) {
-    // #187 undo-free schema: an older store (or any store that still carries
-    // the removed undo table) is quarantined whole, database and sidecars, and
-    // rebuilt fresh. Cached snapshot and served state do not survive the
-    // upgrade; the loss is explicit and recoverable through a new read, which
-    // re-records both.
+    // Old-schema policy (continuing #187's quarantine-and-rebuild): any
+    // incompatible non-empty layout — undo-bearing stores, the former
+    // ownerless current-version shape, and every earlier version — is
+    // quarantined whole, database and sidecars, and rebuilt fresh. Cached
+    // snapshot and served state do not survive the upgrade; the loss is
+    // explicit and recoverable through a new read, which re-records both.
     shutdownDb(opened.db);
     await quarantineStore(storePath, "old-schema");
-    opened = openDbWithBusyRetry(storePath, owner);
+    opened = openDbWithBusyRetry(storePath);
   }
   if (opened.legacy) throw new Error(`Fresh anchor store ${storePath} reopened as an old schema`);
   if (!isHealthy(opened.db)) {
     shutdownDb(opened.db);
     await quarantineStore(storePath, "corrupt");
-    opened = openDbWithBusyRetry(storePath, owner);
+    opened = openDbWithBusyRetry(storePath);
   }
   if (opened.legacy) throw new Error(`Rebuilt anchor store ${storePath} reopened as an old schema`);
-  const { db, stmts } = opened;
 
   const entry: OpenStore = {
-    key: storeKey(storePath, owner),
+    key: storePath,
     path: storePath,
-    owner,
-    db,
-    stmts,
+    db: opened.db,
+    stmts: buildStatements(opened.db),
     refs: 0,
     lastUsed: ++openTick,
+    snapshots: new Map(),
   };
   openStores.set(entry.key, entry);
+  // Quarantine replaced the physical database as one unit: any prior cache
+  // entry for this path is gone with its connection and its snapshots.
   maybeEvict();
 
   registerExitHandler();
   return entry;
 }
 
-async function openStore(storePath: string, options: HashStoreLoadOptions): Promise<OpenStore> {
+async function openStore(storePath: string): Promise<OpenStore> {
   // Schema detection, whole-database quarantine, and fresh rebuild mutate one
   // path across every owner partition. Serialize that lifecycle across owners
   // and Pi processes so two concurrent first opens cannot quarantine each
@@ -447,7 +600,7 @@ async function openStore(storePath: string, options: HashStoreLoadOptions): Prom
   });
   if (!lock) throw new Error(`[E_FILE_LOCKED] Timed out waiting to open anchor store ${storePath}. Retry the operation.`);
   try {
-    return await openStoreUnlocked(storePath, options);
+    return await openStoreUnlocked(storePath);
   } finally {
     await lock.release();
   }
@@ -465,150 +618,171 @@ function registerExitHandler(): void {
   }
 }
 
-export function loadHashStoreAt(
-  storePath: string,
-  options: HashStoreLoadOptions = {},
-): Promise<HashStoreHandle> {
-  const owner = options.owner;
-  const key = storeKey(storePath, owner);
-  const cached = openStores.get(key);
+/**
+ * Opens (or reuses) the physical anchor store at `storePath` and returns a
+ * typed view bound to the required `owner`. One ref-counted connection is
+ * cached per store path; owners share it and never see each other's
+ * snapshots or served rows.
+ */
+export function loadHashStoreAt(storePath: string, owner: string): Promise<HashStoreHandle> {
+  if (typeof owner !== "string" || owner.length === 0) {
+    throw new Error("An anchor store requires a non-empty owner identity.");
+  }
+  const cached = openStores.get(storePath);
   if (cached && cached.db.isOpen) {
-    return Promise.resolve(acquireStore(cached));
+    return Promise.resolve(acquireView(cached, owner));
   }
-  let pending = openingStores.get(key);
+  let pending = openingStores.get(storePath);
   if (!pending) {
-    pending = openStore(storePath, options).finally(() => {
-      openingStores.delete(key);
+    pending = openStore(storePath).finally(() => {
+      openingStores.delete(storePath);
     });
-    openingStores.set(key, pending);
+    openingStores.set(storePath, pending);
   }
-  return pending.then(acquireStore);
+  return pending.then((entry) => acquireView(entry, owner));
 }
 
 export function shutdownHashStore(): void {
   for (const entry of openStores.values()) {
+    entry.snapshots.clear();
     shutdownDb(entry.db);
   }
   openStores.clear();
   openingStores.clear();
-  snapshotCache.clear();
 }
 
-/** Number of databases currently held open across distinct (store file, owner) pairs. */
+/** Number of distinct physical store files currently held open. */
 export function openStoreCount(): number {
   return openStores.size;
 }
 
-function cacheSnapshot(path: string, checksum: string, lineCount: number, hashes: string[]): void {
-  snapshotCache.delete(path);
-  snapshotCache.set(path, { checksum, lineCount, hashes: hashes.slice() });
-  if (snapshotCache.size > SNAPSHOT_CACHE_LIMIT) {
-    const oldest = snapshotCache.keys().next().value;
-    if (oldest !== undefined) snapshotCache.delete(oldest);
-  }
-}
-
-export function getSnapshot(
-  store: HashStore,
-  path: string,
-  content: string,
-  deleteCorrupt = true,
-): string[] | undefined {
-  const checksum = contentChecksum(content);
-  const lineCount = splitLines(content).length;
-  const cached = snapshotCache.get(path);
-  if (cached && cached.checksum === checksum && cached.lineCount === lineCount) {
-    snapshotCache.delete(path);
-    snapshotCache.set(path, cached);
-    return cached.hashes.slice();
-  }
-  const row = store.stmts.get(path, checksum, lineCount);
-  if (!row) return undefined;
-  const parsed = parseHashList(row.hashes as string, () => {
-    if (deleteCorrupt) store.stmts.deleteOne(path);
-    snapshotCache.delete(path);
-  });
-  if (!parsed) return undefined;
-  cacheSnapshot(path, checksum, lineCount, parsed);
-  return parsed;
-}
-
-export function upsertSnapshot(
-  store: HashStore,
-  path: string,
-  checksum: string,
-  lineCount: number,
-  hashes: string[],
-): void {
-  store.stmts.upsert(path, checksum, lineCount, JSON.stringify(hashes), Date.now());
-  cacheSnapshot(path, checksum, lineCount, hashes);
-}
-
 const STAT_BATCH = 64;
+const PRUNE_DIAGNOSTIC_LIMIT = 8;
 
-async function statMissing(rows: { path: string }[]): Promise<string[]> {
+function isMissingPathError(error: unknown): boolean {
+  const code = errCode(error);
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+type PathClassification =
+  | { kind: "present" }
+  | { kind: "missing"; path: string }
+  | { kind: "failure"; path: string; error: unknown };
+
+async function classifyPaths(rows: { path: string }[]): Promise<{
+  missing: string[];
+  failures: { path: string; error: unknown }[];
+}> {
   const missing: string[] = [];
+  const failures: { path: string; error: unknown }[] = [];
   for (let i = 0; i < rows.length; i += STAT_BATCH) {
     const batch = rows.slice(i, i + STAT_BATCH);
     const results = await Promise.all(
-      batch.map(async (row) => {
+      batch.map(async (row): Promise<PathClassification> => {
         try {
           await stat(row.path);
-          return undefined;
-        } catch {
-          return row.path;
+          return { kind: "present" };
+        } catch (error) {
+          // Only a genuine missing-path error proves the file disappeared.
+          // Permission, descriptor-exhaustion, and other stat failures are
+          // operational problems, not deletions: the rows survive and the
+          // failure is surfaced as a bounded diagnostic.
+          if (isMissingPathError(error)) return { kind: "missing", path: row.path };
+          return { kind: "failure", path: row.path, error };
         }
       }),
     );
-    for (const path of results) {
-      if (path !== undefined) missing.push(path);
+    for (const result of results) {
+      if (result.kind === "missing") missing.push(result.path);
+      else if (result.kind === "failure") failures.push({ path: result.path, error: result.error });
     }
   }
-  return missing;
+  return { missing, failures };
 }
 
+/**
+ * Prunes this view's owner's records for files that no longer exist. The
+ * compound delete is one repository transaction, so a failure rolls the whole
+ * pruning back and leaves cache and database consistent. Stat failures that
+ * are not genuine missing-path errors preserve their rows and surface a
+ * bounded diagnostic.
+ */
 export async function pruneMissing(store: HashStoreHandle): Promise<void> {
-  const rows = store.stmts.allPaths() as { path: string }[];
-  const missing = await statMissing(rows);
+  const rows = store.allPaths().map((path) => ({ path }));
+  const { missing, failures } = await classifyPaths(rows);
+  for (const failure of failures.slice(0, PRUNE_DIAGNOSTIC_LIMIT)) {
+    const message = failure.error instanceof Error ? failure.error.message : String(failure.error);
+    console.error(`Anchored store path check failed for ${failure.path}: ${message}`);
+  }
   if (missing.length === 0) return;
   (store as HashStoreHandleImpl).withTransaction(() => {
     for (const path of missing) {
-      store.stmts.deleteOne(path);
-      snapshotCache.delete(path);
-      store.stmts.servedDelete(path);
+      store.deleteSnapshot(path);
+      store.clearServed(path);
     }
   });
 }
 
 /**
- * Lists every distinct owner partition in a scoped store, with the newest
- * activity across its snapshot and served rows. Unscoped (legacy) stores have
- * no owner column and return no partitions.
+ * Lists every distinct owner partition in the store, with the newest activity
+ * across its snapshot and served rows. Served-row timestamps refresh on every
+ * anchored read or edit that merges them, so a partition that keeps using its
+ * state never looks idle merely because a snapshot value was reused.
  */
-export function listOwnerPartitions(store: HashStore): OwnerPartition[] {
-  const rows = store.stmts.listOwners?.() ?? [];
+export function listOwnerPartitions(store: HashStoreHandle): OwnerPartition[] {
+  const rows = (store as HashStoreHandleImpl).requireOpen().stmts.listOwners();
   return rows.map((row) => ({
     owner: String(row.owner),
     updatedAt: Number(row.updated_at ?? 0),
   }));
 }
 
-/** Deletes every row belonging to one owner in a scoped store. No-op on unscoped stores. */
-export function deleteOwnerPartition(store: HashStore, owner: string): void {
-  store.stmts.deleteOwner?.(owner);
+/**
+ * Publishes one completed mutation's store state — the snapshot for the
+ * installed content and, when the diff rows were model-visible, the served
+ * rows for them — as a single repository transaction under the acting owner.
+ * Either both land or neither does, so a publication failure leaves the
+ * pre-mutation state intact and stale served rows cannot authorize a later
+ * replace against the changed file.
+ */
+export function publishMutation(store: HashStoreHandle, input: {
+  path: string;
+  content: string;
+  hashes: string[];
+  servedHashes?: string[];
+}): void {
+  const handle = store as HashStoreHandleImpl;
+  const entry = handle.requireOpen();
+  const checksum = contentChecksum(input.content);
+  const lineCount = splitLines(input.content).length;
+  const updatedAt = Date.now();
+  handle.withTransaction(() => {
+    entry.stmts.upsertSnapshot(handle.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
+    if (input.servedHashes && input.servedHashes.length > 0) {
+      entry.stmts.mergeServed(handle.owner, input.path, input.servedHashes, updatedAt);
+    }
+  });
+  cacheSnapshot(entry, snapshotCacheKey(handle.owner, input.path), checksum, lineCount, input.hashes);
 }
 
-export function findSnapshotPaths(store: HashStore, hashes: string[]): string[] {
-  const rows = store.stmts.allHashes() as { path: string; hashes: string }[];
-  const matches: string[] = [];
-  for (const row of rows) {
-    try {
-      const parsed = JSON.parse(row.hashes) as unknown;
-      if (!isValidHashList(parsed)) continue;
-      if (hashes.every((h) => parsed.includes(h))) matches.push(row.path);
-    } catch {
-      continue;
-    }
-  }
-  return matches;
+/**
+ * Deletes every row belonging to one owner as a single repository
+ * transaction and invalidates exactly that owner's cached snapshots, so a
+ * deleted partition cannot be revived by a later cache hit. Other owners'
+ * rows and caches are untouched.
+ */
+export function deleteOwnerPartition(store: HashStoreHandle, owner: string): void {
+  const handle = store as HashStoreHandleImpl;
+  const entry = handle.requireOpen();
+  handle.withTransaction(() => {
+    entry.stmts.deleteOwnerRows(owner);
+  });
+  dropOwnerCache(entry, owner);
 }
+
+/** @internal Test seams: the view class for prototype spies and the store
+ * entry behind a view for statement-level observation. */
+export const __testables = {
+  HashStoreHandleImpl,
+  storeEntryOf: (view: HashStoreHandle): OpenStore => (view as HashStoreHandleImpl).entry,
+};

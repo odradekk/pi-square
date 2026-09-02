@@ -1,19 +1,12 @@
-import { realpathSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { isWithinWorkspace } from "../core/paths.ts";
-import { loadFileKindAndText } from "./file-kind.ts";
-import { readNormFile } from "./file-reader.ts";
-import { resolveTarget } from "./fs-write.ts";
-import { MAX_HASH_LINES } from "./hashline/index.ts";
-import { anchoredStoreDir, toCwd } from "./paths.ts";
-import { fmtReadPreview } from "./read.ts";
-import { recordServed } from "./served.ts";
-import { errCode } from "./utils.ts";
-import { PARENT_OWNER, loadAnchoredHashStore } from "./workspace-support.ts";
-import { pruneMissingForAllOwners } from "./partitions.ts";
+import { runAnchoredRead, type ReadModelContent } from "./operations.ts";
 
-export type ReadModelContent = AgentToolResult<unknown>["content"];
+export type { ReadModelContent };
+import { resolveTarget } from "./fs-write.ts";
+import { toCwd } from "./paths.ts";
+import { errCode } from "./utils.ts";
+import { PARENT_OWNER } from "./workspace-support.ts";
+import { pruneMissingForAllOwners } from "./partitions.ts";
 
 function textContent(text: string): ReadModelContent {
   return [{ type: "text", text }];
@@ -39,21 +32,16 @@ function readParams(value: unknown): { path: string; offset?: number; limit?: nu
 }
 
 /**
- * Path policy for the anchored read surfaces (#185). The parent passes
- * `confineToWorkspace: false` so anchored read preserves Pi 0.84.2's native
- * path authority: absolute paths, `~` paths, cwd-relative paths (including
- * `../`), and canonical targets reached through symlinks, all under the same
- * OS permissions as Pi's native read. Child surfaces keep the default
- * workspace containment; the writable-child composition passes false (#186).
- *
- * External targets keep the initiating workspace's snapshot/served state and
- * lock area: two different workspaces intentionally do not share state or
- * locks for the same external file (accepted last-write-wins, matching Pi's
- * native cross-workspace behavior), while two sessions in one workspace
- * still coordinate through that workspace's shared store and locks.
+ * Path policy for the anchored read surfaces: Pi 0.84.2's native path
+ * authority — absolute paths, `~` paths, cwd-relative paths (including
+ * `../`), and canonical targets reached through symlinks — under the same OS
+ * permissions as Pi's native read (#185, #186). The retired
+ * workspace-confinement mode is gone; external targets keep the initiating
+ * workspace's snapshot/served state and lock area, so two workspaces never
+ * share state or locks for the same external file while two sessions in one
+ * workspace still coordinate.
  */
 export interface AnchoredReadPathOptions {
-  confineToWorkspace?: boolean;
   /**
    * Persistent session directory of the initiating session, used to locate the
    * anchor store (`<sessionDir>/anchored-edit/`). Undefined or "" selects the
@@ -62,46 +50,30 @@ export interface AnchoredReadPathOptions {
    */
   sessionDir?: string;
 }
-interface ResolvedReadTarget {
-  workspaceRoot: string;
-  absolutePath: string;
-}
 
-/** Resolves a read path with Pi's native semantics: normalize (~, `@`,
- *  unicode spaces, file:// URLs), resolve against the execution cwd, then
- *  canonicalize existing segments through symlinks. Unlike a realpath probe,
- *  a missing target resolves instead of throwing, so Pi's factory can produce
- *  its own native not-found result. */
-async function resolveReadTarget(cwd: string, requestedPath: string): Promise<ResolvedReadTarget> {
-  const workspaceRoot = realpathSync(cwd);
-  const absolutePath = await resolveTarget(toCwd(requestedPath, cwd));
-  return { workspaceRoot, absolutePath };
+/** Resolves a read path with Pi's native semantics; a missing target resolves
+ *  instead of throwing, so Pi's factory can produce its own native not-found
+ *  result. */
+async function resolveReadTarget(cwd: string, requestedPath: string): Promise<string> {
+  return resolveTarget(toCwd(requestedPath, cwd));
 }
 
 export async function guardAnchoredRead(
   value: unknown,
   cwd: string,
-  options: AnchoredReadPathOptions = {},
 ): Promise<ReadModelContent | undefined> {
   const params = readParams(value);
   if (!params) return undefined;
-  const confineToWorkspace = options.confineToWorkspace ?? true;
 
-  let resolved;
+  let resolved: string;
   try {
     resolved = await resolveReadTarget(cwd, params.path);
   } catch (error) {
     return errorText("E_READ_PATH", `Cannot resolve ${params.path}: ${errorMessage(error)}`);
   }
-  if (confineToWorkspace && !isWithinWorkspace(resolved.workspaceRoot, resolved.absolutePath)) {
-    return errorText(
-      "E_OUTSIDE_WORKSPACE",
-      `${params.path} resolves outside the workspace. Disable anchoredEditing.enabled to use Pi's built-in read for that path.`,
-    );
-  }
 
   try {
-    const fileStat = await stat(resolved.absolutePath);
+    const fileStat = await stat(resolved);
     if (fileStat.isDirectory()) {
       return errorText("E_READ_FAILED", `[E_NOT_TEXT] Path is a directory: ${params.path}. Use ls to inspect directories.`);
     }
@@ -117,6 +89,16 @@ export async function guardAnchoredRead(
 export async function initializeAnchoredReadStore(cwd: string, sessionDir?: string): Promise<void> {
   await pruneMissingForAllOwners(cwd, sessionDir);
 }
+
+/**
+ * Post-factory content transform delegating to the integrated anchored read
+ * operation: the target exclusion is held from the byte read through
+ * committing the matching snapshot and served hashes, so the anchors shown
+ * describe exactly the bytes read. Contended reads return the classified
+ * `[E_FILE_LOCKED]` contention instead of unanchored content presented as
+ * anchored evidence; image targets and native not-found failures pass the
+ * factory result through unchanged.
+ */
 export async function transformAnchoredReadContent(
   content: ReadModelContent,
   value: unknown,
@@ -126,63 +108,21 @@ export async function transformAnchoredReadContent(
 ): Promise<ReadModelContent> {
   const params = readParams(value);
   if (!params) return content;
-  const confineToWorkspace = options.confineToWorkspace ?? true;
-
-  let resolved;
-  try {
-    resolved = await resolveReadTarget(cwd, params.path);
-  } catch (error) {
-    return errorText("E_READ_PATH", `Cannot resolve ${params.path}: ${errorMessage(error)}`);
-  }
-  if (confineToWorkspace && !isWithinWorkspace(resolved.workspaceRoot, resolved.absolutePath)) {
-    return errorText(
-      "E_OUTSIDE_WORKSPACE",
-      `${params.path} resolves outside the workspace. Disable anchoredEditing.enabled to use Pi's built-in read for that path.`,
-    );
-  }
-
-  let file;
-  try {
-    file = await loadFileKindAndText(resolved.absolutePath, {
-      maxLines: MAX_HASH_LINES,
-      displayPath: params.path,
-    });
-  } catch (error) {
-    // The factory already produced its own native not-found result; pass it
-    // through unchanged instead of replacing it with anchored wording.
-    if (errCode(error) === "ENOENT") return content;
-    return errorText("E_READ_FAILED", errorMessage(error));
-  }
-  if (file.kind === "image") return content;
 
   try {
-    // Native path authority (#185): the store stays attributed to the
-    // initiating session even for external targets, so served rows for the
-    // same external file in two workspaces never mix.
-    const store = await loadAnchoredHashStore(
-      anchoredStoreDir(options.sessionDir, resolved.workspaceRoot),
+    const result = await runAnchoredRead({
+      cwd,
+      requestedPath: params.path,
+      ...(params.offset !== undefined ? { offset: params.offset } : {}),
+      ...(params.limit !== undefined ? { limit: params.limit } : {}),
       owner,
-    );
-    try {
-      const normalized = await readNormFile(params.path, resolved.workspaceRoot, {
-        preloadedFile: file,
-        maxLines: MAX_HASH_LINES,
-        store,
-      });
-      const preview = await fmtReadPreview(
-        normalized.normalized,
-        { offset: params.offset, limit: params.limit },
-        normalized.fileHashes,
-      );
-      recordServed(store, normalized.absolutePath, preview.servedHashes);
-      const text = normalized.hadUtf8DecodeErrors
-        ? `${preview.text}\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]`
-        : preview.text;
-      return textContent(text);
-    } finally {
-      store.release();
-    }
+      sessionDir: options.sessionDir,
+    });
+    if (result.status === "passthrough") return content;
+    if (result.status === "locked") return textContent(result.message);
+    return result.content;
   } catch (error) {
+    if (errCode(error) === "ENOENT") return content;
     return errorText(
       "E_READ_FAILED",
       `${errorMessage(error)} Disable anchoredEditing.enabled to use Pi's built-in read for this path.`,

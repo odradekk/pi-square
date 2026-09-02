@@ -427,18 +427,31 @@ export function findLastMismatch(
 	return undefined;
 }
 
-export function valEdit(
+/**
+ * Discriminated range-resolution result. A success carries the resolved
+ * bounds and the boundary duplicates computed from them; a failure carries
+ * the mismatches. The impossible combinations of the former optional shape
+ * (`resolved` absent with no mismatches, boundary dups without a resolution)
+ * are unrepresentable.
+ */
+export type RangeResolution =
+	| { ok: true; resolved: RHEdit; boundaryDups: BDup[] }
+	| { ok: false; mismatches: HMismatch[] };
+
+/**
+ * Resolves and validates an edit's anchors exactly once against the current
+ * file. Normalization, duplicate-boundary correction, and application must
+ * consume this result without re-resolving: the resolved line indices stay
+ * valid because nothing after resolution changes the file or its hashes.
+ */
+export function resolveRange(
 	edit: HEdit,
 	fileLines: string[],
 	fileHashes: string[],
-	// Unused upstream as well; kept for call-site compatibility and renamed for
-	// pi-square's noUnusedParameters check.
-	_warnings: string[],
-	signal: AbortSignal | undefined,
-): { resolved: RHEdit | undefined; mismatches: HMismatch[]; boundaryDups: BDup[] } {
-	assertAligned(fileLines, fileHashes, "valEdit");
+	signal?: AbortSignal,
+): RangeResolution {
+	assertAligned(fileLines, fileHashes, "resolveRange");
 	const mismatches: HMismatch[] = [];
-	const boundaryDups: BDup[] = [];
 
 	const hashIndex = new Map<string, number[]>();
 	for (let i = 0; i < fileHashes.length; i++) {
@@ -468,7 +481,7 @@ export function valEdit(
 			const endMismatch = findLastMismatch(mismatches, edit.hash_bounds[1]);
 			if (endMismatch && endMismatch.kind === "not_found") endMismatch.context = startResolved;
 		}
-		return { resolved: undefined, mismatches, boundaryDups };
+		return { ok: false, mismatches };
 	}
 	if (startResolved.line > endResolved.line) {
 		throw new Error(
@@ -478,19 +491,19 @@ export function valEdit(
 	const endLine = endResolved.line;
 	const rangeLines = fileLines.slice(startResolved.line - 1, endLine);
 	const canonLines = fileLines.map((line) => canon(line));
-	boundaryDups.push(
+	const boundaryDups: BDup[] = [
 		...trailingDups(edit.content_lines, fileLines, endLine),
 		...leadingDups(edit.content_lines, fileLines, startResolved.line),
 		...firstNewAfterDups(edit.content_lines, rangeLines, canonLines, endLine),
 		...lastNewBeforeDups(edit.content_lines, rangeLines, canonLines, startResolved.line),
-	);
+	];
 
 	return {
+		ok: true,
 		resolved: {
 			content_lines: edit.content_lines,
 			hash_bounds: [startResolved, endResolved],
 		},
-		mismatches,
 		boundaryDups,
 	};
 }

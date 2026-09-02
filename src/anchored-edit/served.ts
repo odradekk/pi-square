@@ -1,4 +1,4 @@
-import { parseHashList, type HashStore } from "./hash-store";
+import type { HashStoreHandle } from "./hash-store";
 import { HASH_CLASS } from "./hashline/alphabet";
 
 const SERVED_DIFF_ROW_RE = new RegExp(`^[+ ](${HASH_CLASS})│`);
@@ -12,41 +12,34 @@ export function servedHashesFromDiff(diff: string): string[] {
   return hashes;
 }
 
-export function getServed(store: HashStore, path: string): Set<string> | undefined {
-  const row = store.stmts.servedGet(path);
-  if (!row) return undefined;
-  const parsed = parseHashList(row.hashes as string, () => store.stmts.servedDelete(path));
-  if (!parsed) return undefined;
-  return new Set(parsed);
+export function getServed(store: HashStoreHandle, path: string): Set<string> | undefined {
+  return store.getServed(path);
 }
 
-export function recordServed(store: HashStore, path: string, hashes: string[]): void {
-  if (hashes.length === 0) return;
-  const existing = getServed(store, path) ?? new Set<string>();
-  let changed = false;
-  for (const hash of hashes) {
-    if (!existing.has(hash)) {
-      existing.add(hash);
-      changed = true;
-    }
-  }
-  if (!changed) return;
-  store.stmts.servedUpsert(path, JSON.stringify([...existing]), Date.now());
+/**
+ * Merges hashes into the owner's served set for the path. Persistence is
+ * row-level and conflict-safe, so concurrent additions under one owner union
+ * instead of one update replacing the other; the merge also refreshes the
+ * rows' activity timestamp so partition retention observes real use even
+ * when every added hash was already present.
+ */
+export function recordServed(store: HashStoreHandle, path: string, hashes: string[]): void {
+  store.mergeServed(path, hashes);
 }
 
-export function recordServedDiff(store: HashStore, path: string, diff: string): void {
+export function recordServedDiff(store: HashStoreHandle, path: string, diff: string): void {
   recordServed(store, path, servedHashesFromDiff(diff));
 }
 
-export function clearServed(store: HashStore, path: string): void {
-  store.stmts.servedDelete(path);
+export function clearServed(store: HashStoreHandle, path: string): void {
+  store.clearServed(path);
 }
 
 export async function recordServedSafe(
   path: string,
   hashes: string[],
   context: string,
-  store: HashStore,
+  store: HashStoreHandle,
 ): Promise<void> {
   if (hashes.length === 0) return;
   try {
@@ -60,7 +53,7 @@ export async function recordServedDiffSafe(
   path: string,
   diff: string,
   context: string,
-  store: HashStore,
+  store: HashStoreHandle,
 ): Promise<void> {
   if (!diff) return;
   await recordServedSafe(path, servedHashesFromDiff(diff), context, store);
