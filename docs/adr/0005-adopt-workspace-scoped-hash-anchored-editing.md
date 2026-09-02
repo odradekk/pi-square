@@ -25,6 +25,11 @@ changed Pi `write` calls append bounded fresh anchors, while successful
 `replace` and `revert` retain their authoritative anchored diffs. Disabling it
 suppresses those post-edit anchors but still clears write state.
 
+> The store placement and persistence paragraphs below are superseded: the
+> store lives in the session directory (`<sessionDir>/anchored-edit/`) with a
+> workspace-keyed temp fallback, and preparation no longer persists before
+> the write — see [ADR-0014](0014-anchored-operation-boundary.md) (#264).
+
 The project-local `.pi/anchored-edit/hash-store.sqlite` holds snapshots, served
 state, and one revert record per `parent` owner and file. A replace persists the
 record before changing the file. If that persistence fails, the replace does
@@ -89,8 +94,8 @@ native cross-workspace behavior). Writable-child anchored surfaces adopted
 the same native authority in #186: a writable child's read, replace, revert,
 and write accept the same paths, keep external state under the acting child
 owner in the initiating workspace, and preserve the child's `requireServed`
-range gate. The `E_OUTSIDE_WORKSPACE` boundary remains only for callers that
-explicitly opt into confinement.
+range gate. The `E_OUTSIDE_WORKSPACE` boundary was removed with the confinement mode
+itself (#264); no anchored surface emits it.
 
 ## Superseded by ADR-0007
 
