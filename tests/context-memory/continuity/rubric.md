@@ -27,6 +27,15 @@ valid for the exact rubric version the report cites.
   pinned digests — and deliberately no Memory bodies, no source transcripts,
   no provider payloads, and no credentials.
 - The scenario fixtures in `scenarios.mjs` for the exact fixture digest.
+- For a real-mode execution, its per-attempt evidence file
+  (`continuity-evidence-<stamp>.json`, written beside the per-attempt report
+  and tied to it by the same stamp and pins digest). It holds what this
+  review needs on the underlying run: per run and per probe the model's
+  answer text, the tool calls made, the per-item outcome with the phrasing
+  that matched, and the Memory blocks the model authored. It is deliberately
+  not body-free, it stays in the gitignored report directory, and it is
+  never merged into the bounded report. A dry-run writes no evidence file —
+  its answers are already in the fixtures.
 - Where a reported failure needs human eyes on the underlying run, the
   maintainer environment holding the recorded evidence for that execution.
   Reviewers must not re-run the scenarios to form a judgment about a recorded
@@ -70,9 +79,22 @@ defects, never model variance.
 1. Confirm the run row exists with the expected scenario, variant, arm, and
    seed from the pins, and that the observed schedule shows the seeded
    schedule: one append onto the seeded Memory and two suffix rebuilds.
-2. Spot-check at least two oracle items against the fixture: the predeclared
-   `requires` patterns must actually appear in the scripted probe answers and
-   the matching must be the documented case-insensitive substring rule.
+2. Spot-check at least two oracle items against the fixture. Matching scores
+   facts, not phrasings: each item's predeclared `requires` is a set of
+   phrasings of one fact, recall succeeds when any phrasing in the set appears
+   in the answer, and matching is case-insensitive substring containment. Each
+   element of the final task's `requires` is the same kind of phrasing set for
+   one required fact — the identical set some oracle item uses for that fact —
+   and the final answer must match every fact through any of its phrasings.
+   Alternates are derived only from the fact's own structure — compound
+   inversion ("Redis-backed" / "backed by Redis"), preposition or copula
+   insertion ("exponent 0" / "exponent of 0"), value–noun reordering
+   ("384 rows" / "batch size of 384") — and from established domain synonyms
+   ("half to even" / "ties to even", "750 ms" / "750 milliseconds"); where no
+   unambiguous alternate exists the set stays singular, and a phrasing
+   ambiguous about the value, the unit, or the subject is excluded. The
+   fixture tests assert no accepting phrasing matches its item's corruption
+   vocabulary, so a corrupted value can never score as recalled.
 3. Confirm no report field contains Memory Markdown, source transcript text,
    provider payload fragments, or credential material. Treat any such leak as
    a release-blocking report defect.

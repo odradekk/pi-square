@@ -26,6 +26,16 @@ import { scoreRun, evaluateGates } from "./oracles.mjs";
  * applies the deterministic oracle, and emits the bounded report plus the
  * append-only attempts log that makes favorable rerun selection detectable.
  *
+ * #265: every execution writes its report under per-attempt timestamped
+ * names, so no later execution — real or dry-run — can overwrite an earlier
+ * attempt's verdict. A real-mode execution additionally writes one per-
+ * attempt evidence file retaining what the fixed human review needs: per run
+ * and per probe the model's answer text, the tool calls made, the per-item
+ * outcome with the phrasing that matched, and the Memory blocks the model
+ * authored. The evidence file is deliberately NOT body-free — it lives only
+ * in the gitignored report directory, never in the bounded report — and a
+ * dry-run writes none, because its answers are already in the fixtures.
+ *
  * The adapter seam is the whole provider boundary. The dry-run adapter in
  * `fake-model.mjs` drives the production controller with a scripted model and
  * no credentials. #227 supplies a real adapter module with the same contract:
@@ -33,7 +43,9 @@ import { scoreRun, evaluateGates } from "./oracles.mjs";
  * where a session is `{ runTurn(turn) → evidence, stats(), close() }`. The
  * contract binds adapters to send only `turn.user` text to the provider —
  * never scripted answers or oracle patterns — so qualification cannot be
- * coached.
+ * coached. Compression events in `stats()` should carry `block`, the Memory
+ * block body the model submitted at that boundary, so real-mode evidence
+ * retains the model-authored blocks; an absent `block` is recorded as null.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -41,7 +53,44 @@ const REPO_ROOT = join(HERE, "..", "..", "..");
 export const DEFAULT_MATRIX_SALT = "pi-square.context-memory/continuity/1";
 const FAILURE_LIST_CAP = 64;
 export const REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/1";
+export const EVIDENCE_SCHEMA = "pi-square.context-memory/continuity-evidence/1";
 
+// ─── Per-attempt artifacts (#265) ───────────────────────────────────
+
+/**
+ * One execution's file names, derived from its own timestamp so no later
+ * execution can overwrite an earlier attempt's report or evidence. The three
+ * names share one suffix: a report and its evidence stay paired.
+ */
+export function attemptFileNames(generatedAt) {
+  const stamp = String(generatedAt).replaceAll(":", "-").replaceAll(".", "-");
+  return {
+    reportJson: `continuity-qualification-${stamp}.json`,
+    reportMarkdown: `continuity-qualification-${stamp}.md`,
+    evidence: `continuity-evidence-${stamp}.json`,
+  };
+}
+
+export function attemptFilePaths(reportDir, generatedAt) {
+  const names = attemptFileNames(generatedAt);
+  const withSuffix = (name, suffix) => {
+    const dot = name.lastIndexOf(".");
+    return join(reportDir, `${name.slice(0, dot)}${suffix}${name.slice(dot)}`);
+  };
+  let suffix = "";
+  for (let attempt = 2; ; attempt += 1) {
+    const taken = [names.reportJson, names.reportMarkdown, names.evidence]
+      .some((name) => existsSync(withSuffix(name, suffix)));
+    if (!taken) break;
+    suffix = `-${attempt}`;
+  }
+  return {
+    reportJson: withSuffix(names.reportJson, suffix),
+    reportMarkdown: withSuffix(names.reportMarkdown, suffix),
+    evidence: withSuffix(names.evidence, suffix),
+    attempts: join(reportDir, "attempts.jsonl"),
+  };
+}
 // ─── Run matrix and seeds ──────────────────────────────────────────
 
 /** The fixed 16-run matrix: 12 primary variant runs plus 4 secondary canonical runs. */
@@ -397,6 +446,64 @@ function pct(value) {
   return `${Math.round(value * 10_000) / 100}%`;
 }
 
+// ─── Retained evidence (#265) ───────────────────────────────────────
+
+/**
+ * The per-attempt evidence record for the fixed human review (rubric.md §2,
+ * §4.4): per run and per probe the model's answer text, the tool calls made,
+ * the per-item outcome with the phrasing that matched, and the Memory blocks
+ * the model authored. Deliberately not body-free — the bounded report carries
+ * none of this — and written only in real mode.
+ */
+function buildEvidence({ adapterId, pins, report, runScores, evidences }) {
+  return {
+    schema: EVIDENCE_SCHEMA,
+    generatedAt: report.generatedAt,
+    mode: report.mode,
+    adapter: adapterId,
+    pinsDigest: pins.pinsDigest,
+    result: report.result,
+    purpose: "retained for the fixed human review of this attempt; holds model answer text and Memory bodies, stays in the gitignored report directory, and never enters the bounded report",
+    runs: runScores.map((score, index) => {
+      const evidence = evidences[index];
+      const memoryBlocks = evidence
+        .filter((record) => record.compression)
+        .map((record) => ({
+          turn: record.compression.turn,
+          operation: record.compression.operation,
+          blocksBefore: record.compression.blocksBefore,
+          blocksAfter: record.compression.blocksAfter,
+          // The block body the model submitted at this boundary; null when
+          // the adapter did not record it on the compression event.
+          body: record.compression.block ?? null,
+        }));
+      return {
+        run: runLabel(score.run),
+        scenario: score.run.scenario,
+        variant: score.run.variant,
+        arm: score.run.arm,
+        seed: score.run.seed,
+        turns: evidence.map((record) => ({
+          turn: record.turn,
+          kind: record.kind,
+          advisory: record.advisory,
+          assistantText: record.assistantText,
+          assistantChars: record.assistantChars,
+          requestChars: record.requestChars,
+          toolCalls: record.toolCalls,
+          sourceReads: record.sourceReads,
+          compression: record.compression,
+          memoryPurity: record.memoryPurity,
+          error: record.error,
+        })),
+        items: score.itemStatuses,
+        finalTask: { met: score.finalTask, matchedPatterns: score.finalTaskPatterns },
+        memoryBlocks,
+      };
+    }),
+  };
+}
+
 // ─── The qualification entry point ─────────────────────────────────
 
 /**
@@ -440,14 +547,18 @@ export async function runQualification({ adapter, reportDir, salt = DEFAULT_MATR
     };
     json = maskLeaks(JSON.stringify(report, null, 2));
   }
+  let files = null;
   if (reportDir) {
     mkdirSync(reportDir, { recursive: true });
-    // The markdown derives from the same report; whatever the self-check
-    // caught, both artifacts leave masked.
+    // #265: every execution writes under its own per-attempt names, so no
+    // later execution — real or dry-run — can overwrite an earlier attempt's
+    // verdict. The markdown derives from the same report; whatever the
+    // self-check caught, both artifacts leave masked.
+    const paths = attemptFilePaths(reportDir, report.generatedAt);
     const markdown = maskLeaks(reportMarkdown(report));
-    writeFileSync(join(reportDir, "continuity-qualification.json"), `${json}\n`);
-    writeFileSync(join(reportDir, "continuity-qualification.md"), `${markdown}\n`);
-    appendFileSync(join(reportDir, "attempts.jsonl"), `${JSON.stringify({
+    writeFileSync(paths.reportJson, `${json}\n`);
+    writeFileSync(paths.reportMarkdown, `${markdown}\n`);
+    appendFileSync(paths.attempts, `${JSON.stringify({
       generatedAt: report.generatedAt,
       pinsDigest: pins.pinsDigest,
       mode,
@@ -456,7 +567,19 @@ export async function runQualification({ adapter, reportDir, salt = DEFAULT_MATR
       severeFailures: report.zeroTolerance.severeFailures,
       runs: report.totals.runs,
     })}\n`);
+    // #265: a real-mode execution retains the reviewable evidence beside its
+    // report; a dry-run writes none — its answers are already in the fixtures.
+    let evidencePath = null;
+    if (mode === "real") {
+      evidencePath = paths.evidence;
+      writeFileSync(evidencePath, `${JSON.stringify(
+        buildEvidence({ adapterId: normalized.declaration.id, pins, report, runScores, evidences }),
+        null,
+        2,
+      )}\n`);
+    }
+    files = { reportJson: paths.reportJson, reportMarkdown: paths.reportMarkdown, evidence: evidencePath, attempts: paths.attempts };
   }
 
-  return { report, json, markdown: maskLeaks(reportMarkdown(report)) };
+  return { report, json, markdown: maskLeaks(reportMarkdown(report)), files };
 }

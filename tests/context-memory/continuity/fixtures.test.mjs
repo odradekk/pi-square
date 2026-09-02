@@ -22,6 +22,12 @@ import {
  * families, and the leak detectability of every fixture-authored body. These
  * are contracts of the qualification fixtures themselves — orchestration and
  * scoring are covered by `runner.test.mjs`.
+ *
+ * #265 adds the fact-phrasing contracts: every scored fact accepts a
+ * predeclared set of phrasings derived only from the fact's own structure and
+ * established domain synonyms, and the discrimination guard — no accepting
+ * phrasing of an item may match any of that item's corrupting phrasings, so
+ * widening recall can never let a corrupted answer pass.
  */
 
 const HALF_BUDGET_TOKENS = Math.round((MODEL_WINDOW * QUALIFICATION_CONFIG.memoryBudgetPercent) / 100) / 2;
@@ -126,7 +132,7 @@ for (const scenario of SCENARIOS) {
         ...oracle.negativeConstraints.flatMap((constraint) => constraint.claims),
         ...oracle.branch.abandoned.flatMap((entry) => entry.patterns),
         ...oracle.uncertaintyTraps.flatMap((trap) => trap.promote),
-        ...oracle.finalTask.requires,
+        ...oracle.finalTask.requires.flat(),
       ];
       for (const token of scoredOrFailureTokens) {
         assert.ok(
@@ -172,6 +178,95 @@ for (const scenario of SCENARIOS) {
     assert.ok(Array.isArray(oracle.branch.abandoned), `${label} declares branch visibility`);
     assert.ok(Array.isArray(oracle.sourceToolUse), `${label} declares expected source-tool use`);
     assert.ok(oracle.finalTask.requires.length > 0, `${label} predeclares final task success criteria`);
+  }
+}
+
+// ─── Fact phrasing sets and the discrimination guard (#265) ────────
+
+// The alternate phrasings each phrasal fact must accept, by item id. Each is
+// derived from the fact's own structure or an established domain synonym —
+// never from any run transcript, report, or provider call — and every one is
+// checked below to reject its item's entire corruption vocabulary.
+const REQUIRED_ALTERNATES = new Map([
+  ["batch-size", ["batch size of 384", "384-row"]],
+  ["lock-timeout", ["750 milliseconds", "750-ms"]],
+  ["rounding-rule", ["ties to even"]],
+  ["jpy-exponent", ["exponent of 0", "exponent is 0"]],
+  ["partition-count", ["partition count of 16", "16-partition"]],
+  ["amount-units", ["integers in minor units"]],
+  ["integer-path", ["integers in minor units"]],
+  ["backing-store", ["backed by Redis"]],
+  ["rotation-cadence", ["21-day"]],
+  ["followup-owner", ["on-call for storage"]],
+]);
+
+// Facts that are single exact tokens or bare proper-noun phrases: no
+// structure exists to invert or reorder, and any loosening would trade the
+// subject or the identifier away, so their accepting set stays singular.
+const SINGLE_PHRASING_ITEMS = new Set([
+  "idempotency-prefix",
+  "flag-timeline",
+  "ledger-owner",
+  "rule-record",
+  "signoff",
+  "serial-allocator",
+  "queue-owner",
+  "incident-code",
+  "tracking-ticket",
+]);
+
+{
+  for (const scenario of SCENARIOS) {
+    for (const variant of [...PRIMARY_ARM_VARIANTS, "canonical"]) {
+      const { oracle } = buildScript(scenario, variant);
+      const label = `${scenario.id}/${variant}`;
+      const items = [...oracle.criticalItems, ...oracle.continuityItems];
+
+      for (const item of items) {
+        for (const pattern of item.requires) {
+          assert.equal(typeof pattern, "string", `${label} item ${item.id} accepts only string phrasings`);
+          assert.ok(pattern.length > 0, `${label} item ${item.id} accepts no empty phrasing`);
+        }
+        if (REQUIRED_ALTERNATES.has(item.id)) {
+          for (const alternate of REQUIRED_ALTERNATES.get(item.id)) {
+            assert.ok(item.requires.includes(alternate),
+              `${label} item ${item.id} accepts the derived phrasing "${alternate.replace(MARKER, "‹marker›")}"`);
+          }
+          assert.ok(item.requires.length > 1, `${label} item ${item.id} accepts a set of phrasings, not one`);
+        }
+        if (SINGLE_PHRASING_ITEMS.has(item.id)) {
+          assert.equal(item.requires.length, 1,
+            `${label} token item ${item.id} keeps its single exact phrasing — no alternate is derivable without ambiguity`);
+        }
+        // The discrimination guard: a corrupt answer contains a corrupting
+        // phrasing, so any accepting phrasing that is a substring of one
+        // would let that corruption score as recalled.
+        for (const pattern of item.requires) {
+          for (const corrupt of item.corruptsWith ?? []) {
+            assert.ok(
+              !corrupt.toLowerCase().includes(pattern.toLowerCase()),
+              `${label} item ${item.id}: accepting phrasing "${pattern.replace(MARKER, "‹marker›")}" must not match the corrupting phrasing "${corrupt.replace(MARKER, "‹marker›")}"`,
+            );
+          }
+        }
+      }
+
+      // The final task is judged on the same footing as a probe: each of its
+      // required facts is one item's exact accepting set — never a narrower
+      // or wider phrasing list than the probes use for the same fact.
+      for (const phrasings of oracle.finalTask.requires) {
+        assert.ok(Array.isArray(phrasings) && phrasings.length > 0,
+          `${label} final task facts are non-empty phrasing sets`);
+        for (const pattern of phrasings) {
+          assert.equal(typeof pattern, "string", `${label} final task phrasings are strings`);
+          assert.ok(pattern.length > 0, `${label} final task phrasings are non-empty`);
+        }
+        assert.ok(
+          items.some((item) => JSON.stringify(item.requires) === JSON.stringify(phrasings)),
+          `${label} every final-task fact is judged by an oracle item's exact accepting set`,
+        );
+      }
+    }
   }
 }
 

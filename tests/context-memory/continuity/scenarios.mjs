@@ -191,6 +191,40 @@ function bump(id, user, fake, extra = {}) {
   return work(id, user, fake, { ...extra, usageAfter: DUE_USAGE_TOKENS });
 }
 
+// ─── Fact phrasing sets (#265) ──────────────────────────────────────
+
+/**
+ * Every scored fact accepts a predeclared set of phrasings of that fact, not
+ * one literal phrase: a model that states the identical fact in different
+ * words — "backed by Redis" for "Redis-backed", "exponent of 0" for
+ * "exponent 0", "batch size of 384" for "384 rows" — recalls the fact.
+ *
+ * Alternates are derived from the fact's own structure alone — compound
+ * inversion ("Redis-backed" / "backed by Redis", "storage on-call" /
+ * "on-call for storage"), preposition or copula insertion ("exponent 0" /
+ * "exponent of 0" / "exponent is 0"), value–noun reordering ("384 rows" /
+ * "batch size of 384" / "384-row") — and from established domain synonyms
+ * ("half to even" / "ties to even", "750 ms" / "750 milliseconds"). Nothing
+ * else: no run transcript, no report file, no provider call. A candidate
+ * phrasing that is genuinely ambiguous about the value, the unit, or the
+ * subject is left out — "banker's rounding" names the mode but is routinely
+ * paired with the wrong direction, so accepting it would suppress the exact
+ * corruption this item guards.
+ *
+ * The fixture tests enforce the discrimination side: no accepting phrasing
+ * of an item matches any of that item's corrupting phrasings, and facts that
+ * are bare exact tokens or proper-noun phrases keep a single phrasing.
+ */
+const P_BATCH_ROWS = ["384 rows", "batch size of 384", "384-row"];
+const P_LOCK_TIMEOUT = ["750 ms", "750 milliseconds", "750-ms"];
+const P_MINOR_UNITS = ["integer minor units", "integers in minor units"];
+const P_HALF_TO_EVEN = ["half to even", "ties to even"];
+const P_JPY_EXPONENT = ["exponent 0", "exponent of 0", "exponent is 0"];
+const P_PARTITIONS = ["16 partitions", "partition count of 16", "16-partition"];
+const P_REDIS_BACKING = ["Redis-backed", "backed by Redis"];
+const P_ROTATION_DAYS = ["21 days", "21-day"];
+const P_STORAGE_ONCALL = ["storage on-call", "on-call for storage"];
+
 // ─── Shared oracle field shapes ────────────────────────────────────
 
 const NO_BRANCH = { abandoned: [], probes: [], memoryPurity: true };
@@ -306,12 +340,12 @@ function buildExactWork(variant) {
   const oracle = {
     criticalItems: [
       { id: "idempotency-prefix", requires: [`${MARKER}-7C31`], corruptsWith: [`${MARKER}-73C1`, `${MARKER}-7C3`], probes: criticalProbes },
-      { id: "batch-size", requires: ["384 rows"], corruptsWith: ["512 rows", "256 rows"], probes: criticalProbes },
-      { id: "lock-timeout", requires: ["750 ms"], corruptsWith: ["75 ms", "7500 ms", "1,000 ms"], probes: criticalProbes },
+      { id: "batch-size", requires: P_BATCH_ROWS, corruptsWith: ["512 rows", "256 rows"], probes: criticalProbes },
+      { id: "lock-timeout", requires: P_LOCK_TIMEOUT, corruptsWith: ["75 ms", "7500 ms", "1,000 ms"], probes: criticalProbes },
     ],
     continuityItems: [
       { id: "ledger-owner", requires: ["payments team"], probes: continuityProbes },
-      { id: "amount-units", requires: ["integer minor units"], probes: continuityProbes },
+      { id: "amount-units", requires: P_MINOR_UNITS, probes: continuityProbes },
       {
         id: "flag-timeline",
         requires: ["LEDGER_V1"],
@@ -341,7 +375,7 @@ function buildExactWork(variant) {
     sourceToolUse: NO_SOURCE_USE,
     finalTask: {
       turn: "t11-final",
-      requires: [`${MARKER}-7C31`, "384 rows", "750 ms", "payments team"],
+      requires: [[`${MARKER}-7C31`], P_BATCH_ROWS, P_LOCK_TIMEOUT, ["payments team"]],
     },
   };
   return { turns, oracle, blocks };
@@ -451,11 +485,11 @@ function buildConstraintReversal(variant) {
   const continuityProbes = ["t3-probe", "t6-probe", "t9-probe", "t11-final"];
   const oracle = {
     criticalItems: [
-      { id: "rounding-rule", requires: ["half to even"], corruptsWith: ["half up", "rounds up", "away from zero"], probes: criticalProbes },
-      { id: "jpy-exponent", requires: ["exponent 0"], corruptsWith: ["exponent 2", "exponent of 2"], probes: criticalProbes },
+      { id: "rounding-rule", requires: P_HALF_TO_EVEN, corruptsWith: ["half up", "rounds up", "away from zero"], probes: criticalProbes },
+      { id: "jpy-exponent", requires: P_JPY_EXPONENT, corruptsWith: ["exponent 2", "exponent of 2"], probes: criticalProbes },
     ],
     continuityItems: [
-      { id: "integer-path", requires: ["integer minor units"], probes: continuityProbes },
+      { id: "integer-path", requires: P_MINOR_UNITS, probes: continuityProbes },
       {
         id: "rule-record",
         requires: ["0007"],
@@ -490,7 +524,7 @@ function buildConstraintReversal(variant) {
     sourceToolUse: NO_SOURCE_USE,
     finalTask: {
       turn: "t11-final",
-      requires: ["half to even", "integer minor units", "Maya"],
+      requires: [P_HALF_TO_EVEN, P_MINOR_UNITS, ["Maya"]],
     },
   };
   return { turns, oracle, blocks };
@@ -615,11 +649,11 @@ function buildBranchIsolation(variant) {
   const continuityProbes = ["t7-probe", "t10-probe", "t12-final"];
   const oracle = {
     criticalItems: [
-      { id: "partition-count", requires: ["16 partitions"], corruptsWith: ["8 partitions", "32 partitions", "64 partitions"], probes: criticalProbes },
+      { id: "partition-count", requires: P_PARTITIONS, corruptsWith: ["8 partitions", "32 partitions", "64 partitions"], probes: criticalProbes },
       { id: "serial-allocator", requires: [`${MARKER}-SER-1180`], corruptsWith: [`${MARKER}-SER-1800`, `${MARKER}-SER-8110`], probes: criticalProbes },
     ],
     continuityItems: [
-      { id: "backing-store", requires: ["Redis-backed"], probes: continuityProbes },
+      { id: "backing-store", requires: P_REDIS_BACKING, probes: continuityProbes },
       { id: "queue-owner", requires: ["data-platform"], probes: continuityProbes },
     ],
     forbiddenClaims: [
@@ -653,7 +687,7 @@ function buildBranchIsolation(variant) {
     sourceToolUse: NO_SOURCE_USE,
     finalTask: {
       turn: "t12-final",
-      requires: ["16 partitions", `${MARKER}-SER-1180`, "Redis-backed", "data-platform"],
+      requires: [P_PARTITIONS, [`${MARKER}-SER-1180`], P_REDIS_BACKING, ["data-platform"]],
     },
   };
   return { turns, oracle, blocks };
@@ -753,10 +787,10 @@ function buildSourceRecovery(variant) {
   const oracle = {
     criticalItems: [
       { id: "incident-code", requires: [`${MARKER}-INC-4477`], corruptsWith: [`${MARKER}-INC-4478`, `${MARKER}-INC-7744`], probes: ["t11-final"] },
-      { id: "rotation-cadence", requires: ["21 days"], corruptsWith: ["7 days", "30 days"], probes: ["t3-probe", "t6-probe", "t9-probe", "t11-final"] },
+      { id: "rotation-cadence", requires: P_ROTATION_DAYS, corruptsWith: ["7 days", "30 days"], probes: ["t3-probe", "t6-probe", "t9-probe", "t11-final"] },
     ],
     continuityItems: [
-      { id: "followup-owner", requires: ["storage on-call"], probes: ["t3-probe", "t6-probe", "t9-probe", "t11-final"] },
+      { id: "followup-owner", requires: P_STORAGE_ONCALL, probes: ["t3-probe", "t6-probe", "t9-probe", "t11-final"] },
       { id: "tracking-ticket", requires: ["SPE-2291"], probes: ["t3-probe", "t6-probe", "t9-probe", "t11-final"] },
     ],
     forbiddenClaims: [
@@ -783,7 +817,7 @@ function buildSourceRecovery(variant) {
     ],
     finalTask: {
       turn: "t11-final",
-      requires: [`${MARKER}-INC-4477`, "21 days", "storage on-call"],
+      requires: [[`${MARKER}-INC-4477`], P_ROTATION_DAYS, P_STORAGE_ONCALL],
     },
   };
   return { turns, oracle, blocks };
