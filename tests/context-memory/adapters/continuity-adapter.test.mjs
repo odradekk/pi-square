@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { createHarness } from "../qualification/harness.mjs";
-import { QUALIFICATION_CONFIG } from "../continuity/scenarios.mjs";
+import { QUALIFICATION_CONFIG, SEED } from "../continuity/scenarios.mjs";
 import {
   CONTINUITY_PROVIDER_ADAPTER_DECLARATION,
   CONTINUITY_SYSTEM_PROMPT,
@@ -479,6 +479,42 @@ async function runScriptedSession({ arm, replies, turns }) {
   });
   setEnv("CPA_BASE_URL", "https://cpa.example.test");
   assert.match(evidence[0].error, /CPA_BASE_URL is not set/);
+}
+// ─── the adapter applies the fixture's seeded Memory (#261) ────────
+
+{
+  // A script carrying the real fixture seed makes the adapter start from the
+  // two seeded blocks, so the compression evidence counts the append onto
+  // seeded Memory (2 -> 3) exactly as the scripted adapter does. Without the
+  // seed the real qualification would lose its fixture-owned schedule.
+  const transport = stubTransport([
+    anthropicText("Context established."),
+    anthropicTools("Done — submitting the Memory block.", [{
+      id: "toolu_seedsub",
+      name: "submit_memory",
+      args: { markdown: "# Model block\n\n- authored at whatever length the model chose" },
+    }]),
+    anthropicText("Submitted; this run's answer stands."),
+  ]);
+  const adapter = createContinuityProviderAdapter({ transport });
+  const turns = [
+    { id: "t1", kind: "work", user: "Establish the working context for the run.", usageAfter: 6200 },
+    { id: "t2", kind: "work", user: "Complete the first stretch and submit the Memory block." },
+  ];
+  const session = adapter.createSession({
+    script: { turns, oracle: { branch: { abandoned: [] } }, seed: SEED },
+    run: { scenario: "stub", variant: "middle", arm: "primary", seed: "0000" },
+  });
+  const evidence = [];
+  for (const turn of turns) evidence.push(await session.runTurn(turn));
+  await session.close();
+  const compressions = session.stats().compressions;
+  assert.equal(evidence[0].error, null);
+  assert.equal(evidence[1].error, null);
+  assert.equal(compressions.length, 1);
+  assert.equal(compressions[0].operation, "append", "the first due run appends onto the seeded Memory");
+  assert.equal(compressions[0].blocksBefore, SEED.blockCount, "the block count starts at the seed");
+  assert.equal(compressions[0].blocksAfter, SEED.blockCount + 1);
 }
 
 console.log("continuity-adapter.test.mjs: all offline adapter coverage passed");

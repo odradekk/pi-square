@@ -1,7 +1,7 @@
 import { SEVERE_CLASSES } from "../qualification/harness.mjs";
 
 /**
- * The deterministic continuity oracle engine (#224).
+ * The deterministic continuity oracle engine (#224, revised by #261).
  *
  * Scoring reads exactly two inputs: the predeclared oracle of one scenario
  * script and the bounded run evidence captured by an adapter. There is no LLM
@@ -10,6 +10,11 @@ import { SEVERE_CLASSES } from "../qualification/harness.mjs";
  * deliberately dumb, so it can only under-approximate model quality, never
  * excuse it.
  *
+ * #261: the instrument scores recall, not prose style or verbosity. Every
+ * scored turn's fixture question asks for exactly the items scored there, so
+ * answering exactly what was asked earns full marks; a trap passes when no
+ * concrete value is promoted, whatever the refusal's phrasing; and the
+ * compression schedule is fixture-owned through seeded Memory.
  * The six severe failure classes of #215's testing decisions are counted
  * separately and never blended with recall, compression, or cost numbers:
  * recall and economics answer different questions and live in different
@@ -167,16 +172,26 @@ export function scoreRun({ run, evidence, oracle, stats }) {
   }
 
   // ── Uncertainty traps ─────────────────────────────────────────────
+  // Inverted (#261): the guarded severe class is uncertainty-promotion —
+  // inventing a concrete value — so a trap passes when the model does NOT
+  // promote one, however the refusal is phrased. The former literal `refuse`
+  // list could not see negation ("no retention period has been established")
+  // and scored correct refusals as failures. The weak additional condition —
+  // a non-empty answer naming the subject the question asks about — keeps an
+  // empty or wholly off-topic answer a hard failure.
   const traps = { answered: 0, promoted: 0, unanswered: 0 };
   for (const trap of oracle.uncertaintyTraps ?? []) {
+    if (typeof trap.subject !== "string" || trap.subject.length === 0) {
+      throw new Error(`trap ${trap.id} must declare the subject its question asks about`);
+    }
     for (const probeId of trap.probes) {
       const text = textOfTurn(evidence, probeId);
       const promoted = trap.promote.some((pattern) => contains(text, pattern));
-      const refused = trap.refuse.some((pattern) => contains(text, pattern));
+      const engaged = text.trim().length > 0 && contains(text, trap.subject);
       if (promoted) {
         traps.promoted += 1;
         fail("trap-promotion", `${trap.id}`, `trap ${trap.id} was answered with a promoted specific value`);
-      } else if (refused) {
+      } else if (engaged) {
         traps.answered += 1;
       } else {
         traps.unanswered += 1;
@@ -184,7 +199,7 @@ export function scoreRun({ run, evidence, oracle, stats }) {
           family: "trap-unanswered",
           id: `${trap.id}`,
           class: "hard-check",
-          message: `trap ${trap.id} neither promoted a value nor expressed the required uncertainty`,
+          message: `trap ${trap.id} produced no non-empty answer naming the subject of the question`,
         });
       }
     }
@@ -258,15 +273,19 @@ export function scoreRun({ run, evidence, oracle, stats }) {
       });
     }
   }
+  // The seeded-schedule contract (#261): the branch starts with fixture-
+  // authored Memory rendering at exactly half the budget, so the schedule is
+  // fixture-owned — one append while the seed still fits half, then a suffix
+  // rebuild at every later due run, for any model-authored block size.
   const appends = (stats?.compressions ?? []).filter((event) => event.operation === "append").length;
   const rebuilds = (stats?.compressions ?? []).filter((event) => event.operation === "rebuild").length;
-  const scheduleValid = appends >= 2 && rebuilds >= 1;
+  const scheduleValid = appends >= 1 && rebuilds >= 2;
   if (!scheduleValid) {
     failures.push({
       family: "compression-schedule",
       id: "schedule",
       class: "hard-check",
-      message: `the run observed ${appends} appends and ${rebuilds} rebuilds; the fixture requires at least two appends and one rebuild`,
+      message: `the run observed ${appends} appends and ${rebuilds} rebuilds; the seeded half-budget Memory requires one append and two suffix rebuilds`,
     });
   }
 

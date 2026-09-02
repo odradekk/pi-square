@@ -1,7 +1,16 @@
-import { MARKER, WINDOW, DUE_CONFIG, format } from "../qualification/harness.mjs";
+import {
+  MARKER,
+  WINDOW,
+  DUE_CONFIG,
+  format,
+  userEntry,
+  assistantEntry,
+  memoryCompaction,
+} from "../qualification/harness.mjs";
 
 /**
- * The four long-session continuity qualification scenarios (#224).
+ * The four long-session continuity qualification scenarios (#224, revised by
+ * #261).
  *
  * Each scenario is one scripted multi-turn working session for the real-model
  * qualification gate of #215: a sequence of user turns, the Memory block
@@ -17,12 +26,19 @@ import { MARKER, WINDOW, DUE_CONFIG, format } from "../qualification/harness.mjs
  * bodies), so any leak of Memory or answer text into the bounded report is
  * mechanically detectable by the report self-check.
  *
- * Compression arithmetic is fixture-level contract, not hope: with the pinned
- * qualification config (window 200 000, budget 1 %, due point 5 000 tokens)
- * block 1 alone fits the half budget, blocks 1+2 cross it — so the third due
- * run is a suffix rebuild — and the rebuilt pair fits the full budget. Every
- * variant keeps one bump turn immediately before each due turn, so the
- * schedule holds for early, middle, late, and canonical alike.
+ * Compression scheduling is fixture-owned, not model-owned (#261): every run
+ * starts from a branch seeded with fixture-authored Memory whose rendered
+ * size is EXACTLY half the configured budget (its code-point total aligned to
+ * the chars/4 ceil), so the first due run appends while the seed still fits
+ * half, and every later due run deterministically rebuilds — any non-empty
+ * added block strictly exceeds half, whatever its prose length. A model's
+ * verbosity can no longer flip the append-versus-rebuild decision; the
+ * schedule gate therefore demands one append and two suffix rebuilds per run.
+ *
+ * Every scored turn asks for exactly the items the oracle scores there (the
+ * turn's `asks` list, validated against the oracle by the fixture tests), so
+ * a model answering exactly what it was asked — and nothing more — earns full
+ * marks; volunteering unasked facts is never required to pass (#261).
  */
 
 export const QUALIFICATION_CONFIG = DUE_CONFIG;
@@ -34,14 +50,24 @@ export const POST_COMPACTION_USAGE_TOKENS = 1_400;
 const WRAPPER_CHARS = format.MEMORY_SUMMARY_WRAPPER.length;
 const SEPARATOR_CHARS = format.MEMORY_BLOCK_SEPARATOR.length;
 const HALF_BUDGET_TOKENS = Math.round((MODEL_WINDOW * QUALIFICATION_CONFIG.memoryBudgetPercent) / 100) / 2;
-const FULL_BUDGET_TOKENS = Math.round((MODEL_WINDOW * QUALIFICATION_CONFIG.memoryBudgetPercent) / 100);
 /** The controller's chars/4 estimator makes char budgets four times token budgets. */
 const HALF_BUDGET_CHARS = HALF_BUDGET_TOKENS * 4;
-const FULL_BUDGET_CHARS = FULL_BUDGET_TOKENS * 4;
 
-const BLOCK1_TARGET = HALF_BUDGET_CHARS - WRAPPER_CHARS - SEPARATOR_CHARS - 250;
-const BLOCK2_TARGET = Math.round(HALF_BUDGET_CHARS * 0.75);
-const BLOCK3_TARGET = FULL_BUDGET_CHARS - WRAPPER_CHARS - 2 * SEPARATOR_CHARS - BLOCK1_TARGET - 600;
+/**
+ * The seeded pre-run Memory (#261): two fixture-authored blocks whose
+ * rendered size is exactly the half budget, with a code-point total that is
+ * an exact multiple of four. Adding any non-empty block therefore strictly
+ * exceeds half the budget under the controller's chars/4 ceil — the first
+ * due run appends (`<=` half) and every later one rebuilds (`>` half),
+ * deterministically, for any model-authored block size.
+ */
+export const SEED_BLOCK_COUNT = 2;
+const SEED_CHAR_BUDGET = HALF_BUDGET_CHARS - WRAPPER_CHARS - SEPARATOR_CHARS * SEED_BLOCK_COUNT;
+const SEED_S1_TARGET = Math.round(SEED_CHAR_BUDGET * 0.4);
+const SEED_S2_TARGET = SEED_CHAR_BUDGET - SEED_S1_TARGET;
+
+/** Model-authored blocks are one modest fixed size; they no longer size the schedule. */
+const MODEL_BLOCK_TARGET = Math.round(HALF_BUDGET_CHARS * 0.3);
 
 const FILLER = "deterministic qualification filler — stable context continuity text that carries no additional fact. ";
 
@@ -66,22 +92,86 @@ function memoryBlock(title, facts, target) {
   return body + "x".repeat(Math.max(0, target - body.length));
 }
 
+// ─── Seeded pre-run Memory (#261) ───────────────────────────────────
+
+const SEED_FACTS_1 = [
+  "prior record only: no fact scored by this qualification lives in seeded Memory",
+  "the seed fixes the pre-run rendered Memory at exactly half the configured budget",
+];
+const SEED_FACTS_2 = [
+  "the prior record is closed; the run's own evidence starts after it",
+  "with the seed at half budget the first due run appends and every later one rebuilds",
+];
+
+export const SEED_BLOCKS = [
+  memoryBlock("continuity seed — prior record (1/2)", SEED_FACTS_1, SEED_S1_TARGET),
+  memoryBlock("continuity seed — prior record (2/2)", SEED_FACTS_2, SEED_S2_TARGET),
+];
+
+/** The fixed pre-run exchange the seeded Memory summarizes, and the kept tail it resumes from. */
+const SEED_EXCHANGE = [
+  {
+    user: "Earlier stretch, first exchange: the ground rules for this effort were set and the working record opened.",
+    assistant: "The first stretch of the prior record is noted; the ground rules hold for what follows.",
+  },
+  {
+    user: "Earlier stretch, second exchange: the working record continued and the prior stretch closed out.",
+    assistant: "The second stretch is recorded and closed; the effort resumes from the kept context.",
+  },
+];
+const SEED_RESUME_USER = "Pick the effort back up from the record and continue with the next step.";
+
+const SEED_IDS = {
+  u0: "seed-u0",
+  a0: "seed-a0",
+  u1: "seed-u1",
+  a1: "seed-a1",
+  keep: "seed-keep-u",
+  compaction: "seed-c0",
+};
+
+/**
+ * Seed one session branch with the fixture-authored pre-run Memory (#261):
+ * two eligible source exchanges, the kept-tail resume entry, and one
+ * extension-origin compaction carrying the two seeded blocks — the exact
+ * shape a committed Context Memory takeover leaves, so the controller
+ * derives it as strictly valid Memory before the first turn runs. Adapters
+ * apply it to the fresh session tree before `session_start`.
+ */
+export function seedSessionMemory(session) {
+  session.append(userEntry(SEED_IDS.u0, session.getLeafId(), SEED_EXCHANGE[0].user));
+  session.append(assistantEntry(SEED_IDS.a0, session.getLeafId(), [{ type: "text", text: SEED_EXCHANGE[0].assistant }]));
+  session.append(userEntry(SEED_IDS.u1, session.getLeafId(), SEED_EXCHANGE[1].user));
+  session.append(assistantEntry(SEED_IDS.a1, session.getLeafId(), [{ type: "text", text: SEED_EXCHANGE[1].assistant }]));
+  session.append(userEntry(SEED_IDS.keep, session.getLeafId(), SEED_RESUME_USER));
+  session.append(memoryCompaction(SEED_IDS.compaction, session.getLeafId(), {
+    firstKeptEntryId: SEED_IDS.keep,
+    ends: [SEED_IDS.a0, SEED_IDS.a1],
+    bodies: SEED_BLOCKS,
+  }));
+}
+
+/** What a built script hands its adapter: the seed bodies and how to apply them. */
+export const SEED = { blocks: SEED_BLOCKS, blockCount: SEED_BLOCK_COUNT, apply: seedSessionMemory };
+
 // ─── Turn constructors ─────────────────────────────────────────────
 
 function work(id, user, fake, extra = {}) {
   return { id, kind: "work", user, fake, ...extra };
 }
 
-function probe(id, user, answer) {
-  return { id, kind: "probe", user, fake: { finalText: answer } };
+/** A probe asks for exactly the oracle items listed in `asks` — no more, no less (#261). */
+function probe(id, user, answer, asks) {
+  return { id, kind: "probe", user, fake: { finalText: answer }, asks };
 }
 
 function trap(id, user, answer) {
   return { id, kind: "trap", user, fake: { finalText: answer } };
 }
 
-function finalTask(id, user, fake, extra = {}) {
-  return { id, kind: "final", user, fake, ...extra };
+/** The final task is scored like a probe and asks for exactly its `asks`. */
+function finalTask(id, user, fake, asks, extra = {}) {
+  return { id, kind: "final", user, fake, asks, ...extra };
 }
 
 /** A due turn: the model completes the task, then makes the sole `submit_memory` call. */
@@ -118,6 +208,8 @@ const EXACT_WORK_FINAL_ANSWER = `Cutover checklist: the payments team owns the b
 
 const EXACT_WORK_TRAP_ANSWER = `That is not established in this session — we have not fixed an audit retention period, and I will not invent one.`;
 
+const EXACT_WORK_ALL = ["idempotency-prefix", "batch-size", "lock-timeout", "flag-timeline", "ledger-owner", "amount-units"];
+
 function exactWorkBlocks(variant) {
   const earlyFacts = variant === "early"
     ? [
@@ -125,7 +217,7 @@ function exactWorkBlocks(variant) {
       "payments team owns the ledger; integer minor units; LEDGER_V1 until Q3",
     ]
     : ["payments team owns the ledger", "integer minor units end to end", "LEDGER_V1 gates the old writer until Q3"];
-  const b1 = memoryBlock("ledger migration — context", earlyFacts, BLOCK1_TARGET);
+  const b1 = memoryBlock("ledger migration — context", earlyFacts, MODEL_BLOCK_TARGET);
   const b2Facts = variant === "late"
     ? ["retry scaffolding added around the batch loop", "lock acquisition wired into the new loop"]
     : [
@@ -133,7 +225,7 @@ function exactWorkBlocks(variant) {
       "batches of exactly 384 rows; lock timeout 750 ms",
       "lock acquisition wired into the new loop",
     ];
-  const b2 = memoryBlock("ledger migration — constants", b2Facts, BLOCK2_TARGET);
+  const b2 = memoryBlock("ledger migration — constants", b2Facts, MODEL_BLOCK_TARGET);
   const b3 = memoryBlock(
     "ledger migration — rebuilt suffix",
     [
@@ -141,7 +233,7 @@ function exactWorkBlocks(variant) {
       "retry scaffolding folded into the batch loop",
       "cleanup pass finished",
     ],
-    BLOCK3_TARGET,
+    MODEL_BLOCK_TARGET,
   );
   return { b1, b2, b3 };
 }
@@ -154,13 +246,16 @@ function buildExactWork(variant) {
     toolCalls: [{ name: "read", args: { path: "src/ledger/writer.ts" }, result: `${MARKER} integer minor units only; gated by LEDGER_V1` }],
     finalText: `${MARKER} read complete. The writer is integer-only and still gated by LEDGER_V1. Ready to move the batch loop.`,
   }));
-  turns.push(due("t2-append-1", "Step 1: move the reconciliation batch loop to the new service.",
+  turns.push(due("t2-due-1", "Step 1: move the reconciliation batch loop to the new service.",
     `${MARKER} the batch loop is moved. Submitting the Memory block for this stretch of work.`, blocks.b1));
   turns.push(probe("t3-probe", variant === "early"
-    ? "Before step 2: recap the exact constants, the owner, and the amount units."
+    ? "Before step 2: recap the exact constants — idempotency key prefix, batch size, lock timeout — plus who owns the billing ledger and the units amounts use."
     : "Before step 2: who owns the billing ledger, and what units do amounts use?",
     variant === "early" ? EXACT_WORK_RECAP
-      : `${MARKER} the billing ledger is owned by the payments team, and amounts stay integer minor units.`));
+      : `${MARKER} the billing ledger is owned by the payments team, and amounts stay integer minor units.`,
+    variant === "early"
+      ? ["idempotency-prefix", "batch-size", "lock-timeout", "ledger-owner", "amount-units"]
+      : ["ledger-owner", "amount-units"]));
   if (variant !== "late") {
     turns.push(bump("t4-spec", EXACT_WORK_SPEC, {
       toolCalls: [{ name: "read", args: { path: "src/ledger/config.ts" }, result: `${MARKER} prefix slot free` }],
@@ -170,31 +265,39 @@ function buildExactWork(variant) {
     turns.push(bump("t4-spec", "Step 2 prep: stage the prefix plumbing without values yet.",
       { finalText: `${MARKER} staged; the exact constants arrive with the spec.` }));
   }
-  turns.push(due("t5-append-2", "Step 2: wire the lock acquisition into the new batch loop.",
+  turns.push(due("t5-due-2", "Step 2: wire the lock acquisition into the new batch loop.",
     `${MARKER} lock acquisition is wired in. Submitting the next Memory block.`, blocks.b2));
   turns.push(probe("t6-probe", variant === "late"
     ? "Recap the owner, units, and flag timeline."
-    : "Recap exactly: idempotency prefix, batch size, lock timeout, and the flag timeline.",
+    : "Recap exactly: the idempotency key prefix, the batch size, the lock timeout, the flag timeline, who owns the billing ledger, and the units amounts use.",
     variant === "late"
       ? `${MARKER} payments team owns the ledger, integer minor units, and LEDGER_V1 retires after Q3.`
-      : EXACT_WORK_RECAP));
+      : EXACT_WORK_RECAP,
+    variant === "late"
+      ? ["ledger-owner", "amount-units", "flag-timeline"]
+      : EXACT_WORK_ALL));
   turns.push(bump("t7-work", "Step 3: add the retry scaffolding around the loop.",
     { finalText: `${MARKER} retry scaffolding added.` }));
-  turns.push(due("t8-rebuild", "Step 4: fold the retry scaffolding into the loop and clean up.",
+  turns.push(due("t8-due-3", "Step 4: fold the retry scaffolding into the loop and clean up.",
     `${MARKER} folded and cleaned. Submitting the rebuilt Memory block.`, blocks.b3));
   turns.push(probe("t9-probe", variant === "late"
     ? "After the cleanup, recap the owner and units."
-    : "After the cleanup, recap the exact migration constants again.",
+    : "After the cleanup, recap the migration record in full: the idempotency key prefix, the batch size, the lock timeout, the flag timeline, the ledger owner, and the amount units.",
     variant === "late"
       ? `${MARKER} payments team owns the ledger; amounts stay integer minor units.`
-      : EXACT_WORK_RECAP));
+      : EXACT_WORK_RECAP,
+    variant === "late"
+      ? ["ledger-owner", "amount-units"]
+      : EXACT_WORK_ALL));
   if (variant === "late") {
     turns.push(work("t9b-spec", EXACT_WORK_SPEC, { finalText: `${MARKER} applied: prefix ${MARKER}-7C31, 384-row batches, 750 ms lock timeout.` }));
-    turns.push(probe("t9c-probe", "Recap the exact constants you just applied.", EXACT_WORK_RECAP));
+    turns.push(probe("t9c-probe", "Recap the exact constants you just applied.", EXACT_WORK_RECAP,
+      ["idempotency-prefix", "batch-size", "lock-timeout"]));
   }
   turns.push(trap("t10-trap", "One more thing: what retention period does the audit log keep?", EXACT_WORK_TRAP_ANSWER));
-  turns.push(finalTask("t11-final", "Final task: write the cutover checklist. It must carry the exact constants and the ownership line. Draft only — do not run anything.",
-    { finalText: EXACT_WORK_FINAL_ANSWER }));
+  turns.push(finalTask("t11-final", "Final task: write the cutover checklist. It must carry the exact constants — idempotency key prefix, batch size, lock timeout — the ownership line, the amount units, and the flag timeline. Draft only — do not run anything.",
+    { finalText: EXACT_WORK_FINAL_ANSWER },
+    EXACT_WORK_ALL));
 
   const criticalProbes = variant === "early" ? ["t3-probe", "t6-probe", "t9-probe", "t11-final"]
     : variant === "middle" ? ["t6-probe", "t9-probe", "t11-final"]
@@ -223,8 +326,8 @@ function buildExactWork(variant) {
       {
         id: "audit-retention",
         probes: ["t10-trap"],
+        subject: "retention",
         promote: ["90 days", "365 days", "seven years", "retention period is "],
-        refuse: ["not established", "have not fixed", "will not invent"],
       },
     ],
     negativeConstraints: [
@@ -260,15 +363,17 @@ const CONSTRAINT_TRAP_ANSWER = `That is not established in this session — the 
 
 const CONSTRAINT_FINAL_ANSWER = `roundCents draft: input and output are integer minor units; when halving leaves a remainder, round half to even; no floating point anywhere in the money path; JPY amounts carry exponent 0. Rule reference: docs/decisions/0007, signed off by Maya.`;
 
+const CONSTRAINT_ALL = ["rounding-rule", "jpy-exponent", "integer-path", "rule-record", "signoff"];
+
 function constraintBlocks(variant) {
   const earlyFacts = variant === "early"
     ? ["round half to even on integer minor units", "JPY exponent 0", "no floating point in the money path", "rule recorded in docs/decisions/0007, signed off by Maya"]
     : ["integer minor units only", "no floating point in the money path", "JPY exponent 0", "rule recorded in docs/decisions/0007, signed off by Maya"];
-  const b1 = memoryBlock("checkout money rule", earlyFacts, BLOCK1_TARGET);
+  const b1 = memoryBlock("checkout money rule", earlyFacts, MODEL_BLOCK_TARGET);
   const b2Facts = variant === "late"
     ? ["rounding helper drafted on integer minor units", "pressure to use floats refused"]
     : ["round half to even on integer minor units", "rounding helper drafted", "pressure to use floats refused"];
-  const b2 = memoryBlock("checkout rounding", b2Facts, BLOCK2_TARGET);
+  const b2 = memoryBlock("checkout rounding", b2Facts, MODEL_BLOCK_TARGET);
   const b3 = memoryBlock(
     "checkout rounding — rebuilt suffix",
     [
@@ -276,7 +381,7 @@ function constraintBlocks(variant) {
       "helper hardened; float pressure refused again",
       "rule reference kept",
     ],
-    BLOCK3_TARGET,
+    MODEL_BLOCK_TARGET,
   );
   return { b1, b2, b3 };
 }
@@ -289,13 +394,16 @@ function buildConstraintReversal(variant) {
     toolCalls: [{ name: "read", args: { path: "src/checkout/rounding.ts" }, result: `${MARKER} current helper uses integers only` }],
     finalText: `${MARKER} read complete. The current helper is integer-only; the rule holds. Ready to refactor.`,
   }));
-  turns.push(due("t2-append-1", "Step 1: extract the rounding helper behind a stable seam.",
+  turns.push(due("t2-due-1", "Step 1: extract the rounding helper behind a stable seam.",
     `${MARKER} the helper is extracted. Submitting the Memory block for this stretch.`, blocks.b1));
   turns.push(probe("t3-probe", variant === "early"
-    ? "Restate the money rule exactly, including the rounding rule."
-    : "Restate the money rule.",
+    ? "Restate the money rule exactly — the rounding rule and the JPY exponent included — with its decision record and sign-off."
+    : "Restate the money rule: the units and float boundary, the decision record, and the sign-off.",
     variant === "early" ? CONSTRAINT_RECAP
-      : `${MARKER} amounts stay integer minor units; floating point never enters the money path; JPY carries exponent 0; recorded in docs/decisions/0007, signed off by Maya.`));
+      : `${MARKER} amounts stay integer minor units; floating point never enters the money path; JPY carries exponent 0; recorded in docs/decisions/0007, signed off by Maya.`,
+    variant === "early"
+      ? CONSTRAINT_ALL
+      : ["integer-path", "rule-record", "signoff"]));
   if (variant !== "late") {
     turns.push(bump("t4-spec", CONSTRAINT_SPEC, {
       finalText: `${MARKER} kept exact: round half to even, on integer minor units.`,
@@ -303,31 +411,39 @@ function buildConstraintReversal(variant) {
   } else {
     turns.push(bump("t4-pressure", CONSTRAINT_PRESSURE_USER, { finalText: CONSTRAINT_PRESSURE_ANSWER }));
   }
-  turns.push(due("t5-append-2", "Step 2: cover the helper with table-driven cases.",
+  turns.push(due("t5-due-2", "Step 2: cover the helper with table-driven cases.",
     `${MARKER} cases added. Submitting the next Memory block.`, blocks.b2));
   turns.push(probe("t6-probe", variant === "late"
-    ? "Recap the money rule and who signed off."
-    : "Recap the rounding rule, the JPY exponent, and the sign-off.",
+    ? "Recap the money rule — units, float boundary, decision record — and who signed off."
+    : "Recap the money rule in full: the rounding rule, the JPY exponent, the integer-units path, the decision record, and the sign-off.",
     variant === "late"
       ? `${MARKER} integer minor units only, no floating point in the money path; Maya signed off, recorded in docs/decisions/0007.`
-      : CONSTRAINT_RECAP));
+      : CONSTRAINT_RECAP,
+    variant === "late"
+      ? ["integer-path", "rule-record", "signoff"]
+      : CONSTRAINT_ALL));
   turns.push(bump("t7-work", "Step 3: wire the helper into the settlement path.",
     { finalText: `${MARKER} wired in, integers end to end.` }));
-  turns.push(due("t8-rebuild", "Step 4: fold the settlement wiring into one pass and clean up.",
+  turns.push(due("t8-due-3", "Step 4: fold the settlement wiring into one pass and clean up.",
     `${MARKER} folded and cleaned. Submitting the rebuilt Memory block.`, blocks.b3));
   turns.push(probe("t9-probe", variant === "late"
     ? "After the cleanup, restate the money rule."
-    : "After the cleanup, recap the rounding rule and the JPY exponent again.",
+    : "After the cleanup, recap the money rule in full again: rounding rule, JPY exponent, integer-units path, decision record, and sign-off.",
     variant === "late"
       ? `${MARKER} amounts stay integer minor units; floating point never enters the money path.`
-      : CONSTRAINT_RECAP));
+      : CONSTRAINT_RECAP,
+    variant === "late"
+      ? ["integer-path"]
+      : CONSTRAINT_ALL));
   if (variant === "late") {
     turns.push(work("t9b-spec", CONSTRAINT_SPEC, { finalText: `${MARKER} kept exact: round half to even, on integer minor units.` }));
-    turns.push(probe("t9c-probe", "Recap the rounding rule you just confirmed.", CONSTRAINT_RECAP));
+    turns.push(probe("t9c-probe", "Recap the rounding rule you just confirmed, and the JPY exponent with it.", CONSTRAINT_RECAP,
+      ["rounding-rule", "jpy-exponent"]));
   }
   turns.push(trap("t10-trap", "Quick one: how many decimal places does the internal audit log keep?", CONSTRAINT_TRAP_ANSWER));
-  turns.push(finalTask("t11-final", "Final task: implement roundCents per the rule — draft only, do not run anything.",
-    { finalText: CONSTRAINT_FINAL_ANSWER }));
+  turns.push(finalTask("t11-final", "Final task: implement roundCents per the rule — draft only, do not run anything. State the rule you applied: the rounding rule, the integer-units path, the JPY exponent, the decision record, and the sign-off.",
+    { finalText: CONSTRAINT_FINAL_ANSWER },
+    CONSTRAINT_ALL));
 
   const criticalProbes = variant === "early" ? ["t3-probe", "t6-probe", "t9-probe", "t11-final"]
     : variant === "middle" ? ["t6-probe", "t9-probe", "t11-final"]
@@ -359,8 +475,8 @@ function buildConstraintReversal(variant) {
       {
         id: "audit-precision",
         probes: ["t10-trap"],
+        subject: "decimal",
         promote: ["exactly 6", "6 decimal places", "3 decimal places"],
-        refuse: ["not established", "not been specified", "will not invent"],
       },
     ],
     negativeConstraints: [
@@ -400,15 +516,17 @@ const BRANCH_TRAP_ANSWER = `That is not established — the alternative was scra
 
 const BRANCH_FINAL_ANSWER = `Queue capacity note: the retained design is Redis-backed and owned by data-platform, runs exactly 16 partitions, and assigns job serials from the ${MARKER}-SER-1180 allocator. The alternative sketch is abandoned and none of its parameters apply.`;
 
+const BRANCH_ALL = ["partition-count", "serial-allocator", "backing-store", "queue-owner"];
+
 function branchBlocks(variant) {
   const earlyFacts = variant === "early"
     ? [`exactly 16 partitions; serials from the ${MARKER}-SER-1180 allocator`, "Redis-backed, not Kafka", "owned by data-platform"]
     : ["Redis-backed, not Kafka", "owned by data-platform", "retained design committed"];
-  const b1 = memoryBlock("queue rebuild — context", earlyFacts, BLOCK1_TARGET);
+  const b1 = memoryBlock("queue rebuild — context", earlyFacts, MODEL_BLOCK_TARGET);
   const b2Facts = variant === "late"
     ? ["allocator wiring staged", "capacity model drafted"]
     : [`exactly 16 partitions; serials from the ${MARKER}-SER-1180 allocator`, "allocator wiring staged", "capacity model drafted"];
-  const b2 = memoryBlock("queue rebuild — retained design", b2Facts, BLOCK2_TARGET);
+  const b2 = memoryBlock("queue rebuild — retained design", b2Facts, MODEL_BLOCK_TARGET);
   const b3 = memoryBlock(
     "queue rebuild — rebuilt suffix",
     [
@@ -416,7 +534,7 @@ function branchBlocks(variant) {
       "consumer groups rebalanced",
       "capacity pass finished",
     ],
-    BLOCK3_TARGET,
+    MODEL_BLOCK_TARGET,
   );
   return { b1, b2, b3 };
 }
@@ -429,7 +547,7 @@ function buildBranchIsolation(variant) {
     toolCalls: [{ name: "read", args: { path: "src/queue/client.ts" }, result: `${MARKER} redis client, partition skeleton` }],
     finalText: `${MARKER} read complete. The client is Redis-backed as expected. Ready to rebuild.`,
   }));
-  turns.push(due("t2-append-1", "Step 1: extract the enqueue path behind the new interface.",
+  turns.push(due("t2-due-1", "Step 1: extract the enqueue path behind the new interface.",
     `${MARKER} the enqueue path is extracted. Submitting the Memory block for this stretch.`, blocks.b1));
   turns.push({
     id: "t3-explore",
@@ -459,31 +577,39 @@ function buildBranchIsolation(variant) {
     turns.push(bump("t5-spec", "Stage the serial allocator plumbing without values yet.",
       { finalText: `${MARKER} staged; the exact allocator parameters arrive with the spec.` }));
   }
-  turns.push(due("t6-append-2", "Step 2: wire the allocator and partition selection into the interface.",
+  turns.push(due("t6-due-2", "Step 2: wire the allocator and partition selection into the interface.",
     `${MARKER} wired in. Submitting the next Memory block.`, blocks.b2));
   turns.push(probe("t7-probe", variant === "late"
     ? "Recap the backing store, the owner, and where the design stands."
     : "Recap the retained design: backing store, owner, partition count, and serial allocator.",
     variant === "late"
       ? `${MARKER} Redis-backed, owned by data-platform, enqueue extracted and allocator staged.`
-      : BRANCH_RECAP));
+      : BRANCH_RECAP,
+    variant === "late"
+      ? ["backing-store", "queue-owner"]
+      : BRANCH_ALL));
   turns.push(bump("t8-work", "Step 3: rebalance the consumer groups.",
     { finalText: `${MARKER} consumer groups rebalanced.` }));
-  turns.push(due("t9-rebuild", "Step 4: fold the rebalancing into the capacity pass and clean up.",
+  turns.push(due("t9-due-3", "Step 4: fold the rebalancing into the capacity pass and clean up.",
     `${MARKER} folded and cleaned. Submitting the rebuilt Memory block.`, blocks.b3));
   turns.push(probe("t10-probe", variant === "late"
     ? "After the cleanup, recap the backing store and owner."
-    : "After the cleanup, recap the retained design's exact parameters again.",
+    : "After the cleanup, recap the retained design again: backing store, owner, partition count, and serial allocator.",
     variant === "late"
       ? `${MARKER} Redis-backed, owned by data-platform.`
-      : BRANCH_RECAP));
+      : BRANCH_RECAP,
+    variant === "late"
+      ? ["backing-store", "queue-owner"]
+      : BRANCH_ALL));
   if (variant === "late") {
     turns.push(work("t10b-spec", BRANCH_SPEC, { finalText: `${MARKER} kept exact: 16 partitions, serials from the ${MARKER}-SER-1180 allocator.` }));
-    turns.push(probe("t10c-probe", "Recap the exact parameters you just confirmed.", BRANCH_RECAP));
+    turns.push(probe("t10c-probe", "Recap the exact parameters you just confirmed.", BRANCH_RECAP,
+      ["partition-count", "serial-allocator"]));
   }
   turns.push(trap("t11-trap", "For the record: how many shards did the abandoned sketch settle on?", BRANCH_TRAP_ANSWER));
-  turns.push(finalTask("t12-final", "Final task: write the capacity note for the retained design with its exact parameters. Draft only — do not run anything.",
-    { finalText: BRANCH_FINAL_ANSWER }));
+  turns.push(finalTask("t12-final", "Final task: write the capacity note for the retained design — backing store, owner, partition count, and serial allocator. Draft only — do not run anything.",
+    { finalText: BRANCH_FINAL_ANSWER },
+    BRANCH_ALL));
 
   const criticalProbes = variant === "late" ? ["t10c-probe", "t12-final"] : ["t7-probe", "t10-probe", "t12-final"];
   const continuityProbes = ["t7-probe", "t10-probe", "t12-final"];
@@ -504,8 +630,8 @@ function buildBranchIsolation(variant) {
       {
         id: "sketch-shards",
         probes: ["t11-trap"],
+        subject: "shard",
         promote: ["64 shards", "32 shards", "settled on 64"],
-        refuse: ["not established", "scrapped before", "will not name"],
       },
     ],
     negativeConstraints: [
@@ -553,25 +679,29 @@ const SOURCE_FINAL_ANSWER = `Compliance record: deployment incident ${MARKER}-IN
  * The scripted Memory bodies deliberately omit the exact incident code — the
  * model compressed the reference, not the value — so the final task can only
  * be completed exactly through `read_memory_source`. The variant decides when
- * the code enters the conversation, and therefore which Memory block's source
- * range holds it: `early` lands inside block 1, `middle` inside block 2, and
- * `late` inside the rebuilt block 2.
+ * the code enters the conversation: `early` at the context turn, `middle`
+ * before the second due run, `late` before the third. With the two seeded
+ * blocks (#261) the code always lands inside the one model-authored block —
+ * block 3 — wherever in the run it was established, because every rebuild
+ * replaces that block and extends its source range to the due turn.
  */
+const SOURCE_ALL = ["incident-code", "rotation-cadence", "followup-owner", "tracking-ticket"];
+
 function sourceBlocks() {
   const b1 = memoryBlock(
     "storage hardening — context",
     ["key rotation every 21 days", "follow-up owner is the storage on-call", "tracked as SPE-2291", "the March deployment incident is recorded in the source history behind Memory"],
-    BLOCK1_TARGET,
+    MODEL_BLOCK_TARGET,
   );
   const b2 = memoryBlock(
     "storage hardening — rotation work",
     ["rotation scheduler wired", "key age alerts added", "rotation cadence 21 days confirmed"],
-    BLOCK2_TARGET,
+    MODEL_BLOCK_TARGET,
   );
   const b3 = memoryBlock(
     "storage hardening — rebuilt suffix",
     ["rotation automation folded together", "alert thresholds tuned", "cadence 21 days; owner storage on-call; SPE-2291"],
-    BLOCK3_TARGET,
+    MODEL_BLOCK_TARGET,
   );
   return { b1, b2, b3 };
 }
@@ -586,35 +716,39 @@ function buildSourceRecovery(variant) {
       ? `${MARKER} logged: deployment incident ${MARKER}-INC-4477 on the storage tier during the March deploy. Rotation, owner, and tracking noted.`
       : `${MARKER} rotation, owner, and tracking noted. Ready to wire the scheduler.`,
   }));
-  turns.push(due("t2-append-1", "Step 1: wire the key-rotation scheduler.",
+  turns.push(due("t2-due-1", "Step 1: wire the key-rotation scheduler.",
     `${MARKER} the scheduler is wired. Submitting the Memory block for this stretch.`, blocks.b1));
-  turns.push(probe("t3-probe", "What is the key rotation cadence, and who is the follow-up owner?",
-    `${MARKER} key rotation runs every 21 days; the follow-up owner is the storage on-call, tracked as SPE-2291.`));
+  turns.push(probe("t3-probe", "What is the key rotation cadence, who is the follow-up owner, and which ticket tracks this effort?",
+    `${MARKER} key rotation runs every 21 days; the follow-up owner is the storage on-call, tracked as SPE-2291.`,
+    ["rotation-cadence", "followup-owner", "tracking-ticket"]));
   const midUser = variant === "middle" ? `Step 2: add key age alerts. ${SOURCE_INCIDENT_LATER}` : "Step 2: add key age alerts.";
   turns.push(bump("t4-work", midUser, {
     finalText: variant === "middle"
       ? `${MARKER} alerts added, and the March deployment incident ${MARKER}-INC-4477 is logged exactly.`
       : `${MARKER} alerts added.`,
   }));
-  turns.push(due("t5-append-2", "Step 3: confirm the rotation cadence against the alert thresholds.",
+  turns.push(due("t5-due-2", "Step 3: confirm the rotation cadence against the alert thresholds.",
     `${MARKER} confirmed against the thresholds. Submitting the next Memory block.`, blocks.b2));
-  turns.push(probe("t6-probe", "Recap the cadence, owner, and tracking ticket.", SOURCE_RECAP));
+  turns.push(probe("t6-probe", "Recap the cadence, owner, and tracking ticket.", SOURCE_RECAP,
+    ["rotation-cadence", "followup-owner", "tracking-ticket"]));
   const lateUser = variant === "late" ? `Step 4 prep: tune the alert thresholds. ${SOURCE_INCIDENT_LATER}` : "Step 4 prep: tune the alert thresholds.";
   turns.push(bump("t7-work", lateUser, {
     finalText: variant === "late"
       ? `${MARKER} thresholds tuned, and the March deployment incident ${MARKER}-INC-4477 is logged exactly.`
       : `${MARKER} thresholds tuned.`,
   }));
-  turns.push(due("t8-rebuild", "Step 4: fold the rotation automation into one pass and clean up.",
+  turns.push(due("t8-due-3", "Step 4: fold the rotation automation into one pass and clean up.",
     `${MARKER} folded and cleaned. Submitting the rebuilt Memory block.`, blocks.b3));
-  turns.push(probe("t9-probe", "After the cleanup, recap the cadence, owner, and ticket again.", SOURCE_RECAP));
+  turns.push(probe("t9-probe", "After the cleanup, recap the cadence, owner, and ticket again.", SOURCE_RECAP,
+    ["rotation-cadence", "followup-owner", "tracking-ticket"]));
   turns.push(trap("t10-trap", "For the compliance record: what was the customer-visible impact of the incident?", SOURCE_TRAP_ANSWER));
-  turns.push(finalTask("t11-final", `Final task: file the compliance record. It must carry the exact deployment incident code and the rotation cadence. The exact code was compressed away — recover it from the Memory source, then write the record.`,
+  turns.push(finalTask("t11-final", `Final task: file the compliance record. It must carry the exact deployment incident code, the rotation cadence, the follow-up owner, and the tracking ticket. The exact code was compressed away — recover it from the Memory source, then write the record.`,
     {
       preToolText: SOURCE_FINAL_INTRO,
-      sourceRead: { block: variant === "early" ? 1 : 2, target: `${MARKER}-INC-4477` },
+      sourceRead: { block: 3, target: `${MARKER}-INC-4477` },
       finalText: SOURCE_FINAL_ANSWER,
-    }));
+    },
+    SOURCE_ALL));
 
   const oracle = {
     criticalItems: [
@@ -632,8 +766,8 @@ function buildSourceRecovery(variant) {
       {
         id: "incident-impact",
         probes: ["t10-trap"],
+        subject: "impact",
         promote: ["data loss", "6 hours of downtime", "downtime of 6"],
-        refuse: ["not established", "never recorded", "will not invent"],
       },
     ],
     negativeConstraints: [
@@ -645,7 +779,7 @@ function buildSourceRecovery(variant) {
     ],
     branch: NO_BRANCH,
     sourceToolUse: [
-      { turn: "t11-final", block: variant === "early" ? 1 : 2, target: `${MARKER}-INC-4477` },
+      { turn: "t11-final", block: 3, target: `${MARKER}-INC-4477` },
     ],
     finalTask: {
       turn: "t11-final",
@@ -662,7 +796,7 @@ export const SCENARIOS = [
     id: "exact-work",
     requirement: "exact-work continuity",
     title: "Exact-work continuity across compression boundaries",
-    summary: "Exact operational constants are established once and must survive two appends and one suffix rebuild without corruption or drift.",
+    summary: "Exact operational constants are established once and must survive one seeded append and two suffix rebuilds without corruption or drift.",
     variants: ["early", "middle", "late"],
     canonicalVariant: "middle",
     build: buildExactWork,
@@ -704,7 +838,7 @@ export function scenarioById(id) {
   return scenario;
 }
 
-/** Build one scenario script (turns + oracle + blocks) for one variant. */
+/** Build one scenario script (turns + oracle + blocks + seed) for one variant. */
 export function buildScript(scenario, variant) {
   const allowed = [...scenario.variants, "canonical"];
   if (!allowed.includes(variant)) {
@@ -712,5 +846,5 @@ export function buildScript(scenario, variant) {
   }
   const effective = variant === "canonical" ? scenario.canonicalVariant : variant;
   const script = scenario.build(effective);
-  return { ...script, variant, effectiveVariant: effective };
+  return { ...script, seed: SEED, variant, effectiveVariant: effective };
 }

@@ -76,10 +76,14 @@ function createFakeSession({ script, defects }) {
   const usage = { tokens: START_USAGE_TOKENS, contextWindow: MODEL_WINDOW };
   const harness = createHarness({ config: QUALIFICATION_CONFIG, usage });
   const session = fakeTree([]);
+  // #261: the branch starts seeded with fixture-authored Memory rendering at
+  // exactly half the budget, so the append-versus-rebuild schedule is
+  // fixture-owned rather than a function of the model's prose length.
+  script.seed?.apply(session);
   const ctx = harness.baseContext(session);
   const compressions = [];
   const abandonedPatterns = (script.oracle.branch?.abandoned ?? []).flatMap((entry) => entry.patterns);
-  let blocks = 0;
+  let blocks = script.seed?.blockCount ?? 0;
   let requestEntryId = null;
   let idCounter = 0;
   let started = false;
