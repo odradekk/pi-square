@@ -416,10 +416,14 @@ function createProviderSession({ script, arm, transport }) {
   const usage = { tokens: START_USAGE_TOKENS, contextWindow: MODEL_WINDOW };
   const harness = createHarness({ config: QUALIFICATION_CONFIG, usage });
   const session = fakeTree([]);
+  // #261: apply the fixture-declared pre-run Memory seed when the script
+  // carries one, so real runs share the scripted runs' fixture-owned
+  // compression schedule. Stub scripts without a seed keep the empty branch.
+  script.seed?.apply(session);
   const ctx = harness.baseContext(session);
   const compressions = [];
   const abandonedPatterns = (script.oracle.branch?.abandoned ?? []).flatMap((entry) => entry.patterns);
-  let blocks = 0;
+  let blocks = script.seed?.blockCount ?? 0;
   let requestEntryId = null;
   let idCounter = 0;
   let started = false;

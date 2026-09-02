@@ -4,7 +4,16 @@ import { mkdirSync, readFileSync, readdirSync, appendFileSync, writeFileSync, ex
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MARKER, SEVERE_CLASSES, RESERVE_TOKENS, host } from "../qualification/harness.mjs";
-import { SCENARIOS, PRIMARY_ARM_VARIANTS, QUALIFICATION_CONFIG, MODEL_WINDOW, buildScript } from "./scenarios.mjs";
+import {
+  SCENARIOS,
+  PRIMARY_ARM_VARIANTS,
+  QUALIFICATION_CONFIG,
+  MODEL_WINDOW,
+  buildScript,
+  SEED_BLOCKS,
+  SEED_BLOCK_COUNT,
+  renderedMemoryTokens,
+} from "./scenarios.mjs";
 import { scoreRun, evaluateGates } from "./oracles.mjs";
 
 /**
@@ -154,6 +163,15 @@ export function pinEnvironment({ adapterDeclaration, salt = DEFAULT_MATRIX_SALT 
       digest: digestOf(fixtureFiles),
       rubricDigest: createHash("sha256").update(readFileSync(join(HERE, "rubric.md"))).digest("hex"),
       scenarios: SCENARIOS.map((scenario) => scenario.id),
+      // #261 disclosure: the schedule policy is pinned before any scored run,
+      // not chosen after one. The seed renders at exactly half the Memory
+      // budget, so every run must observe one append then two rebuilds.
+      schedulePolicy: {
+        seededBlocks: SEED_BLOCK_COUNT,
+        seededRenderedTokens: renderedMemoryTokens(SEED_BLOCKS),
+        requiredSchedule: "one append onto the seeded Memory, then two suffix rebuilds, in every run",
+        reason: "seeded half-budget Memory makes the append-versus-rebuild decision fixture-controlled, not model-prose-controlled",
+      },
     },
     seeds: planRuns({ salt }).map((run) => ({ ...run })),
     seedRule: `sha256("${salt}|scenario|variant|arm") truncated to 16 hex characters; the matrix is deterministic and involves no random sampling`,

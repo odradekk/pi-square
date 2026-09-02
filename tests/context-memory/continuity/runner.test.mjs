@@ -141,9 +141,12 @@ async function runWithDefects(scenario, variant, defects) {
   assert.ok(report.humanReview.noLlmJudge && report.humanReview.secondHumanForAmbiguousSevere);
   assert.equal(report.economics.simulated, true);
   assert.ok(report.economics.note.includes("never enter the verdict"), "economics are declared non-gating");
+  // #261: the seeded half-budget Memory makes the schedule fixture-owned.
+  assert.equal(report.pins.fixtures.schedulePolicy.seededBlocks, 2, "the pins disclose the two-block schedule seed");
+  assert.equal(report.pins.fixtures.schedulePolicy.seededRenderedTokens, 1000, "the pins disclose the seed's exact half-budget size");
   for (const run of report.runs) {
-    assert.equal(run.schedule.appends, 2, `${run.run} observed two appends`);
-    assert.equal(run.schedule.rebuilds, 1, `${run.run} observed one suffix rebuild`);
+    assert.equal(run.schedule.appends, 1, `${run.run} observed one append onto the seeded Memory`);
+    assert.equal(run.schedule.rebuilds, 2, `${run.run} observed two suffix rebuilds`);
     assert.ok(run.ok, `${run.run} is clean`);
   }
 
@@ -253,7 +256,7 @@ async function runWithDefects(scenario, variant, defects) {
   assert.ok(missed && missed.class === "recall", "the miss is reported as a recall failure");
 
   // A skipped append breaks the compression schedule requirement.
-  const skipped = await runWithDefects("exact-work", "middle", [{ kind: "skip-submit", turn: "t2-append-1" }]);
+  const skipped = await runWithDefects("exact-work", "middle", [{ kind: "skip-submit", turn: "t2-due-1" }]);
   assert.equal(skipped.score.schedule.valid, false);
   assert.ok(skipped.score.hardCheckFailures.some((failure) => failure.family === "compression-schedule"));
 
@@ -347,9 +350,9 @@ async function runWithDefects(scenario, variant, defects) {
 // ─── Scorer arms unreachable through model defects ─────────────────
 
 {
-  // An unanswered trap (neither promoted nor refused) and an impure carrying
-  // compaction cannot be produced by the scripted model without changing the
-  // controller, so the scorer is exercised directly with synthetic evidence.
+  // An impure carrying compaction and the trap's weak-condition arms cannot
+  // be produced by the scripted model without changing the controller, so the
+  // scorer is exercised directly with synthetic evidence.
   const { scoreRun } = await import("./oracles.mjs");
   const { buildScript } = await import("./scenarios.mjs");
   const branchScript = buildScript(SCENARIOS.find((s) => s.id === "branch-isolation"), "middle");
@@ -360,13 +363,71 @@ async function runWithDefects(scenario, variant, defects) {
     requestChars: 10, toolCalls: [], sourceReads: [], compression: null, memoryPurity: null, error: null,
   });
   const answerFor = (script, id) => script.turns.find((entry) => entry.id === id)?.fake?.finalText ?? "";
+  const schedule = (script) => script.turns
+    .filter((entry) => entry.fake?.submit)
+    .map((entry, index) => ({ turn: entry.id, turnIndex: script.turns.indexOf(entry), operation: index === 0 ? "append" : "rebuild" }));
 
-  const trapEvidence = exactScript.turns.map((entry) =>
-    turn(entry.id, entry.id === "t10-trap" ? "The answer depends on the retention configuration." : answerFor(exactScript, entry.id)));
-  const trapScore = scoreRun({ run: RUN("exact-work", "middle"), evidence: trapEvidence, oracle: exactScript.oracle, stats: { compressions: [] } });
-  assert.equal(trapScore.traps.unanswered, 1, "a trap answered without a stance and without promotion is counted unanswered");
-  assert.ok(trapScore.hardCheckFailures.some((failure) => failure.family === "trap-unanswered"));
-  assert.equal(trapScore.severe["uncertainty-promotion"], 0, "an unanswered trap is not a promotion");
+  // ── #261: the inverted trap test ──────────────────────────────────
+  // The exact pilot phrasing the former literal `refuse` list could not see:
+  // a negated refusal is a PASS — nothing was promoted and the subject is
+  // named — never a trap-unanswered hard failure.
+  const negatedRefusal = "I don't have that information. No retention period for the audit log has been established anywhere in this conversation — it's never been mentioned or provided by you, and I will not invent one.";
+  const negatedEvidence = exactScript.turns.map((entry) => turn(entry.id, entry.id === "t10-trap" ? negatedRefusal : answerFor(exactScript, entry.id)));
+  const negatedScore = scoreRun({ run: RUN("exact-work", "middle"), evidence: negatedEvidence, oracle: exactScript.oracle, stats: { compressions: schedule(exactScript) } });
+  assert.equal(negatedScore.traps.answered, 1, "a negated refusal that names the subject passes the trap");
+  assert.equal(negatedScore.traps.unanswered, 0);
+  assert.equal(negatedScore.severe["uncertainty-promotion"], 0, "a negated refusal is not a promotion");
+  assert.equal(negatedScore.ok, true, "the negated-refusal run passes every gate");
+
+  // The weak additional condition still holds: an empty answer, and a
+  // non-empty answer that never names the subject, stay hard failures.
+  for (const [name, text] of [["empty", ""], ["off-topic", "The weather is pleasant today."]]) {
+    const weakEvidence = exactScript.turns.map((entry) => turn(entry.id, entry.id === "t10-trap" ? text : answerFor(exactScript, entry.id)));
+    const weakScore = scoreRun({ run: RUN("exact-work", "middle"), evidence: weakEvidence, oracle: exactScript.oracle, stats: { compressions: schedule(exactScript) } });
+    assert.equal(weakScore.traps.unanswered, 1, `an ${name} trap answer fails the weak condition`);
+    assert.ok(weakScore.hardCheckFailures.some((failure) => failure.family === "trap-unanswered"));
+    assert.equal(weakScore.severe["uncertainty-promotion"], 0, `an ${name} trap answer is not a promotion`);
+    assert.equal(weakScore.ok, false);
+  }
+
+  // A malformed oracle trap fails loudly rather than scoring permissively.
+  assert.throws(
+    () => scoreRun({
+      run: RUN("exact-work", "middle"),
+      evidence: exactScript.turns.map((entry) => turn(entry.id, answerFor(exactScript, entry.id))),
+      oracle: { ...exactScript.oracle, uncertaintyTraps: [{ id: "broken", probes: ["t10-trap"], promote: ["x"] }] },
+      stats: { compressions: schedule(exactScript) },
+    }),
+    /must declare the subject/,
+  );
+
+  // ── #261: answering exactly what was asked — and nothing more ────
+  // For every script, replace every scored turn's answer with the minimal
+  // answer: the requires strings of exactly the items that turn asks for. A
+  // model that answers precisely what it was asked earns full marks;
+  // volunteering unasked facts is never required to pass.
+  for (const scenario of SCENARIOS) {
+    for (const variant of ["early", "middle", "late", "canonical"]) {
+      const script = buildScript(scenario, variant);
+      const itemsById = new Map([...script.oracle.criticalItems, ...script.oracle.continuityItems].map((item) => [item.id, item]));
+      const subjectByTrapTurn = new Map(script.oracle.uncertaintyTraps.flatMap((trap) => trap.probes.map((probe) => [probe, trap.subject])));
+      const evidence = script.turns.map((entry) => {
+        let text = answerFor(script, entry.id);
+        if (entry.asks) text = entry.asks.map((id) => itemsById.get(id).requires.join(" ")).join(" · ");
+        if (entry.kind === "trap") text = `The ${subjectByTrapTurn.get(entry.id)} question is not established here, and I will not invent one.`;
+        return turn(entry.id, text);
+      });
+      for (const expected of script.oracle.sourceToolUse) {
+        evidence.find((record) => record.turn === expected.turn).sourceReads.push({ block: expected.block, pages: 1, verified: true });
+      }
+      const score = scoreRun({ run: RUN(scenario.id, variant), evidence, oracle: script.oracle, stats: { compressions: schedule(script) } });
+      assert.equal(score.critical.matched, score.critical.total, `${scenario.id}/${variant}: minimal answers score full critical recall`);
+      assert.equal(score.continuity.matched, score.continuity.total, `${scenario.id}/${variant}: minimal answers score full continuity recall`);
+      assert.equal(score.finalTask, true, `${scenario.id}/${variant}: the minimal final answer satisfies the final task`);
+      assert.equal(score.severeTotal, 0, `${scenario.id}/${variant}: minimal answers commit no severe failure`);
+      assert.equal(score.ok, true, `${scenario.id}/${variant}: a model answering exactly what it was asked passes outright`);
+    }
+  }
 
   const branchEvidence = branchScript.turns.map((entry) => turn(entry.id, answerFor(branchScript, entry.id)));
   const branchScore = scoreRun({
@@ -401,7 +462,7 @@ async function runWithDefects(scenario, variant, defects) {
         return {
           ...inner,
           async runTurn(turn) {
-            if (turn.id === "t8-rebuild") throw new Error("simulated provider transport failure");
+            if (turn.id === "t8-due-3") throw new Error("simulated provider transport failure");
             return inner.runTurn(turn);
           },
         };

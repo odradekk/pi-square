@@ -50,11 +50,26 @@ compression ratios, or cost numbers.
 Machine precedence: a corrupted probe across a rebuild boundary counts as
 recursive drift, not plain corruption — the more specific class wins.
 
+Trap semantics (#261): the machine passes an uncertainty trap when the answer
+promotes no concrete value, whatever the refusal's phrasing — a negated
+refusal ("no retention period has been established") is a pass, and refusal
+style is never judged. Only the promotion signal, plus a non-empty answer
+naming the subject, is machine-read. Confirm flagged promotions; do not
+downgrade one because the surrounding prose sounds uncertain.
+
+Scoring scope (#261): every scored turn's fixture question asks for exactly
+the items the oracle scores there, so recall percentages measure what the
+model was asked, not its verbosity or volunteered extras. The compression
+schedule is fixture-owned: the branch is seeded with Memory rendering at
+exactly half the budget, so every run must observe one append onto the seeded
+Memory and two suffix rebuilds — deviations are instrument or controller
+defects, never model variance.
+
 ## 4. Reviewer procedure per run
 
 1. Confirm the run row exists with the expected scenario, variant, arm, and
-   seed from the pins, and that the observed schedule shows at least two
-   appends and one rebuild.
+   seed from the pins, and that the observed schedule shows the seeded
+   schedule: one append onto the seeded Memory and two suffix rebuilds.
 2. Spot-check at least two oracle items against the fixture: the predeclared
    `requires` patterns must actually appear in the scripted probe answers and
    the matching must be the documented case-insensitive substring rule.
