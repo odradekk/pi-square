@@ -50,5 +50,6 @@ Two harness details each cost a review round:
 ## Land
 
 1. Merge once the criteria are met, the gates pass, and every accepted failure is baselined. Green CI authorizes nothing on its own, and the merge decision belongs to the maintainer: when it has not been given, report and wait.
-2. Confirm the worktree is clean, fully pushed, and holds no stashes before removing it.
-3. Remove the worktree through `orca-cli`. The remote branch and the merged pull request survive it.
+2. Landing several pull requests together, run the gates once against the accumulated merge before merging any of them. A clean `git merge` proves only that the texts combine; each branch's own green CI says nothing about the combination. Two branches that each typechecked alone have already landed a `main` that did not, because one deleted a union member the other still compared against.
+3. Confirm the worktree is clean, fully pushed, and holds no stashes before removing it.
+4. Remove the worktree through `orca-cli`. The remote branch and the merged pull request survive it.
