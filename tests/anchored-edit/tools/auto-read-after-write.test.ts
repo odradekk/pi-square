@@ -106,13 +106,14 @@ describe("auto-read after write", () => {
     await writeFile(join(cwd, "test.txt"), "before\n", "utf-8");
     try {
       const before = await parentStore(cwd);
-      before.mergeServed(join(cwd, "test.txt"), ["ZZZ"]);
+      before.mergeServed(join(cwd, "test.txt"), ["ZZZ"], "before\n");
       before.release();
 
       await runWrite(cwd, "write-1", "test.txt", "hello\nworld\n");
 
       const after = await parentStore(cwd);
-      const served = after.getServed(join(cwd, "test.txt"));
+      const lookup = after.getServedState(join(cwd, "test.txt"), "hello\nworld\n");
+      const served = lookup !== undefined && "served" in lookup ? lookup.served : undefined;
       expect(served?.has("ZZZ")).toBe(false);
       expect(served?.size).toBeGreaterThan(0);
       after.release();

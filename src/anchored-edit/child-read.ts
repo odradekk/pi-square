@@ -42,8 +42,8 @@ export function createChildAnchoredReadTool(
   const anchored = withAnchoredReadTransform(
     definition,
     cwd,
-    (content, value, executionCwd, executionSessionDir) =>
-      transformAnchoredReadContent(content, value, executionCwd, owner, { sessionDir: sessionDir || executionSessionDir }),
+    (content, value, executionCwd, executionSessionDir, signal) =>
+      transformAnchoredReadContent(content, value, executionCwd, owner, { sessionDir: sessionDir || executionSessionDir }, signal),
     (params, executionCwd) => guardAnchoredRead(params, executionCwd),
   );
   return withAnchoredReadGuidelines(anchored);

@@ -10,6 +10,8 @@ import {
 	resEdit,
 	parseHashRef,
 	MAX_HASH_LINES,
+	AnchorMismatchError,
+	RangeStaleError,
 	type HEdit,
 	type NEdit,
 } from "./hashline";
@@ -205,8 +207,10 @@ function countLineChanges(
  * The candidate snapshot is committed only after the filesystem write
  * succeeds (see `publishMutation`, called from the operation boundary while
  * the target exclusion is still held). Validation failures throw
- * `RangeStaleError`/`AnchorMismatchError`; the caller publishes the shown
- * feedback rows from inside the boundary.
+ * `ReplaceValidationError` (wrapping `RangeStaleError`/`AnchorMismatchError`
+ * with the observed content) when the owner had served rows for the path, or
+ * the underlying error when it had none; the coordinator publishes the shown
+ * feedback rows version-bound from inside the boundary.
  */
 export async function prepareReplace(
   params: ReqParams,
@@ -230,18 +234,41 @@ export async function prepareReplace(
     path, cwd, { signal: options.signal, accessMode: options.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: true },
   );
 
-  const servedRow = await getServedSet(hashStore, absolutePath);
-  const served = options.requireServed === true && servedRow === undefined
-    ? new Set<string>()
-    : servedRow;
-  const anchorResult = applyEdit(
-    originalNormalized,
-    edit,
-    options.signal,
-    originalHashes,
-    path,
-    served,
-  );
+  // Authorization is bound to the content version the rows were served for.
+  // No rows and no verification requirement leaves the parent's
+  // edit-without-prior-read path; rows for another version are stale for
+  // every owner and authorize nothing (an empty set verifies no range, so
+  // the refusal carries the current range with fresh anchors for the
+  // immediate retry).
+  const servedLookup = hashStore.getServedState(absolutePath, originalNormalized);
+  let served: Set<string> | undefined;
+  if (servedLookup !== undefined && "served" in servedLookup) {
+    served = servedLookup.served;
+  } else if (servedLookup !== undefined) {
+    served = new Set<string>();
+  } else if (options.requireServed === true) {
+    served = new Set<string>();
+  }
+  let anchorResult;
+  try {
+    anchorResult = applyEdit(
+      originalNormalized,
+      edit,
+      options.signal,
+      originalHashes,
+      path,
+      served,
+    );
+  } catch (error) {
+    if (error instanceof RangeStaleError || error instanceof AnchorMismatchError) {
+      // The refusal's feedback rows were observed under the operation
+      // boundary; wrapping them with the exact content they belong to lets
+      // the coordinator publish them version-bound so the immediate retry is
+      // authorized while any older version stays unusable.
+      throw new ReplaceValidationError(error, originalNormalized);
+    }
+    throw error;
+  }
 
   const result = anchorResult.content;
   const isNoop = result === originalNormalized;
@@ -279,8 +306,25 @@ export async function prepareReplace(
   };
 }
 
-function getServedSet(store: HashStoreHandle, path: string): Set<string> | undefined {
-  return store.getServed(path);
+/**
+ * Validation failure carrying the exact content the feedback rows were
+ * observed for. The operation coordinator catches it inside the target
+ * boundary and publishes the feedback hashes version-bound (see
+ * `runAnchoredReplace`), so the model's immediate retry with the fresh
+ * anchors verifies while rows recorded for any other content version do not.
+ */
+export class ReplaceValidationError extends Error {
+  readonly cause2: RangeStaleError | AnchorMismatchError;
+  readonly content: string;
+  constructor(cause: RangeStaleError | AnchorMismatchError, content: string) {
+    super(cause.message, { cause });
+    this.name = "ReplaceValidationError";
+    this.cause2 = cause;
+    this.content = content;
+  }
+  get feedbackHashes(): string[] {
+    return this.cause2 instanceof RangeStaleError ? this.cause2.rangeHashes : this.cause2.feedbackHashes;
+  }
 }
 
 export { RangeStaleError, AnchorMismatchError } from "./hashline";

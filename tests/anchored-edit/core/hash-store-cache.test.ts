@@ -80,21 +80,20 @@ describe("hash-store — physical-connection and snapshot-cache ownership (#264)
   });
 
   it("owner deletion invalidates exactly that owner's cached and persisted state", async () => {
-    const { deleteOwnerPartition } = await import("../../../src/anchored-edit/hash-store");
     const a = await loadHashStoreAt(storePath, "A");
     const keeper = await loadHashStoreAt(storePath, "keeper");
     a.upsertSnapshot("/p.ts", contentChecksum("x\n"), 1, ["AAA"]);
     keeper.upsertSnapshot("/k.ts", contentChecksum("k\n"), 1, ["KKK"]);
-    a.mergeServed("/p.ts", ["AAA"]);
+    a.mergeServed("/p.ts", ["AAA"], "x\n");
     expect(a.getSnapshot("/p.ts", "x\n")).toEqual(["AAA"]);
 
-    deleteOwnerPartition(a, "A");
+    a.deleteOwnerPartition("A");
 
     // The deleted partition cannot be revived by a later cache hit, and other
     // owners keep their rows and caches.
     expect(a.getSnapshot("/p.ts", "x\n")).toBeUndefined();
     expect(keeper.getSnapshot("/k.ts", "k\n")).toEqual(["KKK"]);
-    expect(a.getServed("/p.ts")).toBeUndefined();
+    expect(a.getServedState("/p.ts", "x\n")).toBeUndefined();
     const fresh = await loadHashStoreAt(storePath, "A");
     expect(fresh.getSnapshot("/p.ts", "x\n")).toBeUndefined();
     fresh.release();
@@ -151,29 +150,29 @@ describe("hash-store — physical-connection and snapshot-cache ownership (#264)
   it("merges concurrent served-hash additions into their union instead of losing one (#264)", async () => {
     const a1 = await loadHashStoreAt(storePath, "A");
     const a2 = await loadHashStoreAt(storePath, "A");
-    a1.mergeServed("/p.ts", ["AAA", "BBB"]);
-    a2.mergeServed("/p.ts", ["CCC"]);
-    const merged = a1.getServed("/p.ts");
+    a1.mergeServed("/p.ts", ["AAA", "BBB"], "x\n");
+    a2.mergeServed("/p.ts", ["CCC"], "x\n");
+    const lookup = a1.getServedState("/p.ts", "x\n");
+    const merged = lookup !== undefined && "served" in lookup ? lookup.served : undefined;
     expect(merged).toEqual(new Set(["AAA", "BBB", "CCC"]));
     a1.release();
     a2.release();
   });
 
   it("refreshes served-row activity on repeated identical reads so partitions do not look idle (#264)", async () => {
-    const { listOwnerPartitions } = await import("../../../src/anchored-edit/hash-store");
     const a = await loadHashStoreAt(storePath, "active");
     const b = await loadHashStoreAt(storePath, "stale");
-    a.mergeServed("/a.ts", ["AAA"]);
-    b.mergeServed("/b.ts", ["BBB"]);
+    a.mergeServed("/a.ts", ["AAA"], "x\n");
+    b.mergeServed("/b.ts", ["BBB"], "y\n");
     const scoped = (rows: { owner: string; updatedAt: number }[]) =>
       rows.filter((row) => row.owner === "active" || row.owner === "stale");
-    const before = scoped(listOwnerPartitions(a)).sort((x, y) => x.updatedAt - y.updatedAt);
+    const before = scoped(a.listOwners()).sort((x, y) => x.updatedAt - y.updatedAt);
     expect(before[0]!.owner).toBe("active");
     // Repeated identical reads reuse the cached snapshot; the served merge
     // must still count as activity.
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 2));
-    a.mergeServed("/a.ts", ["AAA"]);
-    const after = scoped(listOwnerPartitions(a)).sort((x, y) => x.updatedAt - y.updatedAt);
+    a.mergeServed("/a.ts", ["AAA"], "x\n");
+    const after = scoped(a.listOwners()).sort((x, y) => x.updatedAt - y.updatedAt);
     expect(after[0]!.owner).toBe("stale");
     expect(after[after.length - 1]!.owner).toBe("active");
     a.release();

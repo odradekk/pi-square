@@ -18,6 +18,7 @@ export type ReadContentTransform = (
   params: unknown,
   cwd: string,
   sessionDir: string,
+  signal?: AbortSignal,
 ) => ReadModelContent | Promise<ReadModelContent>;
 /**
  * Optional pre-execution guard. Returning content short-circuits the read
@@ -76,7 +77,7 @@ export function withAnchoredReadTransform(
       const guarded = await guard?.(params, executionCwd);
       if (guarded !== undefined) return { content: guarded, details: undefined };
       const result = await execute(toolCallId, params, signal, onUpdate, ctx);
-      const content = await transform(result.content, params, executionCwd, sessionDir);
+      const content = await transform(result.content, params, executionCwd, sessionDir, signal);
       return content === result.content ? result : { ...result, content };
     },
   } as GenericDefinition;

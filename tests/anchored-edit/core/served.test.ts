@@ -2,8 +2,9 @@ import { describe, expect, it, vi, beforeAll } from "vitest";
 import { mkdtemp, rm } from "fs/promises";
 import { join } from "path";
 import { DatabaseSync } from "node:sqlite";
-import { loadHashStoreAt, shutdownHashStore, pruneMissing, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
-import { getServed, recordServed, clearServed, servedHashesFromDiff, recordServedSafe, recordServedDiffSafe } from "../../../src/anchored-edit/served";
+import { loadHashStoreAt, shutdownHashStore, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
+import { contentChecksum } from "../../../src/anchored-edit/hashline/hasher";
+import { servedHashesFromDiff } from "../../../src/anchored-edit/served";
 import { initHasher } from "../../../src/anchored-edit/hashline";
 import { getWritableTempRoot } from "../support/fixtures";
 
@@ -32,85 +33,6 @@ function openStore(home: string): Promise<HashStoreHandle> {
   return loadHashStoreAt(storePath(home), "parent");
 }
 
-describe("served store", () => {
-  it("returns undefined for a path with no served record", async () => {
-    await withTempHome(async (home) => {
-      const store = await openStore(home);
-      expect(getServed(store, "/missing.ts")).toBeUndefined();
-    });
-  });
-
-  it("round-trips served hashes and unions repeated records", async () => {
-    await withTempHome(async (home) => {
-      const store = await openStore(home);
-      recordServed(store, "/a.ts", ["aB3", "cD4"]);
-      recordServed(store, "/a.ts", ["cD4", "eF5"]);
-      const served = getServed(store, "/a.ts");
-      expect(served).toEqual(new Set(["aB3", "cD4", "eF5"]));
-    });
-  });
-
-  it("ignores empty records and clears existing ones", async () => {
-    await withTempHome(async (home) => {
-      const store = await openStore(home);
-      recordServed(store, "/a.ts", []);
-      expect(getServed(store, "/a.ts")).toBeUndefined();
-      recordServed(store, "/a.ts", ["aB3"]);
-      clearServed(store, "/a.ts");
-      expect(getServed(store, "/a.ts")).toBeUndefined();
-    });
-  });
-
-  it("treats a row with unparseable hashes as a miss and deletes it", async () => {
-    await withTempHome(async (home) => {
-      const store = await openStore(home);
-      recordServed(store, "/a.ts", ["aB3"]);
-      const db = new DatabaseSync(storePath(home), { defensive: false } as any);
-      db.prepare("UPDATE served SET hash = ? WHERE owner = ? AND path = ?").run("{not a hash", "parent", "/a.ts");
-      db.close();
-      expect(getServed(store, "/a.ts")).toBeUndefined();
-      const check = new DatabaseSync(storePath(home), { defensive: false } as any);
-      const remaining = check.prepare("SELECT COUNT(*) AS n FROM served WHERE path = ?").get("/a.ts") as { n: number };
-      check.close();
-      expect(remaining.n).toBe(0);
-    });
-  });
-
-  it("treats a row with malformed hash strings as a miss and deletes it", async () => {
-    await withTempHome(async (home) => {
-      const store = await openStore(home);
-      recordServed(store, "/a.ts", ["aB3"]);
-      const db = new DatabaseSync(storePath(home), { defensive: false } as any);
-      db.prepare("UPDATE served SET hash = ? WHERE owner = ? AND path = ?").run("ZZZZ", "parent", "/a.ts");
-      db.close();
-      expect(getServed(store, "/a.ts")).toBeUndefined();
-      const check = new DatabaseSync(storePath(home), { defensive: false } as any);
-      const remaining = check.prepare("SELECT COUNT(*) AS n FROM served WHERE path = ?").get("/a.ts") as { n: number };
-      check.close();
-      expect(remaining.n).toBe(0);
-    });
-  });
-
-  it("keeps the served record after a store reopen", async () => {
-    await withTempHome(async (home) => {
-      const store = await openStore(home);
-      recordServed(store, "/a.ts", ["aB3", "cD4"]);
-      shutdownHashStore();
-      const reopened = await openStore(home);
-      expect(getServed(reopened, "/a.ts")).toEqual(new Set(["aB3", "cD4"]));
-    });
-  });
-
-  it("prunes served records for deleted files", async () => {
-    await withTempHome(async (home) => {
-      const store = await openStore(home);
-      recordServed(store, "/deleted.ts", ["aB3"]);
-      await pruneMissing(store);
-      expect(getServed(store, "/deleted.ts")).toBeUndefined();
-    });
-  });
-});
-
 describe("servedHashesFromDiff", () => {
   it("extracts + and context rows but not removed rows", () => {
     const diff = " aaa│aaa\n-   │bbb\n-OLD│old\n+XYZ│BBB\n ccc│ccc\n";
@@ -128,51 +50,107 @@ describe("servedHashesFromDiff", () => {
   });
 });
 
-describe("served safe helpers", () => {
-  it("recordServedSafe records hashes without throwing", async () => {
+describe("version-bound served state (#264)", () => {
+  const ORIGINAL = "a\nb\nc\n";
+  const CHANGED = "a\nB\nc\n";
+
+  it("returns undefined for a path with no served record", async () => {
     await withTempHome(async (home) => {
       const store = await openStore(home);
       try {
-        await recordServedSafe("/safe.ts", ["aB3", "cD4"], "test", store);
-        expect(getServed(store, "/safe.ts")).toEqual(new Set(["aB3", "cD4"]));
+        expect(store.getServedState("/missing.ts", ORIGINAL)).toBeUndefined();
       } finally {
         store.release();
       }
     });
   });
 
-  it("recordServedSafe skips empty hash lists", async () => {
+  it("serves rows recorded for the exact content version", async () => {
     await withTempHome(async (home) => {
       const store = await openStore(home);
       try {
-        await recordServedSafe("/safe.ts", [], "test", store);
-        expect(getServed(store, "/safe.ts")).toBeUndefined();
+        store.mergeServed("/a.ts", ["aB3", "cD4"], ORIGINAL);
+        const lookup = store.getServedState("/a.ts", ORIGINAL);
+        expect(lookup).toBeDefined();
+        expect((lookup as { served: Set<string> }).served).toEqual(new Set(["aB3", "cD4"]));
       } finally {
         store.release();
       }
     });
   });
 
-  it("recordServedDiffSafe records diff rows", async () => {
+  it("marks rows for any other content version stale, even partially", async () => {
     await withTempHome(async (home) => {
       const store = await openStore(home);
       try {
-        await recordServedDiffSafe("/safe.ts", "+aB3│x\n pQ2│y\n-cD4│z\n", "test", store);
-        expect(getServed(store, "/safe.ts")).toEqual(new Set(["aB3", "pQ2"]));
+        store.mergeServed("/a.ts", ["aB3"], ORIGINAL);
+        // The same hash is a different line of the changed content, so the
+        // checksum differs: the row is stale against the new version.
+        expect(contentChecksum(ORIGINAL)).not.toBe(contentChecksum(CHANGED));
+        expect(store.getServedState("/a.ts", CHANGED)).toEqual({ stale: true });
       } finally {
         store.release();
       }
     });
   });
 
-  it("recordServedSafe swallows store failures", async () => {
-    const broken = {
-      stmts: {
-        servedGet() {
-          throw new Error("store down");
-        },
-      },
-    };
-    await expect(recordServedSafe("/safe.ts", ["aB3"], "test", broken as never)).resolves.toBeUndefined();
+  it("replacing the version drops the previous version's rows in the same transaction", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      try {
+        store.mergeServed("/a.ts", ["aB3", "cD4"], ORIGINAL);
+        store.mergeServed("/a.ts", ["eF5"], CHANGED);
+        // The changed version owns only its own row; the original version is
+        // no longer authorized by anything.
+        expect(store.getServedState("/a.ts", CHANGED)).toEqual({ served: new Set(["eF5"]) });
+        expect(store.getServedState("/a.ts", ORIGINAL)).toEqual({ stale: true });
+        const db = new DatabaseSync(storePath(home), { defensive: false } as never);
+        const rows = db.prepare("SELECT COUNT(*) AS n FROM served WHERE path = ?").get("/a.ts") as { n: number };
+        db.close();
+        expect(rows.n).toBe(1);
+      } finally {
+        store.release();
+      }
+    });
+  });
+
+  it("treats a row with a malformed hash or missing version as a miss and deletes it", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      try {
+        store.mergeServed("/a.ts", ["aB3"], ORIGINAL);
+        store.release();
+        const db = new DatabaseSync(storePath(home), { defensive: false } as never);
+        db.prepare("UPDATE served SET hash = ? WHERE owner = ? AND path = ?").run("ZZZZ", "parent", "/a.ts");
+        db.close();
+        const reopened = await openStore(home);
+        try {
+          expect(reopened.getServedState("/a.ts", ORIGINAL)).toBeUndefined();
+          const check = new DatabaseSync(storePath(home), { defensive: false } as never);
+          const remaining = check.prepare("SELECT COUNT(*) AS n FROM served WHERE path = ?").get("/a.ts") as { n: number };
+          check.close();
+          expect(remaining.n).toBe(0);
+        } finally {
+          reopened.release();
+        }
+      } finally {
+        // already released above in the happy path branch
+      }
+    });
+  });
+
+  it("keeps the served record after a store reopen", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      store.mergeServed("/a.ts", ["aB3", "cD4"], ORIGINAL);
+      store.release();
+      shutdownHashStore();
+      const reopened = await openStore(home);
+      try {
+        expect(reopened.getServedState("/a.ts", ORIGINAL)).toEqual({ served: new Set(["aB3", "cD4"]) });
+      } finally {
+        reopened.release();
+      }
+    });
   });
 });

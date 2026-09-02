@@ -27,6 +27,43 @@ interface SnapshotCacheEntry {
  * pruning are typed repository operations here; SQL parameter order never
  * spreads through callers.
  */
+export interface ServedState {
+  /**
+   * Hashes served to the owner for exactly the current content version. A
+   * replace may verify its range against these.
+   */
+  served: Set<string>;
+}
+
+export interface StaleServedState {
+  /**
+   * Served rows exist for the path, but every one of them was recorded for a
+   * different content version — the file changed after the last served read
+   * (for example a mutation whose post-commit publication failed, or a crash
+   * at that boundary). The old authorization is unusable: the caller must
+   * refuse until a fresh read republishes rows for the current version.
+   */
+  stale: true;
+}
+
+export type ServedLookup = ServedState | StaleServedState | undefined;
+
+/**
+ * Typed, owner-scoped view over one physical anchor store. Every runtime
+ * caller binds a required owner; an ownerless store can no longer be
+ * constructed, so the former two-schemas-under-one-version state is
+ * unrepresentable. Snapshot lookups, served lookups and merges, read and
+ * mutation publications, owner listing and deletion, and path pruning are
+ * typed repository operations here; SQL parameter order and transaction
+ * ownership never spread through callers.
+ *
+ * Served rows are bound to the exact content version (checksum) they were
+ * served from. Every served publication first drops rows recorded for other
+ * content versions in the same transaction, so at most one content version
+ * is ever authorized per (owner, path), and a mutation whose publication
+ * failed can never leave the previous version authorizing edits against the
+ * changed file.
+ */
 export interface HashStoreHandle {
   readonly engine: "node:sqlite";
   /** Required owner identity this view reads and writes under. */
@@ -40,15 +77,39 @@ export interface HashStoreHandle {
   deleteSnapshot(path: string): void;
   /** Drops this owner's cached snapshot for the path (no database change). */
   invalidateSnapshotCache(path: string): void;
-  /** Served hash set for the path under this owner, or undefined when absent. */
-  getServed(path: string): Set<string> | undefined;
-  /** Conflict-safe row-level merge; also refreshes the rows' activity timestamp. */
-  mergeServed(path: string, hashes: string[]): void;
+  /** Served state for the path under this owner, resolved against the exact
+   *  `content`: the served set for this version, a stale marker when only
+   *  other-version rows exist, or undefined when no rows exist at all. */
+  getServedState(path: string, content: string): ServedLookup;
+  /** Merges hashes as served for exactly `content`'s version, dropping any
+   *  rows recorded for other content versions in the same transaction. */
+  mergeServed(path: string, hashes: string[], content: string): void;
   clearServed(path: string): void;
   /** Every path with a snapshot or served row under this owner. */
   allPaths(): string[];
   /** Snapshot paths under this owner whose stored hashes contain every given hash. */
   findSnapshotPaths(hashes: string[]): string[];
+  /** Runs mutations inside one repository transaction on this store's
+   *  database; a failure rolls the whole transaction back. */
+  withTransaction(fn: () => void): void;
+  /**
+   * Publishes one completed anchored read as a single repository
+   * transaction: the snapshot for the observed content and the served rows
+   * for exactly that content version. Either both land or neither does.
+   */
+  publishRead(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void;
+  /**
+   * Publishes one completed mutation's store state — the snapshot for the
+   * installed content and, when the diff rows were model-visible, the served
+   * rows for exactly that content version — as a single repository
+   * transaction under the acting owner.
+   */
+  publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void;
+  /** Every owner partition in this store with its newest activity. */
+  listOwners(): OwnerPartition[];
+  /** Deletes every row of one owner partition as a single transaction and
+   *  invalidates exactly that owner's cached snapshots. */
+  deleteOwnerPartition(owner: string): void;
 }
 
 export function isValidHashList(value: unknown): value is string[] {
@@ -147,13 +208,18 @@ interface OpenStore {
 }
 
 interface StoreStatements {
-  getVersion: () => string | undefined;
-  setVersion: (version: string) => void;
   getSnapshot: (owner: string, path: string, checksum: string, lineCount: number) => string | undefined;
   upsertSnapshot: (owner: string, path: string, checksum: string, lineCount: number, hashes: string, updatedAt: number) => void;
   deleteSnapshot: (owner: string, path: string) => void;
-  servedRows: (owner: string, path: string) => string[];
-  mergeServed: (owner: string, path: string, hashes: string[], updatedAt: number) => void;
+  servedRows: (owner: string, path: string) => { hash: string; content_hash: string }[];
+  /**
+   * Drops rows recorded for any other content version, then merges the given
+   * hashes for the exact version. Row-level conflict-free: concurrent
+   * additions under one owner and version union instead of one update
+   * replacing the other. The timestamp refresh keeps partition activity tied
+   * to real anchored use even when the added hashes were already present.
+   */
+  mergeServedVersioned: (owner: string, path: string, hashes: string[], contentHash: string, updatedAt: number) => void;
   clearServed: (owner: string, path: string) => void;
   allPaths: (owner: string) => string[];
   allHashes: (owner: string) => { path: string; hashes: string }[];
@@ -277,26 +343,38 @@ class HashStoreHandleImpl implements HashStoreHandle {
     this.entry.snapshots.delete(snapshotCacheKey(this.owner, path));
   }
 
-  getServed(path: string): Set<string> | undefined {
+  getServedState(path: string, content: string): ServedLookup {
     const entry = this.requireOpen();
     const rows = entry.stmts.servedRows(this.owner, path);
     if (rows.length === 0) return undefined;
-    for (const hash of rows) {
-      if (!HASH_RE.test(hash)) {
+    const version = contentChecksum(content);
+    const current: string[] = [];
+    for (const row of rows) {
+      if (!HASH_RE.test(row.hash) || typeof row.content_hash !== "string") {
         // Same repair semantics the JSON-array layout had: an invalid served
         // payload for a path is discarded and re-recorded by the next read.
-        entry.stmts.clearServed(this.owner, path);
+        withBusyRetry(() => {
+          entry.stmts.clearServed(this.owner, path);
+        });
         return undefined;
       }
+      if (row.content_hash === version) current.push(row.hash);
     }
-    return new Set(rows);
+    if (current.length === 0) {
+      // Rows exist only for other content versions: the authorization is
+      // stale against the current file and must not verify any range.
+      return { stale: true };
+    }
+    return { served: new Set(current) };
   }
 
-  mergeServed(path: string, hashes: string[]): void {
+  mergeServed(path: string, hashes: string[], content: string): void {
     if (hashes.length === 0) return;
     const entry = this.requireOpen();
-    withBusyRetry(() => {
-      entry.stmts.mergeServed(this.owner, path, hashes, Date.now());
+    const version = contentChecksum(content);
+    const updatedAt = Date.now();
+    this.withTransaction(() => {
+      entry.stmts.mergeServedVersioned(this.owner, path, hashes, version, updatedAt);
     });
   }
 
@@ -326,7 +404,6 @@ class HashStoreHandleImpl implements HashStoreHandle {
     return matches;
   }
 
-  /** @internal Runs a mutation inside one transaction on this store's database. */
   withTransaction(fn: () => void): void {
     const entry = this.requireOpen();
     withBusyRetry(() => {
@@ -339,6 +416,50 @@ class HashStoreHandleImpl implements HashStoreHandle {
         throw e;
       }
     });
+  }
+
+  publishRead(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void {
+    const entry = this.requireOpen();
+    const checksum = contentChecksum(input.content);
+    const lineCount = splitLines(input.content).length;
+    const updatedAt = Date.now();
+    this.withTransaction(() => {
+      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
+      if (input.servedHashes.length > 0) {
+        entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
+      }
+    });
+    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
+  }
+
+  publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void {
+    const entry = this.requireOpen();
+    const checksum = contentChecksum(input.content);
+    const lineCount = splitLines(input.content).length;
+    const updatedAt = Date.now();
+    this.withTransaction(() => {
+      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
+      if (input.servedHashes && input.servedHashes.length > 0) {
+        entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
+      }
+    });
+    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
+  }
+
+  listOwners(): OwnerPartition[] {
+    const rows = this.requireOpen().stmts.listOwners();
+    return rows.map((row) => ({
+      owner: String(row.owner),
+      updatedAt: Number(row.updated_at ?? 0),
+    }));
+  }
+
+  deleteOwnerPartition(owner: string): void {
+    const entry = this.requireOpen();
+    this.withTransaction(() => {
+      entry.stmts.deleteOwnerRows(owner);
+    });
+    dropOwnerCache(entry, owner);
   }
 }
 
@@ -420,6 +541,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; legacy: false } {
       "owner TEXT NOT NULL, " +
       "path TEXT NOT NULL, " +
       "hash TEXT NOT NULL, " +
+      "content_hash TEXT NOT NULL, " +
       "updated_at INTEGER NOT NULL, " +
       "PRIMARY KEY(owner, path, hash)" +
     ")"
@@ -435,11 +557,6 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; legacy: false } {
 }
 
 function buildStatements(db: DatabaseSync): StoreStatements {
-  const getVersionStmt = db.prepare("SELECT value FROM meta WHERE key = 'version'");
-  const setVersionStmt = db.prepare(
-    "INSERT INTO meta (key, value) VALUES ('version', ?) " +
-    "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  );
   const getSnapshotStmt = db.prepare(
     "SELECT hashes FROM snapshots WHERE owner = ? AND path = ? AND checksum = ? AND line_count = ?"
   );
@@ -448,14 +565,13 @@ function buildStatements(db: DatabaseSync): StoreStatements {
     "ON CONFLICT(owner, path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at"
   );
   const deleteSnapshotStmt = db.prepare("DELETE FROM snapshots WHERE owner = ? AND path = ?");
-  const servedRowsStmt = db.prepare("SELECT hash FROM served WHERE owner = ? AND path = ?");
-  // Row-level conflict-safe merge: concurrent additions under one owner union
-  // instead of one read-modify-write replacing the other. The timestamp
-  // refresh keeps partition activity tied to real anchored use even when the
-  // added hashes were already present.
+  const servedRowsStmt = db.prepare("SELECT hash, content_hash FROM served WHERE owner = ? AND path = ?");
+  const dropOtherVersionsStmt = db.prepare(
+    "DELETE FROM served WHERE owner = ? AND path = ? AND content_hash != ?"
+  );
   const mergeServedBase = db.prepare(
-    "INSERT INTO served (owner, path, hash, updated_at) VALUES (?, ?, ?, ?) " +
-    "ON CONFLICT(owner, path, hash) DO UPDATE SET updated_at = excluded.updated_at"
+    "INSERT INTO served (owner, path, hash, content_hash, updated_at) VALUES (?, ?, ?, ?, ?) " +
+    "ON CONFLICT(owner, path, hash) DO UPDATE SET content_hash = excluded.content_hash, updated_at = excluded.updated_at"
   );
   const clearServedStmt = db.prepare("DELETE FROM served WHERE owner = ? AND path = ?");
   const allPathsStmt = db.prepare(
@@ -471,8 +587,6 @@ function buildStatements(db: DatabaseSync): StoreStatements {
   const deleteOwnerStmt = db.prepare("DELETE FROM snapshots WHERE owner = ?");
   const deleteOwnerServedStmt = db.prepare("DELETE FROM served WHERE owner = ?");
   return {
-    getVersion: () => (getVersionStmt.get() as { value?: string } | undefined)?.value,
-    setVersion: (version) => { setVersionStmt.run(version); },
     getSnapshot: (owner, path, checksum, lineCount) =>
       (getSnapshotStmt.get(owner, path, checksum, lineCount) as { hashes?: string } | undefined)?.hashes,
     upsertSnapshot: (owner, path, checksum, lineCount, hashes, updatedAt) => {
@@ -480,10 +594,11 @@ function buildStatements(db: DatabaseSync): StoreStatements {
     },
     deleteSnapshot: (owner, path) => { deleteSnapshotStmt.run(owner, path); },
     servedRows: (owner, path) =>
-      (servedRowsStmt.all(owner, path) as { hash?: string }[]).map((row) => String(row.hash)),
-    mergeServed: (owner, path, hashes, updatedAt) => {
+      servedRowsStmt.all(owner, path) as { hash: string; content_hash: string }[],
+    mergeServedVersioned: (owner, path, hashes, contentHash, updatedAt) => {
+      dropOtherVersionsStmt.run(owner, path, contentHash);
       for (const hash of hashes) {
-        mergeServedBase.run(owner, path, hash, updatedAt);
+        mergeServedBase.run(owner, path, hash, contentHash, updatedAt);
       }
     },
     clearServed: (owner, path) => { clearServedStmt.run(owner, path); },
@@ -715,69 +830,12 @@ export async function pruneMissing(store: HashStoreHandle): Promise<void> {
     console.error(`Anchored store path check failed for ${failure.path}: ${message}`);
   }
   if (missing.length === 0) return;
-  (store as HashStoreHandleImpl).withTransaction(() => {
+  store.withTransaction(() => {
     for (const path of missing) {
       store.deleteSnapshot(path);
       store.clearServed(path);
     }
   });
-}
-
-/**
- * Lists every distinct owner partition in the store, with the newest activity
- * across its snapshot and served rows. Served-row timestamps refresh on every
- * anchored read or edit that merges them, so a partition that keeps using its
- * state never looks idle merely because a snapshot value was reused.
- */
-export function listOwnerPartitions(store: HashStoreHandle): OwnerPartition[] {
-  const rows = (store as HashStoreHandleImpl).requireOpen().stmts.listOwners();
-  return rows.map((row) => ({
-    owner: String(row.owner),
-    updatedAt: Number(row.updated_at ?? 0),
-  }));
-}
-
-/**
- * Publishes one completed mutation's store state — the snapshot for the
- * installed content and, when the diff rows were model-visible, the served
- * rows for them — as a single repository transaction under the acting owner.
- * Either both land or neither does, so a publication failure leaves the
- * pre-mutation state intact and stale served rows cannot authorize a later
- * replace against the changed file.
- */
-export function publishMutation(store: HashStoreHandle, input: {
-  path: string;
-  content: string;
-  hashes: string[];
-  servedHashes?: string[];
-}): void {
-  const handle = store as HashStoreHandleImpl;
-  const entry = handle.requireOpen();
-  const checksum = contentChecksum(input.content);
-  const lineCount = splitLines(input.content).length;
-  const updatedAt = Date.now();
-  handle.withTransaction(() => {
-    entry.stmts.upsertSnapshot(handle.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
-    if (input.servedHashes && input.servedHashes.length > 0) {
-      entry.stmts.mergeServed(handle.owner, input.path, input.servedHashes, updatedAt);
-    }
-  });
-  cacheSnapshot(entry, snapshotCacheKey(handle.owner, input.path), checksum, lineCount, input.hashes);
-}
-
-/**
- * Deletes every row belonging to one owner as a single repository
- * transaction and invalidates exactly that owner's cached snapshots, so a
- * deleted partition cannot be revived by a later cache hit. Other owners'
- * rows and caches are untouched.
- */
-export function deleteOwnerPartition(store: HashStoreHandle, owner: string): void {
-  const handle = store as HashStoreHandleImpl;
-  const entry = handle.requireOpen();
-  handle.withTransaction(() => {
-    entry.stmts.deleteOwnerRows(owner);
-  });
-  dropOwnerCache(entry, owner);
 }
 
 /** @internal Test seams: the view class for prototype spies and the store

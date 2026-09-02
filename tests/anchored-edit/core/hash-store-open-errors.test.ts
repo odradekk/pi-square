@@ -8,7 +8,10 @@ const state = vi.hoisted(() => ({
   busyOnce: null as Error | null,
   persistentBusy: false,
   runCalls: 0,
-  rename: vi.fn(async () => undefined),
+  rename: vi.fn(async (from: string, to: string) => {
+    void from;
+    void to;
+  }),
   readFile: vi.fn(async () => {
     const err = new Error("no such file") as NodeJS.ErrnoException;
     err.code = "ENOENT";
@@ -60,9 +63,18 @@ vi.mock("fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs/promises")>();
   return {
     ...actual,
-    rename: state.rename,
+    // The store schema lock (src/anchored-edit/file-lock.ts) renames its lock
+    // files through retirement names during normal release; only store-file
+    // quarantine renames are asserted, so everything else passes through.
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      const [from] = args;
+      if (typeof from === "string" && /hash-store\.sqlite$/.test(from)) {
+        return state.rename(from, args[1] as string);
+      }
+      return (actual.rename as any)(...args);
+    },
     readFile: async (path: Parameters<typeof actual.readFile>[0], ...args: any[]) =>
-      String(path).endsWith(".schema.lock")
+      String(path).endsWith(".schema.lock") || /[.]retired-|publish-/.test(String(path))
         ? (actual.readFile as any)(path, ...args)
         : state.readFile(),
   };

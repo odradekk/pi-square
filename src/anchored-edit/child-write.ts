@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
-import { createAnchoredWriteSession, resolveAnchoredTarget } from "./operations.ts";
+import { createAnchoredWriteSession, resolveAnchoredTarget, runWithWriteSignal } from "./operations.ts";
 
 type GenericToolDefinition = ToolDefinition<any, any, any>;
 
@@ -55,10 +55,13 @@ export function createChildAnchoredWriteTool(
     async execute(toolCallId, params: { path: string; content: string }, signal, onUpdate, ctx) {
       const target = await resolveAnchoredTarget(cwd, params.path);
       session.noteRequest(target.canonicalPath, params.path);
-      // A failed factory write throws before or inside the injected write, so
-      // reaching here means the write and its state publication completed
-      // under the boundary; the precomputed appendix is presentation only.
-      const result = await base.execute(toolCallId, params, signal, onUpdate, ctx);
+      // The factory execution runs in the write-signal context so the
+      // injected operation's lock wait observes this call's cancellation; a
+      // failed factory write throws before or inside the injected write, so
+      // reaching the outcome step means the write and its state publication
+      // completed under the boundary (the precomputed appendix is
+      // presentation only).
+      const result = await runWithWriteSignal(signal, () => base.execute(toolCallId, params, signal, onUpdate, ctx));
       const outcome = session.takeOutcome(target.canonicalPath);
       if (!outcome?.appendix) return result;
       return {

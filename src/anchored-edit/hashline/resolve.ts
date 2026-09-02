@@ -444,17 +444,23 @@ export type RangeResolution =
  * consume this result without re-resolving: the resolved line indices stay
  * valid because nothing after resolution changes the file or its hashes.
  */
+/** @internal Deterministic test seam observing each range-resolution pass;
+ *  production leaves it empty. */
+export const __resolveOnceProbe: Array<() => void> = [];
+
 export function resolveRange(
 	edit: HEdit,
 	fileLines: string[],
 	fileHashes: string[],
 	signal?: AbortSignal,
 ): RangeResolution {
+	for (const probe of __resolveOnceProbe) probe();
 	assertAligned(fileLines, fileHashes, "resolveRange");
 	const mismatches: HMismatch[] = [];
 
 	const hashIndex = new Map<string, number[]>();
 	for (let i = 0; i < fileHashes.length; i++) {
+
 		const h = fileHashes[i]!;
 		const list = hashIndex.get(h) ?? [];
 		list.push(i + 1);

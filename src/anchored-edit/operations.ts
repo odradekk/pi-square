@@ -1,8 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { constants as fsConstants, realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import {
   DEFAULT_MAX_BYTES,
   type AgentToolResult,
+  createWriteToolDefinition,
+  type ToolDefinition,
   type WriteOperations,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
@@ -10,18 +13,18 @@ import { loadFileKindAndText } from "./file-kind.ts";
 import { readNormFile, safeSnapId } from "./file-reader.ts";
 import { acquireFileLock, fileLockedMessage, lockFilePath, type AcquireLockOptions } from "./file-lock.ts";
 import { resolveTarget, writeAtomic } from "./fs-write.ts";
-import { publishMutation } from "./hash-store.ts";
+import type { HashStoreHandle } from "./hash-store.ts";
 import { MAX_HASH_LINES } from "./hashline/index.ts";
 import { AnchorMismatchError, RangeStaleError } from "./hashline/index.ts";
 import { anchoredStoreDir, toCwd } from "./paths.ts";
 import { fmtReadPreview } from "./read.ts";
-import { prepareReplace, type PipelineResult, type ReplaceDetails, type ReqParams } from "./replace.ts";
+import { prepareReplace, ReplaceValidationError, type PipelineResult, type ReplaceDetails, type ReqParams } from "./replace.ts";
 import { buildChanged, buildNoop, type RMeta } from "./replace-response.ts";
 import { restoreEndings } from "./replace-diff.ts";
-import { recordServedSafe, servedHashesFromDiff } from "./served.ts";
+import { servedHashesFromDiff } from "./served.ts";
 import { loadAnchoredHashStore } from "./workspace-support.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
-import { abortIf, errCode, visLines } from "./utils.ts";
+import { errCode, visLines } from "./utils.ts";
 
 /**
  * The anchored per-target operation boundary (odradekk/pi-square#264).
@@ -39,9 +42,16 @@ import { abortIf, errCode, visLines } from "./utils.ts";
  * join the same order through the public write factory's injected
  * filesystem-operation seam. Anchored reads hold the same target exclusion
  * from the byte read through snapshot and served-state publication.
- * `E_FILE_LOCKED` reports failure to enter the boundary; `E_RANGE_STALE` is
- * reserved for validation performed after the lock is acquired against a
- * file that no longer matches the served range.
+ * `E_FILE_LOCKED` reports failure to enter the operation boundary (bounded
+ * wait exhausted *or cancelled*); `E_RANGE_STALE` is reserved for validation
+ * performed after the lock is acquired against a file that no longer matches
+ * the served range.
+ *
+ * Authorization is version-bound: served rows authorize only the exact
+ * content version they were recorded for, so a mutation whose post-commit
+ * publication failed (or a process that died at that boundary) leaves the
+ * previous version unable to authorize any replace until a fresh read
+ * republishes current rows.
  */
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];
@@ -101,8 +111,10 @@ export type EnterBoundaryOptions = AcquireLockOptions;
 
 /**
  * Enters the per-target cross-process exclusion. Returns a release handle, or
- * null when the bounded wait ended without the lock — the caller reports the
- * classified contention (`E_FILE_LOCKED`) and changes nothing.
+ * null when the bounded wait ended or was cancelled — the caller reports the
+ * classified contention (`E_FILE_LOCKED`) and changes nothing. Release is
+ * best-effort after committed work: a release failure is logged, never
+ * thrown into a caller whose filesystem operation already succeeded.
  */
 export async function enterTargetBoundary(
   storeDir: string,
@@ -119,6 +131,24 @@ export function withTargetMutationQueue<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   return withFileMutationQueue(target.canonicalPath, fn);
+}
+
+/**
+ * Carries the executing tool call's AbortSignal into the injected write
+ * operation. The public `WriteOperations` seam has no signal parameter, so
+ * the anchored write compositions (`createAnchoredWriteDefinition` and the
+ * child write) run the factory execution inside this context; nothing else
+ * about execution changes.
+ */
+const writeSignalContext = new AsyncLocalStorage<{ signal?: AbortSignal }>;
+
+/** Runs `fn` with the executing tool call's AbortSignal visible to the
+ *  injected write operation. `createAnchoredWriteDefinition` uses this
+ *  internally; the child anchored write composition applies it around the
+ *  public factory execution the same way, so both surfaces propagate
+ *  cancellation into the lock wait. */
+export function runWithWriteSignal<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+  return writeSignalContext.run({ signal }, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +169,9 @@ export interface AnchoredReadInput {
   limit?: number;
   owner: string;
   sessionDir?: string;
+  /** Cancellation for the lock wait; an aborted wait is classified
+   *  contention, never an unclassified throw. */
+  signal?: AbortSignal;
 }
 
 function anchoredReadLockedMessage(path: string): string {
@@ -156,15 +189,15 @@ export const readBarrier: { onBytes?: (content: string) => Promise<void> } = {};
 /**
  * One anchored read as a single operation: the target exclusion is held from
  * reading the file bytes through committing the matching snapshot and served
- * hashes, so the anchors shown describe exactly the bytes read and cannot
- * straddle a concurrent writer. A read that cannot enter the boundary
- * returns classified contention instead of unanchored content presented as
- * anchored evidence.
+ * hashes — both published in one repository transaction, so the read either
+ * publishes state for exactly the bytes it observed or publishes nothing.
+ * A read that cannot enter the boundary returns classified contention
+ * instead of unanchored content presented as anchored evidence.
  */
 export async function runAnchoredRead(input: AnchoredReadInput): Promise<AnchoredReadResult> {
   const target = await resolveAnchoredTarget(input.cwd, input.requestedPath);
   const session = sessionContextFor(input.cwd, input.sessionDir);
-  const boundary = await enterTargetBoundary(session.storeDir, target);
+  const boundary = await enterTargetBoundary(session.storeDir, target, { signal: input.signal });
   if (!boundary) {
     return {
       status: "locked",
@@ -187,10 +220,13 @@ export async function runAnchoredRead(input: AnchoredReadInput): Promise<Anchore
     if (file.kind === "image") return { status: "passthrough" };
     const store = await loadAnchoredHashStore(session.storeDir, input.owner);
     try {
+      // Hash computation is pure: the snapshot cache is read, never written,
+      // before the publication below.
       const normalized = await readNormFile(input.requestedPath, session.workspaceRoot, {
         preloadedFile: file,
         maxLines: MAX_HASH_LINES,
         store,
+        noPersist: true,
       });
       await readBarrier.onBytes?.(normalized.normalized);
       const preview = await fmtReadPreview(
@@ -198,7 +234,12 @@ export async function runAnchoredRead(input: AnchoredReadInput): Promise<Anchore
         { offset: input.offset, limit: input.limit },
         normalized.fileHashes,
       );
-      store.mergeServed(normalized.absolutePath, preview.servedHashes);
+      store.publishRead({
+        path: normalized.absolutePath,
+        content: normalized.normalized,
+        hashes: normalized.fileHashes,
+        servedHashes: preview.servedHashes,
+      });
       const text = normalized.hadUtf8DecodeErrors
         ? `${preview.text}\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]`
         : preview.text;
@@ -270,6 +311,14 @@ function appliedText(prep: PipelineResult, warnings: string[], diff: string): st
 }
 
 /**
+ * @internal Deterministic test seam: awaited inside the boundary immediately
+ * before the replace's irreversible filesystem commit, so tests can hold a
+ * replace at the commit point and prove ordering against other operations
+ * without sleeps. Production never sets it.
+ */
+export const replaceBarrier: { beforeCommit?: (info: { canonicalPath: string }) => Promise<void> } = {};
+
+/**
  * One anchored replace as a single operation: Pi's mutation queue, then the
  * cross-process target lock, then pure preparation, then the filesystem
  * commit, then the store publication — all before the boundary releases.
@@ -278,9 +327,10 @@ function appliedText(prep: PipelineResult, warnings: string[], diff: string): st
  * file commit the candidate snapshot and the diff's served rows are
  * published in one transaction while the lock is still held; if that
  * publication fails, the result still reports the truthful mutation success,
- * suppresses fresh anchors, emits a bounded actionable warning, and leaves
- * stale state unable to authorize another replace — a new anchored read
- * repairs the state.
+ * suppresses fresh anchors, emits a bounded actionable warning, and — because
+ * served authorization is bound to the content version — leaves the previous
+ * version unable to authorize another replace until a fresh read republishes
+ * current rows.
  */
 export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<AnchoredReplaceResult> {
   const session = sessionContextFor(input.cwd, input.sessionDir);
@@ -288,20 +338,18 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
   try {
     const target = await resolveAnchoredTarget(input.cwd, input.params.path);
     return await withTargetMutationQueue(target, async () => {
-      abortIf(input.signal);
+      const lockedRefusal = (): AnchoredReplaceResult => ({
+        content: [{ type: "text", text: fileLockedMessage(input.params.path, "replace") }],
+        details: {
+          diff: "",
+          status: "warning",
+          errorCode: "E_FILE_LOCKED",
+        } satisfies ReplaceDetails,
+      });
+      if (input.signal?.aborted) return lockedRefusal();
       const boundary = await enterTargetBoundary(session.storeDir, target, { signal: input.signal });
-      if (!boundary) {
-        return {
-          content: [{ type: "text", text: fileLockedMessage(input.params.path, "replace") }],
-          details: {
-            diff: "",
-            status: "warning",
-            errorCode: "E_FILE_LOCKED",
-          } satisfies ReplaceDetails,
-        };
-      }
+      if (!boundary) return lockedRefusal();
       try {
-        abortIf(input.signal);
         let prep: PipelineResult;
         try {
           prep = await prepareReplace(input.params, input.cwd, {
@@ -311,14 +359,12 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
             requireServed: input.requireServed,
           });
         } catch (error) {
-          if (error instanceof RangeStaleError || error instanceof AnchorMismatchError) {
+          if (error instanceof ReplaceValidationError) {
             // The refusal's fresh rows were observed under the boundary;
-            // publishing them keeps the immediate retry authorized.
-            const hashes = error instanceof RangeStaleError
-              ? error.rangeHashes
-              : error.feedbackHashes;
-            await recordServedSafe(target.canonicalPath, hashes, "range feedback", store);
-            return anchorWarning(error);
+            // publishing them for exactly the current content version keeps
+            // the immediate retry authorized.
+            store.mergeServed(target.canonicalPath, error.feedbackHashes, error.content);
+            return anchorWarning(error.cause2);
           }
           throw error;
         }
@@ -349,7 +395,8 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           );
         }
 
-        abortIf(input.signal);
+        await replaceBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
+        if (input.signal?.aborted) return lockedRefusal();
         // The filesystem commit is the irreversible point.
         await writeAtomic(target.canonicalPath, prep.bom + restoreEndings(prep.result, prep.originalEnding));
         const snapshotId = await safeSnapId(target.canonicalPath, "post-anchored-replace");
@@ -374,7 +421,7 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
         const diff = changed.details.diff;
         if (diff) {
           try {
-            publishMutation(store, {
+            store.publishMutation({
               path: target.canonicalPath,
               content: prep.result,
               hashes: prep.resultHashes,
@@ -383,7 +430,8 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           } catch (error) {
             // The file changed; never report otherwise. Suppress fresh
             // anchors, surface a bounded actionable warning, and leave the
-            // pre-mutation state unable to authorize another replace.
+            // pre-mutation state unable to authorize another replace: its
+            // served rows are bound to the previous content version.
             store.invalidateSnapshotCache(target.canonicalPath);
             changed.details.diff = "";
             warnings.push(
@@ -425,17 +473,17 @@ export interface AutoReadAnchorsInput {
   /** Initiating workspace root owning the store. */
   workspaceRoot: string;
   /** Loaded anchored hash store under the acting owner; the caller releases it. */
-  store: import("./hash-store.ts").HashStoreHandle;
+  store: HashStoreHandle;
 }
 
 /**
  * Renders the bounded auto-read anchor appendix for one written file and
- * records its rows as served under the acting owner. Shared by the write
- * operation inside the target boundary, so the parent write hook and every
- * writable-child anchored write append byte-identical anchors. Returns
- * undefined when the target is not supported bounded UTF-8 text (binary,
- * image, oversized, non-regular); the caller then keeps the native factory
- * result unchanged.
+ * publishes its snapshot and served rows for exactly the written content as
+ * one repository transaction. Shared by the write operation inside the target
+ * boundary, so the parent write hook and every writable-child anchored write
+ * append byte-identical anchors. Returns undefined when the target is not
+ * supported bounded UTF-8 text (binary, image, oversized, non-regular); the
+ * caller then keeps the native factory result unchanged.
  */
 export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promise<string | undefined> {
   try {
@@ -444,10 +492,12 @@ export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promis
       displayPath: input.displayPath,
     });
     if (file.kind !== "text") return undefined;
+    // Hash computation is pure; publication happens as one transaction below.
     const normalized = await readNormFile(input.displayPath, input.workspaceRoot, {
       maxLines: MAX_HASH_LINES,
       preloadedFile: file,
       store: input.store,
+      noPersist: true,
     });
     const preview = await fmtReadPreview(
       normalized.normalized,
@@ -456,7 +506,12 @@ export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promis
       DEFAULT_MAX_BYTES,
       AUTO_READ_MAX,
     );
-    input.store.mergeServed(normalized.absolutePath, preview.servedHashes);
+    input.store.publishRead({
+      path: normalized.absolutePath,
+      content: normalized.normalized,
+      hashes: normalized.fileHashes,
+      servedHashes: preview.servedHashes,
+    });
     const skipped = preview.nextOffset === undefined
       ? ""
       : `\n[${visLines(normalized.normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
@@ -502,6 +557,20 @@ export interface AnchoredWriteSessionInput {
 }
 
 /**
+ * @internal Deterministic test seam: awaited inside the write's target
+ * boundary immediately before the irreversible filesystem write, so tests can
+ * hold a write at the commit point and prove ordering against other
+ * operations without sleeps. Production never sets it.
+ */
+export const writeBarrier: { beforeWrite?: (info: { canonicalPath: string }) => Promise<void> } = {};
+
+function stateUpdateFailureNote(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const bounded = message.length > 300 ? `${message.slice(0, 300)}…` : message;
+  return `--- Anchored state update failed: ${bounded}. The file was written; call read to get fresh anchors before the next replace. ---`;
+}
+
+/**
  * Creates the write-side operation session for one acting owner. The parent
  * session shares one instance between the registered write definition (its
  * `operations`) and the result-presentation handlers (`noteRequest` /
@@ -514,14 +583,19 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
   const operations: WriteOperations = {
     mkdir: (dir) => mkdir(dir, { recursive: true }).then(() => {}),
     writeFile: async (absolutePath: string, content: string) => {
+      const signal = writeSignalContext.getStore()?.signal;
       const canonicalPath = await resolveTarget(absolutePath);
       const opKey = await operationKeyFor(canonicalPath);
       const displayPath = requests.get(canonicalPath) ?? absolutePath;
-      const boundary = await enterTargetBoundary(session.storeDir, { canonicalPath, opKey });
+      const boundary = await enterTargetBoundary(session.storeDir, { canonicalPath, opKey }, { signal });
       if (!boundary) {
         throw new Error(fileLockedMessage(displayPath, "write"));
       }
       try {
+        if (signal?.aborted) {
+          // Cancelled before any filesystem effect: classified contention.
+          throw new Error(fileLockedMessage(displayPath, "write"));
+        }
         // Pre-write comparison inside the boundary decides whether the write
         // is a change for auto-read; a missing file counts as changed
         // (creation), as does an unreadable one.
@@ -532,30 +606,44 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
           // ENOENT (creation) or an unreadable target: the appendix render
           // applies its own bounds after the write.
         }
+        await writeBarrier.beforeWrite?.({ canonicalPath });
+        if (signal?.aborted) {
+          // Last cancellation checkpoint before the irreversible write.
+          throw new Error(fileLockedMessage(displayPath, "write"));
+        }
         // Ordinary factory filesystem semantics: the write, and any error it
-        // produces, is exactly Pi's own.
+        // produces, is exactly Pi's own. Everything below this point is
+        // post-commit: no failure may present the completed write as failed.
         await writeFile(absolutePath, content, "utf-8");
-        // Publication happens while the boundary is still held.
         let appendix: string | undefined;
-        const store = await loadAnchoredHashStore(session.storeDir, input.owner);
         try {
-          store.clearServed(canonicalPath);
-          if (input.autoRead() && changed) {
-            try {
-              appendix = await renderAutoReadAnchors({
-                path: canonicalPath,
-                displayPath,
-                workspaceRoot: session.workspaceRoot,
-                store,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.error("Auto-read after anchored write failed:", error);
-              appendix = `--- Auto-read failed: ${message} ---`;
+          // Publication happens while the boundary is still held. A failure
+          // is reported as a bounded actionable note on the successful write;
+          // because served authorization is version-bound, the unpublished
+          // state cannot authorize a later replace against the new bytes.
+          const store = await loadAnchoredHashStore(session.storeDir, input.owner);
+          try {
+            store.clearServed(canonicalPath);
+            if (input.autoRead() && changed) {
+              try {
+                appendix = await renderAutoReadAnchors({
+                  path: canonicalPath,
+                  displayPath,
+                  workspaceRoot: session.workspaceRoot,
+                  store,
+                });
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error("Auto-read after anchored write failed:", error);
+                appendix = `--- Auto-read failed: ${message} ---`;
+              }
             }
+          } finally {
+            store.release();
           }
-        } finally {
-          store.release();
+        } catch (error) {
+          console.error("Anchored write state update failed:", error);
+          appendix = stateUpdateFailureNote(error);
         }
         outcomes.set(canonicalPath, {
           canonicalPath,
@@ -579,4 +667,36 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
       return outcome;
     },
   };
+}
+
+/**
+ * The anchored parent write definition: Pi's public write factory with the
+ * anchored write operation injected through its filesystem seam, plus the one
+ * declared execution-entry gate (#264) — when the anchored surface is
+ * unavailable (another extension owns the built-ins, or the anchor store
+ * could not be initialized), execution falls back completely to the plain
+ * native factory, so a half-activated write (locked, store-writing, but
+ * unpresented) cannot exist. The wrapper also runs the factory execution in
+ * the write-signal context so cancellation reaches the injected lock wait;
+ * the factory's own result, error, and renderer semantics are untouched.
+ */
+export function createAnchoredWriteDefinition(
+  cwd: string,
+  input: {
+    session: AnchoredWriteSession;
+    /** Executed at tool-execution time; `false` selects the plain native write. */
+    isAvailable: () => boolean;
+  },
+): ToolDefinition<any, any, any> {
+  const anchoredDefinition = createWriteToolDefinition(cwd, { operations: input.session.operations });
+  const plainDefinition = createWriteToolDefinition(cwd);
+  type ExecuteArgs = Parameters<typeof anchoredDefinition.execute>;
+  const execute = (...args: ExecuteArgs) => {
+    if (!input.isAvailable()) {
+      return plainDefinition.execute(...args);
+    }
+    const run = () => anchoredDefinition.execute(...args);
+    return writeSignalContext.run({ signal: args[2] }, run);
+  };
+  return { ...anchoredDefinition, execute } as typeof anchoredDefinition;
 }

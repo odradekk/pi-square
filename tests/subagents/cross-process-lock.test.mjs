@@ -25,7 +25,7 @@ const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-e
 const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
-const { recordServed } = await load("../../src/anchored-edit/served.ts");
+const { __lockTestables } = await load("../../src/anchored-edit/file-lock.ts");
 
 const helperPath = join(dirname(fileURLToPath(import.meta.url)), "cross-process-lock-helper.mjs");
 
@@ -190,16 +190,18 @@ try {
   assert.equal(malformedRefusal, null, "a malformed lock record is never reclaimed");
   rmSync(malformedPath, { force: true });
 
-  // Cancellation during the bounded wait aborts acquisition (#264).
+  // Cancellation during the bounded wait ends as classified contention: the
+  // acquisition resolves to null (never an unclassified throw), the holder's
+  // lock survives, and nothing was modified (#264).
   {
     const cancelPath = await canonicalLockPath("cancel-wait.txt");
     const cancelHolder = await acquireFileLock(cancelPath);
     assert.ok(cancelHolder);
     const abortController = new AbortController();
     const cancelled = acquireFileLock(cancelPath, { waitMs: 5_000, pollMs: 20, signal: abortController.signal });
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 60));
     abortController.abort();
-    await assert.rejects(cancelled, /aborted/, "cancellation during the wait aborts the acquisition");
+    assert.equal(await cancelled, null, "an aborted wait ends as classified contention, not a throw");
+    assert.ok(existsSync(cancelPath), "the aborted acquisition never removed the holder's lock");
     await cancelHolder.release();
   }
 
@@ -217,19 +219,16 @@ try {
     assert.notEqual(successorRecord.token, "prior-token", "the successor's token replaced the dead owner's");
     const successorIdentity = statSync(successorPath);
 
-    // The previous owner's late release: same token expectations as its own
-    // record, but the file at the path is the successor's now.
-    const lateReleasePath = `${successorPath}.late-release-${Date.now()}`;
-    writeFileSync(lateReleasePath, JSON.stringify(priorRecord));
-    // Its own lock file is long gone (it was reclaimed); a release keyed to
-    // the prior identity must not unlink the successor's inode.
-    const identityIntact = statSync(successorPath);
-    assert.equal(identityIntact.ino, successorIdentity.ino, "the successor's inode survives any prior-owner cleanup");
+    // The previous owner's late release actually runs the verified-removal
+    // protocol against the successor's installed lock: it takes the file,
+    // finds a different token than the one it verified, and restores the
+    // successor's file instead of deleting it.
+    await __lockTestables.removeVerifiedLockFile(successorPath, priorIdentity, priorRecord.token, 5);
+    const survivedRecord = JSON.parse(readFileSync(successorPath, "utf8"));
+    assert.equal(survivedRecord.token, successorRecord.token, "the prior owner's late release restored the successor's lock, never deleted it");
 
     await successor.release();
     assert.ok(!existsSync(successorPath), "the successor's own release still works");
-    rmSync(lateReleasePath, { force: true });
-    void priorIdentity;
   }
 
   // --- Criterion 8/9: a lock held by a live process is waited on, not
@@ -253,8 +252,9 @@ try {
   await kill(observer.child);
 
   // --- Criterion 2/3/9: two processes editing the same file produce one
-  // success and one recoverable refusal, never a lost update. The refusal
-  // after the bounded wait uses E_RANGE_STALE and carries fresh anchors. ---
+  // success and one recoverable refusal, never a lost update. The refusal is
+  // the classified E_FILE_LOCKED contention: the bounded wait ended without
+  // entering the boundary, so nothing was modified and no anchors are served. ---
   writeFileSync(join(workspace, "same.txt"), "alpha\nbeta\ngamma\n");
   const holder = await holdLock("same.txt");
   const middle = hashesOf("alpha\nbeta\ngamma\n")[1];
@@ -309,7 +309,7 @@ try {
   writeFileSync(join(workspace, "second-session.txt"), "alpha\nbeta\ngamma\n");
   const secondStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
   const secondHashes = hashesOf("alpha\nbeta\ngamma\n");
-  recordServed(secondStore, join(workspace, "second-session.txt"), secondHashes);
+  secondStore.mergeServed(join(workspace, "second-session.txt"), secondHashes, "alpha\nbeta\ngamma\n");
   secondStore.release();
 
   const secondHolder = await holdLock("second-session.txt");
@@ -394,6 +394,14 @@ try {
   rmSync(lockDir(), { recursive: true, force: true });
   writeFileSync(join(workspace, "coexist.txt"), "l1\nl2\nl3\nl4\n");
   const coexHashes = hashesOf("l1\nl2\nl3\nl4\n");
+  {
+    // Seed the served rows for the starting version: whichever replace wins
+    // the queue publishes its own diff rows for the new version, so the
+    // loser's authorization against the starting version is stale.
+    const seedStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
+    seedStore.mergeServed(join(workspace, "coexist.txt"), coexHashes, "l1\nl2\nl3\nl4\n");
+    seedStore.release();
+  }
   const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, sessionDir);
   const ctx = sessionCtx;
   const [r1, r2] = await Promise.all([
@@ -436,7 +444,7 @@ try {
   const crashHashes = hashesOf("alpha\nbeta\ngamma\n");
   {
     const seedStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
-    recordServed(seedStore, join(workspace, "crash.txt"), crashHashes);
+    seedStore.mergeServed(join(workspace, "crash.txt"), crashHashes, "alpha\nbeta\ngamma\n");
     seedStore.release();
   }
   const crashJob = spawnJob({
@@ -444,7 +452,9 @@ try {
     workspace,
     sessionDir,
     path: "crash.txt",
-    content: "alpha\nCHANGED\ngamma\n",
+    removeFrom: crashHashes[1],
+    removeTo: crashHashes[1],
+    replacement: "CHANGED",
   });
   const crashedResult = await waitResult(crashJob.resultPath);
   assert.equal(crashedResult.crashed, true, "the helper died at the post-commit boundary");

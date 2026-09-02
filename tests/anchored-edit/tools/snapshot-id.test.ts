@@ -3,7 +3,7 @@ import { readFile, writeFile } from "fs/promises";
 import { withTempFile, setupIntegrationTest } from "../support/fixtures";
 
 describe("snapshotId surface (details-only after W2)", () => {
-  it("edit succeeds when the file changed on disk between read and edit, as long as the changed line is outside the replaced range", async () => {
+  it("edit is refused when the file changed on disk between read and edit, even outside the replaced range, until a fresh read (#264)", async () => {
     await withTempFile("sample.ts", "alpha\nbeta\n", async ({ cwd, path }) => {
       const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 
@@ -16,11 +16,32 @@ describe("snapshotId surface (details-only after W2)", () => {
 
       await writeFile(path, "alpha\nbeta\ngamma\n", "utf-8");
 
-      const result = await editTool.execute(
+      // Version-bound authorization: an appended line elsewhere in the file
+      // still invalidates the read's served rows.
+      const refused = await editTool.execute(
         "e1",
         {
           path: "sample.ts",
           remove_from: betaRef, remove_to: betaRef, replacement_text: "BETA",
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refused.details.errorCode).toBe("E_RANGE_STALE");
+      expect(await readFile(path, "utf-8")).toBe("alpha\nbeta\ngamma\n");
+
+      const retry = await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx);
+      const retryText = retry.content[0].text as string;
+      const freshRef = retryText
+        .split("\n")
+        .find((line: string) => line.includes("│beta"))!
+        .split("│")[0]!;
+      const result = await editTool.execute(
+        "e2",
+        {
+          path: "sample.ts",
+          remove_from: freshRef, remove_to: freshRef, replacement_text: "BETA",
         },
         undefined,
         undefined,

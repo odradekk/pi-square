@@ -2,15 +2,17 @@ import { describe, expect, it } from "vitest";
 import { readFile, writeFile } from "fs/promises";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
 import { shutdownHashStore } from "../../../src/anchored-edit/hash-store";
-import { getServed } from "../../../src/anchored-edit/served";
 import { withTempFile, setupIntegrationTest, setupParentWrite, getText, extractHash, loadTestStore } from "../support/fixtures";
 import { toCwd } from "../../../src/anchored-edit/paths";
 import { resolveTarget } from "../../../src/anchored-edit/fs-write";
 
 async function servedFor(cwd: string, name: string): Promise<Set<string> | undefined> {
+  const canonical = await resolveTarget(toCwd(name, cwd));
+  const content = await readFile(canonical, "utf-8");
   const store = await loadTestStore(cwd);
   try {
-    return getServed(store, await resolveTarget(toCwd(name, cwd)));
+    const lookup = store.getServedState(canonical, content);
+    return lookup !== undefined && "served" in lookup ? lookup.served : undefined;
   } finally {
     store.release();
   }
@@ -128,7 +130,7 @@ describe("served-state range verification", () => {
     });
   });
 
-  it("tolerates an out-of-range external modification", async () => {
+  it("refuses after an out-of-range external modification until a fresh read, then applies (#264 version-bound authorization)", async () => {
     await withTempFile("sample.ts", "a\nb\nc\nd\n", async ({ cwd, path }) => {
       const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 
@@ -139,9 +141,27 @@ describe("served-state range verification", () => {
 
       await writeFile(path, "A\nb\nc\nd\n", "utf-8");
 
-      const result = await editTool.execute(
+      // Even though the replaced range's lines are unchanged, the served
+      // authorization is bound to the content version it was recorded for:
+      // any external modification invalidates it until a fresh read.
+      const refused = await editTool.execute(
         "e1",
         { path: "sample.ts", remove_from: bHash, remove_to: cHash, replacement_text: "x" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(refused.details.errorCode).toBe("E_RANGE_STALE");
+      expect(getText(refused)).toContain("Nothing was modified");
+      expect(await readFile(path, "utf-8")).toBe("A\nb\nc\nd\n");
+
+      const retry = await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx);
+      const fresh = getText(retry).split("\n");
+      const freshB = extractHash(fresh.find((l: string) => l.includes("│b"))!);
+      const freshC = extractHash(fresh.find((l: string) => l.includes("│c"))!);
+      const result = await editTool.execute(
+        "e2",
+        { path: "sample.ts", remove_from: freshB, remove_to: freshC, replacement_text: "x" },
         undefined,
         undefined,
         ctx,

@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { setBannerDisplayDiagnostic } from "../banner";
 import type { ParentAnchoredWrite } from "../anchored-edit/auto-read";
+import { createAnchoredWriteDefinition } from "../anchored-edit/operations";
 import { guardAnchoredRead, initializeAnchoredReadStore, transformAnchoredReadContent } from "../anchored-edit/read-transform";
 import { PARENT_OWNER } from "../anchored-edit/workspace-support";
 import {
@@ -752,13 +753,22 @@ export default function registerDisplayBuiltins(
     const settings = settingsDefinitions(ctx.cwd, ctx);
     diagnostics.push(...settings.diagnostics);
     const anchoredReadEnabled = controller.config?.anchoredEditing?.enabled === true;
+    let anchoredStoreReady = false;
     if (anchoredReadEnabled) {
       try {
         await initializeAnchoredReadStore(ctx.cwd, ctx.sessionManager?.getSessionDir?.() ?? "");
+        anchoredStoreReady = true;
       } catch (error) {
         diagnostics.push(`Anchored read store unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    // The anchored write stays fully inactive until availability is proven at
+    // registration time (store initialized) and stays inactive when a later
+    // ownership check reports a losing `write` (#264): the definition's
+    // execution-entry gate then falls back completely to the plain native
+    // factory, so a half-activated anchored write (locked and store-writing
+    // but not observable as ours) cannot exist.
+    let anchoredWriteActive = false;
     const definitions: GenericDefinition[] = [
       createGrepToolDefinition(ctx.cwd),
       createFindToolDefinition(ctx.cwd),
@@ -768,13 +778,17 @@ export default function registerDisplayBuiltins(
       // factory-faithful (name, parameters, prompt, abort checks, success
       // wording, filesystem error semantics); only the supported filesystem
       // operations are injected so the write enters the same queue-then-lock
-      // boundary as anchored replace and the child writes.
+      // boundary as anchored replace and the child writes. The execution-entry
+      // gate (`anchoredWriteActive`, read at execution time after the
+      // ownership check below) is the one declared exception's sibling: an
+      // unavailable anchored surface selects the plain native write entirely.
       anchoredReadEnabled && parentAnchoredWrite
-        ? createWriteToolDefinition(ctx.cwd, {
-          operations: parentAnchoredWrite.operationsFor(
+        ? createAnchoredWriteDefinition(ctx.cwd, {
+          session: parentAnchoredWrite.attachSession(
             ctx.cwd,
             ctx.sessionManager?.getSessionDir?.() ?? "",
           ),
+          isAvailable: () => anchoredWriteActive,
         })
         : createWriteToolDefinition(ctx.cwd),
       ...settings.definitions,
@@ -788,8 +802,8 @@ export default function registerDisplayBuiltins(
       // the initiating workspace keeps the snapshot/served state and lock area
       // for external targets.
       const readContentTransform = anchoredRead
-        ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string, sessionDir: string) =>
-          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { sessionDir })
+        ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string, sessionDir: string, signal?: AbortSignal) =>
+          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { sessionDir }, signal)
         : undefined;
       pi.registerTool(decorateBuiltinDefinition(
         anchoredRead ? withAnchoredReadGuidelines(definition) : definition,
@@ -806,6 +820,7 @@ export default function registerDisplayBuiltins(
     const anchoredReadAvailable = anchoredReadEnabled
       && names.has("read")
       && !losing.includes("read");
+    anchoredWriteActive = anchoredStoreReady && !losing.includes("write");
     const restoredActive = anchoredReadAvailable
       ? activeToolBaseline.filter((name) => name !== "edit")
       : [...activeToolBaseline];

@@ -232,7 +232,7 @@ describe("anchored replace tool — robustness", () => {
       const hashes = await lineHashes("aaa\nbbb\nccc\n");
       const hashStore = await import("../../../src/anchored-edit/hash-store");
       const spy = vi
-        .spyOn(hashStore, "publishMutation")
+        .spyOn(hashStore.__testables.HashStoreHandleImpl.prototype, "publishMutation")
         .mockImplementation(() => {
           throw new Error("store down");
         });

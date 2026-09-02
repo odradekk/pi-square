@@ -79,8 +79,7 @@ export async function resolveTarget(path: string): Promise<string> {
  * directory entries.
  */
 async function removeOwnTemp(tempPath: string, identity: FileIdentity): Promise<void> {
-  const fail = (code: string, message: string) => new Error(`[${code}] ${message}`);
-  await unlinkIfSameNode(fail, tempPath, identity, {
+  await unlinkIfSameNode(tempFail, tempPath, identity, {
     escaped: "E_TEMP_INVALID",
     invalid: "E_TEMP_INVALID",
   }).catch(() => {});

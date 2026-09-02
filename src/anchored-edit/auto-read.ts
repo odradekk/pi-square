@@ -1,4 +1,4 @@
-import type { AgentToolResult, ExtensionAPI, WriteOperations } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PiSquareConfig } from "../core/config.ts";
 import { resolveAnchoredTarget, type AnchoredWriteSession, createAnchoredWriteSession } from "./operations.ts";
 import { isRec } from "./utils.ts";
@@ -31,9 +31,10 @@ function append(content: AgentToolResult<unknown>["content"], text: string): { c
  * target boundary, so the result observer no longer participates in it.
  */
 export interface ParentAnchoredWrite {
-  /** Attaches the session context and returns the operations for the
-   *  registered parent write definition. */
-  operationsFor(cwd: string, sessionDir: string): WriteOperations;
+  /** Attaches a fresh write session for the session context and returns it;
+   *  the registered parent write definition is built from it through
+   *  `createAnchoredWriteDefinition`. */
+  attachSession(cwd: string, sessionDir: string): AnchoredWriteSession;
   /** The currently attached session, if any. */
   current(): AnchoredWriteSession | undefined;
 }
@@ -41,14 +42,14 @@ export interface ParentAnchoredWrite {
 export function createParentAnchoredWrite(config: () => PiSquareConfig): ParentAnchoredWrite {
   let session: AnchoredWriteSession | undefined;
   return {
-    operationsFor(cwd: string, sessionDir: string): WriteOperations {
+    attachSession(cwd: string, sessionDir: string): AnchoredWriteSession {
       session = createAnchoredWriteSession({
         cwd,
         owner: PARENT_OWNER,
         sessionDir,
         autoRead: () => config().anchoredEditing.autoRead,
       });
-      return session.operations;
+      return session;
     },
     current(): AnchoredWriteSession | undefined {
       return session;

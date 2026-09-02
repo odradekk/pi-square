@@ -7,7 +7,7 @@ import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const { createParentAnchoredWrite, registerAnchoredAutoRead } = await load("../../src/anchored-edit/auto-read.ts");
-const { createWriteToolDefinition } = await load("@earendil-works/pi-coding-agent");
+const { createAnchoredWriteDefinition } = await load("../../src/anchored-edit/operations.ts");
 const { transformAnchoredReadContent } = await load("../../src/anchored-edit/read-transform.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 
@@ -42,8 +42,9 @@ try {
   const config = () => ({ anchoredEditing: { enabled: true, autoRead: true } });
   const parentWrite = createParentAnchoredWrite(config);
   registerAnchoredAutoRead(pi, config, () => true, parentWrite);
-  const writeDefinition = createWriteToolDefinition(workspace, {
-    operations: parentWrite.operationsFor(workspace, sessionDir),
+  const writeDefinition = createAnchoredWriteDefinition(workspace, {
+    session: parentWrite.attachSession(workspace, sessionDir),
+    isAvailable: () => true,
   });
 
   const runWrite = async (toolCallId, input) => {
@@ -159,8 +160,9 @@ try {
     const plainConfig = () => ({ anchoredEditing: { enabled: true, autoRead: false } });
     const plainParentWrite = createParentAnchoredWrite(plainConfig);
     registerAnchoredAutoRead(plainPi, plainConfig, () => true, plainParentWrite);
-    const plainWrite = createWriteToolDefinition(workspace, {
-      operations: plainParentWrite.operationsFor(workspace, sessionDir),
+    const plainWrite = createAnchoredWriteDefinition(workspace, {
+      session: plainParentWrite.attachSession(workspace, sessionDir),
+      isAvailable: () => true,
     });
 
     const clearedExternal = join(root, "outside-cleared.txt");
@@ -264,8 +266,9 @@ try {
     const offConfig = () => ({ anchoredEditing: { enabled: true, autoRead: false } });
     const offParentWrite = createParentAnchoredWrite(offConfig);
     registerAnchoredAutoRead(plainPi2, offConfig, () => true, offParentWrite);
-    const offWrite = createWriteToolDefinition(workspace, {
-      operations: offParentWrite.operationsFor(workspace, sessionDir),
+    const offWrite = createAnchoredWriteDefinition(workspace, {
+      session: offParentWrite.attachSession(workspace, sessionDir),
+      isAvailable: () => true,
     });
     for (const handler of plainEvents2.get("tool_call") ?? []) {
       await handler({ toolName: "write", toolCallId: "write-disabled", input: { path: "source.txt", content: "disabled\n" } }, sessionCtx);

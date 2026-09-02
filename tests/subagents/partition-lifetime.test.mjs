@@ -10,9 +10,7 @@ const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/chil
 const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
-const { getServed, recordServed } = await load("../../src/anchored-edit/served.ts");
 const {
-  listOwnerPartitions,
   shutdownHashStore,
 } = await load("../../src/anchored-edit/hash-store.ts");
 const {
@@ -46,7 +44,7 @@ function sleep(ms) {
 async function childOwners() {
   const store = await openStore(PARENT_OWNER);
   try {
-    return listOwnerPartitions(store)
+    return store.listOwners()
       .filter((p) => p.owner !== PARENT_OWNER)
       .map((p) => p.owner);
   } finally {
@@ -57,7 +55,8 @@ async function childOwners() {
 async function ownerHasServed(owner, path) {
   const store = await openStore(owner);
   try {
-    return Boolean(getServed(store, path));
+    const lookup = store.getServedState(path, readFileSync(path, "utf8"));
+    return lookup !== undefined && "served" in lookup;
   } finally {
     store.release();
   }
@@ -130,7 +129,7 @@ try {
     const store = await openStore(owner);
     try {
       store.upsertSnapshot(file, "checksum", 1, [`AAA`]);
-      recordServed(store, file, ["AAA"]);
+      store.mergeServed(file, ["AAA"], "one\n");
     } finally {
       store.release();
     }
@@ -154,9 +153,9 @@ try {
     const store = await openStore(owner);
     try {
       store.upsertSnapshot(alive, "checksum-alive", 1, ["BBB"]);
-      recordServed(store, alive, ["BBB"]);
+      store.mergeServed(alive, ["BBB"], "alive\n");
       store.upsertSnapshot(join(workspace, "gone.txt"), "checksum-gone", 1, ["CCC"]);
-      recordServed(store, join(workspace, "gone.txt"), ["CCC"]);
+      store.mergeServed(join(workspace, "gone.txt"), ["CCC"], "gone\n");
     } finally {
       store.release();
     }
@@ -165,9 +164,9 @@ try {
   for (const owner of [PARENT_OWNER, CHILD_ONE]) {
     const store = await openStore(owner);
     try {
-      const served = getServed(store, alive);
-      const goneServed = getServed(store, join(workspace, "gone.txt"));
-      assert.ok(served && served.has("BBB"), `existing-file records survive pruning for ${owner}`);
+      const served = store.getServedState(alive, "alive\n");
+      const goneServed = store.getServedState(join(workspace, "gone.txt"), "gone\n");
+      assert.ok(served && "served" in served && served.served.has("BBB"), `existing-file records survive pruning for ${owner}`);
       assert.equal(goneServed, undefined, `missing-file records are pruned for ${owner}`);
     } finally {
       store.release();
@@ -187,7 +186,7 @@ try {
     const delId = createSubagentId();
     const seedStore = await openStore(delId);
     try {
-      recordServed(seedStore, source, ["DDD"]);
+      seedStore.mergeServed(source, ["DDD"], "alpha\nBETA2\ndelta\n");
     } finally {
       seedStore.release();
     }

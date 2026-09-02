@@ -105,6 +105,7 @@ export async function transformAnchoredReadContent(
   cwd: string,
   owner: string = PARENT_OWNER,
   options: AnchoredReadPathOptions = {},
+  signal?: AbortSignal,
 ): Promise<ReadModelContent> {
   const params = readParams(value);
   if (!params) return content;
@@ -117,6 +118,7 @@ export async function transformAnchoredReadContent(
       ...(params.limit !== undefined ? { limit: params.limit } : {}),
       owner,
       sessionDir: options.sessionDir,
+      signal,
     });
     if (result.status === "passthrough") return content;
     if (result.status === "locked") return textContent(result.message);

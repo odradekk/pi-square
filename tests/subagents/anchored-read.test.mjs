@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -11,7 +11,11 @@ const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/chil
 const { transformAnchoredReadContent } = await load("../../src/anchored-edit/read-transform.ts");
 const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
-const { getServed, recordServed } = await load("../../src/anchored-edit/served.ts");
+function servedLookup(store, path, content) {
+  const lookup = store.getServedState(path, content);
+  return lookup !== undefined && "served" in lookup ? lookup.served : undefined;
+}
+
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 const { __testables } = await load("../../src/subagents/session.ts");
 
@@ -150,11 +154,11 @@ try {
   // same anchors in their own partitions — isolation is per-partition, not
   // per-anchor secrecy.)
   {
-    const childServed = getServed(await openStore(CHILD_ONE), realpathSync(join(root, "outside.txt")));
+    const childServed = servedLookup(await openStore(CHILD_ONE), realpathSync(join(root, "outside.txt")), readFileSync(join(root, "outside.txt"), "utf8"));
     assert.ok(childServed && childServed.size > 0, "the child's external read records served rows under the child owner");
     writeFileSync(join(root, "child-only.txt"), "child only\nsecond");
     await childRead.execute("child-only", { path: "../child-only.txt" }, undefined, undefined, { cwd: workspace });
-    const parentOfChildOnly = getServed(await openStore(PARENT_OWNER), realpathSync(join(root, "child-only.txt")));
+    const parentOfChildOnly = servedLookup(await openStore(PARENT_OWNER), realpathSync(join(root, "child-only.txt")), "child only\nsecond");
     assert.equal(parentOfChildOnly, undefined, "a file only the child read has no served rows under the parent owner");
   }
 
@@ -165,21 +169,25 @@ try {
   // Served rows are recorded under the child's own owner in the shared store,
   // and each owner's partition never mixes with another's.
   assert.ok(
-    getServed(await openStore(CHILD_ONE), source),
+    servedLookup(await openStore(CHILD_ONE), source, "first\nmiddle\nlast\n"),
     "the child read records served rows under the child owner",
   );
   const secondChild = createChildAnchoredReadTool(workspace, CHILD_TWO, sessionDir);
   await secondChild.execute("child-two", { path: "source.txt" }, undefined, undefined, { cwd: workspace });
   assert.ok(
-    getServed(await openStore(CHILD_TWO), source),
+    servedLookup(await openStore(CHILD_TWO), source, "first\nmiddle\nlast\n"),
     "the second child records its own served rows",
   );
 
   // A write into one owner's partition never leaks into another owner's.
-  await recordServed(await openStore(CHILD_TWO), source, ["aaa"]);
+  {
+    const seed = await openStore(CHILD_TWO);
+    seed.mergeServed(source, ["aaa"], "first\nmiddle\nlast\n");
+    seed.release();
+  }
   assert.ok(
-    getServed(await openStore(CHILD_ONE), source)
-      && !getServed(await openStore(CHILD_ONE), source).has("aaa"),
+    servedLookup(await openStore(CHILD_ONE), source, "first\nmiddle\nlast\n")
+      && !servedLookup(await openStore(CHILD_ONE), source, "first\nmiddle\nlast\n").has("aaa"),
     "a second child's served write stays in its own partition",
   );
 

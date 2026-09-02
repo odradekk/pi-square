@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { applyEdit, resEdit, type HEdit } from "../../../src/anchored-edit/hashline";
 
 describe("range resolution runs once (#264)", () => {
-  it("a successful boundary-dup correction resolves the anchors exactly once", () => {
+  it("a successful boundary-dup correction resolves the anchors exactly once", async () => {
+    const { __resolveOnceProbe } = await import("../../../src/anchored-edit/hashline/resolve");
     const content = "a\nb\nc\nd\ne\n";
     // A trailing duplicate that triggers boundary autocorrection: the last new
     // line duplicates the line after the replaced range.
@@ -11,24 +12,19 @@ describe("range resolution runs once (#264)", () => {
       remove_to: "bBb",
       replacement_text: "B\nc",
     });
-    // Count every integer-keyed read of the hashes array. The pre-refactor
-    // applyEdit resolved the same anchors twice on the boundary-dup path
-    // (valEdit before and after correction): swapReversedRanges (N) +
-    // stripBarePrefixes (N) + valEdit (N) + valEdit again (N) = 4N. One
-    // resolution reads exactly 3N.
-    let reads = 0;
     const hashes = ["aAa", "bBb", "cCc", "dDd", "eEe"];
-    const countedHashes = new Proxy(hashes, {
-      get(target, prop, receiver) {
-        if (typeof prop === "string" && /^\d+$/.test(prop)) reads += 1;
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-    const result = applyEdit(content, edit, undefined, countedHashes);
-    expect(result.autoFixes?.length).toBe(1);
-    expect(result.content).toBe("a\nB\nc\nd\ne\n");
-    const n = hashes.length;
-    expect(reads).toBe(3 * n);
+    let resolutions = 0;
+    __resolveOnceProbe.push(() => { resolutions += 1; });
+    try {
+      const result = applyEdit(content, edit, undefined, hashes);
+      expect(result.autoFixes?.length).toBe(1);
+      expect(result.content).toBe("a\nB\nc\nd\ne\n");
+      // One resolution pass: the pre-refactor applyEdit re-resolved the same
+      // anchors after correcting boundary duplicates.
+      expect(resolutions).toBe(1);
+    } finally {
+      __resolveOnceProbe.length = 0;
+    }
   });
 
   it("the discriminated resolution cannot represent the impossible optional states", async () => {
