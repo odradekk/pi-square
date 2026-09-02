@@ -1,7 +1,8 @@
 import { boundedErrorText, realTransport } from "./transport.mjs";
 
 /**
- * The credentialed provider-cache experiment adapter (#248, executed by #227).
+ * The credentialed provider-cache experiment adapter (#248, executed by #227;
+ * breakpoint placement re-modeled by #268).
  *
  * It implements the adapter contract validated by
  * `tests/context-memory/cache-experiment/runner.mjs` — `{ id, describePins(),
@@ -16,15 +17,17 @@ import { boundedErrorText, realTransport } from "./transport.mjs";
  *   timestamps, ids, or nonce-shaped fields are injected anywhere, so equal
  *   canonical payload prefixes produce equal wire prefixes and the provider's
  *   cache can only ever see the variability the fixture intends.
- * - The cache breakpoint is placed exactly at `request.cacheControl.coveredBytes`
- *   — the content block containing that byte offset carries
- *   `cache_control: {type: "ephemeral"}` and nothing else does. Caching is
- *   matched at content-block boundaries, so the summary block (whose end the
- *   fixture pins as the breakpoint) is always one whole block. When the
- *   reconstructed conversation ends with an assistant turn — every probe
- *   tail does — one fixed user continuation closes it, because claude-sonnet-5
- *   rejects assistant message prefill; that constant turn sits entirely after
- *   the breakpoint and never varies per request.
+ * - The cache breakpoints are placed exactly where Pi's anthropic-messages
+ *   converter places them (Pi 0.84.2,
+ *   `@earendil-works/pi-ai/dist/api/anthropic-messages.js`): one on the
+ *   system block, one on the last immediate tool, and one on the last block
+ *   of the last user message. The carried summary is one text block, as Pi
+ *   renders a compactionSummary (`@earendil-works/pi-coding-agent/dist/core/messages.js`),
+ *   and it carries no breakpoint of its own — so a request whose summary
+ *   changed can only fall back to the tools boundary, which is the property
+ *   the fixture's negative control exists to expose. `describePins()`
+ *   records the placement as "mirrors Pi's anthropic-messages placement" with
+ *   the three positions named.
  * - `temperature` is omitted although the pinned settings carry 0:
  *   `claude-sonnet-5` rejects `temperature` (issue #248's probed facts), so
  *   the pinned settings cannot be fully applied on any model that caches.
@@ -63,9 +66,9 @@ const MAX_OUTPUT_TOKENS = 512;
  * ends with an assistant turn: claude-sonnet-5 rejects assistant message
  * prefill ("The conversation must end with a user message"), and every probe
  * tail ends with the release-notes assistant turn. The text is a constant by
- * construction — it sits entirely after the cache breakpoint (the summary's
- * end), so it cannot perturb any measured byte, and it must never vary per
- * request.
+ * construction and never varies per request; as the closing user turn it is
+ * the block that carries the tail breakpoint, exactly as a closing user turn
+ * does in a real Pi conversation.
  */
 export const PREFILL_CONTINUATION_USER_TEXT = "Continue.";
 const REPORT_STRING_MAX = 240;
@@ -91,6 +94,14 @@ const SETTINGS_OMISSIONS = [
 const PRICE_NOTE =
   "cost from the adapter's declared estimated price table (USD/MTok in/out/cache-read/cache-write 3/15/0.3/3.75); not provider-measured";
 
+/**
+ * The pinned breakpoint placement, declared in the adapter's pins and copied
+ * into the report: the three positions Pi's anthropic-messages converter sets
+ * (Pi 0.84.2, `@earendil-works/pi-ai/dist/api/anthropic-messages.js`).
+ */
+const BREAKPOINT_PLACEMENT =
+  "mirrors Pi's anthropic-messages placement: system blocks, last immediate tool, last block of the last user message";
+
 function roundCost(value) {
   return Math.round(value * 1e6) / 1e6;
 }
@@ -114,10 +125,11 @@ function tailMessageOf(text) {
 
 /**
  * Reconstructs one Claude Messages request from the canonical payload. Pure:
- * the same table plus the same breakpoint always produce the same request
- * body, and no per-request variability is injected before (or after) the
- * breakpoint. Returns the serializable body plus the block that carries the
- * cache breakpoint.
+ * the same table always produces the same request body, and no per-request
+ * variability is injected anywhere. Returns the serializable body plus the
+ * three blocks that carry the cache breakpoints, in placement order: the
+ * system block, the last immediate tool, and the last block of the last user
+ * message — exactly where Pi's anthropic-messages converter places them.
  */
 export function buildClaudeCacheRequest(request) {
   const payload = request.payload;
@@ -126,7 +138,6 @@ export function buildClaudeCacheRequest(request) {
   let system = null;
   let tools = null;
   const messages = [];
-  const blockByElement = new Map();
   for (const segment of payload.table) {
     if (segment.element === "system") {
       system = contentOf(segment);
@@ -137,16 +148,12 @@ export function buildClaudeCacheRequest(request) {
         input_schema: tool.inputSchema,
       }));
     } else if (segment.element === "summary") {
-      const block = { type: "text", text: contentOf(segment) };
-      messages.push({ role: "user", content: [block] });
-      blockByElement.set(segment.element, block);
+      messages.push({ role: "user", content: [{ type: "text", text: contentOf(segment) }] });
     } else if (segment.element.startsWith("message-")) {
       const message = tailMessageOf(contentOf(segment));
       // One text block per tail message keeps caching matched at the same
       // boundaries the canonical bytes describe.
-      const block = { type: "text", text: message.content };
-      messages.push({ role: message.role, content: [block] });
-      blockByElement.set(segment.element, block);
+      messages.push({ role: message.role, content: [{ type: "text", text: message.content }] });
     }
   }
 
@@ -157,26 +164,32 @@ export function buildClaudeCacheRequest(request) {
     messages.push({ role: "user", content: [{ type: "text", text: PREFILL_CONTINUATION_USER_TEXT }] });
   }
 
-  const covered = request.cacheControl.coveredBytes;
-  // The breakpoint's owning segment: the fixture pins coveredBytes at the end
-  // of the summary segment, so prefer the segment that ends exactly there;
-  // fall back to the segment containing the offset for any other boundary.
-  const owner =
-    payload.table.find((segment) => segment.end === covered)
-    ?? payload.table.find((segment) => covered >= segment.start && covered < segment.end);
-  const breakpointBlock = owner ? blockByElement.get(owner.element) : undefined;
-  if (breakpointBlock) breakpointBlock.cache_control = { type: "ephemeral" };
+  // Breakpoint 1 of 3, the system blocks: the system prompt becomes one text
+  // block carrying cache_control, exactly as Pi sends it.
+  const systemBlock = system === null ? null : { type: "text", text: system, cache_control: { type: "ephemeral" } };
+  // Breakpoint 2 of 3, the last immediate tool.
+  if (tools !== null && tools.length > 0) {
+    tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+  }
+  // Breakpoint 3 of 3, the last block of the last user message. The
+  // reconstruction always ends with a user turn (the tool row for primes, the
+  // fixed continuation for probes), as every Pi conversation does.
+  const lastMessage = messages[messages.length - 1];
+  const tailBlock = Array.isArray(lastMessage?.content) ? lastMessage.content[lastMessage.content.length - 1] : undefined;
+  if (tailBlock && (tailBlock.type === "text" || tailBlock.type === "image" || tailBlock.type === "tool_result")) {
+    tailBlock.cache_control = { type: "ephemeral" };
+  }
 
   return {
     body: {
       model: MODEL,
       max_tokens: MAX_OUTPUT_TOKENS,
-      system,
+      system: systemBlock === null ? undefined : [systemBlock],
       messages,
-      tools,
+      tools: tools === null ? undefined : tools,
       stream: true,
     },
-    breakpointBlock,
+    breakpointBlocks: [systemBlock, tools?.at(-1) ?? null, tailBlock?.cache_control ? tailBlock : null],
   };
 }
 
@@ -310,6 +323,7 @@ export function createCacheProviderAdapter(options = {}) {
       model: MODEL,
       cacheReporting: "reported",
       retentionBuckets: ["5m", "1h"],
+      breakpointPlacement: BREAKPOINT_PLACEMENT,
       settingsOmissions: SETTINGS_OMISSIONS,
       priceNote: boundedString(PRICE_NOTE, PRICE_NOTE_MAX),
     }),

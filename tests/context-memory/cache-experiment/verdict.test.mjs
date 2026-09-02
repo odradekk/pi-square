@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  COST_DERIVATION_NOTE,
   DENOMINATOR_NOTE,
+  DIRECTION_NOTES,
+  DERIVED_FIGURES,
   FORBIDDEN_CLAIM_PHRASES,
   HIT_RATE_AGGREGATION,
   HIT_RATE_DEFINITION,
@@ -14,17 +17,20 @@ import {
   compareNative,
   evaluateRun,
   median,
+  nativeMedians,
   rateDifferenceAtLeast,
   withinTtl,
 } from "./verdict.mjs";
 
 /**
  * Verdict-rule coverage for the provider-cache experiment (#225, standard
- * re-pinned by #260). Every branch is driven with constructed evidence — no
- * provider, no credentials — because the rules, not the plumbing, are the
- * deliverable: ambiguous or dead evidence is inconclusive, never a miss and
- * never a pass, the non-regression band is exercised exactly at its edge, the
- * liveness control is exercised at its margin, and the pinned hit-rate
+ * re-pinned by #260, directions re-modeled by #268). Every branch is driven
+ * with constructed evidence — no provider, no credentials — because the
+ * rules, not the plumbing, are the deliverable: ambiguous or dead evidence is
+ * inconclusive, never a miss and never a pass, the non-regression band is
+ * exercised exactly at its edge, the liveness control is exercised at its
+ * margin, the counted directions are proven independent (a derived cost move
+ * can never fire the regression rule alone), and the pinned hit-rate
  * aggregation is proven to sum first and divide once.
  */
 
@@ -364,11 +370,12 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   assert.equal(rateDifferenceAtLeast(a, a, 0), true);
 }
 
-// ─── native comparison and the regression rule (unchanged #225) ─────
+// ─── native comparison and the regression rule (#225, directions #268) ──
 
 {
-  // Direction computation: stable loses input tokens, write spend, and cost,
-  // wins TTFT; an unmeasured TTFT is unreported, never a direction.
+  // Direction computation: stable loses input tokens and write spend, wins
+  // TTFT; cost moves with the token counts and is reported as derived, never
+  // counted. Two of three counted directions are worse: a regression.
   const group = makeGroup(1, {
     rows: {
       native: { probe: { inputTokens: 80, cost: 0.0005, cacheWrite: 50 } },
@@ -376,9 +383,30 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   });
   const comparison = compareNative(group);
   assert.equal(comparison.evaluated, true);
-  assert.deepEqual(comparison.worseDirections.sort(), ["cost", "inputTokens", "writeSpend"]);
+  assert.deepEqual(comparison.worseDirections.sort(), ["inputTokens", "writeSpend"]);
+  assert.equal(comparison.derived.cost, "worse", "cost is reported as a derived figure");
   assert.equal(comparison.directions.ttft, "better", "160ms versus the default 300ms native probe");
   assert.equal(comparison.multiDirectionRegression, true);
+}
+
+{
+  // #268 defect 2: writeSpend worse with cost moving in lockstep (it derives
+  // from the token counts) and every other counted direction equal. Under the
+  // old four-direction rule this fired the two-direction threshold from one
+  // real movement; it must not fire now.
+  const group = makeGroup(1, {
+    rows: {
+      native: { prime: { cacheWrite: 600 }, probe: { cacheWrite: 0, inputTokens: 100, ttftMs: 160, cost: 0.0005 } },
+      stable: { probe: { inputTokens: 100, ttftMs: 160 } },
+    },
+  });
+  const comparison = compareNative(group);
+  assert.equal(comparison.directions.inputTokens, "equal");
+  assert.equal(comparison.directions.writeSpend, "worse", "700+100 written versus 600+0");
+  assert.equal(comparison.directions.ttft, "equal");
+  assert.equal(comparison.derived.cost, "worse", "the derived figure moves in lockstep with the token counts");
+  assert.deepEqual(comparison.worseDirections, ["writeSpend"], "the lockstep cost figure is not counted beside it");
+  assert.equal(comparison.multiDirectionRegression, false, "one independent worse direction is not a multi-direction regression");
 }
 
 {
@@ -387,9 +415,10 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   const group = makeGroup(1, { rows: { native: { probe: { inputTokens: 80, cost: 0.0005, cacheWrite: 50, ttftMs: null } } } });
   const comparison = compareNative(group);
   assert.equal(comparison.directions.ttft, "unreported");
-  assert.deepEqual(comparison.worseDirections.sort(), ["cost", "inputTokens", "writeSpend"]);
+  assert.deepEqual(comparison.worseDirections.sort(), ["inputTokens", "writeSpend"]);
   assert.equal(comparison.multiDirectionRegression, true, "two-plus measured worse directions still suffice");
 }
+
 
 {
   // An absent native cache report makes the comparison unevaluated.
@@ -400,7 +429,8 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
 }
 
 {
-  // Clear regression: four of five groups regress in three directions each.
+  // Clear regression: four of five groups regress in two counted directions
+  // each (uncached input and TTFT), with the derived cost moving along.
   const verdict = run(fiveGroups((n) => (n <= 4 ? { rows: { native: { probe: { inputTokens: 80, cost: 0.0005, ttftMs: 120 } } } } : {})));
   assert.equal(verdict.cacheConclusion, "positive", "the cache standard still passes on its own axis");
   assert.equal(verdict.conclusion, "regression", "the regression rule overrides the final label");
@@ -425,7 +455,15 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
       || group.nativeComparison.multiDirectionRegression,
     );
   }
-  assert.equal(NATIVE_DIRECTIONS.length, 4);
+  assert.deepEqual(NATIVE_DIRECTIONS, ["inputTokens", "writeSpend", "ttft"], "only independent directions are counted");
+  assert.deepEqual(DERIVED_FIGURES, ["cost"]);
+  assert.ok(!("cost" in DIRECTION_NOTES), "the derived figure carries no direction note");
+  for (const note of Object.values(DIRECTION_NOTES)) {
+    assert.ok(note.includes("independent"), "each note states why its direction is independent");
+    assert.ok(note.length <= 240 && note.length > 0, `direction notes stay bounded (${note.length} chars)`);
+    for (const phrase of FORBIDDEN_CLAIM_PHRASES) assert.ok(!note.includes(phrase));
+  }
+  assert.ok(COST_DERIVATION_NOTE.includes("never counted as a regression direction"));
 }
 
 // ─── medians ────────────────────────────────────────────────────────
@@ -436,4 +474,18 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   assert.equal(median([]), null);
 }
 
+{
+  // TTFT dispersion alongside the median delta (#268 defect 3): the summary
+  // states the span the per-group deltas cover, so a median delta smaller
+  // than the spread cannot read as a finding. Deltas of −100, 0, +300, +50,
+  // +150 across five groups: median +50, spread 400.
+  const groups = fiveGroups((n) => ({ rows: { native: { probe: { ttftMs: 160 - [-100, 0, 300, 50, 150][n - 1] } } } }));
+  const summary = nativeMedians(run(groups).groups);
+  assert.equal(summary.perDirection.ttft.spreadMs, 400, "max delta minus min delta over the evaluated groups");
+  assert.equal(summary.perDirection.ttft.medianDelta, 50);
+  assert.ok(!("spreadMs" in summary.perDirection.inputTokens), "dispersion is stated for the timing direction");
+  // With fewer than two observed deltas there is no spread to state.
+  const single = [makeGroup(1)];
+  assert.equal(nativeMedians(run(single).groups).perDirection.ttft.spreadMs, null);
+}
 console.log("verdict.test.mjs: all verdict branches passed");

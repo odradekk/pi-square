@@ -1,6 +1,7 @@
 /**
  * Verdict rules for the provider-cache experiment (#225, standard re-pinned by
- * #260, authority #215; measured evidence #251).
+ * #260, directions and liveness re-modeled by #268; authority #215; measured
+ * evidence #251).
  *
  * The experiment measures non-regression, not superiority: the release verdict
  * is forbidden from making any provider-cache claim (#227), so the standard's
@@ -30,21 +31,36 @@
  *   `hitRate(native) − 5 percentage points`. Pi native is the baseline, and
  *   the band claims no benefit — it only rules out a loss.
  * - Liveness: the `nonce` control must sit measurably below the arm under
- *   test. Its prefix diverges at the earliest block, so it can legitimately
- *   reuse no more than the append-only stable arm; a run where it does not is
- *   a run whose cache reads do not track content — the #251 signature, where
+ *   test. The measured case is the between-compaction request (#268): the
+ *   stable arm's carried summary is unchanged between its pair's requests
+ *   while its tail grows, so its probe reads through the previous request's
+ *   tail breakpoint; the nonce arm's summary diverges inside the earliest
+ *   block, so its probe falls back to the tools boundary. A run where the
+ *   nonce rate does not sit at least the margin below the stable rate is a
+ *   run whose cache reads do not track content — the #251 signature, where
  *   every probe read the same constant regardless of arm. Such a run is
  *   inconclusive: the measurement is dead, which is neither a pass (nothing
  *   regressed) nor a miss. The control is measured against `stable`, not
- *   against the native baseline: the native arm's regenerated summary
- *   diverges at its head, so by construction the nonce arm can never sit
- *   below the native rate, and a nonce-versus-native rule could not hold in
- *   any honest measurement.
+ *   against the native baseline: in the between-compaction case the native
+ *   arm's summary is unchanged too, so its read structure matches the stable
+ *   arm's and a nonce-versus-native rule could not separate in any honest
+ *   measurement either.
  * - A run in which no arm records any cache activity at all is inconclusive:
  *   a rate computed from nothing is not a rate.
  *
- * The Pi-native comparison and the four-of-five multi-direction regression
- * rule are unchanged from #225 and evaluated independently; firing the
+ * The regression rule (#268 defect 2): only directions that can move
+ * independently are counted — `inputTokens` (provider-reported uncached
+ * input), `writeSpend` (provider-reported cache-creation tokens), and `ttft`
+ * (locally measured time to first token). `cost` is computed from those token
+ * counts through the adapter's declared price table, so it moves in lockstep
+ * with them and is reported as a derived figure, never counted as a
+ * direction; counting it beside `writeSpend` made the two-direction threshold
+ * a one-direction threshold. `DIRECTION_NOTES` states, for each counted
+ * direction, what it measures and why it is independent of the others; the
+ * report restates them verbatim.
+ *
+ * The Pi-native comparison and the repeated multi-direction regression rule
+ * are otherwise unchanged from #225 and evaluated independently; firing the
  * regression rule still overrides the final label while the cache conclusion
  * stays visible beside it. No statistical significance and no
  * provider-neutral superiority is claimed anywhere.
@@ -52,7 +68,22 @@
 
 export const REGRESSION_GROUP_THRESHOLD = 4;
 export const REGRESSION_DIRECTION_THRESHOLD = 2;
-export const NATIVE_DIRECTIONS = ["inputTokens", "writeSpend", "cost", "ttft"];
+/** The counted regression directions: only directions that can move independently. */
+export const NATIVE_DIRECTIONS = ["inputTokens", "writeSpend", "ttft"];
+/** Figures computed from the token counts through the price table; never counted as directions. */
+export const DERIVED_FIGURES = ["cost"];
+
+/** What each counted direction measures and why it is independent; restated verbatim in the report. */
+export const DIRECTION_NOTES = Object.freeze({
+  inputTokens: "uncached input tokens as reported by the provider (anthropic usage input_tokens); a wire measurement, independent of the cache buckets and of local timing",
+  writeSpend: "cache-creation tokens as reported by the provider (anthropic cache_creation_input_tokens); a separate usage bucket, independent of the uncached count and of local timing",
+  ttft: "milliseconds to the first streamed token, measured locally by the runner; timing evidence, independent of every token-count direction",
+});
+
+/** Why cost is derived rather than counted; restated verbatim in the report. */
+export const COST_DERIVATION_NOTE =
+  "cost is computed from the token counts through the adapter's declared price table, so it cannot move independently of them: it is reported as a derived figure and never counted as a regression direction";
+
 
 /** The three arms the standard is defined over; pinned by the fixture. */
 const STANDARD_ARMS = ["stable", "nonce", "native"];
@@ -141,10 +172,11 @@ function directionOf(stableValue, nativeValue) {
 }
 
 /**
- * The Pi-native comparison for one group: which of the four measured
- * directions the stable arm lost. Evaluated only when both arms' requests
- * reported cache values; an unmeasured TTFT stays `unreported` rather than
- * counting as any direction.
+ * The Pi-native comparison for one group: which of the counted independent
+ * directions the stable arm lost, plus the derived cost figure reported
+ * beside them. Evaluated only when both arms' requests reported cache
+ * values; an unmeasured TTFT stays `unreported` rather than counting as any
+ * direction.
  */
 export function compareNative(group) {
   const rows = [group.stable.prime, group.stable.probe, group.native.prime, group.native.probe];
@@ -153,6 +185,7 @@ export function compareNative(group) {
       evaluated: false,
       missing: ["cache report absent on the stable or native arm"],
       directions: {},
+      derived: {},
       worseDirections: [],
       multiDirectionRegression: false,
     };
@@ -160,7 +193,6 @@ export function compareNative(group) {
   const directions = {
     inputTokens: directionOf(group.stable.probe.inputTokens, group.native.probe.inputTokens),
     writeSpend: directionOf(armWriteTokens(group.stable), armWriteTokens(group.native)),
-    cost: directionOf(armCost(group.stable), armCost(group.native)),
   };
   if (group.stable.probe.ttftMs == null || group.native.probe.ttftMs == null) {
     directions.ttft = "unreported";
@@ -172,6 +204,7 @@ export function compareNative(group) {
     evaluated: true,
     missing: [],
     directions,
+    derived: { cost: directionOf(armCost(group.stable), armCost(group.native)) },
     worseDirections,
     multiDirectionRegression: worseDirections.length >= REGRESSION_DIRECTION_THRESHOLD,
   };
@@ -187,32 +220,52 @@ export function median(values) {
 
 /**
  * Native comparison summary across the run: per-direction median deltas
- * (stable minus native) and per-arm medians over the evaluated groups.
+ * (stable minus native) over the counted directions, the derived cost figure,
+ * and per-arm medians over the evaluated groups. TTFT additionally carries
+ * its dispersion — the span of the per-group deltas (#268 defect 3): a
+ * median delta smaller than the spread cannot read as a finding, and the
+ * report states both so no reader has to infer it.
  */
 export function nativeMedians(classifiedGroups) {
   const evaluated = classifiedGroups.filter((group) => group.nativeComparison.evaluated);
+  const deltasOf = (direction) => evaluated
+    .map((group) => {
+      if (direction === "inputTokens") return group.stable.probe.inputTokens - group.native.probe.inputTokens;
+      if (direction === "writeSpend") return armWriteTokens(group.stable) - armWriteTokens(group.native);
+      if (group.stable.probe.ttftMs == null || group.native.probe.ttftMs == null) return null;
+      return group.stable.probe.ttftMs - group.native.probe.ttftMs;
+    })
+    .filter((delta) => delta !== null);
+  const summaryOf = (deltas, directionAt) => ({
+    medianDelta: deltas.length > 0 ? Math.round(median(deltas) * 1e6) / 1e6 : null,
+    worse: evaluated.filter((group) => directionAt(group) === "worse").length,
+    better: evaluated.filter((group) => directionAt(group) === "better").length,
+    equal: evaluated.filter((group) => directionAt(group) === "equal").length,
+    unreported: classifiedGroups.length - deltas.length,
+  });
   const perDirection = {};
   for (const direction of NATIVE_DIRECTIONS) {
-    const deltas = evaluated
-      .map((group) => {
-        if (direction === "inputTokens") return group.stable.probe.inputTokens - group.native.probe.inputTokens;
-        if (direction === "writeSpend") return armWriteTokens(group.stable) - armWriteTokens(group.native);
-        if (direction === "cost") return armCost(group.stable) - armCost(group.native);
-        if (group.stable.probe.ttftMs == null || group.native.probe.ttftMs == null) return null;
-        return group.stable.probe.ttftMs - group.native.probe.ttftMs;
-      })
-      .filter((delta) => delta !== null);
-    perDirection[direction] = {
-      medianDelta: deltas.length > 0 ? Math.round(median(deltas) * 1e6) / 1e6 : null,
-      worse: evaluated.filter((group) => group.nativeComparison.directions[direction] === "worse").length,
-      better: evaluated.filter((group) => group.nativeComparison.directions[direction] === "better").length,
-      equal: evaluated.filter((group) => group.nativeComparison.directions[direction] === "equal").length,
-      unreported: classifiedGroups.length - deltas.length,
-    };
+    const deltas = deltasOf(direction);
+    perDirection[direction] = summaryOf(deltas, (group) => group.nativeComparison.directions[direction]);
+    if (direction === "ttft") {
+      // Dispersion alongside the median (#268): the span the observed deltas cover.
+      perDirection[direction].spreadMs = deltas.length >= 2
+        ? Math.round(Math.max(...deltas) - Math.min(...deltas))
+        : null;
+    }
   }
+  const costDeltas = evaluated
+    .map((group) => armCost(group.stable) - armCost(group.native))
+    .filter((delta) => delta !== null);
   return {
     groupsEvaluated: evaluated.length,
     perDirection,
+    derived: {
+      cost: {
+        ...summaryOf(costDeltas, (group) => group.nativeComparison.derived?.cost ?? "unreported"),
+        note: COST_DERIVATION_NOTE,
+      },
+    },
     armMedians: {
       probeInputTokens: {
         stable: median(evaluated.map((group) => group.stable.probe.inputTokens)),
@@ -347,7 +400,7 @@ export function evaluateRun({ groups, integrity }) {
   const fired = groupsRegressed >= REGRESSION_GROUP_THRESHOLD;
   if (fired) {
     reasons.push(
-      `native regression rule fired: ${groupsRegressed} of ${classified.length} groups regressed in at least ${REGRESSION_DIRECTION_THRESHOLD} directions versus Pi native`,
+      `native regression rule fired: ${groupsRegressed} of ${classified.length} groups regressed in at least ${REGRESSION_DIRECTION_THRESHOLD} independent directions versus Pi native`,
     );
   }
 
@@ -367,7 +420,13 @@ export function evaluateRun({ groups, integrity }) {
       livenessSatisfied,
     },
     regression: {
-      rule: `>=${REGRESSION_GROUP_THRESHOLD} of ${classified.length || 5} groups with >=${REGRESSION_DIRECTION_THRESHOLD} worse directions versus Pi native`,
+      rule: `>=${REGRESSION_GROUP_THRESHOLD} of ${classified.length || 5} groups with >=${REGRESSION_DIRECTION_THRESHOLD} worse independent directions versus Pi native`,
+      directions: {
+        counted: NATIVE_DIRECTIONS,
+        notes: DIRECTION_NOTES,
+        derivedFigures: DERIVED_FIGURES,
+        derivedNote: COST_DERIVATION_NOTE,
+      },
       groupsEvaluated: evaluatedNative.length,
       groupsRegressed,
       fired,
