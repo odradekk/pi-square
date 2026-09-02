@@ -3,17 +3,31 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, GROUP_COUNT, MARKER, REQUEST_ORDER, SYSTEM_PROMPT, fixtureDigest } from "./fixture.mjs";
+import {
+  ARMS,
+  COVERED_PREFIX_FLOOR_TOKENS,
+  GROUP_COUNT,
+  MARKER,
+  MEASURED_CACHEABLE_PREFIX_TOKENS,
+  REQUEST_ORDER,
+  SYSTEM_PROMPT,
+  appendedBlock,
+  baseBlocks,
+  composeRequest,
+  fixtureDigest,
+} from "./fixture.mjs";
+import { estimateTokens } from "./evidence.mjs";
 import { fakeClock, simulatedCacheAdapter } from "./fake-provider.mjs";
 import { classifyDivergenceBoundary, findReportLeaks, runExperiment } from "./runner.mjs";
-import { FORBIDDEN_CLAIM_PHRASES, FRAMING_DISCLAIMER } from "./verdict.mjs";
+import { DENOMINATOR_NOTE, FORBIDDEN_CLAIM_PHRASES, FRAMING_DISCLAIMER, HIT_RATE_DEFINITION, LIVENESS_MARGIN_PP, NON_REGRESSION_BAND_PP } from "./verdict.mjs";
 
 /**
- * End-to-end dry-run coverage for the provider-cache experiment (#225): the
- * full harness runs against the simulated prefix-cache adapter with a fake
- * clock, proving the pinned experiment shape, the recorded evidence, run
- * integrity, determinism, report privacy, and the command-line surface —
- * without credentials and without any real provider call.
+ * End-to-end dry-run coverage for the provider-cache experiment (#225,
+ * standard re-pinned by #260): the full harness runs against the simulated
+ * prefix-cache adapter with a fake clock, proving the pinned experiment
+ * shape and fixture scale, the recorded evidence, run integrity, the
+ * non-regression verdict, determinism, report privacy, and the command-line
+ * surface — without credentials and without any real provider call.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -35,10 +49,44 @@ async function dryRun() {
   assert.equal(exitCode, 0);
   assert.equal(report.totals.groups, GROUP_COUNT);
   assert.equal(report.totals.requests, GROUP_COUNT * REQUEST_ORDER.length, "five interleaved paired groups over three arms");
-  assert.equal(report.criteria.measurableGroups, GROUP_COUNT);
-  assert.ok(report.criteria.nonZeroEvidenceGroups >= 3);
-  assert.ok(report.criteria.reuseAboveControlGroups >= 3);
   assert.equal(report.regression.fired, false);
+}
+
+// ─── the fixture is large enough for the measurement to exist ───────
+
+{
+  // #260/#251: the measured gateway caches nothing below a minimum
+  // cacheable prefix near 1024 tokens, and the pre-enlargement fixture's
+  // breakpoint sat near 487 tokens — too small to cache, so no rate could be
+  // computed. Every composed request's covered prefix (through the end of
+  // the carried summary, the pinned breakpoint) must now clear the pinned
+  // floor, which is twice the measured floor: margin above it, never to it.
+  assert.equal(COVERED_PREFIX_FLOOR_TOKENS, 2 * MEASURED_CACHEABLE_PREFIX_TOKENS, "the floor target is twice the measured floor");
+  let smallest = Infinity;
+  for (let group = 1; group <= GROUP_COUNT; group += 1) {
+    for (const step of REQUEST_ORDER) {
+      const [arm, role] = step.split(".");
+      const { payload, layout } = composeRequest({ group, arm, role });
+      const coveredTokens = estimateTokens(layout.summary.end);
+      smallest = Math.min(smallest, coveredTokens);
+      assert.ok(
+        coveredTokens >= COVERED_PREFIX_FLOOR_TOKENS,
+        `${arm}.${role} covers ${coveredTokens} tokens, below the ${COVERED_PREFIX_FLOOR_TOKENS}-token floor`,
+      );
+      assert.ok(coveredTokens <= payload.bytes.length);
+      // The padding stays disciplined: no 64+ repeated character run ever
+      // enters a payload, so a leaked body stays detectable.
+      assert.ok(!/(.)\1{63}/.test(payload.bytes.toString("utf8")));
+    }
+  }
+  assert.ok(smallest > COVERED_PREFIX_FLOOR_TOKENS, "the smallest covered prefix clears the floor with headroom, not exactly at it");
+  // Block bodies stay well inside the production 16-KiB Memory block bound.
+  for (let group = 1; group <= GROUP_COUNT; group += 1) {
+    for (const body of [...baseBlocks(group), appendedBlock(group)]) {
+      assert.ok(Buffer.byteLength(body, "utf8") < 16 * 1024);
+      assert.ok(body.length > 1000, "each carried block is a substantive enlarged body");
+    }
+  }
 }
 
 // ─── per-arm divergence boundaries and prefix evidence ──────────────
@@ -50,7 +98,7 @@ async function dryRun() {
     assert.equal(group.stable.probe.divergenceBoundary, "after-stable-blocks",
       "the stable probe diverges only after the previously carried blocks");
     assert.equal(group.nonce.probe.divergenceBoundary, "memory-block-1",
-      "the negative control diverges inside the earliest block");
+      "the liveness control diverges inside the earliest block");
     assert.equal(group.native.probe.divergenceBoundary, "native-summary",
       "the native baseline diverges inside the regenerated summary");
     assert.ok(
@@ -76,8 +124,6 @@ async function dryRun() {
     // The causal structure the arms exist for: stable reuse exceeds the control.
     assert.ok(group.stable.probe.cacheRead > group.nonce.probe.cacheRead);
     assert.ok(group.stable.probe.cacheRead > 0, "the stable arm's reuse is explicit non-zero evidence");
-    assert.equal(group.evidenceNonZero, true);
-    assert.equal(group.reuseAboveControl, true);
   }
 }
 
@@ -94,7 +140,7 @@ async function dryRun() {
   assert.match(pins.settingsHash, /^[0-9a-f]{64}$/);
   assert.deepEqual(pins.settings, { temperature: 0, maxOutputTokens: 512, stream: true, thinking: "off" });
   assert.deepEqual(pins.routing, { concurrency: 1, retryPolicy: "none", sessionScope: "arm-per-group" });
-  assert.equal(pins.fixtureDigest, fixtureDigest(), "the fixture digest pins every composed payload");
+  assert.equal(pins.fixtureDigest, fixtureDigest(), "the fixture digest pins every composed payload of the enlarged fixture");
   assert.deepEqual(pins.groupOrder, REQUEST_ORDER);
   assert.equal(pins.retention.bucket, "default");
   assert.equal(pins.retention.ttlMs, 300_000);
@@ -119,6 +165,54 @@ async function dryRun() {
   // Payload hashes differ across groups (per-group trace) but are recorded exactly.
   const primeHashes = new Set(report.groups.map((group) => group.stable.prime.payloadHash));
   assert.equal(primeHashes.size, GROUP_COUNT, "each group runs its own salted trace instance");
+}
+
+// ─── the re-pinned fixture digest ───────────────────────────────────
+
+{
+  const first = fixtureDigest();
+  assert.equal(first, fixtureDigest(), "the digest is deterministic for the enlarged fixture");
+  assert.match(first, /^[0-9a-f]{64}$/);
+  assert.notEqual(first, fixtureDigest(GROUP_COUNT - 1), "the digest covers every group's payloads");
+}
+
+// ─── the non-regression standard in the report ──────────────────────
+
+{
+  const { report, humanText } = await dryRun();
+  const { cacheStandard: standard } = report;
+  assert.equal(standard.hitRateDefinition, HIT_RATE_DEFINITION);
+  assert.equal(standard.band.baselineArm, "native", "Pi native is the baseline");
+  assert.equal(standard.band.belowBaselinePercentagePoints, NON_REGRESSION_BAND_PP);
+  assert.equal(standard.liveness.controlArm, "nonce");
+  assert.equal(standard.liveness.measuredAgainst, "stable");
+  assert.equal(standard.liveness.belowMarginPercentagePoints, LIVENESS_MARGIN_PP);
+  assert.equal(standard.groupsAggregated, GROUP_COUNT);
+  assert.equal(standard.cacheActivityObserved, true);
+  for (const arm of ARMS) {
+    const rate = standard.rates[arm];
+    assert.ok(rate.denominator > 0);
+    assert.ok(rate.rate > 0 && rate.rate <= 1, `${arm} records a measured rate`);
+    assert.equal(rate.denominator, rate.cacheRead + rate.cacheCreation + rate.uncachedInput);
+  }
+  // The honest simulation: stable far above the baseline, nonce far below stable.
+  assert.equal(standard.bandSatisfied, true);
+  assert.equal(standard.livenessSatisfied, true);
+  assert.ok(standard.rates.stable.rate >= standard.rates.native.rate, "the stable arm never sits below the native baseline here");
+  assert.ok(standard.rates.nonce.rate <= standard.rates.stable.rate - LIVENESS_MARGIN_PP / 100);
+  assert.equal(
+    standard.minimumAcceptableStableRate,
+    Math.round(Math.max(0, standard.rates.native.rate - NON_REGRESSION_BAND_PP / 100) * 1e4) / 1e4,
+  );
+  // The report states the pinned definition, the band, the baseline, each
+  // arm's rate, the liveness outcome, and the denominator caveat (#260).
+  assert.ok(humanText.includes("hit rate"));
+  assert.ok(humanText.includes("baseline"));
+  assert.ok(humanText.includes("liveness"));
+  assert.ok(humanText.includes(DENOMINATOR_NOTE), "the report states the differing-denominator caveat verbatim");
+  assert.ok(humanText.includes("must not be reused as a cost metric"));
+  assert.ok(report.conclusion.reasons.some((reason) => reason.startsWith("non-regression band met")));
+  assert.ok(report.conclusion.reasons.some((reason) => reason.startsWith("liveness control alive")));
 }
 
 // ─── native comparison is reported per group and by median ──────────
@@ -152,6 +246,7 @@ async function dryRun() {
   assert.ok(!json.includes(MARKER));
   assert.ok(!json.includes(SYSTEM_PROMPT.slice(0, 40)), "the pinned system prompt text never appears");
   assert.ok(!json.includes("checks: 42 passed"), "trace tail text never appears");
+  assert.ok(!json.includes("frozen row"), "enlarged fixture bodies never appear");
   assert.equal(report.framing.disclaimer, FRAMING_DISCLAIMER);
   assert.ok(humanText.includes(FRAMING_DISCLAIMER));
   for (const phrase of FORBIDDEN_CLAIM_PHRASES) {
@@ -173,6 +268,49 @@ async function dryRun() {
   const first = await dryRun();
   const second = await dryRun();
   assert.deepEqual(first.report, second.report, "two dry runs produce byte-identical evidence");
+}
+
+// ─── the dead-measurement world: constant reads, alive-looking groups ─
+
+{
+  // The #251 signature as an adapter: every probe reports the same constant
+  // read regardless of content, exactly as the measured gateway did when the
+  // fixture sat below the cacheable floor. Every group is measurable and the
+  // band holds trivially, so only the liveness control can expose the run as
+  // dead — and it must, because a dead measurement is never a pass.
+  const constantReadAdapter = {
+    id: "simulated-dead-measurement/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/constant-read-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
+    async send(request, observe = {}) {
+      observe.onFirstToken?.();
+      const probe = request.role === "probe";
+      const read = probe ? 1089 : 0;
+      const write = probe ? 96 : 1185;
+      const input = probe ? 166 : 0;
+      return {
+        usage: { inputTokens: input, outputTokens: probe ? 64 : 48 },
+        cache: { reported: true, read, write },
+        retentionWrite: { reported: true, bucket: "default", tokens: write },
+        cost: 0,
+      };
+    },
+  };
+  const clock = fakeClock();
+  const { report, humanText, exitCode } = await runExperiment({
+    adapter: constantReadAdapter,
+    clock,
+    generatedAt: () => "2026-01-01T00:00:00.000Z",
+  });
+  assert.equal(report.integrity.ok, true);
+  for (const group of report.groups) assert.equal(group.quality, "measurable");
+  assert.equal(report.cacheStandard.cacheActivityObserved, true);
+  assert.equal(report.cacheStandard.bandSatisfied, true, "equal rates satisfy the band trivially");
+  assert.equal(report.cacheStandard.livenessSatisfied, false, "the constant read cannot distinguish content");
+  assert.equal(report.conclusion.cache, "inconclusive");
+  assert.equal(report.conclusion.final, "inconclusive");
+  assert.equal(exitCode, 1);
+  assert.ok(humanText.includes("liveness"), "the human report names the dead liveness control");
+  assert.ok(report.conclusion.reasons.some((reason) => reason.includes("liveness control dead")));
 }
 
 // ─── unsupported cache reporting: absent, not zero ──────────────────
@@ -299,11 +437,14 @@ async function dryRun() {
   const result = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run"], { encoding: "utf8" });
   assert.equal(result.status, 0, `dry-run command exits clean:\n${result.stdout}\n${result.stderr}`);
   assert.ok(result.stdout.includes("result: POSITIVE"));
+  assert.ok(result.stdout.includes("hit rate"), "the human report reflects the non-regression standard");
+  assert.ok(result.stdout.includes("liveness"));
   assert.ok(result.stdout.includes("framing:"));
   const jsonPath = join(HERE, "report", "provider-cache-experiment.json");
   assert.ok(existsSync(jsonPath), "the report artifact is written beside the harness");
   const written = JSON.parse(readFileSync(jsonPath, "utf8"));
   assert.equal(written.schema, "pi-square.context-memory/provider-cache-experiment/1");
+  assert.equal(written.cacheStandard.band.baselineArm, "native");
 }
 
 {
