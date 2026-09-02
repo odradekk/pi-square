@@ -259,8 +259,14 @@ async function runScriptedSession({ arm, replies, turns }) {
     Array.isArray(message.content) ? message.content : []);
   assert.ok(!continuationBlocks.some((part) => part?.type === "tool_use" && part.name === "submit_memory"),
     "the submit tool_use leaves the continuation request");
-  assert.ok(!continuationBlocks.some((part) => part?.type === "tool_result" && part.content === "Memory candidate accepted; compaction pending."),
-    "the paired submit result leaves the continuation request");
+  // The submitting assistant message is the tail while the run continues, so
+  // its paired result is retained rather than dropped: a request ending on an
+  // assistant turn is rejected as an assistant prefill by the real gateway,
+  // which voided one scored run (#227).
+  assert.ok(continuationBlocks.some((part) => part?.type === "tool_result" && part.content === "Memory candidate accepted; compaction pending."),
+    "the paired submit result is retained as the tail so the request does not end on an assistant turn");
+  assert.notEqual(bodies[3].messages.at(-1).role, "assistant",
+    "no continuation request ends with an assistant turn");
   assert.ok(continuationBlocks.some((part) => part?.type === "text" && part.text === "Done — submitting the Memory block."),
     "ordinary assistant text survives its message");
   assert.ok(toolNames(bodies[4]).includes("read_memory_source"), "valid Memory activates read_memory_source");
@@ -464,8 +470,10 @@ async function runScriptedSession({ arm, replies, turns }) {
     .flatMap((message) => message.tool_calls ?? [])
     .map((call) => call.function.name);
   assert.ok(!continuationCalls.includes("submit_memory"), "the submit tool_call leaves the continuation request");
-  assert.ok(!bodies[3].messages.some((message) => message.role === "tool" && message.content === "Memory candidate accepted; compaction pending."),
-    "the paired submit result leaves the continuation request");
+  assert.ok(bodies[3].messages.some((message) => message.role === "tool" && message.content === "Memory candidate accepted; compaction pending."),
+    "the paired submit result is retained as the tail so the request does not end on an assistant turn");
+  assert.notEqual(bodies[3].messages.at(-1).role, "assistant",
+    "no continuation request ends with an assistant turn");
 }
 
 // ─── a missing secondary base URL fails explicitly, not with a guess ──

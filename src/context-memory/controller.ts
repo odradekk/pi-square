@@ -1262,11 +1262,15 @@ function sameMemoryDetails(actual: unknown, expected: MemoryCompactionDetails): 
  */
 function filterSubmitArtifacts(messages: readonly unknown[]): unknown[] {
   const filtered: unknown[] = [];
+  let lastDroppedResult: unknown;
   for (const message of messages) {
     const record = message as { role?: unknown; content?: unknown; toolName?: unknown } | null;
     if (!record) continue;
     if (record.role === "toolResult") {
-      if (record.toolName === SUBMIT_MEMORY_TOOL_NAME) continue;
+      if (record.toolName === SUBMIT_MEMORY_TOOL_NAME) {
+        lastDroppedResult = message;
+        continue;
+      }
       filtered.push(message);
       continue;
     }
@@ -1282,6 +1286,14 @@ function filterSubmitArtifacts(messages: readonly unknown[]): unknown[] {
     }
     filtered.push(message);
   }
+  // The submitting assistant message is the request tail while the run
+  // continues (#253), and dropping its paired result would end the request on
+  // an assistant turn — which providers reject as an assistant prefill. Put
+  // that one result back so the tail is a tool result: the model sees the
+  // acknowledgement for the call it just made, and every older submit
+  // artifact still leaves the request.
+  const tail = filtered.at(-1) as { role?: unknown } | undefined;
+  if (tail?.role === "assistant" && lastDroppedResult !== undefined) filtered.push(lastDroppedResult);
   return filtered;
 }
 

@@ -352,7 +352,7 @@ function reportMarkdown(report) {
   lines.push(`result: **${report.result.toUpperCase()}** — ${report.totals.runs} runs, ${report.totals.turns} turns, ${report.totals.failed} failed runs, 0 waivers, 0 retries`);
   lines.push("");
   lines.push(`adapter: ${report.adapter} · mode ${report.mode}${report.releaseRelevant ? "" : " (not release-relevant)"}`);
-  lines.push(`pins: implementation \`${short(report.pins.implementation.commit)}\` digest \`${short(report.pins.implementation.digest)}\`${report.pins.implementation.dirty ? " (dirty)" : ""} · package ${report.pins.package.name}@${report.pins.package.version} · pi ${report.pins.pi.running} (supported ${report.pins.pi.supported}) · fixtures digest \`${short(report.pins.fixtures.digest)}\` · pins digest \`${short(report.pins.pinsDigest)}\``);
+  lines.push(`pins: implementation \`${short(report.pins.implementation.commit)}\` digest \`${short(report.pins.implementation.digest)}\`${report.pins.implementation.dirty ? " (dirty)" : ""} · package ${report.pins.package.name}@${report.pins.package.version} · pi ${report.pins.pi.running} (qualified against ${report.pins.pi.package}; activation by interface presence, not version) · fixtures digest \`${short(report.pins.fixtures.digest)}\` · pins digest \`${short(report.pins.pinsDigest)}\``);
   lines.push("");
   lines.push("## Gates");
   lines.push("");

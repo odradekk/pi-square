@@ -75,10 +75,10 @@ function sseResponse(frames, { chunkSize } = {}) {
     body: new ReadableStream({
       start(controller) {
         if (!chunkSize) {
-          controller.enqueue(Buffer.from(text));
+          controller.enqueue(new Uint8Array(Buffer.from(text)));
         } else {
           for (let offset = 0; offset < text.length; offset += chunkSize) {
-            controller.enqueue(Buffer.from(text.slice(offset, offset + chunkSize)));
+            controller.enqueue(new Uint8Array(Buffer.from(text.slice(offset, offset + chunkSize))));
           }
         }
         controller.close();

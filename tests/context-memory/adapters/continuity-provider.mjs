@@ -434,7 +434,16 @@ function createProviderSession({ script, arm, transport }) {
 
   function resolveBaseUrl() {
     const overridden = process.env[arm.baseUrlEnv];
-    if (overridden) return overridden;
+    if (overridden) {
+      // The adapter appends the full API path, so the base URL carries only
+      // the origin. A value copied from a Pi provider entry ends in `/v1` and
+      // silently produces `/v1/v1/...`, which the gateway answers with 404 —
+      // it cost one scored run (#227), so it fails loudly here instead.
+      if (/\/v1\/?$/.test(overridden)) {
+        throw new Error(`${arm.baseUrlEnv} must be the origin only; the adapter appends the API path, so drop the trailing /v1`);
+      }
+      return overridden.replace(/\/+$/, "");
+    }
     if (arm.baseUrlDefault) return arm.baseUrlDefault;
     throw new Error(
       `${arm.baseUrlEnv} is not set: the ${arm.arm} arm's gateway base URL must be provided at execution time (#227)`,

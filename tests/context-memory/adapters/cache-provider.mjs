@@ -239,8 +239,12 @@ async function consumeSse(response, observe) {
   };
 
   let buffer = "";
+  // The platform `fetch` yields Uint8Array chunks, not Node Buffers, and a
+  // multi-byte code point can straddle a chunk boundary. A streaming
+  // TextDecoder covers both; `String(chunk)` would stringify the byte values.
+  const decoder = new TextDecoder();
   for await (const chunk of response.body) {
-    buffer += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
     let boundary;
     while ((boundary = buffer.indexOf("\n\n")) >= 0) {
       handleEvent(buffer.slice(0, boundary));
