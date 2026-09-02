@@ -3,14 +3,13 @@ import { realpathSync } from "node:fs";
 import { join } from "path";
 import { beforeAll, afterAll, vi } from "vitest";
 import { Compile } from "typebox/compile";
-import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createReadToolDefinition, createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 import { _lineHashesPure, initHasher } from "../../../src/anchored-edit/hashline";
 import { anchoredHashStorePath, anchoredStoreDir } from "../../../src/anchored-edit/paths";
 import { loadAnchoredHashStore, PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
 import { withAnchoredReadTransform } from "../../../src/anchored-edit/read-tool";
 import { transformAnchoredReadContent, guardAnchoredRead } from "../../../src/anchored-edit/read-transform";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
-import { createAnchoredWriteDefinition } from "../../../src/anchored-edit/operations";
 import { createParentAnchoredWrite, registerAnchoredAutoRead } from "../../../src/anchored-edit/auto-read";
 import type { PiSquareConfig } from "../../../src/core/config";
 import { loadHashStoreAt, shutdownHashStore, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
@@ -328,11 +327,11 @@ export function setupParentWrite(
   const parentWrite = createParentAnchoredWrite(config);
   registerAnchoredAutoRead(pi, config, () => available, parentWrite);
   const sessionDir = testSessionDir(cwd);
-  // The anchored write definition with its execution-entry availability gate,
-  // composed exactly as `src/display/builtins.ts` registers it (#264).
-  const definition = createAnchoredWriteDefinition(cwd, {
-    session: parentWrite.attachSession(cwd, sessionDir),
-    isAvailable: () => available,
+  // The production parent write composition (#264): Pi's public write
+  // factory with the anchored operation injected through its filesystem seam,
+  // with the availability gate living inside the injected operation.
+  const definition = createWriteToolDefinition(cwd, {
+    operations: parentWrite.attachSession(cwd, sessionDir, () => available).operations,
   });
   const ctx = makeTestCtx(cwd);
   async function runWrite(

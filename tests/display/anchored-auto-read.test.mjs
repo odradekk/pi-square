@@ -6,8 +6,9 @@ import { DatabaseSync } from "node:sqlite";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
+const { contentChecksum } = await load("../../src/anchored-edit/hashline/hasher.ts");
 const { createParentAnchoredWrite, registerAnchoredAutoRead } = await load("../../src/anchored-edit/auto-read.ts");
-const { createAnchoredWriteDefinition } = await load("../../src/anchored-edit/operations.ts");
+const { createWriteToolDefinition } = await load("@earendil-works/pi-coding-agent");
 const { transformAnchoredReadContent } = await load("../../src/anchored-edit/read-transform.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 
@@ -42,9 +43,8 @@ try {
   const config = () => ({ anchoredEditing: { enabled: true, autoRead: true } });
   const parentWrite = createParentAnchoredWrite(config);
   registerAnchoredAutoRead(pi, config, () => true, parentWrite);
-  const writeDefinition = createAnchoredWriteDefinition(workspace, {
-    session: parentWrite.attachSession(workspace, sessionDir),
-    isAvailable: () => true,
+  const writeDefinition = createWriteToolDefinition(workspace, {
+    operations: parentWrite.attachSession(workspace, sessionDir, () => true).operations,
   });
 
   const runWrite = async (toolCallId, input) => {
@@ -160,9 +160,8 @@ try {
     const plainConfig = () => ({ anchoredEditing: { enabled: true, autoRead: false } });
     const plainParentWrite = createParentAnchoredWrite(plainConfig);
     registerAnchoredAutoRead(plainPi, plainConfig, () => true, plainParentWrite);
-    const plainWrite = createAnchoredWriteDefinition(workspace, {
-      session: plainParentWrite.attachSession(workspace, sessionDir),
-      isAvailable: () => true,
+    const plainWrite = createWriteToolDefinition(workspace, {
+      operations: plainParentWrite.attachSession(workspace, sessionDir, () => true).operations,
     });
 
     const clearedExternal = join(root, "outside-cleared.txt");
@@ -204,10 +203,17 @@ try {
     assert.equal(clearedResult, undefined, "disabled auto-read appends nothing");
     const store = new DatabaseSync(storePath, { timeout: 500 });
     try {
+      // autoRead=false publishes nothing: the pre-write version's row remains
+      // as a stale barrier, and no row authorizes the written version (#264).
       assert.equal(
-        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = 'parent' AND path = ?").get(realpathSync(clearedExternal)).count,
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = 'parent' AND path = ? AND content_hash != ?").get(realpathSync(clearedExternal), contentChecksum("after\n")).count,
+        1,
+        "a successful autoRead=false external write keeps the previous version's stale row",
+      );
+      assert.equal(
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = 'parent' AND path = ? AND content_hash = ?").get(realpathSync(clearedExternal), contentChecksum("after\n")).count,
         0,
-        "a successful external write clears served state for the canonical file in the initiating workspace",
+        "no row authorizes the autoRead=false written version",
       );
     } finally {
       store.close();
@@ -266,9 +272,8 @@ try {
     const offConfig = () => ({ anchoredEditing: { enabled: true, autoRead: false } });
     const offParentWrite = createParentAnchoredWrite(offConfig);
     registerAnchoredAutoRead(plainPi2, offConfig, () => true, offParentWrite);
-    const offWrite = createAnchoredWriteDefinition(workspace, {
-      session: offParentWrite.attachSession(workspace, sessionDir),
-      isAvailable: () => true,
+    const offWrite = createWriteToolDefinition(workspace, {
+      operations: offParentWrite.attachSession(workspace, sessionDir, () => true).operations,
     });
     for (const handler of plainEvents2.get("tool_call") ?? []) {
       await handler({ toolName: "write", toolCallId: "write-disabled", input: { path: "source.txt", content: "disabled\n" } }, sessionCtx);

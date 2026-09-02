@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
+const { contentChecksum: contentChecksumOf } = await load("../../src/anchored-edit/hashline/hasher.ts");
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { createChildAnchoredWriteTool } = await load("../../src/anchored-edit/child-write.ts");
@@ -30,6 +31,7 @@ function readRows(content) {
     return match ? [{ hash: match[1], text: match[2] }] : [];
   });
 }
+
 
 const root = mkdtempSync(join(tmpdir(), "pi-square-child-anchored-external-write-"));
 const workspace = join(root, "workspace");
@@ -92,9 +94,11 @@ try {
   assert.match(textOf(unchangedResult.content), /Successfully wrote/);
   assert.doesNotMatch(textOf(unchangedResult.content), /Auto-read/, "an unchanged write appends no anchors");
 
-  // The agent-only autoRead=false setting still clears the acting child's stale
-  // served rows after a successful changed write, but appends and serves no
-  // replacement anchors.
+  // The agent-only autoRead=false setting appends and serves no replacement
+  // anchors after a successful changed write: the write publishes nothing, so
+  // the acting child's rows for the previous content version remain as a
+  // stale barrier that authorizes nothing against the written bytes until a
+  // fresh read (#264).
   await childRead.execute("seed-auto-read-off", { path: "../external-write.txt" }, undefined, undefined, ctx);
   const autoReadOff = await createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir, () => false).execute(
     "child-write-auto-read-off",
@@ -108,10 +112,18 @@ try {
   {
     const store = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
     try {
+      const rows = store.prepare(
+        "SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ? AND content_hash != ?",
+      ).get(CHILD_ONE, canonical, contentChecksumOf("one\nAUTO-OFF\nthree\n")).count;
       assert.equal(
-        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonical).count,
+        rows,
+        3,
+        "autoRead=false leaves the previous version's rows as a stale barrier (no new-version rows)",
+      );
+      assert.equal(
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ? AND content_hash = ?").get(CHILD_ONE, canonical, contentChecksumOf("one\nAUTO-OFF\nthree\n")).count,
         0,
-        "autoRead=false still clears the writing child's stale served row",
+        "no rows authorize the autoRead=false written version",
       );
     } finally {
       store.close();

@@ -30,32 +30,33 @@ import { identityOf, sameNodeIdentity, type FileIdentity } from "../core/safe-wr
  * published safely, so the operation reports `[E_FILE_LOCKED]`/an error
  * rather than locking unsafely).
  *
- * Removal never unlinks by path after a check. It takes the file atomically
- * with `rename` to a unique retirement name and then verifies the taken file
- * two ways: its filesystem identity must match the identity the remover
- * verified beforehand, and — because inode reuse inside one coarse
- * birthtime window can falsify identity alone — the unique acquisition token
- * inside the taken record must match the token of the record that was
- * verified:
+ * Removal never unlinks the canonical lock path after a mere check, and it
+ * never renames the canonical lock path away before proving — under a
+ * per-target removal right — that the file to remove is still the exact one
+ * the remover verified. Every remover first publishes a short-lived removal
+ * marker (`<lock>.rm`, the same atomic record protocol) naming the remover
+ * process. While a marker is held, no other remover can act (its marker
+ * publish fails) and no successor can install (the canonical path is still
+ * occupied), so the remover's single rename-take necessarily grabs exactly
+ * the file it re-verified — a dead owner's record, or its own acquisition.
+ * A live successor's lock is therefore never moved off the canonical path by
+ * a stale verifier: the verifier re-reads the canonical record under the
+ * marker, finds a different token, and walks away having touched nothing.
  *
- * - On both matches the retired file is exactly the one the remover proved
- *   to be its own or a confirmed-dead owner's, and only then is it deleted.
- * - On a mismatch the remover took a successor's lock (possible when a
- *   racing reclaimer retired a dead owner's file first and the successor
- *   installed in between, or an inode was reused). A foreign lock is never
- *   destroyed or clobbered: it is restored with a no-clobber hard link as
- *   soon as the lock path is free again.
- *
- * Because a live owner is never reclaimed (below), a holder's own release
- * always finds exactly its own file at the lock path, so the mismatch path
- * exists only for racing reclamations of a dead owner.
+ * A marker whose holder died is reclaimed the same positive-death way as a
+ * dead lock: while the old marker exists no new marker can be published, so
+ * its verified removal is exact. All removal waits share the calling
+ * acquire's deadline and cancellation and end in the same classified
+ * `E_FILE_LOCKED` outcome (or, for a release, a logged best-effort
+ * failure) — never an unbounded or un-cancellable wait.
  *
  * Reclamation requires a positive determination that the recorded local
- * process is gone: the recorded Linux start time differs from the current
- * one for that pid (a reused pid proves the original died), or the pid is
- * confirmed dead by the operating system. Foreign-host and malformed
- * ownership is unverifiable and fails closed: the lock is only waited on,
- * never reclaimed, and elapsed time alone is never proof of death.
+ * process is gone: the recorded Linux start time (strictly digits; anything
+ * else makes the record unverifiable) differs from the current one for that
+ * pid (a reused pid proves the original died), or the pid is confirmed dead
+ * by the operating system. Foreign-host and malformed ownership is
+ * unverifiable and fails closed: the lock is only waited on, never
+ * reclaimed, and elapsed time alone is never proof of death.
  */
 
 function readEnvMs(name: string, fallback: number): number {
@@ -65,19 +66,14 @@ function readEnvMs(name: string, fallback: number): number {
 
 const DEFAULT_LOCK_WAIT_MS = readEnvMs("PI_SQUARE_LOCK_WAIT_MS", 3000);
 const DEFAULT_LOCK_POLL_MS = 40;
-
-/** Bound on restoring a foreign lock retired by a racing reclaimer. Read per
- *  call so deployments (and tests) can tighten it without a reload. */
-function restoreWaitMs(): number {
-  return readEnvMs("PI_SQUARE_LOCK_RESTORE_MS", 10_000);
-}
+/** Bound for a release-time removal (no caller budget): bounded, never
+ *  unbounded, and failures are logged rather than thrown. */
+const RELEASE_REMOVAL_BUDGET_MS = readEnvMs("PI_SQUARE_RELEASE_BUDGET_MS", 10_000);
 
 export interface FileLock {
-  /** Releases the lock by retiring the lock file, removing it only after the
-   *  retired file's identity matches this acquisition's published file, so a
-   *  release can never destroy a successor's lock. Best-effort after a
-   *  committed mutation: failures are logged, never thrown into a caller
-   *  whose filesystem work already succeeded. */
+  /** Releases the lock through the verified-removal protocol. Best-effort
+   *  after a committed mutation: failures are logged, never thrown into a
+   *  caller whose filesystem work already succeeded. */
   release(): Promise<void>;
 }
 
@@ -91,6 +87,18 @@ export interface AcquireLockOptions {
   signal?: AbortSignal;
 }
 
+/** Shared wait budget: one deadline and cancellation for an acquire and
+ *  every removal (reclaim, marker, restore) it performs. */
+interface WaitBudget {
+  deadlineAt: number;
+  signal?: AbortSignal;
+  pollMs: number;
+}
+
+function budgetSpent(budget: WaitBudget): boolean {
+  return budget.signal?.aborted === true || Date.now() >= budget.deadlineAt;
+}
+
 interface LockOwnerRecord {
   v: 1;
   /** Random token uniquely identifying this acquisition. */
@@ -99,8 +107,10 @@ interface LockOwnerRecord {
   hostname: string;
   /**
    * Linux process start time (field 22 of /proc/<pid>/stat, clock ticks
-   * since boot). Distinguishes this process instance from a later process
-   * that reused the pid; undefined where the platform cannot provide it.
+   * since boot — strictly digits). Distinguishes this process instance from
+   * a later process that reused the pid; undefined where the platform cannot
+   * provide it. A value that is not digits is not a start time: the record
+   * is unverifiable and fails closed.
    */
   startTime?: string;
   acquiredAt: number;
@@ -126,6 +136,10 @@ export function lockFilePath(storeDir: string, targetPath: string): string {
   return join(storeDir, "locks", lockFileName(targetPath));
 }
 
+function markerPath(lockPath: string): string {
+  return `${lockPath}.rm`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
@@ -140,6 +154,10 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+function isValidStartTime(value: string): boolean {
+  return /^[0-9]{1,20}$/.test(value);
+}
+
 function readStartTime(pid: number): string | undefined {
   // Linux only: /proc/<pid>/stat field 22. Reading it for another process is
   // a plain file read; a missing file means the process is gone or the
@@ -152,7 +170,8 @@ function readStartTime(pid: number): string | undefined {
     if (close < 0) return undefined;
     const fields = raw.slice(close + 2).split(" ");
     // fields[0] is state (field 3); starttime is field 22 → index 19.
-    return fields[19];
+    const value = fields[19];
+    return value !== undefined && isValidStartTime(value) ? value : undefined;
   } catch {
     return undefined;
   }
@@ -175,7 +194,7 @@ function isCompleteOwnerRecord(value: unknown): value is LockOwnerRecord {
     && record.hostname.length > 0
     && typeof record.acquiredAt === "number"
     && Number.isFinite(record.acquiredAt)
-    && (record.startTime === undefined || typeof record.startTime === "string");
+    && (record.startTime === undefined || (typeof record.startTime === "string" && isValidStartTime(record.startTime)));
 }
 
 function currentOwnerRecord(): LockOwnerRecord {
@@ -192,10 +211,10 @@ function currentOwnerRecord(): LockOwnerRecord {
 /**
  * Positive determination that a recorded local owner is gone. Foreign-host
  * ownership is unverifiable from here and fails closed. A start-time mismatch
- * proves the original process died and the pid was reused; when the current
- * start time cannot be read, the decision falls back to the OS liveness probe
- * — only a confirmed-dead pid or a proven reuse reclaims, never an
- * unverifiable read or elapsed time.
+ * proves the original process died and the pid was reused — but only between
+ * two well-formed start times; when the current start time cannot be read,
+ * the decision falls back to the OS liveness probe. Only a confirmed-dead pid
+ * or a proven reuse reclaims, never an unverifiable read or elapsed time.
  */
 function isOwnerGone(owner: LockOwnerRecord): boolean {
   if (owner.hostname !== localHostname) return false;
@@ -209,12 +228,13 @@ function isOwnerGone(owner: LockOwnerRecord): boolean {
 interface LockFileInfo {
   owner: LockOwnerRecord | undefined;
   identity: FileIdentity | undefined;
+  token: string | undefined;
 }
 
 async function readLockInfo(lockPath: string): Promise<LockFileInfo> {
   try {
     const stats = await stat(lockPath);
-    if (!stats.isFile()) return { owner: undefined, identity: undefined };
+    if (!stats.isFile()) return { owner: undefined, identity: undefined, token: undefined };
     const identity = identityOf(stats);
     const raw = await readFile(lockPath, "utf8");
     let owner: LockOwnerRecord | undefined;
@@ -225,116 +245,219 @@ async function readLockInfo(lockPath: string): Promise<LockFileInfo> {
       // A complete record is published atomically, so a partial file is a
       // foreign or damaged artifact: fail closed and never reclaim it.
     }
-    return { owner, identity };
+    return { owner, identity, token: owner?.token };
   } catch {
-    return { owner: undefined, identity: undefined };
-  }
-}
-
-/** Reads just the acquisition token from a lock record file, or undefined
- *  when the file holds no complete record. */
-async function readLockToken(lockPath: string): Promise<string | undefined> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(lockPath, "utf8"));
-    return isCompleteOwnerRecord(parsed) ? parsed.token : undefined;
-  } catch {
-    return undefined;
+    return { owner: undefined, identity: undefined, token: undefined };
   }
 }
 
 /**
  * Publishes the complete owner record atomically: the record is written to a
- * unique exclusive temporary file and hard-linked into the lock path, so the
- * lock name never exists with partial content and no fallback path is
- * taken. Returns the published lock file's identity for removal-time
- * verification, or undefined when the lock path is already held (EEXIST).
- * Any other failure propagates: publication is fail-closed.
+ * unique exclusive temporary file and hard-linked into the target path, so
+ * the name never exists with partial content and no fallback path is
+ * taken. Returns the published file's identity, or undefined when the path is
+ * already held (EEXIST). Any other failure propagates: publication is
+ * fail-closed.
  */
 async function publishOwnerRecord(
-  lockPath: string,
+  targetPath: string,
   ownerRaw: string,
 ): Promise<FileIdentity | undefined> {
-  const tempPath = join(dirname(lockPath), `.publish-${randomUUID()}.tmp`);
+  const tempPath = join(dirname(targetPath), `.publish-${randomUUID()}.tmp`);
   try {
     await writeFile(tempPath, ownerRaw, { flag: "wx", mode: 0o600 });
     try {
-      await link(tempPath, lockPath);
+      await link(tempPath, targetPath);
     } catch (error) {
       if (errCode(error) === "EEXIST") return undefined;
-      // Fail closed: without an atomic no-clobber publication the lock name
+      // Fail closed: without an atomic no-clobber publication the name
       // could expose a partial record, so the operation must not proceed.
       throw error;
     }
-    return identityOf(await stat(lockPath));
+    return identityOf(await stat(targetPath));
   } finally {
     await rm(tempPath, { force: true }).catch(() => {});
   }
 }
 
+/** Outcome of a verified removal attempt. */
+type RemovalOutcome = "removed" | "absent" | "foreign" | "busy";
+
 /**
- * Removes the lock file at `lockPath` only after proving, through an atomic
- * rename-take and an identity comparison, that the file being deleted is the
- * exact one the remover verified. A foreign file taken in a reclaimer race is
- * restored with a no-clobber link once the lock path is free; it is never
- * destroyed or overwritten. `lockBarrier.afterTake` is a deterministic test
- * seam between the take and the identity check.
+ * Removes the lock file at `lockPath` through the marker-guarded protocol:
+ *
+ * 1. Acquire the per-target removal marker (atomic record publish). A marker
+ *    whose holder is provably dead is reclaimed first; a live marker makes
+ *    this attempt "busy" so the caller's bounded loop can retry.
+ * 2. Under the marker, re-read the canonical record. Anything other than the
+ *    exact expected identity and token means a successor owns the path now:
+ *    return "foreign" having touched nothing — the canonical path was never
+ *    disturbed, so no third writer could have slipped in.
+ * 3. One rename-take, then delete only on a matching identity and token.
+ *    Because the marker excludes every other remover and installers cannot
+ *    install while the path is occupied, the take grabs exactly the
+ *    re-verified file. A mismatch is defense-in-depth (a non-protocol actor):
+ *    the taken file is restored with a no-clobber link within the remaining
+ *    budget, never destroyed.
+ *
+ * `expectedToken` undefined (an unverifiable original) always maps to
+ * "foreign": an unverifiable lock is only ever waited on.
  */
 async function removeVerifiedLockFile(
   lockPath: string,
   expected: FileIdentity,
   expectedToken: string | undefined,
-  pollMs: number,
-): Promise<void> {
-  const retiredPath = join(dirname(lockPath), `.retired-${randomUUID()}.tmp`);
+  budget: WaitBudget,
+): Promise<RemovalOutcome> {
+  if (expectedToken === undefined) return "foreign";
+  const marker = await acquireRemovalMarker(lockPath, budget);
+  if (marker === undefined) return "busy";
   try {
-    await rename(lockPath, retiredPath);
-  } catch (error) {
-    if (errCode(error) === "ENOENT") return; // already gone: nothing to remove
-    throw error;
+    await __lockTestables.lockBarrier.markerHeld?.(lockPath);
+    if (budgetSpent(budget)) return "busy";
+    const current = await readLockInfo(lockPath);
+    if (current.identity === undefined) return "absent";
+    if (!sameNodeIdentity(current.identity, expected) || current.token !== expectedToken) {
+      // A successor owns the canonical path now. Touch nothing: the path was
+      // never disturbed by this attempt, so exclusion held throughout.
+      return "foreign";
+    }
+
+    const retiredPath = join(dirname(lockPath), `.retired-${randomUUID()}.tmp`);
+    try {
+      await rename(lockPath, retiredPath);
+    } catch (error) {
+      if (errCode(error) === "ENOENT") return "absent";
+      throw error;
+    }
+    await __lockTestables.lockBarrier.afterTake?.(lockPath, retiredPath);
+    let retired: FileIdentity;
+    let retiredToken: string | undefined;
+    try {
+      retired = identityOf(await lstat(retiredPath));
+      retiredToken = (await readLockInfo(retiredPath)).token;
+    } catch (error) {
+      if (errCode(error) === "ENOENT") return "absent";
+      throw error;
+    }
+    if (sameNodeIdentity(retired, expected) && retiredToken === expectedToken) {
+      // Exactly the file re-verified under the marker.
+      await rm(retiredPath, { force: true }).catch(() => {});
+      return "removed";
+    }
+    // Defense-in-depth: a non-protocol actor replaced the canonical file
+    // between the re-verify and the take. The taken file is foreign —
+    // restore it under its name, never destroy it, bounded by the shared
+    // budget.
+    for (;;) {
+      try {
+        await link(retiredPath, lockPath);
+        await rm(retiredPath, { force: true }).catch(() => {});
+        return "foreign";
+      } catch (error) {
+        if (errCode(error) !== "EEXIST") throw error;
+      }
+      if (budgetSpent(budget)) {
+        console.error(
+          `Anchored lock removal could not restore a foreign lock file at ${lockPath}; left at ${retiredPath}.`,
+        );
+        return "foreign";
+      }
+      await sleep(budget.pollMs);
+    }
+  } finally {
+    await releaseRemovalMarker(lockPath, marker).catch((error) => {
+      console.error(`Failed to release anchored lock removal marker for ${lockPath}:`, error);
+    });
   }
-  await __lockTestables.lockBarrier.afterTake?.(lockPath, retiredPath);
-  let retired: FileIdentity;
-  let retiredToken: string | undefined;
+}
+
+/**
+ * Acquires the per-target removal marker under the shared budget. A marker
+ * left by a provably dead remover is reclaimed first (while it exists no new
+ * marker can be published, so its verified removal is exact); a live or
+ * unverifiable marker yields undefined — "busy" — and the caller retries
+ * within its own budget.
+ */
+async function acquireRemovalMarker(
+  lockPath: string,
+  budget: WaitBudget,
+): Promise<{ token: string; identity: FileIdentity } | undefined> {
+  const path = markerPath(lockPath);
+  for (;;) {
+    if (budgetSpent(budget)) return undefined;
+    const record = currentOwnerRecord();
+    const identity = await publishOwnerRecord(path, JSON.stringify(record));
+    if (identity) return { token: record.token, identity };
+    const existing = await readLockInfo(path);
+    if (existing.owner && existing.identity && isOwnerGone(existing.owner)) {
+      // Reclaim the dead remover's marker. While it exists, no other marker
+      // can be published, so the take is exact; failure just retries.
+      await removeExactFile(path, existing.identity, existing.owner.token, budget).catch(() => {});
+      continue;
+    }
+    // A live remover holds the marker (or it is unverifiable — same
+    // treatment): back off to the caller's bounded loop.
+    return undefined;
+  }
+}
+
+/** Releases (removes) this process's own removal marker. Only a remover that
+ *  positively determined us dead could touch it, so the take is exact;
+ *  defense-in-depth restore keeps it safe regardless. */
+async function releaseRemovalMarker(
+  lockPath: string,
+  marker: { token: string; identity: FileIdentity },
+): Promise<void> {
+  await removeExactFile(markerPath(lockPath), marker.identity, marker.token, {
+    deadlineAt: Date.now() + RELEASE_REMOVAL_BUDGET_MS,
+    pollMs: DEFAULT_LOCK_POLL_MS,
+  });
+}
+
+/** Rename-take plus identity-and-token verification for a file whose
+ *  replacement is excluded by construction (our own marker, or a dead
+ *  marker/lock no one else can currently replace). */
+async function removeExactFile(
+  path: string,
+  expected: FileIdentity,
+  expectedToken: string,
+  budget: WaitBudget,
+): Promise<void> {
+  const retiredPath = join(dirname(path), `.retired-${randomUUID()}.tmp`);
   try {
-    retired = identityOf(await lstat(retiredPath));
-    retiredToken = await readLockToken(retiredPath);
+    await rename(path, retiredPath);
   } catch (error) {
     if (errCode(error) === "ENOENT") return;
     throw error;
   }
-  // Both proofs must hold: same node identity, and the same unique
-  // acquisition token the verifier read. Inode reuse alone cannot falsify
-  // the token, and the token alone cannot survive a genuine replacement.
-  if (sameNodeIdentity(retired, expected) && retiredToken !== undefined && retiredToken === expectedToken) {
-    // The retired file is exactly the one this remover verified (its own
-    // acquisition, or a confirmed-dead owner's record); only now may it be
-    // deleted.
+  let retired: FileIdentity;
+  let retiredToken: string | undefined;
+  try {
+    retired = identityOf(await lstat(retiredPath));
+    retiredToken = (await readLockInfo(retiredPath)).token;
+  } catch (error) {
+    if (errCode(error) === "ENOENT") return;
+    throw error;
+  }
+  if (sameNodeIdentity(retired, expected) && retiredToken === expectedToken) {
     await rm(retiredPath, { force: true }).catch(() => {});
     return;
   }
-  // A racing reclaimer retired the verified file first and a successor
-  // installed in between. The retired file is foreign: restore it under its
-  // name with a no-clobber link as soon as the path is free. Never destroy
-  // or clobber it.
-  const deadline = Date.now() + restoreWaitMs();
+  // Defense-in-depth: restore rather than destroy, within the budget.
   for (;;) {
     try {
-      await link(retiredPath, lockPath);
+      await link(retiredPath, path);
       await rm(retiredPath, { force: true }).catch(() => {});
       return;
     } catch (error) {
       if (errCode(error) !== "EEXIST") throw error;
     }
-    if (Date.now() >= deadline) {
-      // The path stayed occupied for the whole restore budget. Leave the
-      // retired file in place (the locks directory is pi-square-owned) and
-      // surface the displacement; the lock is preserved, not destroyed.
-      console.error(
-        `Anchored lock retirement could not restore a foreign lock file at ${lockPath}; left at ${retiredPath}.`,
-      );
+    if (budgetSpent(budget)) {
+      console.error(`Anchored lock removal could not restore a foreign file at ${path}; left at ${retiredPath}.`);
       return;
     }
-    await sleep(pollMs);
+    await sleep(budget.pollMs);
   }
 }
 
@@ -342,20 +465,22 @@ async function removeVerifiedLockFile(
  * Acquires the per-file lock with a bounded wait. Returns a release handle,
  * or null when the wait budget ended or the wait was cancelled — both are
  * classified contention the caller reports as `E_FILE_LOCKED`. Locks whose
- * recorded owner is confirmed dead locally are reclaimed on the way;
- * foreign-host, reused-pid-ambiguous, malformed, and live ownership is only
- * ever waited on. The loop is bounded even across repeated reclamations: the
- * deadline is checked before every publish attempt, so it always ends in a
- * handle or a refusal, never an indefinite spin.
+ * recorded owner is confirmed dead locally are reclaimed on the way through
+ * the same marker-guarded protocol; foreign-host, malformed, live, and
+ * marker-busy states are only ever waited on. Every wait — publish polling,
+ * marker acquisition, reclamation — shares this call's deadline and
+ * cancellation, so the acquire always ends in a handle or a refusal, never
+ * an unbounded or un-cancellable wait.
  */
 export async function acquireFileLock(
   lockPath: string,
   options?: AcquireLockOptions,
 ): Promise<FileLock | null> {
-  const waitMs = options?.waitMs ?? DEFAULT_LOCK_WAIT_MS;
-  const pollMs = options?.pollMs ?? DEFAULT_LOCK_POLL_MS;
-  const signal = options?.signal;
-  const deadline = Date.now() + waitMs;
+  const budget: WaitBudget = {
+    deadlineAt: Date.now() + (options?.waitMs ?? DEFAULT_LOCK_WAIT_MS),
+    ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+    pollMs: options?.pollMs ?? DEFAULT_LOCK_POLL_MS,
+  };
   const owner = currentOwnerRecord();
   const ownerRaw = JSON.stringify(owner);
 
@@ -365,7 +490,7 @@ export async function acquireFileLock(
   for (;;) {
     // Cancellation and deadline exhaustion are the same classified outcome:
     // the boundary was not entered and nothing was modified.
-    if (signal?.aborted || Date.now() >= deadline) return null;
+    if (budgetSpent(budget)) return null;
     let identity: FileIdentity | undefined;
     try {
       identity = await publishOwnerRecord(lockPath, ownerRaw);
@@ -379,32 +504,38 @@ export async function acquireFileLock(
     if (identity) {
       return {
         release: () =>
-          removeVerifiedLockFile(lockPath, identity!, owner.token, pollMs).catch((error) => {
-            // Release is best-effort after committed work: log, never throw
-            // into a caller whose filesystem operation already succeeded.
-            console.error(`Failed to release anchored lock ${lockPath}:`, error);
-          }),
+          removeVerifiedLockFile(lockPath, identity!, owner.token, {
+            deadlineAt: Date.now() + RELEASE_REMOVAL_BUDGET_MS,
+            pollMs: DEFAULT_LOCK_POLL_MS,
+          })
+            .then(() => undefined)
+            .catch((error) => {
+              // Release is best-effort after committed work: log, never throw
+              // into a caller whose filesystem operation already succeeded.
+              console.error(`Failed to release anchored lock ${lockPath}:`, error);
+            }),
       };
     }
     const info = await readLockInfo(lockPath);
     if (info.owner && info.identity && isOwnerGone(info.owner)) {
-      // The dead owner's file still blocks every other publisher. Retire it
-      // under its verified identity; a racing reclaimer that wins leaves a
-      // successor's file that the identity check restores, never deletes.
-      // Either way the publish is retried immediately (the loop deadline
-      // still bounds the wait).
-      await removeVerifiedLockFile(lockPath, info.identity, info.owner.token, pollMs).catch(() => {});
+      // The dead owner's file still blocks every publisher. Remove it under
+      // the marker protocol; busy (another remover holds the marker) simply
+      // falls through to the bounded wait, and the loop deadline still bounds
+      // everything.
+      await removeVerifiedLockFile(lockPath, info.identity, info.owner.token, budget)
+        .then(() => undefined)
+        .catch(() => {});
     }
-    await sleep(Math.min(delayMs, pollMs));
+    await sleep(Math.min(delayMs, budget.pollMs));
     delayMs *= 2;
   }
 }
 
 /**
  * @internal Deterministic test seams: direct access to the verified-removal
- * protocol (so a previous owner's late release can be exercised against an
- * installed successor) and a barrier between the atomic take and the
- * identity check. Production never sets the barrier.
+ *  protocol (so a stale verifier can be exercised against an installed
+ *  successor) and barriers at the marker-hold and take points. Production
+ *  never sets the barriers.
  */
 export const __lockTestables = {
   removeVerifiedLockFile,
@@ -412,7 +543,9 @@ export const __lockTestables = {
   currentOwnerRecord,
   isOwnerGone,
   isCompleteOwnerRecord,
+  markerPath,
   lockBarrier: {
+    markerHeld: undefined as ((lockPath: string) => Promise<void>) | undefined,
     afterTake: undefined as ((lockPath: string, retiredPath: string) => Promise<void>) | undefined,
   },
 };

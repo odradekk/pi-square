@@ -304,8 +304,8 @@ try {
 
   // --- Criterion 7/9 (#187): a second session's replace takes the same lock.
   // While a real process holds the lock, another session's replace is refused
-  // with the recoverable stale-range code and leaves the file untouched; once
-  // the lock is free, the same edit applies. ---
+  // with the classified E_FILE_LOCKED contention and leaves the file
+  // untouched; once the lock is free, the same edit applies. ---
   writeFileSync(join(workspace, "second-session.txt"), "alpha\nbeta\ngamma\n");
   const secondStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
   const secondHashes = hashesOf("alpha\nbeta\ngamma\n");
@@ -387,10 +387,12 @@ try {
   );
 
   // --- Criterion 8/9: the lock coexists with Pi's per-session mutation queue.
-  // Two replaces on the same file in one process complete (no deadlock) and
-  // both edits land (no lost update); the queue and the lock serialize. Clear
-  // any stale locks left by the killed holders first so the cleanliness
-  // assertion below checks only the concurrent replaces. ---
+  // Two replaces on the same file in one process complete without deadlock:
+  // the queue serializes them, exactly one edit applies, and the other is
+  // refused recoverably against the winner's updated served state (no lost
+  // update, no interleave). Clear any stale locks left by the killed holders
+  // first so the cleanliness assertion below checks only the concurrent
+  // replaces. ---
   rmSync(lockDir(), { recursive: true, force: true });
   writeFileSync(join(workspace, "coexist.txt"), "l1\nl2\nl3\nl4\n");
   const coexHashes = hashesOf("l1\nl2\nl3\nl4\n");

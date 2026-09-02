@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "fs/promises";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "path";
+import { join } from "node:path";
 import {
   __lockTestables,
   acquireFileLock,
@@ -15,6 +15,7 @@ import { getWritableTempRoot } from "../support/fixtures";
 const { lockBarrier } = __lockTestables;
 
 afterEach(() => {
+  lockBarrier.markerHeld = undefined;
   lockBarrier.afterTake = undefined;
   vi.unstubAllEnvs();
 });
@@ -29,14 +30,19 @@ function lockPathIn(dir: string): string {
   return lockFilePath(dir, "/canonical/target.txt");
 }
 
-/** Publishes a complete owner record for `pid` at the lock path, the way a
- *  real process would. */
+async function residue(dir: string): Promise<string[]> {
+  const entries = await readdir(join(dir, "locks")).catch(() => [] as string[]);
+  return entries.filter((name) => name.includes(".retired-") || name.endsWith(".rm") || name.startsWith(".publish-"));
+}
+
+/** Publishes a complete owner record for `pid` at a path, the way a real
+ *  process would. */
 async function installRecord(
-  dir: string,
+  path: string,
   owner: { pid: number; hostname: string; startTime?: string; token?: string },
 ): Promise<void> {
   await writeFile(
-    lockPathIn(dir),
+    path,
     JSON.stringify({
       v: 1,
       token: owner.token ?? `token-${Math.random()}`,
@@ -56,7 +62,11 @@ function deadPid(): number {
   return result.pid!;
 }
 
-describe("lock record validation (#264 P1: strict schema, fail closed)", () => {
+function budget(ms: number) {
+  return { deadlineAt: Date.now() + ms, pollMs: 5 };
+}
+
+describe("lock record validation (#264: strict schema, fail closed)", () => {
   it("accepts a complete record and rejects every incomplete or malformed variant", () => {
     const { isCompleteOwnerRecord } = __lockTestables;
     const complete = {
@@ -67,7 +77,7 @@ describe("lock record validation (#264 P1: strict schema, fail closed)", () => {
       acquiredAt: 1,
     };
     expect(isCompleteOwnerRecord(complete)).toBe(true);
-    expect(isCompleteOwnerRecord({ ...complete, startTime: "123" })).toBe(true);
+    expect(isCompleteOwnerRecord({ ...complete, startTime: "123456789" })).toBe(true);
     expect(isCompleteOwnerRecord({ ...complete, v: 2 })).toBe(false);
     expect(isCompleteOwnerRecord({ ...complete, token: "" })).toBe(false);
     expect(isCompleteOwnerRecord({ ...complete, token: "t".repeat(129) })).toBe(false);
@@ -77,6 +87,10 @@ describe("lock record validation (#264 P1: strict schema, fail closed)", () => {
     expect(isCompleteOwnerRecord({ ...complete, hostname: "" })).toBe(false);
     expect(isCompleteOwnerRecord({ ...complete, acquiredAt: Number.NaN })).toBe(false);
     expect(isCompleteOwnerRecord({ ...complete, acquiredAt: "now" })).toBe(false);
+    // A start time that is not strictly digits is not a start time: the
+    // record is unverifiable and fails closed.
+    expect(isCompleteOwnerRecord({ ...complete, startTime: "not-a-proc-start-time" })).toBe(false);
+    expect(isCompleteOwnerRecord({ ...complete, startTime: "12x4" })).toBe(false);
     expect(isCompleteOwnerRecord({ ...complete, startTime: 123 })).toBe(false);
     expect(isCompleteOwnerRecord({ pid: 42 })).toBe(false);
     expect(isCompleteOwnerRecord("not an object")).toBe(false);
@@ -106,13 +120,34 @@ describe("lock record validation (#264 P1: strict schema, fail closed)", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("a live pid with a malformed start time is never reclaimed (#264 P1)", async () => {
+    const dir = await freshDir("malformed-start");
+    try {
+      // The reviewer's reproduction: current live PID, our hostname, and a
+      // garbage start time. The record is unverifiable, so the lock is only
+      // waited on — never reclaimed by misreading the garbage as a start-time
+      // mismatch proving pid reuse.
+      await installRecord(lockPathIn(dir), {
+        pid: process.pid,
+        hostname: hostname(),
+        startTime: "not-a-proc-start-time",
+      });
+      const lock = await acquireFileLock(lockPathIn(dir), { waitMs: 120, pollMs: 10 });
+      expect(lock).toBeNull();
+      const raw = JSON.parse(await readFile(lockPathIn(dir), "utf8")) as { pid: number };
+      expect(raw.pid).toBe(process.pid);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
-describe("dead-owner determination (#264 P1: positive proof only)", () => {
+describe("dead-owner determination (#264: positive proof only)", () => {
   it("never reclaims a foreign-host record regardless of age or pid state", async () => {
     const dir = await freshDir("foreign");
     try {
-      await installRecord(dir, { pid: deadPid(), hostname: "another-host.example" });
+      await installRecord(lockPathIn(dir), { pid: deadPid(), hostname: "another-host.example" });
       const lock = await acquireFileLock(lockPathIn(dir), { waitMs: 60, pollMs: 10 });
       expect(lock).toBeNull();
       expect(existsSync(lockPathIn(dir))).toBe(true);
@@ -121,14 +156,15 @@ describe("dead-owner determination (#264 P1: positive proof only)", () => {
     }
   });
 
-  it("reclaims a confirmed-dead local owner and then acquires", async () => {
+  it("reclaims a confirmed-dead local owner through the marker protocol and then acquires", async () => {
     const dir = await freshDir("dead");
     try {
-      await installRecord(dir, { pid: deadPid(), hostname: hostname() });
+      await installRecord(lockPathIn(dir), { pid: deadPid(), hostname: hostname() });
       const lock = await acquireFileLock(lockPathIn(dir), { waitMs: 2000, pollMs: 10 });
       expect(lock).not.toBeNull();
       await lock!.release();
       expect(existsSync(lockPathIn(dir))).toBe(false);
+      expect(await residue(dir)).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -137,19 +173,18 @@ describe("dead-owner determination (#264 P1: positive proof only)", () => {
   it("never reclaims a live local owner", async () => {
     const dir = await freshDir("live");
     try {
-      await installRecord(dir, { pid: process.pid, hostname: hostname() });
+      await installRecord(lockPathIn(dir), { pid: process.pid, hostname: hostname() });
       const lock = await acquireFileLock(lockPathIn(dir), { waitMs: 60, pollMs: 10 });
       expect(lock).toBeNull();
       expect(existsSync(lockPathIn(dir))).toBe(true);
+      expect(await residue(dir)).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it("a start-time mismatch proves the original died even though the pid is alive again", () => {
+  it("a well-formed start-time mismatch proves the original died even though the pid is alive again", () => {
     const { isOwnerGone } = __lockTestables;
-    // A live pid (this process) whose recorded start time differs: the
-    // recorded owner must be proven dead by the mismatch.
     expect(
       isOwnerGone({
         v: 1,
@@ -160,8 +195,6 @@ describe("dead-owner determination (#264 P1: positive proof only)", () => {
         acquiredAt: Date.now(),
       }),
     ).toBe(true);
-    // Without a comparable start time the decision falls back to the OS
-    // liveness probe, and this process is alive.
     expect(
       isOwnerGone({
         v: 1,
@@ -174,20 +207,18 @@ describe("dead-owner determination (#264 P1: positive proof only)", () => {
   });
 });
 
-describe("lock publication (#264 P1: atomic no-clobber or fail closed)", () => {
+describe("lock publication (#264: atomic no-clobber or fail closed)", () => {
   it("never clobbers an existing lock and reports it as held", async () => {
     const dir = await freshDir("publish-held");
     try {
-      await installRecord(dir, { pid: process.pid, hostname: hostname() });
+      await installRecord(lockPathIn(dir), { pid: process.pid, hostname: hostname() });
       const identity = await __lockTestables.publishOwnerRecord(
         lockPathIn(dir),
         JSON.stringify(__lockTestables.currentOwnerRecord()),
       );
       expect(identity).toBeUndefined();
-      // The existing holder's record is intact.
       const raw = JSON.parse(await readFile(lockPathIn(dir), "utf8")) as { pid: number };
       expect(raw.pid).toBe(process.pid);
-      // And no publish temporaries were left behind.
       expect((await readdir(join(dir, "locks"))).filter((name) => name.startsWith(".publish-"))).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -209,7 +240,6 @@ describe("lock publication (#264 P1: atomic no-clobber or fail closed)", () => {
         ),
       ).rejects.toThrow();
       expect(existsSync(lockPathIn(dir))).toBe(false);
-      // No leftover publish temporaries in the (now read-only) directory.
       expect((await readdir(join(dir, "locks"))).filter((name) => name.startsWith(".publish-"))).toEqual([]);
     } finally {
       await chmod(join(dir, "locks"), 0o700).catch(() => {});
@@ -218,91 +248,143 @@ describe("lock publication (#264 P1: atomic no-clobber or fail closed)", () => {
   });
 });
 
-describe("verified removal and the successor race (#264 P1: rename-take + identity)", () => {
-  it("removes exactly the file it verified", async () => {
-    const dir = await freshDir("remove-own");
+describe("stale verifier versus live successor (#264 P1: exclusion never breaks)", () => {
+  it("a stale verifier never disturbs a live successor, no third writer acquires, no residue", async () => {
+    const dir = await freshDir("stale-verifier");
     try {
-      await installRecord(dir, { pid: process.pid, hostname: hostname(), token: "verified-token" });
+      // The verifier earlier proved this dead owner's record.
+      const dead = deadPid();
+      await installRecord(lockPathIn(dir), { pid: dead, hostname: hostname(), token: "prior-token" });
       const verified = await stat(lockPathIn(dir));
-      await __lockTestables.removeVerifiedLockFile(lockPathIn(dir), verified, "verified-token", 5);
+
+      // A real successor reclaims the dead lock and now holds it live.
+      const successorLock = await acquireFileLock(lockPathIn(dir), { waitMs: 2000, pollMs: 10 });
+      expect(successorLock).not.toBeNull();
+      const successor = successorLock!;
+      const successorRecord = JSON.parse(await readFile(lockPathIn(dir), "utf8")) as { token: string };
+      expect(successorRecord.token).not.toBe("prior-token");
+
+      // The stale verifier's removal runs to completion while the successor
+      // is live; hold it deterministically inside its marker-held phase so a
+      // third writer is provably racing the exact window the old protocol
+      // exposed.
+      let releaseVerifier!: () => void;
+      const verifierAtMarker = new Promise<void>((resolveAtMarker) => {
+        lockBarrier.markerHeld = () => {
+          resolveAtMarker();
+          return new Promise<void>((resolveRelease) => { releaseVerifier = resolveRelease; });
+        };
+      });
+      const staleRemoval = __lockTestables.removeVerifiedLockFile(lockPathIn(dir), verified, "prior-token", budget(5000));
+      await verifierAtMarker;
+
+      // While the stale verifier holds its removal marker, the successor's
+      // lock still occupies the canonical path: a third writer cannot
+      // acquire, and the lock file is never moved away.
+      const third = await acquireFileLock(lockPathIn(dir), { waitMs: 80, pollMs: 10 });
+      expect(third, "no third writer acquires while the live successor holds the lock").toBeNull();
+      expect(existsSync(lockPathIn(dir)), "the canonical lock path stayed occupied").toBe(true);
+
+      releaseVerifier();
+      const outcome = await staleRemoval;
+      expect(outcome).toBe("foreign");
+      // The barrier must not intercept the successor's own release below.
+      lockBarrier.markerHeld = undefined;
+
+      // The successor's lock survived untouched and nothing was left behind.
+      const after = JSON.parse(await readFile(lockPathIn(dir), "utf8")) as { token: string };
+      expect(after.token).toBe(successorRecord.token);
+      expect(await residue(dir)).toEqual([]);
+
+      await successor.release();
       expect(existsSync(lockPathIn(dir))).toBe(false);
-      expect((await readdir(join(dir, "locks"))).filter((name) => name.includes(".retired-"))).toEqual([]);
+      expect(await residue(dir)).toEqual([]);
     } finally {
+      lockBarrier.markerHeld = undefined;
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it("a removal that takes a successor-installed file restores it intact instead of deleting it (#264 P1)", async () => {
-    const dir = await freshDir("successor");
-    try {
-      const dead = deadPid();
-      await installRecord(dir, { pid: dead, hostname: hostname(), token: "verified-token" });
-      // The verifier proved this exact file (a dead owner's record)...
-      const verified = await stat(lockPathIn(dir));
-      // ...but another reclaimer removed it first and a successor installed a
-      // different file at the lock path before this removal's take.
-      await rm(lockPathIn(dir), { force: true });
-      await installRecord(dir, { pid: process.pid, hostname: hostname(), token: "successor-token" });
-
-      await __lockTestables.removeVerifiedLockFile(lockPathIn(dir), verified, "verified-token", 5);
-
-      // The taken file was foreign: it was restored under its name with its
-      // content intact, never deleted. The take freed the path, so the
-      // restore completes and leaves no residue.
-      const successor = JSON.parse(await readFile(lockPathIn(dir), "utf8")) as { token: string };
-      expect(successor.token).toBe("successor-token");
-      expect((await readdir(join(dir, "locks"))).filter((name) => name.includes(".retired-"))).toEqual([]);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("a foreign file taken while another successor holds the path is preserved, never destroyed (#264 P1)", async () => {
-    const dir = await freshDir("successor-occupied");
-    // Keep the restore budget short: the occupying successor stays installed
-    // for the whole test, so the removal ends at the budget with the foreign
-    // file preserved at its retirement name.
-    vi.stubEnv("PI_SQUARE_LOCK_RESTORE_MS", "80");
-    try {
-      const dead = deadPid();
-      await installRecord(dir, { pid: dead, hostname: hostname(), token: "verified-token" });
-      const verified = await stat(lockPathIn(dir));
-      // A first replacement occupies the path before this removal's take...
-      await rm(lockPathIn(dir), { force: true });
-      await installRecord(dir, { pid: process.pid, hostname: hostname(), token: "taken-token" });
-      // ...and a second successor installs after the take, while the taken
-      // file is between the atomic rename and the identity/token check.
-      lockBarrier.afterTake = async () => {
-        await installRecord(dir, { pid: process.pid, hostname: hostname(), token: "occupier-token" });
-      };
-
-      await __lockTestables.removeVerifiedLockFile(lockPathIn(dir), verified, "verified-token", 5);
-
-      // The occupier was not deleted and still holds its own record.
-      const occupier = JSON.parse(await readFile(lockPathIn(dir), "utf8")) as { token: string };
-      expect(occupier.token).toBe("occupier-token");
-      // The taken foreign file was preserved at its retirement name, not
-      // destroyed, while the lock path stayed occupied past the budget.
-      const retiredName = (await readdir(join(dir, "locks"))).find((name) => name.includes(".retired-"));
-      expect(retiredName).toBeDefined();
-      const retiredRaw = JSON.parse(await readFile(join(dir, "locks", retiredName!), "utf8")) as { token: string };
-      expect(retiredRaw.token).toBe("taken-token");
-    } finally {
-      lockBarrier.afterTake = undefined;
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("release of a live acquisition always matches and removes exactly its own file", async () => {
+  it("a live holder's own release still removes exactly its own file", async () => {
     const dir = await freshDir("release-own");
     try {
       const lock = await acquireFileLock(lockPathIn(dir), { waitMs: 500 });
       expect(lock).not.toBeNull();
       await lock!.release();
       expect(existsSync(lockPathIn(dir))).toBe(false);
+      expect(await residue(dir)).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("removal marker lifecycle", () => {
+  it("reclaims a marker whose holder died, then reclaims the dead lock — no residue", async () => {
+    const dir = await freshDir("dead-marker");
+    try {
+      await installRecord(lockPathIn(dir), { pid: deadPid(), hostname: hostname() });
+      // A previous remover died holding the removal marker.
+      await installRecord(__lockTestables.markerPath(lockPathIn(dir)), {
+        pid: deadPid(),
+        hostname: hostname(),
+        token: "dead-marker-token",
+      });
+      const lock = await acquireFileLock(lockPathIn(dir), { waitMs: 2000, pollMs: 10 });
+      expect(lock).not.toBeNull();
+      await lock!.release();
+      expect(existsSync(lockPathIn(dir))).toBe(false);
+      expect(await residue(dir)).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a live marker holder makes the reclaim busy: bounded refusal, nothing removed", async () => {
+    const dir = await freshDir("live-marker");
+    try {
+      const deadRecordRaw = JSON.stringify({
+        v: 1,
+        token: "dead-lock-token",
+        pid: deadPid(),
+        hostname: hostname(),
+        acquiredAt: Date.now(),
+      });
+      await writeFile(lockPathIn(dir), deadRecordRaw, "utf8");
+      // A live remover currently holds the marker: the dead lock must not be
+      // touched, and the acquire ends as classified contention within its
+      // own budget.
+      await installRecord(__lockTestables.markerPath(lockPathIn(dir)), {
+        pid: process.pid,
+        hostname: hostname(),
+        token: "live-marker-token",
+      });
+      const lock = await acquireFileLock(lockPathIn(dir), { waitMs: 120, pollMs: 10 });
+      expect(lock).toBeNull();
       expect(
-        (await readdir(join(dir, "locks"))).filter((name) => name.endsWith(".lock") || name.includes(".retired-")),
-      ).toEqual([]);
+        await readFile(lockPathIn(dir), "utf8"),
+        "the dead lock was not removed behind a live marker",
+      ).toBe(deadRecordRaw);
+      const markerRecord = JSON.parse(await readFile(__lockTestables.markerPath(lockPathIn(dir)), "utf8")) as { token: string };
+      expect(markerRecord.token).toBe("live-marker-token");
+      // No residue from OUR attempt: the marker file pre-existed (the live
+      // remover's own artifact), so exclude exactly that name.
+      const markerName = __lockTestables.markerPath(lockPathIn(dir)).split("/").pop()!;
+      expect((await residue(dir)).filter((name) => name !== markerName)).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("an unverifiable original is foreign by definition: never removed, only waited on", async () => {
+    const dir = await freshDir("unverifiable");
+    try {
+      await writeFile(lockPathIn(dir), "{not json", "utf8");
+      const verified = await stat(lockPathIn(dir));
+      const outcome = await __lockTestables.removeVerifiedLockFile(lockPathIn(dir), verified, undefined, budget(500));
+      expect(outcome).toBe("foreign");
+      expect(await readFile(lockPathIn(dir), "utf8")).toBe("{not json");
+      expect(await residue(dir)).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

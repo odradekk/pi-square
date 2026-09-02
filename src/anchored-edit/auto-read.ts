@@ -32,9 +32,12 @@ function append(content: AgentToolResult<unknown>["content"], text: string): { c
  */
 export interface ParentAnchoredWrite {
   /** Attaches a fresh write session for the session context and returns it;
-   *  the registered parent write definition is built from it through
-   *  `createAnchoredWriteDefinition`. */
-  attachSession(cwd: string, sessionDir: string): AnchoredWriteSession;
+   *  the parent write definition is Pi's public factory with the session's
+   *  operations injected. `available` is the complete-anchored-surface gate
+   *  the injected operation reads at operation time: when false the write
+   *  performs Pi's plain filesystem behavior with no anchored lock, store
+   *  mutation, or outcome (#264). */
+  attachSession(cwd: string, sessionDir: string, available: () => boolean): AnchoredWriteSession;
   /** The currently attached session, if any. */
   current(): AnchoredWriteSession | undefined;
 }
@@ -42,12 +45,13 @@ export interface ParentAnchoredWrite {
 export function createParentAnchoredWrite(config: () => PiSquareConfig): ParentAnchoredWrite {
   let session: AnchoredWriteSession | undefined;
   return {
-    attachSession(cwd: string, sessionDir: string): AnchoredWriteSession {
+    attachSession(cwd: string, sessionDir: string, available: () => boolean): AnchoredWriteSession {
       session = createAnchoredWriteSession({
         cwd,
         owner: PARENT_OWNER,
         sessionDir,
         autoRead: () => config().anchoredEditing.autoRead,
+        available,
       });
       return session;
     },

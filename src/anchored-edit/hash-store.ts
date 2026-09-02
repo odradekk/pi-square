@@ -105,6 +105,15 @@ export interface HashStoreHandle {
    * transaction under the acting owner.
    */
   publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void;
+  /**
+   * Publishes one completed write as a single repository transaction: the
+   * snapshot for the written content and the served rows for exactly that
+   * content version — replacing every previous served row for the path
+   * (including removing them entirely when no rows are supplied). A failure
+   * rolls the whole transaction back, so the previous version's rows remain
+   * and cannot authorize anything against the new bytes.
+   */
+  publishWrite(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void;
   /** Every owner partition in this store with its newest activity. */
   listOwners(): OwnerPartition[];
   /** Deletes every row of one owner partition as a single transaction and
@@ -446,6 +455,21 @@ class HashStoreHandleImpl implements HashStoreHandle {
     cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
   }
 
+  publishWrite(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void {
+    const entry = this.requireOpen();
+    const checksum = contentChecksum(input.content);
+    const lineCount = splitLines(input.content).length;
+    const updatedAt = Date.now();
+    this.withTransaction(() => {
+      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
+      entry.stmts.clearServed(this.owner, input.path);
+      if (input.servedHashes && input.servedHashes.length > 0) {
+        entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
+      }
+    });
+    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
+  }
+
   listOwners(): OwnerPartition[] {
     const rows = this.requireOpen().stmts.listOwners();
     return rows.map((row) => ({
@@ -482,7 +506,10 @@ function cacheSnapshot(
  * One owner-aware schema for every store. Any non-empty database whose
  * recorded version is not the current one — including the former ownerless
  * current-version layout and every undo-bearing store — is legacy and is
- * quarantined whole by the loader.
+ * quarantined whole by the loader. A database that *claims* the current
+ * version must actually carry the current layout: a version row alone does
+ * not make a database current, so a current-version file with missing or
+ * reshaped tables is legacy too and is quarantined the same way.
  */
 function inspectLegacyStore(db: DatabaseSync): boolean {
   const tables = db.prepare(
@@ -492,10 +519,45 @@ function inspectLegacyStore(db: DatabaseSync): boolean {
   if (!tables.some((row) => row.name === "meta")) return true;
   try {
     const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as { value?: string } | undefined;
-    return versionRow?.value !== String(HASH_STORE_VERSION);
+    if (versionRow?.value !== String(HASH_STORE_VERSION)) return true;
+    return !hasCurrentSchemaShape(db);
   } catch {
     return true;
   }
+}
+
+const CURRENT_SCHEMA_COLUMNS: Record<string, string[]> = {
+  snapshots: ["owner", "path", "checksum", "line_count", "hashes", "updated_at"],
+  served: ["owner", "path", "hash", "content_hash", "updated_at"],
+};
+
+/** Strict shape check for a database claiming the current version: every
+ *  current table exists with exactly the current column set and primary key.
+ *  Any deviation is an incompatible layout that is quarantined whole rather
+ *  than probed statement-by-statement later. */
+function hasCurrentSchemaShape(db: DatabaseSync): boolean {
+  for (const [table, expectedColumns] of Object.entries(CURRENT_SCHEMA_COLUMNS)) {
+    let columns: Array<{ name?: unknown; pk?: unknown }>;
+    try {
+      columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown; pk?: unknown }>;
+    } catch {
+      return false;
+    }
+    const names = columns.map((column) => String(column.name));
+    if (names.length !== expectedColumns.length) return false;
+    for (let i = 0; i < expectedColumns.length; i += 1) {
+      if (names[i] !== expectedColumns[i]) return false;
+    }
+    const primaryKey = columns
+      .filter((column) => Number(column.pk) > 0)
+      .sort((a, b) => Number(a.pk) - Number(b.pk))
+      .map((column) => String(column.name));
+    const expectedKey = table === "snapshots" ? ["owner", "path"] : ["owner", "path", "hash"];
+    if (primaryKey.length !== expectedKey.length || primaryKey.some((name, i) => name !== expectedKey[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function openDb(storePath: string): OpenedDb {
