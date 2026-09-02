@@ -22,20 +22,22 @@ import {
 } from "./verdict.mjs";
 
 /**
- * The experiment runner (#225): executes the five interleaved paired groups
- * over the three pinned arms through an injected provider adapter, records the
- * exact payload/prefix hashes, first divergence boundaries, usage, cache and
- * retention reports, cost, and locally measured TTFT for every request, and
- * produces the bounded verdict report.
+ * The experiment runner (#225, standard re-pinned by #260): executes the five
+ * interleaved paired groups over the three pinned arms through an injected
+ * provider adapter, records the exact payload/prefix hashes, first divergence
+ * boundaries, usage, cache and retention reports, cost, and locally measured
+ * TTFT for every request, and produces the bounded verdict report.
  *
  * The runner owns run integrity: only the pinned request order is valid,
  * per-arm divergence invariants must hold (the stable arm's probe may not
  * diverge before the end of the previously carried blocks, the nonce arm's
  * probe must diverge inside the earliest block, the native arm's probe must
  * diverge inside the regenerated summary), and provider reports are validated
- * at the boundary. The report carries hashes, offsets, and bounded numbers —
- * never payloads, transcripts, Memory or source bodies, or credentials — and a
- * self-check re-verifies that before anything is written.
+ * at the boundary. The verdict itself — the pinned hit-rate standard, the
+ * non-regression band against the Pi-native baseline, and the nonce liveness
+ * control — lives in `verdict.mjs`. The report carries hashes, offsets, and
+ * bounded numbers — never payloads, transcripts, Memory or source bodies, or
+ * credentials — and a self-check re-verifies that before anything is written.
  */
 
 const REPORT_SCHEMA = "pi-square.context-memory/provider-cache-experiment/1";
@@ -333,12 +335,10 @@ export async function runExperiment({
         ...group,
         quality: classified?.quality ?? null,
         qualityReasons: classified?.qualityReasons ?? [],
-        evidenceNonZero: classified?.evidenceNonZero ?? null,
-        reuseAboveControl: classified?.reuseAboveControl ?? null,
         nativeComparison: classified?.nativeComparison ?? null,
       };
     }),
-    criteria: verdict.criteria,
+    cacheStandard: verdict.cacheStandard,
     nativeSummary: nativeMedians(verdict.groups),
     regression: verdict.regression,
     conclusion: { cache: verdict.cacheConclusion, final: verdict.conclusion, reasons: verdict.reasons },
@@ -371,7 +371,7 @@ export async function runExperiment({
 function renderHuman(report) {
   const short = (hash) => (typeof hash === "string" && hash.length >= 12 ? hash.slice(0, 12) : String(hash));
   const lines = [];
-  lines.push(`Provider-cache experiment (#225) — ${report.mode}`);
+  lines.push(`Provider-cache experiment (#225, standard #260) — ${report.mode}`);
   lines.push(
     `result: ${report.conclusion.final.toUpperCase()} — ${report.totals.groups} groups, ${report.totals.requests} requests, integrity ${report.integrity.ok ? "ok" : "FAILED"}`,
   );
@@ -387,19 +387,26 @@ function renderHuman(report) {
     const native = group.nativeComparison?.evaluated
       ? `${group.nativeComparison.worseDirections.length} worse directions`
       : "native comparison unevaluated";
-    lines.push(
-      `  ${String(group.group).padStart(2)}  ${String(group.quality).padEnd(14)}`
-        + ` evidence=${group.evidenceNonZero === null ? "—" : group.evidenceNonZero ? "yes" : "no"}`
-        + ` reuse-above-control=${group.reuseAboveControl === null ? "—" : group.reuseAboveControl ? "yes" : "no"}`
-        + ` · native: ${native}`,
-    );
+    lines.push(`  ${String(group.group).padStart(2)}  ${String(group.quality).padEnd(14)} · native: ${native}`);
   }
-  const { criteria } = report;
+  const { cacheStandard: standard } = report;
+  const rateText = (arm) => (standard.rates[arm].rate === null ? "n/a" : `${(standard.rates[arm].rate * 100).toFixed(1)}%`);
+  lines.push(`hit rate (${standard.aggregation}):`);
   lines.push(
-    `criteria: non-zero stable evidence ${criteria.nonZeroEvidenceGroups}/${criteria.groupsTotal} (need ${criteria.requiredGroups})`
-      + ` · reuse above control ${criteria.reuseAboveControlGroups}/${criteria.groupsTotal} (need ${criteria.requiredGroups})`
-      + ` · measurable ${criteria.measurableGroups}/${criteria.groupsTotal}`,
+    `  stable ${rateText("stable")} · nonce ${rateText("nonce")} (liveness control) · native ${rateText("native")} (baseline)`
+      + ` — ${standard.groupsAggregated} groups aggregated`,
   );
+  lines.push(`  definition: ${standard.hitRateDefinition}`);
+  lines.push(
+    `  band: stable must stay within ${standard.band.belowBaselinePercentagePoints}pp of native`
+      + ` (minimum ${standard.minimumAcceptableStableRate === null ? "n/a" : `${(standard.minimumAcceptableStableRate * 100).toFixed(1)}%`})`
+      + ` — ${standard.bandSatisfied === null ? "unevaluated" : standard.bandSatisfied ? "met" : "failed"}`,
+  );
+  lines.push(
+    `  liveness: nonce must sit at least ${standard.liveness.belowMarginPercentagePoints}pp below stable`
+      + ` — ${standard.livenessSatisfied === null ? "unevaluated" : standard.livenessSatisfied ? "alive" : "dead (measurement cannot distinguish content)"}`,
+  );
+  lines.push(`  note: ${standard.denominatorNote}`);
   const perDirection = Object.entries(report.nativeSummary.perDirection)
     .map(([direction, summary]) => `${direction} median-delta ${summary.medianDelta ?? "—"} (${summary.worse}w/${summary.better}b/${summary.equal}e)`)
     .join(" · ");

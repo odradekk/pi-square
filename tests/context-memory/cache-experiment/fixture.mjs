@@ -6,7 +6,8 @@ const load = jiti(import.meta.url, { moduleCache: false });
 const { composeMemorySummary } = await load("../../../src/context-memory/format.ts");
 
 /**
- * The pinned experiment fixture and the three-arm payload composer (#225).
+ * The pinned experiment fixture and the three-arm payload composer (#225,
+ * enlarged by #260).
  *
  * One deterministic semantic trace per group produces all three arms over the
  * same content, modeling one compression boundary between the prime and the
@@ -17,8 +18,8 @@ const { composeMemorySummary } = await load("../../../src/context-memory/format.
  *   every byte through the previous last block stays identical.
  * - `nonce` — byte-for-byte the same shape, except the earliest block embeds a
  *   fixed-width per-request nonce, so the prefix diverges at the first block.
- *   This is the paired negative control: identical size and semantics, cache
- *   stability removed by construction.
+ *   This is the liveness control: identical size and semantics, cache reuse
+ *   removed by construction.
  * - `native` — the carried prefix is a single regenerated summary (the way Pi
  *   native compaction rewrites the whole summary at each boundary), so the
  *   divergence lands inside the summary.
@@ -26,6 +27,19 @@ const { composeMemorySummary } = await load("../../../src/context-memory/format.
  * Payloads mirror Pi's real projection shape (system, tools, carried summary
  * as the leading context message, then the raw tail) without depending on a
  * live session: the experiment pins its own fixture.
+ *
+ * Scale (#260, evidence #251): the measured gateway caches nothing below a
+ * minimum cacheable prefix near 1 024 tokens (a 968-token request did not
+ * cache, a 1 121-token request did), while the original fixture's breakpoint
+ * sat near 487 tokens — below the floor, so no arm could cache and no rate
+ * could be computed. The block bodies are therefore padded with deterministic
+ * detail lines so that every composed request's covered prefix (through the
+ * end of the carried summary, the pinned breakpoint) clears
+ * `COVERED_PREFIX_FLOOR_TOKENS`, pinned at twice the measured floor: sized
+ * with margin above the floor, never to it. The padding is part of the
+ * fixture: deterministic, semantically shaped, identical between a group's
+ * prime and probe for the carried blocks, and re-pinned through
+ * `fixtureDigest`.
  */
 
 /** Sentinel embedded in every fixture-authored body or source text. */
@@ -96,12 +110,53 @@ export function nonceFor(group, role) {
   return sha256Hex(`provider-cache-experiment|nonce|${group}|${role}`).slice(0, NONCE_WIDTH);
 }
 
+/**
+ * The measured minimum cacheable prefix of the qualification gateway (#251,
+ * 2026-09-01, claude-sonnet-5 through the #249 adapter): a 968-token request
+ * did not cache, a 1 121-token request did. Requests below this floor cache
+ * nothing, so no hit rate can be computed from them.
+ */
+export const MEASURED_CACHEABLE_PREFIX_TOKENS = 1024;
+
+/**
+ * The pinned fixture scale: every composed request's covered prefix (bytes
+ * zero through the end of the carried summary, the pinned breakpoint) must
+ * clear this many tokens — twice the measured floor, margin above it rather
+ * than sized to it (#260). `DETAIL_LINES_PER_BLOCK` is tuned so the smallest
+ * covered prefix in the whole fixture (the native arm's prime) clears the
+ * floor with headroom; the experiment tests assert the invariant, not the
+ * tuning constant.
+ */
+export const COVERED_PREFIX_FLOOR_TOKENS = 2048;
+const DETAIL_LINES_PER_BLOCK = 30;
+
+/**
+ * Deterministic per-block padding: semantically shaped task-narrative lines
+ * that carry no randomness, stay identical between a group's prime and probe
+ * for the carried blocks, and never repeat one character 64+ times. Each kind
+ * keeps its own line shape so block texts stay unique inside a payload.
+ */
+function detailLines(kind, group) {
+  const shapes = {
+    setup: (index) => `frozen row ${index}: scenario ${group}-${index} carries ${3 + (index % 4)} cases, a pinned expectation, and no deferred input`,
+    parser: (index) => `ledger entry ${index}: column ${11 + index} kept its width marker, and case ${group}-${index} re-parsed without residue`,
+    verification: (index) => `check pass ${index}: ${37 + index} assertions held, and the residual risk row ${index} stayed attached to task ${group}`,
+    release: (index) => `note ${index}: drafted from verified row ${index}; the reviewer holds the task ${group} tag until the notes land`,
+  };
+  const lines = [];
+  for (let index = 1; index <= DETAIL_LINES_PER_BLOCK; index += 1) {
+    lines.push(`- ${shapes[kind](index)}`);
+  }
+  return lines;
+}
+
 function setupBlock(group) {
   return [
     `${nonceLiteral(ZERO_NONCE)} # ${MARKER} task ${group} setup`,
     "",
     `- scope agreed and fixtures frozen for task ${group}`,
     `- the harness wires ${group} scenario rows before any run`,
+    ...detailLines("setup", group),
   ].join("\n");
 }
 
@@ -111,6 +166,7 @@ function parserBlock(group) {
     "",
     "- width handling corrected after the failing cases",
     `- the decision is recorded in the ledger with the task ${group} tag`,
+    ...detailLines("parser", group),
   ].join("\n");
 }
 
@@ -120,6 +176,7 @@ function verificationBlock(group) {
     "",
     "- the checks run green after the fix",
     `- the residual risk note stays attached to task ${group}`,
+    ...detailLines("verification", group),
   ].join("\n");
 }
 
@@ -128,6 +185,7 @@ function releaseNotesBlock(group) {
     `# ${MARKER} task ${group} release notes`,
     "",
     `- notes drafted from the verified state of task ${group}`,
+    ...detailLines("release", group),
   ].join("\n");
 }
 
