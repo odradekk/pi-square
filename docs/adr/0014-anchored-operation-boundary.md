@@ -53,11 +53,15 @@ content presented as anchored evidence.
 `[E_FILE_LOCKED]` means failure to enter the operation boundary (bounded
 wait exhausted or cancelled): an aborted lock wait resolves as classified
 contention, never an unclassified throw, and the cancelled operation changes
-nothing. The executing tool call's AbortSignal reaches every lock wait —
-replace and read carry it directly, and the anchored write compositions run
-the public factory execution inside an AsyncLocalStorage signal context
-because the `WriteOperations` seam has no signal parameter. `[E_RANGE_STALE]`
-is reserved for validation
+nothing. The executing tool call's AbortSignal reaches the replace and read
+lock waits directly, and the child write composition runs the public factory
+execution inside an AsyncLocalStorage signal context (its declared
+exception). The parent write has no execution wrapper — the seam authorized
+by this record is only the injected filesystem operation — and the
+`WriteOperations` seam carries no signal parameter, so the parent write's
+lock wait is bounded by its session budget, classifies as `E_FILE_LOCKED`,
+and its cancellation responsiveness stays the factory's own abort checks.
+`[E_RANGE_STALE]` is reserved for validation
 performed after the lock is acquired against a file that no longer matches
 the served range; it keeps returning the current range with fresh anchors
 and serving those rows for the immediate retry. The child `requireServed`
@@ -87,11 +91,17 @@ mutation success, suppresses fresh anchors, emits a bounded
 `[E_STATE_UNAVAILABLE]` warning directing a fresh read, and — through the
 version binding above — leaves the pre-mutation state unable to authorize
 another replace until a new read republishes current rows. The anchored
-write operations hold the same discipline: everything after their
-filesystem write is post-commit, so a store failure there is reported as a
-bounded actionable note on the truthful success, never as a failed write,
-and the write's signal is checked before any filesystem effect (a cancelled
-wait writes nothing).
+write operations hold the same discipline with one stronger mechanism: the
+write's state publication is a single `publishWrite` transaction that
+replaces the previous served rows for exactly the written content version,
+so any post-commit failure rolls the whole transaction back — the previous
+version's rows survive untouched, are stale against the written bytes, and
+refuse every old anchor (unchanged rows included) until a fresh read. A
+store failure after the write is therefore reported as a unified bounded
+`[E_STATE_UNAVAILABLE]` note on the truthful success, never as a failed
+write and never as a state that still authorizes old anchors. An
+auto-read-off or unchanged write publishes nothing and leaves the previous
+version's rows as the same stale barrier.
 
 ### One owner-aware store schema
 
@@ -107,35 +117,48 @@ publication merges the rows for exactly one content version and drops other
 versions' rows for the path in the same transaction. Owner deletion, multi-path
 pruning, and the post-commit publication are explicit transactions. Path
 pruning returns absence only for genuine missing-path errors — permission
-and resource failures preserve rows and surface bounded diagnostics. Every
-incompatible non-empty layout, including the former ownerless
-current-version shape, is quarantined whole with its sidecars and rebuilt
-fresh; there is no data migration.
+and resource failures preserve rows and surface bounded diagnostics. A database that
+*claims* the current version must also carry the current layout: strict
+shape validation (exact table columns and primary keys for `snapshots` and
+`served`) treats a version-8 file with deviating tables as an incompatible
+layout, so no current-version database is ever probed
+statement-by-statement into a missing-column failure. Every incompatible
+non-empty layout, including the former ownerless current-version shape, is
+quarantined whole with its sidecars and rebuilt fresh; there is no data
+migration.
 
-### Lock ownership, publication, and verified removal
+### Lock ownership, publication, and marker-guarded removal
 
 Lock creation publishes a complete owner record (random token, pid, host,
-and process start time where the platform provides it) atomically by writing
-an exclusive temporary file and hard-linking it into place, so no observer
-ever sees a partial lock; publication failure outside the held case
-(EEXIST) propagates — there is no writable fallback that could expose a
-partial lock name. A record is attributable only when it satisfies the
-complete schema; malformed and pre-token records are unverifiable ownership
-and fail closed.
+and a strictly-digits process start time where the platform provides it)
+atomically by writing an exclusive temporary file and hard-linking it into
+place, so no observer ever sees a partial lock; publication failure outside
+the held case (EEXIST) propagates — there is no writable fallback that could
+expose a partial lock name. A record is attributable only when it satisfies
+the complete schema; malformed, pre-token, and non-numeric-start-time
+records are unverifiable ownership and fail closed (a garbage start time is
+never misread as a start-time mismatch proving pid reuse).
 
-Removal never unlinks by path after a check. It takes the file atomically
-with `rename` to a unique retirement name, then deletes it only when *both*
-proofs hold: the taken file's node identity matches the identity the remover
-verified beforehand, and the unique acquisition token inside the taken
-record matches the token of the record that was verified. The second proof
-exists because inode reuse inside one coarse birthtime window can falsify
-identity alone. On a mismatch — a racing reclaimer retired the verified file
-and a successor installed in between, or an inode was reused — the taken
-file is foreign: it is restored with a no-clobber hard link as soon as the
-lock path is free (a bounded wait that ends by preserving the file at its
-retirement name and surfacing the displacement), and a foreign lock is never
-destroyed or clobbered. Because a live owner is never reclaimed, a holder's
-own release always finds exactly its own file.
+Removal never renames the canonical lock path away after a mere check.
+Every remover first publishes a short-lived per-target removal marker
+(`<lock>.rm`, the same atomic record protocol) naming the remover process.
+While a marker is held, no other remover can act (its marker publish fails)
+and no successor can install (the canonical path is still occupied), so the
+remover's re-verified single rename-take necessarily grabs exactly the file
+it verified — a dead owner's record, or its own acquisition. A stale
+verifier that arrives after a successor installed re-reads the canonical
+record under its marker, finds a different token, and walks away having
+touched nothing: the canonical lock path is never emptied behind a live
+successor, so no third writer can slip in and no restore window exists. A
+taken file whose identity or token mismatches (defense-in-depth against a
+non-protocol actor) is restored with a no-clobber link within the shared
+budget, never destroyed. A marker whose holder died is reclaimed the same
+positive-death way as a dead lock — no new marker can publish while it
+exists, so its verified removal is exact; a live marker makes the removal
+attempt busy and the caller's bounded loop retries. All removal and marker
+waits share the calling acquire's deadline and cancellation and end in the
+classified `[E_FILE_LOCKED]` outcome; a release-time removal runs under its
+own bounded budget and only logs on failure.
 
 A lock held by a confirmed-live or unverifiable owner (foreign host, reused
 pid, malformed record) is never reclaimed because time elapsed; a crashed
@@ -152,17 +175,22 @@ separate lock areas by construction.
 ### Parent write seam and structured results
 
 The contributor rule that parent built-in overrides never wrap Pi `write`
-execution is narrowed: arbitrary execution wrappers remain forbidden, but an
-anchored write may inject the minimal supported filesystem operation needed
-to join the same queue-then-lock protocol, and the registered write
-definition adds exactly one execution-entry gate — when the anchored surface
-is unavailable at execution time (another extension owns the built-in, or
-the anchor store could not be initialized), execution falls back completely
-to the plain native factory, so a half-activated anchored write (locked,
-store-writing, but not observable as ours) cannot exist; the gate also runs
-the factory execution in the write-signal context so cancellation reaches
-the injected lock wait. Result, error, and renderer semantics stay the
-factory's own. Display decoration stays independent of execution. The parent write result keeps Pi's factory
+execution is narrowed exactly as #264 authorizes: arbitrary execution
+wrappers remain forbidden, and an anchored write may inject the minimal
+supported filesystem operation needed to join the same queue-then-lock
+protocol. The availability gate lives inside that injected operation, not in
+an execution wrapper: when the complete anchored surface is unavailable at
+operation time (another extension owns the `read` or `write` built-in, or
+the anchor store could not be initialized), the injected operation performs
+Pi's plain filesystem write with no anchored lock, store mutation, or
+recorded outcome, so a half-activated anchored write (locked, store-writing,
+but not observable as ours) cannot exist. Because the `WriteOperations`
+seam carries no AbortSignal, the parent write's lock wait is bounded and
+classifies as `E_FILE_LOCKED`, while cancellation responsiveness stays the
+factory's own abort checks — the signal context is used only by the child
+write composition, a declared exception. Result, error, and renderer
+semantics stay the factory's own. Display decoration stays independent of
+execution. The parent write result keeps Pi's factory
 wording, and the auto-read appendix is presented by the tool-result
 observer from the outcome the injected operation already published — the
 observer no longer participates in the state transaction. `replace` returns
@@ -224,6 +252,10 @@ now simply covers one more incompatible layout.
    whose immediate retry applies, so the cost is one refused call, not a
    lost edit.
 6. The parent write's filesystem seam means an anchored session depends on
-   the public `WriteOperations` contract of the pinned Pi version; the
-   plain-factory fallback (anchored editing disabled, or the execution-entry
-   gate closed) is unaffected.
+   the public `WriteOperations` contract of the pinned Pi version; the plain
+   filesystem write performed when anchored editing is disabled or the
+   availability gate is closed is unaffected. Because that seam carries no
+   AbortSignal, a parent write cancelled while waiting on the lock completes
+   its bounded wait first (classified `E_FILE_LOCKED`, nothing written) — a
+   small cancellation-latency cost accepted to keep the parent factory's
+   execution unwrapped.
