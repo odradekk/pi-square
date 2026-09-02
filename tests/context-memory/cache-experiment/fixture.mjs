@@ -3,26 +3,41 @@ import jiti from "jiti";
 import { canonicalPayload, locateUnique, sha256Hex } from "./evidence.mjs";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { composeMemorySummary } = await load("../../../src/context-memory/format.ts");
+const { composeMemorySummary, MEMORY_SUMMARY_WRAPPER } = await load("../../../src/context-memory/format.ts");
 
 /**
  * The pinned experiment fixture and the three-arm payload composer (#225,
- * enlarged by #260).
+ * scale #260, arms and order re-modeled by #268).
  *
  * One deterministic semantic trace per group produces all three arms over the
- * same content, modeling one compression boundary between the prime and the
- * probe request:
+ * same content. The measured case is the between-compaction request (#268):
+ * the carried summary is unchanged from the previous request while the
+ * conversation tail grows. That is the case Pi's tail breakpoint — the last
+ * block of the last user message — exists to serve, and the only case where
+ * prefix stability can pay under the breakpoints Pi actually places
+ * (`BREAKPOINT_PLACEMENT` below; no breakpoint sits at the carried summary's
+ * end, so any change to the summary makes every arm fall back to the same
+ * tools boundary — #268 defect 1, #269 records the optimisation).
  *
  * - `stable` — the carried prefix is a real production `composeMemorySummary`
- *   render of the ordered blocks; crossing the boundary appends one block, so
- *   every byte through the previous last block stays identical.
- * - `nonce` — byte-for-byte the same shape, except the earliest block embeds a
- *   fixed-width per-request nonce, so the prefix diverges at the first block.
+ *   render of the ordered blocks, byte-identical between the pair's two
+ *   requests; only the tail grows, so the probe byte-extends its prime.
+ * - `nonce` — the same render with a fixed-width per-request nonce embedded
+ *   in the earliest block, so the probe's summary diverges from its prime
+ *   inside the carried prefix and its read falls back to the tools boundary.
  *   This is the liveness control: identical size and semantics, cache reuse
  *   removed by construction.
- * - `native` — the carried prefix is a single regenerated summary (the way Pi
- *   native compaction rewrites the whole summary at each boundary), so the
- *   divergence lands inside the summary.
+ * - `native` — the carried prefix is Pi native's compaction summary, one
+ *   regenerated text, unchanged between the pair's requests; it regenerates
+ *   only at a compaction boundary, which this fixture deliberately does not
+ *   measure (no arm can differ there under today's Pi placement).
+ *
+ * The three arms are size-matched by construction: the native summary's head
+ * is exactly the Context Memory wrapper's byte length, every arm carries the
+ * same block bodies and the same tail, and the nonce substitution is
+ * fixed-width. The arms therefore differ only in where their probe prefixes
+ * diverge from their primes — never in scale — so the direction comparisons
+ * measure prefix stability rather than fixture authoring.
  *
  * Payloads mirror Pi's real projection shape (system, tools, carried summary
  * as the leading context message, then the raw tail) without depending on a
@@ -30,16 +45,16 @@ const { composeMemorySummary } = await load("../../../src/context-memory/format.
  *
  * Scale (#260, evidence #251): the measured gateway caches nothing below a
  * minimum cacheable prefix near 1 024 tokens (a 968-token request did not
- * cache, a 1 121-token request did), while the original fixture's breakpoint
- * sat near 487 tokens — below the floor, so no arm could cache and no rate
- * could be computed. The block bodies are therefore padded with deterministic
- * detail lines so that every composed request's covered prefix (through the
- * end of the carried summary, the pinned breakpoint) clears
- * `COVERED_PREFIX_FLOOR_TOKENS`, pinned at twice the measured floor: sized
- * with margin above the floor, never to it. The padding is part of the
- * fixture: deterministic, semantically shaped, identical between a group's
- * prime and probe for the carried blocks, and re-pinned through
- * `fixtureDigest`.
+ * cache, a 1 121-token request did), while the original fixture's covered
+ * prefix sat near 487 tokens — below the floor, so no arm could cache and no
+ * rate could be computed. The block bodies are therefore padded with
+ * deterministic detail lines so that every composed request's covered prefix
+ * — bytes zero through the tail breakpoint, the last block of the last user
+ * message — clears `COVERED_PREFIX_FLOOR_TOKENS`, pinned at twice the
+ * measured floor: sized with margin above the floor, never to it. The
+ * padding is part of the fixture: deterministic, semantically shaped,
+ * identical between a group's prime and probe for the carried blocks, and
+ * re-pinned through `fixtureDigest`.
  */
 
 /** Sentinel embedded in every fixture-authored body or source text. */
@@ -47,22 +62,48 @@ export const MARKER = "XCACHE";
 
 export const GROUP_COUNT = 5;
 export const ARMS = ["stable", "nonce", "native"];
-/** Blocks carried by the prime; the probe crosses the boundary and appends one more. */
-export const OLD_BLOCK_COUNT = 3;
 
 /**
- * The pinned per-group request order: all three primes first, then all three
- * probes, so every probe follows its prime with the same number of intervening
- * requests. The five groups repeat this sequence in ascending order.
+ * The pinned arm order each group's requests run in: all three primes first,
+ * then all three probes in the same arm order, so every probe follows its
+ * prime with the same number of intervening requests. The arm order itself
+ * rotates left by one per group (#268 defect 3): TTFT is the one direction
+ * sensitive to request position and the noisiest, and a fixed order would
+ * confound the arm with the position. Five groups over a three-arm rotation
+ * put every arm in every position at least once.
  */
-export const REQUEST_ORDER = [
-  "stable.prime",
-  "nonce.prime",
-  "native.prime",
-  "stable.probe",
-  "nonce.probe",
-  "native.probe",
-];
+export const ARM_ORDER = ["stable", "nonce", "native"];
+
+/** The pinned rotation rule, restated in the report verbatim. */
+export const ARM_ROTATION =
+  "all three primes, then all three probes; arm order rotates left by (group - 1) mod 3 over stable, nonce, native, so no arm always occupies the same request position";
+
+export function armOrderFor(group) {
+  const shift = (group - 1) % ARM_ORDER.length;
+  return ARM_ORDER.map((_, index) => ARM_ORDER[(index + shift) % ARM_ORDER.length]);
+}
+
+/** The pinned per-group request order: six steps, primes then probes. */
+export function groupOrder(group) {
+  const arms = armOrderFor(group);
+  return [
+    ...arms.map((arm) => `${arm}.prime`),
+    ...arms.map((arm) => `${arm}.probe`),
+  ];
+}
+
+/**
+ * The breakpoint placement every request models, restated in the pins and the
+ * report verbatim: the three positions Pi's anthropic-messages converter sets
+ * (`node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`,
+ * Pi 0.84.2: system blocks, last immediate tool, last block of the last user
+ * message). Pi renders a compactionSummary as one text block
+ * (`@earendil-works/pi-coding-agent/dist/core/messages.js`), so the carried
+ * summary is one text block sitting between the tool breakpoint and the tail
+ * breakpoint with no breakpoint of its own.
+ */
+export const BREAKPOINT_PLACEMENT =
+  "mirrors Pi's anthropic-messages placement: system blocks, last immediate tool, last block of the last user message";
 
 export const SYSTEM_PROMPT = [
   `You are the Pi main agent running the pinned provider-cache experiment profile (${MARKER}).`,
@@ -120,12 +161,12 @@ export const MEASURED_CACHEABLE_PREFIX_TOKENS = 1024;
 
 /**
  * The pinned fixture scale: every composed request's covered prefix (bytes
- * zero through the end of the carried summary, the pinned breakpoint) must
- * clear this many tokens — twice the measured floor, margin above it rather
- * than sized to it (#260). `DETAIL_LINES_PER_BLOCK` is tuned so the smallest
- * covered prefix in the whole fixture (the native arm's prime) clears the
- * floor with headroom; the experiment tests assert the invariant, not the
- * tuning constant.
+ * zero through the tail breakpoint — system, tools, carried summary, and the
+ * whole tail) must clear this many tokens — twice the measured floor, margin
+ * above it rather than sized to it (#260). `DETAIL_LINES_PER_BLOCK` is tuned
+ * so the smallest covered prefix in the whole fixture (any arm's prime)
+ * clears the floor with headroom; the experiment tests assert the invariant,
+ * not the tuning constant.
  */
 export const COVERED_PREFIX_FLOOR_TOKENS = 2048;
 const DETAIL_LINES_PER_BLOCK = 30;
@@ -141,7 +182,6 @@ function detailLines(kind, group) {
     setup: (index) => `frozen row ${index}: scenario ${group}-${index} carries ${3 + (index % 4)} cases, a pinned expectation, and no deferred input`,
     parser: (index) => `ledger entry ${index}: column ${11 + index} kept its width marker, and case ${group}-${index} re-parsed without residue`,
     verification: (index) => `check pass ${index}: ${37 + index} assertions held, and the residual risk row ${index} stayed attached to task ${group}`,
-    release: (index) => `note ${index}: drafted from verified row ${index}; the reviewer holds the task ${group} tag until the notes land`,
   };
   const lines = [];
   for (let index = 1; index <= DETAIL_LINES_PER_BLOCK; index += 1) {
@@ -180,28 +220,32 @@ function verificationBlock(group) {
   ].join("\n");
 }
 
-function releaseNotesBlock(group) {
-  return [
-    `# ${MARKER} task ${group} release notes`,
-    "",
-    `- notes drafted from the verified state of task ${group}`,
-    ...detailLines("release", group),
-  ].join("\n");
-}
-
 export function baseBlocks(group) {
   return [setupBlock(group), parserBlock(group), verificationBlock(group)];
 }
 
-export function appendedBlock(group) {
-  return releaseNotesBlock(group);
-}
+/**
+ * The Pi-native arm's carried prefix: one regenerated summary text. The head
+ * is authored at exactly the Context Memory wrapper's byte length (the
+ * experiment tests assert the equality) so the native arm's summary matches
+ * the stable arm's byte-for-byte in scale while differing entirely in
+ * content; the block separator is shared for the same reason.
+ */
+const NATIVE_SUMMARY_HEAD = [
+  "Pi native compaction summary",
+  "============================",
+  "",
+  "The conversation before this point was rewritten into this single summary",
+  "text by native compaction at the last boundary. Native compaction",
+  "regenerates the entire summary from scratch at every compression boundary",
+  "and carries it forward unchanged between boundaries while the raw tail",
+  "keeps growing underneath it, turn by turn.",
+  "",
+].join("\n");
 
-/** The Pi-native arm's carried prefix: one regenerated summary text. */
-export function nativeSummary(group, revision, { probe }) {
-  const head = `Summary of the earlier conversation (revision ${revision}).`;
-  const bodies = [...baseBlocks(group), ...(probe ? [appendedBlock(group)] : [])];
-  return `${head}\n\n${bodies.join("\n\n")}`;
+/** The Pi-native arm's carried prefix: unchanged across the pair (#268). */
+export function nativeSummary(group) {
+  return `${NATIVE_SUMMARY_HEAD}${baseBlocks(group).map((body) => `\n---\n\n${body}`).join("")}`;
 }
 
 export function traceTail(group, { probe }) {
@@ -222,37 +266,45 @@ export function traceTail(group, { probe }) {
 }
 
 /**
- * Composes one arm request. Returns the canonical payload plus the byte layout
- * the divergence invariants are checked against: the summary region and each
- * memory block's global byte range (empty for the native arm, which carries
- * no blocks).
+ * Composes one arm request. Returns the canonical payload plus the byte
+ * layout the divergence invariants are checked against: the summary region,
+ * each memory block's global byte range (empty for the native arm, which
+ * carries no blocks), and the three canonical breakpoint positions every
+ * request declares — the end of the system segment, the end of the tools
+ * segment, and the end of the last message segment, mirroring Pi's placement.
  */
 export function composeRequest({ group, arm, role }) {
   const probe = role === "probe";
   let summaryText;
   let blockTexts = [];
   if (arm === "native") {
-    summaryText = nativeSummary(group, probe ? 2 : 1, { probe });
+    summaryText = nativeSummary(group);
   } else {
     const blocks = [...baseBlocks(group)];
     if (arm === "nonce") {
       // Same width, different bytes: the control changes stability, not size.
       blocks[0] = blocks[0].replace(nonceLiteral(ZERO_NONCE), nonceLiteral(nonceFor(group, role)));
     }
-    if (probe) blocks.push(appendedBlock(group));
     blockTexts = blocks;
     summaryText = composeMemorySummary(blocks);
   }
+  const tail = traceTail(group, { probe });
   const segments = [
     { element: "system", text: SYSTEM_PROMPT },
     { element: "tools", text: JSON.stringify(TOOLS) },
     { element: "summary", text: summaryText },
-    ...traceTail(group, { probe }).map((message, index) => ({
+    ...tail.map((message, index) => ({
       element: `message-${index}`,
       text: `${message.role}: ${message.text}`,
     })),
   ];
   const payload = canonicalPayload(segments);
+  const segmentOf = (element) => payload.table.find((entry) => entry.element === element);
+  const breakpoints = [
+    segmentOf("system").contentEnd,
+    segmentOf("tools").contentEnd,
+    segmentOf(`message-${tail.length - 1}`).contentEnd,
+  ];
   return {
     group,
     arm,
@@ -261,15 +313,16 @@ export function composeRequest({ group, arm, role }) {
     layout: {
       summary: locateUnique(payload.bytes, summaryText),
       blocks: blockTexts.map((text) => locateUnique(payload.bytes, text)),
+      breakpoints,
     },
   };
 }
 
-/** Digest over every composed payload in pinned order: the pinned fixture. */
+/** Digest over every composed payload in pinned per-group order: the pinned fixture. */
 export function fixtureDigest(groupCount = GROUP_COUNT) {
   const hash = createHash("sha256");
   for (let group = 1; group <= groupCount; group += 1) {
-    for (const step of REQUEST_ORDER) {
+    for (const step of groupOrder(group)) {
       const [arm, role] = step.split(".");
       const { payload } = composeRequest({ group, arm, role });
       hash.update(sha256Hex(payload.bytes));

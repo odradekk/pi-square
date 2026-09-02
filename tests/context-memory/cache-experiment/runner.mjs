@@ -1,9 +1,9 @@
 import {
   ARMS,
+  ARM_ROTATION,
+  BREAKPOINT_PLACEMENT,
   GROUP_COUNT,
   MARKER,
-  OLD_BLOCK_COUNT,
-  REQUEST_ORDER,
   SETTINGS,
   SETTINGS_HASH,
   SYSTEM_PROMPT_HASH,
@@ -11,6 +11,7 @@ import {
   TOOLS_HASH,
   composeRequest,
   fixtureDigest,
+  groupOrder,
 } from "./fixture.mjs";
 import { payloadDigest, prefixEvidence } from "./evidence.mjs";
 import {
@@ -22,22 +23,26 @@ import {
 } from "./verdict.mjs";
 
 /**
- * The experiment runner (#225, standard re-pinned by #260): executes the five
- * interleaved paired groups over the three pinned arms through an injected
- * provider adapter, records the exact payload/prefix hashes, first divergence
- * boundaries, usage, cache and retention reports, cost, and locally measured
- * TTFT for every request, and produces the bounded verdict report.
+ * The experiment runner (#225, standard re-pinned by #260, arms and order
+ * re-modeled by #268): executes the five interleaved paired groups over the
+ * three pinned arms through an injected provider adapter, records the exact
+ * payload/prefix hashes, first divergence boundaries, usage, cache and
+ * retention reports, cost, and locally measured TTFT for every request, and
+ * produces the bounded verdict report.
  *
- * The runner owns run integrity: only the pinned request order is valid,
- * per-arm divergence invariants must hold (the stable arm's probe may not
- * diverge before the end of the previously carried blocks, the nonce arm's
- * probe must diverge inside the earliest block, the native arm's probe must
- * diverge inside the regenerated summary), and provider reports are validated
- * at the boundary. The verdict itself — the pinned hit-rate standard, the
- * non-regression band against the Pi-native baseline, and the nonce liveness
- * control — lives in `verdict.mjs`. The report carries hashes, offsets, and
- * bounded numbers — never payloads, transcripts, Memory or source bodies, or
- * credentials — and a self-check re-verifies that before anything is written.
+ * The runner owns run integrity: only the pinned per-group request order is
+ * valid (primes then probes, the arm order rotating per group so no arm is
+ * confounded with a request position), per-arm divergence invariants must
+ * hold (the stable and native arms' probes must byte-extend their primes —
+ * the between-compaction case — while the nonce arm's probe must diverge
+ * inside the earliest carried block), and provider reports are validated at
+ * the boundary. Every request declares the three breakpoints Pi's
+ * anthropic-messages converter places, as canonical byte positions; the
+ * verdict itself — the pinned hit-rate standard, the non-regression band
+ * against the Pi-native baseline, and the nonce liveness control — lives in
+ * `verdict.mjs`. The report carries hashes, offsets, and bounded numbers —
+ * never payloads, transcripts, Memory or source bodies, or credentials — and
+ * a self-check re-verifies that before anything is written.
  */
 
 const REPORT_SCHEMA = "pi-square.context-memory/provider-cache-experiment/1";
@@ -84,30 +89,31 @@ function validateProviderReport(report) {
 
 /**
  * Names the boundary the arm's probe diverges at and checks the arm's prefix
- * invariant. A violation means the fixture or composer stopped producing the
- * cache property under test, so the run's evidence is meaningless.
+ * invariant (#268): the measured case is the between-compaction request, so
+ * the stable and native arms' probes must byte-extend their primes — every
+ * byte of the prime is shared and the divergence lands in the grown tail —
+ * while the nonce arm's probe must diverge inside the earliest carried block.
+ * A violation means the fixture or composer stopped producing the cache
+ * property under test, so the run's evidence is meaningless.
  */
-export function classifyDivergenceBoundary(arm, layout, sharedBytes, oldBlockCount = OLD_BLOCK_COUNT) {
-  if (arm === "stable") {
-    const lastOldBlock = layout.blocks[oldBlockCount - 1];
-    const ok = lastOldBlock !== undefined && sharedBytes >= lastOldBlock.end;
-    return { ok, boundary: ok ? "after-stable-blocks" : "inside-stable-blocks" };
+export function classifyDivergenceBoundary(arm, layout, sharedBytes, primeByteLength) {
+  if (arm === "stable" || arm === "native") {
+    const ok = primeByteLength !== undefined && sharedBytes === primeByteLength;
+    return { ok, boundary: ok ? "growing-tail" : "inside-carried-prefix" };
   }
-  if (arm === "nonce") {
-    const earliest = layout.blocks[0];
-    const ok = earliest !== undefined && sharedBytes >= earliest.start && sharedBytes < earliest.end;
-    return { ok, boundary: ok ? "memory-block-1" : "outside-earliest-block" };
-  }
-  const ok = sharedBytes >= layout.summary.start && sharedBytes < layout.summary.end;
-  return { ok, boundary: ok ? "native-summary" : "outside-native-summary" };
+  const earliest = layout.blocks[0];
+  const ok = earliest !== undefined && sharedBytes >= earliest.start && sharedBytes < earliest.end;
+  return { ok, boundary: ok ? "memory-block-1" : "outside-earliest-block" };
 }
 
 function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount }) {
   const declared = adapter.describePins();
+  const placement = declared.breakpointPlacement ?? BREAKPOINT_PLACEMENT;
   const pins = {
     provider: declared.provider,
     model: declared.model,
     adapterCacheReporting: declared.cacheReporting,
+    adapterBreakpointPlacement: placement,
     toolNames: TOOLS.map((tool) => tool.name),
     toolsHash: TOOLS_HASH,
     systemPromptHash: SYSTEM_PROMPT_HASH,
@@ -118,10 +124,12 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount }) {
     retention: {
       bucket: "default",
       ttlMs,
-      breakpoint: "end-of-carried-summary",
+      breakpoint: placement,
       extendedBucket: "unexercised-in-this-slice",
     },
-    groupOrder: REQUEST_ORDER,
+    groupOrder: Array.from({ length: groupCount }, (_, index) => groupOrder(index + 1)),
+    armRotation: ARM_ROTATION,
+    measuredCase: "between-compaction: the carried summary is unchanged from the previous request while the tail grows; the compaction boundary, where every arm necessarily falls back to the tools breakpoint, is not measured",
     timing: {
       minRequestGapMs,
       ttlMs,
@@ -198,7 +206,7 @@ export async function runExperiment({
   ttlMs = DEFAULT_TTL_MS,
   minRequestGapMs = 0,
   groupCount = GROUP_COUNT,
-  order = REQUEST_ORDER,
+  orderFor = groupOrder,
   generatedAt = () => new Date().toISOString(),
   onEvent,
 }) {
@@ -209,9 +217,11 @@ export async function runExperiment({
   };
 
   const pins = buildPins(adapter, { ttlMs, minRequestGapMs, groupCount });
-  if (order !== REQUEST_ORDER && JSON.stringify(order) !== JSON.stringify(REQUEST_ORDER)) {
-    integrity.orderMatchesPin = false;
-    fail("request order deviated from the pinned interleaved order");
+  for (let group = 1; group <= groupCount; group += 1) {
+    if (JSON.stringify(orderFor(group)) !== JSON.stringify(groupOrder(group))) {
+      integrity.orderMatchesPin = false;
+      fail(`group ${group}: request order deviated from the pinned rotated per-group order`);
+    }
   }
 
   const records = new Map(); // `${group}|${arm}.${role}` -> record
@@ -219,7 +229,7 @@ export async function runExperiment({
   let requestIndex = 0;
   execute:
   for (let group = 1; group <= groupCount; group += 1) {
-    for (const step of order) {
+    for (const step of orderFor(group)) {
       const [arm, role] = step.split(".");
       requestIndex += 1;
       if (minRequestGapMs > 0) await clock.sleep(minRequestGapMs);
@@ -241,7 +251,9 @@ export async function runExperiment({
               bucket: pins.retention.bucket,
               ttlMs,
               breakpoint: pins.retention.breakpoint,
-              coveredBytes: composed.layout.summary.end,
+              // The three positions Pi's anthropic-messages converter places,
+              // as canonical byte positions: system, tools, last message block.
+              breakpoints: composed.layout.breakpoints,
             },
           },
           { onFirstToken: () => { firstTokenAt = clock.now(); } },
@@ -250,7 +262,7 @@ export async function runExperiment({
         integrity.providerErrors += 1;
         const message = `the adapter threw (${String(error?.message ?? error).slice(0, 120)})`;
         fail(`group ${group} ${arm}.${role}: ${message}`);
-        onEvent?.({ type: "request", group, arm, role, index: requestIndex, total: groupCount * order.length, error: message });
+        onEvent?.({ type: "request", group, arm, role, index: requestIndex, total: groupCount * groupOrder(1).length, error: message });
         aborted = true;
         break execute;
       }
@@ -258,12 +270,12 @@ export async function runExperiment({
       if (problem) {
         integrity.providerErrors += 1;
         fail(`group ${group} ${arm}.${role}: ${problem}`);
-        onEvent?.({ type: "request", group, arm, role, index: requestIndex, total: groupCount * order.length, error: problem });
+        onEvent?.({ type: "request", group, arm, role, index: requestIndex, total: groupCount * groupOrder(1).length, error: problem });
         aborted = true;
         break execute;
       }
       onEvent?.({
-        type: "request", group, arm, role, index: requestIndex, total: groupCount * order.length,
+        type: "request", group, arm, role, index: requestIndex, total: groupCount * groupOrder(1).length,
         cacheRead: report.cache?.read ?? 0, cacheWrite: report.cache?.write ?? 0,
         uncached: report.usage?.inputTokens ?? 0,
         ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMs,
@@ -292,7 +304,12 @@ export async function runExperiment({
         const probe = records.get(`${group}|${arm}.probe`);
         if (!prime || !probe) continue; // unreachable with the pinned order; guards a partial run
         const evidence = prefixEvidence(prime.composed.payload, probe.composed.payload);
-        const classification = classifyDivergenceBoundary(arm, probe.composed.layout, evidence.sharedBytes);
+        const classification = classifyDivergenceBoundary(
+          arm,
+          probe.composed.layout,
+          evidence.sharedBytes,
+          prime.composed.payload.bytes.length,
+        );
         if (!classification.ok) {
           integrity.divergenceInvariantsOk = false;
           fail(
@@ -383,7 +400,7 @@ export async function runExperiment({
 function renderHuman(report) {
   const short = (hash) => (typeof hash === "string" && hash.length >= 12 ? hash.slice(0, 12) : String(hash));
   const lines = [];
-  lines.push(`Provider-cache experiment (#225, standard #260) — ${report.mode}`);
+  lines.push(`Provider-cache experiment (#225, standard #260, arms #268) — ${report.mode}`);
   lines.push(
     `result: ${report.conclusion.final.toUpperCase()} — ${report.totals.groups} groups, ${report.totals.requests} requests, integrity ${report.integrity.ok ? "ok" : "FAILED"}`,
   );
@@ -393,7 +410,12 @@ function renderHuman(report) {
       + ` · settings ${short(report.pins.settingsHash)} · fixture ${short(report.pins.fixtureDigest)}`
       + ` · retention ${report.pins.retention.bucket}/${report.pins.retention.ttlMs}ms`,
   );
-  lines.push(`timing: ttl ${report.pins.timing.ttlMs}ms · min gap ${report.pins.timing.minRequestGapMs}ms · order ${report.pins.groupOrder.join(", ")}`);
+  lines.push(`breakpoints: ${report.pins.retention.breakpoint}`);
+  lines.push(`measured case: ${report.pins.measuredCase}`);
+  const orderText = report.pins.groupOrder
+    .map((steps, index) => `${index + 1} ${steps.map((step) => step.replace(".prime", "").replace(".probe", "'")).join(",")}`)
+    .join(" · ");
+  lines.push(`timing: ttl ${report.pins.timing.ttlMs}ms · min gap ${report.pins.timing.minRequestGapMs}ms · order per group (primes then probes): ${orderText}`);
   lines.push("groups:");
   for (const group of report.groups) {
     const native = group.nativeComparison?.evaluated
@@ -420,9 +442,23 @@ function renderHuman(report) {
   );
   lines.push(`  note: ${standard.denominatorNote}`);
   const perDirection = Object.entries(report.nativeSummary.perDirection)
-    .map(([direction, summary]) => `${direction} median-delta ${summary.medianDelta ?? "—"} (${summary.worse}w/${summary.better}b/${summary.equal}e)`)
+    .map(([direction, summary]) => {
+      const spread = direction === "ttft" && summary.spreadMs !== null && summary.spreadMs !== undefined
+        ? ` (spread ${summary.spreadMs}ms)`
+        : "";
+      return `${direction} median-delta ${summary.medianDelta ?? "—"}${spread} (${summary.worse}w/${summary.better}b/${summary.equal}e)`;
+    })
     .join(" · ");
-  lines.push(`native comparison: ${report.nativeSummary.groupsEvaluated} groups evaluated · ${perDirection}`);
+  const derivedCost = report.nativeSummary.derived?.cost;
+  const derivedText = derivedCost
+    ? ` · cost (derived) median-delta ${derivedCost.medianDelta ?? "—"} (${derivedCost.worse}w/${derivedCost.better}b/${derivedCost.equal}e)`
+    : "";
+  lines.push(`native comparison: ${report.nativeSummary.groupsEvaluated} groups evaluated · ${perDirection}${derivedText}`);
+  lines.push(`  directions (counted, independent): ${report.regression.directions.counted.join(", ")}`);
+  for (const [direction, note] of Object.entries(report.regression.directions.notes)) {
+    lines.push(`    ${direction}: ${note}`);
+  }
+  lines.push(`  ${report.regression.directions.derivedNote}`);
   lines.push(`regression rule (${report.regression.rule}): ${report.regression.fired ? "FIRED" : "not fired"} — ${report.regression.groupsRegressed} regressed`);
   lines.push(`conclusion: cache ${report.conclusion.cache.toUpperCase()} · final ${report.conclusion.final.toUpperCase()}`);
   for (const reason of report.conclusion.reasons.slice(0, 8)) lines.push(`  · ${reason}`);

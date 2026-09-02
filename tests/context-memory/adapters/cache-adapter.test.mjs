@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SYSTEM_PROMPT, TOOLS, composeRequest } from "../cache-experiment/fixture.mjs";
-import { estimateTokens } from "../cache-experiment/evidence.mjs";
+import { estimateTokens, sha256Hex } from "../cache-experiment/evidence.mjs";
 import { runExperiment } from "../cache-experiment/runner.mjs";
 import {
   CACHE_PROVIDER_PRICES,
@@ -13,14 +13,16 @@ import {
 } from "./cache-provider.mjs";
 
 /**
- * Offline unit coverage for the credentialed provider-cache adapter (#248).
+ * Offline unit coverage for the credentialed provider-cache adapter (#248,
+ * breakpoint placement re-modeled by #268).
  *
  * Every test drives the adapter against a stubbed transport serving scripted
  * SSE streams: no network call is made, no real credential is read (only a
  * synthetic placeholder value is set and asserted), and no real experiment
  * verdict is produced. The assertions pin the adapter contract the runner
- * and #227 rely on: table-faithful request reconstruction, breakpoint
- * placement, the temperature omission, absent-versus-zero cache reporting,
+ * and #227 rely on: table-faithful request reconstruction, the three
+ * breakpoint positions mirroring Pi's anthropic-messages placement, the
+ * temperature omission, absent-versus-zero cache reporting,
  * retention-bucket honesty, first-token timing, and bounded failures.
  */
 
@@ -52,8 +54,8 @@ function experimentRequest(group, arm, role) {
     cacheControl: {
       bucket: "default",
       ttlMs: 300_000,
-      breakpoint: "end-of-carried-summary",
-      coveredBytes: composed.layout.summary.end,
+      breakpoint: "mirrors Pi's anthropic-messages placement",
+      breakpoints: composed.layout.breakpoints,
     },
   };
 }
@@ -129,6 +131,16 @@ function captureTransport(handler) {
   assert.equal(pins.provider, "ccr-claude");
   assert.equal(pins.model, "claude-sonnet-5");
   assert.equal(pins.cacheReporting, "reported");
+  assert.ok(pins.breakpointPlacement.startsWith("mirrors Pi's anthropic-messages placement"),
+    "the pins record the modelled breakpoint placement");
+  for (const position of ["system blocks", "last immediate tool", "last block of the last user message"]) {
+    assert.ok(pins.breakpointPlacement.includes(position), `the placement names the ${position} position`);
+  }
+  assert.equal(
+    pins.breakpointPlacement,
+    (await import("../cache-experiment/fixture.mjs")).BREAKPOINT_PLACEMENT,
+    "the adapter and the fixture pin the same placement phrase",
+  );
   (function walkStrings(value) {
     if (typeof value === "string") {
       assert.ok(value.length <= 240, `pin strings stay bounded: ${value.slice(0, 40)}…`);
@@ -161,28 +173,35 @@ function captureTransport(handler) {
   assert.equal(body.max_tokens, 512, "SETTINGS.maxOutputTokens applies verbatim");
   assert.equal(body.stream, true);
   assert.ok(!("temperature" in body), "temperature is omitted, not sent as zero");
-  assert.equal(body.system, SYSTEM_PROMPT);
+  assert.ok(Array.isArray(body.system), "the system prompt is one text block list, as Pi sends it");
+  assert.equal(body.system[0].type, "text");
+  assert.equal(body.system[0].text, SYSTEM_PROMPT);
+  assert.deepEqual(body.system[0].cache_control, { type: "ephemeral" },
+    "breakpoint 1: the system block carries cache_control, where Pi places it");
   assert.deepEqual(body.tools, TOOLS.map((tool) => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema,
-  })));
+  })).map((tool, index) => (index === TOOLS.length - 1 ? { ...tool, cache_control: { type: "ephemeral" } } : tool)),
+    "breakpoint 2: the last immediate tool carries cache_control, and only it");
   assert.equal(body.messages[0].role, "user");
   assert.equal(body.messages[0].content[0].type, "text");
   assert.equal(body.messages[0].content[0].text, segmentContent(request, "summary"),
-    "the summary segment is carried verbatim as the leading context message");
-  assert.deepEqual(body.messages[0].content[0].cache_control, { type: "ephemeral" },
-    "the breakpoint sits on the block containing coveredBytes (the summary's end)");
-  assert.equal((transport.requests[0].init.body.match(/"cache_control"/g) ?? []).length, 1,
-    "exactly one cache breakpoint per request");
+    "the summary segment is carried verbatim as the leading context message, one text block as Pi renders it");
+  assert.equal(body.messages[0].content[0].cache_control, undefined,
+    "no breakpoint sits at the carried summary's end — Pi places none there");
+  const marked = body.messages.filter((message) => message.content.some((block) => block.cache_control));
+  assert.equal(marked.length, 1);
+  assert.equal(marked[0], body.messages[body.messages.length - 1],
+    "breakpoint 3: the last message (a user turn) carries cache_control on its last block");
+  assert.equal((transport.requests[0].init.body.match(/"cache_control"/g) ?? []).length, 3,
+    "exactly three cache breakpoints per request: system, last tool, last user-message block");
   const tail = body.messages.slice(1);
   assert.equal(tail.length, 6, "the trace tail rides after the summary");
   assert.deepEqual(tail.map((message) => message.role), ["user", "assistant", "user", "assistant", "user", "user"],
     "user/assistant rows pass through and the tool row surfaces as user text");
 }
-
 // ─── determinism and the prefix property at the wire level ──────────
-
 {
   const transport = captureTransport(() => sseResponse(claudeFrames({ inputTokens: 1 })));
   const adapter = createCacheProviderAdapter({ transport });
@@ -191,17 +210,41 @@ function captureTransport(handler) {
   await adapter.send(experimentRequest(2, "stable", "prime"), {});
   assert.equal(transport.requests[1].init.body, firstBody, "identical inputs produce byte-identical requests");
 
-  const summaryOf = (index) => JSON.parse(transport.requests[index].init.body).messages[0].content[0].text;
-  await adapter.send(experimentRequest(2, "stable", "probe"), {});
-  assert.ok(summaryOf(2).startsWith(summaryOf(0)),
-    "the stable probe's wire summary extends the prime's (no injected variability)");
-  const noncePrime = transport.requests.length;
+  // The between-compaction property on the wire (#268): with the carried
+  // summary unchanged, the stable and native probes' messages extend their
+  // primes' exactly (modulo the tail-breakpoint marker, which legitimately
+  // moves to the new last user block), while the nonce probe's summary — the
+  // leading context message — differs from its prime's inside the earliest
+  // block.
+  const strip = (messages) => JSON.stringify(messages, (key, value) => (key === "cache_control" ? undefined : value));
+  const messagesOf = (index) => JSON.parse(transport.requests[index].init.body).messages;
+  for (const arm of ["stable", "native"]) {
+    await adapter.send(experimentRequest(2, arm, "prime"), {});
+    await adapter.send(experimentRequest(2, arm, "probe"), {});
+    const prime = messagesOf(transport.requests.length - 2);
+    const probe = messagesOf(transport.requests.length - 1);
+    assert.equal(
+      strip(prime),
+      strip(probe.slice(0, prime.length)),
+      `${arm}: the probe's wire messages extend the prime's; only the tail grew`,
+    );
+  }
   await adapter.send(experimentRequest(2, "nonce", "prime"), {});
   await adapter.send(experimentRequest(2, "nonce", "probe"), {});
-  assert.ok(!summaryOf(noncePrime + 1).startsWith(summaryOf(noncePrime)),
-    "the negative control's summary diverges inside the earliest block");
+  const noncePrime = messagesOf(transport.requests.length - 2);
+  const nonceProbe = messagesOf(transport.requests.length - 1);
+  assert.equal(noncePrime[0].role, "user");
+  assert.notEqual(
+    strip([noncePrime[0]]),
+    strip([nonceProbe[0]]),
+    "the negative control's summary message diverges from its prime (the nonce)",
+  );
+  assert.equal(
+    strip(noncePrime.slice(1)),
+    strip(nonceProbe.slice(1, noncePrime.length)),
+    "the control's tail itself is unchanged; only the carried summary varies",
+  );
 }
-
 // ─── no request ends with an assistant turn (no prefill rejection) ───
 
 {
@@ -393,28 +436,49 @@ function captureTransport(handler) {
 // ─── a full offline experiment through the real runner ──────────────
 
 {
-  // A stub gateway that behaves like the probed one: it serves the longest
-  // common wire-prefix shared with any prior request, bounded by the
-  // request's own breakpoint, and reports the write in the 1 h bucket.
-  function commonPrefixLength(a, b) {
-    const limit = Math.min(a.length, b.length);
-    let shared = 0;
-    while (shared < limit && a[shared] === b[shared]) shared += 1;
-    return shared;
-  }
-  const GATEWAY_PREFIX_TOKENS = 539;
-  const priorBodies = [];
-  const transport = captureTransport((body) => {
-    const breakpoint = body.indexOf('"cache_control"');
-    let readBytes = 0;
-    for (const previous of priorBodies) {
-      readBytes = Math.max(readBytes, commonPrefixLength(body, previous));
+  // A stub gateway that behaves like a breakpoint cache. The serialized
+  // directive text is a request instruction, not content — a provider hashes
+  // the block content, with cache_control only marking where the prefix is
+  // cut — so each body is normalized with every
+  // `,"cache_control":{"type":"ephemeral"}` removed and the cut positions
+  // recorded in normalized coordinates. Every request caches its prefix at
+  // each of its three boundaries, and a later request is served the longest
+  // previously-cached boundary its leading content still shares — matching
+  // happens only at those boundaries, never at an arbitrary common prefix.
+  // The write is reported in the 1 h bucket. A summary that changed after the
+  // tools boundary can only fall back to the tools boundary, which is the
+  // behavior the arms must separate.
+  const DIRECTIVE = ',"cache_control":{"type":"ephemeral"}';
+  const normalizeBody = (body) => {
+    const boundaries = [];
+    let text = "";
+    let from = 0;
+    for (;;) {
+      const index = body.indexOf(DIRECTIVE, from);
+      if (index < 0) break;
+      text += body.slice(from, index);
+      boundaries.push(text.length);
+      from = index + DIRECTIVE.length;
     }
-    readBytes = Math.min(readBytes, breakpoint);
-    priorBodies.push(body);
+    text += body.slice(from);
+    return { text, boundaries };
+  };
+  const cachedBoundaries = [];
+  const transport = captureTransport((body) => {
+    const { text, boundaries } = normalizeBody(body);
+    let readBytes = 0;
+    for (const entry of cachedBoundaries) {
+      if (entry.boundary > text.length) continue;
+      if (sha256Hex(text.slice(0, entry.boundary)) === entry.hash) {
+        readBytes = Math.max(readBytes, entry.boundary);
+      }
+    }
+    for (const boundary of boundaries) {
+      cachedBoundaries.push({ hash: sha256Hex(text.slice(0, boundary)), boundary });
+    }
     const read = estimateTokens(readBytes);
-    const write = estimateTokens(Math.max(0, breakpoint - readBytes));
-    const input = Math.max(0, estimateTokens(body.length) + GATEWAY_PREFIX_TOKENS - read - write);
+    const write = estimateTokens(Math.max(0, boundaries[boundaries.length - 1] - readBytes));
+    const input = Math.max(0, estimateTokens(text.length) - read - write);
     return sseResponse(claudeFrames({ inputTokens: input, cacheRead: read, cacheWrite: write, retention: "1h" }));
   });
 
