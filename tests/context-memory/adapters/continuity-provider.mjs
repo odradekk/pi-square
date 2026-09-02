@@ -261,6 +261,16 @@ export function toOpenAiMessages(systemPrompt, llmMessages) {
           function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
         }));
       }
+      // Pi's own converter drops an assistant message carrying neither content
+      // nor tool calls, because providers reject it outright: "either content
+      // or tool_calls, but not none". Reasoning does not satisfy that rule.
+      // Two things produce such a message here — a reasoning-only reply, and
+      // the submitting turn once the controller filters its submit_memory call
+      // out of the projection, leaving only the thinking part behind. Either
+      // one poisons every later request of the run, so mirror Pi and drop it.
+      // The Anthropic path already does through its empty-blocks check, which
+      // is why an unmirrored OpenAI path cost a whole scored arm (#227).
+      if (wire.content === null && wire.tool_calls === undefined) continue;
       out.push(wire);
     } else if (message.role === "toolResult") {
       out.push({ role: "tool", tool_call_id: message.toolCallId, content: resultTextOf(message) });

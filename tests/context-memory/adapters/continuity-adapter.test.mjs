@@ -179,6 +179,27 @@ process.on("exit", () => {
   assert.deepEqual(openai[5], { role: "tool", tool_call_id: "toolu_2", content: "r2" });
   assert.deepEqual(openai[6], { role: "user", content: "advisory text" });
   assert.deepEqual(openai[7], { role: "user", content: "u2" });
+
+  // Once the controller filters a submit_memory call out of an assistant turn
+  // that also carried reasoning, only the thinking part is left. Both wire
+  // builders must drop that message: it has neither content nor tool calls,
+  // and a provider rejects the whole request over it, poisoning every later
+  // turn of the run rather than just the one that produced it.
+  const thinkingOnly = [
+    { role: "user", content: [{ type: "text", text: "u1" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: "reasoned but said nothing" }] },
+    { role: "user", content: [{ type: "text", text: "u2" }] },
+  ];
+  assert.deepEqual(
+    toOpenAiMessages("SYSTEM", thinkingOnly).map((message) => message.role),
+    ["system", "user", "user"],
+    "a content-less assistant message never reaches the OpenAI wire",
+  );
+  assert.deepEqual(
+    toAnthropicMessages(thinkingOnly).map((message) => message.role),
+    ["user", "user"],
+    "nor the Anthropic wire",
+  );
 }
 
 // ─── a full primary-arm session through the real controller seam ────
