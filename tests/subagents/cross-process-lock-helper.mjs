@@ -52,7 +52,7 @@ async function main() {
   }
 
   if (mode === "replace") {
-    const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, undefined, sessionDir);
+    const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, sessionDir);
     const result = await replace.execute(
       "replace",
       {
@@ -83,6 +83,38 @@ async function main() {
     } catch (error) {
       writeResult(resultPath, { ok: false, error: error.message });
     }
+    return;
+  }
+
+  // Simulates a replace whose process died exactly at the post-commit
+  // boundary: the file bytes are committed and the process exits before any
+  // store publication runs.
+  if (mode === "crash-after-write") {
+    writeFileSync(resolve(workspaceRoot, path), job.content, "utf8");
+    writeResult(resultPath, { crashed: true });
+    process.exit(0);
+  }
+
+  if (mode === "read") {
+    const readToolModule = await load("../../src/anchored-edit/read-tool.ts");
+    const readTransformModule = await load("../../src/anchored-edit/read-transform.ts");
+    const piPackage = await load("@earendil-works/pi-coding-agent");
+    const readTool = readToolModule.withAnchoredReadTransform(
+      piPackage.createReadToolDefinition(workspace),
+      workspace,
+      async (content, value, executionCwd, executionSessionDir) =>
+        readTransformModule.transformAnchoredReadContent(
+          content, value, executionCwd, "parent", { sessionDir: executionSessionDir },
+        ),
+    );
+    const result = await readTool.execute(
+      "read",
+      { path },
+      undefined,
+      undefined,
+      { cwd: workspace, sessionManager: { getSessionDir: () => sessionDir } },
+    );
+    writeResult(resultPath, result);
     return;
   }
 

@@ -114,7 +114,7 @@ try {
     { path: "../outside.txt" },
     workspace,
     "parent",
-    { confineToWorkspace: false, sessionDir },
+    { sessionDir },
   );
   assert.match(childOutside.content[0].text, /^[A-Za-z0-9]{3}│outside$/m, "the child read serves external rows with anchors");
   assert.deepEqual(

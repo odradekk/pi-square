@@ -29,7 +29,7 @@ function storePath(home: string): string {
 }
 
 function openStore(home: string): Promise<HashStoreHandle> {
-  return loadHashStoreAt(storePath(home), { owner: "parent" });
+  return loadHashStoreAt(storePath(home), "parent");
 }
 
 describe("served store", () => {
@@ -66,7 +66,7 @@ describe("served store", () => {
       const store = await openStore(home);
       recordServed(store, "/a.ts", ["aB3"]);
       const db = new DatabaseSync(storePath(home), { defensive: false } as any);
-      db.prepare("UPDATE served SET hashes = ? WHERE path = ?").run("{not json", "/a.ts");
+      db.prepare("UPDATE served SET hash = ? WHERE owner = ? AND path = ?").run("{not a hash", "parent", "/a.ts");
       db.close();
       expect(getServed(store, "/a.ts")).toBeUndefined();
       const check = new DatabaseSync(storePath(home), { defensive: false } as any);
@@ -81,7 +81,7 @@ describe("served store", () => {
       const store = await openStore(home);
       recordServed(store, "/a.ts", ["aB3"]);
       const db = new DatabaseSync(storePath(home), { defensive: false } as any);
-      db.prepare("UPDATE served SET hashes = ? WHERE path = ?").run('["ZZ", "ZZZZ"]', "/a.ts");
+      db.prepare("UPDATE served SET hash = ? WHERE owner = ? AND path = ?").run("ZZZZ", "parent", "/a.ts");
       db.close();
       expect(getServed(store, "/a.ts")).toBeUndefined();
       const check = new DatabaseSync(storePath(home), { defensive: false } as any);

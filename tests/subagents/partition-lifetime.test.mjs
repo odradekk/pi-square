@@ -14,7 +14,6 @@ const { getServed, recordServed } = await load("../../src/anchored-edit/served.t
 const {
   listOwnerPartitions,
   shutdownHashStore,
-  upsertSnapshot,
 } = await load("../../src/anchored-edit/hash-store.ts");
 const {
   MAX_RETAINED_CHILD_PARTITIONS,
@@ -130,7 +129,7 @@ try {
     const owner = `subagent_00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
     const store = await openStore(owner);
     try {
-      upsertSnapshot(store, file, "checksum", 1, [`AAA`]);
+      store.upsertSnapshot(file, "checksum", 1, [`AAA`]);
       recordServed(store, file, ["AAA"]);
     } finally {
       store.release();
@@ -154,9 +153,9 @@ try {
   for (const owner of [PARENT_OWNER, CHILD_ONE]) {
     const store = await openStore(owner);
     try {
-      upsertSnapshot(store, alive, "checksum-alive", 1, ["BBB"]);
+      store.upsertSnapshot(alive, "checksum-alive", 1, ["BBB"]);
       recordServed(store, alive, ["BBB"]);
-      upsertSnapshot(store, join(workspace, "gone.txt"), "checksum-gone", 1, ["CCC"]);
+      store.upsertSnapshot(join(workspace, "gone.txt"), "checksum-gone", 1, ["CCC"]);
       recordServed(store, join(workspace, "gone.txt"), ["CCC"]);
     } finally {
       store.release();

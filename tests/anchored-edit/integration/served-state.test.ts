@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readFile, writeFile } from "fs/promises";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import type { PiSquareConfig } from "../../../src/core/config";
 import { shutdownHashStore } from "../../../src/anchored-edit/hash-store";
 import { getServed } from "../../../src/anchored-edit/served";
-import { withTempFile, setupIntegrationTest, getText, extractHash, loadTestStore, makeTestCtx } from "../support/fixtures";
+import { withTempFile, setupIntegrationTest, setupParentWrite, getText, extractHash, loadTestStore } from "../support/fixtures";
 import { toCwd } from "../../../src/anchored-edit/paths";
 import { resolveTarget } from "../../../src/anchored-edit/fs-write";
 
@@ -82,7 +81,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(retry.content[0].text).toContain("Successfully replaced");
+      expect(retry.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("a\nx\nd\n");
     });
   });
@@ -124,7 +123,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(retry.content[0].text).toContain("Successfully replaced");
+      expect(retry.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("A\nb\nc\nd\n");
     });
   });
@@ -147,7 +146,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("A\nx\nd\n");
     });
   });
@@ -171,7 +170,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("a\nx\nd\n");
     });
   });
@@ -216,7 +215,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(first.content[0].text).toContain("Successfully replaced");
+      expect(first.details?.metrics?.classification).toBe("applied");
 
       const tail = await readTool.execute("r2", { path: "sample.ts", offset: 10, limit: 1 }, undefined, undefined, ctx);
       const jHash = extractHash(getText(tail).split("\n").find((l: string) => l.includes("│j"))!);
@@ -227,7 +226,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(second.content[0].text).toContain("Successfully replaced");
+      expect(second.details?.metrics?.classification).toBe("applied");
 
       const firstDiff = (first.details as { diff?: string } | undefined)?.diff ?? "";
       const aHashAfter = extractHash(firstDiff.split("\n").find((l: string) => l.startsWith("+") && l.includes("│A"))!).replace(/^[+ ]/, "");
@@ -262,7 +261,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("x\nc\nd\ne\nf\n");
     });
   });
@@ -279,7 +278,7 @@ describe("served-state range verification", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("A\nb\nc\n");
     });
   });
@@ -330,44 +329,17 @@ describe("served-state range verification", () => {
       const lines = getText(readResult).split("\n");
       const aHash = extractHash(lines.find((l: string) => l.includes("│a"))!);
 
-      const { writeFile: writeFileFs } = await import("fs/promises");
-
-      const writeEvent = {
-        toolName: "write",
-        toolCallId: "write-1",
-        isError: false,
-        input: { path: "sample.ts", content: "x\ny\nz\n" },
-        content: [{ type: "text", text: "File written." }],
-      };
-      const { registerAnchoredAutoRead } = await import("../../../src/anchored-edit/auto-read");
-      const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
-      const pi = {
-        registerTool() {},
-        registerCommand() {},
-        on(event: string, handler: unknown) {
-          handlers.set(event, handler as (event: unknown, ctx: unknown) => Promise<unknown>);
-        },
-      } as never;
-      registerAnchoredAutoRead(
-        pi as never,
-        () => ({ anchoredEditing: { enabled: true, autoRead: true } }) as PiSquareConfig,
-        () => true,
-      );
-      const handlerCtx = makeTestCtx(cwd);
-      await handlers.get("tool_call")!(
-        { toolName: "write", toolCallId: "write-1", input: { path: "sample.ts", content: "x\ny\nz\n" } },
-        handlerCtx,
-      );
-      // The Pi write factory has written the new content by the time
-      // tool_result fires.
-      await writeFileFs(`${cwd}/sample.ts`, "x\ny\nz\n", "utf-8");
-      const result = await handlers.get("tool_result")!(writeEvent, handlerCtx);
-      expect(result).toBeDefined();
+      // The parent write flow as production wires it (#264): the injected
+      // operation performs the write and the state publication inside the
+      // target boundary; tool_result only presents the appendix.
+      const writeSession = setupParentWrite(cwd, { autoRead: true });
+      const result = await writeSession.runWrite("write-1", { path: "sample.ts", content: "x\ny\nz\n" });
+      expect(result.content).toHaveLength(2);
 
       const servedAfterWrite = await servedFor(cwd, "sample.ts");
       expect(servedAfterWrite).toBeDefined();
       expect(servedAfterWrite!.has(aHash)).toBe(false);
-      const servedText = (result as { content: Array<{ type: string; text: string }> }).content[1].text;
+      const servedText = result.content[1]!.text;
       for (const row of servedText.split("\n")) {
         const match = row.match(/^([A-Za-z0-9]{3})│/);
         if (match) expect(servedAfterWrite!.has(match[1]!)).toBe(true);

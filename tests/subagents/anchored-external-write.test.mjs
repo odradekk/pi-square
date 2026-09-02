@@ -73,8 +73,8 @@ try {
     try {
       const fresh = textOf(writeResult.content).match(/([A-Za-z0-9]{3})│TWO/)?.[1];
       assert.ok(fresh, "the fresh anchor is identified");
-      const served = store.prepare("SELECT hashes FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonical);
-      assert.ok(served && JSON.parse(served.hashes).includes(fresh), "the write's auto-read serves the fresh anchor under the writing child");
+      const served = store.prepare("SELECT hash FROM served WHERE owner = ? AND path = ?").all(CHILD_ONE, canonical).map((row) => row.hash);
+      assert.ok(served.includes(fresh), "the write's auto-read serves the fresh anchor under the writing child");
     } finally {
       store.close();
     }

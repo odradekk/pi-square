@@ -26,7 +26,7 @@ describe("snapshotId surface (details-only after W2)", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("alpha\nBETA\ngamma\n");
     });
   });

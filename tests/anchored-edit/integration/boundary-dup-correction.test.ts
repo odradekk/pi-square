@@ -54,7 +54,8 @@ describe("boundary duplication auto-fix", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Added 2 line(s), removed 2 line(s).");
+      expect(editResult.details?.metrics?.added_lines).toBe(2);
+        expect(editResult.details?.metrics?.removed_lines).toBe(2);
       expect(editResult.content[0].text).not.toContain("Added 3 line(s)");
       expect(editResult.details?.metrics?.added_lines).toBe(2);
       expect(editResult.details?.metrics?.removed_lines).toBe(2);
@@ -237,7 +238,7 @@ describe("new-line boundary duplication (auto-fix)", () => {
       );
 
       const text = getText(editResult);
-      expect(text).toContain("Successfully replaced");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       expect(text).not.toContain("[E_BOUNDARY_DUP]");
 
       const content = await readFile(path, "utf-8");
@@ -306,7 +307,7 @@ describe("new-line boundary duplication (auto-fix)", () => {
       );
 
       const text = getText(editResult);
-      expect(text).toContain("Successfully replaced");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       expect(text).not.toContain("[E_BOUNDARY_DUP]");
 
       const content = await readFile(path, "utf-8");
@@ -379,10 +380,9 @@ describe("multi-line boundary duplication runs (auto-fix)", () => {
         ctx,
       );
 
-      const text = getText(editResult);
-      expect(text).toContain("Successfully replaced");
-      expect(text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       expect(editResult.details?.metrics?.added_lines).toBe(1);
+        expect(editResult.details?.metrics?.removed_lines).toBe(1);
 
       const content = await readFile(path, "utf-8");
       const scrollableCount = content.split("\n").filter((l) => l.includes("ScrollableTabContent")).length;
@@ -418,7 +418,8 @@ describe("multi-line boundary duplication runs (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(editResult.details?.metrics?.added_lines).toBe(1);
+      expect(editResult.details?.metrics?.removed_lines).toBe(1);
       const content = await readFile(path, "utf-8");
       expect(content).toBe("function a() {\n  const x = 2;\n}\n}\nafter();\n");
     });
@@ -445,7 +446,8 @@ describe("multi-line boundary duplication runs (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(editResult.details?.metrics?.added_lines).toBe(1);
+      expect(editResult.details?.metrics?.removed_lines).toBe(1);
       const content = await readFile(path, "utf-8");
       expect(content).toBe("before1();\nbefore2();\nNEW();\nafter();\n");
     });
@@ -472,7 +474,7 @@ describe("multi-line boundary duplication runs (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Successfully replaced");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       const content = await readFile(path, "utf-8");
       expect(content).toBe("a\nb\nc\nX\nafter\n");
     });
@@ -499,7 +501,8 @@ describe("multi-line boundary duplication runs (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Added 4 line(s), removed 1 line(s).");
+      expect(editResult.details?.metrics?.added_lines).toBe(4);
+      expect(editResult.details?.metrics?.removed_lines).toBe(1);
       const content = await readFile(path, "utf-8");
       expect(content).toBe("a\nb\nc\na\nb\nc\nX\nafter\n");
     });
@@ -526,8 +529,9 @@ describe("multi-line boundary duplication runs (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Successfully replaced");
-      expect(getText(editResult)).toContain("Added 0 line(s), removed 1 line(s).");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
+      expect(editResult.details?.metrics?.added_lines).toBe(0);
+      expect(editResult.details?.metrics?.removed_lines).toBe(1);
       const content = await readFile(path, "utf-8");
       expect(content).toBe("X\nX\n");
     });
@@ -556,7 +560,7 @@ describe("section-unique boundary duplication (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Successfully replaced");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       const content = await readFile(path, "utf-8");
       expect(content).toBe("import a\n\nexport function main2() {}\nexport interface Foo {\n  x: number;\n}\nexport function main() {}\n");
       expect(content.split("\n").filter((l) => l.includes("export interface Foo")).length).toBe(1);
@@ -585,7 +589,7 @@ describe("section-unique boundary duplication (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Successfully replaced");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       const content = await readFile(path, "utf-8");
       expect(content).toBe("if (a) {\n  x();\n}\nif (b) {\n  y();\n}\nNEW\n");
     });
@@ -612,7 +616,7 @@ describe("section-unique boundary duplication (auto-fix)", () => {
         ctx,
       );
 
-      expect(getText(editResult)).toContain("Successfully replaced");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       const content = await readFile(path, "utf-8");
       expect(content).toBe("Y\nZ\nX\nY\nZ\nY\nZ\n");
     });

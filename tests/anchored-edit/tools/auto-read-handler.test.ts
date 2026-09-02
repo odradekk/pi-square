@@ -1,14 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { writeFile } from "fs/promises";
 import { join } from "path";
 import { registerAnchoredAutoRead } from "../../../src/anchored-edit/auto-read";
 import type { PiSquareConfig } from "../../../src/core/config";
-import { makeTestCtx, withTempDir } from "../support/fixtures";
+import { makeTestCtx, setupIntegrationTest, setupParentWrite, withTempDir } from "../support/fixtures";
+import { _lineHashesPure } from "../../../src/anchored-edit/hashline";
+import { shutdownHashStore } from "../../../src/anchored-edit/hash-store";
 
 type Config = () => PiSquareConfig;
 
 const enabled: Config = () => ({ anchoredEditing: { enabled: true, autoRead: true } }) as PiSquareConfig;
-const disabledAutoRead: Config = () => ({ anchoredEditing: { enabled: true, autoRead: false } }) as PiSquareConfig;
+const disabled: Config = () => ({ anchoredEditing: { enabled: false, autoRead: true } }) as PiSquareConfig;
 
 function makeFakePi(config: Config) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -23,239 +25,97 @@ function makeFakePi(config: Config) {
   return { handlers };
 }
 
-async function fireWrite(
-  handlers: Map<string, (...args: unknown[]) => unknown>,
-  ctx: { cwd: string },
-  event: {
-    toolCallId: string;
-    input: unknown;
-    content: Array<{ type: string; text?: string }>;
-    isError?: boolean;
-  },
-  options: { factoryWrite?: boolean } = {},
-) {
-  await handlers.get("tool_call")!(
-    { toolName: "write", toolCallId: event.toolCallId, input: event.input },
-    ctx,
-  );
-  const input = event.input as { path?: unknown; content?: unknown };
-  if ((options.factoryWrite ?? true) && typeof input.path === "string" && typeof input.content === "string" && !event.isError) {
-    // The Pi write factory has written the new content by the time
-    // tool_result fires.
-    await writeFile(join(ctx.cwd, input.path), input.content, "utf-8");
-  }
-  return handlers.get("tool_result")!(
-    {
-      toolName: "write",
-      toolCallId: event.toolCallId,
-      input: event.input,
-      content: event.content,
-      details: undefined,
-      isError: event.isError ?? false,
-    },
-    ctx,
-  );
-}
-
-describe("auto-read handler", () => {
-  it("appends auto-read content after a successful write", async () => {
-    await withTempDir("auto-read-", async (dir) => {
-      const filePath = join(dir, "test.txt");
-      await writeFile(filePath, "before\n", "utf-8");
-
-      const { handlers } = makeFakePi(enabled);
-      const ctx = makeTestCtx(dir);
-
-      const result = await fireWrite(handlers, ctx, {
-        toolCallId: "write-1",
-        input: { path: "test.txt", content: "hello\nworld\n" },
-        content: [{ type: "text", text: "File written." }],
-      });
-
-      expect(result).toBeDefined();
-      expect(result).toHaveProperty("content");
-      const content = (result as { content: Array<{ type: string; text: string }> }).content;
-      expect(content).toHaveLength(2);
-      expect(content[0]).toEqual({ type: "text", text: "File written." });
-      expect(content[1].type).toBe("text");
-      expect(content[1].text).toContain("--- Auto-read (hashline anchors) ---");
-      expect(content[1].text).toContain("│hello");
-      expect(content[1].text).toContain("│world");
-    });
-  });
-
-  it("returns nothing when auto-read is disabled via config", async () => {
-    await withTempDir("auto-read-disabled-", async (dir) => {
-      await writeFile(join(dir, "test.txt"), "hello\nworld\n", "utf-8");
-
-      const { handlers } = makeFakePi(disabledAutoRead);
-      const ctx = makeTestCtx(dir);
-
-      const result = await fireWrite(handlers, ctx, {
-        toolCallId: "write-1",
-        input: { path: "test.txt", content: "hello\nworld\n" },
-        content: [],
-      });
-
-      expect(result).toBeUndefined();
-    });
+describe("auto-read handler registration", () => {
+  it("registers the tool_call and tool_result handlers", () => {
+    const { handlers } = makeFakePi(enabled);
+    expect(handlers.get("tool_call")).toBeDefined();
+    expect(handlers.get("tool_result")).toBeDefined();
   });
 
   it("returns nothing for non-write tool results", async () => {
-    await withTempDir("auto-read-nonwrite-", async (dir) => {
-      const { handlers } = makeFakePi(enabled);
-
-      const handler = handlers.get("tool_result");
-      expect(handler).toBeDefined();
-
-      const result = await handler!(
-        {
-          toolName: "read",
-          isError: false,
-          input: { path: "test.txt" },
-          content: [],
-        },
-        makeTestCtx(dir),
-      );
-
-      expect(result).toBeUndefined();
-    });
+    const { handlers } = makeFakePi(enabled);
+    const result = await handlers.get("tool_result")!(
+      {
+        toolName: "read",
+        isError: false,
+        input: { path: "test.txt" },
+        content: [],
+      },
+      makeTestCtx("/tmp"),
+    );
+    expect(result).toBeUndefined();
   });
 
-  it("returns nothing when the write tool reported an error", async () => {
-    await withTempDir("auto-read-error-", async (dir) => {
-      const { handlers } = makeFakePi(enabled);
-
-      const result = await fireWrite(handlers, makeTestCtx(dir), {
+  it("returns nothing when anchored editing is disabled via config", async () => {
+    const { handlers } = makeFakePi(disabled);
+    const result = await handlers.get("tool_result")!(
+      {
+        toolName: "write",
         toolCallId: "write-1",
+        isError: false,
         input: { path: "test.txt", content: "hello" },
         content: [],
-        isError: true,
-      });
-
-      expect(result).toBeUndefined();
-    });
+      },
+      makeTestCtx("/tmp"),
+    );
+    expect(result).toBeUndefined();
   });
 
-  it("returns nothing when the input has no path", async () => {
-    await withTempDir("auto-read-nopath-", async (dir) => {
-      const { handlers } = makeFakePi(enabled);
-
-      const result = await fireWrite(handlers, makeTestCtx(dir), {
+  it("returns nothing when the input has no path or content", async () => {
+    const { handlers } = makeFakePi(enabled);
+    const result = await handlers.get("tool_result")!(
+      {
+        toolName: "write",
         toolCallId: "write-1",
+        isError: false,
         input: { content: "hello" },
         content: [],
-      });
-
-      expect(result).toBeUndefined();
-    });
+      },
+      makeTestCtx("/tmp"),
+    );
+    expect(result).toBeUndefined();
   });
+});
 
+describe("auto-read appendix after a parent write", () => {
   it("returns the empty-file anchor when the written file is empty", async () => {
     await withTempDir("auto-read-empty-", async (dir) => {
-      const filePath = join(dir, "empty.txt");
-      await writeFile(filePath, "not empty yet\n", "utf-8");
+      await writeFile(join(dir, "empty.txt"), "not empty yet\n", "utf-8");
 
-      const { handlers } = makeFakePi(enabled);
-      const ctx = makeTestCtx(dir);
+      const session = setupParentWrite(dir, { autoRead: true });
+      const result = await session.runWrite("write-1", { path: "empty.txt", content: "" });
 
-      const result = await fireWrite(handlers, ctx, {
-        toolCallId: "write-1",
-        input: { path: "empty.txt", content: "" },
-        content: [{ type: "text", text: "File written." }],
-      });
-
-      expect(result).toBeDefined();
-      const content = (result as { content: Array<{ type: string; text: string }> }).content;
-      expect(content[1].text).toContain("--- Auto-read (hashline anchors) ---");
-      expect(content[1].text).toContain("[File is empty. Use replace to insert content.]");
-      expect(content[1].text).toMatch(/^[A-Za-z0-9]{3}│/m);
+      expect(result.content).toHaveLength(2);
+      expect(result.content[1]!.text).toContain("--- Auto-read (hashline anchors) ---");
+      expect(result.content[1]!.text).toContain("[File is empty. Use replace to insert content.]");
+      expect(result.content[1]!.text).toMatch(/^[A-Za-z0-9]{3}│/m);
     });
   });
 
-  it("returns nothing for a noop replace (anchors are unchanged)", async () => {
-    await withTempDir("auto-read-noop-", async (dir) => {
-      await writeFile(join(dir, "noop.txt"), "hello\nworld\n", "utf-8");
+  it("does not append an appendix when the written content is unchanged", async () => {
+    await withTempDir("auto-read-unchanged-", async (dir) => {
+      await writeFile(join(dir, "same.txt"), "hello\nworld\n", "utf-8");
 
-      const { handlers } = makeFakePi(enabled);
+      const session = setupParentWrite(dir, { autoRead: true });
+      const result = await session.runWrite("write-1", { path: "same.txt", content: "hello\nworld\n" });
 
-      const handler = handlers.get("tool_result");
-      expect(handler).toBeDefined();
-
-      const result = await handler!(
-        {
-          toolName: "replace",
-          isError: false,
-          input: { path: "noop.txt" },
-          details: { metrics: { classification: "noop" } },
-          content: [{ type: "text", text: "No changes made to noop.txt" }],
-        },
-        makeTestCtx(dir),
-      );
-
-      expect(result).toBeUndefined();
-    });
-  });
-
-  it("returns an auto-read failure notice when the file cannot be read", async () => {
-    await withTempDir("auto-read-fail-", async (dir) => {
-      const { handlers } = makeFakePi(enabled);
-      const ctx = makeTestCtx(dir);
-
-      const result = await fireWrite(handlers, ctx, {
-        toolCallId: "write-1",
-        input: { path: "nonexistent.txt", content: "hello" },
-        content: [{ type: "text", text: "File written." }],
-      }, { factoryWrite: false });
-
-      expect(result).toBeDefined();
-      const content = (result as { content: Array<{ type: string; text: string }> }).content;
-      expect(content).toHaveLength(2);
-      expect(content[0]).toEqual({ type: "text", text: "File written." });
-      expect(content[1].text).toContain("--- Auto-read failed:");
-      expect(content[1].text).toContain("ENOENT");
-    });
-  });
-
-  it("returns only the diff for a replace with auto-read on (no anchors block)", async () => {
-    await withTempDir("auto-read-diff-", async (dir) => {
-      const { handlers } = makeFakePi(enabled);
-      const handler = handlers.get("tool_result");
-      const diff = " aaa\n-   │bbb\n+XYZ│BBB\n ccc";
-      const result = await handler!(
-        {
-          toolName: "replace",
-          isError: false,
-          input: { path: "only.txt" },
-          details: { diff, metrics: { classification: "applied", changed_lines: { first: 5, last: 5 } } },
-          content: [{ type: "text", text: "Replaced." }],
-        },
-        makeTestCtx(dir),
-      );
-      expect(result).toBeDefined();
-      const content = (result as { content: Array<{ type: string; text: string }> }).content;
-      expect(content).toHaveLength(1);
-      expect(content[0].text).toBe(diff);
-      expect(content[0].text).not.toContain("--- Auto-read");
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0]!.text).toBe("Successfully wrote 12 bytes to same.txt");
     });
   });
 
   it("does not auto-display lines over 50KB even though read allows 200KB lines", async () => {
     await withTempDir("auto-read-big-line-", async (dir) => {
-      const filePath = join(dir, "big.txt");
       const big = "Q".repeat(60_000);
-      await writeFile(filePath, `${big}\nsmall\n`, "utf-8");
+      // The appendix renders the on-disk content after the write; give the
+      // written file an oversized first line.
+      const session = setupParentWrite(dir, { autoRead: true });
+      const result = await session.runWrite("write-1", {
+        path: "big.txt",
+        content: `${big}\nsmall\n`,
+      });
 
-      const { handlers } = makeFakePi(enabled);
-      const ctx = makeTestCtx(dir);
-
-      const result = await fireWrite(handlers, ctx, {
-        toolCallId: "write-1",
-        input: { path: "big.txt", content: "irrelevant to the on-disk content" },
-        content: [{ type: "text", text: "File written." }],
-      }, { factoryWrite: false });
-
-      const text = (result as { content: Array<{ type: string; text: string }> }).content[1].text;
+      const text = result.content[1]!.text;
       expect(text).toContain("│small");
       expect(text).not.toContain("│Q");
       expect(text).toContain("exceeds 50.0KB");
@@ -265,100 +125,77 @@ describe("auto-read handler", () => {
 });
 
 describe("replace diff in model-visible text", () => {
+  // The replace executor composes its model-visible content from structured
+  // details (#264): no runtime branch parses rendered prose anymore.
   it("shows the post-edit diff instead of the summary when auto-read is on", async () => {
     await withTempDir("auto-read-diff-", async (dir) => {
       await writeFile(join(dir, "diff.txt"), "aaa\nbbb\nccc\n", "utf-8");
+      const { ctx, editTool } = setupIntegrationTest(dir);
+      const hashes = _lineHashesPure("aaa\nbbb\nccc\n");
 
-      const { handlers } = makeFakePi(enabled);
-      const handler = handlers.get("tool_result");
-      const diff = " aaa\n-   │bbb\n+XYZ│BBB\n ccc";
-
-      const result = await handler!(
-        {
-          toolName: "replace",
-          isError: false,
-          input: { path: "diff.txt" },
-          details: {
-            diff,
-            metrics: { classification: "applied", changed_lines: { first: 2, last: 2 } },
-          },
-          content: [{ type: "text", text: "Successfully replaced in diff.txt. Added 1 line(s), removed 1 line(s)." }],
-        },
-        makeTestCtx(dir),
+      const result = await editTool.execute(
+        "replace",
+        { path: "diff.txt", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BBB" },
+        undefined,
+        undefined,
+        ctx,
       );
 
-      const content = (result as { content: Array<{ type: string; text: string }> }).content;
-      expect(content).toHaveLength(1);
-      expect(content[0].text).toBe(diff);
-      expect(content[0].text).not.toContain("Successfully replaced");
-      expect(content[0].text).not.toContain("--- Auto-read");
+      const text = result.content[0]!.text;
+      expect(text).toMatch(/^\s?[A-Za-z0-9]{3}│aaa/m);
+      expect(text).toContain("+");
+      expect(text).toContain("BBB");
+      expect(text).not.toContain("Successfully replaced");
+      expect(text).not.toContain("--- Auto-read");
+      expect(result.details.diff).toContain("BBB");
     });
   });
 
   it("keeps the warnings block alongside the diff", async () => {
     await withTempDir("auto-read-diff-warn-", async (dir) => {
       await writeFile(join(dir, "warn.txt"), "aaa\nbbb\nccc\n", "utf-8");
+      const { ctx, editTool } = setupIntegrationTest(dir);
+      const hashes = _lineHashesPure("aaa\nbbb\nccc\n");
 
-      const { handlers } = makeFakePi(enabled);
-      const handler = handlers.get("tool_result");
-      const diff = " aaa\n-   │bbb\n+XYZ│BBB\n ccc";
-      const summary = "Successfully replaced in warn.txt. Added 1 line(s), removed 1 line(s).\n\nWarnings:\n[E_BARE_HASH_PREFIX] Autocorrected: stripped \"HASH│\" prefix copied from read output in replacement_text line 1.";
-
-      const result = await handler!(
-        {
-          toolName: "replace",
-          isError: false,
-          input: { path: "warn.txt" },
-          details: { diff, metrics: { classification: "applied" } },
-          content: [{ type: "text", text: summary }],
-        },
-        makeTestCtx(dir),
+      const result = await editTool.execute(
+        "replace",
+        { path: "warn.txt", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: `${hashes[1]!}│BBB` },
+        undefined,
+        undefined,
+        ctx,
       );
 
-      const text = (result as { content: Array<{ type: string; text: string }> }).content[0].text;
-      expect(text).toContain(diff);
+      const text = result.content[0]!.text;
       expect(text).toContain("Warnings:");
-      expect(text).toContain("[E_BARE_HASH_PREFIX]");
-      expect(text).not.toContain("Successfully replaced");
-      expect(text).not.toContain("--- Auto-read");
+      expect(text).toContain('stripped "HASH│" prefix');
+      expect(result.details.warnings?.some((warning: string) => warning.includes("[E_BARE_HASH_PREFIX]"))).toBe(true);
     });
   });
 
-  it("leaves the summary untouched when the result carries no diff", async () => {
-    await withTempDir("auto-read-nodiff-", async (dir) => {
-      const { handlers } = makeFakePi(enabled);
-      const handler = handlers.get("tool_result");
+  it("returns only the summary, without diff rows, when auto-read is off", async () => {
+    await withTempDir("auto-read-off-", async (dir) => {
+      const { createAnchoredReplaceToolDefinition } = await import("../../../src/anchored-edit/workspace-replace");
+      const { PARENT_OWNER } = await import("../../../src/anchored-edit/workspace-support");
+      await writeFile(join(dir, "off.txt"), "aaa\nbbb\nccc\n", "utf-8");
+      const replace = createAnchoredReplaceToolDefinition(dir, () => false, PARENT_OWNER, false);
+      const hashes = _lineHashesPure("aaa\nbbb\nccc\n");
 
-      const result = await handler!(
-        {
-          toolName: "replace",
-          isError: false,
-          input: { path: "nodiff.txt" },
-          details: { metrics: { classification: "applied" } },
-          content: [{ type: "text", text: "Successfully replaced in nodiff.txt." }],
-        },
+      const result = await replace.execute(
+        "replace",
+        { path: "off.txt", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BBB" },
+        undefined,
+        undefined,
         makeTestCtx(dir),
       );
 
-      expect(result).toBeUndefined();
+      const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+      expect(text).toContain("Successfully replaced");
+      expect(text).not.toMatch(/[A-Za-z0-9]{3}│bbb/);
+      expect(result.details.diff).toBe("");
     });
   });
+});
 
-  it("leaves the summary untouched for replace when auto-read is disabled", async () => {
-    await withTempDir("auto-read-diff-off-", async (dir) => {
-      const { handlers } = makeFakePi(disabledAutoRead);
-      const handler = handlers.get("tool_result");
-      const result = await handler!(
-        {
-          toolName: "replace",
-          isError: false,
-          input: { path: "off.txt" },
-          details: { diff: " aaa\n-   │bbb\n+XYZ│BBB\n ccc", metrics: { classification: "applied" } },
-          content: [{ type: "text", text: "Successfully replaced in off.txt. Added 1 line(s), removed 1 line(s)." }],
-        },
-        makeTestCtx(dir),
-      );
-      expect(result).toBeUndefined();
-    });
-  });
+afterAll(() => {
+  shutdownHashStore();
 });

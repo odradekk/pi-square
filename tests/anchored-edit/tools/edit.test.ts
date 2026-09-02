@@ -41,7 +41,7 @@ describe("anchored replace tool", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
 
       const content = await readFile(path, "utf-8");
       expect(content).toBe("a\nb\nbbb\n");
@@ -63,8 +63,9 @@ describe("anchored replace tool", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
-      expect(result.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.details?.metrics?.added_lines).toBe(1);
+        expect(result.details?.metrics?.removed_lines).toBe(1);
       expect(result.details?.diff).toBeDefined();
       expect(result.details?.diff).toContain("BBB");
     });
@@ -85,7 +86,7 @@ describe("anchored replace tool", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(result.content[0].text).toContain("Warnings:");
       expect(result.content[0].text).toContain(`stripped "HASH│" prefix`);
       expect(result.details?.diff).toContain("BBB");
@@ -108,7 +109,7 @@ describe("anchored replace tool", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(result.content[0].text).toContain("Warnings:");
       expect(result.content[0].text).toContain(`stripped diff-preview marker`);
       expect(result.details?.diff).toContain("BBB");
@@ -131,8 +132,9 @@ describe("anchored replace tool", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
-      expect(result.content[0].text).toContain("Added 1 line(s), removed 2 line(s).");
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.details?.metrics?.added_lines).toBe(1);
+        expect(result.details?.metrics?.removed_lines).toBe(2);
       expect(result.content[0].text).toContain("Warnings:");
       expect(result.content[0].text).toContain("were reversed");
       expect(result.details?.diff).toContain("X");
@@ -155,7 +157,7 @@ describe("anchored replace tool", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
       expect(result.content[0].text).toContain("Warnings:");
       expect(result.content[0].text).toContain(`stripped "HASH│" prefix`);
       expect(result.details?.diff).toContain("BBB");
@@ -186,7 +188,7 @@ describe("anchored replace tool — robustness", () => {
           undefined,
           ctx,
         );
-        expect(result.content[0].text).toContain("Successfully replaced");
+        expect(result.details?.metrics?.classification).toBe("applied");
         expect(result.details?.snapshotId).toBeUndefined();
       } finally {
         spy.mockRestore();
@@ -224,18 +226,19 @@ describe("anchored replace tool — robustness", () => {
     });
   });
 
-  it("applies the edit even when snapshot persistence fails", async () => {
+  it("applies the edit, reports the truthful success, and suppresses fresh anchors when post-commit publication fails (#264)", async () => {
     await withTempFile("sample.ts", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
       const { ctx, editTool } = setupIntegrationTest(cwd);
       const hashes = await lineHashes("aaa\nbbb\nccc\n");
       const hashStore = await import("../../../src/anchored-edit/hash-store");
       const spy = vi
-        .spyOn(hashStore, "upsertSnapshot")
+        .spyOn(hashStore, "publishMutation")
         .mockImplementation(() => {
           throw new Error("store down");
         });
+      let result: Awaited<ReturnType<typeof editTool.execute>>;
       try {
-        const result = await editTool.execute(
+        result = await editTool.execute(
           "e1",
           {
             path: "sample.ts",
@@ -246,10 +249,16 @@ describe("anchored replace tool — robustness", () => {
           undefined,
           ctx,
         );
-        expect(result.content[0].text).toContain("Successfully replaced");
       } finally {
         spy.mockRestore();
       }
+      // The file changed; never report otherwise.
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.content[0].text).toContain("[E_STATE_UNAVAILABLE]");
+      expect(result.content[0].text).toContain("call read to get fresh anchors");
+      // Fresh anchors are suppressed and the failure is structured.
+      expect(result.details.diff).toBe("");
+      expect(result.details.warnings?.some((warning: string) => warning.includes("[E_STATE_UNAVAILABLE]"))).toBe(true);
       const content = await readFile(path, "utf-8");
       expect(content).toBe("aaa\nBBB\nccc\n");
     });

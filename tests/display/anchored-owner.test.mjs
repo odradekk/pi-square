@@ -95,7 +95,7 @@ try {
   // A child-owner replace records its post-edit rows only in the child
   // partition (#187: replace is the only range-editing path; the undo store is
   // gone, so served rows are the per-owner state).
-  const childReplace = createAnchoredReplaceToolDefinition(workspace, () => true, CHILD_OWNER, undefined, undefined, sessionDir);
+  const childReplace = createAnchoredReplaceToolDefinition(workspace, () => true, CHILD_OWNER, undefined, sessionDir);
   const changed = await childReplace.execute(
     "replace-1",
     {

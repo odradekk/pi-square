@@ -183,21 +183,24 @@ describe("writeAtomic", () => {
     });
   });
 
-  it("sweeps only its own stale temp files, never user files with a .tmp- prefix", async () => {
+  it("never touches unrelated temp-named files beside the target (#264: no directory sweeping)", async () => {
     await withTempDir("fs-write-test-", async (dir) => {
       const userFile = join(dir, ".tmp-user-notes.txt");
       await writeFile(userFile, "precious");
+      const oldTemp = join(dir, ".tmp-12345678-1234-1234-1234-123456789abc");
+      await writeFile(oldTemp, "leftover");
       const stale = new Date(Date.now() - 2 * 60 * 60 * 1000);
       await utimes(userFile, stale, stale);
-      const ownTemp = join(dir, ".tmp-12345678-1234-1234-1234-123456789abc");
-      await writeFile(ownTemp, "stale temp");
-      await utimes(ownTemp, stale, stale);
+      await utimes(oldTemp, stale, stale);
 
       const target = join(dir, "target.txt");
       await writeAtomic(target, "content");
 
+      // Anchored replace never inspects or deletes other directory entries:
+      // even a stale-looking temp-named file survives.
       expect(await readFile(userFile, "utf-8")).toBe("precious");
-      await expect(stat(ownTemp)).rejects.toThrow();
+      expect(await readFile(oldTemp, "utf-8")).toBe("leftover");
+      expect(await readFile(target, "utf-8")).toBe("content");
     });
   });
 });

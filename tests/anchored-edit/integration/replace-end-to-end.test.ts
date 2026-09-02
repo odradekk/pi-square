@@ -25,8 +25,9 @@ describe("replace tool — end-to-end", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Successfully replaced");
-      expect(editResult.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
+      expect(editResult.details?.metrics?.added_lines).toBe(1);
+        expect(editResult.details?.metrics?.removed_lines).toBe(1);
 
       const content = await readFile(path, "utf-8");
       expect(content).toBe("aaa\nBBB\nccc\n");
@@ -54,8 +55,9 @@ describe("replace tool — end-to-end", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Successfully replaced");
-      expect(editResult.content[0].text).toContain("Added 2 line(s), removed 2 line(s).");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
+      expect(editResult.details?.metrics?.added_lines).toBe(2);
+        expect(editResult.details?.metrics?.removed_lines).toBe(2);
 
       const content = await readFile(path, "utf-8");
       expect(content).toBe("aaa\nB\nC\nddd\n");
@@ -83,8 +85,9 @@ describe("replace tool — end-to-end", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Successfully replaced");
-      expect(editResult.content[0].text).toContain("Added 0 line(s), removed 2 line(s).");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
+      expect(editResult.details?.metrics?.added_lines).toBe(0);
+        expect(editResult.details?.metrics?.removed_lines).toBe(2);
 
       const content = await readFile(path, "utf-8");
       expect(content).toBe("aaa\n");
@@ -291,7 +294,7 @@ describe("replace tool — end-to-end", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Successfully replaced");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       const { readFile } = await import("fs/promises");
       const content = await readFile(path, "utf-8");
       expect(content).toBe("aaa\nBBB\nccc\n");
