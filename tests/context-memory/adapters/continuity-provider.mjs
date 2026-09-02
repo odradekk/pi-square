@@ -449,6 +449,10 @@ function createProviderSession({ script, arm, transport }) {
   let idCounter = 0;
   let started = false;
   let retainedLeafId = null;
+  // The Markdown the model submitted at this run's due boundary, held until
+  // the compression event that commits it so real-mode evidence carries the
+  // model-authored Memory the human review reads (#265).
+  let submittedBody = null;
 
   const nextId = (prefix) => `${prefix}-${String((idCounter += 1)).padStart(3, "0")}`;
   const emit = (name, event) => harness.emit(name, event, ctx);
@@ -572,9 +576,10 @@ function createProviderSession({ script, arm, transport }) {
       // has already been recorded, so the controller's sole-batch check sees
       // exactly [toolCallId] — the same ordering the scripted adapter keeps.
       try {
+        submittedBody = typeof call.arguments?.markdown === "string" ? call.arguments.markdown : "";
         await submit.execute(
           toolCallId,
-          { markdown: typeof call.arguments?.markdown === "string" ? call.arguments.markdown : "" },
+          { markdown: submittedBody },
           undefined,
           undefined,
           ctx,
@@ -729,7 +734,9 @@ function createProviderSession({ script, arm, transport }) {
             operation: blocks === 0 || blocksAfter > blocks ? "append" : "rebuild",
             blocksBefore: blocks,
             blocksAfter,
+            block: submittedBody,
           });
+          submittedBody = null;
           blocks = blocksAfter;
           evidence.compression = compressions[compressions.length - 1];
           if (abandonedPatterns.length > 0) {

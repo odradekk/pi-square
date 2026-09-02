@@ -247,7 +247,16 @@ async function runScriptedSession({ arm, replies, turns }) {
     "the post-acknowledgement continuation is delivered in the same turn (#253)");
   // The submit was accepted (message_end before execute, sole batch, same id):
   // only an accepted candidate produces the takeover the compression records.
-  assert.deepEqual(evidence[1].compression, { turn: "t2", turnIndex: null, operation: "append", blocksBefore: 0, blocksAfter: 1 });
+  // `block` is the Markdown the model submitted at this boundary; real-mode
+  // evidence retains it as the run's model-authored Memory (#265).
+  assert.deepEqual(evidence[1].compression, {
+    turn: "t2",
+    turnIndex: null,
+    operation: "append",
+    blocksBefore: 0,
+    blocksAfter: 1,
+    block: "# Memory one\n\n- established the working context for the run",
+  });
   assert.equal(stats.compressions.length, 1);
   assert.equal(evidence[1].advisory, true, "the bump turn's usageAfter opened the due run");
   assert.equal(evidence[2].error, null);
@@ -551,6 +560,15 @@ async function runScriptedSession({ arm, replies, turns }) {
   assert.equal(compressions[0].operation, "append", "the first due run appends onto the seeded Memory");
   assert.equal(compressions[0].blocksBefore, SEED.blockCount, "the block count starts at the seed");
   assert.equal(compressions[0].blocksAfter, SEED.blockCount + 1);
+  // The compression event carries the Markdown the model actually submitted.
+  // Real-mode evidence retains this as the run's model-authored Memory, and
+  // it is what the fixed human review reads when it confirms or challenges a
+  // severe classification — an absent body leaves that review with nothing.
+  assert.equal(
+    compressions[0].block,
+    "# Model block\n\n- authored at whatever length the model chose",
+    "the compression event carries the submitted Memory body into evidence",
+  );
 }
 
 console.log("continuity-adapter.test.mjs: all offline adapter coverage passed");

@@ -1,5 +1,5 @@
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { createFakeAdapter } from "./fake-model.mjs";
 import { runQualification } from "./runner.mjs";
 import { continuityProgress } from "../progress.mjs";
@@ -75,9 +75,17 @@ async function main() {
   // Live progress on stderr for the long credentialed run; the dry run is
   // fast enough that it only adds noise, and --quiet turns it off entirely.
   const onEvent = options.quiet || mode !== "real" ? undefined : continuityProgress();
-  const { report, json, markdown } = await runQualification({ adapter, reportDir: REPORT_DIR, mode, onEvent });
+  const { report, json, markdown, files } = await runQualification({ adapter, reportDir: REPORT_DIR, mode, onEvent });
   if (options.json) console.log(json);
   else console.log(markdown.trimEnd());
+  // Where this attempt's artifacts landed, on stderr so the report on stdout
+  // stays pipeable. The evidence file is the one the fixed human review of
+  // rubric.md reads, and nothing else in the run names it (#265).
+  if (files) {
+    console.error(`\nreport:   ${relative(process.cwd(), files.reportMarkdown)}`);
+    console.error(`json:     ${relative(process.cwd(), files.reportJson)}`);
+    if (files.evidence) console.error(`evidence: ${relative(process.cwd(), files.evidence)}  ← the fixed human review reads this`);
+  }
   process.exitCode = report.result === "pass" ? 0 : 1;
 }
 

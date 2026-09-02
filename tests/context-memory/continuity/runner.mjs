@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, appendFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MARKER, SEVERE_CLASSES, RESERVE_TOKENS, host } from "../qualification/harness.mjs";
 import {
@@ -158,10 +158,18 @@ function gitOutput(args) {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
+/**
+ * Each file is keyed by its repository-relative path with POSIX separators,
+ * never by the absolute checkout path, so the digest pins content and layout
+ * only: the same commit digests identically at any working location. The
+ * corpus digest was fixed this way in #250; this one carried the same defect,
+ * which made a report's fixture pin unverifiable from a second checkout.
+ * Both inputs derive from REPO_ROOT, so the relative form always exists.
+ */
 function digestOf(paths) {
   const hash = createHash("sha256");
   for (const path of [...paths].sort()) {
-    hash.update(path);
+    hash.update(relative(REPO_ROOT, path).split(sep).join("/"));
     hash.update("\0");
     hash.update(readFileSync(path));
     hash.update("\0");
