@@ -8,8 +8,9 @@ export { renderAutoReadAnchors } from "./operations.ts";
 export type { AutoReadAnchorsInput } from "./operations.ts";
 
 type PendingWrite = {
-  /** Canonical target path resolved at tool-call time. */
+  originalPath: string;
   canonicalPath: string;
+  content: string;
 };
 
 function writeInput(value: unknown): { path: string; content: string } | undefined {
@@ -52,12 +53,6 @@ export function createParentAnchoredWrite(config: () => PiSquareConfig): ParentA
         sessionDir,
         autoRead: () => config().anchoredEditing.autoRead,
         available,
-        // The parent seam carries no AbortSignal and the parent write has no
-        // execution wrapper (ADR-0014), so the parent path is the
-        // non-yielding zero-wait operation regardless of this option; the
-        // bound only covers the child composition's bounded wait, kept at
-        // zero here to mirror the parent's refusal semantics.
-        lockWaitMs: 0,
       });
       return session;
     },
@@ -88,11 +83,21 @@ export function registerAnchoredAutoRead(
     const input = writeInput(event.input);
     if (!input) return;
     try {
+      // Pi documents tool_call input as mutable. Canonicalizing the factory's
+      // own argument here means its later queue registration and our injected
+      // operation receive exactly the same path; no execute wrapper is needed.
       const target = await resolveAnchoredTarget(ctx.cwd, input.path);
-      parentWrite?.current()?.noteRequest(target.canonicalPath, input.path);
-      pendingWrites.set(event.toolCallId, { canonicalPath: target.canonicalPath });
+      pendingWrites.set(event.toolCallId, {
+        originalPath: input.path,
+        canonicalPath: target.canonicalPath,
+        content: input.content,
+      });
+      (event.input as { path: string }).path = target.canonicalPath;
     } catch (error) {
-      console.error("Failed to inspect anchored write before execution:", error);
+      return {
+        block: true,
+        reason: error instanceof Error ? error.message : String(error),
+      };
     }
   });
 
@@ -100,15 +105,36 @@ export function registerAnchoredAutoRead(
     if (event.toolName !== "write") return;
     const pending = pendingWrites.get(event.toolCallId);
     pendingWrites.delete(event.toolCallId);
-    if (event.isError || !pending || !config().anchoredEditing.enabled || !anchoredReadAvailable()) return;
+    if (!pending) return;
     try {
-      const outcome = parentWrite?.current()?.takeOutcome(pending.canonicalPath);
-      if (outcome?.appendix) {
-        return append(event.content, `\n\n${outcome.appendix}`);
-      }
+      const outcome = parentWrite?.current()?.takeOutcome(pending.canonicalPath, pending.content);
+      if (event.isError && !outcome) return;
+      const nativeSuccess = `Successfully wrote ${pending.content.length} bytes to ${pending.originalPath}`;
+      const restored = event.isError
+        ? [{ type: "text" as const, text: nativeSuccess }]
+        : event.content.map((part) =>
+          part.type === "text" && part.text === `Successfully wrote ${pending.content.length} bytes to ${pending.canonicalPath}`
+            ? { ...part, text: nativeSuccess }
+            : part,
+        );
+      return {
+        ...(outcome?.appendix ? append(restored, `\n\n${outcome.appendix}`) : { content: restored }),
+        isError: false,
+      };
     } catch (error) {
       console.error("Failed to present anchored write appendix:", error);
     }
+  });
+
+  // A later tool_call handler can block a call, or Pi can observe an abort
+  // after this handler returns but before execution. Neither path invokes the
+  // tool_result hook, so discard those call-bound presentation records when
+  // the run closes.
+  pi.on("agent_end", () => {
+    pendingWrites.clear();
+  });
+  pi.on("session_start", () => {
+    pendingWrites.clear();
   });
 }
 

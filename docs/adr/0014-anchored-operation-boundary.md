@@ -24,11 +24,12 @@ record supersedes the affected decisions.
 `src/anchored-edit/operations.ts` owns target resolution, in-process queue
 participation, cross-process exclusion, disk observation or mutation, and the
 matching owner-scoped store transaction for parent and writable-child reads,
-replaces, and writes. Tool registration never touches lock files, queue
-ordering, filesystem mechanics, cache ownership, or database transactions
-directly. The invariant stated in one place and tested there: model-visible
-anchors correspond to exact file bytes, belong to one physical store and
-owner, and are published only for a completed operation.
+replaces, and writes. Tool integrations delegate canonicalization to that
+module and never implement lock files, queue ordering, filesystem mechanics,
+cache ownership, or database transactions directly. The invariant stated in
+one place and tested there: model-visible anchors correspond to exact file
+bytes, belong to one physical store and owner, and are published only for a
+completed operation.
 
 ### Lock order and contention classification
 
@@ -60,13 +61,13 @@ waits directly, and the child write composition runs the public factory
 execution inside an AsyncLocalStorage signal context (its declared
 exception). The parent write has no execution wrapper — the seam authorized
 by this record is only the injected filesystem operation — and the
-`WriteOperations` seam carries no signal parameter. The parent write is
-therefore a *non-yielding* operation (see "Parent write seam" below): it
-performs resolution, the zero-wait lock (one publish attempt, one
-non-waiting dead-owner reclamation round), the atomic commit, and the
-post-commit store publication with no real-asynchronous I/O step, so an
-abort can only land before the operation starts or after it completed.
-`[E_RANGE_STALE]` is reserved for validation
+`WriteOperations` seam carries no signal parameter. Its lock wait is therefore
+bounded but not cancellation-aware. Pi checks cancellation before calling the
+operation and again after it settles. When the operation committed before that
+final check observes an abort, the `tool_result` observer consumes the recorded
+outcome and changes the result back to the factory's ordinary success wording;
+the report therefore always matches the disk effect instead of claiming that a
+completed write was aborted. `[E_RANGE_STALE]` is reserved for validation
 performed after the lock is acquired against a file that no longer matches
 the served range; it keeps returning the current range with fresh anchors
 and serving those rows for the immediate retry. The child `requireServed`
@@ -105,10 +106,11 @@ version's rows survive untouched, are stale against the written bytes, and
 refuse every old anchor (unchanged rows included) until a fresh read. A
 store failure after the write is therefore reported as a unified bounded
 `[E_STATE_UNAVAILABLE]` note on the truthful success, never as a failed
-write and never as a state that still authorizes old anchors. Auto-read-
-off, unchanged, and empty writes publish the same clearing transaction with
-no new rows: the write-state clearing contract holds for every successful
-write, and only a failed publication leaves the stale barrier.
+write and never as a state that still authorizes old anchors. Auto-read-off,
+unchanged, empty, and over-the-anchor-line-limit writes publish the same
+clearing transaction with no new rows: the write-state clearing contract
+holds for every successful write, and only a failed publication leaves the
+stale barrier.
 
 ### One owner-aware store schema
 
@@ -121,12 +123,12 @@ store eviction, owner deletion, quarantine, and shutdown invalidate only the
 state they own and never close a connection with an active borrower. Served
 hashes are row-level, version-bound, and merge conflict-free: each
 publication merges the rows for exactly one content version and drops other
-versions' rows for the path in the same transaction. Owner deletion, multi-path
-pruning, and the post-commit publication are explicit transactions. Path
-pruning returns absence only for genuine missing-path errors — permission
-and resource failures preserve rows and surface bounded diagnostics. A database that
-*claims* the current version must also carry the current layout: strict
-shape validation treats a version-8 file with deviating schema as an
+versions' rows for the path in the same transaction. Owner deletion,
+multi-path pruning, and the post-commit publication are explicit transactions.
+Path pruning returns absence only for genuine missing-path errors — permission
+and resource failures preserve rows and surface bounded diagnostics. A
+database that *claims* the current version must also carry the current layout:
+strict shape validation treats a version-8 file with deviating schema as an
 incompatible layout, so no current-version database is ever probed
 statement-by-statement into a failing publication. Validation covers the
 complete schema, not just visible columns: the table set is exactly
@@ -139,8 +141,8 @@ schema object that changes transaction semantics — no views, no triggers,
 and no indexes besides the one automatic index each expected PRIMARY KEY
 implies, so an extra UNIQUE constraint (which materializes as an extra
 autoindex, like a generated `STORED UNIQUE` column) is quarantined rather
-than surfacing later as a `UNIQUE constraint failed` publication error. Every incompatible
-non-empty layout, including the former ownerless current-version shape, is
+than surfacing later as a `UNIQUE constraint failed` publication error. Every
+incompatible non-empty layout, including the former ownerless current-version shape, is
 quarantined whole with its sidecars and rebuilt fresh; there is no data
 migration.
 
@@ -160,36 +162,42 @@ Removal never renames the canonical lock path away after a mere check.
 Every remover first publishes a short-lived per-target removal marker
 (`<lock>.rm`, the same atomic record protocol) naming the remover process.
 While a marker is held, no other remover can act (its marker publish fails)
-and no successor can install (the canonical path is still occupied), so the
-remover's re-verified single rename-take necessarily grabs exactly the file
-it verified — a dead owner's record, or its own acquisition. A stale
-verifier that arrives after a successor installed re-reads the canonical
-record under its marker, finds a different token, and walks away having
-touched nothing: the canonical lock path is never emptied behind a live
-successor, so no third writer can slip in and no restore window exists. A
-taken file whose identity or token mismatches (defense-in-depth against a
+and, before the take, the occupied canonical path prevents a successor from
+installing. The remover's re-verified single rename-take therefore grabs
+exactly the file it verified — a dead owner's record, or its own acquisition —
+and it deletes only that retired exact file. A successor may install after
+the take and remains untouched. A stale verifier that arrives after a
+successor installed re-reads the canonical record under its marker, finds a
+different identity or token, and walks away having touched nothing. A taken
+file whose identity or token mismatches (defense-in-depth against a
 non-protocol actor) is restored with a no-clobber link within the shared
-budget, never destroyed. The zero-wait caller still performs one
-non-waiting dead-owner reclamation round — cancellation precedes the first
-publish attempt, and a deadline-exhausted caller earns exactly one extra
-publish attempt after removing a dead holder — so the parent write recovers
-a crashed cross-process holder without ever waiting. A marker whose holder
-died is reclaimed through a per-dead-token
-claim: a reclaimer must first win an exclusive claim file named after the
-dead marker's unique token (one link winner), and only the claim winner
-ever takes the marker path — so two stale reclaimers of the same dead
-marker can never race a check-then-rename on the marker, and a live marker
+budget, never destroyed. Cancellation precedes the first publish attempt,
+and a deadline-exhausted caller earns exactly one extra publish attempt after
+removing a dead holder. A marker whose holder died is reclaimed through a
+per-dead-token claim: a reclaimer must first win an exclusive fixed-length
+claim file derived from the dead marker's unique token (one link winner), and
+only the claim winner ever takes the marker path — so two stale reclaimers of
+the same dead marker can never race a check-then-rename on the marker, and a live marker
 installed by another reclaimer is never displaced. A claim holder that
 crashed between publishing its claim and taking the marker cannot block
 recovery: a claim is a complete owner record like any other, so a provably
-dead claim holder's file is removed through the same verified take (while
-it exists no other claimant for that dead marker can publish) and the next
-reclaimer retries, while a live claim holder simply means busy. If a fresh
-remover wins the empty path in the claimant's take-to-publish gap, the
-claimant backs
-off: exactly one holder exists at every instant. A live marker makes the
-removal attempt busy and the caller's bounded loop retries; a release
-retries busy within its bounded release budget and records an explicit safe
+dead claim holder's file is removed and the next reclaimer retries, while a
+live claim holder simply means busy. Dead-claim removal first publishes a
+guard derived from that claim's own unique token. Every stale reclaimer of
+the same claim competes on the same guard, so the winner's final re-read and
+rename-take are protected as one protocol step; a successor is never moved.
+If a guard holder crashes, the same token-derived rule recurses under a fixed
+depth bound, so damaged chains fail closed instead of recursing forever. A
+claim holder re-verifies that its own claim is still canonical before taking
+the marker, so no interleaving can ever produce two takers. Anchored operations and store
+opening use this one asynchronous lock protocol; the former synchronous
+write-side protocol has been removed. If a fresh remover wins the empty path
+in the claimant's take-to-publish gap, the claimant backs off: exactly one
+holder exists at every instant. A live marker makes the removal attempt busy
+and the caller's bounded loop retries. A live owner
+releasing its own exact record may use that busy marker as remover exclusion,
+so a completed operation never carries its lock forward; other release
+failures stay within the bounded release budget and record an explicit safe
 failure on exhaustion (the lock file remains and is reclaimed once the
 process is gone). All removal and marker waits share the calling acquire's
 deadline and cancellation and end in the classified `[E_FILE_LOCKED]`
@@ -225,32 +233,39 @@ classifies as `E_FILE_LOCKED`, while cancellation responsiveness stays the
 factory's own abort checks — the signal context is used only by the child
 write composition, a declared exception.
 
-The parent write's injected operation is **non-yielding**: target
-resolution, the operation key, the zero-wait lock acquisition (one publish
-attempt plus one non-waiting dead-owner reclamation through the same
-marker/claim records the asynchronous protocol uses), the pre-write
-comparison, the atomic commit, the auto-read render computed from the
-written content itself, the store publication, and the verified release all
-run synchronously, with no real-asynchronous I/O between them. This is the
-cancellation-truthfulness design for a seam that cannot carry a signal: an
-AbortController event (delivered from the event loop) can only land before
-the factory's last pre-write check — in which case the factory aborts the
-call and nothing is written — or after the operation completed, which is
-exactly the outcome the factory's own native write produces when an abort
-lands during its filesystem write (the factory checks after each await and
-never rejects the in-flight write). The operation can therefore never
-proceed to a write *after* an observable cancellation inside it, and it can
-never present torn anchored state: whatever the factory's final
-classification, the served rows on disk always match the written bytes
-exactly. The asynchronous bounded-wait protocol with signal checkpoints
-remains the child composition's path. Result, error, and renderer
-semantics stay the factory's own. Display decoration stays independent of
-execution. The parent write result keeps Pi's factory
-wording, and the auto-read appendix is presented by the tool-result
-observer from the outcome the injected operation already published — the
-observer no longer participates in the state transaction. `replace` returns
-structured diff and warning details from its executor; the model result and
-operational display consume that structure directly, and the test-only
+The parent uses Pi's documented mutable `tool_call.input` contract to replace
+the requested path with its canonical target before execution. The unwrapped
+public factory therefore registers its native mutation queue with the exact
+path later passed to `WriteOperations.writeFile`; the injected operation uses
+that same path for the lock, bytes, and store publication. A symlink retarget
+after `tool_call` cannot split those identities. The observer remembers the
+original requested path and restores Pi's ordinary success wording in the
+result.
+
+The operations seam does not carry `toolCallId`, so anchored parent and child
+write definitions declare sequential execution. This makes each completed
+outcome unambiguous even for identical path/content calls and for a call that
+fails before `writeFile`; successful outcomes are consumed FIFO and cannot be
+overwritten or leaked across calls. Different operation types still share
+Pi's per-target queue, and cross-process concurrency remains per target.
+
+The injected operation uses the same asynchronous lock implementation as
+reads and replaces. The child passes its AbortSignal through the declared
+AsyncLocalStorage composition and can stop before commit. The unwrapped parent
+cannot pass a signal through `WriteOperations`, so Pi owns its cancellation
+checkpoints. If the final checkpoint observes cancellation after the operation
+committed, the recorded outcome proves the effect and the `tool_result`
+observer returns the factory's success wording (plus any precomputed appendix)
+with `isError: false`. A pre-operation abort or a write failure records no
+outcome and remains Pi's native error. Thus cancellation never produces a
+false report, without a parent execute wrapper.
+
+Result, error, and renderer semantics otherwise stay the factory's own.
+Display decoration stays independent of execution. The auto-read appendix is
+presented by the tool-result observer from the outcome the injected operation
+already published — the observer no longer participates in the state
+transaction. `replace` returns structured diff and warning details from its
+executor; the model result and operational display consume that structure directly, and the test-only
 renderer and its `Warnings:`-parsing round-trip are deleted. Range
 resolution returns one discriminated success-or-failure result;
 normalization, duplicate-boundary correction, and application consume the
@@ -310,10 +325,10 @@ now simply covers one more incompatible layout.
    the public `WriteOperations` contract of the pinned Pi version; the plain
    filesystem write performed when anchored editing is disabled or the
    availability gate is closed is unaffected. Because that seam carries no
-   AbortSignal, the parent write performs one immediate lock attempt: a
-   cross-process holder makes the write refuse with `E_FILE_LOCKED`
-   immediately instead of waiting out a budget — a small contention-retry
-   cost accepted to keep the parent factory's execution unwrapped and to
-   remove every cancellable wait from the parent path. The non-yielding
-   operation also makes a hot uncached store open classify as retryable
-   `E_FILE_LOCKED` (one synchronous schema-lock attempt) rather than wait.
+   AbortSignal, the parent lock wait is bounded rather than cancellation-aware;
+   Pi's own pre-operation checkpoint still stops an already-aborted call, and
+   a recorded completed outcome repairs a post-commit abort into truthful
+   success. Anchored write definitions are sequential because the operations
+   seam also carries no call id; this may serialize unrelated tools in a batch
+   containing a write, an accepted cost for exact result association without
+   wrapping parent execution.

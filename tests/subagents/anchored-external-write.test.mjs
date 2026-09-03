@@ -120,7 +120,12 @@ try {
   }
 
   // An unsupported (over-limit) external write keeps the factory result
-  // without an anchor appendix: the appendix bounds reject the target.
+  // without an anchor appendix: the appendix bounds reject the target and
+  // the successful write still clears previously served state.
+  const externalHuge = join(root, "external-huge.txt");
+  writeFileSync(externalHuge, "seed\n", "utf8");
+  const canonicalHuge = realpathSync(externalHuge);
+  await childRead.execute("seed-huge", { path: "../external-huge.txt" }, undefined, undefined, ctx);
   const huge = `${"a\n".repeat(240_000)}end`;
   const hugeResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir).execute(
     "child-write-huge",
@@ -131,6 +136,23 @@ try {
   );
   assert.match(textOf(hugeResult.content), /Successfully wrote/, "the over-limit write still succeeds through the factory");
   assert.doesNotMatch(textOf(hugeResult.content), /Auto-read/, "an unsupported write keeps its native result without anchors");
+  assert.doesNotMatch(
+    textOf(hugeResult.content),
+    /E_STATE_UNAVAILABLE/,
+    "a known auto-read size limit clears state normally instead of masquerading as a store failure",
+  );
+  {
+    const store = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
+    try {
+      assert.equal(
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonicalHuge).count,
+        0,
+        "an over-limit write clears the writing child's previous served rows",
+      );
+    } finally {
+      store.close();
+    }
+  }
 
   // Only the writing child's served rows were cleared; the parent and another
   // child's partitions keep their rows for the same canonical file.

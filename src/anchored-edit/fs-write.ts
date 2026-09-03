@@ -8,7 +8,6 @@ import {
 	stat,
 	writeFile,
 } from "fs/promises";
-import { lstatSync, readlinkSync } from "fs";
 import { dirname, join, parse, resolve, sep } from "path";
 import { errCode } from "./utils";
 import { createAtomicTempFile, unlinkIfSameNode, type FileIdentity } from "../core/safe-write.ts";
@@ -69,49 +68,6 @@ export async function resolveTarget(path: string): Promise<string> {
   }
 
   return resParts(root, parts);
-}
-
-/**
- * Synchronous mirror of {@link resolveTarget}: the same symlink-walking
- * resolution with ENOENT passthrough on missing final components. Used by
- * the parent write's non-yielding operation, which must not interleave real
- * asynchronous I/O between target resolution and the filesystem commit.
- */
-export function resolveTargetSync(path: string): string {
-  const absolutePath = resolve(path);
-  const { root } = parse(absolutePath);
-  const parts = absolutePath
-    .slice(root.length)
-    .split(sep)
-    .filter((part) => part.length > 0);
-  const visitedSymlinks = new Set<string>();
-
-  function resPartsSync(currentPath: string, remainingParts: string[]): string {
-    if (remainingParts.length === 0) return currentPath;
-    const [nextPart, ...tail] = remainingParts;
-    const candidatePath = join(currentPath, nextPart);
-    try {
-      const candidateStats = lstatSync(candidatePath);
-      if (!candidateStats.isSymbolicLink()) return resPartsSync(candidatePath, tail);
-      if (visitedSymlinks.has(candidatePath)) {
-        const error = new Error(`Too many symbolic links while resolving ${path}`) as NodeJS.ErrnoException;
-        error.code = "ELOOP";
-        throw error;
-      }
-      visitedSymlinks.add(candidatePath);
-      const linkTargetPath = resolve(dirname(candidatePath), readlinkSync(candidatePath));
-      const targetParts = linkTargetPath
-        .slice(parse(linkTargetPath).root.length)
-        .split(sep)
-        .filter((part) => part.length > 0);
-      return resPartsSync(parse(linkTargetPath).root, [...targetParts, ...tail]);
-    } catch (error: unknown) {
-      if (errCode(error) === "ENOENT") return join(candidatePath, ...tail);
-      throw error;
-    }
-  }
-
-  return resPartsSync(root, parts);
 }
 
 /**

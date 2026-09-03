@@ -74,27 +74,12 @@ try {
   assert.match(result.content[1].text, /--- Auto-read \(hashline anchors\) ---/);
   assert.match(result.content[1].text, /^[A-Za-z0-9]{3}│after$/m);
 
-  for (const handler of events.get("tool_call") ?? []) {
-    await handler(
-      { toolName: "write", toolCallId: "write-unchanged", input: { path: "source.txt", content: "after\n" } },
-      sessionCtx,
-    );
-  }
-  let unchanged;
-  for (const handler of events.get("tool_result") ?? []) {
-    unchanged = await handler(
-      {
-        toolName: "write",
-        toolCallId: "write-unchanged",
-        input: { path: "source.txt", content: "after\n" },
-        content: [{ type: "text", text: "Successfully wrote 6 bytes to source.txt" }],
-        details: undefined,
-        isError: false,
-      },
-      sessionCtx,
-    );
-  }
-  assert.equal(unchanged, undefined, "an unchanged write does not append anchors");
+  const unchanged = await runWrite("write-unchanged", { path: "source.txt", content: "after\n" });
+  assert.deepEqual(
+    unchanged.content,
+    [{ type: "text", text: "Successfully wrote 6 bytes to source.txt" }],
+    "an unchanged write restores the native result path without appending anchors",
+  );
 
   // ── Native path authority (#185): a parent write to an external path
   // clears served state for that canonical file in the initiating workspace
@@ -172,15 +157,16 @@ try {
       "parent",
       { sessionDir },
     );
+    const clearedInput = { path: "../outside-cleared.txt", content: "after\n" };
     for (const handler of plainEvents.get("tool_call") ?? []) {
       await handler(
-        { toolName: "write", toolCallId: "write-external-cleared", input: { path: "../outside-cleared.txt", content: "after\n" } },
+        { toolName: "write", toolCallId: "write-external-cleared", input: clearedInput },
         sessionCtx,
       );
     }
     const clearedFactoryResult = await plainWrite.execute(
       "write-external-cleared",
-      { path: "../outside-cleared.txt", content: "after\n" },
+      clearedInput,
       undefined,
       undefined,
       sessionCtx,
@@ -191,7 +177,7 @@ try {
         {
           toolName: "write",
           toolCallId: "write-external-cleared",
-          input: { path: "../outside-cleared.txt", content: "after\n" },
+          input: clearedInput,
           content: clearedFactoryResult.content,
           details: clearedFactoryResult.details,
           isError: false,
@@ -199,7 +185,11 @@ try {
         sessionCtx,
       );
     }
-    assert.equal(clearedResult, undefined, "disabled auto-read appends nothing");
+    assert.deepEqual(
+      clearedResult.content,
+      [{ type: "text", text: "Successfully wrote 6 bytes to ../outside-cleared.txt" }],
+      "disabled auto-read restores the native result path without appending anchors",
+    );
     const store = new DatabaseSync(storePath, { timeout: 500 });
     try {
       // autoRead=false appends no anchors, but the successful write still

@@ -330,9 +330,13 @@ export function setupParentWrite(
   // The production parent write composition (#264): Pi's public write
   // factory with the anchored operation injected through its filesystem seam,
   // with the availability gate living inside the injected operation.
-  const definition = createWriteToolDefinition(cwd, {
-    operations: parentWrite.attachSession(cwd, sessionDir, () => available).operations,
-  });
+  const writeSession = parentWrite.attachSession(cwd, sessionDir, () => available);
+  const definition = {
+    ...createWriteToolDefinition(cwd, {
+      operations: writeSession.operations,
+    }),
+    executionMode: "sequential" as const,
+  };
   const ctx = makeTestCtx(cwd);
   async function runWrite(
     toolCallId: string,
@@ -343,19 +347,35 @@ export function setupParentWrite(
       { toolName: "write", toolCallId, input: params },
       ctx,
     );
-    const result = await definition.execute(toolCallId, params, signal, undefined, ctx);
-    const patched = await handlers.get("tool_result")!(
-      {
+    try {
+      const result = await definition.execute(toolCallId, params, signal, undefined, ctx);
+      const patched = await handlers.get("tool_result")!(
+        {
+          toolName: "write",
+          toolCallId,
+          input: params,
+          content: result.content,
+          details: result.details,
+          isError: false,
+        },
+        ctx,
+      );
+      return (patched ?? result) as { content: Array<{ type: string; text: string }> } & Record<string, unknown>;
+    } catch (error) {
+      const failed = {
         toolName: "write",
         toolCallId,
         input: params,
-        content: result.content,
-        details: result.details,
-        isError: false,
-      },
-      ctx,
-    );
-    return (patched ?? result) as { content: Array<{ type: string; text: string }> } & Record<string, unknown>;
+        content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+        details: undefined,
+        isError: true,
+      };
+      const patched = await handlers.get("tool_result")!(failed, ctx) as
+        | ({ content: Array<{ type: string; text: string }>; isError?: boolean } & Record<string, unknown>)
+        | undefined;
+      if (patched?.isError === false) return patched;
+      throw error;
+    }
   }
-  return { pi, handlers, definition, runWrite };
+  return { pi, handlers, definition, runWrite, writeSession };
 }

@@ -4,6 +4,12 @@ import { createAnchoredWriteSession, resolveAnchoredTarget, runWithWriteSignal }
 
 type GenericToolDefinition = ToolDefinition<any, any, any>;
 
+/** @internal Deterministic test seam after canonicalization and before the
+ * public factory registers its queue. Production never sets it. */
+export const childWriteEntryBarrier: {
+  afterResolve?: (canonicalPath: string) => Promise<void>;
+} = {};
+
 /**
  * Builds the child write tool for a writable subagent while anchored editing is
  * on. It is Pi's public write factory with the integrated anchored write
@@ -52,22 +58,46 @@ export function createChildAnchoredWriteTool(
   const base = createWriteToolDefinition(cwd, { operations: session.operations });
   return {
     ...base,
+    // The operations seam carries no call id. Sequential host execution keeps
+    // each completed outcome paired with its own result, including identical
+    // path/content calls where an earlier call failed before writeFile.
+    executionMode: "sequential",
     async execute(toolCallId, params: { path: string; content: string }, signal, onUpdate, ctx) {
       const target = await resolveAnchoredTarget(cwd, params.path);
-      session.noteRequest(target.canonicalPath, params.path);
-      // The factory execution runs in the write-signal context so the
-      // injected operation's lock wait observes this call's cancellation; a
-      // failed factory write throws before or inside the injected write, so
-      // reaching the outcome step means the write and its state publication
-      // completed under the boundary (the precomputed appendix is
-      // presentation only).
-      const result = await runWithWriteSignal(signal, () => base.execute(toolCallId, params, signal, onUpdate, ctx));
-      const outcome = session.takeOutcome(target.canonicalPath);
-      if (!outcome?.appendix) return result;
-      return {
-        ...result,
-        content: [...result.content, { type: "text", text: `\n\n${outcome.appendix}` }],
-      };
+      await childWriteEntryBarrier.afterResolve?.(target.canonicalPath);
+      const canonicalParams = { ...params, path: target.canonicalPath };
+      const successText = `Successfully wrote ${params.content.length} bytes to ${params.path}`;
+      try {
+        const result = await runWithWriteSignal(
+          signal,
+          () => base.execute(toolCallId, canonicalParams, signal, onUpdate, ctx),
+        );
+        const outcome = session.takeOutcome(target.canonicalPath, params.content);
+        const restored = result.content.map((part) =>
+          part.type === "text" && part.text === `Successfully wrote ${params.content.length} bytes to ${target.canonicalPath}`
+            ? { ...part, text: successText }
+            : part,
+        );
+        return {
+          ...result,
+          content: outcome?.appendix
+            ? [...restored, { type: "text" as const, text: `\n\n${outcome.appendix}` }]
+            : restored,
+        };
+      } catch (error) {
+        // Pi checks cancellation once more after the injected write settles.
+        // If the operation recorded an outcome, the bytes were committed and
+        // the truthful result is success even when that final check aborted.
+        const outcome = session.takeOutcome(target.canonicalPath, params.content);
+        if (!outcome) throw error;
+        return {
+          content: [
+            { type: "text" as const, text: successText },
+            ...(outcome.appendix ? [{ type: "text" as const, text: `\n\n${outcome.appendix}` }] : []),
+          ],
+          details: undefined,
+        };
+      }
     },
   } as GenericToolDefinition;
 }

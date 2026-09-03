@@ -9,14 +9,14 @@ import {
   readBarrier,
   replaceBarrier,
   resolveAnchoredTarget,
+  withTargetMutationQueue,
   writeBarrier,
-  writeBarrierSync,
 } from "../../../src/anchored-edit/operations";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
-import { createChildAnchoredWriteTool } from "../../../src/anchored-edit/child-write";
+import { childWriteEntryBarrier, createChildAnchoredWriteTool } from "../../../src/anchored-edit/child-write";
 import { PARENT_OWNER, loadAnchoredHashStore } from "../../../src/anchored-edit/workspace-support";
 import { anchoredStoreDir } from "../../../src/anchored-edit/paths";
-import { lockFilePath } from "../../../src/anchored-edit/file-lock";
+import { lockFilePath, __lockTestables } from "../../../src/anchored-edit/file-lock";
 import { loadHashStoreAt, shutdownHashStore, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
 import { _lineHashesPure } from "../../../src/anchored-edit/hashline";
 import { makeTestCtx, setupParentWrite, testSessionDir, withTempDir } from "../support/fixtures";
@@ -72,7 +72,7 @@ afterEach(() => {
   replaceBarrier.beforePrepare = undefined;
   replaceBarrier.beforeCommit = undefined;
   writeBarrier.beforeWrite = undefined;
-  writeBarrierSync.beforeWrite = undefined;
+  childWriteEntryBarrier.afterResolve = undefined;
 });
 
 describe("operation boundary — replace preparation is pure (#264)", () => {
@@ -215,7 +215,7 @@ describe("operation boundary — replace preparation is pure (#264)", () => {
       expect(textOf(result.content)).toContain("Successfully wrote");
       expect(await readFile(path, "utf-8"), "the write is not presented as failed").toBe("written\n");
 
-      const outcome = session.takeOutcome(join(cwd, "sample.txt"));
+      const outcome = session.takeOutcome(join(cwd, "sample.txt"), "written\n");
       expect(outcome?.appendix).toContain("call read to get fresh anchors");
 
       // The unpublished state authorizes nothing: an immediate replace with
@@ -405,10 +405,7 @@ describe("operation boundary — one queue-then-lock order for every writer (#26
     await withTempDir("boundary-pw-replace-", async (cwd) => {
       const { ctx, hashes, parentWrite, replace } = await setup(cwd);
 
-      // The parent write's operation is non-yielding: once its queue turn
-      // starts it resolves the target, locks, commits, and publishes with no
-      // interleaving point, so firing both concurrently is deterministic
-      // through the shared mutation queue alone (the write entered first).
+      // Both mutations share Pi's queue; the write entered it first.
       const writePromise = parentWrite.execute("w1", { path: "sample.txt", content: "written\n" }, undefined, undefined, ctx);
       const replacePromise = replace.execute(
         "r1",
@@ -510,9 +507,8 @@ describe("operation boundary — one queue-then-lock order for every writer (#26
     await withTempDir("boundary-pw-cw-", async (cwd) => {
       const { ctx, parentWrite, childWrite } = await setup(cwd);
 
-      // Both writes enter the same per-file mutation queue; the parent's
-      // non-yielding operation completes its queue turn atomically, so the
-      // child write deterministically lands after it without a barrier.
+      // Both writes enter the same per-file mutation queue, so the child
+      // deterministically lands after the parent without a timing assumption.
       const parentPromise = parentWrite.execute("w1", { path: "sample.txt", content: "parent\n" }, undefined, undefined, ctx);
       const childPromise = childWrite.execute("w1-child", { path: "sample.txt", content: "child\n" }, undefined, undefined, ctx);
       await parentPromise;
@@ -1034,7 +1030,7 @@ describe("operation boundary — cancellation during the lock wait (#264 P1)", (
     });
   });
 
-  it("a parent write aborted while another editor holds the lock never writes: zero-wait classification (#264 P1)", async () => {
+  it("a parent write refused by a held lock never writes, and a pre-abort stays native (#264 P1)", async () => {
     await withTempDir("boundary-cancel-write-", async (cwd) => {
       const path = join(cwd, "sample.txt");
       await writeFile(path, SAMPLE, "utf-8");
@@ -1044,13 +1040,6 @@ describe("operation boundary — cancellation during the lock wait (#264 P1)", (
       const holder = await (await import("../../../src/anchored-edit/operations")).enterTargetBoundary(storeDir, target, { waitMs: 5000 });
       expect(holder).not.toBeNull();
       try {
-        // The production parent composition: the seam carries no AbortSignal
-        // and there is no execution wrapper, so the parent write performs one
-        // immediate lock attempt — it never enters a cancellable wait. The
-        // reviewer's interleaving (abort during what a waiting design would
-        // still be waiting on) therefore cannot write-then-fail: the busy
-        // target classifies as E_FILE_LOCKED at once and the bytes are
-        // untouched, whatever the abort timing.
         const { runWrite } = setupParentWrite(cwd, { autoRead: true });
 
         // A call aborted before the factory runs keeps Pi's own abort
@@ -1061,11 +1050,7 @@ describe("operation boundary — cancellation during the lock wait (#264 P1)", (
           .rejects.toThrow("Operation aborted");
         expect(await readFile(path, "utf-8")).toBe(SAMPLE);
 
-        // The reviewer's interleaving — abort at 50ms while a waiting design
-        // would still be waiting until the holder releases at 150ms — cannot
-        // write-then-fail: with no cancellable wait, the contended write
-        // settles as E_FILE_LOCKED within the first event-loop turns, long
-        // before any later abort or release, and the bytes are untouched.
+        // The bounded lock wait expires without entering the operation.
         await expect(runWrite("w1", { path: "sample.txt", content: "AFTER\n" })).rejects.toThrow("[E_FILE_LOCKED]");
         expect(await readFile(path, "utf-8"), "a contended parent write never modifies the file").toBe(SAMPLE);
       } finally {
@@ -1172,7 +1157,7 @@ describe("operation boundary — anchored write availability gate (#264 P1)", ()
       const store = await parentStoreFor(cwd);
       expect(store.getServedState(path, "plain\n")).toBeUndefined();
       store.release();
-      expect(session.takeOutcome(path)).toBeUndefined();
+      expect(session.takeOutcome(path, "after\n")).toBeUndefined();
     });
   });
 
@@ -1197,7 +1182,7 @@ describe("operation boundary — anchored write availability gate (#264 P1)", ()
       const store = await parentStoreFor(cwd);
       expect(store.getServedState(path, "anchored\n")).toBeDefined();
       store.release();
-      expect(session.takeOutcome(path)?.appendix).toContain("Auto-read");
+      expect(session.takeOutcome(path, "anchored\n")?.appendix).toContain("Auto-read");
     });
   });
 });
@@ -1296,12 +1281,10 @@ describe("operation boundary — the locked target is the I/O target (#264 P1)",
       const fixture = await symlinkFixture(cwd);
       const { runWrite } = setupParentWrite(cwd, { autoRead: true });
 
-      // The retarget fires synchronously at the worst-possible moment —
-      // after resolution and lock, immediately before the filesystem write.
-      // The non-yielding operation still commits the locked canonical target.
-      writeBarrierSync.beforeWrite = () => {
-        writeBarrierSync.beforeWrite = undefined;
-        void (async () => { await retargetToDecoy(cwd); })();
+      // Retarget after resolution and lock, immediately before the write.
+      writeBarrier.beforeWrite = async () => {
+        writeBarrier.beforeWrite = undefined;
+        await retargetToDecoy(cwd);
       };
 
       const result = await runWrite("w1", { path: "link.txt", content: "frozen\n" });
@@ -1371,44 +1354,6 @@ describe("operation boundary — parent write cancellation truthfulness (#264 P1
     });
   });
 
-  it("an abort fired at the worst-possible moment leaves consistent state for the committed bytes", async () => {
-    await withTempDir("boundary-abort-mid-", async (cwd) => {
-      const path = join(cwd, "sample.txt");
-      await writeFile(path, SAMPLE, "utf-8");
-      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
-      const controller = new AbortController();
-
-      // Fired synchronously between the lock and the filesystem write — the
-      // exact interleaving the zero-wait design removed every await from. The
-      // non-yielding operation completes atomically; the factory may still
-      // classify the call as aborted (its native post-write check), but the
-      // anchored layer must never present a torn state: the published served
-      // rows match the written bytes exactly, so a fresh read is unaffected.
-      writeBarrierSync.beforeWrite = () => {
-        writeBarrierSync.beforeWrite = undefined;
-        controller.abort();
-      };
-
-      // The factory's own post-write check classifies the call as aborted —
-      // the identical outcome a native Pi write produces when an abort lands
-      // during its filesystem write. The anchored state below is what our
-      // layer owns, and it is consistent with the committed bytes.
-      await expect(
-        runWrite("w1", { path: "sample.txt", content: "after\n" }, controller.signal),
-      ).rejects.toThrow(/aborted/i);
-      expect(await readFile(path, "utf-8")).toBe("after\n");
-      const store = await parentStoreFor(cwd);
-      const served = await servedFor(store, path, "after\n");
-      expect(served).toBeDefined();
-      expect(served!.size).toBeGreaterThan(0);
-      // The pre-write version authorizes nothing against the written bytes.
-      expect(await servedFor(store, path, SAMPLE)).toBeUndefined();
-      store.release();
-      // The lock was released in the same non-yielding span.
-      expect(lockAreaResidue(cwd)).toEqual([]);
-    });
-  });
-
   it("a busy target is refused immediately with the file untouched and no residue", async () => {
     await withTempDir("boundary-abort-busy-", async (cwd) => {
       const path = join(cwd, "sample.txt");
@@ -1467,4 +1412,251 @@ describe("operation boundary — parent write cancellation truthfulness (#264 P1
     });
   });
 
+});
+
+describe("operation boundary — parent write cancellation consistency (#264 round 5)", () => {
+  it("a write with no abort reports success and the file is written", async () => {
+    await withTempDir("r5-abort-clean-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "before\n", "utf-8");
+      const ctx = makeTestCtx(cwd);
+      const session = createAnchoredWriteSession({
+        cwd,
+        owner: PARENT_OWNER,
+        sessionDir: testSessionDir(cwd),
+        autoRead: () => true,
+        available: () => true,
+      });
+      const definition = createWriteToolDefinition(cwd, { operations: session.operations });
+      const result = await definition.execute("w1", { path: "sample.txt", content: "after\n" }, undefined, undefined, ctx);
+      expect(textOf(result.content)).toContain("Successfully wrote");
+      expect(await readFile(path, "utf-8")).toBe("after\n");
+    });
+  });
+
+  it("a parent write committed before the factory observes cancellation is reported as success", async () => {
+    await withTempDir("r6-abort-after-commit-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "before\n", "utf-8");
+      const controller = new AbortController();
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+      writeBarrier.beforeWrite = async () => controller.abort();
+
+      const result = await runWrite("w1", { path: "sample.txt", content: "after\n" }, controller.signal);
+
+      expect(textOf(result.content)).toContain("Successfully wrote 6 bytes to sample.txt");
+      expect(await readFile(path, "utf-8")).toBe("after\n");
+    });
+  });
+
+  it("keeps identical completed write outcomes in FIFO order", async () => {
+    await withTempDir("r6-identical-outcomes-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "before\n", "utf-8");
+      const session = createAnchoredWriteSession({
+        cwd,
+        owner: PARENT_OWNER,
+        sessionDir: testSessionDir(cwd),
+        autoRead: () => false,
+      });
+
+      await session.operations.writeFile(path, "same\n");
+      await session.operations.writeFile(path, "same\n");
+
+      expect(session.takeOutcome(path, "same\n")?.changed).toBe(true);
+      expect(session.takeOutcome(path, "same\n")?.changed).toBe(false);
+      expect(session.takeOutcome(path, "same\n")).toBeUndefined();
+    });
+  });
+});
+
+describe("operation boundary — the canonical factory argument survives a mid-queue retarget (#264 P1)", () => {
+  async function symlinkFixture(cwd: string) {
+    await writeFile(join(cwd, "sample.txt"), SAMPLE, "utf-8");
+    await writeFile(join(cwd, "other.txt"), "WRONG\n", "utf-8");
+    await symlink(join(cwd, "sample.txt"), join(cwd, "link.txt"));
+    return { canonical: join(cwd, "sample.txt"), decoy: join(cwd, "other.txt"), link: join(cwd, "link.txt") };
+  }
+
+  async function retargetToDecoy(cwd: string): Promise<void> {
+    const temp = join(cwd, ".retarget.tmp");
+    await symlink(join(cwd, "other.txt"), temp);
+    await rename(temp, join(cwd, "link.txt"));
+  }
+
+  it("the parent tool_call freezes the factory input to the canonical target and preserves sequential result association", async () => {
+    await withTempDir("r6-call-freeze-parent-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const { handlers, definition } = setupParentWrite(cwd, { autoRead: true });
+      const input = { path: "link.txt", content: "frozen\n" };
+
+      await handlers.get("tool_call")!(
+        { toolName: "write", toolCallId: "w1", input },
+        makeTestCtx(cwd),
+      );
+
+      expect(input.path).toBe(fixture.canonical);
+      expect(definition.executionMode).toBe("sequential");
+    });
+  });
+
+  it("parent write: the canonical factory target serializes with the queue holder and never follows the retarget", async () => {
+    await withTempDir("r5-queue-freeze-parent-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const { handlers, definition } = setupParentWrite(cwd, { autoRead: true });
+      const ctx = makeTestCtx(cwd);
+      const input = { path: "link.txt", content: "frozen\n" };
+
+      // Occupy the mutation queue Pi registers the write under (the
+      // entry-time realpath of link.txt = sample.txt).
+      const queueTarget = { canonicalPath: fixture.canonical, opKey: fixture.canonical };
+      let releaseQueue!: () => void;
+      const queueHeld = new Promise<void>((resolveHeld) => {
+        void withTargetMutationQueue(queueTarget, () => new Promise<void>((resolveFn) => {
+          resolveHeld();
+          releaseQueue = resolveFn;
+        }));
+      });
+      await queueHeld;
+
+      await handlers.get("tool_call")!({ toolName: "write", toolCallId: "w1", input }, ctx);
+      expect(input.path).toBe(fixture.canonical);
+      await retargetToDecoy(cwd);
+      const writePromise = definition.execute("w1", input, undefined, undefined, ctx);
+      releaseQueue();
+      const result = await writePromise;
+      const patched = await handlers.get("tool_result")!({
+        toolName: "write", toolCallId: "w1", input, content: result.content, details: result.details, isError: false,
+      }, ctx) as { content: Array<{ type: string; text?: string }> };
+      expect(textOf(patched.content)).toContain("Successfully wrote 7 bytes to link.txt");
+
+      // The write serialized with the queue holder on the frozen target and
+      // never followed the retarget: sample.txt written, decoy untouched.
+      expect(await readFile(fixture.canonical, "utf-8")).toBe("frozen\n");
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+      const store = await parentStoreFor(cwd);
+      expect(await servedFor(store, fixture.canonical, "frozen\n")).toBeDefined();
+      store.release();
+    });
+  });
+
+  it("child write: the canonical factory target serializes with the queue holder and keeps its appendix", async () => {
+    await withTempDir("r5-queue-freeze-child-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const ctx = makeTestCtx(cwd);
+      const childWrite = createChildAnchoredWriteTool(cwd, "subagent_r5", testSessionDir(cwd), () => true);
+
+      const queueTarget = { canonicalPath: fixture.canonical, opKey: fixture.canonical };
+      let releaseQueue!: () => void;
+      const queueHeld = new Promise<void>((resolveHeld) => {
+        void withTargetMutationQueue(queueTarget, () => new Promise<void>((resolveFn) => {
+          resolveHeld();
+          releaseQueue = resolveFn;
+        }));
+      });
+      await queueHeld;
+
+      let releaseEntry!: () => void;
+      const entryResolved = new Promise<string>((resolveEntry) => {
+        childWriteEntryBarrier.afterResolve = (canonicalPath) => {
+          childWriteEntryBarrier.afterResolve = undefined;
+          resolveEntry(canonicalPath);
+          return new Promise<void>((resolveRelease) => { releaseEntry = resolveRelease; });
+        };
+      });
+      const writePromise = childWrite.execute("w1", { path: "link.txt", content: "child-frozen\n" }, undefined, undefined, ctx);
+      expect(await entryResolved).toBe(fixture.canonical);
+      await retargetToDecoy(cwd);
+      releaseEntry();
+      releaseQueue();
+      const written = await writePromise;
+
+      expect(textOf(written.content)).toContain("Successfully wrote");
+      expect(textOf(written.content)).toContain("Auto-read");
+      expect(await readFile(fixture.canonical, "utf-8")).toBe("child-frozen\n");
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+    });
+  });
+
+  it("parent write: the appendix survives a symlink retarget between the call and the operation (#264 P1)", async () => {
+    await withTempDir("r5-bind-freeze-parent-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const { handlers, definition, writeSession } = setupParentWrite(cwd, { autoRead: true });
+      const ctx = makeTestCtx(cwd);
+      const input = { path: "link.txt", content: "bound\n" };
+
+      // The tool_call observer runs (awaited) before execution and freezes
+      // the entry target; the retarget then cannot move the association.
+      await handlers.get("tool_call")!({ toolName: "write", toolCallId: "w1", input }, ctx);
+      await retargetToDecoy(cwd);
+      const result = await definition.execute("w1", input, undefined, undefined, ctx);
+      const patched = (await handlers.get("tool_result")!({
+        toolName: "write", toolCallId: "w1", input, content: result.content, details: result.details, isError: false,
+      }, ctx)) as ({ content: Array<{ type: string; text?: string }> | undefined });
+
+      expect(textOf((patched ?? result).content ?? [])).toContain("Auto-read");
+      expect(await readFile(fixture.canonical, "utf-8")).toBe("bound\n");
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+
+      expect(writeSession.takeOutcome(fixture.canonical, input.content)).toBeUndefined();
+    });
+  });
+});
+
+describe("operation boundary — the parent write never carries a live lock out of its turn (#264 P1)", () => {
+  const lockMarkerPath = (lockPath: string): string => __lockTestables.markerPath(lockPath);
+
+  function liveMarkerRecord(): string {
+    return JSON.stringify(__lockTestables.currentOwnerRecord());
+  }
+
+  it("a live removal marker on the target cannot leak the lock past the write: the next write succeeds", async () => {
+    await withTempDir("r5-release-live-marker-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "one\n", "utf-8");
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+
+      const target = await resolveAnchoredTarget(cwd, "sample.txt");
+      const lockPath = lockFilePath(anchoredStoreDir(testSessionDir(cwd), cwd), target.opKey);
+      await mkdir(dirname(lockPath), { recursive: true });
+      writeFileSync(lockMarkerPath(lockPath), liveMarkerRecord(), { flag: "wx", mode: 0o600 });
+
+      const r1 = await runWrite("w1", { path: "sample.txt", content: "two\n" });
+      expect(textOf(r1.content)).toContain("Successfully wrote");
+      // The lock itself is gone even though the marker stayed busy.
+      expect(existsSync(lockPath)).toBe(false);
+
+      const r2 = await runWrite("w2", { path: "sample.txt", content: "three\n" });
+      expect(textOf(r2.content)).toContain("Successfully wrote");
+      expect(await readFile(path, "utf-8")).toBe("three\n");
+      expect(existsSync(lockPath)).toBe(false);
+    });
+  });
+
+  it("a crashed remover's dead marker is reclaimed by the release: no lock, no residue", async () => {
+    await withTempDir("r5-release-dead-marker-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "one\n", "utf-8");
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+
+      const target = await resolveAnchoredTarget(cwd, "sample.txt");
+      const lockPath = lockFilePath(anchoredStoreDir(testSessionDir(cwd), cwd), target.opKey);
+      const marker = lockMarkerPath(lockPath);
+      await mkdir(dirname(lockPath), { recursive: true });
+      const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+      const { hostname } = await import("node:os");
+      writeFileSync(marker, JSON.stringify({ v: 1, token: "dead-marker-token", pid: exited.pid, hostname: hostname(), startTime: "1", acquiredAt: 1 }), { flag: "wx", mode: 0o600 });
+
+      const r1 = await runWrite("w1", { path: "sample.txt", content: "two\n" });
+      expect(textOf(r1.content)).toContain("Successfully wrote");
+      const r2 = await runWrite("w2", { path: "sample.txt", content: "three\n" });
+      expect(textOf(r2.content)).toContain("Successfully wrote");
+      expect(await readFile(path, "utf-8")).toBe("three\n");
+      expect(existsSync(lockPath)).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      const locksDir = join(anchoredStoreDir(testSessionDir(cwd), cwd), "locks");
+      const residue = readdirSync(locksDir).filter((name) => !name.endsWith(".schema.lock"));
+      expect(residue).toEqual([]);
+    });
+  });
 });

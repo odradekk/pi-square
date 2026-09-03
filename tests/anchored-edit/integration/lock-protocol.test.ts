@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   __lockTestables,
   acquireFileLock,
@@ -19,6 +19,8 @@ afterEach(() => {
   lockBarrier.markerClaimed = undefined;
   lockBarrier.markerTaken = undefined;
   lockBarrier.afterTake = undefined;
+  lockBarrier.claimRecheck = undefined;
+  lockBarrier.claimGuarded = undefined;
   vi.unstubAllEnvs();
 });
 
@@ -35,7 +37,7 @@ function lockPathIn(dir: string): string {
 async function residue(dir: string): Promise<string[]> {
   const entries = await readdir(join(dir, "locks")).catch(() => [] as string[]);
   return entries.filter(
-    (name) => name.includes(".retired-") || name.endsWith(".rm") || name.includes(".rm.claim.") || name.startsWith(".publish-"),
+    (name) => name.includes(".retired-") || name.endsWith(".rm") || name.includes(".rm.claim-") || name.startsWith(".claim-guard-") || name.startsWith(".publish-"),
   );
 }
 
@@ -68,6 +70,18 @@ function deadPid(): number {
 
 function budget(ms: number) {
   return { deadlineAt: Date.now() + ms, pollMs: 5 };
+}
+
+/** Temporary-file artifacts only (take/restore residue); planted protocol
+ *  files (lock, marker, claim) are the test's own fixtures. */
+async function tempResidue(dir: string): Promise<string[]> {
+  const entries = await readdir(join(dir, "locks")).catch(() => [] as string[]);
+  return entries.filter((name) => name.includes(".retired-") || name.startsWith(".publish-"));
+}
+
+function readFileSyncClaim(path: string): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require("node:fs").readFileSync(path, "utf8") as string;
 }
 
 function rmSyncSafe(path: string): void {
@@ -398,7 +412,7 @@ describe("stale verifier versus live successor (#264 P1: exclusion never breaks)
     }
   });
 
-  it("a release whose every attempt stays busy exhausts its budget safely with an explicit record (#264 P1)", async () => {
+  it("a release uses a live busy marker as exclusion and never carries its own lock past the operation (#264 P1)", async () => {
     const dir = await freshDir("release-exhaust");
     vi.stubEnv("PI_SQUARE_RELEASE_BUDGET_MS", "80");
     try {
@@ -427,22 +441,16 @@ describe("stale verifier versus live successor (#264 P1: exclusion never breaks)
       } finally {
         errorSpy.mockRestore();
       }
-      expect(
-        errors.some((args) => String((args as unknown[])[0]).includes("removal marker stayed busy")),
-        "the exhausted release records the safe failure explicitly",
-      ).toBe(true);
-      // Safe failure: the lock file remains (reclaimed once this process is
-      // gone) and no protocol residue was left behind.
-      expect(existsSync(lockPathIn(dir))).toBe(true);
+      expect(errors).toEqual([]);
+      expect(existsSync(lockPathIn(dir))).toBe(false);
 
       releaseVerifier();
       // One-shot barrier: nothing after this may park on it.
       lockBarrier.markerHeld = undefined;
       const staleOutcome = await staleRemoval;
-      expect(staleOutcome).toBe("foreign");
+      expect(staleOutcome).toBe("absent");
       const entries = await residue(dir);
       expect(entries.filter((name) => name !== undefined)).toEqual([]);
-      rmSyncSafe(lockPathIn(dir));
     } finally {
       lockBarrier.markerHeld = undefined;
       vi.unstubAllEnvs();
@@ -504,6 +512,43 @@ describe("removal marker claim races (#264 P1)", () => {
       await __lockTestables.releaseRemovalMarker(lockPathIn(dir), r1Handle!);
       expect(existsSync(marker)).toBe(false);
       expect(await residue(dir)).toEqual([]);
+    } finally {
+      lockBarrier.markerClaimed = undefined;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a same-token successor marker is protected by file identity", async () => {
+    const dir = await freshDir("claim-same-token-successor");
+    try {
+      const lockPath = lockPathIn(dir);
+      const marker = __lockTestables.markerPath(lockPath);
+      await installRecord(marker, { pid: deadPid(), hostname: hostname(), token: "reused-token" });
+
+      let releaseClaim!: () => void;
+      const claimed = new Promise<void>((resolveClaimed) => {
+        lockBarrier.markerClaimed = () => {
+          resolveClaimed();
+          return new Promise<void>((resolveRelease) => { releaseClaim = resolveRelease; });
+        };
+      });
+      const stale = __lockTestables.acquireRemovalMarker(lockPath, budget(5_000));
+      await claimed;
+
+      await rm(marker);
+      const live = __lockTestables.currentOwnerRecord();
+      await installRecord(marker, {
+        pid: live.pid,
+        hostname: live.hostname,
+        ...(live.startTime !== undefined ? { startTime: live.startTime } : {}),
+        token: "reused-token",
+      });
+      const successorIdentity = await stat(marker);
+      releaseClaim();
+
+      expect(await stale).toBeUndefined();
+      expect(await stat(marker)).toMatchObject({ dev: successorIdentity.dev, ino: successorIdentity.ino });
+      expect((JSON.parse(await readFile(marker, "utf8")) as { token: string }).token).toBe("reused-token");
     } finally {
       lockBarrier.markerClaimed = undefined;
       await rm(dir, { recursive: true, force: true });
@@ -653,6 +698,7 @@ describe("removal marker lifecycle", () => {
     const dir = await freshDir("dead-claim");
     const lockPath = lockPathIn(dir);
     const marker = __lockTestables.markerPath(lockPath);
+    const claim = __lockTestables.claimPathFor(lockPath, "dead-owner-token");
 
     // The crash state a reclaimer leaves behind when it exits after
     // publishing its claim but before taking the dead marker: the dead lock,
@@ -662,7 +708,7 @@ describe("removal marker lifecycle", () => {
     await installRecord(lockPath, { pid: deadOwnerPid, hostname: hostname(), startTime: "1", token: "dead-owner-token" });
     await installRecord(marker, { pid: deadOwnerPid, hostname: hostname(), startTime: "1", token: "dead-owner-token" });
     await installRecord(
-      `${marker}.claim.dead-owner-token`,
+      claim,
       { pid: deadClaimantPid, hostname: hostname(), startTime: "1", token: "crashed-claimant" },
     );
 
@@ -676,22 +722,117 @@ describe("removal marker lifecycle", () => {
     // Full recovery: no lock, no marker, no claim, no residue.
     expect(existsSync(lockPath)).toBe(false);
     expect(existsSync(marker)).toBe(false);
-    expect(existsSync(`${marker}.claim.dead-owner-token`)).toBe(false);
+    expect(existsSync(claim)).toBe(false);
     expect(await residue(dir)).toEqual([]);
+  });
+
+  it("derives fixed safe claim names from untrusted owner tokens", async () => {
+    const dir = await freshDir("claim-token-path");
+    const lockPath = lockPathIn(dir);
+    const marker = __lockTestables.markerPath(lockPath);
+    const hostileToken = "../../outside/" + "x".repeat(100);
+    const claim = __lockTestables.claimPathFor(lockPath, hostileToken);
+    expect(dirname(claim)).toBe(dirname(lockPath));
+    expect(claim.split("/").pop()!.length).toBeLessThan(255);
+
+    await installRecord(lockPath, { pid: deadPid(), hostname: hostname(), startTime: "1", token: hostileToken });
+    await installRecord(marker, { pid: deadPid(), hostname: hostname(), startTime: "1", token: hostileToken });
+    await installRecord(claim, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-claimant" });
+
+    const acquired = await acquireFileLock(lockPath, { waitMs: 5_000 });
+    expect(acquired).not.toBeNull();
+    await acquired!.release();
+    expect(await residue(dir)).toEqual([]);
+  });
+
+  it("a successor claim published after the stale read is observed live and never displaced (#264 round 5, async)", async () => {
+    const dir = await freshDir("claim-race");
+    const lockPath = lockPathIn(dir);
+    const marker = __lockTestables.markerPath(lockPath);
+    const claim = __lockTestables.claimPathFor(lockPath, "dead-owner-token");
+    await installRecord(lockPath, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    await installRecord(marker, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    await installRecord(
+      claim,
+      { pid: deadPid(), hostname: hostname(), startTime: "1", token: "crashed-claimant" },
+    );
+
+    // Between the stale read of the dead claim and the take, another
+    // reclaimer removes it and publishes a live successor.
+    let releaseRecheck!: () => void;
+    const recheckEntered = new Promise<void>((resolveEntered) => {
+      lockBarrier.claimRecheck = () => {
+        lockBarrier.claimRecheck = undefined;
+        resolveEntered();
+        return new Promise<void>((resolveRelease) => { releaseRecheck = resolveRelease; });
+      };
+    });
+    const acquirePromise = acquireFileLock(lockPath, { waitMs: 300 });
+    await recheckEntered;
+    const successor = __lockTestables.currentOwnerRecord();
+    await rmSyncSafe(claim);
+    await installRecord(
+      claim,
+      { pid: successor.pid, hostname: successor.hostname, ...(successor.startTime !== undefined ? { startTime: successor.startTime } : {}), token: "successor-claimant" },
+    );
+    releaseRecheck();
+
+    const acquired = await acquirePromise;
+    expect(acquired).toBeNull();
+
+    // The live successor claim was never moved away: still the canonical
+    // claim with its own token, and there is no second winner.
+    const claimRaw = JSON.parse(readFileSyncClaim(claim));
+    expect(claimRaw.token).toBe("successor-claimant");
+    expect(await tempResidue(dir)).toEqual([]);
+  });
+
+  it("a dead claim is guarded across its final read and take, so a second reclaimer cannot replace it", async () => {
+    const dir = await freshDir("claim-final-window");
+    const lockPath = lockPathIn(dir);
+    const marker = __lockTestables.markerPath(lockPath);
+    const claim = __lockTestables.claimPathFor(lockPath, "dead-owner-token");
+    await installRecord(lockPath, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    await installRecord(marker, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    await installRecord(claim, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "crashed-claimant" });
+
+    let releaseGuard!: () => void;
+    const guarded = new Promise<void>((resolveGuarded) => {
+      lockBarrier.claimGuarded = () => {
+        lockBarrier.claimGuarded = undefined;
+        resolveGuarded();
+        return new Promise<void>((resolveRelease) => { releaseGuard = resolveRelease; });
+      };
+    });
+    const first = __lockTestables.acquireRemovalMarker(lockPath, budget(5_000));
+    await guarded;
+
+    const second = await __lockTestables.acquireRemovalMarker(lockPath, budget(200));
+    expect(second).toBeUndefined();
+    expect((JSON.parse(await readFile(claim, "utf8")) as { token: string }).token).toBe("crashed-claimant");
+
+    releaseGuard();
+    const handle = await first;
+    expect(handle).toBeDefined();
+    await __lockTestables.releaseRemovalMarker(lockPath, handle!);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(claim)).toBe(false);
+    expect(await tempResidue(dir)).toEqual([]);
   });
 
   it("a live claim holder is busy, never displaced (#264 P1)", async () => {
     const dir = await freshDir("live-claim");
     const lockPath = lockPathIn(dir);
     const marker = __lockTestables.markerPath(lockPath);
+    const claim = __lockTestables.claimPathFor(lockPath, "dead-owner-token");
     await installRecord(lockPath, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
     await installRecord(marker, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
-    // The claim holder is this process: complete, attributable, alive — its
-    // start time matches the live process exactly.
-    const liveStart = readFileSync(`/proc/${process.pid}/stat`, "utf8").split(") ")[1]!.split(" ")[19]!;
+    // The claim holder is this process: the real, complete, attributable
+    // record of the live process (platform-neutral — no /proc parsing).
+    const live = __lockTestables.currentOwnerRecord();
     await installRecord(
-      `${marker}.claim.dead-owner-token`,
-      { pid: process.pid, hostname: hostname(), startTime: liveStart, token: "live-claimant" },
+      claim,
+      { pid: live.pid, hostname: live.hostname, ...(live.startTime !== undefined ? { startTime: live.startTime } : {}), token: "live-claimant" },
     );
 
     const acquired = await acquireFileLock(lockPath, { waitMs: 200 });
@@ -699,7 +840,7 @@ describe("removal marker lifecycle", () => {
     // Nothing was displaced: lock, marker, and the live claim all remain.
     expect(existsSync(lockPath)).toBe(true);
     expect(existsSync(marker)).toBe(true);
-    expect(existsSync(`${marker}.claim.dead-owner-token`)).toBe(true);
+    expect(existsSync(claim)).toBe(true);
   });
 
   it("an unverifiable original is foreign by definition: never removed, only waited on", async () => {

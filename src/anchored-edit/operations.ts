@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { constants as fsConstants, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { constants as fsConstants, realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import {
   DEFAULT_MAX_BYTES,
@@ -9,10 +10,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { loadFileKindAndText } from "./file-kind.ts";
 import { readNormFile, safeSnapId } from "./file-reader.ts";
-import { acquireFileLock, acquireZeroWaitFileSync, fileLockedMessage, lockFilePath, releaseFileSync, type AcquireLockOptions } from "./file-lock.ts";
-import { initHasher } from "./hashline/hasher.ts";
+import { acquireFileLock, fileLockedMessage, lockFilePath, type AcquireLockOptions } from "./file-lock.ts";
 import { _lineHashesPure } from "./hashline/index.ts";
-import { resolveTarget, resolveTargetSync, writeAtomic } from "./fs-write.ts";
+import { resolveTarget, writeAtomic } from "./fs-write.ts";
 import type { HashStoreHandle } from "./hash-store.ts";
 import { MAX_HASH_LINES } from "./hashline/index.ts";
 import { AnchorMismatchError, RangeStaleError } from "./hashline/index.ts";
@@ -23,7 +23,6 @@ import { buildChanged, buildNoop, type RMeta } from "./replace-response.ts";
 import { restoreEndings } from "./replace-diff.ts";
 import { servedHashesFromDiff } from "./served.ts";
 import { loadAnchoredHashStore } from "./workspace-support.ts";
-import { loadAnchoredHashStoreSync } from "./workspace-support-sync.ts";
 import { stripBOM, toLF } from "./replace-diff.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
 import { errCode, visLines } from "./utils.ts";
@@ -34,9 +33,9 @@ import { errCode, visLines } from "./utils.ts";
  * One coordinator owns target resolution, in-process queue participation,
  * cross-process exclusion, disk observation or mutation, and the matching
  * owner-scoped store transaction for parent and writable-child reads,
- * replaces, and writes. Tool registration never touches lock files, queue
- * ordering, filesystem mechanics, cache ownership, or database transactions
- * directly.
+ * replaces, and writes. Tool integrations delegate canonicalization to this
+ * module and never implement lock files, queue ordering, filesystem mechanics,
+ * cache ownership, or database transactions directly.
  *
  * Ordering is fixed for every mutation: Pi's per-file mutation queue is the
  * outer in-process serializer and the anchored cross-process lock is the
@@ -86,20 +85,6 @@ async function operationKeyFor(canonicalPath: string): Promise<string> {
   return canonicalPath;
 }
 
-/** Synchronous mirror of {@link operationKeyFor} for the parent write's
- *  non-yielding operation. */
-function operationKeyForSync(canonicalPath: string): string {
-  try {
-    const stats = statSync(canonicalPath);
-    if (stats.isFile() && stats.nlink > 1 && (stats.dev !== 0 || stats.ino !== 0)) {
-      return `inode:${stats.dev}:${stats.ino}`;
-    }
-  } catch {
-    // Missing or unstatable target: the canonical path is the key.
-  }
-  return canonicalPath;
-}
-
 /** Resolves a requested path with Pi's native authority and derives its
  *  operation key. Mirrors exactly what the Pi factories resolve. */
 export async function resolveAnchoredTarget(
@@ -108,13 +93,6 @@ export async function resolveAnchoredTarget(
 ): Promise<AnchoredTarget> {
   const canonicalPath = await resolveTarget(toCwd(requestedPath, cwd));
   return { canonicalPath, opKey: await operationKeyFor(canonicalPath) };
-}
-
-/** Synchronous mirror of {@link resolveAnchoredTarget} for the parent
- *  write's non-yielding operation. */
-export function resolveAnchoredTargetSync(cwd: string, requestedPath: string): AnchoredTarget {
-  const canonicalPath = resolveTargetSync(toCwd(requestedPath, cwd));
-  return { canonicalPath, opKey: operationKeyForSync(canonicalPath) };
 }
 
 interface SessionContext {
@@ -577,7 +555,7 @@ export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promis
   }
 }
 
-/** Pure auto-read render for the parent write's non-yielding operation.
+/** Pure auto-read render for an anchored write operation.
  *  The written bytes are exactly `content` (the factory writes it verbatim as
  *  UTF-8), so the normalized content, hashes, and preview rows are computed
  *  from that string — with the same normalization, bounds, and text shape as
@@ -587,12 +565,13 @@ export async function renderAutoReadAnchors(input: AutoReadAnchorsInput): Promis
 function renderAutoReadFromContent(content: string): AutoReadRender | undefined {
   const { text: raw } = stripBOM(content);
   const normalized = toLF(raw);
+  const lines = visLines(normalized);
+  if (lines.length > MAX_HASH_LINES) return undefined;
   const hashes = _lineHashesPure(normalized);
-  if (visLines(normalized).length > MAX_HASH_LINES) return undefined;
   const preview = fmtReadPreviewSync(normalized, {}, hashes, DEFAULT_MAX_BYTES, AUTO_READ_MAX);
   const skipped = preview.nextOffset === undefined
     ? ""
-    : `\n[${visLines(normalized).length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
+    : `\n[${lines.length - preview.nextOffset + 1} lines skipped; call read with offset=${preview.nextOffset} for more anchors.]`;
   return {
     text: `--- Auto-read (hashline anchors) ---\n${preview.text}${skipped}`,
     content: normalized,
@@ -612,17 +591,16 @@ export interface AnchoredWriteOutcome {
 }
 
 export interface AnchoredWriteSession {
-  /** Operations for Pi's public write factory. `writeFile` joins the fixed
-   *  queue-then-lock protocol — the factory enters the per-file mutation
-   *  queue, and the operation acquires the target lock inside it — and
-   *  publishes the owner's store state before the lock releases. */
+  /** Operations for Pi's public write factory. The caller must pass the
+   *  canonical path returned by {@link resolveAnchoredTarget} to the factory,
+   *  so Pi's queue and this operation act on the same target. */
   readonly operations: WriteOperations;
-  /** Records the model-visible request path for the next write under the
-   *  canonical path, used for appendix display text. */
-  noteRequest(canonicalPath: string, displayPath: string): void;
-  /** Takes (consumes) the outcome of the most recent completed write under
-   *  the canonical path, when one is pending. */
-  takeOutcome(canonicalPath: string): AnchoredWriteOutcome | undefined;
+  /** Takes the oldest completed outcome for this canonical path/content pair.
+   *  Pi serializes calls to one target, so completion and result delivery have
+   *  the same order. Anchored write definitions additionally declare
+   *  sequential execution so a failed pre-write call cannot consume a later
+   *  call's outcome. */
+  takeOutcome(canonicalPath: string, content: string): AnchoredWriteOutcome | undefined;
 }
 
 export interface AnchoredWriteSessionInput {
@@ -646,23 +624,17 @@ export interface AnchoredWriteSessionInput {
 }
 
 /**
- * @internal Deterministic test seam for the asynchronous (child) write
- * composition: awaited inside the target boundary immediately before the
+ * @internal Deterministic test seam for parent and child writes: awaited
+ * inside the target boundary immediately before the
  * irreversible filesystem write, so tests can hold a write at the commit
  * point and prove ordering against other operations without sleeps.
  * Production never sets it.
  */
 export const writeBarrier: { beforeWrite?: (info: { canonicalPath: string }) => Promise<void> } = {};
 
-/**
- * @internal Deterministic test seam for the parent write's non-yielding
- * operation: a synchronous observation point immediately before the
- * irreversible filesystem write. It cannot pause the operation — by design,
- * no event can interleave there — but tests use it to fire an abort (or any
- * event) at the worst-possible moment and assert the operation's
- * outcome/bytes/state consistency. Production never sets it.
- */
-export const writeBarrierSync: { beforeWrite?: (info: { canonicalPath: string }) => void } = {};
+function writeIdentity(canonicalPath: string, content: string): string {
+  return `${canonicalPath}\0${createHash("sha256").update(content).digest("hex")}`;
+}
 
 /** Unified bounded actionable note for any post-commit state failure. The
  *  platform error is logged, never leaked into model-visible text: the note
@@ -671,203 +643,73 @@ const ANCHORED_STATE_NOTE =
   "--- [E_STATE_UNAVAILABLE] The file was written, but updating anchored state failed; call read to get fresh anchors before the next replace. ---";
 
 /**
- * The parent write's non-yielding operation: one frozen canonical target
- * from resolution through the cross-process lock, comparison, atomic commit,
- * and the owner-scoped store publication. Every step is synchronous — no
- * real-asynchronous I/O runs between the lock and the commit's publication —
- * so cancellation cannot interleave inside the operation (see the injection
- * site for the abort-semantics contract) and no await can observe a target
- * that the lock does not cover. A busy target is an immediate classified
- * `[E_FILE_LOCKED]` with nothing written; the one non-waiting dead-owner
- * reclamation round still recovers a crashed holder.
- */
-function runParentWriteSync(
-  session: SessionContext,
-  input: AnchoredWriteSessionInput,
-  requests: Map<string, string>,
-  outcomes: Map<string, AnchoredWriteOutcome>,
-  absolutePath: string,
-  content: string,
-): void {
-  const target = resolveAnchoredTargetSync(input.cwd, absolutePath);
-  const canonicalPath = target.canonicalPath;
-  const displayPath = requests.get(canonicalPath) ?? absolutePath;
-  const lockPath = lockFilePath(session.storeDir, target.opKey);
-  const lock = acquireZeroWaitFileSync(lockPath);
-  if (!lock) {
-    throw new Error(fileLockedMessage(displayPath, "write"));
-  }
-  try {
-    let changed = true;
-    try {
-      changed = !Buffer.from(content, "utf8").equals(readFileSync(canonicalPath));
-    } catch {
-      // ENOENT (creation) or an unreadable target: changed.
-    }
-    writeBarrierSync.beforeWrite?.({ canonicalPath });
-    // Ordinary factory filesystem semantics: the write, and any error it
-    // produces, is exactly Pi's own — the synchronous mirror of the factory's
-    // in-place write. Everything below this point is post-commit: no failure
-    // may present the completed write as failed.
-    writeFileSync(canonicalPath, content, "utf-8");
-    let appendix: string | undefined;
-    try {
-      // Publication happens while the boundary is still held, as ONE
-      // repository transaction per successful write: the served rows for the
-      // written content version replace every previous row (the write-state
-      // clearing contract), with new rows only when the agent-only auto-read
-      // setting serves fresh anchors for a changed, supported target. Any
-      // failure rolls the whole transaction back, so the previous version's
-      // rows remain and — being version-bound — cannot authorize a replace
-      // against the written bytes; the model sees the unified bounded note
-      // and a fresh read repairs.
-      const store = loadAnchoredHashStoreSync(session.storeDir, input.owner);
-      try {
-        const rendered = input.autoRead() && changed ? renderAutoReadFromContent(content) : undefined;
-        if (rendered !== undefined) {
-          appendix = rendered.text;
-          store.publishWrite({
-            kind: "publish",
-            path: canonicalPath,
-            snapshot: { content: rendered.content, hashes: rendered.hashes },
-            ...(rendered.servedHashes.length > 0 ? { servedHashes: rendered.servedHashes } : {}),
-          });
-        } else {
-          store.publishWrite({ kind: "clear", path: canonicalPath });
-        }
-      } finally {
-        store.release();
-      }
-    } catch (error) {
-      console.error("Anchored write state update failed:", error);
-      appendix = ANCHORED_STATE_NOTE;
-    }
-    outcomes.set(canonicalPath, {
-      canonicalPath,
-      changed,
-      ...(appendix !== undefined ? { appendix } : {}),
-    });
-  } finally {
-    releaseFileSync(lockPath, lock.token, lock.identity);
-  }
-}
-
-/**
  * Creates the write-side operation session for one acting owner. The parent
- * session shares one instance between the registered write definition (its
- * `operations`) and the result-presentation handlers (`noteRequest` /
- * `takeOutcome`); each writable child creates its own.
+ * session shares one instance between the registered write definition and
+ * the result-presentation handlers; each writable child creates its own.
  */
 export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): AnchoredWriteSession {
-  const outcomes = new Map<string, AnchoredWriteOutcome>();
-  const requests = new Map<string, string>();
+  const outcomes = new Map<string, AnchoredWriteOutcome[]>();
   const session = sessionContextFor(input.cwd, input.sessionDir);
+
+  const recordOutcome = (key: string, outcome: AnchoredWriteOutcome): void => {
+    const queued = outcomes.get(key);
+    if (queued) queued.push(outcome);
+    else outcomes.set(key, [outcome]);
+  };
+
   const operations: WriteOperations = {
     mkdir: (dir) => mkdir(dir, { recursive: true }).then(() => {}),
     writeFile: async (absolutePath: string, content: string) => {
-      const signalContext = writeSignalContext.getStore();
-      const signal = signalContext?.signal;
-      if (input.available !== undefined && !input.available()) {
-        // The anchored surface is incomplete: perform Pi's plain filesystem
-        // write with no anchored lock, no store mutation, and no outcome, so
-        // the write cannot be half-activated (#264). This is the availability
-        // gate living inside the one authorized seam — the injected
-        // filesystem operation — not an execution wrapper.
+      const signal = writeSignalContext.getStore()?.signal;
+      const available = input.available !== undefined ? input.available() : true;
+      if (!available) {
         await writeFile(absolutePath, content, "utf-8");
         return;
       }
-      if (signalContext === undefined) {
-        // Parent write: the non-yielding operation (ADR-0014). The public
-        // `WriteOperations` seam carries no AbortSignal, and an execution
-        // wrapper around the factory is forbidden, so the operation performs
-        // resolution, locking, comparison, the filesystem commit, and the
-        // post-commit store publication with no real-asynchronous I/O step.
-        // An abort can therefore only land before the operation starts (the
-        // factory's own pre-write check then classifies the call and nothing
-        // is written) or after it completed — exactly the factory's native
-        // abort semantics, with no window in between where a write proceeds
-        // after an observable cancellation.
-        await initHasher();
-        runParentWriteSync(session, input, requests, outcomes, absolutePath, content);
-        return;
-      }
-      const canonicalPath = await resolveTarget(absolutePath);
-      const opKey = await operationKeyFor(canonicalPath);
-      const displayPath = requests.get(canonicalPath) ?? absolutePath;
+      // Parent tool_call interception and the child composition both replace
+      // the factory argument with this canonical path before execution. Pi's
+      // queue therefore resolved the same path this operation locks/writes.
+      const target = await resolveAnchoredTarget(input.cwd, absolutePath);
+      const outcomeKey = writeIdentity(target.canonicalPath, content);
       const boundary = await enterTargetBoundary(
         session.storeDir,
-        { canonicalPath, opKey },
+        target,
         { signal, ...(input.lockWaitMs !== undefined ? { waitMs: input.lockWaitMs } : {}) },
       );
       if (!boundary) {
-        throw new Error(fileLockedMessage(displayPath, "write"));
+        throw new Error(fileLockedMessage(absolutePath, "write"));
       }
       try {
         if (signal?.aborted) {
-          // Cancelled before any filesystem effect: classified contention.
-          throw new Error(fileLockedMessage(displayPath, "write"));
+          throw new Error(fileLockedMessage(absolutePath, "write"));
         }
-        // Pre-write comparison inside the boundary decides whether the write
-        // is a change for auto-read; a missing file counts as changed
-        // (creation), as does an unreadable one.
         let changed = true;
         try {
-          changed = !Buffer.from(content, "utf8").equals(await readFile(canonicalPath));
+          changed = !Buffer.from(content, "utf8").equals(await readFile(target.canonicalPath));
         } catch {
-          // ENOENT (creation) or an unreadable target: the appendix render
-          // applies its own bounds after the write.
+          // ENOENT (creation) or an unreadable target: changed.
         }
-        await writeBarrier.beforeWrite?.({ canonicalPath });
+        await writeBarrier.beforeWrite?.({ canonicalPath: target.canonicalPath });
         if (signal?.aborted) {
-          // Last cancellation checkpoint before the irreversible write.
-          throw new Error(fileLockedMessage(displayPath, "write"));
+          throw new Error(fileLockedMessage(absolutePath, "write"));
         }
-        // Ordinary factory filesystem semantics: the write, and any error it
-        // produces, is exactly Pi's own. The target is the boundary's frozen
-        // canonical path — the locked target and the written target are the
-        // same file. Everything below this point is post-commit: no failure
-        // may present the completed write as failed.
-        await writeFile(canonicalPath, content, "utf-8");
+        await writeFile(target.canonicalPath, content, "utf-8");
         let appendix: string | undefined;
         try {
-          // Publication happens while the boundary is still held, as ONE
-          // repository transaction per successful write: the served rows for
-          // the written content version replace every previous row (the
-          // write-state clearing contract), with new rows only when the
-          // agent-only auto-read setting serves fresh anchors for a changed,
-          // supported target. Any failure rolls the whole transaction back,
-          // so the previous version's rows remain and — being version-bound —
-          // cannot authorize a replace against the written bytes; the model
-          // sees the unified bounded note and a fresh read repairs.
           const store = await loadAnchoredHashStore(session.storeDir, input.owner);
           try {
-            let servedHashes: string[] | undefined;
-            let snapshotHashes: string[] = [];
-            let snapshotContent: string | undefined;
-            if (input.autoRead() && changed) {
-              const rendered = await renderAutoReadAnchors({
-                path: canonicalPath,
-                displayPath,
-                workspaceRoot: session.workspaceRoot,
-                store,
+            const rendered = input.autoRead() && changed ? renderAutoReadFromContent(content) : undefined;
+            if (rendered !== undefined) {
+              appendix = rendered.text;
+              store.publishWrite({
+                kind: "publish",
+                path: target.canonicalPath,
+                snapshot: { content: rendered.content, hashes: rendered.hashes },
+                ...(rendered.servedHashes.length > 0 ? { servedHashes: rendered.servedHashes } : {}),
               });
-              if (rendered !== undefined) {
-                appendix = rendered.text;
-                servedHashes = rendered.servedHashes.length > 0 ? rendered.servedHashes : undefined;
-                snapshotHashes = rendered.hashes;
-                snapshotContent = rendered.content;
-              }
+            } else {
+              store.publishWrite({ kind: "clear", path: target.canonicalPath });
             }
-            store.publishWrite(
-              snapshotContent !== undefined
-                ? {
-                    kind: "publish",
-                    path: canonicalPath,
-                    snapshot: { content: snapshotContent, hashes: snapshotHashes },
-                    ...(servedHashes !== undefined ? { servedHashes } : {}),
-                  }
-                : { kind: "clear", path: canonicalPath },
-            );
           } finally {
             store.release();
           }
@@ -875,8 +717,8 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
           console.error("Anchored write state update failed:", error);
           appendix = ANCHORED_STATE_NOTE;
         }
-        outcomes.set(canonicalPath, {
-          canonicalPath,
+        recordOutcome(outcomeKey, {
+          canonicalPath: target.canonicalPath,
           changed,
           ...(appendix !== undefined ? { appendix } : {}),
         });
@@ -887,13 +729,11 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
   };
   return {
     operations,
-    noteRequest(canonicalPath: string, displayPath: string): void {
-      requests.set(canonicalPath, displayPath);
-    },
-    takeOutcome(canonicalPath: string): AnchoredWriteOutcome | undefined {
-      const outcome = outcomes.get(canonicalPath);
-      if (outcome !== undefined) outcomes.delete(canonicalPath);
-      requests.delete(canonicalPath);
+    takeOutcome(canonicalPath: string, content: string): AnchoredWriteOutcome | undefined {
+      const key = writeIdentity(canonicalPath, content);
+      const queued = outcomes.get(key);
+      const outcome = queued?.shift();
+      if (queued?.length === 0) outcomes.delete(key);
       return outcome;
     },
   };

@@ -36,8 +36,8 @@ export function formatPaginationHint(
 
 /** Synchronous core of {@link fmtReadPreview}: the caller supplies the
  *  content's line hashes. Every consumer that already knows the hashes (the
- *  anchored read's boundary-held read and the parent write's non-yielding
- *  auto-read render) composes rows without any asynchronous filesystem or
+ *  anchored read's boundary-held read and the write operation's pure
+ *  auto-read render) composes rows without any filesystem or
  *  hashing step. */
 export function fmtReadPreviewSync(
 	text: string,
@@ -159,4 +159,3 @@ export async function fmtReadPreview(
 		maxTruncLines,
 	);
 }
-

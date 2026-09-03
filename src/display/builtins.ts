@@ -783,15 +783,18 @@ export default function registerDisplayBuiltins(
       // wrapper exists — the availability gate lives inside the injected
       // operation itself and reads `anchoredWriteActive` at operation time.
       anchoredReadEnabled && parentAnchoredWrite
-        ? createWriteToolDefinition(ctx.cwd, {
-          operations: parentAnchoredWrite
-            .attachSession(
-              ctx.cwd,
-              ctx.sessionManager?.getSessionDir?.() ?? "",
-              () => anchoredWriteActive,
-            )
-            .operations,
-        })
+        ? {
+          ...createWriteToolDefinition(ctx.cwd, {
+            operations: parentAnchoredWrite
+              .attachSession(
+                ctx.cwd,
+                ctx.sessionManager?.getSessionDir?.() ?? "",
+                () => anchoredWriteActive,
+              )
+              .operations,
+          }),
+          executionMode: "sequential" as const,
+        }
         : createWriteToolDefinition(ctx.cwd),
       ...settings.definitions,
     ];

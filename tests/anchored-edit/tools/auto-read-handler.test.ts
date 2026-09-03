@@ -26,10 +26,11 @@ function makeFakePi(config: Config) {
 }
 
 describe("auto-read handler registration", () => {
-  it("registers the tool_call and tool_result handlers", () => {
+  it("registers the write handlers and run-end cleanup", () => {
     const { handlers } = makeFakePi(enabled);
     expect(handlers.get("tool_call")).toBeDefined();
     expect(handlers.get("tool_result")).toBeDefined();
+    expect(handlers.get("agent_end")).toBeDefined();
   });
 
   it("returns nothing for non-write tool results", async () => {

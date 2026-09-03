@@ -6,7 +6,7 @@ import { errCode, splitLines } from "./utils";
 import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT } from "./constants";
-import { acquireFileLock, acquireZeroWaitFileSync, releaseFileSync } from "./file-lock";
+import { acquireFileLock } from "./file-lock";
 
 export interface OwnerPartition {
   owner: string;
@@ -831,8 +831,7 @@ async function openStoreUnlocked(storePath: string): Promise<OpenStore> {
   return openStoreUnlockedCore(storePath);
 }
 
-/** Synchronous open lifecycle shared by the async and the non-yielding
- *  parent-write paths; callers guarantee the hasher is initialized. */
+/** Synchronous SQLite open core entered after the async hasher/lock setup. */
 function openStoreUnlockedCore(storePath: string): OpenStore {
   mkdirSync(dirname(storePath), { recursive: true });
 
@@ -933,31 +932,6 @@ export function loadHashStoreAt(storePath: string, owner: string): Promise<HashS
     openingStores.set(storePath, pending);
   }
   return pending.then((entry) => acquireView(entry, owner));
-}
-
-/** Synchronous store open for the parent write's non-yielding operation.
- *  Cached opens pay nothing; an uncached open takes the schema lock with one
- *  synchronous zero-wait attempt, so a concurrent opener classifies the
- *  write as retryable [E_FILE_LOCKED] instead of waiting. The caller
- *  guarantees the hasher is initialized (warm in every anchored session). */
-export function loadHashStoreAtSync(storePath: string, owner: string): HashStoreHandle {
-  if (typeof owner !== "string" || owner.length === 0) {
-    throw new Error("An anchor store requires a non-empty owner identity.");
-  }
-  const cached = openStores.get(storePath);
-  if (cached && cached.db.isOpen) return acquireView(cached, owner);
-  if (openingStores.get(storePath) !== undefined) {
-    throw new Error(`[E_FILE_LOCKED] Anchor store ${storePath} is opening concurrently. Retry the operation.`);
-  }
-  const lock = acquireZeroWaitFileSync(schemaLockPath(storePath));
-  if (!lock) {
-    throw new Error(`[E_FILE_LOCKED] Timed out waiting to open anchor store ${storePath}. Retry the operation.`);
-  }
-  try {
-    return acquireView(openStoreUnlockedCore(storePath), owner);
-  } finally {
-    releaseFileSync(schemaLockPath(storePath), lock.token, lock.identity);
-  }
 }
 
 export function shutdownHashStore(): void {
