@@ -10,7 +10,11 @@ const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/c
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
-const { getServed } = await load("../../src/anchored-edit/served.ts");
+function servedLookup(store, path, content) {
+  const lookup = store.getServedState(path, content);
+  return lookup !== undefined && "served" in lookup ? lookup.served : undefined;
+}
+
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
 const { __testables } = await load("../../src/subagents/session.ts");
 
@@ -81,9 +85,9 @@ try {
   // owner; the parent's partition is not credited with the fresh anchor.
   const freshAnchor = ownRegion.details.diff.match(/([A-Za-z0-9]{3})│BETA2/)?.[1];
   assert.ok(freshAnchor, "the child replace carries a fresh anchor for the changed line");
-  const childServedRows = getServed(await openStore(CHILD_ONE), source);
+  const childServedRows = servedLookup(await openStore(CHILD_ONE), source, "alpha\nBETA2\ndelta\n");
   assert.ok(childServedRows?.has(freshAnchor), "the child replace records post-edit rows under the child owner");
-  const parentServedRows = getServed(await openStore(PARENT_OWNER), source);
+  const parentServedRows = servedLookup(await openStore(PARENT_OWNER), source, "alpha\nBETA2\ndelta\n");
   assert.ok(!parentServedRows?.has(freshAnchor), "the parent partition is not credited with the child's fresh anchor");
 
   // A child editing a region only the parent read is refused with the
@@ -107,7 +111,7 @@ try {
 
   // The refusal made the current range served for that child, so its immediate
   // retry with the same anchors is not refused again.
-  const servedAfterRefusal = getServed(await openStore(CHILD_TWO), source);
+  const servedAfterRefusal = servedLookup(await openStore(CHILD_TWO), source, "alpha\nbeta\ngamma\ndelta\n");
   assert.ok(servedAfterRefusal && servedAfterRefusal.size > 0, "the refusal serves the current range under the child");
   const retry = await childTwoReplace.execute(
     "child-two-retry",
@@ -171,7 +175,7 @@ try {
   assert.equal(externalEdit.details?.status, undefined, "a child editing an external range it read itself succeeds");
   assert.equal(readFileSync(externalFile, "utf8"), "ext-alpha\nEDITED\next-gamma\n", "the external file changed as intended");
 
-  const externalServed = getServed(await openStore(CHILD_ONE), realpathSync(externalFile));
+  const externalServed = servedLookup(await openStore(CHILD_ONE), realpathSync(externalFile), "ext-alpha\nEDITED\next-gamma\n");
   assert.ok(externalServed && externalServed.size > 0, "the external child replace records served rows in the initiating workspace under the child owner");
 
   // A stale external anchor is a recoverable warning with fresh rows.

@@ -3,15 +3,14 @@ import {
 	lstat,
 	mkdir,
 	open,
-	readdir,
 	readlink,
 	rename,
-	rm,
 	stat,
 	writeFile,
 } from "fs/promises";
 import { dirname, join, parse, resolve, sep } from "path";
 import { errCode } from "./utils";
+import { createAtomicTempFile, unlinkIfSameNode, type FileIdentity } from "../core/safe-write.ts";
 
 export async function resolveTarget(path: string): Promise<string> {
   const absolutePath = resolve(path);
@@ -71,30 +70,19 @@ export async function resolveTarget(path: string): Promise<string> {
   return resParts(root, parts);
 }
 
-const TEMP_PREFIX = ".tmp-";
-const TEMP_UUID_RE = /^\.tmp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const STALE_TEMP_MS = 60 * 60 * 1000;
-const sweptDirs = new Set<string>();
-
-async function sweepStaleTemps(dir: string): Promise<void> {
-  if (sweptDirs.has(dir)) return;
-  sweptDirs.add(dir);
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const now = Date.now();
-    for (const entry of entries) {
-      if (!entry.isFile() || !TEMP_UUID_RE.test(entry.name)) continue;
-      const tempPath = join(dir, entry.name);
-      try {
-        const stats = await stat(tempPath);
-        if (now - stats.mtimeMs > STALE_TEMP_MS) {
-          await rm(tempPath, { force: true });
-        }
-      } catch {
-      }
-    }
-  } catch {
-  }
+/**
+ * Removes a temporary file this operation created, and only that file: the
+ * removal is identity-checked against the inode this operation wrote, so a
+ * path collision with any other directory entry can never delete data this
+ * operation cannot prove it created. Directory-wide filename sweeping is
+ * intentionally absent — anchored replace never inspects or deletes other
+ * directory entries.
+ */
+async function removeOwnTemp(tempPath: string, identity: FileIdentity): Promise<void> {
+  await unlinkIfSameNode(tempFail, tempPath, identity, {
+    escaped: "E_TEMP_INVALID",
+    invalid: "E_TEMP_INVALID",
+  }).catch(() => {});
 }
 
 async function syncDir(dir: string): Promise<void> {
@@ -109,6 +97,12 @@ async function syncDir(dir: string): Promise<void> {
   } catch {
   }
 }
+
+function tempFail(code: string, message: string): Error {
+  return new Error(`[${code}] ${message}`);
+}
+
+const TEMP_CODES = { escaped: "E_TEMP_INVALID", invalid: "E_TEMP_INVALID" } as const;
 
 export async function writeAtomic(
   path: string,
@@ -126,28 +120,18 @@ export async function writeAtomic(
   }
 
   if (existingStats && existingStats.nlink > 1) {
+    // A multi-link target is written in place: a rename would sever the
+    // sibling links from the new content.
     await writeFile(targetPath, content, "utf-8");
     return;
   }
 
   const dir = dirname(targetPath);
-  await sweepStaleTemps(dir);
-  const tempPath = join(dir, `${TEMP_PREFIX}${randomUUID()}`);
+  const tempPath = join(dir, `.tmp-${randomUUID()}`);
   await mkdir(dir, { recursive: true });
-  const tempHandle = await open(tempPath, "wx", 0o600);
+  const mode = existingStats ? existingStats.mode & 0o7777 : 0o600;
+  const tempIdentity = await createAtomicTempFile(tempFail, TEMP_CODES, tempPath, content, mode);
   try {
-    await tempHandle.writeFile(content, "utf-8");
-    if (existingStats) {
-      await tempHandle.chmod(existingStats.mode & 0o7777);
-    }
-    await tempHandle.sync();
-  } catch (error: unknown) {
-    await tempHandle.close();
-    try { await rm(tempPath, { force: true }); } catch {}
-    throw error;
-  }
-  try {
-    await tempHandle.close();
     await rename(tempPath, targetPath);
     await syncDir(dir);
   } catch (error: unknown) {
@@ -156,10 +140,10 @@ export async function writeAtomic(
         await writeFile(targetPath, content, "utf-8");
         return;
       } finally {
-        try { await rm(tempPath, { force: true }); } catch {}
+        await removeOwnTemp(tempPath, tempIdentity);
       }
     }
-    try { await rm(tempPath, { force: true }); } catch {}
+    await removeOwnTemp(tempPath, tempIdentity);
     throw error;
   }
 }

@@ -18,6 +18,7 @@ export type ReadContentTransform = (
   params: unknown,
   cwd: string,
   sessionDir: string,
+  signal?: AbortSignal,
 ) => ReadModelContent | Promise<ReadModelContent>;
 /**
  * Optional pre-execution guard. Returning content short-circuits the read
@@ -34,30 +35,21 @@ export const ANCHORED_READ_GUIDELINES = [
   "After a replace, use its returned diff rows for an immediate follow-up; read again only when you need wider file context.",
 ];
 
-const CONFINED_WORKSPACE_GUIDELINE =
-  "Anchored read only serves paths inside the current workspace.";
 const NATIVE_PATH_GUIDELINE =
   "Anchored read accepts the same paths as Pi's built-in read, including absolute, ~, and ../ paths outside the workspace.";
 
 /**
  * Appends the anchored-read prompt guidelines to a read definition. Shared by
  * the parent override and the child anchored read so the two surfaces carry
- * the same evidence rules. The path guideline follows the surface's path
- * policy (#185): the parent states native path authority; child surfaces keep
- * the workspace confinement guideline; the writable-child composition
- * selects the native-path guideline (#186), matching the parent.
+ * the same evidence rules and the same native-path guideline (#185, #186).
  */
-export function withAnchoredReadGuidelines(
-  definition: GenericDefinition,
-  options: { confineToWorkspace?: boolean } = {},
-): GenericDefinition {
-  const confineToWorkspace = options.confineToWorkspace ?? true;
+export function withAnchoredReadGuidelines(definition: GenericDefinition): GenericDefinition {
   return {
     ...definition,
     promptGuidelines: [
       ...(definition.promptGuidelines ?? []),
       ...ANCHORED_READ_GUIDELINES,
-      confineToWorkspace ? CONFINED_WORKSPACE_GUIDELINE : NATIVE_PATH_GUIDELINE,
+      NATIVE_PATH_GUIDELINE,
     ],
   };
 }
@@ -85,7 +77,7 @@ export function withAnchoredReadTransform(
       const guarded = await guard?.(params, executionCwd);
       if (guarded !== undefined) return { content: guarded, details: undefined };
       const result = await execute(toolCallId, params, signal, onUpdate, ctx);
-      const content = await transform(result.content, params, executionCwd, sessionDir);
+      const content = await transform(result.content, params, executionCwd, sessionDir, signal);
       return content === result.content ? result : { ...result, content };
     },
   } as GenericDefinition;

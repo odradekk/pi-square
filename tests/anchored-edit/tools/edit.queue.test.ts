@@ -14,15 +14,17 @@ describe("edit tool file mutation queue", () => {
         { path: "sample.ts", remove_from: hashes[0]!, remove_to: hashes[0]!, replacement_text: "ALPHA" },
         undefined, undefined, ctx,
       );
-      expect(r1.content[0].text).toContain("Successfully replaced");
-      expect(r1.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(r1.details?.metrics?.classification).toBe("applied");
+      expect(r1.details?.metrics?.added_lines).toBe(1);
+        expect(r1.details?.metrics?.removed_lines).toBe(1);
       const r2 = await editTool.execute(
         "e2",
         { path: "sample.ts", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BETA" },
         undefined, undefined, ctx,
       );
-      expect(r2.content[0].text).toContain("Successfully replaced");
-      expect(r2.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(r2.details?.metrics?.classification).toBe("applied");
+      expect(r2.details?.metrics?.added_lines).toBe(1);
+        expect(r2.details?.metrics?.removed_lines).toBe(1);
     });
   });
 
@@ -38,15 +40,17 @@ describe("edit tool file mutation queue", () => {
         { path: "target.ts", remove_from: hashes[0]!, remove_to: hashes[0]!, replacement_text: "ALPHA" },
         undefined, undefined, ctx,
       );
-      expect(r1.content[0].text).toContain("Successfully replaced");
-      expect(r1.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(r1.details?.metrics?.classification).toBe("applied");
+      expect(r1.details?.metrics?.added_lines).toBe(1);
+        expect(r1.details?.metrics?.removed_lines).toBe(1);
       const r2 = await editTool.execute(
         "e2",
         { path: "link.ts", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BETA" },
         undefined, undefined, ctx,
       );
-      expect(r2.content[0].text).toContain("Successfully replaced");
-      expect(r2.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(r2.details?.metrics?.classification).toBe("applied");
+      expect(r2.details?.metrics?.added_lines).toBe(1);
+        expect(r2.details?.metrics?.removed_lines).toBe(1);
     });
   });
 
@@ -70,15 +74,17 @@ describe("edit tool file mutation queue", () => {
       { path: "sub/target.ts", remove_from: hashes[0]!, remove_to: hashes[0]!, replacement_text: "ALPHA" },
       undefined, undefined, ctx,
     );
-    expect(r1.content[0].text).toContain("Successfully replaced");
-    expect(r1.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+    expect(r1.details?.metrics?.classification).toBe("applied");
+    expect(r1.details?.metrics?.added_lines).toBe(1);
+        expect(r1.details?.metrics?.removed_lines).toBe(1);
     const r2 = await editTool.execute(
       "e2",
       { path: "linkdir/sub/target.ts", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BETA" },
       undefined, undefined, ctx,
     );
-    expect(r2.content[0].text).toContain("Successfully replaced");
-    expect(r2.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+    expect(r2.details?.metrics?.classification).toBe("applied");
+    expect(r2.details?.metrics?.added_lines).toBe(1);
+        expect(r2.details?.metrics?.removed_lines).toBe(1);
     const { rm } = await import("fs/promises");
     await rm(tmpDir, { recursive: true, force: true });
   });

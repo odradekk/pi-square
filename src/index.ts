@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAskUser from "./ask-user";
-import registerAnchoredAutoRead from "./anchored-edit/auto-read";
+import registerAnchoredAutoRead, { createParentAnchoredWrite } from "./anchored-edit/auto-read";
 import registerAnchoredReplace from "./anchored-edit/workspace-replace";
 import registerBanner from "./banner";
 import registerCodeGraph from "./codegraph";
@@ -49,11 +49,16 @@ export default function piSquare(pi: ExtensionAPI): void {
     displayRuntimeProvider: () => display.runtime,
   });
   let anchoredReadAvailable = false;
+  // One parent anchored-write session is shared between the write definition
+  // the display registration constructs and the appendix presentation
+  // handlers (#264).
+  const parentAnchoredWrite = createParentAnchoredWrite(() => display.config);
   registerDisplayBuiltins(
     pi,
     display,
     (available) => { anchoredReadAvailable = available; },
     CONTEXT_MEMORY_OWNED_TOOL_NAMES,
+    parentAnchoredWrite,
   );
   registerAnchoredReplace(
     pi,
@@ -65,6 +70,7 @@ export default function piSquare(pi: ExtensionAPI): void {
     pi,
     () => display.config,
     () => anchoredReadAvailable,
+    parentAnchoredWrite,
   );
 
   const notifications = registerNotifications(pi);

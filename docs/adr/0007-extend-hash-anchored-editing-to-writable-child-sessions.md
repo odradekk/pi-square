@@ -75,6 +75,14 @@ revert that edit.
 
 ### Cross-process write lock and lock ordering
 
+> Superseded by [ADR-0014](0014-anchored-operation-boundary.md) (#264): all
+> mutations now use one queue-then-lock order — the child write joins the
+> queue through the write factory's filesystem-operation seam — anchored
+> reads hold the same exclusion, locks publish complete atomic owner records
+> reclaimed only on confirmed local death (never by age), and contention is
+> reported as `[E_FILE_LOCKED]`. The section below records the superseded
+> history.
+
 Anchored `replace`, `revert`, and the child anchored `write` take a
 cross-process per-target-file write lock held across served-state verification
 and the write and released after. Lock files live under
@@ -135,3 +143,15 @@ the `[E_UNDO_OWNER]`/`[E_UNDO_STALE]`/`[E_UNDO_UNAVAILABLE]` codes, and the
 writable-child capability mapping now resolves `edit` to the anchored `replace`
 alone; partition retention, the served gate, lock ordering, and native path
 authority are unchanged. Points 1 and 2 above are void; points 3 and 4 stand.
+
+## Superseded by #264 (one operation boundary)
+
+The lock-ordering trade-off above (point 4 included) is superseded by
+[ADR-0014](0014-anchored-operation-boundary.md): every mutation now enters
+Pi's per-file mutation queue first and takes the anchored cross-process lock
+inside it, anchored reads hold the same target exclusion from bytes through
+publication, the parent write joins the protocol through the public write
+factory's filesystem-operation seam, and lock ownership is a complete atomic
+record reclaimed only on confirmed local death. The owner-scoped store is
+schema version 8 with one owner-aware layout and one connection per store
+path (ADR-0014).

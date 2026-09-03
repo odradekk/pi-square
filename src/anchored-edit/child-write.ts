@@ -1,38 +1,29 @@
-import { readFile } from "node:fs/promises";
-import { createWriteToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { resolveWorkspacePath } from "../core/paths.ts";
-import { renderAutoReadAnchors } from "./auto-read.ts";
-import { resolveTarget } from "./fs-write.ts";
-import { acquireFileLock, fileLockedMessage, lockFilePath } from "./file-lock.ts";
-import { anchoredStoreDir, toCwd } from "./paths.ts";
-import { clearServed } from "./served.ts";
-import { loadAnchoredHashStore } from "./workspace-support.ts";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createAnchoredWriteSession } from "./operations.ts";
 
 type GenericToolDefinition = ToolDefinition<any, any, any>;
 
 /**
  * Builds the child write tool for a writable subagent while anchored editing is
- * on. It is Pi's public write factory, so the child writes exactly as it does
- * with the built-in tool, with one addition: a successful write clears the
- * child's own served rows, so its next edit on the new content is not refused
- * by stale served rows. A failed write leaves them intact. Only the acting
- * child's own rows are cleared, so a sibling child's served partition survives
- * the write.
+ * on. It is Pi's public write factory with the integrated anchored write
+ * operation injected through the factory's filesystem-operation seam (#264):
+ * the factory still owns the tool name, parameters, prompt guidance, path
+ * resolution, abort checks, success wording, and ordinary filesystem error
+ * semantics, while the injected write joins the fixed queue-then-lock protocol
+ * — the factory enters Pi's per-file mutation queue and the operation takes
+ * the anchored cross-process lock inside it — and publishes the child's store
+ * state (clearing its own served rows, then the bounded auto-read appendix
+ * with its rows served under the writing child) before the lock releases. A
+ * failed or refused write leaves the child's state intact; only the acting
+ * child's own rows are cleared, so a sibling's served partition survives.
  *
  * Native path authority (#186): the write follows Pi's native path resolution
  * for every supported target — absolute paths, `~` paths, cwd-relative paths
  * (including `../`), and canonical targets reached through symlinks — so the
  * write is the creation path for external files too (`replace` edits existing
- * files only). The cross-process write lock and the state clear apply uniformly
- * to workspace and external targets through the initiating workspace's lock
- * area: two different workspaces intentionally do not share external-target
- * state or locks (accepted last-write-wins, matching Pi's native
- * cross-workspace behavior), while two sessions in one workspace still
- * coordinate. When auto-read is enabled, a successful changed write to
- * supported bounded UTF-8 text appends the same fresh-anchor appendix the
- * parent write hook appends (shared `renderAutoReadAnchors`), with the fresh
- * rows served under the writing child; failed, unchanged, binary, image,
- * oversized, and unsupported writes keep the factory result unchanged.
+ * files only). The lock and state clear apply uniformly to workspace and
+ * external targets through the initiating workspace's lock area.
  *
  * The returned definition carries the built-in write name; when it is passed as
  * a child custom tool it overrides the child's built-in write, leaving exactly
@@ -57,68 +48,45 @@ export function createChildAnchoredWriteTool(
   sessionDir: string,
   autoRead: () => boolean = () => true,
 ): GenericToolDefinition {
-  const base = createWriteToolDefinition(cwd);
+  const session = createAnchoredWriteSession({ cwd, owner, sessionDir, autoRead });
+  const base = createWriteToolDefinition(cwd, { operations: session.operations });
+  const anchored = session.wrapDefinition(base);
   return {
-    ...base,
+    ...anchored,
+    // Sequential host execution keeps one native-factory call active at a
+    // time; completed outcomes are paired by immutable tool-call id.
+    executionMode: "sequential",
     async execute(toolCallId, params: { path: string; content: string }, signal, onUpdate, ctx) {
-      const workspace = resolveWorkspacePath(cwd, ".");
-      const path = await resolveTarget(toCwd(params.path, cwd));
-      const storeDir = anchoredStoreDir(sessionDir, workspace.workspaceRoot);
-      // The child write also takes the cross-process write lock, so a child
-      // write and a parent (or another session's) replace on the same file can
-      // never interleave; one wins and the other is refused or waits.
-      const lock = await acquireFileLock(lockFilePath(storeDir, path), { signal });
-      if (!lock) {
-        throw new Error(fileLockedMessage(params.path, "write"));
-      }
+      const successText = `Successfully wrote ${params.content.length} bytes to ${params.path}`;
       try {
-        // Pre-write comparison inside the lock decides whether the write is a
-        // change for auto-read; a missing file counts as changed (creation).
-        let changed = true;
-        try {
-          changed = !Buffer.from(params.content, "utf8").equals(await readFile(path));
-        } catch {
-          // ENOENT (creation) or an unreadable target: treat as changed; the
-          // post-write appendix render still applies its own bounds.
-        }
-        // A failed factory write throws, so reaching here means the write
-        // completed; the state clear and optional appendix follow.
-        const result = await base.execute(toolCallId, params, signal, onUpdate, ctx);
-        try {
-          // The cross-process lock serializes this file for every other writer,
-          // so the state clear cannot interleave with a concurrent replace and
-          // needs no separate per-file mutation queue here (wrapping the clear
-          // in one would invert lock order against replace and could deadlock a
-          // same-process contender).
-          const store = await loadAnchoredHashStore(storeDir, owner);
-          try {
-            clearServed(store, path);
-            if (!autoRead() || !changed) return result;
-            try {
-              const appendix = await renderAutoReadAnchors({
-                path,
-                displayPath: params.path,
-                workspaceRoot: workspace.workspaceRoot,
-                store,
-              });
-              if (appendix === undefined) return result;
-              return {
-                ...result,
-                content: [...result.content, { type: "text", text: `\n\n${appendix}` }],
-              };
-            } catch (error) {
-              console.error(`Auto-read after anchored child write failed for ${owner}:`, error);
-              return result;
-            }
-          } finally {
-            store.release();
-          }
-        } catch (error) {
-          console.error(`Failed to clear anchored write state for ${owner}:`, error);
-          return result;
-        }
-      } finally {
-        await lock.release();
+        const result = await anchored.execute(toolCallId, params, signal, onUpdate, ctx);
+        const outcome = session.takeOutcome(toolCallId);
+        const restored = result.content.map((part) =>
+          outcome !== undefined
+            && part.type === "text"
+            && part.text === `Successfully wrote ${outcome.bytes} bytes to ${outcome.canonicalPath}`
+            ? { ...part, text: successText }
+            : part,
+        );
+        return {
+          ...result,
+          content: outcome?.appendix
+            ? [...restored, { type: "text" as const, text: `\n\n${outcome.appendix}` }]
+            : restored,
+        };
+      } catch (error) {
+        // Pi checks cancellation once more after the injected write settles.
+        // If the operation recorded an outcome, the bytes were committed and
+        // the truthful result is success even when that final check aborted.
+        const outcome = session.takeOutcome(toolCallId);
+        if (!outcome) throw error;
+        return {
+          content: [
+            { type: "text" as const, text: successText },
+            ...(outcome.appendix ? [{ type: "text" as const, text: `\n\n${outcome.appendix}` }] : []),
+          ],
+          details: undefined,
+        };
       }
     },
   } as GenericToolDefinition;

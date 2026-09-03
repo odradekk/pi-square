@@ -16,6 +16,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { setBannerDisplayDiagnostic } from "../banner";
+import type { ParentAnchoredWrite } from "../anchored-edit/auto-read";
 import { guardAnchoredRead, initializeAnchoredReadStore, transformAnchoredReadContent } from "../anchored-edit/read-transform";
 import { PARENT_OWNER } from "../anchored-edit/workspace-support";
 import {
@@ -728,6 +729,13 @@ export default function registerDisplayBuiltins(
   setAnchoredReadAvailable?: (available: boolean) => void,
   /** Tool names whose current active state survives the baseline restore (#217). */
   dynamicToolNames: readonly string[] = [],
+  /** Parent anchored-write integration (#264). When anchored editing is
+   *  enabled, the parent write definition is constructed from Pi's public
+   *  factory with the anchored write operation injected through its supported
+   *  filesystem-operation seam, so the write joins the same queue-then-lock
+   *  protocol as replace and the child writes. Arbitrary execution wrappers
+   *  remain forbidden; only this seam is used. */
+  parentAnchoredWrite?: ParentAnchoredWrite,
 ): void {
   let activeToolBaseline: readonly string[] | undefined;
   pi.on("session_start", async (_event, ctx) => {
@@ -744,19 +752,48 @@ export default function registerDisplayBuiltins(
     const settings = settingsDefinitions(ctx.cwd, ctx);
     diagnostics.push(...settings.diagnostics);
     const anchoredReadEnabled = controller.config?.anchoredEditing?.enabled === true;
+    let anchoredStoreReady = false;
     if (anchoredReadEnabled) {
       try {
         await initializeAnchoredReadStore(ctx.cwd, ctx.sessionManager?.getSessionDir?.() ?? "");
+        anchoredStoreReady = true;
       } catch (error) {
         diagnostics.push(`Anchored read store unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    // The anchored write stays fully inactive until the COMPLETE anchored
+    // surface is proven available: store initialized, and both the `read` and
+    // `write` built-in ownership checks won (#264). The flag is read at
+    // operation time by the injected write operation's availability gate, so
+    // an incompletely-owned surface — even one where only `read` lost to
+    // another extension — performs Pi's plain filesystem write with no
+    // anchored lock, no store mutation, and no outcome. A half-activated
+    // anchored write cannot exist.
+    let anchoredWriteActive = false;
     const definitions: GenericDefinition[] = [
       createGrepToolDefinition(ctx.cwd),
       createFindToolDefinition(ctx.cwd),
       createLsToolDefinition(ctx.cwd),
       createEditToolDefinition(ctx.cwd),
-      createWriteToolDefinition(ctx.cwd),
+      // Narrow anchored parent-write seam (#264): the factory definition stays
+      // factory-faithful (name, parameters, prompt, abort checks, success
+      // wording, filesystem error semantics); only the supported filesystem
+      // operations are injected so the write enters the same queue-then-lock
+      // boundary as anchored replace and the child writes. The narrow wrapper
+      // only freezes the final target and carries call id/signal into that
+      // seam; Pi's factory still owns queueing, checks, wording, and errors.
+      anchoredReadEnabled && parentAnchoredWrite
+        ? (() => {
+          const writeSession = parentAnchoredWrite.attachSession(
+            ctx.cwd,
+            ctx.sessionManager?.getSessionDir?.() ?? "",
+            () => anchoredWriteActive,
+          );
+          return writeSession.wrapDefinition(createWriteToolDefinition(ctx.cwd, {
+            operations: writeSession.operations,
+          }));
+        })()
+        : createWriteToolDefinition(ctx.cwd),
       ...settings.definitions,
     ];
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
@@ -768,15 +805,15 @@ export default function registerDisplayBuiltins(
       // the initiating workspace keeps the snapshot/served state and lock area
       // for external targets.
       const readContentTransform = anchoredRead
-        ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string, sessionDir: string) =>
-          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { confineToWorkspace: false, sessionDir })
+        ? (content: AgentToolResult<unknown>["content"], params: unknown, executionCwd: string, sessionDir: string, signal?: AbortSignal) =>
+          transformAnchoredReadContent(content, params, executionCwd, PARENT_OWNER, { sessionDir }, signal)
         : undefined;
       pi.registerTool(decorateBuiltinDefinition(
-        anchoredRead ? withAnchoredReadGuidelines(definition, { confineToWorkspace: false }) : definition,
+        anchoredRead ? withAnchoredReadGuidelines(definition) : definition,
         ctx.cwd,
         () => controller.runtime,
         readContentTransform,
-        anchoredRead ? (params: unknown, executionCwd: string) => guardAnchoredRead(params, executionCwd, { confineToWorkspace: false }) : undefined,
+        anchoredRead ? (params: unknown, executionCwd: string) => guardAnchoredRead(params, executionCwd) : undefined,
       ));
     }
     const owner = ownSource(pi);
@@ -786,6 +823,11 @@ export default function registerDisplayBuiltins(
     const anchoredReadAvailable = anchoredReadEnabled
       && names.has("read")
       && !losing.includes("read");
+    // The write's anchored behavior requires the complete anchored surface:
+    // the anchor store initialized AND the read available (the read transform
+    // and the auto-read presentation are part of the same surface) AND the
+    // write ownership won. Anything less selects the plain native write.
+    anchoredWriteActive = anchoredStoreReady && anchoredReadAvailable && !losing.includes("write");
     const restoredActive = anchoredReadAvailable
       ? activeToolBaseline.filter((name) => name !== "edit")
       : [...activeToolBaseline];

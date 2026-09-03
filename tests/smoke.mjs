@@ -144,7 +144,8 @@ try {
     remove_to: anchor,
     replacement_text: "pi-square-smoke-replaced",
   }, undefined, undefined);
-  assert.match(anchoredReplace.content[0].text, /Successfully replaced/);
+  assert.equal(anchoredReplace.details.metrics?.classification, "applied");
+  assert.match(anchoredReplace.content[0].text, /pi-square-smoke-replaced/);
 
   const writeInput = { path: "sample.txt", content: "pi-square-smoke-written\n" };
   await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:anchored-write", input: writeInput });
@@ -177,7 +178,8 @@ try {
     undefined,
     undefined,
   );
-  assert.match(writeFollowUp.content[0].text, /Successfully replaced/, "the write's fresh anchors support an immediate follow-up replace");
+  assert.equal(writeFollowUp.details.metrics?.classification, "applied");
+  assert.match(writeFollowUp.content[0].text, /pi-square-smoke-after-write/, "the write's fresh anchors support an immediate follow-up replace");
 
   await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:failed-write", input: writeInput });
   const failedWrite = await runner.emitToolResult({
@@ -197,7 +199,8 @@ try {
     undefined,
     undefined,
   );
-  assert.match(preservedServed.content[0].text, /Successfully replaced/, "a failed Pi write preserves the served state for the next replace");
+  assert.equal(preservedServed.details.metrics?.classification, "applied");
+  assert.match(preservedServed.content[0].text, /pi-square-smoke-pending/, "a failed Pi write preserves the served state for the next replace");
 
   // ── #187: an external read → replace → write flow through native path
   // authority, with replace as the only range-editing path. ──
@@ -210,7 +213,8 @@ try {
     undefined,
     undefined,
   );
-  assert.match(externalReplace.content[0].text, /Successfully replaced/, "an external replace applies through the same authority");
+  assert.equal(externalReplace.details.metrics?.classification, "applied");
+  assert.match(externalReplace.content[0].text, /pi-square-smoke-external/, "an external replace applies through the same authority");
   const externalWriteInput = { path: "../external-smoke.txt", content: "pi-square-smoke-external-written\n" };
   await runner.emitToolCall({ toolName: "write", toolCallId: "smoke:external-write", input: externalWriteInput });
   const externalWriteResult = await toolByName("write").execute(

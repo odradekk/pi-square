@@ -31,6 +31,7 @@ function readRows(content) {
   });
 }
 
+
 const root = mkdtempSync(join(tmpdir(), "pi-square-child-anchored-external-write-"));
 const workspace = join(root, "workspace");
 mkdirSync(workspace, { recursive: true });
@@ -73,8 +74,8 @@ try {
     try {
       const fresh = textOf(writeResult.content).match(/([A-Za-z0-9]{3})│TWO/)?.[1];
       assert.ok(fresh, "the fresh anchor is identified");
-      const served = store.prepare("SELECT hashes FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonical);
-      assert.ok(served && JSON.parse(served.hashes).includes(fresh), "the write's auto-read serves the fresh anchor under the writing child");
+      const served = store.prepare("SELECT hash FROM served WHERE owner = ? AND path = ?").all(CHILD_ONE, canonical).map((row) => row.hash);
+      assert.ok(served.includes(fresh), "the write's auto-read serves the fresh anchor under the writing child");
     } finally {
       store.close();
     }
@@ -92,9 +93,9 @@ try {
   assert.match(textOf(unchangedResult.content), /Successfully wrote/);
   assert.doesNotMatch(textOf(unchangedResult.content), /Auto-read/, "an unchanged write appends no anchors");
 
-  // The agent-only autoRead=false setting still clears the acting child's stale
-  // served rows after a successful changed write, but appends and serves no
-  // replacement anchors.
+  // The agent-only autoRead=false setting appends no anchors, but every
+  // successful write still clears the acting child's served rows in the same
+  // post-commit publication transaction (#264).
   await childRead.execute("seed-auto-read-off", { path: "../external-write.txt" }, undefined, undefined, ctx);
   const autoReadOff = await createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir, () => false).execute(
     "child-write-auto-read-off",
@@ -111,7 +112,7 @@ try {
       assert.equal(
         store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonical).count,
         0,
-        "autoRead=false still clears the writing child's stale served row",
+        "autoRead=false still clears the writing child's served rows in the same transaction",
       );
     } finally {
       store.close();
@@ -119,7 +120,12 @@ try {
   }
 
   // An unsupported (over-limit) external write keeps the factory result
-  // without an anchor appendix: the appendix bounds reject the target.
+  // without an anchor appendix: the appendix bounds reject the target and
+  // the successful write still clears previously served state.
+  const externalHuge = join(root, "external-huge.txt");
+  writeFileSync(externalHuge, "seed\n", "utf8");
+  const canonicalHuge = realpathSync(externalHuge);
+  await childRead.execute("seed-huge", { path: "../external-huge.txt" }, undefined, undefined, ctx);
   const huge = `${"a\n".repeat(240_000)}end`;
   const hugeResult = await createChildAnchoredWriteTool(workspace, CHILD_ONE, sessionDir).execute(
     "child-write-huge",
@@ -130,6 +136,23 @@ try {
   );
   assert.match(textOf(hugeResult.content), /Successfully wrote/, "the over-limit write still succeeds through the factory");
   assert.doesNotMatch(textOf(hugeResult.content), /Auto-read/, "an unsupported write keeps its native result without anchors");
+  assert.doesNotMatch(
+    textOf(hugeResult.content),
+    /E_STATE_UNAVAILABLE/,
+    "a known auto-read size limit clears state normally instead of masquerading as a store failure",
+  );
+  {
+    const store = new DatabaseSync(join(storeDir, "hash-store.sqlite"), { timeout: 500 });
+    try {
+      assert.equal(
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = ? AND path = ?").get(CHILD_ONE, canonicalHuge).count,
+        0,
+        "an over-limit write clears the writing child's previous served rows",
+      );
+    } finally {
+      store.close();
+    }
+  }
 
   // Only the writing child's served rows were cleared; the parent and another
   // child's partitions keep their rows for the same canonical file.

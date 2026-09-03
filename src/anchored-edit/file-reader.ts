@@ -8,7 +8,7 @@ import { detectEnding, toLF, stripBOM, type LineEnding } from "./replace-diff";
 import { abortIf } from "./utils";
 import { valKind, valAccess } from "./validation";
 import { visLines } from "./utils";
-import type { HashStore } from "./hash-store";
+import type { HashStoreHandle } from "./hash-store";
 export interface NormFile {
   absolutePath: string;
   normalized: string;
@@ -64,7 +64,7 @@ export interface ReadNormOptions {
   maxLines?: number;
   /** Explicit store keeping the file's hashes stable across reads; required so
    *  no call site can fall back to an implicit global store. */
-  store: HashStore;
+  store: HashStoreHandle;
   noPersist?: boolean;
 }
 

@@ -2,11 +2,40 @@ import { describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { constants } from "node:fs";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
-import { execPipeline } from "../../../src/anchored-edit/replace";
-import { getSnapshot } from "../../../src/anchored-edit/hash-store";
+import { prepareReplace } from "../../../src/anchored-edit/replace";
 import { withTempFile, loadTestStore, anchoredStoreFile } from "../support/fixtures";
+import { __testables } from "../../../src/anchored-edit/hash-store";
 
 describe("execPipeline no-persist guarantee", () => {
+
+  it("does not populate or refresh the snapshot cache during preparation", async () => {
+    const content = "a\nb\nc\n";
+    await withTempFile("sample.txt", content, async ({ cwd }) => {
+      const absolutePath = await (await import("../../../src/anchored-edit/fs-write")).resolveTarget(
+        await (await import("../../../src/anchored-edit/paths")).toCwd("sample.txt", cwd),
+      );
+      const store = await loadTestStore(cwd);
+      try {
+        const hashes = await lineHashes(content, absolutePath, undefined, store);
+        const entry = __testables.storeEntryOf(store);
+        entry.snapshots.clear();
+
+        await prepareReplace(
+          {
+            path: "sample.txt",
+            remove_from: hashes[0]!, remove_to: hashes[0]!,
+            replacement_text: "A",
+          },
+          cwd,
+          { accessMode: constants.R_OK, store },
+        );
+
+        expect(entry.snapshots.size).toBe(0);
+      } finally {
+        store.release();
+      }
+    });
+  });
 
   it("does not persist hypothetical result to hash store", async () => {
     const content = "a\nb\nc\nb\nd\n";
@@ -19,24 +48,24 @@ describe("execPipeline no-persist guarantee", () => {
       try {
         const hashes = await lineHashes(content, absolutePath, undefined, store);
 
-        const beforeHashes = getSnapshot(store, absolutePath, content);
+        const beforeHashes = store.getSnapshot(absolutePath, content);
         expect(beforeHashes).toBeDefined();
         expect(beforeHashes).toEqual(hashes);
         const bHash = hashes[1]!;
         const cHash = hashes[2]!;
 
-        const pipeline = await execPipeline(
+        const pipeline = await prepareReplace(
           {
             path: "sample.txt",
             remove_from: bHash, remove_to: cHash,
             replacement_text: "B",
           },
           cwd,
-          { accessMode: constants.R_OK, store, noPersist: true },
+          { accessMode: constants.R_OK, store },
         );
         expect(pipeline.result).toBe("a\nB\nb\nd\n");
 
-        const afterHashes = getSnapshot(store, absolutePath, content);
+        const afterHashes = store.getSnapshot(absolutePath, content);
         expect(afterHashes).toBeDefined();
         expect(afterHashes).toEqual(hashes);
       } finally {
@@ -56,17 +85,17 @@ describe("execPipeline no-persist guarantee", () => {
       try {
         const hashes = await lineHashes(content, absolutePath, undefined, store);
 
-        await execPipeline(
+        await prepareReplace(
           {
             path: "sample.txt",
             remove_from: hashes[1]!, remove_to: hashes[2]!,
             replacement_text: "X\nY",
           },
           cwd,
-          { accessMode: constants.R_OK, store, noPersist: true },
+          { accessMode: constants.R_OK, store },
         );
 
-        expect(getSnapshot(store, absolutePath, content)).toEqual(hashes);
+        expect(store.getSnapshot(absolutePath, content)).toEqual(hashes);
       } finally {
         store.release();
       }
@@ -84,14 +113,14 @@ describe("execPipeline no-persist guarantee", () => {
       try {
         const hashes = await lineHashes(content, absolutePath, undefined, store);
 
-        const pipeline = await execPipeline(
+        const pipeline = await prepareReplace(
           {
             path: "sample.txt",
             remove_from: hashes[0]!, remove_to: hashes[2]!,
             replacement_text: "x",
           },
           cwd,
-          { accessMode: constants.R_OK, store, noPersist: true },
+          { accessMode: constants.R_OK, store },
         );
         expect(pipeline.result).toBeDefined();
 
@@ -120,14 +149,14 @@ describe("execPipeline no-persist guarantee", () => {
 
         const previewStore = await loadTestStore(cwd);
         try {
-          const pipeline = await execPipeline(
+          const pipeline = await prepareReplace(
             {
               path: "sample.txt",
               remove_from: hashes[0]!, remove_to: hashes[1]!,
               replacement_text: "X",
             },
             cwd,
-            { accessMode: constants.R_OK, store: previewStore, noPersist: true },
+            { accessMode: constants.R_OK, store: previewStore },
           );
           expect(pipeline.result).toBeDefined();
         } finally {

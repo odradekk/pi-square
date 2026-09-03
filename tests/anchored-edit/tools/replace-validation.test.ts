@@ -5,7 +5,7 @@ import { PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
 import { withTempDir, makeTestCtx } from "../support/fixtures";
 
 function replaceTool(cwd: string) {
-  return createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false, false);
+  return createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false);
 }
 
 describe("assertReq", () => {

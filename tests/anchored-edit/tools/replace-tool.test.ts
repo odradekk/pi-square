@@ -22,7 +22,7 @@ describe("editToolSchema", () => {
 describe("anchored replace tool", () => {
   it("registers a tool named 'replace'", () => {
     const { pi, getTool } = makeFakePiRegistry();
-    pi.registerTool(createAnchoredReplaceToolDefinition("/tmp", () => true, PARENT_OWNER, false, false));
+    pi.registerTool(createAnchoredReplaceToolDefinition("/tmp", () => true, PARENT_OWNER, false));
     const tool = getTool("replace");
     expect(tool).toBeDefined();
     expect(tool.name).toBe("replace");
@@ -31,7 +31,7 @@ describe("anchored replace tool", () => {
 
   it("prepareArguments normalizes file_path to path", () => {
     const { pi, getTool } = makeFakePiRegistry();
-    pi.registerTool(createAnchoredReplaceToolDefinition("/tmp", () => true, PARENT_OWNER, false, false));
+    pi.registerTool(createAnchoredReplaceToolDefinition("/tmp", () => true, PARENT_OWNER, false));
     const tool = getTool("replace");
     const result = tool.prepareArguments({
       file_path: "test.txt",
@@ -61,8 +61,9 @@ describe("anchored replace tool", () => {
         ctx,
       );
 
-      expect(result.content[0].text).toContain("Successfully replaced in sample.txt");
-      expect(result.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.details?.metrics?.added_lines).toBe(1);
+        expect(result.details?.metrics?.removed_lines).toBe(1);
     });
   });
 
@@ -83,8 +84,9 @@ describe("anchored replace tool", () => {
         ctx,
       );
 
-      expect(result.content[0].text).toContain("Successfully replaced in sample.txt");
-      expect(result.content[0].text).toContain("Added 2 line(s), removed 2 line(s).");
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.details?.metrics?.added_lines).toBe(2);
+        expect(result.details?.metrics?.removed_lines).toBe(2);
     });
   });
 
@@ -105,8 +107,9 @@ describe("anchored replace tool", () => {
         ctx,
       );
 
-      expect(result.content[0].text).toContain("Successfully replaced in sample.txt");
-      expect(result.content[0].text).toContain("Added 0 line(s), removed 1 line(s).");
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.details?.metrics?.added_lines).toBe(0);
+        expect(result.details?.metrics?.removed_lines).toBe(1);
     });
   });
 

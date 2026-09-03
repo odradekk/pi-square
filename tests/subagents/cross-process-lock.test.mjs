@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -7,8 +7,10 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +25,6 @@ const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-e
 const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
-const { recordServed } = await load("../../src/anchored-edit/served.ts");
 
 const helperPath = join(dirname(fileURLToPath(import.meta.url)), "cross-process-lock-helper.mjs");
 
@@ -46,6 +47,24 @@ await initHasher();
 
 function hashesOf(content) {
   return _lineHashesPure(content);
+}
+
+function readStartTimeOf(pid) {
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = raw.lastIndexOf(")");
+    if (close < 0) return undefined;
+    return raw.slice(close + 2).split(" ")[19];
+  } catch {
+    return undefined;
+  }
+}
+
+/** A real, dead pid: spawn a process that exits immediately and wait for it. */
+function deadPid() {
+  const result = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+  assert.equal(result.status, 0);
+  return result.pid;
 }
 
 function lockDir() {
@@ -129,7 +148,9 @@ try {
   assert.ok(lockA, "the lock is acquired");
   assert.ok(existsSync(aPath), "the lock file exists while held");
   const holderInfo = JSON.parse(readFileSync(aPath, "utf8"));
+  assert.equal(holderInfo.v, 1, "the lock record carries its format version");
   assert.equal(typeof holderInfo.pid, "number", "the lock records its owning pid");
+  assert.equal(typeof holderInfo.token, "string", "the lock records a unique acquisition token");
   assert.equal(typeof holderInfo.acquiredAt, "number", "the lock records its acquire time");
   await lockA.release();
   assert.ok(!existsSync(aPath), "the lock file is removed on release");
@@ -145,13 +166,75 @@ try {
   await kill(h1.child);
   await kill(h2Job.child);
 
-  // --- Criterion 6/9: a lock whose owning process no longer exists is
-  // reclaimed rather than blocking indefinitely. ---
-  const stalePath = await canonicalLockPath("stale-inproc.txt");
-  writeFileSync(stalePath, JSON.stringify({ pid: 2_147_483_647, hostname: "x", acquiredAt: Date.now() - 1000 }));
-  const reclaimInProc = await acquireFileLock(stalePath, { waitMs: 200 });
-  assert.ok(reclaimInProc, "a lock owned by a dead pid is reclaimed");
+  // --- Criterion 6/9: a lock whose owning process no longer exists locally is
+  // reclaimed rather than blocking indefinitely; foreign-host ownership is
+  // unverifiable and fails closed. ---
+  const deadLocalPath = await canonicalLockPath("stale-inproc.txt");
+  writeFileSync(deadLocalPath, JSON.stringify({ v: 1, token: "dead-local", pid: deadPid(), hostname: hostname(), acquiredAt: Date.now() - 1000 }));
+  const reclaimInProc = await acquireFileLock(deadLocalPath, { waitMs: 200 });
+  assert.ok(reclaimInProc, "a lock owned by a confirmed-dead local pid is reclaimed");
   await reclaimInProc.release();
+
+  const foreignPath = await canonicalLockPath("foreign-host.txt");
+  writeFileSync(foreignPath, JSON.stringify({ v: 1, token: "foreign", pid: deadPid(), hostname: "definitely-not-this-host", acquiredAt: Date.now() - 3_600_000 }));
+  const foreignRefusal = await acquireFileLock(foreignPath, { waitMs: 150 });
+  assert.equal(foreignRefusal, null, "a foreign-host lock is never reclaimed, only waited on");
+  rmSync(foreignPath, { force: true });
+
+  // A live local holder keeps its lock regardless of elapsed wall time: age is
+  // never proof of death (#264). The former 60-second age threshold is gone.
+  const agedLivePath = await canonicalLockPath("aged-live.txt");
+  writeFileSync(agedLivePath, JSON.stringify({ v: 1, token: "aged", pid: process.pid, hostname: hostname(), startTime: readStartTimeOf(process.pid), acquiredAt: Date.now() - 120_000 }));
+  const agedRefusal = await acquireFileLock(agedLivePath, { waitMs: 120 });
+  assert.equal(agedRefusal, null, "a live local holder beyond the former age threshold is not reclaimed");
+  rmSync(agedLivePath, { force: true });
+
+  // A malformed lock record is unverifiable ownership and fails closed.
+  const malformedPath = await canonicalLockPath("malformed.txt");
+  writeFileSync(malformedPath, "{not json");
+  const malformedRefusal = await acquireFileLock(malformedPath, { waitMs: 120 });
+  assert.equal(malformedRefusal, null, "a malformed lock record is never reclaimed");
+  rmSync(malformedPath, { force: true });
+
+  // Cancellation during the bounded wait ends as classified contention: the
+  // acquisition resolves to null (never an unclassified throw), the holder's
+  // lock survives, and nothing was modified (#264).
+  {
+    const cancelPath = await canonicalLockPath("cancel-wait.txt");
+    const cancelHolder = await acquireFileLock(cancelPath);
+    assert.ok(cancelHolder);
+    const abortController = new AbortController();
+    const cancelled = acquireFileLock(cancelPath, { waitMs: 5_000, pollMs: 20, signal: abortController.signal });
+    abortController.abort();
+    assert.equal(await cancelled, null, "an aborted wait ends as classified contention, not a throw");
+    assert.ok(existsSync(cancelPath), "the aborted acquisition never removed the holder's lock");
+    await cancelHolder.release();
+  }
+
+  // A successor's lock survives the previous owner's late release: release
+  // verifies token and file identity through the unlink, and the dead owner's
+  // recorded identity no longer names the successor's inode (#264).
+  {
+    const successorPath = await canonicalLockPath("successor.txt");
+    const prior = await acquireFileLock(successorPath);
+    assert.ok(prior, "the prior owner acquired its lock");
+    rmSync(successorPath);
+    const successor = await acquireFileLock(successorPath, { waitMs: 300 });
+    assert.ok(successor, "the successor acquired the vacated path");
+    const successorRecord = JSON.parse(readFileSync(successorPath, "utf8"));
+    const successorIdentity = statSync(successorPath);
+
+    // The real previous handle's late release runs the verified-removal
+    // protocol and must walk away without taking the successor's file.
+    await prior.release();
+    const survivedRecord = JSON.parse(readFileSync(successorPath, "utf8"));
+    const survivedIdentity = statSync(successorPath);
+    assert.equal(survivedRecord.token, successorRecord.token, "the prior owner's late release preserved the successor token");
+    assert.equal(survivedIdentity.ino, successorIdentity.ino, "the prior owner's late release preserved the successor inode");
+
+    await successor.release();
+    assert.ok(!existsSync(successorPath), "the successor's own release still works");
+  }
 
   // --- Criterion 8/9: a lock held by a live process is waited on, not
   // reclaimed; the bounded wait ends in a refusal, not an indefinite block. ---
@@ -174,8 +257,9 @@ try {
   await kill(observer.child);
 
   // --- Criterion 2/3/9: two processes editing the same file produce one
-  // success and one recoverable refusal, never a lost update. The refusal
-  // after the bounded wait uses E_RANGE_STALE and carries fresh anchors. ---
+  // success and one recoverable refusal, never a lost update. The refusal is
+  // the classified E_FILE_LOCKED contention: the bounded wait ended without
+  // entering the boundary, so nothing was modified and no anchors are served. ---
   writeFileSync(join(workspace, "same.txt"), "alpha\nbeta\ngamma\n");
   const holder = await holdLock("same.txt");
   const middle = hashesOf("alpha\nbeta\ngamma\n")[1];
@@ -189,11 +273,10 @@ try {
     replacement: "BETA",
   });
   const refusal = await waitResult(contender.resultPath);
-  assert.match(textOf(refusal.content), /\[E_RANGE_STALE\]/, "the refusal uses the recoverable stale-range code");
+  assert.match(textOf(refusal.content), /\[E_FILE_LOCKED\]/, "lock contention is classified with the file-locked code (#264)");
   assert.match(textOf(refusal.content), /Another editor holds the write lock/, "the refusal explains the lock contention");
-  const freshRows = readRows(refusal.content);
-  assert.ok(freshRows.length > 0, "the refusal carries fresh anchors");
-  assert.deepEqual(freshRows.map((row) => row.text), ["beta"], "the fresh anchors are the current range");
+  assert.equal(refusal.details.errorCode, "E_FILE_LOCKED", "the refusal carries the structured code");
+  assert.equal(readRows(refusal.content).length, 0, "a contended replace serves no anchors it cannot observe under the boundary");
   assert.equal(
     readFileSync(join(workspace, "same.txt"), "utf8"),
     "alpha\nbeta\ngamma\n",
@@ -226,12 +309,12 @@ try {
 
   // --- Criterion 7/9 (#187): a second session's replace takes the same lock.
   // While a real process holds the lock, another session's replace is refused
-  // with the recoverable stale-range code and leaves the file untouched; once
-  // the lock is free, the same edit applies. ---
+  // with the classified E_FILE_LOCKED contention and leaves the file
+  // untouched; once the lock is free, the same edit applies. ---
   writeFileSync(join(workspace, "second-session.txt"), "alpha\nbeta\ngamma\n");
   const secondStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
   const secondHashes = hashesOf("alpha\nbeta\ngamma\n");
-  recordServed(secondStore, join(workspace, "second-session.txt"), secondHashes);
+  secondStore.mergeServed(join(workspace, "second-session.txt"), secondHashes, "alpha\nbeta\ngamma\n");
   secondStore.release();
 
   const secondHolder = await holdLock("second-session.txt");
@@ -245,7 +328,7 @@ try {
     replacement: "BETA",
   });
   const lockedSecond = await waitResult(secondReplace.resultPath);
-  assert.match(textOf(lockedSecond.content), /\[E_RANGE_STALE\]/, "a second session's replace is refused while the lock is held");
+  assert.match(textOf(lockedSecond.content), /\[E_FILE_LOCKED\]/, "a second session's replace is refused while the lock is held");
   assert.equal(
     readFileSync(join(workspace, "second-session.txt"), "utf8"),
     "alpha\nbeta\ngamma\n",
@@ -309,14 +392,24 @@ try {
   );
 
   // --- Criterion 8/9: the lock coexists with Pi's per-session mutation queue.
-  // Two replaces on the same file in one process complete (no deadlock) and
-  // both edits land (no lost update); the queue and the lock serialize. Clear
-  // any stale locks left by the killed holders first so the cleanliness
-  // assertion below checks only the concurrent replaces. ---
+  // Two replaces on the same file in one process complete without deadlock:
+  // the queue serializes them, exactly one edit applies, and the other is
+  // refused recoverably against the winner's updated served state (no lost
+  // update, no interleave). Clear any stale locks left by the killed holders
+  // first so the cleanliness assertion below checks only the concurrent
+  // replaces. ---
   rmSync(lockDir(), { recursive: true, force: true });
   writeFileSync(join(workspace, "coexist.txt"), "l1\nl2\nl3\nl4\n");
   const coexHashes = hashesOf("l1\nl2\nl3\nl4\n");
-  const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, undefined, sessionDir);
+  {
+    // Seed the served rows for the starting version: whichever replace wins
+    // the queue publishes its own diff rows for the new version, so the
+    // loser's authorization against the starting version is stale.
+    const seedStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
+    seedStore.mergeServed(join(workspace, "coexist.txt"), coexHashes, "l1\nl2\nl3\nl4\n");
+    seedStore.release();
+  }
+  const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, sessionDir);
   const ctx = sessionCtx;
   const [r1, r2] = await Promise.all([
     replace.execute(
@@ -335,21 +428,94 @@ try {
     ),
   ]);
   assert.ok(r1 && r2, "concurrent same-file replaces complete without deadlock");
+  // #264: with one queue-then-lock order the queue serializes both replaces
+  // before either lock wait begins, so there is no circular wait and no false
+  // contention. Exactly one edit applies; the other is refused recoverably by
+  // the served-state gate against the winner's fresh diff rows.
   const coexContent = readFileSync(join(workspace, "coexist.txt"), "utf8");
   const x1Land = coexContent.includes("X1") && !coexContent.includes("X4");
   const x4Land = coexContent.includes("X4") && !coexContent.includes("X1");
   assert.ok(x1Land || x4Land, "exactly one of the two concurrent edits landed (well-defined, no lost update)");
-  const r1Text = textOf(r1.content);
-  const r2Text = textOf(r2.content);
-  assert.ok(
-    /Successfully replaced/.test(r1Text) !== /Successfully replaced/.test(r2Text),
-    "exactly one concurrent edit was applied",
-  );
-  assert.ok(
-    /\[E_RANGE_STALE\]/.test(r1Text) !== /\[E_RANGE_STALE\]/.test(r2Text),
-    "the other concurrent edit was refused recoverably against the updated served state",
-  );
+  const r1Applied = r1.details.metrics?.classification === "applied";
+  const r2Applied = r2.details.metrics?.classification === "applied";
+  assert.ok(r1Applied !== r2Applied, "exactly one concurrent edit was applied");
+  const refused = r1Applied ? r2 : r1;
+  assert.equal(refused.details.errorCode, "E_RANGE_STALE", "the other concurrent edit was refused recoverably against the updated served state");
   assert.ok(!lockDirFiles().length, "no lock artefacts remain after the concurrent replaces");
+
+  // --- #264 crash-at-boundary: a real process dies between the filesystem
+  // commit and the store publication. The changed file is reported
+  // truthfully, stale anchors cannot authorize a replace against it, and a
+  // fresh read repairs the state. ---
+  writeFileSync(join(workspace, "crash.txt"), "alpha\nbeta\ngamma\n");
+  const crashHashes = hashesOf("alpha\nbeta\ngamma\n");
+  {
+    const seedStore = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
+    seedStore.mergeServed(join(workspace, "crash.txt"), crashHashes, "alpha\nbeta\ngamma\n");
+    seedStore.release();
+  }
+  const crashJob = spawnJob({
+    mode: "crash-after-write",
+    workspace,
+    sessionDir,
+    path: "crash.txt",
+    removeFrom: crashHashes[1],
+    removeTo: crashHashes[1],
+    replacement: "CHANGED",
+  });
+  const crashedResult = await waitResult(crashJob.resultPath);
+  assert.equal(crashedResult.crashed, true, "the helper died at the post-commit boundary");
+  assert.equal(
+    readFileSync(join(workspace, "crash.txt"), "utf8"),
+    "alpha\nCHANGED\ngamma\n",
+    "the crashed helper's file bytes are committed",
+  );
+  {
+    // The pre-crash served state cannot authorize a replace against the new
+    // bytes: the old anchor no longer matches the file.
+    const afterCrash = spawnJob({
+      mode: "replace",
+      workspace,
+      sessionDir,
+      path: "crash.txt",
+      removeFrom: crashHashes[1],
+      removeTo: crashHashes[1],
+      replacement: "MUST-NOT-APPLY",
+    });
+    const refusedAfterCrash = await waitResult(afterCrash.resultPath);
+    assert.ok(
+      /\[E_RANGE_STALE\]|\[E_STALE_ANCHOR\]/.test(textOf(refusedAfterCrash.content)),
+      "stale anchors cannot authorize a replace against the crashed write's bytes",
+    );
+    assert.equal(
+      readFileSync(join(workspace, "crash.txt"), "utf8"),
+      "alpha\nCHANGED\ngamma\n",
+      "the refused replace did not touch the file",
+    );
+  }
+  {
+    // A fresh read repairs the state and the retry applies.
+    const repairRead = spawnJob({ mode: "read", workspace, sessionDir, path: "crash.txt" });
+    const readResult = await waitResult(repairRead.resultPath);
+    const freshRows = readRows(readResult.content);
+    const changedRow = freshRows.find((row) => row.text === "CHANGED");
+    assert.ok(changedRow, "the repairing read serves the current content");
+    const retry = spawnJob({
+      mode: "replace",
+      workspace,
+      sessionDir,
+      path: "crash.txt",
+      removeFrom: changedRow.hash,
+      removeTo: changedRow.hash,
+      replacement: "REPAIRED",
+    });
+    await waitResult(retry.resultPath);
+    assert.equal(
+      readFileSync(join(workspace, "crash.txt"), "utf8"),
+      "alpha\nREPAIRED\ngamma\n",
+      "the repaired state authorizes the retry",
+    );
+  }
 
   // --- Criterion 9/9: lock artefacts live under the session directory, so the
   // workspace never carries version-control-visible anchored-edit state. ---

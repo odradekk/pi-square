@@ -3,13 +3,15 @@ import { realpathSync } from "node:fs";
 import { join } from "path";
 import { beforeAll, afterAll, vi } from "vitest";
 import { Compile } from "typebox/compile";
-import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createReadToolDefinition, createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 import { _lineHashesPure, initHasher } from "../../../src/anchored-edit/hashline";
 import { anchoredHashStorePath, anchoredStoreDir } from "../../../src/anchored-edit/paths";
 import { loadAnchoredHashStore, PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
 import { withAnchoredReadTransform } from "../../../src/anchored-edit/read-tool";
 import { transformAnchoredReadContent, guardAnchoredRead } from "../../../src/anchored-edit/read-transform";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
+import { createParentAnchoredWrite, registerAnchoredAutoRead } from "../../../src/anchored-edit/auto-read";
+import type { PiSquareConfig } from "../../../src/core/config";
 import { loadHashStoreAt, shutdownHashStore, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
 export async function getWritableTempRoot(): Promise<string> {
   const fallback = join(process.cwd(), ".tmp");
@@ -179,7 +181,7 @@ export function useScratchStore(): { store: () => HashStoreHandle } {
   let dir: string | undefined;
   beforeAll(async () => {
     dir = await mkdtemp(join(await getWritableTempRoot(), "scratch-store-"));
-    state.handle = await loadHashStoreAt(join(dir, "hash-store.sqlite"), { owner: "parent" });
+    state.handle = await loadHashStoreAt(join(dir, "hash-store.sqlite"), "parent");
   });
   afterAll(async () => {
     state.handle?.release();
@@ -252,19 +254,16 @@ function anchoredReadDefinition(cwd: string) {
     createReadToolDefinition(cwd),
     cwd,
     (content, value, executionCwd, sessionDir) =>
-      transformAnchoredReadContent(content, value, executionCwd, PARENT_OWNER, {
-        confineToWorkspace: false,
-        sessionDir,
-      }),
+      transformAnchoredReadContent(content, value, executionCwd, PARENT_OWNER, { sessionDir }),
     (params, executionCwd) =>
-      guardAnchoredRead(params, executionCwd, { confineToWorkspace: false }),
+      guardAnchoredRead(params, executionCwd),
   );
 }
 
 export function setupIntegrationTest(cwd: string) {
   const { pi, getTool } = makeFakePiRegistry();
   pi.registerTool(anchoredReadDefinition(cwd));
-  pi.registerTool(createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false, false));
+  pi.registerTool(createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false));
   const ctx = makeTestCtx(cwd);
   return { pi, getTool, ctx, readTool: getTool("read"), editTool: getTool("replace") };
 }
@@ -303,4 +302,79 @@ export function expectedEditContent(
 export async function makeTag(content: string, line: number): Promise<{ hash: string }> {
   const hashes = _lineHashesPure(content);
   return { hash: hashes[line - 1]! };
+}
+
+/** Composes the parent anchored write exactly as `src/index.ts` and
+ * `src/display/builtins.ts` wire it (#264): Pi's public write factory with the
+ * anchored write operation injected, plus the tool_call/tool_result appendix
+ * presentation handlers. `runWrite` fires the full production flow. */
+export function setupParentWrite(
+  cwd: string,
+  options: { autoRead?: boolean; enabled?: boolean; anchoredReadAvailable?: boolean } = {},
+) {
+  const autoRead = options.autoRead ?? true;
+  const enabled = options.enabled ?? true;
+  const available = options.anchoredReadAvailable ?? true;
+  const config = () => ({ anchoredEditing: { enabled, autoRead } }) as PiSquareConfig;
+  const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+  const pi = {
+    registerTool() {},
+    registerCommand() {},
+    on(event: string, handler: (...args: unknown[]) => Promise<unknown>) {
+      handlers.set(event, handler);
+    },
+  } as any;
+  const parentWrite = createParentAnchoredWrite(config);
+  registerAnchoredAutoRead(pi, config, () => available, parentWrite);
+  const sessionDir = testSessionDir(cwd);
+  // The production parent write composition (#264): Pi's public write
+  // factory with the anchored operation injected through its filesystem seam,
+  // with the availability gate living inside the injected operation.
+  const writeSession = parentWrite.attachSession(cwd, sessionDir, () => available);
+  const definition = writeSession.wrapDefinition(
+    createWriteToolDefinition(cwd, {
+      operations: writeSession.operations,
+    }),
+  );
+  const ctx = makeTestCtx(cwd);
+  async function runWrite(
+    toolCallId: string,
+    params: { path: string; content: string },
+    signal?: AbortSignal,
+  ): Promise<{ content: Array<{ type: string; text: string }> } & Record<string, unknown>> {
+    await handlers.get("tool_call")!(
+      { toolName: "write", toolCallId, input: params },
+      ctx,
+    );
+    try {
+      const result = await definition.execute(toolCallId, params, signal, undefined, ctx);
+      const patched = await handlers.get("tool_result")!(
+        {
+          toolName: "write",
+          toolCallId,
+          input: params,
+          content: result.content,
+          details: result.details,
+          isError: false,
+        },
+        ctx,
+      );
+      return (patched ?? result) as { content: Array<{ type: string; text: string }> } & Record<string, unknown>;
+    } catch (error) {
+      const failed = {
+        toolName: "write",
+        toolCallId,
+        input: params,
+        content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+        details: undefined,
+        isError: true,
+      };
+      const patched = await handlers.get("tool_result")!(failed, ctx) as
+        | ({ content: Array<{ type: string; text: string }>; isError?: boolean } & Record<string, unknown>)
+        | undefined;
+      if (patched?.isError === false) return patched;
+      throw error;
+    }
+  }
+  return { pi, handlers, definition, runWrite, writeSession };
 }
