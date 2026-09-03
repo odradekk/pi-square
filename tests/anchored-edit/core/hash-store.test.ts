@@ -412,6 +412,45 @@ describe("hash-store — schema versioning", () => {
     });
   });
 
+  it("quarantines a version-8 database with a hidden generated column instead of failing later publications (#264 P1)", async () => {
+    await withTempHome(async (home) => {
+      const store = await openStore(home);
+      await put(store, "/p.ts", "x\n", ["XYZ"]);
+      shutdownHashStore();
+
+      // A database that claims the current version but carries a generated
+      // STORED column with a UNIQUE constraint. `PRAGMA table_info` hides
+      // generated columns, so this layout previously passed the loader's
+      // shape check and then failed real publications with
+      // "UNIQUE constraint failed" — the loader must see every column and
+      // every schema object and quarantine the whole database.
+      const tampered = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
+      tampered.exec(
+        "CREATE TABLE snapshots_v8_hidden (owner TEXT NOT NULL, path TEXT NOT NULL, checksum TEXT NOT NULL, " +
+          "line_count INTEGER NOT NULL, hashes TEXT NOT NULL, updated_at INTEGER NOT NULL, " +
+          "hidden_guard TEXT GENERATED ALWAYS AS (owner || path) STORED UNIQUE, PRIMARY KEY (owner, path))",
+      );
+      tampered.prepare("INSERT INTO snapshots_v8_hidden (owner, path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run("parent", "/p.ts", "deadbeef", 1, "[\"XYZ\"]", 1);
+      tampered.exec("DROP TABLE snapshots");
+      tampered.exec("ALTER TABLE snapshots_v8_hidden RENAME TO snapshots");
+      tampered.close();
+
+      const reloaded = await openStore(home);
+      expect(reloaded.getSnapshot("/p.ts", "x\n")).toBeUndefined();
+      const entries = await readdir(configHome(home));
+      expect(entries.some((name) => name.includes(".old-schema-"))).toBe(true);
+
+      // The rebuilt store is fully usable: two publications succeed.
+      reloaded.publishRead({ path: "/a.ts", content: "a\n", hashes: ["AAA"], servedHashes: ["AAA"] });
+      reloaded.publishRead({ path: "/b.ts", content: "b\n", hashes: ["BBB"], servedHashes: ["BBB"] });
+      expect(reloaded.getSnapshot("/a.ts", "a\n")).toEqual(["AAA"]);
+      expect(reloaded.getSnapshot("/b.ts", "b\n")).toEqual(["BBB"]);
+      expect(reloaded.getServedState("/a.ts", "a\n")).toEqual({ served: new Set(["AAA"]) });
+      expect(reloaded.getServedState("/b.ts", "b\n")).toEqual({ served: new Set(["BBB"]) });
+    });
+  });
+
   it("quarantines an undo-bearing pre-versioning database (#187)", async () => {
     await withTempHome(async (home) => {
       const store = await openStore(tmpHome);

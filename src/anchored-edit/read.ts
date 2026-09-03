@@ -34,19 +34,24 @@ export function formatPaginationHint(
 	return `[Showing lines ${startLine}-${endLine} of ${totalLines}${sizeSuffix}. Use offset=${nextOffset} to continue.]`;
 }
 
-export async function fmtReadPreview(
+/** Synchronous core of {@link fmtReadPreview}: the caller supplies the
+ *  content's line hashes. Every consumer that already knows the hashes (the
+ *  anchored read's boundary-held read and the parent write's non-yielding
+ *  auto-read render) composes rows without any asynchronous filesystem or
+ *  hashing step. */
+export function fmtReadPreviewSync(
 	text: string,
 	options: { offset?: number; limit?: number },
-	precomputedHashes?: string[],
+	precomputedHashes: string[],
 	maxLineBytes = MAX_READ_LINE_BYTES,
 	maxTruncLines = DEFAULT_MAX_LINES,
-): Promise<{ text: string; truncation?: TruncationResult; nextOffset?: number; servedHashes: string[] }> {
+): { text: string; truncation?: TruncationResult; nextOffset?: number; servedHashes: string[] } {
+	const allHashes = precomputedHashes;
 	const allLines = visLines(text);
 	const totalLines = allLines.length;
 	const startLine = normPosInt(options.offset, "offset") ?? 1;
 	if (totalLines === 0) {
 		if (startLine === 1) {
-      const allHashes = precomputedHashes ?? await lineHashes(text);
       const emptyLineHash = allHashes[0] ?? "";
       return {
 				text: `${emptyLineHash}${HASH_SEP}\n[File is empty. Use replace to insert content.]`,
@@ -70,7 +75,6 @@ export async function fmtReadPreview(
 		? Math.min(startLine - 1 + limit, totalLines)
 		: totalLines;
 	const selected = allLines.slice(startLine - 1, endIdx);
-	const allHashes = precomputedHashes ?? await lineHashes(text);
 	const selectedHashes = allHashes.slice(startLine - 1, endIdx);
 	const formatted = fmtRegion(selectedHashes, selected);
 	const maxBytes = maxLineBytes;
@@ -138,5 +142,21 @@ export async function fmtReadPreview(
 		...(nextOffset !== undefined ? { nextOffset } : {}),
 		servedHashes,
 	};
+}
+
+export async function fmtReadPreview(
+	text: string,
+	options: { offset?: number; limit?: number },
+	precomputedHashes?: string[],
+	maxLineBytes = MAX_READ_LINE_BYTES,
+	maxTruncLines = DEFAULT_MAX_LINES,
+): Promise<{ text: string; truncation?: TruncationResult; nextOffset?: number; servedHashes: string[] }> {
+	return fmtReadPreviewSync(
+		text,
+		options,
+		precomputedHashes ?? (await lineHashes(text)),
+		maxLineBytes,
+		maxTruncLines,
+	);
 }
 

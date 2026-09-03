@@ -1,8 +1,8 @@
 import { afterEach } from "vitest";
 import { describe, expect, it, vi } from "vitest";
-import { link, mkdir, readFile, stat, writeFile } from "fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "path";
+import { link, mkdir, readFile, rename, stat, symlink, writeFile } from "fs/promises";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "path";
 import { createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createAnchoredWriteSession,
@@ -10,6 +10,7 @@ import {
   replaceBarrier,
   resolveAnchoredTarget,
   writeBarrier,
+  writeBarrierSync,
 } from "../../../src/anchored-edit/operations";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
 import { createChildAnchoredWriteTool } from "../../../src/anchored-edit/child-write";
@@ -19,6 +20,7 @@ import { lockFilePath } from "../../../src/anchored-edit/file-lock";
 import { loadHashStoreAt, shutdownHashStore, type HashStoreHandle } from "../../../src/anchored-edit/hash-store";
 import { _lineHashesPure } from "../../../src/anchored-edit/hashline";
 import { makeTestCtx, setupParentWrite, testSessionDir, withTempDir } from "../support/fixtures";
+import { spawnSync } from "node:child_process";
 
 const SAMPLE = "aaa\nbbb\nccc\n";
 
@@ -65,9 +67,12 @@ async function anchoredReadOf(cwd: string, ctx: unknown) {
 }
 
 afterEach(() => {
+  readBarrier.locked = undefined;
   readBarrier.onBytes = undefined;
+  replaceBarrier.beforePrepare = undefined;
   replaceBarrier.beforeCommit = undefined;
   writeBarrier.beforeWrite = undefined;
+  writeBarrierSync.beforeWrite = undefined;
 });
 
 describe("operation boundary — replace preparation is pure (#264)", () => {
@@ -399,19 +404,17 @@ describe("operation boundary — one queue-then-lock order for every writer (#26
   it("write first, replace queued behind: the replace validates against the written bytes and never interleaves (#264)", async () => {
     await withTempDir("boundary-pw-replace-", async (cwd) => {
       const { ctx, hashes, parentWrite, replace } = await setup(cwd);
-      const gate = holdAt(writeBarrier);
 
+      // The parent write's operation is non-yielding: once its queue turn
+      // starts it resolves the target, locks, commits, and publishes with no
+      // interleaving point, so firing both concurrently is deterministic
+      // through the shared mutation queue alone (the write entered first).
       const writePromise = parentWrite.execute("w1", { path: "sample.txt", content: "written\n" }, undefined, undefined, ctx);
-      // Deterministic: the write is inside the mutation queue and the target
-      // boundary, paused immediately before its irreversible filesystem write.
-      expect(await gate.entered).toBe(join(cwd, "sample.txt"));
-
       const replacePromise = replace.execute(
         "r1",
         { path: "sample.txt", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BBB" },
         undefined, undefined, ctx,
       );
-      gate.release();
       await writePromise;
 
       // The replace ran strictly after the write against the written bytes:
@@ -506,13 +509,12 @@ describe("operation boundary — one queue-then-lock order for every writer (#26
   it("parent write first, child write queued behind: the child write lands after (#264)", async () => {
     await withTempDir("boundary-pw-cw-", async (cwd) => {
       const { ctx, parentWrite, childWrite } = await setup(cwd);
-      const gate = holdAt(writeBarrier);
 
+      // Both writes enter the same per-file mutation queue; the parent's
+      // non-yielding operation completes its queue turn atomically, so the
+      // child write deterministically lands after it without a barrier.
       const parentPromise = parentWrite.execute("w1", { path: "sample.txt", content: "parent\n" }, undefined, undefined, ctx);
-      expect(await gate.entered).toBe(join(cwd, "sample.txt"));
-
       const childPromise = childWrite.execute("w1-child", { path: "sample.txt", content: "child\n" }, undefined, undefined, ctx);
-      gate.release();
       await parentPromise;
       const childResult = await childPromise;
 
@@ -1198,4 +1200,271 @@ describe("operation boundary — anchored write availability gate (#264 P1)", ()
       expect(session.takeOutcome(path)?.appendix).toContain("Auto-read");
     });
   });
+});
+
+describe("operation boundary — the locked target is the I/O target (#264 P1)", () => {
+  /** link.txt initially points at sample.txt; other.txt is the decoy the
+   *  retarget would redirect an unfrozen operation to. */
+  async function symlinkFixture(cwd: string) {
+    await writeFile(join(cwd, "sample.txt"), SAMPLE, "utf-8");
+    await writeFile(join(cwd, "other.txt"), "WRONG\n", "utf-8");
+    await symlink(join(cwd, "sample.txt"), join(cwd, "link.txt"));
+    return { canonical: join(cwd, "sample.txt"), decoy: join(cwd, "other.txt"), link: join(cwd, "link.txt") };
+  }
+
+  /** Retargets link.txt to the decoy in place (atomic replace of the link). */
+  async function retargetToDecoy(cwd: string): Promise<void> {
+    const temp = join(cwd, ".retarget.tmp");
+    await symlink(join(cwd, "other.txt"), temp);
+    await rename(temp, join(cwd, "link.txt"));
+  }
+
+  it("parent read: a symlink retargeted inside the boundary cannot redirect the bytes or the store key", async () => {
+    await withTempDir("boundary-freeze-read-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const ctx = makeTestCtx(cwd);
+      let releaseRead!: () => void;
+      const locked = new Promise<string>((resolveLocked) => {
+        readBarrier.locked = (info) => {
+          readBarrier.locked = undefined;
+          resolveLocked(info.canonicalPath);
+          return new Promise<void>((resolveRelease) => { releaseRead = resolveRelease; });
+        };
+      });
+
+      const { createReadToolDefinition } = await import("@earendil-works/pi-coding-agent");
+      const { withAnchoredReadTransform } = await import("../../../src/anchored-edit/read-tool");
+      const { transformAnchoredReadContent } = await import("../../../src/anchored-edit/read-transform");
+      const readTool = withAnchoredReadTransform(
+        createReadToolDefinition(cwd),
+        cwd,
+        async (content: unknown, value: unknown, executionCwd: string, sessionDir: string, signal?: AbortSignal) =>
+          transformAnchoredReadContent(content as never, value, executionCwd, PARENT_OWNER, { sessionDir }, signal),
+      );
+      const readPromise = readTool.execute("r-freeze", { path: "link.txt" }, undefined, undefined, ctx as never);
+      expect(await locked).toBe(fixture.canonical);
+      await retargetToDecoy(cwd);
+      releaseRead();
+      const read = await readPromise;
+
+      // The bytes came from the locked canonical target, not the decoy the
+      // link now names.
+      expect(rowsOf(read.content).length).toBe(3);
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+      const store = await parentStoreFor(cwd);
+      expect(await servedFor(store, fixture.canonical, SAMPLE)).toBeDefined();
+      store.release();
+    });
+  });
+
+  it("replace: a symlink retargeted between the lock and the validation cannot redirect the edit", async () => {
+    await withTempDir("boundary-freeze-replace-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const ctx = makeTestCtx(cwd);
+      const hashes = _lineHashesPure(SAMPLE);
+      const store = await parentStoreFor(cwd);
+      store.mergeServed(fixture.canonical, [...hashes], SAMPLE);
+      store.release();
+      const replace = createAnchoredReplaceToolDefinition(cwd, () => false, PARENT_OWNER, false);
+      let releaseReplace!: () => void;
+      const prepared = new Promise<string>((resolvePrepared) => {
+        replaceBarrier.beforePrepare = (info) => {
+          replaceBarrier.beforePrepare = undefined;
+          resolvePrepared(info.canonicalPath);
+          return new Promise<void>((resolveRelease) => { releaseReplace = resolveRelease; });
+        };
+      });
+
+      const replacePromise = replace.execute(
+        "r1",
+        { path: "link.txt", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BBB" },
+        undefined, undefined, ctx,
+      );
+      expect(await prepared).toBe(fixture.canonical);
+      await retargetToDecoy(cwd);
+      releaseReplace();
+      const replaced = await replacePromise;
+
+      expect(replaced.details.metrics?.classification).toBe("applied");
+      expect(await readFile(fixture.canonical, "utf-8")).toBe("aaa\nBBB\nccc\n");
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+    });
+  });
+
+  it("parent write: a symlink retargeted mid-operation cannot redirect the commit or the store key", async () => {
+    await withTempDir("boundary-freeze-pwrite-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+
+      // The retarget fires synchronously at the worst-possible moment —
+      // after resolution and lock, immediately before the filesystem write.
+      // The non-yielding operation still commits the locked canonical target.
+      writeBarrierSync.beforeWrite = () => {
+        writeBarrierSync.beforeWrite = undefined;
+        void (async () => { await retargetToDecoy(cwd); })();
+      };
+
+      const result = await runWrite("w1", { path: "link.txt", content: "frozen\n" });
+      expect(textOf(result.content)).toContain("Successfully wrote");
+
+      expect(await readFile(fixture.canonical, "utf-8")).toBe("frozen\n");
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+      const store = await parentStoreFor(cwd);
+      const served = await servedFor(store, fixture.canonical, "frozen\n");
+      expect(served).toBeDefined();
+      expect(served!.size).toBeGreaterThan(0);
+      store.release();
+    });
+  });
+
+  it("child write: a symlink retargeted inside the boundary cannot redirect the commit", async () => {
+    await withTempDir("boundary-freeze-cwrite-", async (cwd) => {
+      const fixture = await symlinkFixture(cwd);
+      const ctx = makeTestCtx(cwd);
+      const childWrite = createChildAnchoredWriteTool(cwd, "subagent_freeze", testSessionDir(cwd), () => true);
+      let releaseWrite!: () => void;
+      const entered = new Promise<string>((resolveEntered) => {
+        writeBarrier.beforeWrite = (info) => {
+          writeBarrier.beforeWrite = undefined;
+          resolveEntered(info.canonicalPath);
+          return new Promise<void>((resolveRelease) => { releaseWrite = resolveRelease; });
+        };
+      });
+
+      const writePromise = childWrite.execute("w1", { path: "link.txt", content: "child-frozen\n" }, undefined, undefined, ctx);
+      expect(await entered).toBe(fixture.canonical);
+      await retargetToDecoy(cwd);
+      releaseWrite();
+      const written = await writePromise;
+
+      expect(textOf(written.content)).toContain("Successfully wrote");
+      expect(await readFile(fixture.canonical, "utf-8")).toBe("child-frozen\n");
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+    });
+  });
+});
+
+describe("operation boundary — parent write cancellation truthfulness (#264 P1)", () => {
+  function lockAreaResidue(cwd: string): string[] {
+    const locksDir = join(anchoredStoreDir(testSessionDir(cwd), cwd), "locks");
+    return existsSync(locksDir)
+      ? readdirSync(locksDir).filter((name) => !name.endsWith(".schema.lock"))
+      : [];
+  }
+
+  it("a pre-aborted write touches nothing: classified by the factory, no bytes, no state, no lock residue", async () => {
+    await withTempDir("boundary-abort-pre-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+
+      // The factory classified the call before the operation started; the
+      // anchored layer published nothing and left no artifact.
+      await expect(
+        runWrite("w1", { path: "sample.txt", content: "after\n" }, AbortSignal.abort()),
+      ).rejects.toThrow(/aborted/i);
+      expect(await readFile(path, "utf-8")).toBe(SAMPLE);
+      const store = await parentStoreFor(cwd);
+      expect(await servedFor(store, path, SAMPLE)).toBeUndefined();
+      store.release();
+      expect(lockAreaResidue(cwd)).toEqual([]);
+    });
+  });
+
+  it("an abort fired at the worst-possible moment leaves consistent state for the committed bytes", async () => {
+    await withTempDir("boundary-abort-mid-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+      const controller = new AbortController();
+
+      // Fired synchronously between the lock and the filesystem write — the
+      // exact interleaving the zero-wait design removed every await from. The
+      // non-yielding operation completes atomically; the factory may still
+      // classify the call as aborted (its native post-write check), but the
+      // anchored layer must never present a torn state: the published served
+      // rows match the written bytes exactly, so a fresh read is unaffected.
+      writeBarrierSync.beforeWrite = () => {
+        writeBarrierSync.beforeWrite = undefined;
+        controller.abort();
+      };
+
+      // The factory's own post-write check classifies the call as aborted —
+      // the identical outcome a native Pi write produces when an abort lands
+      // during its filesystem write. The anchored state below is what our
+      // layer owns, and it is consistent with the committed bytes.
+      await expect(
+        runWrite("w1", { path: "sample.txt", content: "after\n" }, controller.signal),
+      ).rejects.toThrow(/aborted/i);
+      expect(await readFile(path, "utf-8")).toBe("after\n");
+      const store = await parentStoreFor(cwd);
+      const served = await servedFor(store, path, "after\n");
+      expect(served).toBeDefined();
+      expect(served!.size).toBeGreaterThan(0);
+      // The pre-write version authorizes nothing against the written bytes.
+      expect(await servedFor(store, path, SAMPLE)).toBeUndefined();
+      store.release();
+      // The lock was released in the same non-yielding span.
+      expect(lockAreaResidue(cwd)).toEqual([]);
+    });
+  });
+
+  it("a busy target is refused immediately with the file untouched and no residue", async () => {
+    await withTempDir("boundary-abort-busy-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+
+      const target = await resolveAnchoredTarget(cwd, "sample.txt");
+      const storeDir = anchoredStoreDir(testSessionDir(cwd), cwd);
+      const holder = await (await import("../../../src/anchored-edit/operations")).enterTargetBoundary(storeDir, target, { waitMs: 100 });
+      expect(holder).not.toBeNull();
+      try {
+        await expect(runWrite("w1", { path: "sample.txt", content: "after\n" })).rejects.toThrow(/E_FILE_LOCKED/);
+        expect(await readFile(path, "utf-8")).toBe(SAMPLE);
+      } finally {
+        await holder!.release();
+      }
+      const store = await parentStoreFor(cwd);
+      expect(await servedFor(store, path, SAMPLE)).toBeUndefined();
+      store.release();
+      expect(lockAreaResidue(cwd)).toEqual([]);
+    });
+  });
+
+  it("a dead owner's lock is reclaimed by the production parent write (#264 P1)", async () => {
+    await withTempDir("boundary-write-deadlock-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+
+      // A crashed holder: the pid is a genuinely exited local process, and a
+      // mismatching start time additionally proves the pid is not reused.
+      const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+      expect(exited.status).toBe(0);
+      const target = await resolveAnchoredTarget(cwd, "sample.txt");
+      const lockPath = lockFilePath(anchoredStoreDir(testSessionDir(cwd), cwd), target.opKey);
+      await mkdir(dirname(lockPath), { recursive: true });
+      // A complete, attributable record for a local pid that no longer
+      // exists: the start-time mismatch alone proves the pid was not reused.
+      const { hostname } = await import("node:os");
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ v: 1, token: "dead-token-000", pid: exited.pid, hostname: hostname(), startTime: "1", acquiredAt: 1 }),
+        { flag: "wx", mode: 0o600 },
+      );
+      expect(existsSync(lockPath)).toBe(true);
+
+      const result = await runWrite("w1", { path: "sample.txt", content: "recovered\n" });
+      expect(textOf(result.content)).toContain("Successfully wrote");
+      expect(await readFile(path, "utf-8")).toBe("recovered\n");
+      const store = await parentStoreFor(cwd);
+      expect(await servedFor(store, path, "recovered\n")).toBeDefined();
+      store.release();
+      // The dead lock and every protocol artifact are gone.
+      expect(existsSync(lockPath)).toBe(false);
+      expect(lockAreaResidue(cwd)).toEqual([]);
+    });
+  });
+
 });

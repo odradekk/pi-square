@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { readFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { link, lstat, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { errCode } from "./utils";
@@ -102,7 +102,13 @@ interface WaitBudget {
 }
 
 function budgetSpent(budget: WaitBudget): boolean {
-  return budget.signal?.aborted === true || Date.now() >= budget.deadlineAt;
+  return signalAborted(budget) || Date.now() >= budget.deadlineAt;
+}
+
+/** Cancellation query behind a function boundary: the flag can flip between
+ *  any two awaits, which the type system cannot see. */
+function signalAborted(budget: WaitBudget): boolean {
+  return budget.signal?.aborted === true;
 }
 
 interface LockOwnerRecord {
@@ -337,7 +343,10 @@ async function removeVerifiedLockFile(
   if (marker === undefined) return "busy";
   try {
     await __lockTestables.lockBarrier.markerHeld?.(lockPath);
-    if (budgetSpent(budget)) return "busy";
+    // The marker is held: the re-verify and take are single non-waiting
+    // steps, so a zero-wait caller still completes this round; only
+    // cancellation aborts it.
+    if (signalAborted(budget)) return "busy";
     const current = await readLockInfo(lockPath);
     if (current.identity === undefined) return "absent";
     if (!sameNodeIdentity(current.identity, expected) || current.token !== expectedToken) {
@@ -442,17 +451,31 @@ async function acquireRemovalMarker(
     // treatment): back off to the caller's bounded loop.
     return undefined;
   }
-  if (budgetSpent(budget)) return undefined;
+  if (signalAborted(budget)) return undefined;
 
   // Claim the dead marker's reclamation exclusively.
   const deadToken = existing.owner.token;
   const claimPath = claimPathFor(lockPath, deadToken);
   const claimRecord = currentOwnerRecord();
-  const claimIdentity = await publishOwnerRecord(claimPath, JSON.stringify(claimRecord));
-  if (!claimIdentity) return undefined; // another reclaimer won the claim
+  let claimIdentity = await publishOwnerRecord(claimPath, JSON.stringify(claimRecord));
+  if (!claimIdentity) {
+    // A claim file exists. A claim holder that crashed between publishing
+    // its claim and taking the marker must not block reclamation forever:
+    // like any lock record, a provably dead claim holder's file is removed
+    // through the verified take (while it exists, no other claimant for this
+    // dead marker can publish), and a live claim holder simply means busy.
+    const staleClaim = await readLockInfo(claimPath);
+    if (!(staleClaim.owner && staleClaim.identity && isOwnerGone(staleClaim.owner))) {
+      return undefined;
+    }
+    await removeExactFile(claimPath, staleClaim.identity, staleClaim.owner.token, budget).catch(() => {});
+    if (signalAborted(budget)) return undefined;
+    claimIdentity = await publishOwnerRecord(claimPath, JSON.stringify(claimRecord));
+    if (!claimIdentity) return undefined;
+  }
   try {
     await __lockTestables.lockBarrier.markerClaimed?.(lockPath, claimPath);
-    if (budgetSpent(budget)) return undefined;
+    if (signalAborted(budget)) return undefined;
     // Re-read under the claim: only the claim winner writes the marker path,
     // so the marker must still be the exact dead record read above.
     const now = await readLockInfo(path);
@@ -593,7 +616,14 @@ export async function acquireFileLock(
   await mkdir(dirname(lockPath), { recursive: true });
 
   let delayMs = 1;
+  // A dead-owner reclamation right at the deadline earns exactly one extra
+  // publish attempt, so zero-wait callers can still recover a crashed owner
+  // without gaining an unbounded loop.
+  let retriedAfterDeadline = false;
   for (;;) {
+    // Cancellation comes first: an aborted caller never publishes, never
+    // leaves a lock artifact, and never observes or mutates the target.
+    if (signalAborted(budget)) return null;
     // One immediate publish attempt happens even at a zero budget: the
     // parent write uses a zero-wait boundary (its seam carries no
     // AbortSignal, so it never enters a cancellable wait), and a busy target
@@ -620,22 +650,246 @@ export async function acquireFileLock(
             }),
       };
     }
-    // Cancellation and deadline exhaustion are the same classified outcome:
-    // the boundary was not entered and nothing was modified. Checked after
-    // the publish attempt so a zero budget still performs exactly one try.
-    if (budgetSpent(budget)) return null;
+    if (signalAborted(budget)) return null;
     const info = await readLockInfo(lockPath);
     if (info.owner && info.identity && isOwnerGone(info.owner)) {
       // The dead owner's file still blocks every publisher. Remove it under
-      // the marker protocol; busy (another remover holds the marker) simply
-      // falls through to the bounded wait, and the loop deadline still bounds
-      // everything.
-      await removeVerifiedLockFile(lockPath, info.identity, info.owner.token, budget)
-        .then(() => undefined)
-        .catch(() => {});
+      // the marker protocol. Only a completed removal earns the immediate
+      // publish retry (even at an exhausted deadline, so a zero-wait caller
+      // reclaims crashed owners — bounded to one such post-deadline retry);
+      // a busy marker (another remover holds it) falls through to the
+      // bounded wait instead of spinning.
+      let removed = false;
+      try {
+        removed = (await removeVerifiedLockFile(lockPath, info.identity, info.owner.token, budget)) === "removed";
+      } catch {
+        // Reclaim failures classify as contention on the next pass.
+      }
+      if (removed) {
+        if (signalAborted(budget)) return null;
+        if (Date.now() >= budget.deadlineAt) {
+          if (retriedAfterDeadline) return null;
+          retriedAfterDeadline = true;
+        }
+        continue;
+      }
     }
+    if (budgetSpent(budget)) return null;
     await sleep(Math.min(delayMs, budget.pollMs));
     delayMs *= 2;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Synchronous zero-wait protocol (parent write's non-yielding operation)
+// ---------------------------------------------------------------------------
+
+/**
+ * The parent write's injected operation runs without any real-asynchronous
+ * I/O so no cancellation or competing operation can interleave between its
+ * boundary verification and its filesystem commit (ADR-0014). These
+ * synchronous mirrors implement exactly the zero-wait slice of the async
+ * protocol above — one publish attempt, one non-waiting dead-owner
+ * reclamation through the same marker/claim records, one verified release —
+ * so both protocols interoperate through the same file formats.
+ */
+
+function readLockInfoSync(lockPath: string): LockFileInfo {
+  try {
+    const stats = statSync(lockPath);
+    if (!stats.isFile()) return { owner: undefined, identity: undefined, token: undefined };
+    const identity = identityOf(stats);
+    let owner: LockOwnerRecord | undefined;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(lockPath, "utf8"));
+      if (isCompleteOwnerRecord(parsed)) owner = parsed;
+    } catch {
+      // Partial or foreign artifact: unverifiable, fail closed.
+    }
+    return { owner, identity, token: owner?.token };
+  } catch {
+    return { owner: undefined, identity: undefined, token: undefined };
+  }
+}
+
+function publishOwnerRecordSync(targetPath: string, ownerRaw: string): FileIdentity | undefined {
+  const tempPath = join(dirname(targetPath), `.publish-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tempPath, ownerRaw, { flag: "wx", mode: 0o600 });
+    try {
+      linkSync(tempPath, targetPath);
+    } catch (error) {
+      if (errCode(error) === "EEXIST") return undefined;
+      throw error;
+    }
+    return identityOf(statSync(targetPath));
+  } finally {
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      // already gone
+    }
+  }
+}
+
+/** Verified take plus delete for a file whose replacement is excluded by
+ *  construction (our own marker or claim, or a re-verified dead record).
+ *  A mismatch is a non-protocol actor: restore once, never destroy. */
+function removeExactFileSync(path: string, expected: FileIdentity, expectedToken: string): "removed" | "absent" | "foreign" {
+  const retiredPath = join(dirname(path), `.retired-${randomUUID()}.tmp`);
+  try {
+    renameSync(path, retiredPath);
+  } catch (error) {
+    if (errCode(error) === "ENOENT") return "absent";
+    throw error;
+  }
+  const retired = readLockInfoSync(retiredPath);
+  if (
+    retired.identity !== undefined
+    && sameNodeIdentity(retired.identity, expected)
+    && retired.token === expectedToken
+  ) {
+    try {
+      unlinkSync(retiredPath);
+    } catch {
+      // best-effort
+    }
+    return "removed";
+  }
+  try {
+    if (!existsSync(path)) linkSync(retiredPath, path);
+    else console.error(`Anchored lock removal could not restore a foreign file at ${path}; left at ${retiredPath}.`);
+  } catch (error) {
+    console.error(`Anchored lock removal could not restore a foreign file at ${path}:`, error);
+  }
+  return "foreign";
+}
+
+/**
+ * Synchronous zero-wait acquisition of the canonical target lock: one
+ * publish attempt; on a busy target, one non-waiting dead-owner check and
+ * reclamation through the marker/claim protocol, then one final publish
+ * attempt. Every live, foreign, malformed, or marker-busy state is an
+ * immediate classified refusal — there is never a wait.
+ */
+export function acquireZeroWaitFileSync(lockPath: string): { token: string; identity: FileIdentity } | undefined {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const record = currentOwnerRecord();
+  const ownerRaw = JSON.stringify(record);
+  const attempt = (): FileIdentity | undefined => {
+    try {
+      return publishOwnerRecordSync(lockPath, ownerRaw);
+    } catch (error) {
+      if (errCode(error) === "EEXIST") return undefined;
+      throw error;
+    }
+  };
+
+  let identity = attempt();
+  if (identity) return { token: record.token, identity };
+
+  // One non-waiting dead-owner reclamation round.
+  const info = readLockInfoSync(lockPath);
+  if (info.owner && info.identity && isOwnerGone(info.owner)) {
+    reclaimDeadLockSync(lockPath, info.identity, info.owner.token);
+    identity = attempt();
+    if (identity) return { token: record.token, identity };
+  }
+  return undefined;
+}
+
+/** Non-waiting marker/claim reclamation of a verified dead lock. */
+function reclaimDeadLockSync(lockPath: string, expected: FileIdentity, deadToken: string): void {
+  const marker = markerPath(lockPath);
+  const markerRecord = currentOwnerRecord();
+  let markerIdentity: FileIdentity | undefined;
+  try {
+    markerIdentity = publishOwnerRecordSync(marker, JSON.stringify(markerRecord));
+  } catch {
+    return;
+  }
+  if (!markerIdentity) {
+    // Marker busy: reclaim it only when its holder is provably dead (one
+    // non-waiting claim round); anything else is an immediate give-up.
+    const existing = readLockInfoSync(marker);
+    if (!(existing.owner && existing.identity && isOwnerGone(existing.owner))) return;
+    reclaimDeadMarkerSync(lockPath, existing.identity, existing.owner.token);
+    try {
+      markerIdentity = publishOwnerRecordSync(marker, JSON.stringify(markerRecord));
+    } catch {
+      return;
+    }
+    if (!markerIdentity) return;
+  }
+  try {
+    const current = readLockInfoSync(lockPath);
+    if (!current.identity || !sameNodeIdentity(current.identity, expected) || current.token !== deadToken) return;
+    const outcome = removeExactFileSync(lockPath, expected, deadToken);
+    void outcome;
+  } finally {
+    removeExactFileSync(marker, markerIdentity, markerRecord.token);
+  }
+}
+
+/** Non-waiting claim-guarded reclamation of a verified dead marker. */
+function reclaimDeadMarkerSync(lockPath: string, expected: FileIdentity, deadToken: string): void {
+  const marker = markerPath(lockPath);
+  const claimPath = claimPathFor(lockPath, deadToken);
+  const claimRecord = currentOwnerRecord();
+  let claimIdentity: FileIdentity | undefined;
+  try {
+    claimIdentity = publishOwnerRecordSync(claimPath, JSON.stringify(claimRecord));
+  } catch {
+    return;
+  }
+  if (!claimIdentity) {
+    const stale = readLockInfoSync(claimPath);
+    if (!(stale.owner && stale.identity && isOwnerGone(stale.owner))) return;
+    removeExactFileSync(claimPath, stale.identity, stale.owner.token);
+    try {
+      claimIdentity = publishOwnerRecordSync(claimPath, JSON.stringify(claimRecord));
+    } catch {
+      return;
+    }
+    if (!claimIdentity) return;
+  }
+  try {
+    const current = readLockInfoSync(marker);
+    if (!current.identity || !sameNodeIdentity(current.identity, expected) || current.token !== deadToken) return;
+    removeExactFileSync(marker, expected, deadToken);
+  } finally {
+    removeExactFileSync(claimPath, claimIdentity, claimRecord.token);
+  }
+}
+
+/**
+ * Synchronous verified release of this process's own acquisition. When the
+ * removal marker is busy (another remover holds it), the release continues
+ * asynchronously through the retrying protocol — the lock is ours, so the
+ * deferred release never affects the operation's reported outcome.
+ */
+export function releaseFileSync(lockPath: string, token: string, identity: FileIdentity): void {
+  const markerRecord = currentOwnerRecord();
+  let markerIdentity: FileIdentity | undefined;
+  try {
+    markerIdentity = publishOwnerRecordSync(markerPath(lockPath), JSON.stringify(markerRecord));
+  } catch (error) {
+    console.error(`Failed to release anchored lock ${lockPath}:`, error);
+    return;
+  }
+  if (!markerIdentity) {
+    // Busy marker: defer to the bounded retrying release.
+    void releaseWithRetry(lockPath, identity, token).catch((error) => {
+      console.error(`Failed to release anchored lock ${lockPath}:`, error);
+    });
+    return;
+  }
+  try {
+    const current = readLockInfoSync(lockPath);
+    if (!current.identity || !sameNodeIdentity(current.identity, identity) || current.token !== token) return;
+    removeExactFileSync(lockPath, identity, token);
+  } finally {
+    removeExactFileSync(markerPath(lockPath), markerIdentity, markerRecord.token);
   }
 }
 
@@ -649,6 +903,8 @@ export const __lockTestables = {
   removeVerifiedLockFile,
   acquireRemovalMarker,
   releaseRemovalMarker,
+  acquireZeroWaitFileSync,
+  releaseFileSync,
   publishOwnerRecord,
   currentOwnerRecord,
   isOwnerGone,

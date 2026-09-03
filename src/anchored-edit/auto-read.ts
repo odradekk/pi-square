@@ -53,9 +53,10 @@ export function createParentAnchoredWrite(config: () => PiSquareConfig): ParentA
         autoRead: () => config().anchoredEditing.autoRead,
         available,
         // The parent seam carries no AbortSignal and the parent write has no
-        // execution wrapper (ADR-0014), so it never enters a cancellable
-        // wait: one immediate lock attempt, and a busy target classifies as
-        // E_FILE_LOCKED at once with the file untouched.
+        // execution wrapper (ADR-0014), so the parent path is the
+        // non-yielding zero-wait operation regardless of this option; the
+        // bound only covers the child composition's bounded wait, kept at
+        // zero here to mirror the parent's refusal semantics.
         lockWaitMs: 0,
       });
       return session;

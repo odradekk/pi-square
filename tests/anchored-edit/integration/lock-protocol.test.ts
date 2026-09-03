@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import {
@@ -604,6 +604,102 @@ describe("removal marker lifecycle", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("a pre-aborted caller never publishes: classified refusal with no artifact (#264 P1)", async () => {
+    const dir = await freshDir("pre-abort");
+    const lockPath = lockPathIn(dir);
+    const controller = new AbortController();
+    controller.abort();
+    const acquired = await acquireFileLock(lockPath, { waitMs: 5000, signal: controller.signal });
+    expect(acquired).toBeNull();
+    // No lock file, no marker, no claim, no residue: the cancellation check
+    // precedes the first publication attempt.
+    expect(existsSync(lockPath)).toBe(false);
+    expect(await residue(dir)).toEqual([]);
+  });
+
+  it("zero budget with a live holder still performs exactly one publish attempt", async () => {
+    const dir = await freshDir("zero-live");
+    const lockPath = lockPathIn(dir);
+    const holder = await acquireFileLock(lockPath, { waitMs: 100 });
+    expect(holder).not.toBeNull();
+    try {
+      const acquired = await acquireFileLock(lockPath, { waitMs: 0 });
+      expect(acquired).toBeNull();
+      // The live holder's file is untouched.
+      expect(existsSync(lockPath)).toBe(true);
+    } finally {
+      await holder!.release();
+    }
+  });
+
+  it("zero budget reclaims a dead holder and acquires (#264 P1)", async () => {
+    const dir = await freshDir("zero-dead");
+    const lockPath = lockPathIn(dir);
+    await installRecord(lockPath, { pid: deadPid(), hostname: hostname(), startTime: "1" });
+    const acquired = await acquireFileLock(lockPath, { waitMs: 0 });
+    expect(acquired).not.toBeNull();
+    try {
+      expect(existsSync(lockPath)).toBe(true);
+    } finally {
+      await acquired!.release();
+    }
+    expect(existsSync(lockPath)).toBe(false);
+    expect(await residue(dir)).toEqual([]);
+  });
+
+  it("a claimant that died between publishing its claim and taking the marker no longer blocks recovery (#264 P1)", async () => {
+    const dir = await freshDir("dead-claim");
+    const lockPath = lockPathIn(dir);
+    const marker = __lockTestables.markerPath(lockPath);
+
+    // The crash state a reclaimer leaves behind when it exits after
+    // publishing its claim but before taking the dead marker: the dead lock,
+    // the dead marker it was about to take, and the dead reclaimer's claim.
+    const deadOwnerPid = deadPid();
+    const deadClaimantPid = deadPid();
+    await installRecord(lockPath, { pid: deadOwnerPid, hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    await installRecord(marker, { pid: deadOwnerPid, hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    await installRecord(
+      `${marker}.claim.dead-owner-token`,
+      { pid: deadClaimantPid, hostname: hostname(), startTime: "1", token: "crashed-claimant" },
+    );
+
+    const acquired = await acquireFileLock(lockPath, { waitMs: 5000 });
+    expect(acquired).not.toBeNull();
+    try {
+      expect(existsSync(lockPath)).toBe(true);
+    } finally {
+      await acquired!.release();
+    }
+    // Full recovery: no lock, no marker, no claim, no residue.
+    expect(existsSync(lockPath)).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(`${marker}.claim.dead-owner-token`)).toBe(false);
+    expect(await residue(dir)).toEqual([]);
+  });
+
+  it("a live claim holder is busy, never displaced (#264 P1)", async () => {
+    const dir = await freshDir("live-claim");
+    const lockPath = lockPathIn(dir);
+    const marker = __lockTestables.markerPath(lockPath);
+    await installRecord(lockPath, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    await installRecord(marker, { pid: deadPid(), hostname: hostname(), startTime: "1", token: "dead-owner-token" });
+    // The claim holder is this process: complete, attributable, alive — its
+    // start time matches the live process exactly.
+    const liveStart = readFileSync(`/proc/${process.pid}/stat`, "utf8").split(") ")[1]!.split(" ")[19]!;
+    await installRecord(
+      `${marker}.claim.dead-owner-token`,
+      { pid: process.pid, hostname: hostname(), startTime: liveStart, token: "live-claimant" },
+    );
+
+    const acquired = await acquireFileLock(lockPath, { waitMs: 200 });
+    expect(acquired).toBeNull();
+    // Nothing was displaced: lock, marker, and the live claim all remain.
+    expect(existsSync(lockPath)).toBe(true);
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(`${marker}.claim.dead-owner-token`)).toBe(true);
   });
 
   it("an unverifiable original is foreign by definition: never removed, only waited on", async () => {

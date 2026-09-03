@@ -1,11 +1,12 @@
 import { basename, dirname, join } from "path";
-import { rename, mkdir, stat } from "fs/promises";
+import { stat } from "fs/promises";
+import { mkdirSync, renameSync } from "fs";
 import { DatabaseSync } from "node:sqlite";
 import { errCode, splitLines } from "./utils";
 import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT } from "./constants";
-import { acquireFileLock } from "./file-lock";
+import { acquireFileLock, acquireZeroWaitFileSync, releaseFileSync } from "./file-lock";
 
 export interface OwnerPartition {
   owner: string;
@@ -64,6 +65,22 @@ export type ServedLookup = ServedState | StaleServedState | undefined;
  * failed can never leave the previous version authorizing edits against the
  * changed file.
  */
+/** Write publication is a discriminated input: either the write clears the
+ *  path's served rows for a new content version with no snapshot and no new
+ *  rows (auto-read off, unchanged, empty, or unsupported content), or it
+ *  publishes exactly one snapshot for the written version and optionally
+ *  serves fresh rows bound to that version. Invalid combinations — served
+ *  rows without a version, a snapshot without content — are
+ *  unrepresentable. */
+export type WritePublication =
+  | { kind: "clear"; path: string }
+  | {
+      kind: "publish";
+      path: string;
+      snapshot: { content: string; hashes: string[] };
+      servedHashes?: string[];
+    };
+
 export interface HashStoreHandle {
   readonly engine: "node:sqlite";
   /** Required owner identity this view reads and writes under. */
@@ -113,7 +130,7 @@ export interface HashStoreHandle {
    * rolls the whole transaction back, so the previous version's rows remain
    * and cannot authorize anything against the new bytes.
    */
-  publishWrite(input: { path: string; content?: string; hashes?: string[]; servedHashes?: string[] }): void;
+  publishWrite(input: WritePublication): void;
   /** Every owner partition in this store with its newest activity. */
   listOwners(): OwnerPartition[];
   /** Deletes every row of one owner partition as a single transaction and
@@ -428,53 +445,56 @@ class HashStoreHandleImpl implements HashStoreHandle {
   }
 
   publishRead(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void {
-    const entry = this.requireOpen();
-    const checksum = contentChecksum(input.content);
-    const lineCount = splitLines(input.content).length;
-    const updatedAt = Date.now();
-    this.withTransaction(() => {
-      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
-      if (input.servedHashes.length > 0) {
-        entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
-      }
-    });
-    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
+    this.publishSnapshotAndServed(input.path, { content: input.content, hashes: input.hashes }, input.servedHashes);
   }
 
   publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void {
+    this.publishSnapshotAndServed(input.path, { content: input.content, hashes: input.hashes }, input.servedHashes);
+  }
+
+  /** Read and mutation publications share one transaction primitive: one
+   *  snapshot upsert plus optional rows served against exactly that
+   *  content version. */
+  private publishSnapshotAndServed(
+    path: string,
+    snapshot: { content: string; hashes: string[] },
+    servedHashes?: string[],
+  ): void {
     const entry = this.requireOpen();
-    const checksum = contentChecksum(input.content);
-    const lineCount = splitLines(input.content).length;
+    const checksum = contentChecksum(snapshot.content);
+    const lineCount = splitLines(snapshot.content).length;
     const updatedAt = Date.now();
     this.withTransaction(() => {
-      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
+      entry.stmts.upsertSnapshot(this.owner, path, checksum, lineCount, JSON.stringify(snapshot.hashes), updatedAt);
+      if (servedHashes && servedHashes.length > 0) {
+        entry.stmts.mergeServedVersioned(this.owner, path, servedHashes, checksum, updatedAt);
+      }
+    });
+    cacheSnapshot(entry, snapshotCacheKey(this.owner, path), checksum, lineCount, snapshot.hashes);
+  }
+
+  publishWrite(input: WritePublication): void {
+    const entry = this.requireOpen();
+    if (input.kind === "clear") {
+      // The clearing is the contract: every successful write replaces the
+      // path's served rows; with no published version there is nothing left
+      // to serve.
+      this.withTransaction(() => {
+        entry.stmts.clearServed(this.owner, input.path);
+      });
+      return;
+    }
+    const checksum = contentChecksum(input.snapshot.content);
+    const lineCount = splitLines(input.snapshot.content).length;
+    const updatedAt = Date.now();
+    this.withTransaction(() => {
+      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.snapshot.hashes), updatedAt);
+      entry.stmts.clearServed(this.owner, input.path);
       if (input.servedHashes && input.servedHashes.length > 0) {
         entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
       }
     });
-    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
-  }
-
-  publishWrite(input: { path: string; content?: string; hashes?: string[]; servedHashes?: string[] }): void {
-    const entry = this.requireOpen();
-    const withSnapshot = input.content !== undefined && input.hashes !== undefined && input.hashes.length > 0;
-    const checksum = withSnapshot ? contentChecksum(input.content!) : undefined;
-    const lineCount = withSnapshot ? splitLines(input.content!).length : 0;
-    const updatedAt = Date.now();
-    this.withTransaction(() => {
-      if (withSnapshot) {
-        entry.stmts.upsertSnapshot(this.owner, input.path, checksum!, lineCount, JSON.stringify(input.hashes), updatedAt);
-      }
-      // The clearing is the contract: every successful write replaces the
-      // path's served rows for exactly the written content version.
-      entry.stmts.clearServed(this.owner, input.path);
-      if (input.servedHashes && input.servedHashes.length > 0 && checksum !== undefined) {
-        entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
-      }
-    });
-    if (withSnapshot) {
-      cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum!, lineCount, input.hashes!);
-    }
+    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.snapshot.hashes);
   }
 
   listOwners(): OwnerPartition[] {
@@ -569,17 +589,29 @@ const CURRENT_SCHEMA_TABLES: Record<string, ExpectedColumn[]> = {
 };
 
 /** Strict shape check for a database claiming the current version. Any
- *  deviation — a missing or extra owned table, a renamed/missing/extra
- *  column, a changed type or nullability, a different primary key — is an
- *  incompatible layout that is quarantined whole rather than probed
- *  statement-by-statement later. */
+ *  deviation is an incompatible layout that is quarantined whole rather
+ *  than probed statement-by-statement later:
+ *  - the visible table set is exactly {meta, snapshots, served};
+ *  - each table's columns — through `PRAGMA table_xinfo`, which unlike
+ *    `table_info` also exposes hidden and generated (VIRTUAL/STORED)
+ *    columns — match exactly in name, order, type, nullability, and
+ *    primary-key position, with no column of any kind beyond the expected
+ *    set (a generated `STORED UNIQUE` column fails here);
+ *  - no column carries a default;
+ *  - the database defines no extra schema objects that change transaction
+ *    semantics: no views, no triggers, and no indexes besides the one
+ *    automatic index each expected PRIMARY KEY implies (extra UNIQUE
+ *    constraints materialize as extra autoindexes and are caught by the
+ *    per-table count).
+ */
 function hasCurrentSchemaShape(db: DatabaseSync, ownedTables: string[]): boolean {
   const allowed = new Set(Object.keys(CURRENT_SCHEMA_TABLES));
   if (ownedTables.some((table) => !allowed.has(table))) return false;
+
   for (const [table, expected] of Object.entries(CURRENT_SCHEMA_TABLES)) {
-    let columns: Array<{ name?: unknown; type?: unknown; notnull?: unknown; pk?: unknown }>;
+    let columns: Array<{ name?: unknown; type?: unknown; notnull?: unknown; dflt_value?: unknown; pk?: unknown; hidden?: unknown }>;
     try {
-      columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown; type?: unknown; notnull?: unknown; pk?: unknown }>;
+      columns = db.prepare(`PRAGMA table_xinfo(${table})`).all() as Array<{ name?: unknown; type?: unknown; notnull?: unknown; dflt_value?: unknown; pk?: unknown; hidden?: unknown }>;
     } catch {
       return false;
     }
@@ -592,10 +624,48 @@ function hasCurrentSchemaShape(db: DatabaseSync, ownedTables: string[]): boolean
         || String(column.type).toUpperCase() !== want.type
         || (Number(column.notnull) !== 0) !== want.notNull
         || Number(column.pk) !== want.pk
+        || column.dflt_value !== null && column.dflt_value !== undefined
+        || Number(column.hidden) !== 0
       ) {
         return false;
       }
     }
+  }
+
+  // No unexpected schema objects: exactly the three tables, no views or
+  // triggers, and exactly one automatic index per expected PRIMARY KEY.
+  // (sqlite_autoindex_* rows live behind the sqlite_% name prefix, so index
+  // counting queries them explicitly; extra UNIQUE constraints materialize
+  // as additional autoindexes and are caught by the per-table count.)
+  let objects: Array<{ type?: unknown; name?: unknown }>;
+  let indexes: Array<{ name?: unknown; tbl_name?: unknown }>;
+  try {
+    objects = db.prepare(
+      "SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+    ).all() as Array<{ type?: unknown; name?: unknown }>;
+    indexes = db.prepare(
+      "SELECT name, tbl_name FROM sqlite_schema WHERE type = 'index'",
+    ).all() as Array<{ name?: unknown; tbl_name?: unknown }>;
+  } catch {
+    return false;
+  }
+  if (objects.length !== allowed.size) return false;
+  for (const object of objects) {
+    if (String(object.type) !== "table" || !allowed.has(String(object.name))) return false;
+  }
+  const autoIndexCounts = new Map<string, number>();
+  for (const index of indexes) {
+    const name = String(index.name);
+    if (!name.startsWith("sqlite_autoindex_")) {
+      // Any non-automatic index (extra UNIQUE or user index), view, or
+      // trigger changes insert/update semantics and is incompatible.
+      return false;
+    }
+    const owner = String(index.tbl_name);
+    autoIndexCounts.set(owner, (autoIndexCounts.get(owner) ?? 0) + 1);
+  }
+  for (const table of allowed) {
+    if ((autoIndexCounts.get(table) ?? 0) !== 1) return false;
   }
   return true;
 }
@@ -725,17 +795,17 @@ function isHealthy(db: DatabaseSync): boolean {
   }
 }
 
-async function quarantineStore(storePath: string, label: "corrupt" | "old-schema"): Promise<void> {
+function quarantineStoreSync(storePath: string, label: "corrupt" | "old-schema"): void {
   const suffix = `.${label}-${Date.now()}`;
   try {
-    await rename(storePath, `${storePath}${suffix}`);
+    renameSync(storePath, `${storePath}${suffix}`);
   } catch (error) {
     if (errCode(error) === "ENOENT") return;
     throw new Error(`Failed to quarantine ${label} hash store ${storePath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   for (const candidate of [`${storePath}-wal`, `${storePath}-shm`]) {
     try {
-      await rename(candidate, `${candidate}${suffix}`);
+      renameSync(candidate, `${candidate}${suffix}`);
     } catch (error) {
       if (errCode(error) !== "ENOENT") {
         console.error(`Failed to quarantine ${label} hash store sidecar:`, error);
@@ -758,7 +828,13 @@ function shutdownDb(db: DatabaseSync): void {
 
 async function openStoreUnlocked(storePath: string): Promise<OpenStore> {
   await initHasher();
-  await mkdir(dirname(storePath), { recursive: true });
+  return openStoreUnlockedCore(storePath);
+}
+
+/** Synchronous open lifecycle shared by the async and the non-yielding
+ *  parent-write paths; callers guarantee the hasher is initialized. */
+function openStoreUnlockedCore(storePath: string): OpenStore {
+  mkdirSync(dirname(storePath), { recursive: true });
 
   let opened: OpenedDb;
   try {
@@ -766,7 +842,7 @@ async function openStoreUnlocked(storePath: string): Promise<OpenStore> {
   } catch (error) {
     if (!isCorruptionError(error)) throw error;
     console.error("Hash store failed to open, rebuilding:", error);
-    await quarantineStore(storePath, "corrupt");
+    quarantineStoreSync(storePath, "corrupt");
     opened = openDbWithBusyRetry(storePath);
   }
   if (opened.legacy) {
@@ -777,13 +853,13 @@ async function openStoreUnlocked(storePath: string): Promise<OpenStore> {
     // snapshot and served state do not survive the upgrade; the loss is
     // explicit and recoverable through a new read, which re-records both.
     shutdownDb(opened.db);
-    await quarantineStore(storePath, "old-schema");
+    quarantineStoreSync(storePath, "old-schema");
     opened = openDbWithBusyRetry(storePath);
   }
   if (opened.legacy) throw new Error(`Fresh anchor store ${storePath} reopened as an old schema`);
   if (!isHealthy(opened.db)) {
     shutdownDb(opened.db);
-    await quarantineStore(storePath, "corrupt");
+    quarantineStoreSync(storePath, "corrupt");
     opened = openDbWithBusyRetry(storePath);
   }
   if (opened.legacy) throw new Error(`Rebuilt anchor store ${storePath} reopened as an old schema`);
@@ -857,6 +933,31 @@ export function loadHashStoreAt(storePath: string, owner: string): Promise<HashS
     openingStores.set(storePath, pending);
   }
   return pending.then((entry) => acquireView(entry, owner));
+}
+
+/** Synchronous store open for the parent write's non-yielding operation.
+ *  Cached opens pay nothing; an uncached open takes the schema lock with one
+ *  synchronous zero-wait attempt, so a concurrent opener classifies the
+ *  write as retryable [E_FILE_LOCKED] instead of waiting. The caller
+ *  guarantees the hasher is initialized (warm in every anchored session). */
+export function loadHashStoreAtSync(storePath: string, owner: string): HashStoreHandle {
+  if (typeof owner !== "string" || owner.length === 0) {
+    throw new Error("An anchor store requires a non-empty owner identity.");
+  }
+  const cached = openStores.get(storePath);
+  if (cached && cached.db.isOpen) return acquireView(cached, owner);
+  if (openingStores.get(storePath) !== undefined) {
+    throw new Error(`[E_FILE_LOCKED] Anchor store ${storePath} is opening concurrently. Retry the operation.`);
+  }
+  const lock = acquireZeroWaitFileSync(schemaLockPath(storePath));
+  if (!lock) {
+    throw new Error(`[E_FILE_LOCKED] Timed out waiting to open anchor store ${storePath}. Retry the operation.`);
+  }
+  try {
+    return acquireView(openStoreUnlockedCore(storePath), owner);
+  } finally {
+    releaseFileSync(schemaLockPath(storePath), lock.token, lock.identity);
+  }
 }
 
 export function shutdownHashStore(): void {

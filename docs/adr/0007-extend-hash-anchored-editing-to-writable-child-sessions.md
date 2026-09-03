@@ -153,5 +153,5 @@ inside it, anchored reads hold the same target exclusion from bytes through
 publication, the parent write joins the protocol through the public write
 factory's filesystem-operation seam, and lock ownership is a complete atomic
 record reclaimed only on confirmed local death. The owner-scoped store is
-schema version 7 with one owner-aware layout and one connection per store
+schema version 8 with one owner-aware layout and one connection per store
 path (ADR-0014).

@@ -59,6 +59,22 @@ vi.mock("node:sqlite", () => ({
   },
 }));
 
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  return {
+    ...actual,
+    // Quarantine renames the store file synchronously; assert only those,
+    // pass every other sync rename through.
+    renameSync: (from: string, to: string) => {
+      if (/hash-store\.sqlite$/.test(from)) {
+        state.rename(from, to);
+        return;
+      }
+      return actual.renameSync(from, to);
+    },
+  };
+});
+
 vi.mock("fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs/promises")>();
   return {

@@ -53,16 +53,19 @@ content presented as anchored evidence.
 `[E_FILE_LOCKED]` means failure to enter the operation boundary (bounded
 wait exhausted or cancelled): an aborted lock wait resolves as classified
 contention, never an unclassified throw, and the cancelled operation changes
-nothing. The executing tool call's AbortSignal reaches the replace and read
-lock waits directly, and the child write composition runs the public factory
+nothing. Cancellation is checked before the first publication attempt: an
+aborted caller never publishes a lock record and never leaves an artifact.
+The executing tool call's AbortSignal reaches the replace and read lock
+waits directly, and the child write composition runs the public factory
 execution inside an AsyncLocalStorage signal context (its declared
 exception). The parent write has no execution wrapper — the seam authorized
 by this record is only the injected filesystem operation — and the
-`WriteOperations` seam carries no signal parameter, so the parent write
-performs one immediate lock attempt (a zero-wait boundary): a busy target
-classifies as `E_FILE_LOCKED` at once with the file untouched, no
-cancellable wait exists to outlive an abort, and cancellation
-responsiveness stays the factory's own abort checks.
+`WriteOperations` seam carries no signal parameter. The parent write is
+therefore a *non-yielding* operation (see "Parent write seam" below): it
+performs resolution, the zero-wait lock (one publish attempt, one
+non-waiting dead-owner reclamation round), the atomic commit, and the
+post-commit store publication with no real-asynchronous I/O step, so an
+abort can only land before the operation starts or after it completed.
 `[E_RANGE_STALE]` is reserved for validation
 performed after the lock is acquired against a file that no longer matches
 the served range; it keeps returning the current range with fresh anchors
@@ -123,10 +126,20 @@ pruning, and the post-commit publication are explicit transactions. Path
 pruning returns absence only for genuine missing-path errors — permission
 and resource failures preserve rows and surface bounded diagnostics. A database that
 *claims* the current version must also carry the current layout: strict
-shape validation (exact table columns and primary keys for `snapshots` and
-`served`) treats a version-8 file with deviating tables as an incompatible
-layout, so no current-version database is ever probed
-statement-by-statement into a missing-column failure. Every incompatible
+shape validation treats a version-8 file with deviating schema as an
+incompatible layout, so no current-version database is ever probed
+statement-by-statement into a failing publication. Validation covers the
+complete schema, not just visible columns: the table set is exactly
+`meta`, `snapshots`, and `served`; each table's columns — inspected with
+`PRAGMA table_xinfo`, which unlike `table_info` also exposes hidden and
+generated (VIRTUAL/STORED) columns — match exactly in name, order, type,
+nullability, and primary-key position, carry no default, and include no
+column of any kind beyond the expected set; and the database defines no
+schema object that changes transaction semantics — no views, no triggers,
+and no indexes besides the one automatic index each expected PRIMARY KEY
+implies, so an extra UNIQUE constraint (which materializes as an extra
+autoindex, like a generated `STORED UNIQUE` column) is quarantined rather
+than surfacing later as a `UNIQUE constraint failed` publication error. Every incompatible
 non-empty layout, including the former ownerless current-version shape, is
 quarantined whole with its sidecars and rebuilt fresh; there is no data
 migration.
@@ -156,13 +169,24 @@ touched nothing: the canonical lock path is never emptied behind a live
 successor, so no third writer can slip in and no restore window exists. A
 taken file whose identity or token mismatches (defense-in-depth against a
 non-protocol actor) is restored with a no-clobber link within the shared
-budget, never destroyed. A marker whose holder died is reclaimed through a per-dead-token
+budget, never destroyed. The zero-wait caller still performs one
+non-waiting dead-owner reclamation round — cancellation precedes the first
+publish attempt, and a deadline-exhausted caller earns exactly one extra
+publish attempt after removing a dead holder — so the parent write recovers
+a crashed cross-process holder without ever waiting. A marker whose holder
+died is reclaimed through a per-dead-token
 claim: a reclaimer must first win an exclusive claim file named after the
 dead marker's unique token (one link winner), and only the claim winner
 ever takes the marker path — so two stale reclaimers of the same dead
 marker can never race a check-then-rename on the marker, and a live marker
-installed by another reclaimer is never displaced. If a fresh remover wins
-the empty path in the claimant's take-to-publish gap, the claimant backs
+installed by another reclaimer is never displaced. A claim holder that
+crashed between publishing its claim and taking the marker cannot block
+recovery: a claim is a complete owner record like any other, so a provably
+dead claim holder's file is removed through the same verified take (while
+it exists no other claimant for that dead marker can publish) and the next
+reclaimer retries, while a live claim holder simply means busy. If a fresh
+remover wins the empty path in the claimant's take-to-publish gap, the
+claimant backs
 off: exactly one holder exists at every instant. A live marker makes the
 removal attempt busy and the caller's bounded loop retries; a release
 retries busy within its bounded release budget and records an explicit safe
@@ -199,7 +223,27 @@ but not observable as ours) cannot exist. Because the `WriteOperations`
 seam carries no AbortSignal, the parent write's lock wait is bounded and
 classifies as `E_FILE_LOCKED`, while cancellation responsiveness stays the
 factory's own abort checks — the signal context is used only by the child
-write composition, a declared exception. Result, error, and renderer
+write composition, a declared exception.
+
+The parent write's injected operation is **non-yielding**: target
+resolution, the operation key, the zero-wait lock acquisition (one publish
+attempt plus one non-waiting dead-owner reclamation through the same
+marker/claim records the asynchronous protocol uses), the pre-write
+comparison, the atomic commit, the auto-read render computed from the
+written content itself, the store publication, and the verified release all
+run synchronously, with no real-asynchronous I/O between them. This is the
+cancellation-truthfulness design for a seam that cannot carry a signal: an
+AbortController event (delivered from the event loop) can only land before
+the factory's last pre-write check — in which case the factory aborts the
+call and nothing is written — or after the operation completed, which is
+exactly the outcome the factory's own native write produces when an abort
+lands during its filesystem write (the factory checks after each await and
+never rejects the in-flight write). The operation can therefore never
+proceed to a write *after* an observable cancellation inside it, and it can
+never present torn anchored state: whatever the factory's final
+classification, the served rows on disk always match the written bytes
+exactly. The asynchronous bounded-wait protocol with signal checkpoints
+remains the child composition's path. Result, error, and renderer
 semantics stay the factory's own. Display decoration stays independent of
 execution. The parent write result keeps Pi's factory
 wording, and the auto-read appendix is presented by the tool-result
@@ -270,4 +314,6 @@ now simply covers one more incompatible layout.
    cross-process holder makes the write refuse with `E_FILE_LOCKED`
    immediately instead of waiting out a budget — a small contention-retry
    cost accepted to keep the parent factory's execution unwrapped and to
-   make cancellation leakage structurally impossible.
+   remove every cancellable wait from the parent path. The non-yielding
+   operation also makes a hot uncached store open classify as retryable
+   `E_FILE_LOCKED` (one synchronous schema-lock attempt) rather than wait.

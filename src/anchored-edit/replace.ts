@@ -161,6 +161,13 @@ export interface PrepareOptions {
    * to preserve its existing edit-without-prior-read behaviour.
    */
   requireServed?: boolean;
+  /**
+   * The boundary-locked canonical target for `path`. When set, the byte
+   * read, authorization, and store keys observe exactly this frozen target
+   * instead of re-resolving the request path, so a symlink retargeted after
+   * the boundary acquisition cannot redirect the operation.
+   */
+  canonicalPath?: string;
 }
 
 function collectRemovedHashes(
@@ -231,7 +238,7 @@ export async function prepareReplace(
 
   const hashStore = options.store;
   const { normalized: originalNormalized, bom, originalEnding, fileHashes: originalHashes, hadUtf8DecodeErrors, absolutePath } = await readNormFile(
-    path, cwd, { signal: options.signal, accessMode: options.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: true },
+    options.canonicalPath ?? path, cwd, { signal: options.signal, accessMode: options.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: true },
   );
 
   // Authorization is bound to the content version the rows were served for.
@@ -314,16 +321,16 @@ export async function prepareReplace(
  * anchors verifies while rows recorded for any other content version do not.
  */
 export class ReplaceValidationError extends Error {
-  readonly cause2: RangeStaleError | AnchorMismatchError;
+  readonly anchorError: RangeStaleError | AnchorMismatchError;
   readonly content: string;
   constructor(cause: RangeStaleError | AnchorMismatchError, content: string) {
     super(cause.message, { cause });
     this.name = "ReplaceValidationError";
-    this.cause2 = cause;
+    this.anchorError = cause;
     this.content = content;
   }
   get feedbackHashes(): string[] {
-    return this.cause2 instanceof RangeStaleError ? this.cause2.rangeHashes : this.cause2.feedbackHashes;
+    return this.anchorError instanceof RangeStaleError ? this.anchorError.rangeHashes : this.anchorError.feedbackHashes;
   }
 }
 
