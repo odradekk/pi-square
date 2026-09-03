@@ -779,22 +779,20 @@ export default function registerDisplayBuiltins(
       // factory-faithful (name, parameters, prompt, abort checks, success
       // wording, filesystem error semantics); only the supported filesystem
       // operations are injected so the write enters the same queue-then-lock
-      // boundary as anchored replace and the child writes. No execution
-      // wrapper exists — the availability gate lives inside the injected
-      // operation itself and reads `anchoredWriteActive` at operation time.
+      // boundary as anchored replace and the child writes. The narrow wrapper
+      // only freezes the final target and carries call id/signal into that
+      // seam; Pi's factory still owns queueing, checks, wording, and errors.
       anchoredReadEnabled && parentAnchoredWrite
-        ? {
-          ...createWriteToolDefinition(ctx.cwd, {
-            operations: parentAnchoredWrite
-              .attachSession(
-                ctx.cwd,
-                ctx.sessionManager?.getSessionDir?.() ?? "",
-                () => anchoredWriteActive,
-              )
-              .operations,
-          }),
-          executionMode: "sequential" as const,
-        }
+        ? (() => {
+          const writeSession = parentAnchoredWrite.attachSession(
+            ctx.cwd,
+            ctx.sessionManager?.getSessionDir?.() ?? "",
+            () => anchoredWriteActive,
+          );
+          return writeSession.wrapDefinition(createWriteToolDefinition(ctx.cwd, {
+            operations: writeSession.operations,
+          }));
+        })()
         : createWriteToolDefinition(ctx.cwd),
       ...settings.definitions,
     ];

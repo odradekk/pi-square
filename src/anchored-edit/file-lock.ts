@@ -157,6 +157,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
+/** Cancellable acquire backoff. The test seam fires only after both timer and
+ * abort listener are installed, so cancellation-during-wait is deterministic. */
+function waitForAcquireRetry(ms: number, budget: WaitBudget): Promise<void> {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      budget.signal?.removeEventListener("abort", done);
+      resolvePromise();
+    };
+    const timer = setTimeout(done, ms);
+    budget.signal?.addEventListener("abort", done, { once: true });
+    __lockTestables.lockBarrier.acquireWaitStarted?.();
+  });
+}
+
 /** Upper bound of a Linux pid (`pid_max` ceiling, 2^22): a record naming a
  *  pid above it is malformed ownership, not a process to probe. */
 const MAX_REPRESENTABLE_PID = 4_194_304;
@@ -357,11 +375,10 @@ type RemovalOutcome = "removed" | "absent" | "foreign" | "busy";
  */
 async function removeVerifiedLockFile(
   lockPath: string,
-  expected: FileIdentity,
-  expectedToken: string | undefined,
+  expected: { identity: FileIdentity; token: string | undefined },
   budget: WaitBudget,
 ): Promise<RemovalOutcome> {
-  if (expectedToken === undefined) return "foreign";
+  if (expected.token === undefined) return "foreign";
   const marker = await acquireRemovalMarker(lockPath, budget);
   if (marker === undefined) return "busy";
   try {
@@ -371,7 +388,7 @@ async function removeVerifiedLockFile(
     if (signalAborted(budget)) return "busy";
     const current = await readLockInfo(lockPath);
     if (current.identity === undefined) return "absent";
-    if (!isVerifiedFile(current, expected, expectedToken)) {
+    if (!isVerifiedFile(current, expected.identity, expected.token)) {
       // A successor owns the canonical path now. Touch nothing: the path was
       // never disturbed by this attempt, so exclusion held throughout.
       return "foreign";
@@ -394,7 +411,7 @@ async function removeVerifiedLockFile(
       if (errCode(error) === "ENOENT") return "absent";
       throw error;
     }
-    if (retiredToken !== undefined && retiredToken === expectedToken && sameNodeIdentity(retired, expected)) {
+    if (retiredToken !== undefined && retiredToken === expected.token && sameNodeIdentity(retired, expected.identity)) {
       // Exactly the file re-verified under the marker.
       await rm(retiredPath, { force: true }).catch(() => {});
       return "removed";
@@ -422,7 +439,7 @@ async function removeVerifiedLockFile(
 async function releaseWithRetry(lockPath: string, identity: FileIdentity, token: string): Promise<void> {
   const deadlineAt = Date.now() + releaseBudgetMs();
   for (;;) {
-    const outcome = await removeVerifiedLockFile(lockPath, identity, token, {
+    const outcome = await removeVerifiedLockFile(lockPath, { identity, token }, {
       deadlineAt,
       pollMs: DEFAULT_LOCK_POLL_MS,
     });
@@ -775,7 +792,11 @@ export async function acquireFileLock(
       // bounded wait instead of spinning.
       let removed = false;
       try {
-        removed = (await removeVerifiedLockFile(lockPath, info.identity, info.owner.token, budget)) === "removed";
+        removed = (await removeVerifiedLockFile(
+          lockPath,
+          { identity: info.identity, token: info.owner.token },
+          budget,
+        )) === "removed";
       } catch {
         // Reclaim failures classify as contention on the next pass.
       }
@@ -789,7 +810,7 @@ export async function acquireFileLock(
       }
     }
     if (budgetSpent(budget)) return null;
-    await sleep(Math.min(delayMs, budget.pollMs));
+    await waitForAcquireRetry(Math.min(delayMs, budget.pollMs), budget);
     delayMs *= 2;
   }
 }
@@ -817,5 +838,6 @@ export const __lockTestables = {
     claimRecheck: undefined as ((lockPath: string, claimPath: string) => Promise<void>) | undefined,
     claimGuarded: undefined as ((lockPath: string, claimPath: string) => Promise<void>) | undefined,
     afterTake: undefined as ((lockPath: string, retiredPath: string) => Promise<void>) | undefined,
+    acquireWaitStarted: undefined as (() => void) | undefined,
   },
 };

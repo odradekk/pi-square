@@ -1,17 +1,11 @@
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PiSquareConfig } from "../core/config.ts";
-import { resolveAnchoredTarget, type AnchoredWriteSession, createAnchoredWriteSession } from "./operations.ts";
+import { type AnchoredWriteSession, createAnchoredWriteSession } from "./operations.ts";
 import { isRec } from "./utils.ts";
 import { PARENT_OWNER } from "./workspace-support.ts";
 
 export { renderAutoReadAnchors } from "./operations.ts";
 export type { AutoReadAnchorsInput } from "./operations.ts";
-
-type PendingWrite = {
-  originalPath: string;
-  canonicalPath: string;
-  content: string;
-};
 
 function writeInput(value: unknown): { path: string; content: string } | undefined {
   if (!isRec(value) || typeof value.path !== "string" || typeof value.content !== "string") return undefined;
@@ -25,9 +19,10 @@ function append(content: AgentToolResult<unknown>["content"], text: string): { c
 /**
  * The parent session's anchored write integration. One write session is
  * attached per session start; the display registration constructs the parent
- * `write` definition from Pi's public factory with the session's operations
- * injected, so the write joins the fixed queue-then-lock protocol, and these
- * handlers only present the precomputed auto-read appendix on the result.
+ * `write` definition from Pi's public factory with the session's narrow
+ * execution context and operations injected, so the write joins the fixed
+ * queue-then-lock protocol, and these handlers only present the precomputed
+ * auto-read appendix on the result.
  * The state transaction itself lives inside the injected operation under the
  * target boundary, so the result observer no longer participates in it.
  */
@@ -76,47 +71,41 @@ export function registerAnchoredAutoRead(
   anchoredReadAvailable: () => boolean = () => true,
   parentWrite?: ParentAnchoredWrite,
 ): void {
-  const pendingWrites = new Map<string, PendingWrite>();
+  const pendingWrites = new Set<string>();
 
-  pi.on("tool_call", async (event, ctx) => {
+  pi.on("tool_call", (event) => {
     if (event.toolName !== "write" || !config().anchoredEditing.enabled || !anchoredReadAvailable()) return;
     const input = writeInput(event.input);
     if (!input) return;
-    try {
-      // Pi documents tool_call input as mutable. Canonicalizing the factory's
-      // own argument here means its later queue registration and our injected
-      // operation receive exactly the same path; no execute wrapper is needed.
-      const target = await resolveAnchoredTarget(ctx.cwd, input.path);
-      pendingWrites.set(event.toolCallId, {
-        originalPath: input.path,
-        canonicalPath: target.canonicalPath,
-        content: input.content,
-      });
-      (event.input as { path: string }).path = target.canonicalPath;
-    } catch (error) {
-      return {
-        block: true,
-        reason: error instanceof Error ? error.message : String(error),
-      };
-    }
+    // Correlate only by the immutable call id. Later tool_call handlers may
+    // legally rewrite path/content; the execution wrapper freezes their final
+    // values immediately before Pi registers its mutation queue.
+    pendingWrites.add(event.toolCallId);
   });
 
   pi.on("tool_result", async (event, _ctx) => {
     if (event.toolName !== "write") return;
-    const pending = pendingWrites.get(event.toolCallId);
-    pendingWrites.delete(event.toolCallId);
-    if (!pending) return;
+    if (!pendingWrites.delete(event.toolCallId)) return;
     try {
-      const outcome = parentWrite?.current()?.takeOutcome(pending.canonicalPath, pending.content);
+      const outcome = parentWrite?.current()?.takeOutcome(event.toolCallId);
       if (event.isError && !outcome) return;
-      const nativeSuccess = `Successfully wrote ${pending.content.length} bytes to ${pending.originalPath}`;
-      const restored = event.isError
-        ? [{ type: "text" as const, text: nativeSuccess }]
-        : event.content.map((part) =>
-          part.type === "text" && part.text === `Successfully wrote ${pending.content.length} bytes to ${pending.canonicalPath}`
-            ? { ...part, text: nativeSuccess }
-            : part,
-        );
+      let restored = event.content;
+      if (outcome) {
+        // tool_result carries the final post-middleware input. Preserve Pi's
+        // factory wording for the path it actually executed, not an earlier
+        // observer's snapshot.
+        const resultInput = writeInput(event.input);
+        const resultPath = resultInput?.path ?? outcome.canonicalPath;
+        const nativeSuccess = `Successfully wrote ${outcome.bytes} bytes to ${resultPath}`;
+        restored = event.isError
+          ? [{ type: "text" as const, text: nativeSuccess }]
+          : event.content.map((part) =>
+            part.type === "text"
+              && part.text === `Successfully wrote ${outcome.bytes} bytes to ${outcome.canonicalPath}`
+              ? { ...part, text: nativeSuccess }
+              : part,
+          );
+      }
       return {
         ...(outcome?.appendix ? append(restored, `\n\n${outcome.appendix}`) : { content: restored }),
         isError: false,

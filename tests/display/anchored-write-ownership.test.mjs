@@ -128,7 +128,7 @@ try {
       store.release();
     }
     assert.equal((await locksEntries()).length, 0, "the lock was released");
-    const outcome = harness.parentAnchoredWrite.current().takeOutcome(realpathSync(target), "after\n");
+    const outcome = harness.parentAnchoredWrite.current().takeOutcome("w1");
     assert.ok(outcome?.appendix?.includes("Auto-read"), "the anchored write recorded its outcome for presentation");
   }
 
@@ -160,7 +160,7 @@ try {
       store.release();
     }
     assert.equal(
-      harness.parentAnchoredWrite.current().takeOutcome(realpathSync(target), "after\n"),
+      harness.parentAnchoredWrite.current().takeOutcome("w2"),
       undefined,
       "no anchored outcome was recorded",
     );

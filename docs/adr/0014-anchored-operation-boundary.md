@@ -56,16 +56,14 @@ wait exhausted or cancelled): an aborted lock wait resolves as classified
 contention, never an unclassified throw, and the cancelled operation changes
 nothing. Cancellation is checked before the first publication attempt: an
 aborted caller never publishes a lock record and never leaves an artifact.
-The executing tool call's AbortSignal reaches the replace and read lock
-waits directly, and the child write composition runs the public factory
-execution inside an AsyncLocalStorage signal context (its declared
-exception). The parent write has no execution wrapper — the seam authorized
-by this record is only the injected filesystem operation — and the
-`WriteOperations` seam carries no signal parameter. Its lock wait is therefore
-bounded but not cancellation-aware. Pi checks cancellation before calling the
-operation and again after it settles. When the operation committed before that
-final check observes an abort, the `tool_result` observer consumes the recorded
-outcome and changes the result back to the factory's ordinary success wording;
+The executing tool call's AbortSignal reaches every lock wait. Read and replace
+pass it directly. Parent and child writes use one narrow AsyncLocalStorage
+execution context because `WriteOperations` carries neither signal nor call
+identity. That wrapper resolves the final target once and then delegates to
+the public factory, which still owns validation, queue entry, cancellation
+checkpoints, result wording, and ordinary errors. When the operation committed
+before Pi's final check observes an abort, the `tool_result` observer consumes
+the exact call-ID outcome and changes the result back to the factory's ordinary success wording;
 the report therefore always matches the disk effect instead of claiming that a
 completed write was aborted. `[E_RANGE_STALE]` is reserved for validation
 performed after the lock is acquired against a file that no longer matches
@@ -76,7 +74,9 @@ gate is unchanged.
 ### Replace: pure preparation, version-bound authorization, atomic publication
 
 Replace preparation resolves and validates the range and computes the
-replacement without changing persistent or cached state. Authorization is
+replacement without changing persistent or cached state. Snapshot evidence is
+read through a cache-bypassing lookup that never populates, refreshes,
+invalidates, or repairs the cache or database. Authorization is
 bound to the content version: every served row records the checksum of the
 exact content it was served for, and a replace may verify a range only
 against rows recorded for the file's current version. Rows recorded for any
@@ -120,7 +120,9 @@ ownerless current-version shape is unrepresentable. One ref-counted physical
 connection is cached per store path, and callers receive typed owner views.
 Snapshot caches are scoped by physical store, owner, and canonical target;
 store eviction, owner deletion, quarantine, and shutdown invalidate only the
-state they own and never close a connection with an active borrower. Served
+state they own and never close a connection with an active borrower; shutdown
+marks a borrowed entry, or an entry whose open is still pending, to close when
+its final owner view releases it. Served
 hashes are row-level, version-bound, and merge conflict-free: each
 publication merges the rows for exactly one content version and drops other
 versions' rows for the path in the same transaction. Owner deletion,
@@ -217,48 +219,41 @@ separate lock areas by construction.
 
 ### Parent write seam and structured results
 
-The contributor rule that parent built-in overrides never wrap Pi `write`
-execution is narrowed exactly as #264 authorizes: arbitrary execution
-wrappers remain forbidden, and an anchored write may inject the minimal
-supported filesystem operation needed to join the same queue-then-lock
-protocol. The availability gate lives inside that injected operation, not in
-an execution wrapper: when the complete anchored surface is unavailable at
-operation time (another extension owns the `read` or `write` built-in, or
-the anchor store could not be initialized), the injected operation performs
-Pi's plain filesystem write with no anchored lock, store mutation, or
-recorded outcome, so a half-activated anchored write (locked, store-writing,
-but not observable as ours) cannot exist. Because the `WriteOperations`
-seam carries no AbortSignal, the parent write's lock wait is bounded and
-classifies as `E_FILE_LOCKED`, while cancellation responsiveness stays the
-factory's own abort checks — the signal context is used only by the child
-write composition, a declared exception.
+The contributor rule is narrowed exactly as #264 requires: arbitrary
+execution wrappers remain forbidden, while anchored parent and child writes
+may wrap the public factory only to resolve the final target and carry that
+target, the immutable call ID, and AbortSignal into injected operations. The
+factory keeps its validation, mutation queue, cancellation checkpoints,
+result wording, and ordinary errors. When the complete anchored surface is
+unavailable at execution entry (another extension owns the `read` or `write`
+built-in, or the anchor store could not be initialized), the wrapper invokes
+the native factory path without an anchored context, so there is no anchored
+lock, store mutation, or recorded outcome.
 
-The parent uses Pi's documented mutable `tool_call.input` contract to replace
-the requested path with its canonical target before execution. The unwrapped
-public factory therefore registers its native mutation queue with the exact
-path later passed to `WriteOperations.writeFile`; the injected operation uses
-that same path for the lock, bytes, and store publication. A symlink retarget
-after `tool_call` cannot split those identities. The observer remembers the
-original requested path and restores Pi's ordinary success wording in the
-result.
+The execution wrapper resolves the final argument once immediately before the
+public factory registers its native mutation queue. The same frozen target is
+carried into `WriteOperations` for the lock, write path, and store publication;
+there is no second application-level resolution. The observer correlates by
+immutable call ID and uses `tool_result.input` for the final post-middleware
+factory path, so neither state nor result wording is keyed by an earlier
+mutable-argument snapshot. If canonical resolution itself fails, the wrapper
+delegates to the untouched factory so its ordinary filesystem error wins.
 
-The operations seam does not carry `toolCallId`, so anchored parent and child
-write definitions declare sequential execution. This makes each completed
-outcome unambiguous even for identical path/content calls and for a call that
-fails before `writeFile`; successful outcomes are consumed FIFO and cannot be
-overwritten or leaked across calls. Different operation types still share
+Anchored parent and child write definitions declare sequential execution, and
+the wrapper supplies the immutable `toolCallId` missing from the operations
+seam. Each completed outcome is stored and consumed by that ID, so identical
+path/content calls and later `tool_call` middleware rewrites cannot overwrite,
+leak, or consume another call's result. Different operation types still share
 Pi's per-target queue, and cross-process concurrency remains per target.
 
 The injected operation uses the same asynchronous lock implementation as
-reads and replaces. The child passes its AbortSignal through the declared
-AsyncLocalStorage composition and can stop before commit. The unwrapped parent
-cannot pass a signal through `WriteOperations`, so Pi owns its cancellation
-checkpoints. If the final checkpoint observes cancellation after the operation
+reads and replaces. Both parent and child pass their AbortSignal through the
+declared AsyncLocalStorage composition and can stop during lock contention or
+before commit. If Pi's final checkpoint observes cancellation after the operation
 committed, the recorded outcome proves the effect and the `tool_result`
 observer returns the factory's success wording (plus any precomputed appendix)
 with `isError: false`. A pre-operation abort or a write failure records no
-outcome and remains Pi's native error. Thus cancellation never produces a
-false report, without a parent execute wrapper.
+outcome and remains Pi's native error.
 
 Result, error, and renderer semantics otherwise stay the factory's own.
 Display decoration stays independent of execution. The auto-read appendix is
@@ -324,11 +319,9 @@ now simply covers one more incompatible layout.
 6. The parent write's filesystem seam means an anchored session depends on
    the public `WriteOperations` contract of the pinned Pi version; the plain
    filesystem write performed when anchored editing is disabled or the
-   availability gate is closed is unaffected. Because that seam carries no
-   AbortSignal, the parent lock wait is bounded rather than cancellation-aware;
-   Pi's own pre-operation checkpoint still stops an already-aborted call, and
-   a recorded completed outcome repairs a post-commit abort into truthful
-   success. Anchored write definitions are sequential because the operations
-   seam also carries no call id; this may serialize unrelated tools in a batch
-   containing a write, an accepted cost for exact result association without
-   wrapping parent execution.
+   availability gate is closed is unaffected. A narrow execution context
+   supplies the AbortSignal and call ID that seam omits; a recorded completed
+   outcome repairs a post-commit abort into truthful success. Anchored write
+   definitions remain sequential, which may serialize unrelated tools in a
+   batch containing a write; this is the accepted scheduling cost of keeping
+   one native-factory execution at a time.

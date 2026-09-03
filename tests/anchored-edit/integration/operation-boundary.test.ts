@@ -11,9 +11,10 @@ import {
   resolveAnchoredTarget,
   withTargetMutationQueue,
   writeBarrier,
+  writeEntryBarrier,
 } from "../../../src/anchored-edit/operations";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
-import { childWriteEntryBarrier, createChildAnchoredWriteTool } from "../../../src/anchored-edit/child-write";
+import { createChildAnchoredWriteTool } from "../../../src/anchored-edit/child-write";
 import { PARENT_OWNER, loadAnchoredHashStore } from "../../../src/anchored-edit/workspace-support";
 import { anchoredStoreDir } from "../../../src/anchored-edit/paths";
 import { lockFilePath, __lockTestables } from "../../../src/anchored-edit/file-lock";
@@ -72,7 +73,9 @@ afterEach(() => {
   replaceBarrier.beforePrepare = undefined;
   replaceBarrier.beforeCommit = undefined;
   writeBarrier.beforeWrite = undefined;
-  childWriteEntryBarrier.afterResolve = undefined;
+  writeBarrier.afterWrite = undefined;
+  writeEntryBarrier.afterResolve = undefined;
+  __lockTestables.lockBarrier.acquireWaitStarted = undefined;
 });
 
 describe("operation boundary — replace preparation is pure (#264)", () => {
@@ -208,14 +211,14 @@ describe("operation boundary — replace preparation is pure (#264)", () => {
         sessionDir: testSessionDir(cwd),
         autoRead: () => true,
       });
-      const definition = createWriteToolDefinition(cwd, { operations: session.operations });
+      const definition = session.wrapDefinition(createWriteToolDefinition(cwd, { operations: session.operations }));
       const result = await definition.execute("w1", { path: "sample.txt", content: "written\n" }, undefined, undefined, ctx);
       spy.mockRestore();
 
       expect(textOf(result.content)).toContain("Successfully wrote");
       expect(await readFile(path, "utf-8"), "the write is not presented as failed").toBe("written\n");
 
-      const outcome = session.takeOutcome(join(cwd, "sample.txt"), "written\n");
+      const outcome = session.takeOutcome("w1");
       expect(outcome?.appendix).toContain("call read to get fresh anchors");
 
       // The unpublished state authorizes nothing: an immediate replace with
@@ -1065,6 +1068,35 @@ describe("operation boundary — cancellation during the lock wait (#264 P1)", (
     });
   });
 
+  it("a parent write cancelled while its target is busy returns E_FILE_LOCKED without writing", async () => {
+    await withTempDir("boundary-cancel-parent-wait-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const target = await resolveAnchoredTarget(cwd, path);
+      const holder = await (await import("../../../src/anchored-edit/operations")).enterTargetBoundary(
+        anchoredStoreDir(testSessionDir(cwd), cwd), target, { waitMs: 5000 },
+      );
+      expect(holder).not.toBeNull();
+      try {
+        const controller = new AbortController();
+        const { runWrite } = setupParentWrite(cwd, { autoRead: true });
+        const waiting = new Promise<void>((resolve) => {
+          __lockTestables.lockBarrier.acquireWaitStarted = () => {
+            __lockTestables.lockBarrier.acquireWaitStarted = undefined;
+            resolve();
+          };
+        });
+        const pending = runWrite("w-cancel", { path: "sample.txt", content: "AFTER\n" }, controller.signal);
+        await waiting;
+        controller.abort();
+        await expect(pending).rejects.toThrow("[E_FILE_LOCKED]");
+        expect(await readFile(path, "utf-8")).toBe(SAMPLE);
+      } finally {
+        await holder!.release();
+      }
+    });
+  });
+
   it("a child write's aborted lock wait reports E_FILE_LOCKED without writing the file", async () => {
     await withTempDir("boundary-cancel-cwrite-", async (cwd) => {
       const path = join(cwd, "sample.txt");
@@ -1082,14 +1114,20 @@ describe("operation boundary — cancellation during the lock wait (#264 P1)", (
           sessionDir: testSessionDir(cwd),
           autoRead: () => true,
         });
-        // The child composition runs the factory execution inside the write
-        // signal context (its declared exception), so an aborted call ends
-        // the lock wait as classified contention.
-        const controller = new AbortController();
-        const promise = operations.runWithWriteSignal(
-          controller.signal,
-          () => writeSession.operations.writeFile(path, "written\n") as Promise<void>,
+        const definition = writeSession.wrapDefinition(
+          createWriteToolDefinition(cwd, { operations: writeSession.operations }),
         );
+        const controller = new AbortController();
+        const waiting = new Promise<void>((resolve) => {
+          __lockTestables.lockBarrier.acquireWaitStarted = () => {
+            __lockTestables.lockBarrier.acquireWaitStarted = undefined;
+            resolve();
+          };
+        });
+        const promise = definition.execute(
+          "w1", { path, content: "written\n" }, controller.signal, undefined, makeTestCtx(cwd),
+        );
+        await waiting;
         controller.abort();
         await expect(promise).rejects.toThrow("[E_FILE_LOCKED]");
         expect(await readFile(path, "utf-8")).toBe(SAMPLE);
@@ -1143,7 +1181,7 @@ describe("operation boundary — anchored write availability gate (#264 P1)", ()
         autoRead: () => true,
         available: () => false,
       });
-      const definition = createWriteToolDefinition(cwd, { operations: session.operations });
+      const definition = session.wrapDefinition(createWriteToolDefinition(cwd, { operations: session.operations }));
       const result = await definition.execute("w1", { path: "sample.txt", content: "plain\n" }, undefined, undefined, ctx);
 
       expect(textOf(result.content)).toContain("Successfully wrote");
@@ -1157,7 +1195,7 @@ describe("operation boundary — anchored write availability gate (#264 P1)", ()
       const store = await parentStoreFor(cwd);
       expect(store.getServedState(path, "plain\n")).toBeUndefined();
       store.release();
-      expect(session.takeOutcome(path, "after\n")).toBeUndefined();
+      expect(session.takeOutcome("w1")).toBeUndefined();
     });
   });
 
@@ -1174,7 +1212,7 @@ describe("operation boundary — anchored write availability gate (#264 P1)", ()
         autoRead: () => true,
         available: () => true,
       });
-      const definition = createWriteToolDefinition(cwd, { operations: session.operations });
+      const definition = session.wrapDefinition(createWriteToolDefinition(cwd, { operations: session.operations }));
       const result = await definition.execute("w1", { path: "sample.txt", content: "anchored\n" }, undefined, undefined, ctx);
 
       expect(textOf(result.content)).toContain("Successfully wrote");
@@ -1182,7 +1220,31 @@ describe("operation boundary — anchored write availability gate (#264 P1)", ()
       const store = await parentStoreFor(cwd);
       expect(store.getServedState(path, "anchored\n")).toBeDefined();
       store.release();
-      expect(session.takeOutcome(path, "anchored\n")?.appendix).toContain("Auto-read");
+      expect(session.takeOutcome("w1")?.appendix).toContain("Auto-read");
+    });
+  });
+
+  it("delegates pre-resolution failures to the native factory error path", async () => {
+    await withTempDir("boundary-native-write-error-", async (cwd) => {
+      await writeFile(join(cwd, "file"), "not a directory", "utf-8");
+      const session = createAnchoredWriteSession({
+        cwd,
+        owner: PARENT_OWNER,
+        sessionDir: testSessionDir(cwd),
+        autoRead: () => true,
+      });
+      const definition = session.wrapDefinition(createWriteToolDefinition(cwd, { operations: session.operations }));
+
+      await expect(
+        definition.execute(
+          "w-native-error",
+          { path: "file/child.txt", content: "x\n" },
+          undefined,
+          undefined,
+          makeTestCtx(cwd),
+        ),
+      ).rejects.toMatchObject({ code: "EEXIST" });
+      expect(session.takeOutcome("w-native-error")).toBeUndefined();
     });
   });
 });
@@ -1427,7 +1489,7 @@ describe("operation boundary — parent write cancellation consistency (#264 rou
         autoRead: () => true,
         available: () => true,
       });
-      const definition = createWriteToolDefinition(cwd, { operations: session.operations });
+      const definition = session.wrapDefinition(createWriteToolDefinition(cwd, { operations: session.operations }));
       const result = await definition.execute("w1", { path: "sample.txt", content: "after\n" }, undefined, undefined, ctx);
       expect(textOf(result.content)).toContain("Successfully wrote");
       expect(await readFile(path, "utf-8")).toBe("after\n");
@@ -1440,7 +1502,7 @@ describe("operation boundary — parent write cancellation consistency (#264 rou
       await writeFile(path, "before\n", "utf-8");
       const controller = new AbortController();
       const { runWrite } = setupParentWrite(cwd, { autoRead: true });
-      writeBarrier.beforeWrite = async () => controller.abort();
+      writeBarrier.afterWrite = async () => controller.abort();
 
       const result = await runWrite("w1", { path: "sample.txt", content: "after\n" }, controller.signal);
 
@@ -1449,7 +1511,7 @@ describe("operation boundary — parent write cancellation consistency (#264 rou
     });
   });
 
-  it("keeps identical completed write outcomes in FIFO order", async () => {
+  it("correlates identical completed writes by immutable tool-call id", async () => {
     await withTempDir("r6-identical-outcomes-", async (cwd) => {
       const path = join(cwd, "sample.txt");
       await writeFile(path, "before\n", "utf-8");
@@ -1460,12 +1522,13 @@ describe("operation boundary — parent write cancellation consistency (#264 rou
         autoRead: () => false,
       });
 
-      await session.operations.writeFile(path, "same\n");
-      await session.operations.writeFile(path, "same\n");
+      const definition = session.wrapDefinition(createWriteToolDefinition(cwd, { operations: session.operations }));
+      await definition.execute("first", { path, content: "same\n" }, undefined, undefined, makeTestCtx(cwd));
+      await definition.execute("second", { path, content: "same\n" }, undefined, undefined, makeTestCtx(cwd));
 
-      expect(session.takeOutcome(path, "same\n")?.changed).toBe(true);
-      expect(session.takeOutcome(path, "same\n")?.changed).toBe(false);
-      expect(session.takeOutcome(path, "same\n")).toBeUndefined();
+      expect(session.takeOutcome("second")?.changed).toBe(false);
+      expect(session.takeOutcome("first")?.changed).toBe(true);
+      expect(session.takeOutcome("first")).toBeUndefined();
     });
   });
 });
@@ -1484,9 +1547,9 @@ describe("operation boundary — the canonical factory argument survives a mid-q
     await rename(temp, join(cwd, "link.txt"));
   }
 
-  it("the parent tool_call freezes the factory input to the canonical target and preserves sequential result association", async () => {
+  it("the parent observer leaves mutable arguments to later middleware and declares sequential execution", async () => {
     await withTempDir("r6-call-freeze-parent-", async (cwd) => {
-      const fixture = await symlinkFixture(cwd);
+      await symlinkFixture(cwd);
       const { handlers, definition } = setupParentWrite(cwd, { autoRead: true });
       const input = { path: "link.txt", content: "frozen\n" };
 
@@ -1495,7 +1558,7 @@ describe("operation boundary — the canonical factory argument survives a mid-q
         makeTestCtx(cwd),
       );
 
-      expect(input.path).toBe(fixture.canonical);
+      expect(input.path).toBe("link.txt");
       expect(definition.executionMode).toBe("sequential");
     });
   });
@@ -1520,9 +1583,18 @@ describe("operation boundary — the canonical factory argument survives a mid-q
       await queueHeld;
 
       await handlers.get("tool_call")!({ toolName: "write", toolCallId: "w1", input }, ctx);
-      expect(input.path).toBe(fixture.canonical);
-      await retargetToDecoy(cwd);
+      let releaseEntry!: () => void;
+      const entryResolved = new Promise<string>((resolveEntry) => {
+        writeEntryBarrier.afterResolve = ({ target }) => {
+          writeEntryBarrier.afterResolve = undefined;
+          resolveEntry(target.canonicalPath);
+          return new Promise<void>((resolveRelease) => { releaseEntry = resolveRelease; });
+        };
+      });
       const writePromise = definition.execute("w1", input, undefined, undefined, ctx);
+      expect(await entryResolved).toBe(fixture.canonical);
+      await retargetToDecoy(cwd);
+      releaseEntry();
       releaseQueue();
       const result = await writePromise;
       const patched = await handlers.get("tool_result")!({
@@ -1558,9 +1630,9 @@ describe("operation boundary — the canonical factory argument survives a mid-q
 
       let releaseEntry!: () => void;
       const entryResolved = new Promise<string>((resolveEntry) => {
-        childWriteEntryBarrier.afterResolve = (canonicalPath) => {
-          childWriteEntryBarrier.afterResolve = undefined;
-          resolveEntry(canonicalPath);
+        writeEntryBarrier.afterResolve = ({ target }) => {
+          writeEntryBarrier.afterResolve = undefined;
+          resolveEntry(target.canonicalPath);
           return new Promise<void>((resolveRelease) => { releaseEntry = resolveRelease; });
         };
       });
@@ -1578,27 +1650,30 @@ describe("operation boundary — the canonical factory argument survives a mid-q
     });
   });
 
-  it("parent write: the appendix survives a symlink retarget between the call and the operation (#264 P1)", async () => {
+  it("parent write: later middleware rewrites cannot break call-id outcome correlation (#264 P1)", async () => {
     await withTempDir("r5-bind-freeze-parent-", async (cwd) => {
       const fixture = await symlinkFixture(cwd);
       const { handlers, definition, writeSession } = setupParentWrite(cwd, { autoRead: true });
       const ctx = makeTestCtx(cwd);
       const input = { path: "link.txt", content: "bound\n" };
 
-      // The tool_call observer runs (awaited) before execution and freezes
-      // the entry target; the retarget then cannot move the association.
+      // This handler runs before another supported tool_call handler mutates
+      // both arguments. The completed outcome must still belong to w1.
       await handlers.get("tool_call")!({ toolName: "write", toolCallId: "w1", input }, ctx);
-      await retargetToDecoy(cwd);
+      input.path = "other.txt";
+      input.content = "middleware\n";
       const result = await definition.execute("w1", input, undefined, undefined, ctx);
       const patched = (await handlers.get("tool_result")!({
         toolName: "write", toolCallId: "w1", input, content: result.content, details: result.details, isError: false,
       }, ctx)) as ({ content: Array<{ type: string; text?: string }> | undefined });
 
       expect(textOf((patched ?? result).content ?? [])).toContain("Auto-read");
-      expect(await readFile(fixture.canonical, "utf-8")).toBe("bound\n");
-      expect(await readFile(fixture.decoy, "utf-8")).toBe("WRONG\n");
+      expect(textOf((patched ?? result).content ?? [])).toContain("Successfully wrote 11 bytes to other.txt");
+      expect(textOf((patched ?? result).content ?? [])).not.toContain("bytes to link.txt");
+      expect(await readFile(fixture.canonical, "utf-8")).toBe(SAMPLE);
+      expect(await readFile(fixture.decoy, "utf-8")).toBe("middleware\n");
 
-      expect(writeSession.takeOutcome(fixture.canonical, input.content)).toBeUndefined();
+      expect(writeSession.takeOutcome("w1")).toBeUndefined();
     });
   });
 });

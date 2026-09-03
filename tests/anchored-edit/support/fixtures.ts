@@ -331,12 +331,11 @@ export function setupParentWrite(
   // factory with the anchored operation injected through its filesystem seam,
   // with the availability gate living inside the injected operation.
   const writeSession = parentWrite.attachSession(cwd, sessionDir, () => available);
-  const definition = {
-    ...createWriteToolDefinition(cwd, {
+  const definition = writeSession.wrapDefinition(
+    createWriteToolDefinition(cwd, {
       operations: writeSession.operations,
     }),
-    executionMode: "sequential" as const,
-  };
+  );
   const ctx = makeTestCtx(cwd);
   async function runWrite(
     toolCallId: string,

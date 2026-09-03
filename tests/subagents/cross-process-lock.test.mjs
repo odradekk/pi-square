@@ -25,7 +25,6 @@ const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-e
 const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
-const { __lockTestables } = await load("../../src/anchored-edit/file-lock.ts");
 
 const helperPath = join(dirname(fileURLToPath(import.meta.url)), "cross-process-lock-helper.mjs");
 
@@ -217,22 +216,21 @@ try {
   // recorded identity no longer names the successor's inode (#264).
   {
     const successorPath = await canonicalLockPath("successor.txt");
-    const priorRecord = { v: 1, token: "prior-token", pid: deadPid(), hostname: hostname(), acquiredAt: Date.now() - 1_000 };
-    writeFileSync(successorPath, JSON.stringify(priorRecord));
-    const priorIdentity = statSync(successorPath);
+    const prior = await acquireFileLock(successorPath);
+    assert.ok(prior, "the prior owner acquired its lock");
+    rmSync(successorPath);
     const successor = await acquireFileLock(successorPath, { waitMs: 300 });
-    assert.ok(successor, "the dead owner's lock is reclaimed by the successor");
+    assert.ok(successor, "the successor acquired the vacated path");
     const successorRecord = JSON.parse(readFileSync(successorPath, "utf8"));
-    assert.notEqual(successorRecord.token, "prior-token", "the successor's token replaced the dead owner's");
     const successorIdentity = statSync(successorPath);
 
-    // The previous owner's late release actually runs the verified-removal
-    // protocol against the successor's installed lock: it takes the file,
-    // finds a different token than the one it verified, and restores the
-    // successor's file instead of deleting it.
-    await __lockTestables.removeVerifiedLockFile(successorPath, priorIdentity, priorRecord.token, 5);
+    // The real previous handle's late release runs the verified-removal
+    // protocol and must walk away without taking the successor's file.
+    await prior.release();
     const survivedRecord = JSON.parse(readFileSync(successorPath, "utf8"));
-    assert.equal(survivedRecord.token, successorRecord.token, "the prior owner's late release restored the successor's lock, never deleted it");
+    const survivedIdentity = statSync(successorPath);
+    assert.equal(survivedRecord.token, successorRecord.token, "the prior owner's late release preserved the successor token");
+    assert.equal(survivedIdentity.ino, successorIdentity.ino, "the prior owner's late release preserved the successor inode");
 
     await successor.release();
     assert.ok(!existsSync(successorPath), "the successor's own release still works");

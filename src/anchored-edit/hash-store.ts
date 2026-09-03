@@ -90,6 +90,9 @@ export interface HashStoreHandle {
   /** Snapshot hashes for exact (path, content) under this owner, reading the
    *  store-owned cache first. Deletes a corrupt row when `deleteCorrupt`. */
   getSnapshot(path: string, content: string, deleteCorrupt?: boolean): string[] | undefined;
+  /** Pure snapshot lookup for preparation: bypasses and does not mutate the
+   *  cache or database, including when the stored row is malformed. */
+  peekSnapshot(path: string, content: string): string[] | undefined;
   upsertSnapshot(path: string, checksum: string, lineCount: number, hashes: string[]): void;
   deleteSnapshot(path: string): void;
   /** Drops this owner's cached snapshot for the path (no database change). */
@@ -229,6 +232,7 @@ interface OpenStore {
   stmts: StoreStatements;
   refs: number;
   lastUsed: number;
+  closeWhenIdle: boolean;
   /** Snapshot cache owned by this physical store, scoped by owner and path. */
   snapshots: Map<string, SnapshotCacheEntry>;
 }
@@ -269,11 +273,23 @@ export const SNAPSHOT_CACHE_LIMIT = 256;
 const openStores = new Map<string, OpenStore>();
 const openingStores = new Map<string, Promise<OpenStore>>();
 let openTick = 0;
+let shutdownGeneration = 0;
+const loadBarrier: {
+  beforeAcquire?: (storePath: string) => Promise<void>;
+} = {};
 
 function acquireView(entry: OpenStore, owner: string): HashStoreHandle {
   entry.refs += 1;
   entry.lastUsed = ++openTick;
   return new HashStoreHandleImpl(entry, owner);
+}
+
+function closeMarkedIdle(entry: OpenStore): boolean {
+  if (entry.refs !== 0 || !entry.closeWhenIdle || openingStores.has(entry.key)) return false;
+  if (openStores.get(entry.key) === entry) openStores.delete(entry.key);
+  entry.snapshots.clear();
+  shutdownDb(entry.db);
+  return true;
 }
 
 function dropOwnerCache(entry: OpenStore, owner: string): void {
@@ -316,6 +332,7 @@ class HashStoreHandleImpl implements HashStoreHandle {
     if (this.released) return;
     this.released = true;
     this.entry.refs -= 1;
+    if (closeMarkedIdle(this.entry)) return;
     maybeEvict();
   }
 
@@ -347,6 +364,17 @@ class HashStoreHandleImpl implements HashStoreHandle {
     if (!parsed) return undefined;
     cacheSnapshot(entry, key, checksum, lineCount, parsed);
     return parsed;
+  }
+
+  peekSnapshot(path: string, content: string): string[] | undefined {
+    const entry = this.requireOpen();
+    const raw = entry.stmts.getSnapshot(
+      this.owner,
+      path,
+      contentChecksum(content),
+      splitLines(content).length,
+    );
+    return raw === undefined ? undefined : parseHashList(raw, () => {});
   }
 
   upsertSnapshot(path: string, checksum: string, lineCount: number, hashes: string[]): void {
@@ -870,6 +898,7 @@ function openStoreUnlockedCore(storePath: string): OpenStore {
     stmts: buildStatements(opened.db),
     refs: 0,
     lastUsed: ++openTick,
+    closeWhenIdle: false,
     snapshots: new Map(),
   };
   openStores.set(entry.key, entry);
@@ -926,21 +955,46 @@ export function loadHashStoreAt(storePath: string, owner: string): Promise<HashS
   }
   let pending = openingStores.get(storePath);
   if (!pending) {
-    pending = openStore(storePath).finally(() => {
-      openingStores.delete(storePath);
-    });
+    const openedInGeneration = shutdownGeneration;
+    pending = openStore(storePath)
+      .then((entry) => {
+        if (openedInGeneration !== shutdownGeneration) entry.closeWhenIdle = true;
+        return entry;
+      });
     openingStores.set(storePath, pending);
   }
-  return pending.then((entry) => acquireView(entry, owner));
+  const opening = pending;
+  return opening.then(
+    async (entry) => {
+      try {
+        await loadBarrier.beforeAcquire?.(storePath);
+        return acquireView(entry, owner);
+      } finally {
+        // Keep the opener visible to shutdown/eviction until at least one
+        // caller owns a reference. The callback is synchronous after the
+        // optional test barrier, so no production handoff gap remains.
+        if (openingStores.get(storePath) === opening) openingStores.delete(storePath);
+        closeMarkedIdle(entry);
+      }
+    },
+    (error: unknown) => {
+      if (openingStores.get(storePath) === opening) openingStores.delete(storePath);
+      throw error;
+    },
+  );
 }
 
 export function shutdownHashStore(): void {
+  shutdownGeneration += 1;
   for (const entry of openStores.values()) {
+    if (entry.refs > 0 || openingStores.has(entry.key)) {
+      entry.closeWhenIdle = true;
+      continue;
+    }
+    openStores.delete(entry.key);
     entry.snapshots.clear();
     shutdownDb(entry.db);
   }
-  openStores.clear();
-  openingStores.clear();
 }
 
 /** Number of distinct physical store files currently held open. */
@@ -1020,4 +1074,5 @@ export async function pruneMissing(store: HashStoreHandle): Promise<void> {
 export const __testables = {
   HashStoreHandleImpl,
   storeEntryOf: (view: HashStoreHandle): OpenStore => (view as HashStoreHandleImpl).entry,
+  loadBarrier,
 };

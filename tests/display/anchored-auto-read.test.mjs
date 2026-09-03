@@ -42,9 +42,10 @@ try {
   const config = () => ({ anchoredEditing: { enabled: true, autoRead: true } });
   const parentWrite = createParentAnchoredWrite(config);
   registerAnchoredAutoRead(pi, config, () => true, parentWrite);
-  const writeDefinition = createWriteToolDefinition(workspace, {
-    operations: parentWrite.attachSession(workspace, sessionDir, () => true).operations,
-  });
+  const writeSession = parentWrite.attachSession(workspace, sessionDir, () => true);
+  const writeDefinition = writeSession.wrapDefinition(createWriteToolDefinition(workspace, {
+    operations: writeSession.operations,
+  }));
 
   const runWrite = async (toolCallId, input) => {
     for (const handler of events.get("tool_call") ?? []) {
@@ -144,9 +145,10 @@ try {
     const plainConfig = () => ({ anchoredEditing: { enabled: true, autoRead: false } });
     const plainParentWrite = createParentAnchoredWrite(plainConfig);
     registerAnchoredAutoRead(plainPi, plainConfig, () => true, plainParentWrite);
-    const plainWrite = createWriteToolDefinition(workspace, {
-      operations: plainParentWrite.attachSession(workspace, sessionDir, () => true).operations,
-    });
+    const plainWriteSession = plainParentWrite.attachSession(workspace, sessionDir, () => true);
+    const plainWrite = plainWriteSession.wrapDefinition(createWriteToolDefinition(workspace, {
+      operations: plainWriteSession.operations,
+    }));
 
     const clearedExternal = join(root, "outside-cleared.txt");
     writeFileSync(clearedExternal, "before\n", "utf8");
@@ -256,9 +258,10 @@ try {
     const offConfig = () => ({ anchoredEditing: { enabled: true, autoRead: false } });
     const offParentWrite = createParentAnchoredWrite(offConfig);
     registerAnchoredAutoRead(plainPi2, offConfig, () => true, offParentWrite);
-    const offWrite = createWriteToolDefinition(workspace, {
-      operations: offParentWrite.attachSession(workspace, sessionDir, () => true).operations,
-    });
+    const offWriteSession = offParentWrite.attachSession(workspace, sessionDir, () => true);
+    const offWrite = offWriteSession.wrapDefinition(createWriteToolDefinition(workspace, {
+      operations: offWriteSession.operations,
+    }));
     for (const handler of plainEvents2.get("tool_call") ?? []) {
       await handler({ toolName: "write", toolCallId: "write-disabled", input: { path: "source.txt", content: "disabled\n" } }, sessionCtx);
     }

@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants as fsConstants, realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
   type AgentToolResult,
+  type ToolDefinition,
   type WriteOperations,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
@@ -135,23 +136,27 @@ export function withTargetMutationQueue<T>(
 }
 
 /**
- * Carries the executing tool call's AbortSignal into an injected write
- * operation. The public `WriteOperations` seam has no signal parameter, and
- * the parent write must not wrap the factory's execution (ADR-0014), so only
- * the child anchored write composition — a declared exception to that rule —
- * runs the factory execution inside this context. The parent write's lock
- * wait is bounded and its failures classify as `E_FILE_LOCKED`; its
- * cancellation responsiveness stays the factory's own abort checks.
+ * Carries the target, call identity, and AbortSignal frozen immediately
+ * before Pi's public write factory enters its mutation queue. WriteOperations
+ * has none of those parameters, so this narrow execution context bridges them
+ * into the injected filesystem seam while the factory keeps ownership of the
+ * queue, abort checks, result wording, and ordinary error behavior.
  */
-const writeSignalContext = new AsyncLocalStorage<{ signal?: AbortSignal }>;
-
-/** Runs `fn` with the executing tool call's AbortSignal visible to the
- *  injected write operation. Used by the child anchored write composition
- *  around the public factory execution so cancellation reaches the child's
- *  lock wait. */
-export function runWithWriteSignal<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
-  return writeSignalContext.run({ signal }, fn);
+interface WriteExecutionContext {
+  readonly toolCallId: string;
+  readonly signal?: AbortSignal;
+  readonly target: AnchoredTarget;
 }
+
+const writeExecutionContext = new AsyncLocalStorage<WriteExecutionContext>();
+
+/** @internal Deterministic seam after the single target resolution and before
+ * Pi registers the mutation queue. Production never sets it. */
+export const writeEntryBarrier: {
+  afterResolve?: (info: { toolCallId: string; target: AnchoredTarget }) => Promise<void>;
+} = {};
+
+type GenericWriteDefinition = ToolDefinition<any, any, any>;
 
 // ---------------------------------------------------------------------------
 // Read operation
@@ -586,21 +591,19 @@ function renderAutoReadFromContent(content: string): AutoReadRender | undefined 
 
 export interface AnchoredWriteOutcome {
   readonly canonicalPath: string;
+  readonly bytes: number;
   readonly changed: boolean;
   readonly appendix?: string;
 }
 
 export interface AnchoredWriteSession {
-  /** Operations for Pi's public write factory. The caller must pass the
-   *  canonical path returned by {@link resolveAnchoredTarget} to the factory,
-   *  so Pi's queue and this operation act on the same target. */
+  /** Operations for Pi's public write factory. */
   readonly operations: WriteOperations;
-  /** Takes the oldest completed outcome for this canonical path/content pair.
-   *  Pi serializes calls to one target, so completion and result delivery have
-   *  the same order. Anchored write definitions additionally declare
-   *  sequential execution so a failed pre-write call cannot consume a later
-   *  call's outcome. */
-  takeOutcome(canonicalPath: string, content: string): AnchoredWriteOutcome | undefined;
+  /** Wraps only factory execution so the one resolved target, immutable call
+   *  id, and signal reach the otherwise context-free operations seam. */
+  wrapDefinition(definition: GenericWriteDefinition): GenericWriteDefinition;
+  /** Takes the completed outcome belonging to exactly this Pi tool call. */
+  takeOutcome(toolCallId: string): AnchoredWriteOutcome | undefined;
 }
 
 export interface AnchoredWriteSessionInput {
@@ -609,9 +612,9 @@ export interface AnchoredWriteSessionInput {
   sessionDir?: string;
   autoRead: () => boolean;
   /**
-   * Anchored-surface availability, read at operation time. When false, the
-   * injected write operation performs Pi's plain filesystem write with no
-   * anchored lock, no store mutation, and no recorded outcome — the
+   * Anchored-surface availability, read when wrapped execution begins. When
+   * false, the wrapper invokes Pi's plain factory path with no anchored
+   * context, lock, store mutation, or recorded outcome — the
    * incomplete-surface write cannot be half-activated (#264). The parent
    * registration wires this to the full anchored surface (anchor store
    * initialized and both built-in ownership checks won); writable-child
@@ -630,11 +633,10 @@ export interface AnchoredWriteSessionInput {
  * point and prove ordering against other operations without sleeps.
  * Production never sets it.
  */
-export const writeBarrier: { beforeWrite?: (info: { canonicalPath: string }) => Promise<void> } = {};
-
-function writeIdentity(canonicalPath: string, content: string): string {
-  return `${canonicalPath}\0${createHash("sha256").update(content).digest("hex")}`;
-}
+export const writeBarrier: {
+  beforeWrite?: (info: { canonicalPath: string }) => Promise<void>;
+  afterWrite?: (info: { canonicalPath: string }) => Promise<void>;
+} = {};
 
 /** Unified bounded actionable note for any post-commit state failure. The
  *  platform error is logged, never leaked into model-visible text: the note
@@ -648,29 +650,31 @@ const ANCHORED_STATE_NOTE =
  * the result-presentation handlers; each writable child creates its own.
  */
 export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): AnchoredWriteSession {
-  const outcomes = new Map<string, AnchoredWriteOutcome[]>();
+  const outcomes = new Map<string, AnchoredWriteOutcome>();
   const session = sessionContextFor(input.cwd, input.sessionDir);
 
-  const recordOutcome = (key: string, outcome: AnchoredWriteOutcome): void => {
-    const queued = outcomes.get(key);
-    if (queued) queued.push(outcome);
-    else outcomes.set(key, [outcome]);
+  const recordOutcome = (toolCallId: string, outcome: AnchoredWriteOutcome): void => {
+    outcomes.set(toolCallId, outcome);
   };
 
   const operations: WriteOperations = {
-    mkdir: (dir) => mkdir(dir, { recursive: true }).then(() => {}),
+    // Pi calls mkdir before writeFile. Anchored calls defer it until target
+    // exclusion is held; inactive/native calls have no execution context.
+    mkdir: async (dir) => {
+      if (writeExecutionContext.getStore() === undefined) {
+        await mkdir(dir, { recursive: true });
+      }
+    },
     writeFile: async (absolutePath: string, content: string) => {
-      const signal = writeSignalContext.getStore()?.signal;
-      const available = input.available !== undefined ? input.available() : true;
-      if (!available) {
+      const execution = writeExecutionContext.getStore();
+      if (execution === undefined) {
         await writeFile(absolutePath, content, "utf-8");
         return;
       }
-      // Parent tool_call interception and the child composition both replace
-      // the factory argument with this canonical path before execution. Pi's
-      // queue therefore resolved the same path this operation locks/writes.
-      const target = await resolveAnchoredTarget(input.cwd, absolutePath);
-      const outcomeKey = writeIdentity(target.canonicalPath, content);
+      const { signal, target, toolCallId } = execution;
+      if (absolutePath !== target.canonicalPath) {
+        throw new Error("Anchored write target changed after boundary resolution");
+      }
       const boundary = await enterTargetBoundary(
         session.storeDir,
         target,
@@ -680,6 +684,7 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
         throw new Error(fileLockedMessage(absolutePath, "write"));
       }
       try {
+        await mkdir(dirname(target.canonicalPath), { recursive: true });
         if (signal?.aborted) {
           throw new Error(fileLockedMessage(absolutePath, "write"));
         }
@@ -694,6 +699,7 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
           throw new Error(fileLockedMessage(absolutePath, "write"));
         }
         await writeFile(target.canonicalPath, content, "utf-8");
+        await writeBarrier.afterWrite?.({ canonicalPath: target.canonicalPath });
         let appendix: string | undefined;
         try {
           const store = await loadAnchoredHashStore(session.storeDir, input.owner);
@@ -717,8 +723,9 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
           console.error("Anchored write state update failed:", error);
           appendix = ANCHORED_STATE_NOTE;
         }
-        recordOutcome(outcomeKey, {
+        recordOutcome(toolCallId, {
           canonicalPath: target.canonicalPath,
+          bytes: content.length,
           changed,
           ...(appendix !== undefined ? { appendix } : {}),
         });
@@ -729,11 +736,41 @@ export function createAnchoredWriteSession(input: AnchoredWriteSessionInput): An
   };
   return {
     operations,
-    takeOutcome(canonicalPath: string, content: string): AnchoredWriteOutcome | undefined {
-      const key = writeIdentity(canonicalPath, content);
-      const queued = outcomes.get(key);
-      const outcome = queued?.shift();
-      if (queued?.length === 0) outcomes.delete(key);
+    wrapDefinition(definition: GenericWriteDefinition): GenericWriteDefinition {
+      return {
+        ...definition,
+        executionMode: "sequential",
+        async execute(toolCallId, params: { path: string; content: string }, signal, onUpdate, ctx) {
+          if (input.available?.() === false) {
+            return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+          }
+          let target: AnchoredTarget;
+          try {
+            target = await resolveAnchoredTarget(input.cwd, params.path);
+          } catch {
+            // Resolution is required only for the anchored boundary. Let the
+            // untouched factory produce its native filesystem failure rather
+            // than substituting a resolver-specific errno (for example
+            // ENOTDIR instead of mkdir's EEXIST for file/child).
+            return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+          }
+          await writeEntryBarrier.afterResolve?.({ toolCallId, target });
+          return writeExecutionContext.run(
+            { toolCallId, signal, target },
+            () => definition.execute(
+              toolCallId,
+              { ...params, path: target.canonicalPath },
+              signal,
+              onUpdate,
+              ctx,
+            ),
+          );
+        },
+      } as GenericWriteDefinition;
+    },
+    takeOutcome(toolCallId: string): AnchoredWriteOutcome | undefined {
+      const outcome = outcomes.get(toolCallId);
+      outcomes.delete(toolCallId);
       return outcome;
     },
   };

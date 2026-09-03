@@ -4,8 +4,38 @@ import { constants } from "node:fs";
 import { lineHashes } from "../../../src/anchored-edit/hashline";
 import { prepareReplace } from "../../../src/anchored-edit/replace";
 import { withTempFile, loadTestStore, anchoredStoreFile } from "../support/fixtures";
+import { __testables } from "../../../src/anchored-edit/hash-store";
 
 describe("execPipeline no-persist guarantee", () => {
+
+  it("does not populate or refresh the snapshot cache during preparation", async () => {
+    const content = "a\nb\nc\n";
+    await withTempFile("sample.txt", content, async ({ cwd }) => {
+      const absolutePath = await (await import("../../../src/anchored-edit/fs-write")).resolveTarget(
+        await (await import("../../../src/anchored-edit/paths")).toCwd("sample.txt", cwd),
+      );
+      const store = await loadTestStore(cwd);
+      try {
+        const hashes = await lineHashes(content, absolutePath, undefined, store);
+        const entry = __testables.storeEntryOf(store);
+        entry.snapshots.clear();
+
+        await prepareReplace(
+          {
+            path: "sample.txt",
+            remove_from: hashes[0]!, remove_to: hashes[0]!,
+            replacement_text: "A",
+          },
+          cwd,
+          { accessMode: constants.R_OK, store },
+        );
+
+        expect(entry.snapshots.size).toBe(0);
+      } finally {
+        store.release();
+      }
+    });
+  });
 
   it("does not persist hypothetical result to hash store", async () => {
     const content = "a\nb\nc\nb\nd\n";

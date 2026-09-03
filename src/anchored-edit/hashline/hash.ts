@@ -134,7 +134,9 @@ export async function lineHashes(
 
   let cached: string[] | undefined;
   try {
-    cached = hashStore.getSnapshot(path, content, persist !== false);
+    cached = persist === false
+      ? hashStore.peekSnapshot(path, content)
+      : hashStore.getSnapshot(path, content);
   } catch (error) {
     console.error("Failed to read hash store snapshot:", error);
   }
