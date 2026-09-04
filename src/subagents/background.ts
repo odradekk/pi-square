@@ -93,10 +93,11 @@ function emitChange(state: BackgroundState): void {
 function compactFinishedJobs(state: BackgroundState): void {
   // A finished job whose result the parent has not received yet is exempt from
   // compaction: dropping it here would destroy the only copy of a result that
-  // is still waiting for delivery. The pending set has its own hard bound.
+  // is still waiting for delivery or is owned by an explicit waiter. The
+  // pending set has its own hard bound.
   const finished = Array.from(state.jobs.values())
     .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "aborted")
-    .filter((job) => !state.delivery?.isPending(job.id))
+    .filter((job) => !state.delivery?.isPending(job.id) && !state.delivery?.isClaimed(job.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   for (const extra of finished.slice(MAX_FINISHED_JOBS)) {
@@ -142,20 +143,33 @@ function snapshot(job: BackgroundJob): BackgroundJobSnapshot {
 }
 
 /**
- * Hands one finished run to the delivery controller, which owns budgeting,
- * coalescing, delivery timing, confirmation, and re-delivery. A state without
- * an attached controller receives one on first use so a completion is never
- * dropped for a missing session registration.
+ * Returns the session-owned delivery controller, creating it on first use so a
+ * completion is never dropped for a missing session registration. A state with
+ * neither an attached controller nor a Pi API (headless unit-test lifecycles)
+ * has nowhere to deliver and receives none.
  */
-function deliverCompletion(pi: ExtensionAPI, state: BackgroundState, job: BackgroundJob): void {
-  if (job.status !== "completed" && job.status !== "failed") return;
-
-  const delivery = state.delivery ?? (state.delivery = createDeliveryController({
+export function ensureDeliveryController(pi: ExtensionAPI | undefined, state: BackgroundState): DeliveryController | undefined {
+  if (state.delivery) return state.delivery;
+  if (!pi) return undefined;
+  state.delivery = createDeliveryController({
     pi,
     notify: () => emitChange(state),
-  }));
+  });
+  return state.delivery;
+}
 
-  delivery.enqueue({
+/**
+ * Hands one terminal run to the delivery controller, which owns budgeting,
+ * coalescing, delivery timing, confirmation, re-delivery, and the
+ * explicit-wait ownership policy. Completed and failed runs enter the pending
+ * store for automatic delivery; an aborted run is stored only while a waiter
+ * already owns its claim.
+ */
+function deliverCompletion(pi: ExtensionAPI | undefined, state: BackgroundState, job: BackgroundJob): void {
+  if (job.status !== "completed" && job.status !== "failed" && job.status !== "aborted") return;
+
+  const delivery = ensureDeliveryController(pi, state);
+  delivery?.enqueue({
     id: job.id,
     status: job.status,
     details: job.details,
@@ -314,6 +328,8 @@ export function listBackgroundJobs(state: BackgroundState): BackgroundJobSnapsho
 
 /** Requests cancellation for one job or all active background jobs. */
 export function cancelBackgroundJobs(input: {
+  /** Pi API for the delivery controller; a state that already owns one does not need it. */
+  pi?: ExtensionAPI;
   state: BackgroundState;
   id?: string;
   all?: boolean;
@@ -347,6 +363,9 @@ export function cancelBackgroundJobs(input: {
       ensureAbortedDetails(job, reason);
       details.canceled.push(snapshot(job));
       changed = true;
+      // A waiter that already claimed this run owns its aborted outcome; an
+      // ordinary aborted run never notifies the parent.
+      deliverCompletion(input.pi, state, job);
       continue;
     }
     if (job.status === "running") {
@@ -388,6 +407,8 @@ function startBackgroundLifecycle(input: {
       job.updatedAt = now();
       compactFinishedJobs(state);
       emitChange(state);
+      // A waiter that already claimed this run owns its aborted outcome.
+      deliverCompletion(pi, state, job);
       return;
     }
 
@@ -411,6 +432,8 @@ function startBackgroundLifecycle(input: {
       ensureAbortedDetails(job, job.details.error || DEFAULT_CANCEL_REASON);
       compactFinishedJobs(state);
       emitChange(state);
+      // A waiter that already claimed this run owns its aborted outcome.
+      deliverCompletion(pi, state, job);
       return;
     }
 
@@ -426,6 +449,8 @@ function startBackgroundLifecycle(input: {
       ensureAbortedDetails(job, job.details.error || DEFAULT_CANCEL_REASON);
       compactFinishedJobs(state);
       emitChange(state);
+      // A waiter that already claimed this run owns its aborted outcome.
+      deliverCompletion(pi, state, job);
       return;
     }
 
@@ -518,8 +543,9 @@ export function startBackgroundResumeJob(input: {
   });
 }
 
-export function abortAllBackgroundJobs(state: BackgroundState): void {
+export function abortAllBackgroundJobs(pi: ExtensionAPI | undefined, state: BackgroundState): void {
   cancelBackgroundJobs({
+    pi,
     state,
     all: true,
     reason: "Background subagent job aborted during session shutdown.",

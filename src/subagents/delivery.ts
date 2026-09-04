@@ -6,11 +6,13 @@
  * `pi.sendMessage` is fire-and-forget and reports no failure to the caller. A
  * result that is sent once and forgotten can therefore disappear without any
  * trace. The generic mechanics — the bounded pending set, batch selection,
- * safe delivery timing, confirmation, resend, interruption suppression, and
- * send-failure retention — live in `confirmed-delivery.ts`; this module is the
- * Subagent adapter: it supplies the run identity, the V5 notification payload
- * with its entry validation, the message construction, and the transcript
- * confirmation parser.
+ * safe delivery timing, confirmation, resend, interruption suppression,
+ * send-failure retention, and the atomic claim/take/release ownership
+ * operations — live in `confirmed-delivery.ts`; this module is the Subagent
+ * adapter: it supplies the run identity, the V5 notification payload with its
+ * entry validation, the message construction, the transcript confirmation
+ * parser, the wait-claim adapter, and the aborted-result policy that stores an
+ * aborted run only for a waiter that already owns it.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
@@ -19,11 +21,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   clipWithHeadTail,
   createConfirmedDeliveryCore,
+  type ConfirmedDeliveryClaim,
+  type DeliveryClaimFailure,
   DEFAULT_MAX_BATCH_RESULTS,
+  DEFAULT_MAX_CLAIM_RESERVATIONS,
   DEFAULT_MAX_PENDING_RESULTS,
 } from "./confirmed-delivery";
-import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
-
+import type {
+  SubagentNotificationDetails,
+  SubagentResultStatus,
+  SubagentRunDetails,
+} from "./types";
 export const SUBAGENT_NOTIFICATION_TYPE = "pi-square.subagent-notification";
 
 /** Model-facing budget for one result text. */
@@ -32,20 +40,25 @@ export const MAX_RESULT_CHARS = 24_000;
 export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
 /** Hard bound on the pending set so an unattended session stays bounded. */
 export const MAX_PENDING_RESULTS = DEFAULT_MAX_PENDING_RESULTS;
+/** Hard bound on simultaneously held explicit wait reservations. */
+export const MAX_WAIT_RESERVATIONS = DEFAULT_MAX_CLAIM_RESERVATIONS;
+/** Public IDs one wait_subagent call may select. */
+export const MAX_WAIT_IDS = 6;
 const MAX_TASK_CHARS = 300;
 
+/** Statuses that flow through automatic delivery to the parent. */
 export type DeliverableStatus = "completed" | "failed";
 
 /** One finished run as the delivery core carries it. */
 interface SubagentDeliveryValue {
-  status: DeliverableStatus;
+  status: SubagentResultStatus;
   details: SubagentRunDetails;
 }
 
-/** One run rendered into a delivery message. */
+/** One run rendered into a delivery message or an explicit wait result. */
 export interface SubagentDeliveryEntry {
   id: string;
-  status: DeliverableStatus;
+  status: SubagentResultStatus;
   details: SubagentRunDetails;
 }
 
@@ -95,11 +108,49 @@ export function parseV5NotificationDetails(details: unknown): ValidatedNotificat
     .filter((entry): entry is ValidatedNotificationEntry => entry !== undefined);
 }
 
+/** The Subagent adapter over one held claim of the delivery core. */
+export interface SubagentDeliveryClaim {
+  /** Reserved public IDs in the order the waiter requested them. */
+  readonly ids: readonly string[];
+  /** False once the claim was taken, released, or cleared by a reset. */
+  readonly active: boolean;
+  /** The stored result of one claimed ID once its run finished; the waiter's
+   * completeness signal before it takes. */
+  result(id: string): SubagentDeliveryEntry | undefined;
+  /** Consumes every claimed result in request order; missing results yield undefined. */
+  take(): (SubagentDeliveryEntry | undefined)[];
+  /**
+   * Gives up ownership. Completed and failed results stay in the store as
+   * unsent automatic-delivery candidates; aborted results are removed from
+   * delivery storage, because an aborted run that no waiter owns never
+   * notifies the parent.
+   */
+  release(): void;
+}
+
+/** Why one explicit wait claim was rejected, with the offending public ID. */
+export type SubagentClaimFailure = DeliveryClaimFailure;
+
 export interface DeliveryController {
-  /** Registers a finished run and delivers it when the parent is idle. */
-  enqueue(input: { id: string; status: DeliverableStatus; details: SubagentRunDetails }): void;
+  /**
+   * Registers one finished run. A completed or failed run enters the pending
+   * store for automatic delivery; an aborted run is stored only while an
+   * explicit waiter already owns its claim, and is dropped otherwise.
+   */
+  enqueue(input: { id: string; status: SubagentResultStatus; details: SubagentRunDetails }): void;
   /** Drops a result, for example when its history is deleted. */
   remove(id: string): void;
+  /**
+   * Atomically reserves a set of public IDs for one explicit waiter. An ID
+   * already claimed by another waiter, or whose result was already sent for
+   * delivery, rejects the complete request, as does a request that would
+   * exceed the reservation bound.
+   */
+  claim(ids: string[]): { ok: true; claim: SubagentDeliveryClaim } | { ok: false; failure: SubagentClaimFailure };
+  /** True while an explicit waiter owns this run's result. */
+  isClaimed(id: string): boolean;
+  /** True while this run's result was sent for delivery but not confirmed. */
+  isSent(id: string): boolean;
   /** Confirms delivery from an injected parent message. */
   observeMessage(message: unknown): void;
   /** Turn boundary of a running parent; an aborted terminal message suppresses delivery. */
@@ -145,12 +196,17 @@ function agentLabel(result: SubagentDeliveryEntry): string {
 }
 
 function resultText(result: SubagentDeliveryEntry): string {
-  return result.status === "completed"
-    ? budgetResultText(result.details.finalText || "(no output)")
-    : budgetResultText(result.details.error || "Subagent failed.");
+  if (result.status === "completed") return budgetResultText(result.details.finalText || "(no output)");
+  return budgetResultText(result.details.error || (result.status === "aborted" ? "Subagent run aborted." : "Subagent failed."));
 }
 
-/** Builds the model-facing content of one delivery. */
+function outcomeLabel(status: SubagentResultStatus): string {
+  if (status === "completed") return "Result:";
+  if (status === "aborted") return "Aborted:";
+  return "Error:";
+}
+
+/** Builds the model-facing content of one delivery or explicit wait result. */
 export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: boolean): string {
   const suffix = resent ? " (resent)" : "";
   if (results.length === 1) {
@@ -161,7 +217,7 @@ export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: b
       `agent: ${agentLabel(only)}`,
       `task: ${clipTask(only.details.task)}`,
       "",
-      only.status === "completed" ? "Result:" : "Error:",
+      outcomeLabel(only.status),
       resultText(only),
     ].join("\n");
   }
@@ -173,7 +229,7 @@ export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: b
       `--- ${index + 1}/${results.length} ${result.status} · id: ${result.id} · agent: ${agentLabel(result)}`,
       `task: ${clipTask(result.details.task)}`,
       "",
-      result.status === "completed" ? "Result:" : "Error:",
+      outcomeLabel(result.status),
       resultText(result),
     );
   });
@@ -208,9 +264,13 @@ export function createDeliveryController(options: {
         version: 5,
         deliveryId: `delivery-${sequence}`,
         resent,
+        // Only completed and failed results ever sit unclaimed in the pending
+        // set (an aborted result enters only while claimed, and claimed
+        // entries are excluded from flush), so the automatic delivery path
+        // always carries the deliverable statuses.
         results: entries.map((entry) => ({
           id: entry.id,
-          status: entry.status,
+          status: entry.status as DeliverableStatus,
           result: entry.details,
         })),
       };
@@ -232,11 +292,46 @@ export function createDeliveryController(options: {
     onPendingChange: options.notify,
   });
 
+  function toEntry(id: string, value: SubagentDeliveryValue): SubagentDeliveryEntry {
+    return { id, status: value.status, details: value.details };
+  }
+
   return {
     enqueue(input) {
+      // Aborted-result policy: an ordinary aborted run notifies nobody. A run
+      // an explicit waiter already owns still enters the store, claimed and
+      // therefore excluded from automatic delivery, so the waiter receives its
+      // aborted outcome; if the waiter releases first, the entry is dropped.
+      if (input.status === "aborted" && !core.isClaimed(input.id)) return;
       core.enqueue({ id: input.id, value: { status: input.status, details: input.details } });
     },
     remove: (id) => core.remove(id),
+    claim(ids) {
+      const result = core.claim(ids);
+      if (!result.ok) return result;
+      const inner: ConfirmedDeliveryClaim<SubagentDeliveryValue> = result.claim;
+      return {
+        ok: true,
+        claim: {
+          ids: inner.ids,
+          get active() {
+            return inner.active;
+          },
+          result(id) {
+            const value = core.claimedValue(id);
+            return value ? toEntry(id, value) : undefined;
+          },
+          take() {
+            return inner.take().map((value, index) => (value ? toEntry(inner.ids[index]!, value) : undefined));
+          },
+          release() {
+            inner.release((value) => value.status !== "aborted");
+          },
+        },
+      };
+    },
+    isClaimed: (id) => core.isClaimed(id),
+    isSent: (id) => core.isSent(id),
     observeMessage: (message) => core.observeMessage(message),
     handleTurnEnd: (message) => core.handleTurnEnd(message),
     handleAgentStart: () => core.handleAgentStart(),
