@@ -71,7 +71,7 @@ function ok(input) {
 
 {
   // Excluded capabilities are not in the catalog and drop with a warning.
-  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "revert", "ssh", "parse", "delegate", "resume", "todo", "ask"]) {
+  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "revert", "ssh", "parse", "delegate_subagent", "resume_subagent", "todo", "ask"]) {
     const envelope = ok({ cwd, tools: ["read", excluded] });
     assert.deepEqual(envelope.toolNames, ["read"], excluded);
     assert.equal(envelope.warnings.length, 1, excluded);

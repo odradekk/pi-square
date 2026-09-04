@@ -71,8 +71,8 @@ try {
   assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
-    "ask", "delegate", "docs", "fetch",
-    "libs", "parse", "pdf_search", "replace", "resume", "search",
+    "ask", "delegate_subagent", "docs", "fetch",
+    "libs", "parse", "pdf_search", "replace", "resume_subagent", "search",
     "todo",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();

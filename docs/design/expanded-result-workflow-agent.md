@@ -1,6 +1,6 @@
 # Workflow and Agent Expanded Results
 
-Scope: `todo`, `ask`, `time`, `subagent_delegate`, `subagent_resume`
+Scope: `todo`, `ask`, `time`, `delegate_subagent`, `resume_subagent`
 Parent tools: all five. Child availability follows the existing catalog: all remain parent-facing workflow surfaces rather than child tools.
 Primary family contract: state and user action first, structured payload second, private prompts and raw session artifacts never.
 
@@ -63,30 +63,29 @@ Rules:
 - The display calls no clock itself; it renders only the tool result.
 - The compact result remains one row; expanded output may align fields but must not imply timezone conversion or scheduling capability.
 
-## subagent_delegate
+## delegate_subagent
 
 Expanded sections:
 
 - `ERROR` for definition, prompt, model, active-lease, child execution, or cancellation failures.
-- `RUN`: agent, mode, short/full ID according to phase, model, effort, cwd, context count, and retry state.
-- `RESULT`: bounded live or final text.
+- `RUN`: agent, short/full ID according to phase, model, effort, cwd, context count, and retry state.
+- `RESULT`: bounded final text.
 - `ACTIVITY`: recent allowlisted tool-call summaries, with latest activity emphasized collapsed and up to eight entries expanded.
 - `ISSUES`: bounded child tool errors with suggested action.
 - `USAGE`: turns, input/output/cache/cost, duration, and phase.
 
 Rules:
 
-- Running and partial states preserve role identity and never render `Completed` before a terminal phase.
-- Background queued results identify queue state and public ID without implying completion.
+- Queued results identify queue state and public ID without implying completion, and a run never renders `Completed` before a terminal phase.
 - Timeline summaries show tool and allowlisted call metadata only; result payloads are never rendered.
 - Full IDs may appear in expanded metadata and queued/resumed operational contexts; collapsed primary output uses short identity.
 
-## subagent_resume
+## resume_subagent
 
-Expanded sections mirror `subagent_delegate`, with these differences:
+Expanded sections mirror `delegate_subagent`, with these differences:
 
 - `RUN`: resume target ID, original model/effort/system snapshot reuse, current task, and context count.
-- `RESULT`: resumed live or final text.
+- `RESULT`: resumed final text.
 - `ACTIVITY`: resumed timeline plus any new allowlisted tool calls.
 - `ISSUES`: active lease, stale history, artifact, or provider errors.
 
@@ -101,7 +100,7 @@ Rules:
 
 - Todo restore, damaged snapshot, and idempotent operation displays.
 - Ask partial progress shows counts only; submitted answers appear only after terminal submission.
-- Subagent running state includes live text and `ACTIVITY`, never `Completed`.
+- Subagent queued state states the queued outcome with the run ID, never `Completed`.
 - Expanded subagent output includes up to eight bounded activity rows and up to four issues.
 - Background notification keeps success/error shell color and privacy boundaries.
 - All outputs remain bounded and theme-portable across the standard width matrix.

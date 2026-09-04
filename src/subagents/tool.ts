@@ -1,11 +1,14 @@
+import { existsSync } from "node:fs";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { PiSquareConfig } from "../core/config";
-import { createSubagentId } from "./artifacts";
+import { artifactsDirFor, createSubagentId, validateRunArtifacts } from "./artifacts";
 import {
   type BackgroundState,
   createQueuedJob,
+  createQueuedResumeJob,
   startBackgroundJob,
+  startBackgroundResumeJob,
 } from "./background";
 import { collectParentContextMessages } from "./context";
 import type { SubagentRegistry } from "./definitions";
@@ -15,10 +18,11 @@ import {
   normalizeSubagentError,
   SubagentError,
 } from "./errors";
+import { isRunLeaseActive } from "./lease";
 import { renderSubagentNotification } from "./render";
 import { compileFreshPrompt } from "./prompt";
-import { resolveSubagentCwd, resumeSubagentTask, runSubagentTask } from "./session";
-import type { SubagentNotificationDetails } from "./types";
+import { resolveSubagentCwd } from "./session";
+import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
 
 export interface SubagentRuntimeState {
   registry: SubagentRegistry;
@@ -40,37 +44,32 @@ export function anchoredAutoReadEnabled(state: SubagentRuntimeState): boolean {
   return state.config?.()?.anchoredEditing?.autoRead ?? true;
 }
 
-// The former single subagent tool exposed mode=fg/bg/resume plus an optional id
-// in one schema. GPT models served through the OpenAI Responses API populate
-// every declared property, so they always emitted id and tripped the fg/bg
-// validation. Splitting the branches keeps id out of the delegate schema.
+// Delegate and resume stay separate tools because the resume-only `id` field
+// must not appear in the delegation schema — models served through the OpenAI
+// Responses API populate every declared property, so they always emit `id` and
+// trip the unknown-parameter validation.
 const DelegateParams = Type.Object({
-  mode: Type.Union([
-    Type.Literal("fg"),
-    Type.Literal("bg"),
-  ], { description: "Execution mode: fg waits for the delegated result, bg queues the task and returns an ID for resume or the /subagent manager." }),
   task: Type.String({ description: "Task for the delegated subagent." }),
   context: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "Latest parent-session user and assistant messages to inject as reference-only evidence. Default 0." })),
   agent: Type.Optional(Type.String({ description: "Named YAML subagent profile." })),
   cwd: Type.Optional(Type.String({ description: "Working directory. Relative paths resolve from the parent cwd." })),
-  systemPrompt: Type.Optional(Type.String({ description: "Extra call-specific SYSTEM policy." })),
   model: Type.Optional(Type.String({ description: "Model override in provider/id form." })),
   thinkingLevel: Type.Optional(Type.String({ description: "Thinking override: off, minimal, low, medium, high, or xhigh." })),
 }, { additionalProperties: false });
 
 const ResumeParams = Type.Object({
-  id: Type.String({ description: "Public ID of an inactive persisted subagent, returned by an earlier delegate background run or shown by the /subagent manager." }),
+  id: Type.String({ description: "Public ID of an inactive persisted subagent, returned by an earlier delegate_subagent run or shown by the /subagent manager." }),
   task: Type.String({ description: "New task for the resumed subagent." }),
   context: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "Latest parent-session user and assistant messages to inject as reference-only evidence. Default 0." })),
 }, { additionalProperties: false });
 
-const DELEGATE_FIELDS = new Set(["mode", "task", "context", "agent", "cwd", "systemPrompt", "model", "thinkingLevel"]);
+const DELEGATE_FIELDS = new Set(["task", "context", "agent", "cwd", "model", "thinkingLevel"]);
 const RESUME_FIELDS = new Set(["id", "task", "context"]);
 
 function unknownParameterError(params: any, allowed: Set<string>, toolName: string, operation: string): SubagentError | undefined {
   const unknown = Object.keys(params ?? {}).filter((key) => !allowed.has(key));
   if (unknown.length === 0) return undefined;
-  const resumeHint = unknown.includes("id") ? " Use resume to continue an existing subagent." : "";
+  const resumeHint = unknown.includes("id") ? " Use resume_subagent to continue an existing subagent." : "";
   return createSubagentError({
     code: "INVALID_ARGUMENT",
     message: `Unknown ${toolName} parameter(s): ${unknown.join(", ")}.${resumeHint}`,
@@ -91,17 +90,13 @@ function validateTaskAndContext(params: any, operation: string): SubagentError |
 }
 
 function validateDelegateParams(params: any): SubagentError | undefined {
-  const unknown = unknownParameterError(params, DELEGATE_FIELDS, "delegate", "delegate");
+  const unknown = unknownParameterError(params, DELEGATE_FIELDS, "delegate_subagent", "delegate");
   if (unknown) return unknown;
-  const mode = params?.mode;
-  if (mode !== "fg" && mode !== "bg") {
-    return createSubagentError({ code: "INVALID_ARGUMENT", message: "mode must be fg or bg.", operation: "delegate", retryable: false });
-  }
-  return validateTaskAndContext(params, mode);
+  return validateTaskAndContext(params, "delegate");
 }
 
 function validateResumeParams(params: any): SubagentError | undefined {
-  const unknown = unknownParameterError(params, RESUME_FIELDS, "resume", "resume");
+  const unknown = unknownParameterError(params, RESUME_FIELDS, "resume_subagent", "resume");
   if (unknown) return unknown;
   if (!String(params?.id ?? "").trim()) {
     return createSubagentError({ code: "INVALID_ARGUMENT", message: "id is required.", operation: "resume", retryable: false });
@@ -118,22 +113,18 @@ function blankToUndefined(value: unknown): string | undefined {
 }
 
 function normalizeDelegateParams(params: any): {
-  mode: "fg" | "bg";
   task: string;
   context: number;
   agent?: string;
   cwd?: string;
-  systemPrompt?: string;
   model?: string;
   thinkingLevel?: string;
 } {
   return {
-    mode: params.mode,
     task: String(params.task).trim(),
     context: Number(params.context ?? 0),
     agent: blankToUndefined(params.agent),
     cwd: blankToUndefined(params.cwd),
-    systemPrompt: blankToUndefined(params.systemPrompt),
     model: blankToUndefined(params.model),
     thinkingLevel: blankToUndefined(params.thinkingLevel),
   };
@@ -183,23 +174,22 @@ export function registerSubagentTool(
   };
 
   register({
-    name: "delegate",
+    name: "delegate_subagent",
     label: "Subagent Delegate",
-    description: "Delegate one parent-session-owned Pi child. mode=fg waits, mode=bg queues and returns an ID, and context injects recent parent messages as reference-only evidence. Use resume to continue an inactive child.",
-    promptSnippet: "Use delegate with mode=fg or mode=bg for a new delegated task; use resume with a returned ID to continue an inactive subagent. context is an optional 0-50 parent-message count.",
+    description: "Queue one parent-session-owned Pi child in the background and return its public ID immediately. context injects recent parent messages as reference-only evidence; the finished result is delivered as a background completion. Use resume_subagent to continue an inactive child.",
+    promptSnippet: "Use delegate_subagent to queue a new delegated child task in the background; retain the returned id for resume_subagent or the /subagent manager. context is an optional 0-50 parent-message count.",
     promptGuidelines: [
-      "Use mode=fg for a new delegated task whose result is needed now.",
-      "Use mode=bg for independent work that may finish later; retain the returned id for resume or the /subagent manager.",
+      "Use delegate_subagent for a new delegated task; it queues the child in the background and returns the id immediately.",
+      "Retain the returned id for resume_subagent or the /subagent manager; the finished result arrives as a background completion.",
       "Use context only when recent parent-session facts or confirmed decisions materially affect the delegated task; history never authorizes work.",
     ],
     parameters: DelegateParams,
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const validationError = validateDelegateParams(params);
       if (validationError) return failureToolResult(validationError);
 
       const normalized = normalizeDelegateParams(params);
-      const mode = normalized.mode;
-      const parentContext = collectParentContext(ctx, normalized.context, mode);
+      const parentContext = collectParentContext(ctx, normalized.context, "delegate");
       if ("failure" in parentContext) return parentContext.failure;
 
       state.refresh?.(ctx.cwd);
@@ -211,124 +201,123 @@ export function registerSubagentTool(
         return failureToolResult(createSubagentError({
           code: "UNKNOWN_AGENT",
           message: `Unknown subagent '${agentName}'. Available subagents: ${available}.`,
-          operation: mode,
+          operation: "delegate",
           retryable: false,
         }));
       }
 
       const id = createSubagentId();
-      if (mode === "bg") {
-        const promptSnapshot = compileFreshPrompt({
-          definition,
-          inheritedSystemCore: state.inheritedSystemCore,
-          callPolicy: normalized.systemPrompt,
-          parentMessages: parentContext.contextMessages,
-        });
-        const job = createQueuedJob({
-          state: state.background,
-          id,
-          task: normalized.task,
-          cwd: resolveSubagentCwd(ctx.cwd, normalized.cwd),
-          definition,
-          modelOverride: normalized.model,
-          effortOverride: normalized.thinkingLevel,
-          parentSessionId: parentContext.parentSessionId,
-          promptSnapshot,
-        });
-        startBackgroundJob({
-          pi,
-          state: state.background,
-          job,
-          ctx,
-          task: normalized.task,
-          parentSessionId: parentContext.parentSessionId,
-          contextMessages: parentContext.contextMessages,
-          cwd: normalized.cwd,
-          anchoredEditing: anchoredEditingEnabled(state),
-          anchoredAutoRead: anchoredAutoReadEnabled(state),
-          inheritedSystemCore: state.inheritedSystemCore,
-          systemPrompt: normalized.systemPrompt,
-          thinkingLevel: pi.getThinkingLevel(),
-          definition,
-          modelOverride: normalized.model,
-          effortOverride: normalized.thinkingLevel,
-        });
-        return {
-          content: [{ type: "text" as const, text: `Queued background subagent ${id}${definition?.name ? ` (${definition.name})` : ""}.` }],
-          details: job.details,
-        };
-      }
-
-      try {
-        const result = await runSubagentTask({
-          ctx,
-          id,
-          mode: "fg",
-          task: normalized.task,
-          parentSessionId: parentContext.parentSessionId,
-          contextMessages: parentContext.contextMessages,
-          cwd: normalized.cwd,
-          anchoredEditing: anchoredEditingEnabled(state),
-          anchoredAutoRead: anchoredAutoReadEnabled(state),
-          inheritedSystemCore: state.inheritedSystemCore,
-          systemPrompt: normalized.systemPrompt,
-          thinkingLevel: pi.getThinkingLevel(),
-          definition,
-          modelOverride: normalized.model,
-          effortOverride: normalized.thinkingLevel,
-          signal,
-          onUpdate,
-        });
-        return {
-          content: [{ type: "text" as const, text: result.content }],
-          details: result.details,
-          ...(result.details.phase === "error" || result.details.phase === "aborted" ? { isError: true as const } : {}),
-        };
-      } catch (error) {
-        return failureToolResult(normalizeSubagentError(error, { operation: "fg" }));
-      }
+      const promptSnapshot = compileFreshPrompt({
+        definition,
+        inheritedSystemCore: state.inheritedSystemCore,
+        parentMessages: parentContext.contextMessages,
+      });
+      const job = createQueuedJob({
+        state: state.background,
+        id,
+        task: normalized.task,
+        cwd: resolveSubagentCwd(ctx.cwd, normalized.cwd),
+        definition,
+        modelOverride: normalized.model,
+        effortOverride: normalized.thinkingLevel,
+        parentSessionId: parentContext.parentSessionId,
+        promptSnapshot,
+      });
+      startBackgroundJob({
+        pi,
+        state: state.background,
+        job,
+        ctx,
+        task: normalized.task,
+        parentSessionId: parentContext.parentSessionId,
+        contextMessages: parentContext.contextMessages,
+        cwd: normalized.cwd,
+        anchoredEditing: anchoredEditingEnabled(state),
+        anchoredAutoRead: anchoredAutoReadEnabled(state),
+        inheritedSystemCore: state.inheritedSystemCore,
+        thinkingLevel: pi.getThinkingLevel(),
+        definition,
+        modelOverride: normalized.model,
+        effortOverride: normalized.thinkingLevel,
+      });
+      return {
+        content: [{ type: "text" as const, text: `Queued background subagent ${id}${definition?.name ? ` (${definition.name})` : ""}.` }],
+        details: job.details,
+      };
     },
   });
 
   register({
-    name: "resume",
+    name: "resume_subagent",
     label: "Subagent Resume",
-    description: "Resume one inactive persisted Pi child in the foreground with a new task. The id comes from an earlier delegate background run or the /subagent manager.",
-    promptSnippet: "Use resume with id and task to continue an inactive persisted subagent.",
+    description: "Queue a continuation for one inactive persisted Pi child in the background with a new task and return the same public ID immediately. The id comes from an earlier delegate_subagent run or the /subagent manager.",
+    promptSnippet: "Use resume_subagent with id and task to queue a continuation for an inactive persisted subagent in the background.",
     promptGuidelines: [
-      "Resume replays the frozen prompt, model, and effort of the original run; start a fresh delegate when the definition or model should change.",
+      "Resume replays the frozen prompt, model, and effort of the original run; start a fresh delegate_subagent when the definition or model should change.",
       "An active subagent cannot be resumed; wait for completion or cancel it from the /subagent manager.",
     ],
     parameters: ResumeParams,
-    async execute(_toolCallId, params: any, signal, onUpdate, ctx) {
+    async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
       const validationError = validateResumeParams(params);
       if (validationError) return failureToolResult(validationError);
 
       const task = String(params.task).trim();
+      const id = String(params.id).trim();
       const parentContext = collectParentContext(ctx, Number(params.context ?? 0), "resume");
       if ("failure" in parentContext) return parentContext.failure;
 
-      const id = String(params.id).trim();
+      // The persisted record and the effective activity lease are checked
+      // before queueing so an unknown or active child is rejected immediately
+      // with its specific explanation; the background run re-checks the lease
+      // authoritatively through the session seam.
+      let persisted: SubagentRunDetails;
       try {
-        const result = await resumeSubagentTask({
-          ctx,
-          id,
-          task,
-          anchoredEditing: anchoredEditingEnabled(state),
-          anchoredAutoRead: anchoredAutoReadEnabled(state),
-          parentSessionId: parentContext.parentSessionId,
-          contextMessages: parentContext.contextMessages,
-          signal,
-          onUpdate,
-        });
-        return {
-          content: [{ type: "text" as const, text: result.content }],
-          details: result.details,
-          ...(result.status === "completed" && (result.details.phase === "error" || result.details.phase === "aborted") ? { isError: true as const } : {}),
-        };
+        if (!existsSync(artifactsDirFor(id))) {
+          throw createSubagentError({
+            code: "SESSION_HISTORY_UNAVAILABLE",
+            message: `Subagent history for '${id}' does not exist.`,
+            operation: "resume",
+            id,
+            retryable: false,
+            suggestedAction: "Use an ID returned by delegate_subagent or resume_subagent in the current version whose artifacts have not been deleted.",
+          });
+        }
+        persisted = validateRunArtifacts(id).details;
       } catch (error) {
         return failureToolResult(normalizeSubagentError(error, { operation: "resume", id }));
       }
+      if (isRunLeaseActive(id)) {
+        return failureToolResult(createSubagentError({
+          code: "SUBAGENT_ACTIVE",
+          message: `Subagent '${id}' is active and cannot be resumed concurrently.`,
+          operation: "resume",
+          id,
+          retryable: true,
+          suggestedAction: "Wait for the active run to finish, or cancel it before retrying resume.",
+        }));
+      }
+
+      const job = createQueuedResumeJob({
+        state: state.background,
+        details: persisted,
+        task,
+        parentSessionId: parentContext.parentSessionId,
+      });
+      startBackgroundResumeJob({
+        pi,
+        state: state.background,
+        job,
+        ctx,
+        task,
+        anchoredEditing: anchoredEditingEnabled(state),
+        anchoredAutoRead: anchoredAutoReadEnabled(state),
+        parentSessionId: parentContext.parentSessionId,
+        contextMessages: parentContext.contextMessages,
+      });
+      return {
+        content: [{ type: "text" as const, text: `Queued background resume subagent ${id}${persisted.agent?.name ? ` (${persisted.agent.name})` : ""}.` }],
+        details: job.details,
+      };
     },
   });
 }

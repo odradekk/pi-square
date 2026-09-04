@@ -23,29 +23,17 @@ function shortId(value: unknown): string | undefined {
   return suffix.slice(0, 8);
 }
 
-/** Derive an explicit lifecycle + qualifiers from phase, partial, and isError. */
+/** Derive an explicit lifecycle + qualifiers from phase and isError. */
 function subagentLifecycle(
   details: Record<string, unknown>,
-  partial: boolean,
   isError: boolean,
-  phase: "call" | "result",
 ): { lifecycle: OperationalLifecycle; qualifiers: OperationalQualifier[] } {
-  if (phase === "call") {
-    return { lifecycle: "pending", qualifiers: [] };
-  }
   const detailPhase = String(details.phase ?? "").toLowerCase();
   const qualifiers: OperationalQualifier[] = [];
 
-  if (partial) {
-    const partialQualifiers: OperationalQualifier[] = ["partial"];
-    if (typeof details.retries === "number" && details.retries > 0) {
-      partialQualifiers.push("retrying");
-    }
-    return { lifecycle: "running", qualifiers: partialQualifiers };
-  }
-
-  // Background running without partial → queued
-  if (detailPhase === "running" && details.mode === "bg") {
+  // A running record of a background run kind (fresh or resumed) is the
+  // queued tool outcome both tools return immediately.
+  if (detailPhase === "running" && (details.mode === "bg" || details.mode === "resume")) {
     return { lifecycle: "queued", qualifiers };
   }
 
@@ -264,8 +252,8 @@ function subagentSummary(
 // ─── Target ────────────────────────────────────────────────────────
 
 /**
- * Target for delegate: the agent name.
- * For resume: agent name + short run ID, identical in call and result.
+ * Target for delegate_subagent: the agent name.
+ * For resume_subagent: the short run ID, identical in call and result.
  */
 function subagentTarget(
   details: Record<string, unknown>,
@@ -291,15 +279,14 @@ function subagentTarget(
 export function describeSubagentRun(
   name: string,
   run: SubagentRunDetails,
-  options: { expanded: boolean; isPartial: boolean; isError: boolean },
+  options: { expanded: boolean; isError: boolean },
   fallbackText: string,
   args: Record<string, unknown> = {},
 ): DisplayDescriptionV1 {
   const details = run as unknown as Record<string, unknown>;
-  const live = String(run.liveText || run.finalText || fallbackText || "").trim();
-  const lc = subagentLifecycle(details, options.isPartial, options.isError, "result");
-  // Also accept the retired name so persisted records from before the rename still render.
-  const isResume = name === "resume" || name === "subagent_resume";
+  const live = String(run.finalText || fallbackText || "").trim();
+  const lc = subagentLifecycle(details, options.isError);
+  const isResume = name === "resume_subagent";
   const summary = subagentSummary(details, lc.lifecycle);
   const qualifiers: OperationalQualifier[] = [...lc.qualifiers];
   if (Array.isArray(details.toolErrors) && details.toolErrors.length > 0 && !qualifiers.includes("warning")) {
@@ -312,22 +299,19 @@ export function describeSubagentRun(
   const isTerminal = lc.lifecycle === "completed" || lc.lifecycle === "failed" || lc.lifecycle === "aborted";
 
   // C4 revision: collapsed entries are exactly one row, so state messages
-  // that used to live in the collapsed body move into the inline summary.
-  const queuedMessage = !isTerminal && lc.lifecycle === "queued" && run.mode === "bg"
-    ? "Queued in the parent session"
+  // that used to live in the collapsed body move into the inline summary. The
+  // queued summary keeps the short run ID visible for named agents too,
+  // because the queued outcome and the ID are one fact for the caller.
+  const queuedRunId = lc.lifecycle === "queued" ? shortId(details.id ?? args.id) : undefined;
+  const queuedMessage = !isTerminal && lc.lifecycle === "queued"
+    ? ["Queued in the parent session", queuedRunId ? `run ${queuedRunId}` : undefined].filter(Boolean).join(" · ")
     : undefined;
   const effectiveSummary = queuedMessage ?? summary;
 
-  // Rows for non-terminal states (running, queued) render only when expanded.
+  // Rows for the queued state render only when expanded.
   const rows: DisplayRow[] = [];
-  if (!isTerminal) {
-    if (lc.lifecycle === "queued" && run.mode === "bg") {
-      rows.push({ text: "Queued in the parent session", tone: "muted" as DisplayTone });
-    } else if (live) {
-      for (const line of tailLines(live, 5).text.split("\n")) {
-        rows.push({ text: line, tone: options.isError ? ("error" as DisplayTone) : undefined });
-      }
-    }
+  if (!isTerminal && lc.lifecycle === "queued") {
+    rows.push({ text: "Queued in the parent session", tone: "muted" as DisplayTone });
   }
 
   // Collapsed result preview (compact sections render in collapsed mode).
@@ -352,7 +336,7 @@ export function describeSubagentRun(
     }
     expandedSections.push(...[
       taskSection(details),
-      resultSection(options.isPartial ? "Live" : "Result", live),
+      resultSection("Result", live),
       activitySection(run.timeline),
       refusalSection(details),
       issueSection(details),
@@ -384,12 +368,11 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
     describeCall(argsValue, context) {
       const args = record(argsValue);
       const task = typeof args.task === "string" ? args.task : undefined;
-      // Also accept the retired name so persisted records from before the rename still render.
-      const isResume = name === "resume" || name === "subagent_resume";
+      const isResume = name === "resume_subagent";
       const id = shortId(args.id);
       const agentName = typeof args.agent === "string" && args.agent ? args.agent : undefined;
 
-      // Target: agent name for delegate, agent + id for resume
+      // Target: agent name for delegate_subagent, short run ID for resume_subagent
       let target: string | undefined;
       if (isResume) {
         target = id; // Will be updated when run details are available
@@ -397,7 +380,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         target = agentName ?? id;
       }
 
-      // Call rows: task preview + mode/context info
+      // Call rows: task preview + context info
       const rows: DisplayRow[] = [];
       if (task) {
         rows.push({ text: task });
@@ -405,12 +388,13 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       if (isResume) {
         rows.push({ text: "frozen model and effort", tone: "muted" as DisplayTone });
       } else {
-        const mode = typeof args.mode === "string" ? args.mode : "fg";
         const contextCount = typeof args.context === "number" ? args.context : undefined;
         const contextStr = contextCount !== undefined
           ? `${contextCount} ${contextCount === 1 ? "context message" : "context messages"}`
           : undefined;
-        rows.push({ text: [mode, contextStr].filter(Boolean).join(" · "), tone: "muted" as DisplayTone });
+        if (contextStr) {
+          rows.push({ text: contextStr, tone: "muted" as DisplayTone });
+        }
       }
 
       return {
@@ -430,9 +414,8 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       const text = textResult(result);
       const isRun = details.version === 3 && Array.isArray(details.timeline);
       if (!isRun) {
-        // Also accept the retired name so persisted records from before the rename still render.
-        const isResume = name === "resume" || name === "subagent_resume";
-        const lc = subagentLifecycle(details, options.isPartial, context.isError, "result");
+        const isResume = name === "resume_subagent";
+        const lc = subagentLifecycle(details, context.isError);
         const summary = subagentSummary(details, lc.lifecycle);
         return {
           version: 1,
@@ -453,7 +436,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       return describeSubagentRun(
         name,
         details as unknown as SubagentRunDetails,
-        { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError },
+        { expanded: options.expanded, isError: context.isError },
         text,
         args,
       );

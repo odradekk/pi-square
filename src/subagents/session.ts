@@ -44,11 +44,8 @@ import type { ActiveSubagentConfig, SubagentPromptSnapshot, SubagentRunDetails, 
 
 const MAX_TIMELINE_ITEMS = 120;
 const MAX_TIMELINE_TEXT = 1600;
-const MAX_LIVE_TEXT = 2000;
-const LIVE_UPDATE_THROTTLE_MS = 100;
 const MAX_RAW_SESSION_OUTPUT = 12000;
 const MAX_TOOL_ERRORS = 20;
-const MAX_CONTENT_TOOL_ERRORS = 3;
 const ALLOWED_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 type AllowedEffort = typeof ALLOWED_EFFORTS[number];
 
@@ -56,12 +53,6 @@ function clip(text: string, max = MAX_TIMELINE_TEXT): string {
   const normalized = String(text ?? "").trim();
   if (!normalized) return "";
   return normalized.length > max ? `${normalized.slice(0, max - 3)}...` : normalized;
-}
-
-function appendLiveTextTail(current: string | undefined, delta: unknown, max = MAX_LIVE_TEXT): string {
-  const combined = `${current ?? ""}${String(delta ?? "")}`;
-  const codePoints = Array.from(combined);
-  return codePoints.length <= max ? combined : codePoints.slice(-max).join("");
 }
 
 function normalizeMaybePath(value: string): string {
@@ -161,12 +152,6 @@ export function classifyToolEnd(
   return refusalCode;
 }
 
-function formatToolErrorList(toolErrors: SubagentRunDetails["toolErrors"]): string {
-  return toolErrors
-    .slice(-MAX_CONTENT_TOOL_ERRORS)
-    .map((item) => `  - ${item.tool}: ${item.message}`)
-    .join("\n");
-}
 
 // Tool errors are recoverable events; only true session-level exceptions or
 // missing/incomplete final output trigger phase="error". Empty finalText is
@@ -209,30 +194,6 @@ function deriveTerminalPhase(details: SubagentRunDetails, messages: any): void {
   details.error = "subagent produced no messages at all";
   details.phase = "error";
 }
-
-function buildReturnContent(details: SubagentRunDetails): string {
-  let body: string;
-  if (details.phase === "error" || details.phase === "aborted") {
-    const lines = [details.errorInfo ? details.error ?? "Subagent failed." : `Subagent failed: ${details.error ?? "unknown error"}`];
-    if (details.salvagedFinalText) {
-      lines.push("", "Salvaged final text from message history:", details.salvagedFinalText);
-    } else if (details.rawSessionOutput) {
-      lines.push("", "Last messages from session (truncated):", details.rawSessionOutput);
-    }
-    if (details.toolErrors.length > 0) {
-      lines.push("", "Last tool errors:", formatToolErrorList(details.toolErrors));
-    }
-    body = lines.join("\n");
-  } else {
-    const output = details.finalText;
-    body = details.toolErrors.length > 0
-      ? `${output}\n\n[Note: ${details.toolErrors.length} tool call(s) inside the subagent failed during the run; see details for full timeline.]`
-      : output;
-  }
-
-  return `ID: ${details.id}\n\n${body}`;
-}
-
 
 function collectFinalAssistantText(messages: any): string {
   if (!Array.isArray(messages)) return "";
@@ -511,7 +472,7 @@ function finishRunFailure(
   details: SubagentRunDetails,
   error: unknown,
   defaults: { code?: "INVALID_ARGUMENT" | "UNKNOWN_MODEL" | "CONTEXT_TOO_LARGE" | "SUBAGENT_FAILED"; message?: string; retryable?: boolean } = {},
-): { content: string; details: SubagentRunDetails } {
+): { details: SubagentRunDetails } {
   const normalized = error instanceof SubagentError
     ? error
     : normalizeSubagentError(error, {
@@ -525,14 +486,13 @@ function finishRunFailure(
   applyRunFailure(details, normalized);
   details.endedAt = nowMs();
   details.durationMs = details.endedAt - details.startedAt;
-  details.liveText = "";
   pushTimeline(details, { kind: "error", text: normalized.info.cause ?? normalized.info.message, isError: true });
   try {
     writeRunState(details.artifactsDir, details);
   } catch {
     // The primary failure remains authoritative when its final state cannot be written.
   }
-  return { content: buildReturnContent(details), details };
+  return { details };
 }
 
 function createChildSettings() {
@@ -553,32 +513,23 @@ async function promptSession(input: {
   details: SubagentRunDetails;
   definitionName?: string;
   signal?: AbortSignal;
-  onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentRunDetails }) => void;
-}): Promise<{ content: string; details: SubagentRunDetails }> {
+  onUpdate?: (details: SubagentRunDetails) => void;
+}): Promise<{ details: SubagentRunDetails }> {
   const { session, prompt, details } = input;
   let persistenceFailure: SubagentError | undefined;
   let executorOwnsSession = false;
-  let liveUpdateTimer: NodeJS.Timeout | undefined;
-  let liveUpdateDirty = false;
-  let lastLiveUpdateAt = 0;
 
-  const clearLiveUpdateTimer = () => {
-    if (!liveUpdateTimer) return;
-    clearTimeout(liveUpdateTimer);
-    liveUpdateTimer = undefined;
-  };
+  // The background lifecycle consumes these snapshots to mirror one job's
+  // observable run state (phase, timeline, usage), so each published value is
+  // a detached clone of the still-mutating details record.
   const publishUpdate = () => {
     input.onUpdate?.({
-      content: [{ type: "text", text: details.liveText || details.finalText || `(subagent ${details.id} running...)` }],
-      details: {
-        ...details,
-        agent: details.agent ? { ...details.agent } : undefined,
-        liveText: details.liveText ?? "",
-        toolErrors: details.toolErrors.map((item) => ({ ...item })),
-        toolWarnings: Array.isArray(details.toolWarnings) ? details.toolWarnings.map((item) => ({ ...item })) : [],
-        usage: { ...details.usage },
-        timeline: details.timeline.map((item) => ({ ...item })),
-      },
+      ...details,
+      agent: details.agent ? { ...details.agent } : undefined,
+      toolErrors: details.toolErrors.map((item) => ({ ...item })),
+      toolWarnings: Array.isArray(details.toolWarnings) ? details.toolWarnings.map((item) => ({ ...item })) : [],
+      usage: { ...details.usage },
+      timeline: details.timeline.map((item) => ({ ...item })),
     });
   };
   const persistProgress = () => {
@@ -597,32 +548,8 @@ async function promptSession(input: {
     }
   };
   const emitUpdate = () => {
-    clearLiveUpdateTimer();
-    liveUpdateDirty = false;
-    lastLiveUpdateAt = Date.now();
     persistProgress();
     publishUpdate();
-  };
-  const emitLiveUpdate = () => {
-    if (!liveUpdateDirty) return;
-    liveUpdateDirty = false;
-    lastLiveUpdateAt = Date.now();
-    publishUpdate();
-  };
-  const scheduleLiveUpdate = () => {
-    if (!input.onUpdate) return;
-    liveUpdateDirty = true;
-    const delay = LIVE_UPDATE_THROTTLE_MS - (Date.now() - lastLiveUpdateAt);
-    if (delay <= 0) {
-      clearLiveUpdateTimer();
-      emitLiveUpdate();
-      return;
-    }
-    liveUpdateTimer ??= setTimeout(() => {
-      liveUpdateTimer = undefined;
-      emitLiveUpdate();
-    }, delay);
-    liveUpdateTimer.unref?.();
   };
 
   // The one-time child-session executor owns the native run lifecycle — the
@@ -636,10 +563,8 @@ async function promptSession(input: {
         break;
       }
       case "message_update": {
-        if (event.assistantMessageEvent?.type === "text_delta") {
-          details.liveText = appendLiveTextTail(details.liveText, event.assistantMessageEvent.delta);
-          scheduleLiveUpdate();
-        }
+        // Streaming text deltas are not observed: run state carries only the
+        // completed assistant text, which arrives through message_end.
         break;
       }
       case "tool_execution_start": {
@@ -669,7 +594,6 @@ async function promptSession(input: {
         const text = extractTextFromContent(message.content);
         if (text) {
           details.finalText = text;
-          details.liveText = "";
           pushTimeline(details, { kind: "assistant", text });
         }
         emitUpdate();
@@ -755,10 +679,9 @@ async function promptSession(input: {
       applyRunFailure(details, normalized);
       details.endedAt = nowMs();
       details.durationMs = details.endedAt - details.startedAt;
-      details.liveText = "";
       pushTimeline(details, { kind: "error", text: normalized.info.cause ?? normalized.info.message, isError: true });
       emitUpdate();
-      return { content: buildReturnContent(details), details };
+      return { details };
     }
     if (outcome.terminalAssistantError && !details.errorInfo) {
       applyRunFailure(details, normalizeSubagentError(new Error(outcome.terminalAssistantError), {
@@ -792,7 +715,7 @@ async function promptSession(input: {
     details.endedAt = nowMs();
     details.durationMs = details.endedAt - details.startedAt;
     emitUpdate();
-    return { content: buildReturnContent(details), details };
+    return { details };
   } catch (error) {
     const normalized = normalizeSubagentError(error, {
       operation: details.mode,
@@ -803,13 +726,10 @@ async function promptSession(input: {
     applyRunFailure(details, normalized);
     details.endedAt = nowMs();
     details.durationMs = details.endedAt - details.startedAt;
-    details.liveText = "";
     pushTimeline(details, { kind: "error", text: normalized.info.cause ?? normalized.info.message, isError: true });
     emitUpdate();
-    return { content: buildReturnContent(details), details };
+    return { details };
   } finally {
-    clearLiveUpdateTimer();
-    liveUpdateDirty = false;
     if (!executorOwnsSession) {
       try {
         session?.dispose?.();
@@ -820,11 +740,10 @@ async function promptSession(input: {
   }
 }
 
-/** Runs one fresh delegated task in a persisted child AgentSession. */
+/** Runs one fresh delegated background task in a persisted child AgentSession. */
 export async function runSubagentTask(input: {
   ctx: ExtensionContext;
   id: string;
-  mode: "fg" | "bg";
   task: string;
   parentSessionId?: string;
   contextMessages?: ParentContextMessage[];
@@ -832,20 +751,18 @@ export async function runSubagentTask(input: {
   anchoredEditing?: boolean;
   anchoredAutoRead?: boolean;
   inheritedSystemCore?: string;
-  systemPrompt?: string;
   thinkingLevel?: string;
   modelOverride?: string;
   effortOverride?: string;
   definition?: SubagentDefinition;
   signal?: AbortSignal;
-  onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentRunDetails }) => void;
-}): Promise<{ content: string; details: SubagentRunDetails }> {
+  onUpdate?: (details: SubagentRunDetails) => void;
+}): Promise<{ details: SubagentRunDetails }> {
   const cwd = resolveSubagentCwd(input.ctx.cwd, input.cwd);
   const parentSessionId = resolveParentSessionId(input.ctx, input.parentSessionId);
   let promptSnapshot = compileFreshPrompt({
     definition: input.definition,
     inheritedSystemCore: input.inheritedSystemCore,
-    callPolicy: input.systemPrompt,
     parentMessages: input.contextMessages,
   });
   const prompt = buildDelegatedPrompt({
@@ -899,7 +816,7 @@ export async function runSubagentTask(input: {
     throw createSubagentError({
       code: "PERSISTENCE_FAILED",
       message: "The newly allocated subagent ID already has persisted state.",
-      operation: input.mode,
+      operation: "bg",
       retryable: false,
     });
   }
@@ -908,7 +825,7 @@ export async function runSubagentTask(input: {
     throw createSubagentError({
       code: "PERSISTENCE_FAILED",
       message: "A newly allocated subagent ID is already active.",
-      operation: input.mode,
+      operation: "bg",
       retryable: false,
     });
   }
@@ -923,7 +840,7 @@ export async function runSubagentTask(input: {
       throw createSubagentError({
         code: "PERSISTENCE_FAILED",
         message: "Pi did not create a persistent native session.",
-        operation: input.mode,
+        operation: "bg",
         retryable: false,
       });
     }
@@ -931,7 +848,7 @@ export async function runSubagentTask(input: {
     details = {
       version: 3,
       id: input.id,
-      mode: input.mode,
+      mode: "bg",
       artifactsDir,
       sessionFile,
       sessionId,
@@ -979,7 +896,7 @@ export async function runSubagentTask(input: {
       return finishRunFailure(details, createSubagentError({
         code: resolvedModel.error ? "UNKNOWN_MODEL" : "INVALID_ARGUMENT",
         message,
-        operation: input.mode,
+        operation: "bg",
         id: input.id,
         retryable: false,
         cause: message,
@@ -989,7 +906,7 @@ export async function runSubagentTask(input: {
     assertPromptCanFit({
       prompt,
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
-      operation: input.mode,
+      operation: "bg",
       id: input.id,
       selectedMessages: input.contextMessages?.length ?? 0,
     });
@@ -1008,7 +925,7 @@ export async function runSubagentTask(input: {
       return finishRunFailure(details, createSubagentError({
         code: "INVALID_ARGUMENT",
         message,
-        operation: input.mode,
+        operation: "bg",
         id: input.id,
         retryable: false,
       }));
@@ -1045,18 +962,12 @@ export async function runSubagentTask(input: {
     throw normalizeSubagentError(error, {
       code: "PERSISTENCE_FAILED",
       message: "Unable to initialize the subagent session.",
-      operation: input.mode,
+      operation: "bg",
     });
   } finally {
     leaseResult.lease.release();
   }
 }
-
-export type ResumeSubagentResult = {
-  status: "completed";
-  content: string;
-  details: SubagentRunDetails;
-};
 
 /** Reopens one inactive subagent conversation and appends a new task. */
 export async function resumeSubagentTask(input: {
@@ -1068,8 +979,8 @@ export async function resumeSubagentTask(input: {
   parentSessionId?: string;
   contextMessages?: ParentContextMessage[];
   signal?: AbortSignal;
-  onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: SubagentRunDetails }) => void;
-}): Promise<ResumeSubagentResult> {
+  onUpdate?: (details: SubagentRunDetails) => void;
+}): Promise<{ details: SubagentRunDetails }> {
   const artifactsDir = artifactsDirFor(input.id);
   if (!existsSync(artifactsDir)) {
     throw createSubagentError({
@@ -1078,7 +989,7 @@ export async function resumeSubagentTask(input: {
       operation: "resume",
       id: input.id,
       retryable: false,
-      suggestedAction: "Use an ID returned by delegate or resume in the current version whose artifacts have not been deleted.",
+      suggestedAction: "Use an ID returned by delegate_subagent or resume_subagent in the current version whose artifacts have not been deleted.",
     });
   }
 
@@ -1186,7 +1097,7 @@ export async function resumeSubagentTask(input: {
         id: input.id,
         retryable: false,
       }));
-      return { status: "completed", ...failed };
+      return failed;
     }
 
     assertPromptCanFit({
@@ -1228,11 +1139,11 @@ export async function resumeSubagentTask(input: {
       signal: input.signal,
       onUpdate: input.onUpdate,
     });
-    return { status: "completed", ...result };
+    return result;
   } catch (error) {
     if (details) {
       const failed = finishRunFailure(details, error);
-      return { status: "completed", ...failed };
+      return failed;
     }
     throw error;
   } finally {
@@ -1243,11 +1154,9 @@ export async function resumeSubagentTask(input: {
 // Exposed for unit tests; not part of the public extension API.
 export const __testables = {
   deriveTerminalPhase,
-  buildReturnContent,
   collectLastMessages,
   createChildSettings,
   freezeSystemPrompt,
-  appendLiveTextTail,
   appendChildAnchoredRead,
   appendChildAnchoredEdit,
   appendChildAnchoredWrite,
@@ -1255,6 +1164,4 @@ export const __testables = {
   promptSession,
   anchorRefusalCode,
   classifyToolEnd,
-  LIVE_UPDATE_THROTTLE_MS,
-  MAX_LIVE_TEXT,
 };

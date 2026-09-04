@@ -49,8 +49,8 @@ const KNOWN_TOOL_FIELDS: Readonly<Record<string, readonly string[]>> = Object.fr
   fetch: ["urls"],
   libs: ["libraryName", "query"],
   docs: ["libraryId", "query"],
-  delegate: ["agent", "mode"],
-  resume: ["id"],
+  delegate_subagent: ["agent"],
+  resume_subagent: ["id"],
   todo: ["action"],
   parse: ["path", "pages"],
 });

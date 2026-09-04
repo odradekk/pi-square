@@ -64,6 +64,14 @@ export async function resumeSubagentTask(input) {
   return await mockState.impl(input);
 }
 
+// Mirrors session.ts so tool.ts can resolve the child cwd against the mocked seam.
+export function resolveSubagentCwd(baseCwd, maybeCwd) {
+  const input = String(maybeCwd ?? "").trim();
+  if (!input) return baseCwd;
+  const normalized = input.startsWith("@") ? input.slice(1) : input;
+  return normalized.startsWith("/") ? normalized : resolve(baseCwd, normalized);
+}
+
 export async function loadBackgroundModule() {
   return load(join(packageRoot, "src", "subagents", "background.ts"));
 }

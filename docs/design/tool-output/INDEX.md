@@ -122,7 +122,7 @@ removes the majority of the individual defects that the tool documents list.
 | Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh` | C4 one-row collapsed entry; the payload moves to the expanded body |
 | Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
 | Key-value metadata rows and coded fields | every family | State the same facts in the inline summary |
-| A failure body is rendered twice | `pwsh`, `ssh`, `delegate`, `resume` | Render the error stream once |
+| A failure body is rendered twice | `pwsh`, `ssh`, `delegate_subagent`, `resume_subagent` | Render the error stream once |
 | Raw platform or provider text as the failure message | every family | C6 one sentence, raw text in the expanded `ERROR` section |
 | Empty result presented as a fake list entry | `ls`, `find`, `grep` | A muted state row and no section |
 | Truncation without the `truncated` badge | `read`, `write`, `bash` | C7 |
@@ -131,7 +131,7 @@ removes the majority of the individual defects that the tool documents list.
 
 One defect is a correctness defect rather than a presentation defect:
 
-1. `delegate`/`resume` parse each end-phase timeline entry into a malformed activity
+1. `delegate_subagent`/`resume_subagent` parse each end-phase timeline entry into a malformed activity
    row such as `read:  working`.
 
 ## Status
@@ -160,5 +160,5 @@ One defect is a correctness defect rather than a presentation defect:
 | 18 | `todo` | workflow | [todo.md](todo.md) | Designed |
 | 19 | `ask` | workflow | [ask.md](ask.md) | Designed |
 | 20 | `time` | workflow | [time.md](time.md) | Designed |
-| 21 | `delegate` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
-| 22 | `resume` | agent | [subagent-resume.md](subagent-resume.md) | Designed |
+| 21 | `delegate_subagent` | agent | [subagent-delegate.md](subagent-delegate.md) | Designed |
+| 22 | `resume_subagent` | agent | [subagent-resume.md](subagent-resume.md) | Designed |

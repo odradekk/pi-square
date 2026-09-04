@@ -158,18 +158,18 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   // ── agent ───────────────────────────────────────────────────────
   {
-    name: "delegate",
+    name: "delegate_subagent",
     family: "agent",
     parent: true,
     child: false,
-    description: "Delegate work to a child subagent",
+    description: "Queue a fresh child subagent in the background",
   },
   {
-    name: "resume",
+    name: "resume_subagent",
     family: "agent",
     parent: true,
     child: false,
-    description: "Resume an existing child subagent",
+    description: "Queue a continuation for an existing child subagent",
   },
 ] satisfies readonly DisplayToolCatalogEntry[]).map((entry) => Object.freeze(entry)));
 

@@ -91,4 +91,4 @@ The existing smoke test must continue to verify production registration for ever
 - `docs/design/expanded-result-search.md` — `grep`, `pdf_search`.
 - `docs/design/expanded-result-execution.md` — `bash`, `pwsh`.
 - `docs/design/expanded-result-remote.md` — `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`.
-- `docs/design/expanded-result-workflow-agent.md` — `todo`, `ask`, `time`, `subagent_delegate`, `subagent_resume`.
+- `docs/design/expanded-result-workflow-agent.md` — `todo`, `ask`, `time`, `delegate_subagent`, `resume_subagent`.

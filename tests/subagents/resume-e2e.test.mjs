@@ -154,7 +154,7 @@ test("done subagents resume with the same public and native session IDs", async 
   state.messageSequence = 0;
   try {
     mkdirSync(cwd, { recursive: true });
-    const first = await runSubagentTask({ ctx: ctx(cwd), id: ID, mode: "fg", task: "initial task" });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id: ID, task: "initial task" });
     assert.equal(first.details.phase, "done");
     const { sessionFile, sessionId } = first.details;
     assert.deepEqual(state.openedPaths, [sessionFile], "fresh setup should reopen its initialized header through the native manager");
@@ -167,7 +167,6 @@ test("done subagents resume with the same public and native session IDs", async 
       contextMessages: [{ role: "user", text: "parent decision" }],
     });
 
-    assert.equal(resumed.status, "completed");
     assert.equal(resumed.details.id, ID);
     assert.equal(resumed.details.sessionFile, sessionFile);
     assert.equal(resumed.details.sessionId, sessionId);
@@ -201,11 +200,9 @@ test("resume restores original model, tools, effort, and system prompt", async (
     await runSubagentTask({
       ctx: ctx(cwd),
       id,
-      mode: "fg",
       task: "initial",
       modelOverride: "fake-provider/fake-model",
       effortOverride: "high",
-      systemPrompt: "extra system",
       definition: definition({ tools: ["read", "edit"] }),
     });
     const original = state.createCalls.at(-1);
@@ -240,7 +237,6 @@ test("resume migrates the former dual-shell declaration to a portable shell inte
     const first = await runSubagentTask({
       ctx: ctx(cwd),
       id,
-      mode: "fg",
       task: "initial",
       definition: definition({ tools: ["read", "shell"] }),
     });
@@ -251,7 +247,6 @@ test("resume migrates the former dual-shell declaration to a portable shell inte
     writeFileSync(runPath, `${JSON.stringify(legacy, null, 2)}\n`, "utf8");
 
     const resumed = await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
-    assert.equal(resumed.status, "completed");
     assert.ok(state.createCalls.at(-1).tools.includes("bash"));
     assert.ok(!state.createCalls.at(-1).tools.includes("pwsh"));
     assert.deepEqual(resumed.details.agent.tools, ["read", "shell"]);
@@ -276,7 +271,7 @@ test("fresh runs compile exactly one working-directory suffix and freeze it out 
   state.agentsFiles = [{ path: "/child/AGENTS.md", content: "CHILD CONTEXT" }];
   try {
     mkdirSync(cwd, { recursive: true });
-    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, task: "initial" });
     const freshEffective = state.effectiveSystems.at(-1);
     assert.equal(first.details.phase, "done");
     assert.equal(countCwdLines(freshEffective), 1, "Pi must append exactly one working-directory suffix");
@@ -314,7 +309,7 @@ test("resume strips the historical date-plus-cwd suffix from persisted snapshots
   state.agentsFiles = [];
   try {
     mkdirSync(cwd, { recursive: true });
-    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, task: "initial" });
     const runPath = join(first.details.artifactsDir, "run.json");
     const persisted = JSON.parse(readFileSync(runPath, "utf8"));
     const frozenSystem = persisted.promptSnapshot.system;
@@ -349,7 +344,7 @@ test("early resume failures persist the frozen SYSTEM with its matching hash", a
   state.agentsFiles = [];
   try {
     mkdirSync(cwd, { recursive: true });
-    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, task: "initial" });
     const runPath = join(first.details.artifactsDir, "run.json");
     const persisted = JSON.parse(readFileSync(runPath, "utf8"));
     const frozenSystem = persisted.promptSnapshot.system;
@@ -361,7 +356,6 @@ test("early resume failures persist the frozen SYSTEM with its matching hash", a
     writeFileSync(runPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
 
     const resumed = await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
-    assert.equal(resumed.status, "completed");
     assert.equal(resumed.details.phase, "error");
     assert.equal(state.createCalls.length, 1, "unknown model must fail before creating a resumed child session");
 
@@ -390,7 +384,7 @@ test("resume collapses duplicated working-directory suffixes persisted by earlie
   state.agentsFiles = [];
   try {
     mkdirSync(cwd, { recursive: true });
-    const first = await runSubagentTask({ ctx: ctx(cwd), id, mode: "fg", task: "initial" });
+    const first = await runSubagentTask({ ctx: ctx(cwd), id, task: "initial" });
     const runPath = join(first.details.artifactsDir, "run.json");
     const persisted = JSON.parse(readFileSync(runPath, "utf8"));
     const frozenSystem = persisted.promptSnapshot.system;

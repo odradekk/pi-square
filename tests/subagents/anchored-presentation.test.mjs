@@ -200,7 +200,7 @@ test("a run with anchored refusals completes with a warning qualifier, not a fai
     ],
     toolWarnings: [{ tool: "replace", message: "replace refused with [E_RANGE_STALE]" }],
   });
-  const description = describeSubagentRun("delegate", refused, { expanded: false, isPartial: false, isError: false }, "background content");
+  const description = describeSubagentRun("delegate_subagent", refused, { expanded: false, isError: false }, "background content");
   assert.equal(description.lifecycle, "completed", "an anchor refusal is not a failed lifecycle");
   assert.ok(description.qualifiers.includes("warning"), "the refusal surfaces as a warning qualifier");
   assert.match(description.summary ?? "", /1 anchored refusal/);
@@ -214,7 +214,7 @@ test("a genuine tool error remains distinct from an anchored refusal", () => {
     ],
     toolErrors: [{ tool: "read", message: "[E_NOT_FOUND] No such file" }],
   });
-  const description = describeSubagentRun("delegate", failed, { expanded: false, isPartial: false, isError: false }, "background content");
+  const description = describeSubagentRun("delegate_subagent", failed, { expanded: false, isError: false }, "background content");
   assert.equal(description.lifecycle, "completed");
   assert.ok(description.qualifiers.includes("warning"), "a tool error still warns");
   assert.match(description.summary ?? "", /1 tool error/);

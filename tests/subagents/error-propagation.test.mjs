@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import jiti from "jiti";
-import { loadToolModule, run, setRunSubagentTaskMock, test } from "./lib/test-helpers.mjs";
+import { run, test, waitFor } from "./lib/test-helpers.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const root = join(tmpdir(), `pi-square-error-propagation-${process.pid}-${Date.now()}`);
@@ -45,48 +45,57 @@ export const SessionManager = { create(cwd, artifactsDir) { sequence += 1; const
 export const SettingsManager = { inMemory(value) { return value; } };
 `, "utf8");
 
-const loadSession = jiti(import.meta.url, { moduleCache: false, alias: { "@earendil-works/pi-coding-agent": mockSdkPath } });
-const { runSubagentTask } = await loadSession(join(packageRoot, "src", "subagents", "session.ts"));
-const { registerSubagentTool } = await loadToolModule();
+// One loader resolves the whole subagent graph — tool, background lifecycle,
+// and the session seam — against the mocked SDK, so the delegated tool call
+// exercises the real background path end to end.
+const load = jiti(import.meta.url, {
+  moduleCache: false,
+  alias: { "@earendil-works/pi-coding-agent": mockSdkPath },
+});
+const { registerSubagentTool } = await load(join(packageRoot, "src", "subagents", "tool.ts"));
+const { createBackgroundState } = await load(join(packageRoot, "src", "subagents", "background.ts"));
 process.env.PI_AGENT_DIR = root;
 mkdirSync(root, { recursive: true });
 
-function tool() {
+test("background envelope exposes silent child tool failures as a structured error", async () => {
+  const sent = [];
+  const state = {
+    registry: { definitions: [], errors: [], projectDir: null },
+    background: createBackgroundState(),
+  };
   const tools = new Map();
   registerSubagentTool({
     registerTool(definition) { tools.set(definition.name, definition); },
     registerMessageRenderer() {},
     registerCommand() {},
+    sendMessage(message, options) { sent.push({ message, options }); },
     getThinkingLevel() { return "off"; },
-  }, {
-    registry: { definitions: [], errors: [], projectDir: null },
-    background: { jobs: new Map() },
-  });
-  return tools.get("delegate");
-}
-
-test("foreground envelope exposes silent child tool failures as a structured error", async () => {
-  setRunSubagentTaskMock((input) => runSubagentTask(input));
-  const result = await tool().execute(
+  }, state);
+  const result = await tools.get("delegate_subagent").execute(
     "tool:error",
-    { mode: "fg", task: "trigger failures" },
+    { task: "trigger failures" },
     undefined,
     undefined,
     {
-      cwd: "/tmp/subagents",
+      cwd: root,
       model: { provider: "test", id: "model", contextWindow: 100000 },
       modelRegistry: { find() { return undefined; } },
       sessionManager: { getSessionId: () => "parent-error-session", getBranch: () => [] },
     },
   );
-  assert.equal(result.isError, true);
-  assert.equal(result.details.phase, "error");
-  assert.equal(result.details.errorInfo.code, "SUBAGENT_FAILED");
-  assert.deepEqual(result.details.toolErrors, [
+  assert.equal(result.isError, undefined, "queueing is a successful tool call");
+
+  const job = [...state.background.jobs.values()].find((item) => item.details.task === "trigger failures");
+  assert.ok(job, "the queued job is registered in the background state");
+  await waitFor(() => job.status === "error", "background job to fail");
+  assert.equal(job.details.phase, "error");
+  assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
+  assert.deepEqual(job.details.toolErrors, [
     { tool: "grep", message: "grep failed" },
     { tool: "bash", message: "exit status 2" },
   ]);
-  assert.match(result.content[0].text, /Subagent failed/);
+  await waitFor(() => sent.length === 1, "the failure to enter the delivery set");
+  assert.match(sent[0].message.content, /Subagent failed/);
 });
 
 await run();

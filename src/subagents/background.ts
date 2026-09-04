@@ -371,7 +371,7 @@ function startBackgroundLifecycle(input: {
   state: BackgroundState;
   job: BackgroundJob;
   operation: "bg" | "resume";
-  execute: (onUpdate: (partial: { details: SubagentRunDetails }) => void) => Promise<{ details: SubagentRunDetails }>;
+  execute: (onUpdate: (details: SubagentRunDetails) => void) => Promise<{ details: SubagentRunDetails }>;
 }): void {
   const { pi, state, job } = input;
   void (async () => {
@@ -388,9 +388,9 @@ function startBackgroundLifecycle(input: {
     job.details.timeline.push({ kind: "status", text: "background subagent job started" });
     emitChange(state);
 
-    const result = await input.execute((partial) => {
+    const result = await input.execute((details) => {
       if (jobWasAborted(job)) return;
-      job.details = partial.details;
+      job.details = details;
       job.updatedAt = now();
       emitChange(state);
     });
@@ -447,7 +447,6 @@ export function startBackgroundJob(input: {
   anchoredEditing?: boolean;
   anchoredAutoRead?: boolean;
   inheritedSystemCore?: string;
-  systemPrompt?: string;
   thinkingLevel?: string;
   modelOverride?: string;
   effortOverride?: string;
@@ -463,7 +462,6 @@ export function startBackgroundJob(input: {
     execute: (onUpdate) => runSubagentTask({
       ctx: input.ctx,
       id: input.job.id,
-      mode: "bg",
       task: input.task,
       anchoredEditing: input.anchoredEditing,
       anchoredAutoRead: input.anchoredAutoRead,
@@ -471,7 +469,6 @@ export function startBackgroundJob(input: {
       contextMessages: input.contextMessages,
       cwd: input.cwd,
       inheritedSystemCore: input.inheritedSystemCore,
-      systemPrompt: input.systemPrompt,
       thinkingLevel: input.thinkingLevel,
       definition: input.definition,
       modelOverride: input.modelOverride,
@@ -491,6 +488,7 @@ export function startBackgroundResumeJob(input: {
   anchoredEditing?: boolean;
   anchoredAutoRead?: boolean;
   parentSessionId: string;
+  contextMessages?: ParentContextMessage[];
 }): void {
   startBackgroundLifecycle({
     pi: input.pi,
@@ -504,6 +502,7 @@ export function startBackgroundResumeJob(input: {
       anchoredEditing: input.anchoredEditing,
       anchoredAutoRead: input.anchoredAutoRead,
       parentSessionId: input.parentSessionId,
+      contextMessages: input.contextMessages,
       signal: input.job.abortController.signal,
       onUpdate,
     }),

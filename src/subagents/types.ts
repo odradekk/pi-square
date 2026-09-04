@@ -1,3 +1,6 @@
+/** Persisted run dimension. New records carry only `"bg"` and `"resume"`;
+ * `"fg"` is the retired foreground value and is still read so persisted
+ * records from earlier versions keep rendering and stay resumable. */
 export type SubagentMode = "fg" | "bg" | "resume";
 export type SubagentPhase = "running" | "cancelling" | "done" | "error" | "aborted";
 
@@ -72,7 +75,6 @@ export interface PromptManifest {
   governanceHash: string;
   parentSystemHash?: string;
   policyHash?: string;
-  callPolicyHash?: string;
   instructionsHash?: string;
   outputHash?: string;
   definitionHash?: string;
