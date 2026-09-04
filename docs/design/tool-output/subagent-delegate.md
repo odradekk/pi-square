@@ -1,13 +1,16 @@
-# `delegate`
+# `delegate_subagent`
 
 **Family:** agent · **Scope:** parent only · **Owner:**
 `src/subagents/tool.ts`, rendered by `src/subagents/display-adapter.ts`
 
 **Status:** Implemented.
 
-`delegate` and `resume` share one grammar. This document is
+`delegate_subagent` and `resume_subagent` share one grammar. This document is
 the reference; [subagent-resume.md](subagent-resume.md) records only the
-differences.
+differences. Both tools are background-only: the tool call queues the child in
+the session-owned background lifecycle and returns immediately with the public
+ID and the queued state, and the finished result arrives as a background
+completion message.
 
 ## Evidence level
 
@@ -21,67 +24,22 @@ uses the real v3 shape that the tool emits.
 Call:
 
 ```
-⠋ ◇ Subagent explorer                                                        0ms
-│    mode=fg · context=2
-│  Trace how the display runtime resolves the effective policy and report the
+● Subagent explorer                                                0.0s
+│    Trace how the display runtime resolves the effective policy and report the
 └─ exact files.
 ```
 
-Completed, collapsed:
+Queued result, collapsed (the immediate tool outcome):
 
 ```
-✓ ◇ Subagent explorer                                                      42.0s
-│    id=12345678 · mode=fg · phase=done · model=cpa/deepseek-v4-flash ·
-│    effort=xhigh · turns=6
-│    # Findings
-│    read src/display/policy.ts
-│
-│    ACTIVITY ──────────────────────────────────────────────────────────────────
-│    read:  working                                                       ✓ done
-│
-│    USAGE ─────────────────────────────────────────────────────────────────────
-│      turns=6
-│      input=18240
-│      output=1310
-│      cacheRead=12000
-│      cacheWrite=0
-└─     cost=0.0182
+– Subagent explorer           Queued in the parent session            0.0s
 ```
 
-Completed, expanded activity:
+Completed background completion, collapsed:
 
 ```
-│    ACTIVITY ──────────────────────────────────────────────────────────────────
-│    rg  rg /resolvePolicy/ in src/display                             → running
-│    rg:  working                                                         ✓ done
-│    read  read src/display/policy.ts                                  → running
-│    read:  working                                                       ✓ done
+✓ Subagent explorer done · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
 ```
-
-Failed, where the error text appears twice:
-
-```
-✗ ◇ Subagent explorer                                                      42.0s
-│    id=12345678 · mode=fg · phase=error · …
-│    Child model returned no auth
-│    …
-└─   Child model returned no auth
-```
-
-## Defects
-
-| # | Defect | Convention |
-|---|---|---|
-| 99 | The metadata row prints six key-value fields and wraps to two rows | C4 |
-| 100 | Each tool call produces two `ACTIVITY` rows, and one of them is malformed: the tool name is parsed as `read:` with a colon and the summary degrades to the literal word `working` | — |
-| 101 | `ACTIVITY` uses a `→ running` arrow, which is a second lifecycle vocabulary | C5 |
-| 102 | A failure renders the error text twice | C8 |
-| 103 | `USAGE` prints six key-value rows, and the collected `toolErrors` are never shown | C4 |
-| 104 | The collapsed body mixes the result preview with activity rows and keeps the raw `# Findings` marker, while the expanded body strips it | C4 |
-
-Defect 100 is a parsing defect, not a layout defect: the end-phase timeline
-entry `read: ok` is split on whitespace, so the tool identity keeps its colon
-and the remaining text is not a call summary.
 
 ## Target design
 
@@ -92,21 +50,37 @@ expanded.
 ### Call
 
 ```
-● Subagent explorer fg · 2 context messages                                0.0s
+● Subagent explorer 2 context messages                                0.0s
 ```
 
-The target is the agent name. The inline summary states the delivery mode and
-the context count in words; the task text renders only when the entry is
-expanded. Custom system text is never rendered, and this rule does not
-change.
+The target is the agent name. The inline summary states the context count in
+words; the task text renders only when the entry is expanded. System text is
+never rendered, and this rule does not change.
 
-### Collapsed result
+### Queued result
 
-One row (C4). The inline summary states the phase, the turns, the total
-tokens, the cost, and the short run ID:
+One row (C4). The immediate result of a delegation call states the queued
+state and identifies the run:
 
 ```
-● Subagent explorer done · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
+– Subagent explorer           Queued in the parent session            0.0s
+```
+
+A generic run without a named agent shows the short run ID as the target.
+Rules:
+
+1. The queued row never implies completion.
+2. The full run ID is never rendered.
+
+### Completed result
+
+The completed run renders through the background completion message, which
+reuses this description builder inside Pi's native success/error shell. The
+inline summary states the phase, the turns, the total tokens, the cost, and
+the short run ID:
+
+```
+✓ Subagent explorer done · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
 ```
 
 The normalized result preview renders only when the entry is expanded.
@@ -123,8 +97,7 @@ Inline summary cases:
 | Case | Row |
 |---|---|
 | Completed | `done · 6 turns · 31.5k tokens · $0.018 · run 12345678` |
-| Running | `running · 3 turns so far · run 12345678` |
-| Queued in background | `queued · run 12345678` |
+| Queued in background | `Queued in the parent session` |
 | Failed | `error · 6 turns · run 12345678` |
 | Aborted | `aborted · run 12345678` |
 | Tool errors present | adds `· 1 tool error` and the `warning` qualifier |
@@ -146,9 +119,8 @@ Four sections, in this order.
    ```
 
    The leading glyph reuses the lifecycle vocabulary: `●` running, `✓`
-   completed, `×` failed. The `→ running` arrow is removed. A tool that the
-   shared allowlisted formatter does not know shows only `called`. No tool
-   result payload is ever rendered.
+   completed, `×` failed. A tool that the shared allowlisted formatter does
+   not know shows only `called`. No tool result payload is ever rendered.
 
 4. `USAGE` — one row, not six fields:
 
@@ -157,7 +129,9 @@ Four sections, in this order.
    ```
 
 One muted row above `TASK` states the run identity that the inline summary
-does not carry: the mode, the model, and the effort.
+does not carry: the run kind, the model, and the effort. An expanded queued
+result states `Queued in the parent session` as a muted row instead of a
+result preview.
 
 ### Failure
 
@@ -172,24 +146,25 @@ raw session data, no artifact path, and no full run ID in any state.
 
 ## Acceptance criteria
 
-1. The header shows `●`, the title `Subagent`, and the agent name as the
-   target.
+1. The header shows `–` for the queued result, the title `Subagent`, and the
+   agent name (or short run ID) as the target.
 2. The collapsed entry is exactly one row with the outcome inline, and no
    activity rows; the normalized result preview renders only when the entry
    is expanded.
 3. Markdown normalization is identical in the collapsed and the expanded
    bodies.
 4. `ACTIVITY` renders exactly one row per tool call, with the lifecycle glyph
-   and no `→ running` arrow, and no malformed `tool:` identity.
+   and no malformed `tool:` identity.
 5. `USAGE` is one row.
 6. A failure renders its message exactly once, and tool errors are visible.
 7. No prompt, system text, session data, artifact path, or full run ID is
    rendered.
-8. The model-facing result is unchanged.
+8. The model-facing result is unchanged: the queued ID text plus the queued
+   run record.
 9. Every state is bounded at 39, 40, 63, 64, 80, 99, 100, and 120 columns in
    both bundled themes.
 
 ## Out of scope
 
-- The `/subagent` manager and the background completion message, which keep
-  their own accepted designs and already share this description builder.
+- The `/subagent` manager and the background completion message shell, which
+  keep their own accepted designs and already share this description builder.

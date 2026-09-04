@@ -1,4 +1,4 @@
-# `resume`
+# `resume_subagent`
 
 **Family:** agent · **Scope:** parent only · **Owner:**
 `src/subagents/tool.ts`, rendered by `src/subagents/display-adapter.ts`
@@ -6,64 +6,42 @@
 **Status:** Implemented.
 
 Uses the grammar of [subagent-delegate.md](subagent-delegate.md). This
-document records only what differs.
+document records only what differs. `resume_subagent` is background-only like
+`delegate_subagent`: it validates the persisted record and the effective
+activity lease, queues the continuation in the session-owned background
+lifecycle, and immediately returns the same public ID and the queued state.
 
 ## Current output
 
 Call:
 
 ```
-⠋ ◇ Resume subagent 12345678                                                 0ms
+● Resume subagent 12345678                                          0.0s
 └─ Continue: also report the provenance fields.
 ```
 
-Result, collapsed:
+Queued result, collapsed:
 
 ```
-✓ ◇ Resume subagent explorer                                               42.0s
-│    id=12345678 · mode=fg · phase=done · model=cpa/deepseek-v4-flash ·
-│    effort=xhigh · turns=6
-│    # Findings
-│    read src/display/policy.ts
-│
-│    ACTIVITY ──────────────────────────────────────────────────────────────────
-│    read:  working                                                       ✓ done
-│
-│    USAGE ─────────────────────────────────────────────────────────────────────
-│      turns=6
-│      …
+– Resume subagent 12345678   Queued in the parent session           0.0s
 ```
-
-## Defects
-
-Every defect of [subagent-delegate.md](subagent-delegate.md), 99 to 104,
-applies unchanged. In addition:
-
-| # | Defect | Convention |
-|---|---|---|
-| 105 | The target changes between the call and the result: the call shows the short run ID, the result shows the agent name. The same transcript entry therefore changes identity when it completes | C5 |
-
-The result must visually replace the pending call, so the identity in the
-header must not move.
 
 ## Target design
 
 ### Header
 
 ```
-● Resume explorer 12345678                                               42.0s
+– Resume 12345678             Queued in the parent session          0.0s
 ```
 
-The title is `Resume`. The target is the agent name followed by the short run
-ID, and it is **identical** in the call and in the result. The agent name is
-known at call time from the persisted record; when the record cannot be read
-before execution, the target is the short run ID alone and stays that way for
-the whole entry.
+The title is `Resume`. The target is the short run ID, and it is **identical**
+in the call and in the queued result, so the entry never changes identity when
+the result replaces the pending call.
 
 ### Call
 
 ```
-● Resume explorer 12345678 frozen model and effort                         0.0s
+● Resume 12345678 frozen model and effort                            0.0s
 ```
 
 The inline summary states that a resumed run keeps the original frozen model
@@ -71,27 +49,35 @@ and effort values, because that is the fact a user most often needs when they
 compare a resume with a fresh delegation. The follow-up task text renders
 only when the entry is expanded.
 
-### Result
+### Queued result
 
-Identical to [subagent-delegate.md](subagent-delegate.md), with one addition
-in the inline summary: a resumed run states the cumulative turn count and
-marks it as cumulative.
+Identical to [subagent-delegate.md](subagent-delegate.md), with the resume
+target: one row that states the queued state and the same public ID that the
+call named.
+
+### Completed result
+
+Rendered through the background completion message, identical to
+[subagent-delegate.md](subagent-delegate.md), with one addition in the inline
+summary: a resumed run states the cumulative turn count and marks it as
+cumulative.
 
 | Case | Row |
 |---|---|
 | Completed | `done · 9 turns total · 48.2k tokens · $0.031 · run 12345678` |
+| Queued in background | `Queued in the parent session` |
 | Active lease conflict | `Run 12345678 is already active` |
 | Unknown run | `Unknown run 12345678` |
 | Not resumable | `Run 12345678 has no resumable artifacts` |
 
 The retryable `SUBAGENT_ACTIVE` error keeps its exact tool-error contract; only
-its rendered sentence changes.
+its rendered sentence changes. The lease and history rejections happen before
+anything is queued, so the tool call itself carries the structured error.
 
 ## Acceptance criteria
 
-1. The header target is identical in the call and in the result.
-2. The title is `Resume` and the target carries the agent name and the short
-   run ID.
+1. The header target is identical in the call and in the queued result.
+2. The title is `Resume` and the target carries the short run ID.
 3. The inline summary states cumulative turns for a resumed run.
 4. An active-lease conflict renders one sentence and the failed state, and the
    underlying tool-error contract is unchanged.
