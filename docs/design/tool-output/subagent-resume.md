@@ -66,7 +66,7 @@ marks it as cumulative in the inline summary.
 
 | Case | Row |
 |---|---|
-| Completed | `done · 9 turns total · 48.2k tokens · $0.031 · run 12345678` |
+| Completed | `completed · 9 turns total · 48.2k tokens · $0.031 · run 12345678` |
 | Queued in background | `Queued in the parent session · run 12345678` |
 | Active lease conflict | `Run 12345678 is already active` |
 | Unknown run | `Unknown run 12345678` |

@@ -15,9 +15,9 @@ completion message.
 ## Evidence level
 
 Rendered through the production adapter `decorateSubagentTool` at 80 columns,
-with a complete v3 run record for each lifecycle state. The record is
+with a complete V4 run record for each lifecycle state. The record is
 synthetic, because a real child run needs a live parent session; every field
-uses the real v3 shape that the tool emits.
+uses the real V4 shape that the tool emits.
 
 ## Current output
 
@@ -38,7 +38,7 @@ Queued result, collapsed (the immediate tool outcome):
 Completed background completion, collapsed:
 
 ```
-✓ Subagent explorer done · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
+✓ Subagent explorer completed · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
 ```
 
 ## Target design
@@ -82,10 +82,12 @@ inline summary states the phase, the turns, the total tokens, the cost, and
 the short run ID:
 
 ```
-✓ Subagent explorer done · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
+✓ Subagent explorer completed · 6 turns · 31.5k tokens · $0.018 · run 12345678 42.0s
 ```
 
-The normalized result preview renders only when the entry is expanded.
+At narrower widths the inline summary elides before the outcome head and the
+cost/run-id tail drop. The normalized result preview renders only when the
+entry is expanded.
 
 Rules:
 
@@ -98,9 +100,9 @@ Inline summary cases:
 
 | Case | Row |
 |---|---|
-| Completed | `done · 6 turns · 31.5k tokens · $0.018 · run 12345678` |
+| Completed | `completed · 6 turns · 31.5k tokens · $0.018 · run 12345678` |
 | Queued in background | `Queued in the parent session · run 12345678` |
-| Failed | `error · 6 turns · run 12345678` |
+| Failed | `failed · 6 turns · run 12345678` |
 | Aborted | `aborted · run 12345678` |
 | Tool errors present | adds `· 1 tool error` and the `warning` qualifier |
 
@@ -131,9 +133,9 @@ Four sections, in this order.
    ```
 
 One muted row above `TASK` states the run identity that the inline summary
-does not carry: the run kind, the model, and the effort. An expanded queued
-result states `Queued in the parent session` as a muted row instead of a
-result preview.
+does not carry: the run operation (`delegate` or `resume`), the model, and the
+effort. An expanded queued result states `Queued in the parent session` as a
+muted row instead of a result preview.
 
 ### Failure
 
