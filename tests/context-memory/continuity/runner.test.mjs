@@ -1,0 +1,671 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MARKER, SEVERE_CLASSES } from "../qualification/harness.mjs";
+import { SCENARIOS } from "./scenarios.mjs";
+import { createFakeAdapter, FAKE_ADAPTER_DECLARATION } from "./fake-model.mjs";
+import {
+  planRuns,
+  deriveSeed,
+  selectRerunScope,
+  pinEnvironment,
+  executeRun,
+  runQualification,
+  runLabel,
+  attemptFileNames,
+  attemptFilePaths,
+  REPORT_SCHEMA,
+  EVIDENCE_SCHEMA,
+} from "./runner.mjs";
+import { evaluateGates } from "./oracles.mjs";
+
+/**
+ * Fake/dry-run coverage for the continuity qualification system (#224):
+ * orchestration of the fixed 16-run matrix through the adapter seam against
+ * the production controller, deterministic scoring of every severe failure
+ * class and every gate-blocking condition, the bounded report shape with its
+ * privacy self-check, failure propagation into the verdict, and the
+ * impact-based rerun selection. No provider credential is read anywhere.
+ */
+
+const RUN = (scenario, variant, arm = "primary") => ({ scenario, variant, arm, seed: deriveSeed({ scenario, variant, arm }) });
+
+async function runWithDefects(scenario, variant, defects) {
+  const { score, evidence } = await executeRun({
+    adapter: createFakeAdapter({ defects }),
+    run: RUN(scenario, variant),
+  });
+  return { score, evidence };
+}
+
+// ─── Orchestration: the fixed run matrix ───────────────────────────
+
+{
+  const runs = planRuns();
+  assert.equal(runs.length, 16, "the matrix is the fixed 16-run gate of #215");
+  const primary = runs.filter((run) => run.arm === "primary");
+  const secondary = runs.filter((run) => run.arm === "secondary");
+  assert.equal(primary.length, 12, "the primary arm covers early/middle/late for all four scenarios");
+  assert.equal(secondary.length, 4, "the secondary arm covers one canonical run per scenario");
+  for (const scenario of SCENARIOS) {
+    assert.deepEqual(
+      primary.filter((run) => run.scenario === scenario.id).map((run) => run.variant).sort(),
+      ["early", "late", "middle"],
+      `${scenario.id} primary variants`,
+    );
+    assert.deepEqual(
+      secondary.filter((run) => run.scenario === scenario.id).map((run) => run.variant),
+      ["canonical"],
+      `${scenario.id} secondary runs the canonical variant`,
+    );
+  }
+  assert.deepEqual(planRuns(), runs, "the matrix is deterministic");
+  assert.deepEqual(planRuns({ salt: "other-salt" }).map((run) => run.seed), runs.map((run) => deriveSeed(run, "other-salt")));
+  assert.notDeepEqual(planRuns({ salt: "other-salt" }).map((run) => run.seed), runs.map((run) => run.seed), "seeds follow the salt");
+  assert.equal(new Set(runs.map((run) => run.seed)).size, 16, "every run carries a distinct seed");
+}
+
+// ─── Rerun selection (#215 impact-based rules) ─────────────────────
+
+{
+  const full = selectRerunScope({ kind: "model-visible" });
+  assert.equal(full.scope, "full");
+  assert.equal(full.runs.length, 16);
+  assert.equal(selectRerunScope({ kind: "algorithm" }).scope, "full");
+
+  const none = selectRerunScope({ kind: "ui" });
+  assert.equal(none.scope, "none");
+  assert.equal(none.runs.length, 0);
+  assert.equal(selectRerunScope({ kind: "documentation" }).runs.length, 0);
+
+  const provider = selectRerunScope({ kind: "provider", arms: ["primary"] });
+  assert.equal(provider.scope, "affected");
+  assert.deepEqual(provider.runs.map((run) => run.arm), Array(12).fill("primary"));
+  assert.equal(selectRerunScope({ kind: "pi-compat", arms: [] }).scope, "full", "unspecified arms fail safe to everything");
+
+  const defect = selectRerunScope({ kind: "defect", scenarios: ["branch-isolation", "source-recovery"] });
+  assert.equal(defect.scope, "affected");
+  assert.deepEqual([...new Set(defect.runs.map((run) => run.scenario))], ["branch-isolation", "source-recovery"]);
+  assert.equal(defect.runs.length, 8, "a defect rerun covers every variant and arm of the affected scenarios");
+  assert.equal(selectRerunScope({ kind: "defect" }).scope, "full", "unspecified scenarios fail safe to everything");
+  assert.equal(selectRerunScope({ kind: "made-up" }).scope, "full", "unknown kinds fail safe to everything");
+}
+
+// ─── Pinning ───────────────────────────────────────────────────────
+
+{
+  const pins = pinEnvironment({ adapterDeclaration: FAKE_ADAPTER_DECLARATION });
+  assert.match(pins.implementation.commit, /^[0-9a-f]{40}$/, "the implementation commit is pinned");
+  assert.match(pins.implementation.digest, /^[0-9a-f]{64}$/, "the implementation digest is pinned");
+  assert.equal(typeof pins.implementation.dirty, "boolean");
+  assert.equal(pins.package.name, "@odradekk/pi-square");
+  assert.match(pins.package.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(pins.pi.package, "0.84.2", "the pinned package version records what the corpus was qualified against");
+  assert.equal(pins.config.contextMemory.enabled, true);
+  assert.equal(pins.config.modelWindow, 200_000);
+  for (const arm of ["primary", "secondary"]) {
+    const declared = pins.arms[arm];
+    assert.ok(declared.provider && declared.model, `${arm} pins provider/model`);
+    assert.equal(typeof declared.thinking, "string", `${arm} pins thinking settings`);
+    assert.ok(declared.sampling && typeof declared.sampling === "object", `${arm} pins sampling settings`);
+  }
+  assert.match(pins.fixtures.digest, /^[0-9a-f]{64}$/, "the fixture commit digest is pinned");
+  assert.match(pins.fixtures.rubricDigest, /^[0-9a-f]{64}$/, "the rubric digest is pinned");
+  assert.equal(pins.seeds.length, 16, "the supported seed list is recorded");
+  assert.equal(typeof pins.seedRule, "string");
+  assert.match(pins.pinsDigest, /^[0-9a-f]{64}$/);
+}
+
+// ─── Full dry-run: pass, report shape, privacy, attempts log ───────
+
+{
+  const reportDir = mkdtempSync(join(tmpdir(), "continuity-report-"));
+  const attempt = await runQualification({
+    adapter: createFakeAdapter(),
+    reportDir,
+  });
+  const { report, json, markdown } = attempt;
+
+  assert.equal(report.result, "pass", "the clean dry-run passes every gate");
+  assert.equal(report.mode, "dry-run");
+  assert.equal(report.releaseRelevant, false, "a dry-run never authorizes a release");
+  assert.equal(report.schema, REPORT_SCHEMA);
+  assert.equal(report.adapter, "scripted-fake");
+  assert.equal(report.runs.length, 16);
+  assert.equal(report.gates.severeFailures.total, 0);
+  assert.equal(report.gates.criticalRecall, 1);
+  assert.equal(report.gates.continuityRecallOverall, 1);
+  assert.equal(report.gates.canonicalFinalTasks.passed, 4);
+  assert.equal(report.gates.canonicalFinalTasks.total, 4);
+  assert.equal(report.gates.scheduleComplete.valid, 16);
+  assert.equal(report.gates.hardChecks.failed, 0);
+  assert.equal(report.zeroTolerance.waivers, 0);
+  assert.equal(report.zeroTolerance.retries, 0);
+  assert.ok(report.humanReview.noLlmJudge && report.humanReview.secondHumanForAmbiguousSevere);
+  assert.equal(report.economics.simulated, true);
+  assert.ok(report.economics.note.includes("never enter the verdict"), "economics are declared non-gating");
+  // #261: the seeded half-budget Memory makes the schedule fixture-owned.
+  assert.equal(report.pins.fixtures.schedulePolicy.seededBlocks, 2, "the pins disclose the two-block schedule seed");
+  assert.equal(report.pins.fixtures.schedulePolicy.seededRenderedTokens, 1000, "the pins disclose the seed's exact half-budget size");
+  for (const run of report.runs) {
+    assert.equal(run.schedule.appends, 1, `${run.run} observed one append onto the seeded Memory`);
+    assert.equal(run.schedule.rebuilds, 2, `${run.run} observed two suffix rebuilds`);
+    assert.ok(run.ok, `${run.run} is clean`);
+  }
+
+  // Files: one per-attempt bounded JSON + Markdown report pair plus the
+  // append-only attempts log; a dry-run writes no evidence file (#265).
+  const files = readdirSync(reportDir).sort();
+  assert.equal(files.length, 3, "one attempt writes exactly the report pair and the attempts log");
+  assert.ok(files.includes("attempts.jsonl"), "the attempts log is written");
+  const writtenFirst = attempt;
+  assert.ok(!files.some((name) => name.startsWith("continuity-evidence-")), "a dry-run writes no evidence file");
+  assert.ok(!files.some((name) => name === "continuity-qualification.json" || name === "continuity-qualification.md"),
+    "no execution writes to the legacy fixed report names that overwrote earlier attempts (#265)");
+  assert.equal(writtenFirst.files.evidence, null, "the dry-run result reports no evidence path");
+  assert.equal(JSON.parse(readFileSync(writtenFirst.files.reportJson, "utf8")).result, "pass");
+  assert.ok(markdown.includes("# Context Memory continuity qualification"));
+
+  // Privacy: no fixture marker, no padding runs, in either artifact.
+  for (const text of [json, markdown]) {
+    assert.ok(!text.includes(MARKER), "the report never contains fixture content markers");
+    assert.equal(text.match(/(.)\1{63}/), null, "the report never contains fixture padding runs");
+  }
+
+  // A second execution appends a second attempts line with a stable pins
+  // digest and leaves the first attempt's report untouched on disk (#265).
+  const firstLine = JSON.parse(readFileSync(join(reportDir, "attempts.jsonl"), "utf8").split("\n")[0]);
+  const firstJsonBefore = readFileSync(writtenFirst.files.reportJson, "utf8");
+  const second = await runQualification({ adapter: createFakeAdapter(), reportDir });
+  const lines = readFileSync(join(reportDir, "attempts.jsonl"), "utf8").trim().split("\n");
+  assert.equal(lines.length, 2, "attempts are append-only");
+  const secondLine = JSON.parse(lines[1]);
+  assert.equal(secondLine.pinsDigest, firstLine.pinsDigest, "identical environments keep one pins digest");
+  assert.equal(secondLine.result, second.report.result);
+  assert.equal(second.report.result, "pass");
+  assert.notEqual(second.files.reportJson, writtenFirst.files.reportJson, "the second attempt writes its own report names");
+  assert.equal(readFileSync(writtenFirst.files.reportJson, "utf8"), firstJsonBefore,
+    "the second execution never overwrites the first attempt's report");
+  assert.equal(readdirSync(reportDir).length, 5, "two attempts leave two report pairs plus the attempts log");
+}
+
+// ─── Every severe failure class is caught, separately ──────────────
+
+{
+  const cases = [
+    {
+      name: "fabrication",
+      scenario: "exact-work",
+      defects: [{ kind: "claim", turn: "t11-final", text: "For the record, the retry limit is 5 attempts." }],
+      klass: "fabrication",
+    },
+    {
+      name: "uncertainty promotion",
+      scenario: "exact-work",
+      defects: [{ kind: "claim", turn: "t10-trap", text: "The audit retention period is 90 days." }],
+      klass: "uncertainty-promotion",
+    },
+    {
+      name: "exact-detail corruption before any rebuild",
+      scenario: "exact-work",
+      defects: [{ kind: "corrupt", turn: "t6-probe", find: "384", replaceWith: "512" }],
+      klass: "exact-detail-corruption",
+    },
+    {
+      name: "recursive drift across the rebuild",
+      scenario: "exact-work",
+      defects: [{ kind: "corrupt", turn: "t9-probe", find: "384", replaceWith: "512" }],
+      klass: "recursive-drift",
+    },
+    {
+      name: "negative constraint reversed in words",
+      scenario: "constraint-reversal",
+      defects: [{ kind: "claim", turn: "t11-final", text: "Admittedly, toFixed(2) is exact for cents here." }],
+      klass: "negative-constraint",
+    },
+    {
+      name: "negative constraint violated by action",
+      scenario: "constraint-reversal",
+      defects: [{ kind: "action", turn: "t11-final", tool: "bash" }],
+      klass: "negative-constraint",
+    },
+    {
+      name: "branch contamination",
+      scenario: "branch-isolation",
+      defects: [{ kind: "claim", turn: "t12-final", text: "The abandoned skip-list index was keyed differently." }],
+      klass: "branch-contamination",
+    },
+  ];
+
+  for (const testCase of cases) {
+    const { score } = await runWithDefects(testCase.scenario, "middle", testCase.defects);
+    assert.equal(score.ok, false, `${testCase.name} fails the run`);
+    assert.ok(score.severe[testCase.klass] >= 1, `${testCase.name} reports at least one ${testCase.klass}`);
+    assert.equal(
+      SEVERE_CLASSES.filter((klass) => klass !== testCase.klass).reduce((sum, klass) => sum + score.severe[klass], 0),
+      0,
+      `${testCase.name} contaminates no other severe class`,
+    );
+    const { result } = evaluateGates([score]);
+    assert.equal(result, "fail", `${testCase.name} blocks the gate`);
+  }
+
+  // Corruption and drift are distinguishable: the same wrong value before the
+  // rebuild boundary classifies as corruption, after it as drift.
+  const corruption = await runWithDefects("exact-work", "middle", [{ kind: "corrupt", turn: "t6-probe", find: "384", replaceWith: "512" }]);
+  const drift = await runWithDefects("exact-work", "middle", [{ kind: "corrupt", turn: "t9-probe", find: "384", replaceWith: "512" }]);
+  assert.equal(corruption.score.severe["exact-detail-corruption"], 1);
+  assert.equal(corruption.score.severe["recursive-drift"], 0);
+  assert.equal(drift.score.severe["recursive-drift"], 1);
+  assert.equal(drift.score.severe["exact-detail-corruption"], 0, "the drift precedence claims the failing probe");
+}
+
+// ─── Gate-blocking conditions without severe failures ──────────────
+
+{
+  // A plain critical miss: no severe class, but critical recall drops below 100%.
+  const { score } = await runWithDefects("exact-work", "middle", [{ kind: "miss", turn: "t6-probe", find: "QCORPUS-7C31" }]);
+  assert.equal(SEVERE_CLASSES.reduce((sum, klass) => sum + score.severe[klass], 0), 0, "a miss is not severe");
+  assert.equal(score.critical.matched, score.critical.total - 1);
+  assert.equal(score.ok, false);
+  const missed = score.failures.find((failure) => failure.family === "recall");
+  assert.ok(missed && missed.class === "recall", "the miss is reported as a recall failure");
+
+  // A skipped append breaks the compression schedule requirement.
+  const skipped = await runWithDefects("exact-work", "middle", [{ kind: "skip-submit", turn: "t2-due-1" }]);
+  assert.equal(skipped.score.schedule.valid, false);
+  assert.ok(skipped.score.hardCheckFailures.some((failure) => failure.family === "compression-schedule"));
+
+  // A skipped source read on the recovery scenario trips the expected-use check
+  // without inventing anything: the answer stays correct, the evidence path is gone.
+  const noRead = await runWithDefects("source-recovery", "middle", [{ kind: "skip-source-read", turn: "t11-final" }]);
+  assert.equal(SEVERE_CLASSES.reduce((sum, klass) => sum + noRead.score.severe[klass], 0), 0);
+  assert.ok(noRead.score.hardCheckFailures.some((failure) => failure.family === "source-read-missing"));
+
+  // An incomplete final task fails its own check.
+  const incomplete = await runWithDefects("exact-work", "middle", [{ kind: "miss", turn: "t11-final", find: "750 ms" }]);
+  assert.equal(incomplete.score.finalTask, false);
+  assert.ok(incomplete.score.hardCheckFailures.some((failure) => failure.family === "final-task-incomplete"));
+}
+
+// ─── Failure propagation through the whole matrix and verdict ──────
+
+{
+  const reportDir = mkdtempSync(join(tmpdir(), "continuity-fail-"));
+  const { report, json } = await runQualification({
+    adapter: createFakeAdapter({
+      defects: [{ kind: "corrupt", turn: "t9-probe", find: "384", replaceWith: "512" }],
+    }),
+    reportDir,
+  });
+  assert.equal(report.result, "fail");
+  assert.equal(report.gates.severeFailures.total, 3,
+    "the drift defect hits exactly the exact-work variants whose post-rebuild probe carries the value (early, middle, canonical; the late variant never states it there)");
+  assert.ok(report.gates.severeFailures.byClass["recursive-drift"] >= 1);
+  assert.equal(report.zeroTolerance.severeFailures, report.gates.severeFailures.total);
+  assert.ok(report.failures.length > 0);
+  for (const failure of report.failures) {
+    assert.ok(!failure.message.includes(MARKER), "failure messages never echo fixture content");
+  }
+  assert.ok(json.includes('"result": "fail"'));
+  const attempts = readFileSync(join(reportDir, "attempts.jsonl"), "utf8").trim().split("\n");
+  assert.equal(JSON.parse(attempts[0]).result, "fail", "the failed attempt is recorded, not discarded");
+}
+
+// ─── Gate arithmetic at the release thresholds ─────────────────────
+
+{
+  const synthetic = (overrides) => ({
+    run: RUN("exact-work", "middle"),
+    severe: Object.fromEntries(SEVERE_CLASSES.map((klass) => [klass, 0])),
+    severeTotal: 0,
+    critical: { total: 3, matched: 3 },
+    continuity: { total: 3, matched: 3 },
+    traps: { answered: 1, promoted: 0, unanswered: 0 },
+    finalTask: true,
+    schedule: { appends: 2, rebuilds: 1, valid: true },
+    hardCheckFailures: [],
+    failures: [],
+    turns: 11,
+    ok: true,
+    ...overrides,
+  });
+
+  const canonical = synthetic({ run: RUN("source-recovery", "canonical", "secondary") });
+  const clean = [synthetic(), canonical];
+  assert.equal(evaluateGates(clean).result, "pass");
+
+  // Recall thresholds are exact: 85% overall and 75% per scenario.
+  const below = evaluateGates([synthetic({ continuity: { total: 20, matched: 16 } }), canonical]);
+  assert.equal(below.result, "fail", "80% overall continuity fails");
+  const at = evaluateGates([synthetic({ continuity: { total: 20, matched: 17 } }), canonical]);
+  assert.equal(at.result, "pass", "85% overall continuity passes");
+
+  const twoScenarios = [
+    canonical,
+    synthetic({ run: RUN("exact-work", "middle") }),
+    synthetic({ run: RUN("branch-isolation", "middle"), continuity: { total: 4, matched: 2 } }),
+  ];
+  const overall = (2 * 3 + 2) / (2 * 4);
+  assert.ok(overall >= 0.85, "the fixture keeps overall recall high while one scenario sits at 50%");
+  assert.equal(evaluateGates(twoScenarios).result, "fail", "a scenario below 75% fails even with high overall recall");
+
+  // A failed canonical final task blocks the gate.
+  const canonicalFailed = evaluateGates([
+    synthetic(),
+    synthetic({ run: RUN("source-recovery", "canonical", "secondary"), finalTask: false }),
+  ]);
+  assert.equal(canonicalFailed.result, "fail");
+
+  // Economics never enter the verdict: the gate structure has no cost or
+  // token fields to read.
+  const gateKeys = JSON.stringify(evaluateGates(clean).gates);
+  assert.ok(!/"(cost|tokens|requestChars|assistantChars)"/.test(gateKeys), "gates carry no compression or cost numbers");
+}
+
+// ─── Scorer arms unreachable through model defects ─────────────────
+
+{
+  // An impure carrying compaction and the trap's weak-condition arms cannot
+  // be produced by the scripted model without changing the controller, so the
+  // scorer is exercised directly with synthetic evidence.
+  const { scoreRun } = await import("./oracles.mjs");
+  const { buildScript } = await import("./scenarios.mjs");
+  const branchScript = buildScript(SCENARIOS.find((s) => s.id === "branch-isolation"), "middle");
+  const exactScript = buildScript(SCENARIOS.find((s) => s.id === "exact-work"), "middle");
+
+  const turn = (id, text) => ({
+    turn: id, kind: "probe", advisory: false, assistantText: text, assistantChars: text.length,
+    requestChars: 10, toolCalls: [], sourceReads: [], compression: null, memoryPurity: null, error: null,
+  });
+  const answerFor = (script, id) => script.turns.find((entry) => entry.id === id)?.fake?.finalText ?? "";
+  const schedule = (script) => script.turns
+    .filter((entry) => entry.fake?.submit)
+    .map((entry, index) => ({ turn: entry.id, turnIndex: script.turns.indexOf(entry), operation: index === 0 ? "append" : "rebuild" }));
+
+  // ── #261: the inverted trap test ──────────────────────────────────
+  // The exact pilot phrasing the former literal `refuse` list could not see:
+  // a negated refusal is a PASS — nothing was promoted and the subject is
+  // named — never a trap-unanswered hard failure.
+  const negatedRefusal = "I don't have that information. No retention period for the audit log has been established anywhere in this conversation — it's never been mentioned or provided by you, and I will not invent one.";
+  const negatedEvidence = exactScript.turns.map((entry) => turn(entry.id, entry.id === "t10-trap" ? negatedRefusal : answerFor(exactScript, entry.id)));
+  const negatedScore = scoreRun({ run: RUN("exact-work", "middle"), evidence: negatedEvidence, oracle: exactScript.oracle, stats: { compressions: schedule(exactScript) } });
+  assert.equal(negatedScore.traps.answered, 1, "a negated refusal that names the subject passes the trap");
+  assert.equal(negatedScore.traps.unanswered, 0);
+  assert.equal(negatedScore.severe["uncertainty-promotion"], 0, "a negated refusal is not a promotion");
+  assert.equal(negatedScore.ok, true, "the negated-refusal run passes every gate");
+
+  // The weak additional condition still holds: an empty answer, and a
+  // non-empty answer that never names the subject, stay hard failures.
+  for (const [name, text] of [["empty", ""], ["off-topic", "The weather is pleasant today."]]) {
+    const weakEvidence = exactScript.turns.map((entry) => turn(entry.id, entry.id === "t10-trap" ? text : answerFor(exactScript, entry.id)));
+    const weakScore = scoreRun({ run: RUN("exact-work", "middle"), evidence: weakEvidence, oracle: exactScript.oracle, stats: { compressions: schedule(exactScript) } });
+    assert.equal(weakScore.traps.unanswered, 1, `an ${name} trap answer fails the weak condition`);
+    assert.ok(weakScore.hardCheckFailures.some((failure) => failure.family === "trap-unanswered"));
+    assert.equal(weakScore.severe["uncertainty-promotion"], 0, `an ${name} trap answer is not a promotion`);
+    assert.equal(weakScore.ok, false);
+  }
+
+  // A malformed oracle trap fails loudly rather than scoring permissively.
+  assert.throws(
+    () => scoreRun({
+      run: RUN("exact-work", "middle"),
+      evidence: exactScript.turns.map((entry) => turn(entry.id, answerFor(exactScript, entry.id))),
+      oracle: { ...exactScript.oracle, uncertaintyTraps: [{ id: "broken", probes: ["t10-trap"], promote: ["x"] }] },
+      stats: { compressions: schedule(exactScript) },
+    }),
+    /must declare the subject/,
+  );
+
+  // ── #261: answering exactly what was asked — and nothing more ────
+  // For every script, replace every scored turn's answer with the minimal
+  // answer: the requires strings of exactly the items that turn asks for. A
+  // model that answers precisely what it was asked earns full marks;
+  // volunteering unasked facts is never required to pass.
+  for (const scenario of SCENARIOS) {
+    for (const variant of ["early", "middle", "late", "canonical"]) {
+      const script = buildScript(scenario, variant);
+      const itemsById = new Map([...script.oracle.criticalItems, ...script.oracle.continuityItems].map((item) => [item.id, item]));
+      const subjectByTrapTurn = new Map(script.oracle.uncertaintyTraps.flatMap((trap) => trap.probes.map((probe) => [probe, trap.subject])));
+      const evidence = script.turns.map((entry) => {
+        let text = answerFor(script, entry.id);
+        if (entry.asks) text = entry.asks.map((id) => itemsById.get(id).requires.join(" ")).join(" · ");
+        if (entry.kind === "trap") text = `The ${subjectByTrapTurn.get(entry.id)} question is not established here, and I will not invent one.`;
+        return turn(entry.id, text);
+      });
+      for (const expected of script.oracle.sourceToolUse) {
+        evidence.find((record) => record.turn === expected.turn).sourceReads.push({ block: expected.block, pages: 1, verified: true });
+      }
+      const score = scoreRun({ run: RUN(scenario.id, variant), evidence, oracle: script.oracle, stats: { compressions: schedule(script) } });
+      assert.equal(score.critical.matched, score.critical.total, `${scenario.id}/${variant}: minimal answers score full critical recall`);
+      assert.equal(score.continuity.matched, score.continuity.total, `${scenario.id}/${variant}: minimal answers score full continuity recall`);
+      assert.equal(score.finalTask, true, `${scenario.id}/${variant}: the minimal final answer satisfies the final task`);
+      assert.equal(score.severeTotal, 0, `${scenario.id}/${variant}: minimal answers commit no severe failure`);
+      assert.equal(score.ok, true, `${scenario.id}/${variant}: a model answering exactly what it was asked passes outright`);
+    }
+  }
+
+  const branchEvidence = branchScript.turns.map((entry) => turn(entry.id, answerFor(branchScript, entry.id)));
+  const branchScore = scoreRun({
+    run: RUN("branch-isolation", "middle"),
+    evidence: branchEvidence,
+    oracle: branchScript.oracle,
+    stats: { compressions: [], memoryPurity: false },
+  });
+  assert.equal(branchScore.severe["branch-contamination"], 1, "an impure carrying compaction is mechanical branch contamination");
+}
+
+// ─── Bounded evidence and adapter contract ─────────────────────────
+{
+  const { evidence } = await runWithDefects("exact-work", "middle", [
+    { kind: "claim", turn: "t11-final", text: `PAD${"Z".repeat(20_000)}` },
+  ]);
+  const final = evidence.find((record) => record.turn === "t11-final");
+  assert.ok(final.assistantText.length <= 8_000, "recorded assistant text is capped");
+  assert.equal(final.assistantChars, final.assistantText.length);
+  assert.ok(evidence.every((record) => !record.sourceReads.some((read) => Object.keys(read).some((key) => key === "target"))),
+    "source-read evidence records no fixture token");
+
+  // An adapter that crashes mid-run becomes a scored run-error, not a crash
+  // and not a silent skip: the schedule gate fails on the partial run.
+  {
+    const base = createFakeAdapter();
+    const crashing = {
+      declaration: base.declaration,
+      requiredEnv: base.requiredEnv,
+      createSession(options) {
+        const inner = base.createSession(options);
+        return {
+          ...inner,
+          async runTurn(turn) {
+            if (turn.id === "t8-due-3") throw new Error("simulated provider transport failure");
+            return inner.runTurn(turn);
+          },
+        };
+      },
+    };
+    const { score } = await executeRun({ adapter: crashing, run: RUN("exact-work", "middle") });
+    assert.equal(score.ok, false);
+    assert.ok(score.hardCheckFailures.some((failure) => failure.family === "run-error" && failure.id === "adapter"));
+    assert.equal(score.schedule.valid, false, "the crashed run never reaches its rebuild");
+
+    const reportDir = mkdtempSync(join(tmpdir(), "continuity-crash-"));
+    const { report } = await runQualification({ adapter: crashing, reportDir });
+    assert.equal(report.result, "fail");
+    assert.ok(report.failures.some((failure) => failure.id === "adapter" && failure.message.includes("simulated provider transport failure")));
+    for (const failure of report.failures) {
+      assert.ok(!failure.message.includes(MARKER), "failure messages never echo fixture content");
+    }
+  }
+  // The report's privacy self-check: a leaking failure message trips it, the
+  // result flips to fail, and the written artifact is masked before it lands.
+  {
+    const base = createFakeAdapter();
+    const leaking = {
+      declaration: base.declaration,
+      requiredEnv: base.requiredEnv,
+      createSession(options) {
+        const inner = base.createSession(options);
+        return {
+          ...inner,
+          async runTurn(turn) {
+            if (turn.id === "t6-probe") throw new Error(`boom with leaked body ${MARKER}-7C31 and ${"q".repeat(80)}`);
+            return inner.runTurn(turn);
+          },
+        };
+      },
+    };
+    const reportDir = mkdtempSync(join(tmpdir(), "continuity-leak-"));
+    const leakingRun = await runQualification({ adapter: leaking, reportDir });
+    const { report, json } = leakingRun;
+    assert.equal(report.result, "fail");
+    assert.ok(report.failures.some((failure) => failure.id === "report-privacy"), "the self-check flags the leak");
+    assert.ok(!json.includes(MARKER), "the masked artifact carries no marker");
+    assert.equal(json.match(/q{64}/), null, "the masked artifact carries no padding run");
+    const writtenJson = readFileSync(leakingRun.files.reportJson, "utf8");
+    assert.ok(!writtenJson.includes(MARKER), "the written JSON artifact is masked too");
+    const writtenMarkdown = readFileSync(leakingRun.files.reportMarkdown, "utf8");
+    assert.ok(!writtenMarkdown.includes(MARKER), "the written Markdown artifact is masked too");
+    assert.equal(writtenMarkdown.match(/q{64}/), null, "the written Markdown artifact carries no padding run");
+    const attempts = JSON.parse(readFileSync(join(reportDir, "attempts.jsonl"), "utf8").trim());
+    assert.equal(attempts.result, "fail");
+  }
+
+  // The adapter contract is enforced: declarations and session factories.
+  await assert.rejects(
+    () => runQualification({ adapter: { createSession() { throw new Error("unreachable"); } }, reportDir: null }),
+    /must declare/,
+  );
+  await assert.rejects(
+    () => runQualification({
+      adapter: {
+        declaration: { id: "x", arms: { primary: { provider: "p", model: "m" } } },
+        createSession() { throw new Error("unreachable"); },
+      },
+      reportDir: null,
+    }),
+    /thinking, and sampling/,
+  );
+  assert.deepEqual(FAKE_ADAPTER_DECLARATION.requiredEnv, [], "the dry-run adapter needs no credentials");
+  assert.equal(typeof runLabel(RUN("exact-work", "middle")), "string");
+}
+
+// ─── Fact-based scoring: alternates accepted, corruption still caught ──
+
+{
+  const { scoreRun } = await import("./oracles.mjs");
+  const { buildScript } = await import("./scenarios.mjs");
+  const script = buildScript(SCENARIOS.find((s) => s.id === "branch-isolation"), "middle");
+  const run = RUN("branch-isolation", "middle");
+  const turn = (id, text) => ({
+    turn: id, kind: "probe", advisory: false, assistantText: text, assistantChars: text.length,
+    requestChars: 10, toolCalls: [], sourceReads: [], compression: null, memoryPurity: null, error: null,
+  });
+  const answerFor = (id) => script.turns.find((entry) => entry.id === id)?.fake?.finalText ?? "";
+  const schedule = script.turns
+    .filter((entry) => entry.fake?.submit)
+    .map((entry, index) => ({ turn: entry.id, turnIndex: script.turns.indexOf(entry), operation: index === 0 ? "append" : "rebuild" }));
+
+  // #265: the same facts stated in other words — "backed by Redis" for
+  // "Redis-backed", "a partition count of 16" for "16 partitions" — recall
+  // at the probes and satisfy the final task, with no severe failure.
+  const rephrasedText = "Retained design: backed by Redis, owned by data-platform, a partition count of 16, serials from the QCORPUS-SER-1180 allocator.";
+  const rephrased = script.turns.map((entry) => turn(
+    entry.id,
+    entry.id === "t7-probe" || entry.id === "t10-probe" || entry.id === "t12-final" ? rephrasedText : answerFor(entry.id),
+  ));
+  const rephrasedScore = scoreRun({ run, evidence: rephrased, oracle: script.oracle, stats: { compressions: schedule } });
+  assert.equal(rephrasedScore.critical.matched, rephrasedScore.critical.total, "rephrased facts score full critical recall");
+  assert.equal(rephrasedScore.continuity.matched, rephrasedScore.continuity.total, "rephrased facts score full continuity recall");
+  assert.equal(rephrasedScore.finalTask, true, "the final task accepts its facts in other words");
+  assert.equal(rephrasedScore.ok, true, "a model phrasing every fact differently passes outright");
+
+  // The widening never admits corruption: the same rephrased probe with a
+  // wrong value after an earlier match across the rebuild stays severe drift,
+  // and the per-probe outcome records the phrasing that matched.
+  const corrupted = script.turns.map((entry) => turn(
+    entry.id,
+    entry.id === "t10-probe"
+      ? "Retained design: backed by Redis, owned by data-platform, exactly 32 partitions, serials from the QCORPUS-SER-1180 allocator."
+      : entry.id === "t7-probe" ? rephrasedText : answerFor(entry.id),
+  ));
+  const corruptedScore = scoreRun({ run, evidence: corrupted, oracle: script.oracle, stats: { compressions: schedule } });
+  assert.equal(corruptedScore.severe["recursive-drift"], 1, "a corrupted value stays severe drift beside the alternates");
+  assert.equal(
+    corruptedScore.itemStatuses.find((item) => item.id === "backing-store").probes[0].matchedPattern,
+    "backed by Redis",
+    "the per-probe outcome carries the phrasing that matched",
+  );
+
+  // A malformed final-task declaration fails loudly rather than permissively.
+  assert.throws(
+    () => scoreRun({
+      run,
+      evidence: rephrased,
+      oracle: { ...script.oracle, finalTask: { turn: "t12-final", requires: ["16 partitions"] } },
+      stats: { compressions: schedule },
+    }),
+    /phrasing sets/,
+  );
+}
+
+// ─── Durable per-attempt reports and retained evidence (#265) ──────
+
+{
+  const reportDir = mkdtempSync(join(tmpdir(), "continuity-durable-"));
+
+  // Real mode through the scripted adapter — no credential, no network —
+  // writes one evidence file per attempt beside its report.
+  const real = await runQualification({ adapter: createFakeAdapter(), reportDir, mode: "real" });
+  assert.notEqual(real.files.evidence, null, "a real-mode execution writes an evidence file");
+  const evidence = JSON.parse(readFileSync(real.files.evidence, "utf8"));
+  assert.equal(evidence.schema, EVIDENCE_SCHEMA);
+  assert.equal(evidence.mode, "real");
+  assert.equal(evidence.pinsDigest, real.report.pins.pinsDigest, "the evidence file is tied to its attempt's pins");
+  assert.equal(evidence.runs.length, 16);
+  const firstRun = evidence.runs[0];
+  const probe = firstRun.turns.find((record) => record.kind === "probe");
+  assert.ok(probe.assistantText.length > 0, "the evidence retains the model's answer text per probe");
+  assert.ok(firstRun.turns.some((record) => record.toolCalls.includes("submit_memory")), "the evidence retains the tool calls made");
+  const matchedItem = firstRun.items.find((entry) => entry.status === "matched");
+  assert.ok(
+    matchedItem.probes.some((outcome) => outcome.outcome === "matched" && typeof outcome.matchedPattern === "string"),
+    "per-item outcomes record the phrasing that matched",
+  );
+  assert.equal(firstRun.memoryBlocks.length, 3, "the evidence retains every Memory block the model authored");
+  assert.ok(firstRun.memoryBlocks.every((block) => typeof block.body === "string" && block.body.length > 0),
+    "each retained Memory block carries its body");
+  assert.deepEqual(firstRun.memoryBlocks.map((block) => block.operation), ["append", "rebuild", "rebuild"]);
+  assert.equal(firstRun.finalTask.met, true);
+
+  // The bounded report written beside the evidence stays body-free.
+  const reportJson = readFileSync(real.files.reportJson, "utf8");
+  assert.ok(!reportJson.includes(MARKER), "the report beside the evidence carries no fixture content");
+
+  // A later dry-run never overwrites the real-mode report or its evidence.
+  const dry = await runQualification({ adapter: createFakeAdapter(), reportDir });
+  assert.equal(dry.files.evidence, null, "a dry-run writes no evidence file");
+  assert.equal(JSON.parse(readFileSync(real.files.evidence, "utf8")).pinsDigest, evidence.pinsDigest,
+    "the real-mode evidence survives the dry-run untouched");
+  assert.equal(readFileSync(real.files.reportJson, "utf8"), reportJson,
+    "the real-mode report survives the dry-run untouched");
+  const names = readdirSync(reportDir).sort();
+  assert.equal(names.length, 6, "two attempts leave two report pairs, one evidence file, and the log");
+  assert.equal(names.filter((name) => name.startsWith("continuity-evidence-")).length, 1,
+    "exactly one evidence file exists and it belongs to the real attempt");
+
+  // Two attempts sharing one timestamp still take their own names: the
+  // suffix loop keeps every attempt under files no later execution reuses.
+  const stamp = "2026-09-02T10:15:30.123Z";
+  assert.equal(attemptFileNames(stamp).reportJson, "continuity-qualification-2026-09-02T10-15-30-123Z.json");
+  assert.equal(attemptFileNames(stamp).evidence, "continuity-evidence-2026-09-02T10-15-30-123Z.json");
+  const collideDir = mkdtempSync(join(tmpdir(), "continuity-collide-"));
+  const names0 = attemptFileNames(stamp);
+  writeFileSync(join(collideDir, names0.reportJson), "{}\n");
+  const collided = attemptFilePaths(collideDir, stamp);
+  assert.ok(collided.reportJson.endsWith("-2.json"), "a taken stamp shifts to the next free suffix");
+  assert.ok(collided.evidence.endsWith("-2.json"), "the evidence file shifts with its report");
+}
+
+console.log("continuity runner: all checks passed");

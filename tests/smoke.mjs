@@ -14,6 +14,7 @@ import {
 import jiti from "jiti";
 
 const smokeLoad = jiti(import.meta.url, { moduleCache: false });
+const { MEMORY_FORMAT_TAG, composeMemorySummary } = await smokeLoad("../src/context-memory/format.ts");
 
 // The /context command handler reads ctx.ui.theme; initialize the theme
 // registry the way an interactive session would.
@@ -49,7 +50,8 @@ const settingsManager = SettingsManager.create(cwd, agentDir);
 // and trips the zero-skills assertion below.
 const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true });
 await resourceLoader.reload();
-// The shared in-memory session the smoke run drives.
+// The shared in-memory session the smoke run drives; #217 appends a real
+// compaction entry to it for the Context Memory reading surface.
 const smokeSession = SessionManager.inMemory();
 const created = await createAgentSession({
   cwd,
@@ -244,6 +246,547 @@ try {
   }, undefined, undefined);
   assert.equal(codegraphResult.details.code, "NOT_INDEXED");
   assert.equal(codegraphResult.details.phase, "recoverable");
+
+  // ── Context Memory shell (#215, #216): default-off, registered but inactive ──
+  const allToolsAfterStart = extensionsResult.runtime.getAllTools().map((tool) => tool.name);
+  assert.ok(allToolsAfterStart.includes("submit_memory"), "submit_memory is registered");
+  assert.ok(allToolsAfterStart.includes("read_memory_source"), "read_memory_source is registered");
+  for (const definition of ["submit_memory", "read_memory_source"]) {
+    assert.equal(typeof session.getToolDefinition(definition)?.renderCall, "function", `${definition} renders calls through pi-square`);
+    assert.equal(session.getToolDefinition(definition)?.renderShell, "self", `${definition} owns its display shell`);
+  }
+  const inactiveMemoryTools = (name) => name === "submit_memory" || name === "read_memory_source";
+  assert.ok(
+    !session.agent.state.tools.some((tool) => inactiveMemoryTools(tool.name)),
+    "default-off configuration leaves both Context Memory tools inactive",
+  );
+
+  const contextCommand = runner.getCommand("context");
+  assert.ok(contextCommand, "/context remains the sole Context Memory surface owner");
+  async function runContextCommand(args = "") {
+    const notified = [];
+    const commandCtx = runner.createCommandContext();
+    await contextCommand.handler(args, {
+      ...commandCtx,
+      hasUI: true,
+      ui: { ...commandCtx.ui, notify: (text) => notified.push(text) },
+    });
+    return stripVTControlCharacters(notified.join("\n"));
+  }
+  const defaultContextView = await runContextCommand();
+  assert.match(defaultContextView, /memory\[\]/, "/context renders the memory[] section");
+  assert.match(defaultContextView, /disabled · enable through agent-level contextMemory configuration/,
+    "the default state explains disabled");
+  assert.match(defaultContextView, /Prompt Manager/, "/context still renders the Prompt Manager snapshot");
+
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    contextMemory: { enabled: true, compressionThreshold: { tokens: 2500 }, memoryBudgetPercent: 1 },
+  }, null, 2) + "\n");
+  await runner.emit({ type: "session_start", reason: "config-change" });
+  assert.ok(
+    !session.agent.state.tools.some((tool) => inactiveMemoryTools(tool.name)),
+    "an enabled configuration still leaves both tools inactive without Memory or a due run",
+  );
+  const enabledContextView = await runContextCommand();
+  assert.match(enabledContextView, /enabled · no Memory blocks yet/,
+    "the enabled/no-Memory state renders through /context");
+  assert.match(enabledContextView, /ephemeral session/,
+    "the in-memory smoke session is reported as ephemeral (#221)");
+
+  // ── #218: the first Memory block through the full handshake, with Pi's own
+  // compaction seam consuming the candidate end to end ──
+
+  // A large real conversation pushes the deterministic estimate past the due
+  // point; the fake model carries the window and would fail loudly if the
+  // takeover ever tried a summarization call.
+  let smokeSourceEndEntry;
+  for (let i = 0; i < 40; i++) {
+    smokeSession.appendMessage({
+      role: "user", content: `smoke bulk request ${i} ` + "context filler ".repeat(24), timestamp: 100 + i * 2,
+    });
+    smokeSourceEndEntry = smokeSession.appendMessage({
+      role: "assistant",
+      // No usage payload: Pi's estimator then measures the whole projected
+      // conversation instead of trusting a fabricated last-assistant count.
+      content: [{ type: "text", text: `smoke bulk answer ${i} ` + "deterministic filler ".repeat(24) }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      stopReason: "stop", timestamp: 101 + i * 2,
+    });
+  }
+  session.agent.state.model = { provider: "smoke", id: "smoke-model", contextWindow: 200000 };
+  session.agent.streamFunction = async () => {
+    throw new Error("the Context Memory takeover must not call the model");
+  };
+  session.agent.state.messages = smokeSession.buildSessionContext().messages;
+  await runner.emit({ type: "agent_settled" });
+  const dueContextView = await runContextCommand();
+  assert.match(dueContextView, /due · threshold reached · the next run authors the first Memory block/,
+    "/context renders the due state");
+
+  const inputResult = await runner.emitInput("smoke: ship the first Memory block", undefined, "interactive");
+  assert.equal(inputResult.action, "continue", "the input boundary passes the prompt through unchanged");
+  assert.ok(
+    session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "the due real-user run activates submit_memory before request construction",
+  );
+
+  const smokeRequestEntry = smokeSession.appendMessage({
+    role: "user", content: "smoke: ship the first Memory block", timestamp: 400,
+  });
+  const projectedRequest = smokeSession.buildSessionContext().messages;
+  const transformedRequest = await runner.emitContext(projectedRequest);
+  const advisoryMessages = transformedRequest.filter(
+    (message) => message?.customType === "pi-square.context-memory/advisory",
+  );
+  assert.equal(advisoryMessages.length, 1, "the first provider request carries exactly one advisory");
+  assert.equal(advisoryMessages[0].display, false);
+  assert.equal(transformedRequest.at(-2)?.role, "user");
+  assert.equal(transformedRequest.at(-2)?.content, "smoke: ship the first Memory block",
+    "the advisory sits directly after the current user message");
+  const repeatedRequest = await runner.emitContext(transformedRequest);
+  assert.equal(
+    repeatedRequest.filter((message) => message?.customType === "pi-square.context-memory/advisory").length,
+    1,
+    "later requests never repeat the advisory",
+  );
+
+  const smokeBlock = "# Smoke first block\n\n- the bulk exchange explored deterministic filler content";
+  smokeSession.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "text", text: "done — submitting the first Memory block" },
+      { type: "toolCall", id: "smoke:submit-first", name: "submit_memory", arguments: { markdown: smokeBlock } },
+    ],
+    api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "toolUse", timestamp: 401,
+  });
+  await runner.emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "done — submitting the first Memory block" },
+        { type: "toolCall", id: "smoke:submit-first", name: "submit_memory", arguments: { markdown: smokeBlock } },
+      ],
+    },
+  });
+  const submitCtx = runner.createCommandContext();
+  const submitResult = await toolByName("submit_memory").execute(
+    "smoke:submit-first",
+    { markdown: smokeBlock },
+    undefined,
+    undefined,
+    submitCtx,
+  );
+  assert.equal(submitResult.content[0].text, "Memory candidate accepted; compaction pending.");
+  assert.deepEqual(submitResult.details, { accepted: true });
+  assert.equal(submitResult.terminate, undefined, "the accepted submission no longer ends the run (#253)");
+  assert.ok(
+    !session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "acceptance deactivates submit_memory for the rest of the due run",
+  );
+  smokeSession.appendMessage({
+    role: "toolResult", toolCallId: "smoke:submit-first", toolName: "submit_memory",
+    content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 402,
+  });
+
+  await runner.emit({ type: "agent_settled" });
+  for (let i = 0; i < 500 && session.isCompacting; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(!session.isCompacting, "the settle-triggered compaction finished");
+
+  const smokeCompactions = smokeSession.getBranch().filter((entry) => entry.type === "compaction");
+  assert.equal(smokeCompactions.length, 1, "Pi's own seam saved exactly one compaction entry");
+  assert.equal(smokeCompactions[0].fromHook, true, "the saved entry carries extension origin");
+  assert.equal(smokeCompactions[0].firstKeptEntryId, smokeRequestEntry,
+    "the current real-user request is the retained-tail boundary");
+  assert.equal(smokeCompactions[0].summary.endsWith(smokeBlock), true, "the saved summary carries the block byte-exact");
+  // The byte directory is the fourth field confirmation compares; without this
+  // a details round-trip failure would only surface as a silent conflict.
+  assert.deepEqual(smokeCompactions[0].details, {
+    format: MEMORY_FORMAT_TAG,
+    blocks: [{ endEntryId: smokeSourceEndEntry, markdownBytes: Buffer.byteLength(smokeBlock, "utf8") }],
+  }, "Pi round-trips the byte directory the compaction confirmation compares");
+
+  const committedContextView = await runContextCommand();
+  assert.match(committedContextView, /memory\[\]\s+active/, "/context shows the committed Memory");
+  assert.match(committedContextView, /1 block/, "/context counts the committed block");
+  assert.match(committedContextView, /ephemeral session/, "committed Memory still reports the ephemeral session");
+  assert.ok(
+    session.agent.state.tools.some((tool) => tool.name === "read_memory_source"),
+    "the committed block activates read_memory_source end to end",
+  );
+  assert.ok(
+    !session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "submit_memory deactivates after the handshake",
+  );
+
+  // The fake model and stream stub existed only for the compaction seam; the
+  // remaining sections run model-agnostic like the rest of the smoke.
+  session.agent.state.model = undefined;
+
+  // ── #217 reading surface over the genuinely committed block (#218 commit) ──
+
+  const activeContextView = await runContextCommand();
+  assert.match(activeContextView, /memory\[\]\s+active/, "/context shows the active Memory state");
+  assert.match(activeContextView, /1 block/, "/context counts the Memory blocks");
+  assert.match(activeContextView, /# Smoke first block/, "/context previews the block chronologically");
+  assert.match(activeContextView, /\d+ sources/, "/context shows the safe source count");
+
+  const memoryDetailView = await runContextCommand("memory 1");
+  assert.match(memoryDetailView, /# Smoke first block/, "/context memory shows the full block Markdown");
+  assert.match(memoryDetailView, /smoke bulk request 0/, "/context memory shows a source page");
+  assert.match(memoryDetailView, /read-only · current session only · visible in terminal scrollback/,
+    "/context memory states the inspection boundary");
+
+  const invalidDetailView = await runContextCommand("memory banana");
+  assert.match(invalidDetailView, /Usage: \/context \[memory <block> \[page\]\]/,
+    "invalid /context memory syntax shows one usage line");
+
+  const commandCtx = runner.createCommandContext();
+  const memorySourceResult = await toolByName("read_memory_source").execute(
+    "smoke:memory-source",
+    { block: 1, page: 1 },
+    undefined,
+    undefined,
+    commandCtx,
+  );
+  assert.match(memorySourceResult.content[0].text, /^Memory source · block 1 of 1 · page 1 of \d+$/);
+  assert.match(memorySourceResult.content[1].text, /smoke bulk request 0/);
+  assert.ok(!memorySourceResult.content[1].text.includes(smokeRequestEntry),
+    "the real tool page never exposes entry ids");
+  assert.deepEqual(
+    Object.keys(memorySourceResult.details).sort(),
+    ["block", "hasMore", "page", "totalBlocks", "totalPages"],
+  );
+
+  // ── #219: the second append through Pi's own compaction seam end to end ──
+
+  // More bulk conversation accumulates after the first compaction; the
+  // deterministic estimate crosses the threshold again and the next real-user
+  // run appends the second block onto the committed first one.
+  let smokeSecondSourceEnd;
+  for (let i = 0; i < 24; i++) {
+    smokeSession.appendMessage({
+      role: "user", content: `smoke second-round request ${i} ` + "later filler ".repeat(24), timestamp: 500 + i * 2,
+    });
+    smokeSecondSourceEnd = smokeSession.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: `smoke second-round answer ${i} ` + "later response filler ".repeat(20) }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      // Pi's post-compaction usage scan requires every assistant after the
+      // latest compaction to carry usage; the fabricated count stands in for
+      // the grown conversation exactly like a real exchange.
+      usage: { input: 15000, output: 15000, cacheRead: 0, cacheWrite: 0, totalTokens: 30000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop", timestamp: 501 + i * 2,
+    });
+  }
+  const firstCompactionEntry = smokeSession.getBranch().filter((entry) => entry.type === "compaction")[0];
+  assert.ok(firstCompactionEntry, "the first Memory compaction is on the branch");
+  session.agent.state.model = { provider: "smoke", id: "smoke-model", contextWindow: 200000 };
+  session.agent.streamFunction = async () => {
+    throw new Error("the Context Memory takeover must not call the model");
+  };
+  session.agent.state.messages = smokeSession.buildSessionContext().messages;
+  await runner.emit({ type: "agent_settled" });
+  const dueAgainView = await runContextCommand();
+  assert.match(dueAgainView, /memory\[\]\s+active/, "/context keeps the active Memory view while due");
+  assert.match(dueAgainView, /next: append/, "/context reports append as the next operation");
+
+  const secondInputResult = await runner.emitInput("smoke: ship the second Memory block", undefined, "interactive");
+  assert.equal(secondInputResult.action, "continue");
+  assert.ok(
+    session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "the second due real-user run activates submit_memory onto existing Memory",
+  );
+  assert.ok(
+    session.agent.state.tools.some((tool) => tool.name === "read_memory_source"),
+    "the reading surface stays active through the append boundary",
+  );
+
+  const secondRequestEntry = smokeSession.appendMessage({
+    role: "user", content: "smoke: ship the second Memory block", timestamp: 600,
+  });
+  const secondProjected = smokeSession.buildSessionContext().messages;
+  const secondTransformed = await runner.emitContext(secondProjected);
+  const secondAdvisories = secondTransformed.filter(
+    (message) => message?.customType === "pi-square.context-memory/advisory",
+  );
+  assert.equal(secondAdvisories.length, 1, "the append run carries exactly one advisory");
+  assert.ok(secondAdvisories[0].content.includes("since the existing Memory blocks"),
+    "the append advisory names the accumulated source scope");
+  assert.ok(secondAdvisories[0].content.includes("appended after the existing Memory blocks"),
+    "the append advisory identifies the append operation");
+  assert.equal(secondTransformed.at(-2)?.role, "user");
+  assert.equal(secondTransformed.at(-2)?.content, "smoke: ship the second Memory block",
+    "the advisory sits directly after the current user message");
+
+  const smokeSecondBlock = "# Smoke second block\n\n- the second-round exchange covered later filler work";
+  smokeSession.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "text", text: "done — appending the second Memory block" },
+      { type: "toolCall", id: "smoke:submit-second", name: "submit_memory", arguments: { markdown: smokeSecondBlock } },
+    ],
+    api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "toolUse", timestamp: 601,
+  });
+  await runner.emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "done — appending the second Memory block" },
+        { type: "toolCall", id: "smoke:submit-second", name: "submit_memory", arguments: { markdown: smokeSecondBlock } },
+      ],
+    },
+  });
+  const secondSubmitCtx = runner.createCommandContext();
+  const secondSubmitResult = await toolByName("submit_memory").execute(
+    "smoke:submit-second",
+    { markdown: smokeSecondBlock },
+    undefined,
+    undefined,
+    secondSubmitCtx,
+  );
+  assert.equal(secondSubmitResult.content[0].text, "Memory candidate accepted; compaction pending.");
+  smokeSession.appendMessage({
+    role: "toolResult", toolCallId: "smoke:submit-second", toolName: "submit_memory",
+    content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 602,
+  });
+
+  await runner.emit({ type: "agent_settled" });
+  for (let i = 0; i < 500 && session.isCompacting; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(!session.isCompacting, "the settle-triggered append compaction finished");
+
+  const smokeCompactionsAfter = smokeSession.getBranch().filter((entry) => entry.type === "compaction");
+  assert.equal(smokeCompactionsAfter.length, 2, "Pi's own seam saved exactly one more compaction entry");
+  const secondCompactionEntry = smokeCompactionsAfter[1];
+  assert.equal(secondCompactionEntry.fromHook, true, "the appended entry carries extension origin");
+  assert.equal(secondCompactionEntry.firstKeptEntryId, secondRequestEntry,
+    "the second run's real-user request is the retained-tail boundary");
+  assert.equal(
+    secondCompactionEntry.summary,
+    composeMemorySummary([smokeBlock, smokeSecondBlock]),
+    "the complete latest summary carries both blocks",
+  );
+  assert.ok(secondCompactionEntry.summary.startsWith(firstCompactionEntry.summary),
+    "the first block's rendering stays the byte-identical prefix");
+  assert.deepEqual(secondCompactionEntry.details, {
+    format: MEMORY_FORMAT_TAG,
+    blocks: [
+      firstCompactionEntry.details.blocks[0],
+      { endEntryId: smokeSecondSourceEnd, markdownBytes: Buffer.byteLength(smokeSecondBlock, "utf8") },
+    ],
+  }, "Pi round-trips the two-entry byte directory with the unchanged first entry");
+
+  // The projected provider context renders deterministically and diverges
+  // from the old prefix exactly after the first block's bytes.
+  const secondProjection = smokeSession.buildSessionContext().messages;
+  assert.equal(JSON.stringify(smokeSession.buildSessionContext().messages), JSON.stringify(secondProjection),
+    "repeated rendering after the append is byte-identical");
+  assert.equal(secondProjection[0].role, "compactionSummary");
+  assert.equal(
+    secondProjection[0].summary,
+    firstCompactionEntry.summary + "\n---\n\n" + smokeSecondBlock,
+    "append-only divergence begins exactly after the old block prefix",
+  );
+
+  const twoBlockView = await runContextCommand();
+  assert.match(twoBlockView, /2 blocks/, "/context counts both committed blocks");
+  assert.match(twoBlockView, /# Smoke second block/, "/context previews the appended block chronologically");
+  const secondDetailView = await runContextCommand("memory 2");
+  assert.match(secondDetailView, /# Smoke second block/, "/context memory shows the appended block Markdown");
+  assert.match(secondDetailView, /smoke second-round request 0/, "/context memory shows the appended block's sources");
+  const secondMemorySource = await toolByName("read_memory_source").execute(
+    "smoke:memory-source-2",
+    { block: 2, page: 1 },
+    undefined,
+    undefined,
+    runner.createCommandContext(),
+  );
+  assert.match(secondMemorySource.content[0].text, /^Memory source · block 2 of 2 · page 1 of \d+$/);
+  assert.match(secondMemorySource.content[1].text, /smoke second-round request 0/);
+  assert.ok(!secondMemorySource.content[1].text.includes("smoke bulk request 0"),
+    "the appended block covers only the newly accumulated sources");
+  assert.ok(
+    !session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "submit_memory deactivates after the append handshake",
+  );
+
+  // ── #220: the suffix rebuild through Pi's own compaction seam end to end ──
+
+  // A smaller model window (26000) puts the two committed blocks above half
+  // of the 1% Memory budget (130 tokens), so the next due run is the
+  // maintenance rebuild of the newest block. Round-three bulk conversation
+  // carries a fabricated post-compaction usage so Pi's numeric usage is due
+  // while the complete maintenance request still fits the window.
+  let smokeThirdSourceEnd;
+  for (let i = 0; i < 12; i++) {
+    smokeSession.appendMessage({
+      role: "user", content: `smoke third-round request ${i} ` + "maintenance filler ".repeat(16), timestamp: 700 + i * 2,
+    });
+    smokeThirdSourceEnd = smokeSession.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: `smoke third-round answer ${i} ` + "maintenance response filler ".repeat(12) }],
+      api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+      usage: { input: 3000, output: 500, cacheRead: 0, cacheWrite: 0, totalTokens: 3500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop", timestamp: 701 + i * 2,
+    });
+  }
+  session.agent.state.model = { provider: "smoke", id: "smoke-model-small", contextWindow: 26000 };
+  session.agent.streamFunction = async () => {
+    throw new Error("the Context Memory takeover must not call the model");
+  };
+  session.agent.state.messages = smokeSession.buildSessionContext().messages;
+  await runner.emit({ type: "agent_settled" });
+  const rebuildDueView = await runContextCommand();
+  assert.match(rebuildDueView, /memory\[\]\s+active/, "/context keeps the active Memory view while due for maintenance");
+  assert.match(rebuildDueView, /next: rebuild/, "/context reports the rebuild as the next operation");
+  assert.match(rebuildDueView, /stable 1\/2/, "/context previews the unchanged single-block prefix");
+
+  const thirdInputResult = await runner.emitInput("smoke: maintain the Memory blocks", undefined, "interactive");
+  assert.equal(thirdInputResult.action, "continue");
+  assert.ok(
+    session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "the due real-user run opens as the maintenance rebuild",
+  );
+
+  const thirdRequestEntry = smokeSession.appendMessage({
+    role: "user", content: "smoke: maintain the Memory blocks", timestamp: 800,
+  });
+  const thirdProjected = smokeSession.buildSessionContext().messages;
+  assert.equal(thirdProjected[0].role, "compactionSummary");
+  assert.equal(thirdProjected[0].summary, composeMemorySummary([smokeBlock, smokeSecondBlock]));
+  const thirdTransformed = await runner.emitContext(thirdProjected);
+  assert.ok(Array.isArray(thirdTransformed), "the maintenance run transforms Pi's real projected request");
+  assert.equal(
+    thirdTransformed[0].summary,
+    composeMemorySummary([smokeBlock]),
+    "the summary message keeps exactly the unchanged first block",
+  );
+  assert.equal(thirdTransformed[1].content, "smoke: ship the first Memory block",
+    "the inserted sources begin at the selected block's first original entry (the prior run's retained request)");
+  const thirdSerialized = JSON.stringify(thirdTransformed);
+  assert.equal((thirdSerialized.match(/smoke second-round request 0/g) ?? []).length, 1,
+    "the selected source entries appear exactly once");
+  assert.ok(thirdSerialized.includes("smoke: ship the second Memory block"),
+    "the raw tail retained by the second compaction stays in the request");
+  const thirdAdvisories = thirdTransformed.filter(
+    (message) => message?.customType === "pi-square.context-memory/advisory",
+  );
+  assert.equal(thirdAdvisories.length, 1, "the maintenance run carries exactly one advisory");
+  assert.ok(thirdAdvisories[0].content.includes("maintenance compression is due"),
+    "the maintenance advisory identifies the rebuild operation");
+  assert.equal(thirdTransformed.at(-2)?.content, "smoke: maintain the Memory blocks",
+    "the advisory sits directly after the current user message");
+
+  const smokeRebuiltBlock = "# Smoke rebuilt block\n\n- the second-round sources and this run in one block";
+  smokeSession.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "text", text: "done — submitting the replacement block" },
+      { type: "toolCall", id: "smoke:submit-rebuild", name: "submit_memory", arguments: { markdown: smokeRebuiltBlock } },
+    ],
+    api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet",
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "toolUse", timestamp: 801,
+  });
+  await runner.emit({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "done — submitting the replacement block" },
+        { type: "toolCall", id: "smoke:submit-rebuild", name: "submit_memory", arguments: { markdown: smokeRebuiltBlock } },
+      ],
+    },
+  });
+  const rebuildSubmitCtx = runner.createCommandContext();
+  const rebuildSubmitResult = await toolByName("submit_memory").execute(
+    "smoke:submit-rebuild",
+    { markdown: smokeRebuiltBlock },
+    undefined,
+    undefined,
+    rebuildSubmitCtx,
+  );
+  assert.equal(rebuildSubmitResult.content[0].text, "Memory candidate accepted; compaction pending.");
+  smokeSession.appendMessage({
+    role: "toolResult", toolCallId: "smoke:submit-rebuild", toolName: "submit_memory",
+    content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], isError: false, timestamp: 802,
+  });
+
+  await runner.emit({ type: "agent_settled" });
+  for (let i = 0; i < 500 && session.isCompacting; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(!session.isCompacting, "the settle-triggered rebuild compaction finished");
+
+  const smokeCompactionsRebuilt = smokeSession.getBranch().filter((entry) => entry.type === "compaction");
+  assert.equal(smokeCompactionsRebuilt.length, 3, "Pi's own seam saved exactly one more compaction entry");
+  const rebuiltCompactionEntry = smokeCompactionsRebuilt[2];
+  assert.equal(rebuiltCompactionEntry.fromHook, true, "the rebuilt entry carries extension origin");
+  assert.equal(rebuiltCompactionEntry.firstKeptEntryId, thirdRequestEntry,
+    "the maintenance run's real-user request is the retained-tail boundary");
+  assert.equal(
+    rebuiltCompactionEntry.summary,
+    firstCompactionEntry.summary + "\n---\n\n" + smokeRebuiltBlock,
+    "the unselected block stays byte-identical and divergence begins at the first rebuilt block",
+  );
+  assert.deepEqual(rebuiltCompactionEntry.details, {
+    format: MEMORY_FORMAT_TAG,
+    blocks: [
+      secondCompactionEntry.details.blocks[0],
+      { endEntryId: smokeThirdSourceEnd, markdownBytes: Buffer.byteLength(smokeRebuiltBlock, "utf8") },
+    ],
+  }, "Pi round-trips the rebuild directory with the unchanged first entry");
+
+  // The projected provider context renders deterministically after the
+  // rebuild and keeps the first block's rendering byte-identical.
+  const thirdProjection = smokeSession.buildSessionContext().messages;
+  assert.equal(JSON.stringify(smokeSession.buildSessionContext().messages), JSON.stringify(thirdProjection),
+    "repeated rendering after the rebuild is byte-identical");
+  assert.equal(thirdProjection[0].summary, composeMemorySummary([smokeBlock, smokeRebuiltBlock]));
+
+  const rebuiltView = await runContextCommand();
+  assert.match(rebuiltView, /2 blocks/, "/context counts the prefix and replacement blocks");
+  const rebuiltDetailView = await runContextCommand("memory 2");
+  assert.match(rebuiltDetailView, /# Smoke rebuilt block/, "/context memory shows the replacement block Markdown");
+  assert.match(rebuiltDetailView, /smoke second-round request 0/, "/context memory shows the rebuilt block's sources");
+  const rebuiltRead = toolByName("read_memory_source");
+  const rebuiltPages = [];
+  let rebuiltPage = 1;
+  for (;;) {
+    const result = await rebuiltRead.execute(
+      `smoke:memory-source-rebuilt:${rebuiltPage}`,
+      { block: 2, page: rebuiltPage },
+      undefined,
+      undefined,
+      runner.createCommandContext(),
+    );
+    rebuiltPages.push(result.content[1].text);
+    if (!result.details.hasMore) break;
+    rebuiltPage += 1;
+  }
+  assert.match(rebuiltPages[0], /smoke second-round request 0/,
+    "the rebuilt block recovers the selected suffix's original conversation");
+  const rebuiltTranscript = rebuiltPages.join("");
+  assert.match(rebuiltTranscript, /smoke: ship the second Memory block/,
+    "the rebuilt block also covers the raw tail retained by the previous compaction");
+  assert.match(rebuiltTranscript, /smoke third-round request 0/,
+    "the rebuilt block covers the newly accumulated raw tail");
+  assert.ok(!rebuiltTranscript.includes("smoke bulk request 0"),
+    "the unchanged prefix keeps its own sources");
+  assert.ok(
+    !session.agent.state.tools.some((tool) => tool.name === "submit_memory"),
+    "submit_memory deactivates after the rebuild handshake",
+  );
 
   // The fake model and stream stub existed only for the compaction seams; the
   // remaining sections run model-agnostic like the rest of the smoke.
