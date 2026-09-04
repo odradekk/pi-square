@@ -28,4 +28,13 @@ npm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Context Memory qualification report (generated build artifact, #223)
+tests/context-memory/qualification/report/
+
+# Context Memory continuity qualification report (generated build artifact, #224)
+tests/context-memory/continuity/report/
+
+# Provider-cache experiment report (generated build artifact, #225)
+tests/context-memory/cache-experiment/report/
 .tmp/

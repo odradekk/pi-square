@@ -146,7 +146,7 @@ try {
       getAllTools() { return []; },
     };
     const controller = new DisplayController(DEFAULT_CONFIG);
-    registerDisplayBuiltinsDefault(pi, controller, undefined, ["owned_reader", "owned_writer"]);
+    registerDisplayBuiltinsDefault(pi, controller, undefined, ["read_memory_source", "submit_memory"]);
 
     const ctx = {
       cwd: temp,
@@ -162,21 +162,21 @@ try {
 
     // First start: the baseline is captured without the dynamic names.
     await emit();
-    assert.ok(!active.includes("owned_reader"), "the baseline never contains the dynamic names");
-    assert.ok(!active.includes("owned_writer"));
+    assert.ok(!active.includes("read_memory_source"), "the baseline never contains the dynamic names");
+    assert.ok(!active.includes("submit_memory"));
 
-    // A reload after the owning module activated the reader: the restore keeps it.
-    active = [...active, "owned_reader"];
+    // A reload after Context Memory activated the read tool: the restore keeps it.
+    active = [...active, "read_memory_source"];
     await emit();
-    assert.ok(active.includes("owned_reader"),
+    assert.ok(active.includes("read_memory_source"),
       "the baseline restore preserves a dynamically added owned name");
-    assert.ok(!active.includes("owned_writer"),
+    assert.ok(!active.includes("submit_memory"),
       "an owned name another module removed stays removed");
 
-    // A reload after the owning module deactivated it again: nothing resurrects.
-    active = active.filter((name) => name !== "owned_reader");
+    // A reload after Context Memory deactivated it again: nothing resurrects.
+    active = active.filter((name) => name !== "read_memory_source");
     await emit();
-    assert.ok(!active.includes("owned_reader"), "a dynamically removed owned name stays removed");
+    assert.ok(!active.includes("read_memory_source"), "a dynamically removed owned name stays removed");
   }
 
   runtime.dispose();

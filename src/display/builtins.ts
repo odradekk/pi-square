@@ -831,10 +831,10 @@ export default function registerDisplayBuiltins(
     const restoredActive = anchoredReadAvailable
       ? activeToolBaseline.filter((name) => name !== "edit")
       : [...activeToolBaseline];
-    // Dynamically owned tool names (#217): another module synchronizes them
-    // before this handler on the same event, so `active` already reflects
-    // their intended state. The baseline restore keeps that selection
-    // instead of reverting it to the stale capture.
+    // Dynamically owned tool names (Context Memory, #217): another module
+    // synchronizes them before this handler on the same event, so `active`
+    // already reflects their intended state. The baseline restore keeps that
+    // selection instead of reverting it to the stale capture.
     for (const name of dynamicToolNames) {
       if (active.includes(name) && !restoredActive.includes(name)) restoredActive.push(name);
     }

@@ -194,6 +194,81 @@ try {
   assert.equal(oobValue.diagnostics.length, 1);
   assert.match(oobValue.diagnostics[0].message, /config ignored/);
 
+  // ── Context Memory configuration (#215, #216) ───────────────────
+
+  // Defaults: disabled, percent threshold 30, budget 10.
+  assert.deepEqual(DEFAULT_CONFIG.contextMemory, {
+    enabled: false,
+    compressionThreshold: { percent: 30 },
+    memoryBudgetPercent: 10,
+  });
+
+  rmSync(join(projectDir, ".pi", "config", "pi-square.json"), { force: true });
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    contextMemory: {
+      enabled: true,
+      compressionThreshold: { tokens: 24_000 },
+      memoryBudgetPercent: 25,
+    },
+  }));
+  const memoryAgent = loadConfig(projectDir);
+  assert.equal(memoryAgent.diagnostics.length, 0, `unexpected diagnostics: ${memoryAgent.diagnostics.map((d) => d.message).join("; ")}`);
+  assert.deepEqual(memoryAgent.config.contextMemory, {
+    enabled: true,
+    compressionThreshold: { tokens: 24_000 },
+    memoryBudgetPercent: 25,
+  });
+
+  const invalidMemoryLayers = [
+    { enabled: true, compressionThreshold: { percent: 9 } },
+    { enabled: true, compressionThreshold: { percent: 81 } },
+    { enabled: true, compressionThreshold: { percent: 30, tokens: 100 } },
+    { enabled: true, compressionThreshold: {} },
+    { enabled: true, compressionThreshold: { tokens: 0 } },
+    { enabled: true, compressionThreshold: { tokens: 1.5 } },
+    { enabled: true, compressionThreshold: { tokens: -5 } },
+    { enabled: true, memoryBudgetPercent: 0 },
+    { enabled: true, memoryBudgetPercent: 26 },
+    { enabled: true, memoryBudgetPercent: 10.5 },
+    { enabled: "true" },
+    { enabled: true, unexpectedField: true },
+  ];
+  for (const [index, contextMemory] of invalidMemoryLayers.entries()) {
+    writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({ version: 2, contextMemory }));
+    const invalid = loadConfig(projectDir);
+    assert.equal(invalid.diagnostics.length, 1, `layer ${index} must be rejected`);
+    assert.match(invalid.diagnostics[0].message, /config ignored/, `layer ${index} diagnostic`);
+    assert.equal(invalid.config.contextMemory.enabled, false, `layer ${index} never enables the feature`);
+    assert.deepEqual(invalid.config.contextMemory.compressionThreshold, { percent: 30 }, `layer ${index} keeps default threshold`);
+  }
+
+  // A JSON number that parses to Infinity is not a finite integer.
+  writeFileSync(join(agentDir, "config", "pi-square.json"),
+    '{"version":2,"contextMemory":{"enabled":true,"compressionThreshold":{"tokens":1e999}}}');
+  const nonFiniteTokens = loadConfig(projectDir);
+  assert.equal(nonFiniteTokens.diagnostics.length, 1);
+  assert.equal(nonFiniteTokens.config.contextMemory.enabled, false);
+
+  // A project layer declaring contextMemory is rejected atomically — including
+  // its otherwise-valid display section — and cannot enable or alter anything.
+  writeFileSync(join(agentDir, "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    contextMemory: { enabled: true },
+  }));
+  writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
+    version: 2,
+    display: { motion: "off" },
+    contextMemory: { enabled: false, compressionThreshold: { tokens: 1 } },
+  }));
+  const memoryProject = loadConfig(projectDir);
+  assert.equal(memoryProject.diagnostics.length, 1);
+  assert.match(memoryProject.diagnostics[0].message, /config ignored/);
+  assert.equal(memoryProject.config.contextMemory.enabled, true, "the agent layer keeps sole authority");
+  assert.equal(memoryProject.config.display.project, undefined, "the project layer is dropped atomically");
+
+  rmSync(join(projectDir, ".pi", "config", "pi-square.json"), { force: true });
+
   // ── Display config writer ───────────────────────────────────────
 
   const writeModule = await load("../src/core/config-write.ts");

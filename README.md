@@ -370,6 +370,27 @@ Definition files are ordinary Markdown with a strict bounded frontmatter
 subset; invalid definitions are diagnosed and excluded individually while
 valid ones remain inspectable.
 
+## Context Memory (experimental, disabled by default)
+
+Context Memory keeps one long conversation branch usable with a smaller active context by representing older history as an ordered list of **Memory blocks** — compact Markdown written by the current main agent inside an ordinary user run — followed by the recent uncompressed conversation. Existing blocks stay byte-identical across appends, a maintenance run rebuilds only a recent suffix from the complete original conversation, and a parent-only `read_memory_source` tool recovers any block's original transcript in bounded 16 KiB pages. Memory is stored only inside Pi's own compaction entries on the current branch: there is no second database, background summarizer, or extra model call, and every unsupported case — an unqualified host, an opaque branch, a failed takeover, or the explicit scale limit where complete original sources no longer fit the model window — falls back to Pi native compaction untouched. The complete guide is [`docs/context-memory.md`](docs/context-memory.md); the architecture decision is recorded in [ADR 0013](docs/adr/0013-context-memory.md).
+
+Enable it through the agent-only `contextMemory` section in agent-level `config/pi-square.json`:
+
+```json
+{
+  "version": 2,
+  "contextMemory": {
+    "enabled": true,
+    "compressionThreshold": { "percent": 30 },
+    "memoryBudgetPercent": 10
+  }
+}
+```
+
+`compressionThreshold` is exactly one of `{ "percent": 10–80 }` or `{ "tokens": ≥ 1 }` (integers), and `memoryBudgetPercent` accepts 1–25 as a percent of the current model's full context window; unknown fields and a project layer that declares `contextMemory` are rejected as a whole. The feature activates by capability detection: it runs on any Pi host that exposes the required public interfaces, whatever version that host reports, and `/context` names the running host version when support fails. Inspect it through the `/context` `memory[]` section — states include `active`, `due`, `pending`, `committing`, `opaque`, `scale-limit`, `no-memory`, `unsupported`, `disabled`, and an `ephemeral` marker for in-memory sessions — and read one block with `/context memory <block> [page]`, which performs no model call.
+
+Disclosure: Memory blocks are model-authored conversation text transmitted to the selected provider like any other message (provider switching carries them), and they are **not** encrypted, secret-scanned, redacted, or securely erased — the compression advisory asks the model not to copy credentials, private keys, or access tokens into Memory, but it can persist sensitive text by mistake. Disabling or uninstalling affects future behavior only: existing compaction entries remain in Pi history as ordinary model-visible summaries. Pi's `SessionManager` stays the only session-file writer — one writer per session file; run parallel work in forked or cloned sessions — and deleting one session file is not universal erasure of forks, exports, scrollback, or provider records. No success-rate, correctness, or cost-efficiency improvement is claimed: the feature has not yet been qualified with the required real-model and provider-cache evidence.
+
 ## Persistent SSH shell
 
 The parent session exposes one `ssh` tool for bounded persistent remote POSIX shells. `connect` selects an agent-configured profile and allowlisted target, verifies its pinned OpenSSH SHA-256 host fingerprint, authenticates with an SSH agent or private-key file, and returns a session ID. `command` preserves the same remote shell's working directory, exported environment, and other shell state across calls. A session permits one foreground command at a time; `read`, `input`, `secret_input`, and `interrupt` continue a command that exceeds the bounded wait or pauses for input, while `close` and `list` manage the current connection set. Commands that invoke `exec` or `exit` can intentionally terminate that persistent shell, so avoid them when later calls must reuse the session or receive its completion marker.
@@ -477,7 +498,7 @@ This major release adds an explicit package export map for `.`, `./display`, and
 
 ## Configuration
 
-Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict. SSH profiles and both `anchoredEditing` settings are agent-only settings: a project configuration that supplies any of these fields is rejected as a whole.
+Non-secret settings live in `config/pi-square.json` at agent or project scope. Configuration V2 is strict. SSH profiles, both `anchoredEditing` settings, and the whole `contextMemory` section are agent-only settings: a project configuration that supplies any of these fields is rejected as a whole. See [Context Memory](#context-memory-experimental-disabled-by-default) for the `contextMemory` shape and bounds.
 
 ```json
 {
