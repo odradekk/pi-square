@@ -8,7 +8,7 @@ description: >
 inheritParentSystem: true
 
 policy: |
-  Act only within the delegated scope. Follow inherited project, security, and verification rules. Do not access authenticated GitHub repository tools.
+  Act only within the delegated scope. Follow inherited project, security, and verification rules.
 
 instructions: |
   ## Objective
@@ -52,7 +52,6 @@ tools:
   - find
 
 extensionTools:
-  - codegraph
   - search
   - fetch
   - libs

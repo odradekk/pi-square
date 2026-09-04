@@ -34,8 +34,6 @@ const requiredFiles = [
   "subagents/example_profile.yaml",
   "subagents/explorer.yaml",
   "subagents/generalist.yaml",
-  "subagents/librarian.yaml",
-  "subagents/oracle.yaml",
 ];
 const paths = new Set(pack.files.map((file) => file.path));
 

@@ -102,7 +102,6 @@ const EXPECTED_TITLES = {
   write: "Write",
   find: "Find",
   grep: "Grep",
-  codegraph: "CodeGraph",
   pdf_search: "PDF search",
   bash: "Bash",
   pwsh: "PowerShell",
@@ -111,7 +110,6 @@ const EXPECTED_TITLES = {
   libs: "Library search",
   docs: "Documentation",
   parse: "PDF parse",
-  github: "GitHub",
   ssh: "SSH",
   todo: "Tasks",
   ask: "Questions",
@@ -477,8 +475,7 @@ const EXPECTED_TITLES = {
   runtime.dispose();
 
   // The search-family boundedness signals stay badge-free too: paged
-  // pdf_search results with more matches available, and the codegraph
-  // output budget.
+  // pdf_search results with more matches available.
   const stub = (name) => ({
     name,
     description: name,
@@ -508,23 +505,6 @@ const EXPECTED_TITLES = {
     "a paged pdf_search result renders no truncated badge",
   );
   pdfRuntime.dispose();
-  const codegraphRuntime = newRuntime();
-  const codegraph = decorateInternalTool(stub("codegraph"), () => codegraphRuntime);
-  const codegraphResult = codegraph.renderResult(
-    {
-      content: [{ type: "text", text: "{}" }],
-      details: { operation: "explore", phase: "done", outputTruncated: true },
-    },
-    { expanded: false, isPartial: false },
-    plainTheme,
-    makeCtx({ operation: "explore", query: "auth" }, {}, { executionStarted: true, isError: false }),
-  );
-  assert.doesNotMatch(
-    stripVTControlCharacters(codegraphResult.render(80)[0]),
-    /\[truncated\]/,
-    "a codegraph result bounded by the output budget renders no badge",
-  );
-  codegraphRuntime.dispose();
 }
 
 // ─── Boundedness: every new header shape at every width and theme ───

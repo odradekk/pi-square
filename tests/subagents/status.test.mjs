@@ -86,17 +86,6 @@ test("native status keeps undelivered results visible without any active job", (
   );
 });
 
-test("native status uses specialized GitHub summaries without result payloads", () => {
-  const jobs = [
-    job("subagent_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "running", 2, "librarian", toolTimeline(
-      "github {\"operation\":\"commit\",\"repo\":\"owner/name\",\"ref\":\"abc123\",\"token\":\"private\"}",
-    )),
-  ];
-  const rendered = renderNativeSubagentStatus(plainTheme(), jobs);
-  assert.match(rendered, /github owner\/name@abc123/);
-  assert.doesNotMatch(rendered, /SECRET TOOL RESULT|token|private/);
-});
-
 test("native status bounds unicode-safe visible output and strips controls", () => {
   const longCall = `read ${"界".repeat(100)}\npassword=private-value`;
   const jobs = [

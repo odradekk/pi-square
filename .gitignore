@@ -2,7 +2,7 @@
 node_modules
 node_modules/
 
-# CodeGraph index database
+# Legacy CodeGraph index data from retired tooling; deletion is the user's decision
 .codegraph/
 
 # Build and test output

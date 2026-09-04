@@ -89,7 +89,7 @@ test("collapsed guide is one native-style summary and expanded guide reveals bou
   const guide = buildSubagentConfigGuide(registry, syntheticGuideRoot);
   const collapsed = plain(renderSubagentConfigGuide(guide, { expanded: false }, plainTheme));
   assert.match(collapsed, /✓ ● Config guide/);
-  assert.match(collapsed, /6 definitions/);
+  assert.match(collapsed, /4 definitions/);
   assert.match(collapsed, /package/);
   assert.match(collapsed, /expand/);
   assert.doesNotMatch(collapsed, /promptVersion|explorer\.yaml/);

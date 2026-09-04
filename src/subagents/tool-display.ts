@@ -18,11 +18,6 @@ function shortenPath(value: unknown): string {
   return clipInline(value || ".", 48);
 }
 
-function withRef(base: string, ref: unknown): string {
-  const formatted = clipInline(ref, 32);
-  return formatted ? `${base} @${formatted}` : base;
-}
-
 export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDisplay {
   let summary: string;
   switch (toolName) {
@@ -43,14 +38,6 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
     case "find":
       summary = `${clipInline(args?.pattern || ".", 40)} in ${shortenPath(args?.path || ".")}`;
       break;
-    case "codegraph": {
-      const operation = clipInline(args?.operation || "...", 16);
-      const path = shortenPath(args?.projectPath || ".");
-      summary = operation === "explore"
-        ? `explore: ${clipInline(args?.query || "...", 60)} in ${path}`
-        : `${operation} ${path}`;
-      break;
-    }
     case "pdf_search":
       summary = `${clipInline(args?.query || "...", 50)} in ${shortenPath(args?.path || "...")}`;
       break;
@@ -82,30 +69,6 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
     case "docs":
       summary = clipInline(args?.libraryId || "...", 60);
       break;
-    case "github": {
-      const op = args?.operation;
-      if (op === "search") {
-        summary = `${clipInline(args?.kind || "repositories", 16)}: ${clipInline(args?.query || "...", 60)}`;
-      } else if (op === "read") {
-        const repo = clipInline(args?.repo || "...", 48);
-        const path = clipInline(args?.path || "README", 48);
-        const line = typeof args?.line === "number" ? ` · line ${args.line}` : "";
-        summary = `${withRef(`${repo}:${path}`, args?.ref)}${line}`;
-      } else if (op === "tree") {
-        const repo = clipInline(args?.repo || "...", 48);
-        const path = clipInline(args?.path || ".", 48);
-        const depth = typeof args?.depth === "number" ? ` · depth ${args.depth}` : "";
-        summary = `${withRef(`${repo}:${path}`, args?.ref)}${depth}`;
-      } else if (op === "commit") {
-        const repo = clipInline(args?.repo || "...", 48);
-        const ref = clipInline(args?.ref || "...", 40);
-        const page = typeof args?.page === "number" ? ` · page ${args.page}` : "";
-        summary = `${repo}@${ref}${page}`;
-      } else {
-        summary = "called";
-      }
-      break;
-    }
     default:
       summary = "called";
       break;

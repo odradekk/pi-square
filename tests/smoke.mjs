@@ -71,7 +71,7 @@ try {
   assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
-    "ask", "codegraph", "delegate", "docs", "fetch", "github",
+    "ask", "delegate", "docs", "fetch",
     "libs", "parse", "pdf_search", "replace", "resume", "search",
     "todo",
   ];
@@ -242,12 +242,6 @@ try {
   assert.equal(todoResult.details.counts.total, 1);
   assert.equal(todoResult.details.currentId, "smoke");
   assert.equal(JSON.parse(todoResult.content[0].text).version, 1);
-
-  const codegraphResult = await toolByName("codegraph").execute("smoke:codegraph", {
-    operation: "status",
-  }, undefined, undefined);
-  assert.equal(codegraphResult.details.code, "NOT_INDEXED");
-  assert.equal(codegraphResult.details.phase, "recoverable");
 
   // The fake model and stream stub existed only for the compaction seams; the
   // remaining sections run model-agnostic like the rest of the smoke.

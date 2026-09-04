@@ -10,7 +10,6 @@ import type { DisplayFamily, DisplayMetadataEntry, OperationalLifecycle, Operati
 
 const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   pdf_search: ["path", "query", "limit"],
-  codegraph: ["operation", "projectPath", "query", "maxFiles"],
   bash: ["command", "timeout"],
   pwsh: ["command", "cwd", "timeoutMs"],
   ssh: ["operation", "profile", "target", "label", "session", "command", "prompt", "cursor", "waitMs", "newline"],
@@ -20,7 +19,6 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
   parse: ["path", "pages", "mode", "max_tokens", "timeout"],
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
-  // github uses per-operation GITHUB_ARG_FIELDS below, not this flat map.
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
   delegate: ["agent", "mode", "task", "cwd", "model", "thinkingLevel", "context"],
@@ -29,7 +27,7 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   pdf_search: ["query"],
-  codegraph: ["operation"], bash: ["command"], pwsh: ["command"],
+  bash: ["command"], pwsh: ["command"],
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
   docs: ["libraryId"], parse: ["path"], replace: ["path"],
   ask: [], todo: ["action"],
@@ -39,9 +37,9 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
 /** C1 sentence-case titles; unique within each family (`grep` is `Text search`). */
 const TITLES: Readonly<Record<string, string>> = Object.freeze({
   pdf_search: "PDF search",
-  codegraph: "CodeGraph", bash: "Bash", pwsh: "PowerShell",
+  bash: "Bash", pwsh: "PowerShell",
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
-  docs: "Documentation", parse: "PDF parse", replace: "Replace", github: "GitHub",
+  docs: "Documentation", parse: "PDF parse", replace: "Replace",
   ask: "Questions", todo: "Tasks",
   delegate: "Subagent", resume: "Resume subagent",
 });
@@ -50,19 +48,6 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
 const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   parse: ["path"],
   replace: ["path"],
-});
-
-/** Per-operation target fields for the merged github tool. */
-const GITHUB_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  search: ["query"], read: ["path"], tree: ["path"], commit: ["ref"],
-});
-
-/** Per-operation metadata fields for the merged github tool. */
-const GITHUB_ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  search: ["kind", "query", "page", "limit"],
-  read: ["repo", "path", "ref", "line", "limit"],
-  tree: ["repo", "path", "ref", "depth", "offset", "limit"],
-  commit: ["repo", "ref", "page", "limit"],
 });
 
 function record(value: unknown): Record<string, unknown> {
@@ -104,9 +89,7 @@ function resolveResultLifecycle(
 
 function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
   const source = record(args);
-  const fields = name === "github"
-    ? (GITHUB_ARG_FIELDS[String(source.operation)] ?? [])
-    : (ARG_FIELDS[name] ?? []);
+  const fields = ARG_FIELDS[name] ?? [];
   return fields.flatMap((key) => {
     if (!Object.hasOwn(source, key) || source[key] === undefined) return [];
     if (name === "ssh" && key === "prompt") return [{ label: key, value: "secure input requested", tone: "warning" as const }];
@@ -121,9 +104,7 @@ function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
 
 function targetFor(name: string, args: unknown, cwd: string): { value?: string; isPath: boolean } {
   const source = record(args);
-  const fields = name === "github"
-    ? (GITHUB_TARGET_FIELDS[String(source.operation)] ?? ["operation"])
-    : (TARGET_FIELDS[name] ?? []);
+  const fields = TARGET_FIELDS[name] ?? [];
   for (const key of fields) {
     const raw = source[key];
     if (raw === undefined) continue;
@@ -146,10 +127,10 @@ function callPreview(name: string, args: unknown): string | undefined {
 
 /**
  * C7 boundedness signals shared by the extension tools: an explicit
- * `truncated` flag, a truncation detail object (content budgets),
- * the codegraph model-facing output budget, a truncated stderr stream, a
- * paged result with more entries available, and over-long lines truncated
- * by GitHub reads. Any of them raises the `truncated` header badge.
+ * `truncated` flag, a truncation detail object (content budgets), a
+ * truncated output or stderr stream, a paged result with more entries
+ * available, and over-long truncated lines. Any of them raises the
+ * `truncated` header badge.
  */
 function isBoundedResult(details: Record<string, unknown>): boolean {
   const truncation = record(details.truncation);
@@ -198,13 +179,6 @@ function summaryRows(detailsValue: unknown): { rows: { text: string }[]; metadat
 
 function createAdapter(name: string, family: DisplayFamily): InternalToolDisplayAdapter<any, unknown, unknown> {
   const title = TITLES[name] ?? name;
-  function resolveTitle(args: unknown): string {
-    if (name === "github") {
-      const op = record(args).operation;
-      if (typeof op === "string" && op) return `GitHub ${op}`;
-    }
-    return title;
-  }
   return {
     describeCall(args, context) {
       const preview = callPreview(name, args);
@@ -219,7 +193,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         tool: name,
         family,
         lifecycle,
-        title: resolveTitle(args),
+        title,
         target: target.value ?? (context.argsComplete ? undefined : "building arguments"),
         ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: metadataForArgs(name, args),
@@ -247,7 +221,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         family,
         lifecycle: lc.lifecycle,
         ...(lc.qualifiers.length > 0 ? { qualifiers: lc.qualifiers } : {}),
-        title: resolveTitle(context.args),
+        title,
         target: target.value,
         ...(target.isPath ? { targetKind: "path" as const } : {}),
         metadata: [...metadataForArgs(name, context.args), ...outcome.metadata],
@@ -278,7 +252,6 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
   if (!entry) throw new Error(`Missing display catalog entry for '${definition.name}'`);
   const base = createAdapter(definition.name, entry.family);
   const adapter = definition.name === "pdf_search"
-    || definition.name === "codegraph"
     ? createSearchAdapter(definition.name, base)
     : definition.name === "bash" || definition.name === "pwsh"
       ? createExecutionAdapter(definition.name, base)
@@ -287,7 +260,6 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
         || definition.name === "libs"
         || definition.name === "docs"
         || definition.name === "parse"
-        || definition.name === "github"
         || definition.name === "ssh"
         ? createRemoteAdapter(definition.name, base)
         : definition.name === "ask"

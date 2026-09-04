@@ -62,16 +62,16 @@ function ok(input) {
   const envelope = ok({ cwd, tools: [...SHADOW_SAFE_TOOLS] });
   assert.deepEqual(envelope.toolNames, [
     "read", "grep", "find", "ls",
-    "codegraph", "pdf_search", "search", "fetch", "libs", "docs",
+    "pdf_search", "search", "fetch", "libs", "docs",
   ]);
   assert.deepEqual(envelope.customTools.map((tool) => tool.name), [
-    "codegraph", "pdf_search", "search", "fetch", "libs", "docs",
+    "pdf_search", "search", "fetch", "libs", "docs",
   ]);
 }
 
 {
   // Excluded capabilities are not in the catalog and drop with a warning.
-  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "revert", "ssh", "parse", "github", "delegate", "resume", "todo", "ask"]) {
+  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "revert", "ssh", "parse", "delegate", "resume", "todo", "ask"]) {
     const envelope = ok({ cwd, tools: ["read", excluded] });
     assert.deepEqual(envelope.toolNames, ["read"], excluded);
     assert.equal(envelope.warnings.length, 1, excluded);
@@ -90,9 +90,9 @@ function ok(input) {
 
 {
   // Definition text order never changes the envelope or its hash.
-  const forward = ok({ cwd, tools: ["docs", "search", "ls", "read", "codegraph"] });
-  const reverse = ok({ cwd, tools: ["codegraph", "read", "ls", "search", "docs"] });
-  assert.deepEqual(forward.toolNames, ["read", "ls", "codegraph", "search", "docs"]);
+  const forward = ok({ cwd, tools: ["docs", "search", "ls", "read", "pdf_search"] });
+  const reverse = ok({ cwd, tools: ["pdf_search", "read", "ls", "search", "docs"] });
+  assert.deepEqual(forward.toolNames, ["read", "ls", "pdf_search", "search", "docs"]);
   assert.equal(forward.schemaHash, reverse.schemaHash);
 }
 
@@ -105,8 +105,8 @@ function ok(input) {
 
 {
   // The hash is stable across working directories.
-  const here = ok({ cwd, tools: ["read", "codegraph"] });
-  const elsewhere = ok({ cwd: "/tmp/elsewhere", tools: ["read", "codegraph"] });
+  const here = ok({ cwd, tools: ["read", "pdf_search"] });
+  const elsewhere = ok({ cwd: "/tmp/elsewhere", tools: ["read", "pdf_search"] });
   assert.equal(here.schemaHash, elsewhere.schemaHash);
 }
 
@@ -143,8 +143,8 @@ function ok(input) {
 {
   // Extension tools come from the child-safe read-only factories: the
   // Shadow envelope only ever receives catalog definitions, never a
-  // github/pwsh definition even when adjacent names are requested.
-  const envelope = ok({ cwd, tools: ["codegraph", "search"] });
+  // shell definition even when adjacent names are requested.
+  const envelope = ok({ cwd, tools: ["pdf_search", "search"] });
   assert.equal(envelope.customTools.length, 2);
   for (const tool of envelope.customTools) {
     assert.equal(SHADOW_EXTENSION_BASE_ORDER.includes(tool.name), true);

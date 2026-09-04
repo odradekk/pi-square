@@ -25,7 +25,7 @@ instructions: |
 
   ## Boundaries
 
-  Do not modify local files or use GitHub repository APIs. Repository-specific tree, file, code, or commit research belongs to Librarian.
+  Do not modify local files or use GitHub repository APIs.
 
 output: |
   Include only sections with content:
