@@ -19,15 +19,15 @@ const {
 
 function runDetails(id, overrides = {}) {
   return {
-    version: 3,
+    version: 4,
     id,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: `/tmp/subagents/${id}`,
     sessionFile: `/tmp/subagents/${id}/session.jsonl`,
     sessionId: "native-session",
     originParentSessionId: "parent-session",
     lastParentSessionId: "parent-session",
-    phase: "done",
+    phase: "completed",
     agent: { promptVersion: 2, name: "explorer", inheritParentSystem: true },
     task: "probe task",
     cwd: "/tmp/subagents",
@@ -76,7 +76,7 @@ function harness({ idle = true, send } = {}) {
 function enqueue(controller, id, overrides = {}) {
   controller.enqueue({
     id,
-    status: overrides.status ?? "done",
+    status: overrides.status ?? "completed",
     details: runDetails(id, overrides.details ?? {}),
   });
 }
@@ -116,12 +116,12 @@ test("a failure text uses the same budget as a result text", () => {
   const failure = "E".repeat(30_000);
   const probe = harness();
   enqueue(probe.controller, "run-failed", {
-    status: "error",
-    details: { phase: "error", finalText: "", error: failure },
+    status: "failed",
+    details: { phase: "failed", finalText: "", error: failure },
   });
 
   const content = probe.last().message.content;
-  assert.match(content, /^\[Background subagent error\]/);
+  assert.match(content, /^\[Background subagent failed\]/);
   assert.match(content, /\[omitted 6000 characters\]/, "the former 800-character error clip is gone");
 });
 
@@ -144,10 +144,10 @@ test("results are coalesced into one delivery and the surplus follows at the nex
 
   probe.controller.handleTurnEnd();
   assert.equal(probe.sent.length, 1, "one message carries the whole burst");
-  assert.equal(probe.last().message.details.version, 4);
+  assert.equal(probe.last().message.details.version, 5);
   assert.equal(probe.last().message.details.results.length, MAX_BATCH_RESULTS);
   assert.match(probe.last().message.content, new RegExp(`^\\[Background subagents: ${MAX_BATCH_RESULTS} results\\]`));
-  assert.match(probe.last().message.content, /--- 1\/6 done · id: run-0/);
+  assert.match(probe.last().message.content, /--- 1\/6 completed · id: run-0/);
 
   probe.controller.handleTurnEnd();
   assert.equal(probe.sent.length, 2, "the surplus result is not lost");
@@ -179,7 +179,7 @@ test("a result the parent never received is delivered again after the parent set
   probe.controller.handleAgentSettled();
   assert.equal(probe.sent.length, 2, "the discarded result is delivered again");
   assert.equal(probe.last().message.details.resent, true);
-  assert.match(probe.last().message.content, /^\[Background subagent done\] \(resent\)/);
+  assert.match(probe.last().message.content, /^\[Background subagent completed\] \(resent\)/);
   assert.deepEqual(probe.last().message.details.results.map((result) => result.id), ["run-lost"]);
 
   probe.confirmLast();
@@ -267,22 +267,22 @@ test("a session reset clears every pending result", () => {
 
 // ─── Confirmation payloads ───────────────────────────────────────────
 
-test("confirmation reads V4 and legacy V3 payloads and ignores foreign messages", () => {
+test("confirmation reads V5 payloads and ignores foreign messages", () => {
   assert.deepEqual(
     notificationResultIds({
       customType: SUBAGENT_NOTIFICATION_TYPE,
-      details: { version: 4, results: [{ id: "a" }, { id: "b" }] },
+      details: { version: 5, results: [{ id: "a" }, { id: "b" }] },
     }),
     ["a", "b"],
   );
   assert.deepEqual(
     notificationResultIds({
       customType: SUBAGENT_NOTIFICATION_TYPE,
-      details: { id: "legacy", status: "done", result: {} },
+      details: { version: 5, results: [{ id: "skipped" }, { id: "" }] },
     }),
-    ["legacy"],
+    ["skipped"],
   );
-  assert.deepEqual(notificationResultIds({ customType: "other", details: { id: "a" } }), []);
+  assert.deepEqual(notificationResultIds({ customType: "other", details: { version: 5, results: [{ id: "a" }] } }), []);
   assert.deepEqual(notificationResultIds(undefined), []);
 });
 

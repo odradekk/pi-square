@@ -76,16 +76,16 @@ function writePersistedRun(id) {
   mkdirSync(artifactsDir, { recursive: true });
   writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "native-1", timestamp: new Date(0).toISOString(), cwd: "/tmp" })}\n`, "utf8");
   writeFileSync(join(artifactsDir, "run.json"), JSON.stringify({
-    version: 3,
+    version: 4,
     id,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir,
     sessionFile,
     sessionId: "native-1",
     originParentSessionId: PARENT_SESSION,
     lastParentSessionId: PARENT_SESSION,
     promptSnapshot: createPromptSnapshot(),
-    phase: "done",
+    phase: "completed",
     agent: { promptVersion: 2, name: "worker", inheritParentSystem: true },
     task: "initial",
     cwd: "/tmp",
@@ -169,7 +169,7 @@ test("delegate queues a fresh background child and returns its new id and queued
   setRunSubagentTaskMock(async (input) => ({
     details: {
       ...input,
-      phase: "done",
+      phase: "completed",
       finalText: "ACK",
       endedAt: 2,
       durationMs: 1,
@@ -180,8 +180,8 @@ test("delegate queues a fresh background child and returns its new id and queued
   const id = /^Queued background subagent (subagent_[0-9a-f-]{36})\.$/.exec(result.content[0].text)?.[1];
   assert.ok(id, `content states the new public id: ${result.content[0].text}`);
   assert.equal(result.details.id, id);
-  assert.equal(result.details.mode, "bg");
-  assert.equal(result.details.phase, "running");
+  assert.equal(result.details.operation, "delegate");
+  assert.equal(result.details.phase, "queued");
   assert.equal(result.details.task, "delegate work");
   const call = getRunSubagentTaskCalls()[0];
   assert.equal(call.id, id);
@@ -191,7 +191,7 @@ test("delegate queues a fresh background child and returns its new id and queued
 
 test("delegate normalizes blank optional strings to unset", async () => {
   const delegate = delegateTool();
-  setRunSubagentTaskMock(async (input) => ({ details: { ...input, phase: "done", finalText: "ACK" } }));
+  setRunSubagentTaskMock(async (input) => ({ details: { ...input, phase: "completed", finalText: "ACK" } }));
   const result = await delegate.execute("call-blank", {
     task: "delegate",
     agent: "",
@@ -209,7 +209,7 @@ test("delegate normalizes blank optional strings to unset", async () => {
 
 test("delegate passes the frozen clean parent context into the child", async () => {
   const tool = delegateTool();
-  setRunSubagentTaskMock(async (input) => ({ details: { ...input, phase: "done", finalText: "ACK" } }));
+  setRunSubagentTaskMock(async (input) => ({ details: { ...input, phase: "completed", finalText: "ACK" } }));
   const ctx = {
     cwd: "/tmp",
     model: { provider: "test", id: "model" },
@@ -243,7 +243,7 @@ test("delegate rejects an unknown named agent with the visible catalog", async (
 test("resume queues the continuation in the background and returns the same id", async () => {
   const tool = resumeTool();
   writePersistedRun("subagent_00000000-0000-4000-8000-000000000081");
-  setRunSubagentTaskMock(async (input) => ({ details: { ...input, phase: "done", finalText: "continued" } }));
+  setRunSubagentTaskMock(async (input) => ({ details: { ...input, phase: "completed", finalText: "continued" } }));
   const result = await tool.execute("resume-queue", {
     id: "subagent_00000000-0000-4000-8000-000000000081",
     task: "continue",
@@ -258,8 +258,8 @@ test("resume queues the continuation in the background and returns the same id",
   assert.equal(result.isError, undefined);
   assert.match(result.content[0].text, /Queued background resume subagent subagent_00000000-0000-4000-8000-000000000081/);
   assert.equal(result.details.id, "subagent_00000000-0000-4000-8000-000000000081");
-  assert.equal(result.details.mode, "resume");
-  assert.equal(result.details.phase, "running");
+  assert.equal(result.details.operation, "resume");
+  assert.equal(result.details.phase, "queued");
   await new Promise((resolve) => setImmediate(resolve));
   const call = getRunSubagentTaskCalls()[0];
   assert.equal(call.id, "subagent_00000000-0000-4000-8000-000000000081");

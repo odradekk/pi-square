@@ -14,19 +14,19 @@ const { promptSession } = __testables;
 function makeDetails(artifactsDir, overrides = {}) {
   const id = `subagent_${randomUUID()}`;
   return {
-    version: 3,
+    version: 4,
     id,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir,
     sessionFile: join(artifactsDir, "session.jsonl"),
     sessionId: randomUUID(),
     originParentSessionId: "parent-session",
     lastParentSessionId: "parent-session",
     promptSnapshot: {
-      version: 2,
+      version: 3,
       system: "test system",
       manifest: {
-        contractVersion: 2,
+        contractVersion: 3,
         governanceVersion: 1,
         inheritParentSystem: true,
         effectiveSystemHash: "hash",
@@ -115,7 +115,7 @@ function createSession(script) {
   assert.ok(toolStart, "tool start should publish immediately");
   assert.ok(toolEnd, "tool end should publish immediately");
 
-  assert.equal(returned.details.phase, "done");
+  assert.equal(returned.details.phase, "completed");
   const toolStarts = returned.details.timeline.filter((item) => item.kind === "tool" && item.phase === "start").map((item) => item.text);
   assert.deepEqual(toolStarts, [
     "grep /needle/ in .",
@@ -128,7 +128,7 @@ function createSession(script) {
   assert.notEqual(toolStart.details.timeline, returned.details.timeline);
 
   const persisted = JSON.parse(readFileSync(join(artifactsDir, "run.json"), "utf8"));
-  assert.equal(persisted.phase, "done");
+  assert.equal(persisted.phase, "completed");
   assert.equal(persisted.finalText, "# Final\n\nComplete answer.");
   rmSync(artifactsDir, { recursive: true, force: true });
 }
@@ -148,7 +148,7 @@ function createSession(script) {
     details,
     onUpdate(published) { updates.push(published); },
   });
-  assert.equal(returned.details.phase, "error");
+  assert.equal(returned.details.phase, "failed");
   assert.match(returned.details.error, /controlled session failure/);
   assert.ok(updates.length >= 1, "progress before the failure was published");
   rmSync(artifactsDir, { recursive: true, force: true });

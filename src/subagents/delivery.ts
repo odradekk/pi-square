@@ -8,7 +8,7 @@
  * trace. The generic mechanics — the bounded pending set, batch selection,
  * safe delivery timing, confirmation, resend, interruption suppression, and
  * send-failure retention — live in `confirmed-delivery.ts`; this module is the
- * Subagent adapter: it supplies the run identity, the V4 notification payload
+ * Subagent adapter: it supplies the run identity, the V5 notification payload
  * and message construction, and the transcript confirmation parser.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
@@ -33,7 +33,7 @@ export const MAX_BATCH_RESULTS = DEFAULT_MAX_BATCH_RESULTS;
 export const MAX_PENDING_RESULTS = DEFAULT_MAX_PENDING_RESULTS;
 const MAX_TASK_CHARS = 300;
 
-export type DeliverableStatus = "done" | "error";
+export type DeliverableStatus = "completed" | "failed";
 
 /** One finished run as the delivery core carries it. */
 interface SubagentDeliveryValue {
@@ -98,7 +98,7 @@ function agentLabel(result: SubagentDeliveryEntry): string {
 }
 
 function resultText(result: SubagentDeliveryEntry): string {
-  return result.status === "done"
+  return result.status === "completed"
     ? budgetResultText(result.details.finalText || "(no output)")
     : budgetResultText(result.details.error || "Subagent failed.");
 }
@@ -114,7 +114,7 @@ export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: b
       `agent: ${agentLabel(only)}`,
       `task: ${clipTask(only.details.task)}`,
       "",
-      only.status === "done" ? "Result:" : "Error:",
+      only.status === "completed" ? "Result:" : "Error:",
       resultText(only),
     ].join("\n");
   }
@@ -126,26 +126,23 @@ export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: b
       `--- ${index + 1}/${results.length} ${result.status} · id: ${result.id} · agent: ${agentLabel(result)}`,
       `task: ${clipTask(result.details.task)}`,
       "",
-      result.status === "done" ? "Result:" : "Error:",
+      result.status === "completed" ? "Result:" : "Error:",
       resultText(result),
     );
   });
   return lines.join("\n");
 }
 
-/** Reads the run IDs carried by a delivered notification, V4 or legacy V3. */
+/** Reads the run IDs carried by a delivered V5 notification. */
 export function notificationResultIds(message: unknown): string[] {
-  const candidate = message as { customType?: unknown; details?: unknown } | undefined;
+  const candidate = message as { customType?: unknown; details?: { version?: unknown; results?: { id?: unknown }[] } } | undefined;
   if (candidate?.customType !== SUBAGENT_NOTIFICATION_TYPE) return [];
-  const details = candidate.details as
-    | { results?: { id?: unknown }[]; id?: unknown }
-    | undefined;
-  if (Array.isArray(details?.results)) {
-    return details.results
-      .map((entry) => (typeof entry?.id === "string" ? entry.id : ""))
-      .filter((id): id is string => id.length > 0);
-  }
-  return typeof details?.id === "string" ? [details.id] : [];
+  if (candidate.details?.version !== 5) return [];
+  const results = candidate.details?.results;
+  if (!Array.isArray(results)) return [];
+  return results
+    .map((entry) => (typeof entry?.id === "string" ? entry.id : ""))
+    .filter((id): id is string => id.length > 0);
 }
 
 export function createDeliveryController(options: {
@@ -165,7 +162,7 @@ export function createDeliveryController(options: {
         details: entry.value.details,
       }));
       const details: SubagentNotificationDetails = {
-        version: 4,
+        version: 5,
         deliveryId: `delivery-${sequence}`,
         resent,
         results: entries.map((entry) => ({

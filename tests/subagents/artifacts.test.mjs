@@ -36,9 +36,9 @@ function makeTempRoot() {
 function details(root, overrides = {}) {
   const artifactsDir = join(root, "state", "subagents", ID);
   return {
-    version: 3,
+    version: 4,
     id: ID,
-    mode: "fg",
+    operation: "delegate",
     artifactsDir,
     sessionFile: join(artifactsDir, "session.jsonl"),
     sessionId: SESSION_ID,
@@ -84,7 +84,7 @@ test("artifactsDirFor returns <agentDir>/state/subagents/<id>", () => {
   assert.equal(artifactsDirFor(ID), resolve(root, "state", "subagents", ID));
 });
 
-test("writeRunState and readRunState round trip version 3 details", () => {
+test("writeRunState and readRunState round trip version 4 details", () => {
   const root = makeTempRoot();
   process.env.PI_AGENT_DIR = root;
   try {
@@ -111,7 +111,7 @@ test("old run-state versions are rejected", () => {
   }
 });
 
-test("parent-session index lists only owned V3 runs and supports confirmed deletion", () => {
+test("parent-session index lists only owned V4 runs and supports confirmed deletion", () => {
   const root = makeTempRoot();
   try {
     const { dir } = createValidArtifacts(root);

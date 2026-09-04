@@ -87,8 +87,8 @@ test("background envelope exposes silent child tool failures as a structured err
 
   const job = [...state.background.jobs.values()].find((item) => item.details.task === "trigger failures");
   assert.ok(job, "the queued job is registered in the background state");
-  await waitFor(() => job.status === "error", "background job to fail");
-  assert.equal(job.details.phase, "error");
+  await waitFor(() => job.status === "failed", "background job to fail");
+  assert.equal(job.details.phase, "failed");
   assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
   assert.deepEqual(job.details.toolErrors, [
     { tool: "grep", message: "grep failed" },

@@ -192,7 +192,7 @@ test("none starts a child with only the requested custom tools", async () => {
 test("built-in names under extensionTools fail before child creation", async () => {
   reset();
   const result = await runSubagentTask(freshInput({ definition: definition({ tools: ["read"], extensionTools: ["read"] }) }));
-  assert.equal(result.details.phase, "error");
+  assert.equal(result.details.phase, "failed");
   assert.equal(result.details.errorInfo.code, "INVALID_ARGUMENT");
   assert.equal(sdkState.calls.length, 0);
 });
@@ -258,7 +258,7 @@ test("retry events are counted while a recovered tool error remains non-terminal
     };
   };
   const result = await runSubagentTask(freshInput());
-  assert.equal(result.details.phase, "done");
+  assert.equal(result.details.phase, "completed");
   assert.equal(result.details.retries, 1);
   assert.equal(result.details.toolErrors.length, 1);
 });
@@ -304,7 +304,7 @@ test("retry exhaustion returns a structured retryable error", async () => {
     };
   };
   const result = await runSubagentTask(freshInput());
-  assert.equal(result.details.phase, "error");
+  assert.equal(result.details.phase, "failed");
   assert.equal(result.details.errorInfo.code, "RETRY_EXHAUSTED");
   assert.equal(result.details.errorInfo.retryable, true);
   assert.equal(result.details.errorInfo.retries, 3);

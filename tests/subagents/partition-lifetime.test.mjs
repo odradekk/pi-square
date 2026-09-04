@@ -196,21 +196,21 @@ try {
     const sessionFile = join(dir, "session.jsonl");
     const delSessionId = "019f0000-0000-7000-8000-0000000000aa";
     const runDetails = {
-      version: 3,
+      version: 4,
       id: delId,
-      mode: "fg",
+      operation: "delegate",
       artifactsDir: dir,
       sessionFile,
       sessionId: delSessionId,
       originParentSessionId: "parent-session",
       lastParentSessionId: "parent-session",
       promptSnapshot: {
-        version: 2,
+        version: 3,
         system: "s",
         instructions: "i",
         output: "o",
         manifest: {
-          contractVersion: 2,
+          contractVersion: 3,
           governanceVersion: 1,
           inheritParentSystem: true,
           effectiveSystemHash: "h",
@@ -220,7 +220,7 @@ try {
           sourceFiles: [],
         },
       },
-      phase: "done",
+      phase: "completed",
       task: "task",
       cwd: workspace,
       startedAt: Date.now(),

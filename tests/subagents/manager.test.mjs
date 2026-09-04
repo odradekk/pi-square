@@ -66,9 +66,9 @@ function promptSnapshot() {
 function runDetails(overrides = {}) {
   const id = "subagent_11111111-1111-4111-8111-111111111111";
   return {
-    version: 3,
+    version: 4,
     id,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: `/tmp/${id}`,
     sessionFile: `/tmp/${id}/session.jsonl`,
     sessionId: "child-session",
@@ -96,7 +96,7 @@ function data(overrides = {}) {
   const details = runDetails();
   return {
     running: [{ id: details.id, status: "running", createdAt: 1, updatedAt: 2, details }],
-    session: [{ ...details, phase: "done", finalText: "done" }],
+    session: [{ ...details, phase: "completed", finalText: "done" }],
     activeSessionIds: [],
     definitions: discoverSubagents(packageRoot).definitions,
     errors: [],
@@ -122,7 +122,7 @@ function fakeServices(initialData, overrides = {}) {
     queueResume(id, task) {
       calls.push(["resume", id, task]);
       const source = current.session.find((item) => item.id === id);
-      const details = { ...source, phase: "running", mode: "resume", task };
+      const details = { ...source, phase: "running", operation: "resume", task };
       current = { ...current, running: [{ id, status: "queued", createdAt: 1, updatedAt: 1, details }] };
       return { ok: true, message: "Queued resume.", selectedId: id };
     },
@@ -161,7 +161,7 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
 });
 
 test("manager keeps resume task, review, and queueing inside one focused component", () => {
-  const finished = runDetails({ phase: "done", finalText: "done" });
+  const finished = runDetails({ phase: "completed", finalText: "done" });
   const initial = data({ running: [], session: [finished] });
   const fake = fakeServices(initial);
   let closed = 0;
@@ -462,15 +462,15 @@ test("list rows show operational lifecycle markers", () => {
 });
 
 test("session tab shows operational lifecycle markers for each phase", () => {
-  const done = runDetails({ id: "subagent_aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", phase: "done", finalText: "done" });
-  const errored = runDetails({ id: "subagent_bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", phase: "error", error: "failed" });
+  const done = runDetails({ id: "subagent_aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", phase: "completed", finalText: "done" });
+  const errored = runDetails({ id: "subagent_bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", phase: "failed", error: "failed" });
   const aborted = runDetails({ id: "subagent_cccccccc-3333-4333-8333-cccccccccccc", phase: "aborted" });
   const initial = data({ running: [], session: [done, errored, aborted], activeSessionIds: [] });
   const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
   manager.handleInput("\x1b[C");
   const text = render(manager, 120);
-  assert.match(text, /\u2713 done/);
-  assert.match(text, /\u2717 error/);
+  assert.match(text, /\u2713 completed/);
+  assert.match(text, /\u2717 failed/);
   assert.match(text, /\u00d7 aborted/);
   manager.dispose();
 });

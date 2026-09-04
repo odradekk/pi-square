@@ -155,7 +155,7 @@ test("done subagents resume with the same public and native session IDs", async 
   try {
     mkdirSync(cwd, { recursive: true });
     const first = await runSubagentTask({ ctx: ctx(cwd), id: ID, task: "initial task" });
-    assert.equal(first.details.phase, "done");
+    assert.equal(first.details.phase, "completed");
     const { sessionFile, sessionId } = first.details;
     assert.deepEqual(state.openedPaths, [sessionFile], "fresh setup should reopen its initialized header through the native manager");
     state.openedPaths = [];
@@ -170,7 +170,7 @@ test("done subagents resume with the same public and native session IDs", async 
     assert.equal(resumed.details.id, ID);
     assert.equal(resumed.details.sessionFile, sessionFile);
     assert.equal(resumed.details.sessionId, sessionId);
-    assert.equal(resumed.details.phase, "done");
+    assert.equal(resumed.details.phase, "completed");
     assert.deepEqual(state.openedPaths, [sessionFile]);
     assert.match(state.prompts.at(-1), /Parent conversation history — reference only/);
     assert.ok(state.prompts.at(-1).endsWith("[Current delegated task]\ncontinue with a new instruction"));
@@ -178,7 +178,7 @@ test("done subagents resume with the same public and native session IDs", async 
     const persisted = JSON.parse(readFileSync(join(resumed.details.artifactsDir, "run.json"), "utf8"));
     assert.equal(persisted.id, ID);
     assert.equal(persisted.sessionId, sessionId);
-    assert.equal(persisted.mode, "resume");
+    assert.equal(persisted.operation, "resume");
     assert.equal(persisted.task, "continue with a new instruction");
     assert.equal(persisted.initialTask, "initial task");
   } finally {
@@ -273,7 +273,7 @@ test("fresh runs compile exactly one working-directory suffix and freeze it out 
     mkdirSync(cwd, { recursive: true });
     const first = await runSubagentTask({ ctx: ctx(cwd), id, task: "initial" });
     const freshEffective = state.effectiveSystems.at(-1);
-    assert.equal(first.details.phase, "done");
+    assert.equal(first.details.phase, "completed");
     assert.equal(countCwdLines(freshEffective), 1, "Pi must append exactly one working-directory suffix");
     assert.match(freshEffective, /<project_instructions path="\/child\/AGENTS\.md">/);
 
@@ -356,7 +356,7 @@ test("early resume failures persist the frozen SYSTEM with its matching hash", a
     writeFileSync(runPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
 
     const resumed = await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
-    assert.equal(resumed.details.phase, "error");
+    assert.equal(resumed.details.phase, "failed");
     assert.equal(state.createCalls.length, 1, "unknown model must fail before creating a resumed child session");
 
     const failedPersisted = JSON.parse(readFileSync(runPath, "utf8"));

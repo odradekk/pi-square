@@ -223,6 +223,10 @@ export function registerSubagentTool(
         parentSessionId: parentContext.parentSessionId,
         promptSnapshot,
       });
+      // The tool result is the detached queued snapshot: the background
+      // lifecycle starts synchronously and would otherwise mutate this record
+      // into its running phase before the caller observes it.
+      const queuedDetails = { ...job.details, timeline: [...job.details.timeline] };
       startBackgroundJob({
         pi,
         state: state.background,
@@ -242,7 +246,7 @@ export function registerSubagentTool(
       });
       return {
         content: [{ type: "text" as const, text: `Queued background subagent ${id}${definition?.name ? ` (${definition.name})` : ""}.` }],
-        details: job.details,
+        details: queuedDetails,
       };
     },
   });
@@ -303,6 +307,7 @@ export function registerSubagentTool(
         task,
         parentSessionId: parentContext.parentSessionId,
       });
+      const queuedDetails = { ...job.details, timeline: [...job.details.timeline] };
       startBackgroundResumeJob({
         pi,
         state: state.background,
@@ -316,7 +321,7 @@ export function registerSubagentTool(
       });
       return {
         content: [{ type: "text" as const, text: `Queued background resume subagent ${id}${persisted.agent?.name ? ` (${persisted.agent.name})` : ""}.` }],
-        details: job.details,
+        details: queuedDetails,
       };
     },
   });

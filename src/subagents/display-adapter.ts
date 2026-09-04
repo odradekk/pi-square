@@ -23,7 +23,7 @@ function shortId(value: unknown): string | undefined {
   return suffix.slice(0, 8);
 }
 
-/** Derive an explicit lifecycle + qualifiers from phase and isError. */
+/** Derive an explicit lifecycle + qualifiers from the V4 run phase. */
 function subagentLifecycle(
   details: Record<string, unknown>,
   isError: boolean,
@@ -31,19 +31,15 @@ function subagentLifecycle(
   const detailPhase = String(details.phase ?? "").toLowerCase();
   const qualifiers: OperationalQualifier[] = [];
 
-  // A running record of a background run kind (fresh or resumed) is the
-  // queued tool outcome both tools return immediately.
-  if (detailPhase === "running" && (details.mode === "bg" || details.mode === "resume")) {
-    return { lifecycle: "queued", qualifiers };
-  }
+  if (detailPhase === "queued") return { lifecycle: "queued", qualifiers };
+
+  if (detailPhase === "running") return { lifecycle: "running", qualifiers };
 
   if (detailPhase === "cancelling") return { lifecycle: "running", qualifiers: ["cancelling"] };
 
-  if (detailPhase === "aborted" || detailPhase === "cancelled" || detailPhase === "canceled") {
-    return { lifecycle: "aborted", qualifiers };
-  }
+  if (detailPhase === "aborted") return { lifecycle: "aborted", qualifiers };
 
-  if (detailPhase === "error" || detailPhase === "failed" || isError) {
+  if (detailPhase === "failed" || isError) {
     return { lifecycle: "failed", qualifiers };
   }
 
@@ -215,13 +211,13 @@ function subagentSummary(
   const totalTokens = input + output + cacheRead;
   const toolErrors = Array.isArray(details.toolErrors) ? details.toolErrors.length : 0;
   const toolWarnings = Array.isArray(details.toolWarnings) ? details.toolWarnings.length : 0;
-  const isResume = typeof details.resumed === "boolean" && details.resumed;
+  const isResume = details.operation === "resume";
 
   const parts: string[] = [];
 
   switch (lifecycle) {
     case "completed":
-      parts.push("done");
+      parts.push("completed");
       if (turns !== undefined) parts.push(isResume ? `${turns} turns total` : `${turns} turns`);
       if (totalTokens > 0) parts.push(`${formatTokens(totalTokens)} tokens`);
       if (cost !== undefined) parts.push(`$${cost.toFixed(3)}`);
@@ -234,7 +230,7 @@ function subagentSummary(
       break;
     case "failed":
     case "aborted":
-      parts.push(lifecycle === "failed" ? "error" : "aborted");
+      parts.push(lifecycle);
       if (turns !== undefined) parts.push(`${turns} turns`);
       if (id) parts.push(`run ${id}`);
       break;
@@ -328,7 +324,7 @@ export function describeSubagentRun(
     // Identity row: mode · model · effort
     const agent = record(details.agent);
     const identityParts: string[] = [];
-    if (typeof details.mode === "string") identityParts.push(details.mode);
+    if (typeof details.operation === "string") identityParts.push(details.operation);
     if (typeof details.model === "string" && details.model) identityParts.push(details.model);
     if (typeof agent.effort === "string" && agent.effort) identityParts.push(agent.effort);
     if (identityParts.length > 0) {
@@ -357,7 +353,7 @@ export function describeSubagentRun(
     sections: options.expanded ? expandedSections : collapsedSections,
     durationMs: typeof run.durationMs === "number" ? run.durationMs : undefined,
     summary: effectiveSummary,
-    ...(options.isError || run.phase === "error"
+    ...(options.isError || run.phase === "failed"
       ? { error: String(run.error || fallbackText || "Subagent failed") }
       : {}),
   } satisfies DisplayDescriptionV1;
@@ -412,7 +408,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       const details = record(result.details);
       const args = record(context.args);
       const text = textResult(result);
-      const isRun = details.version === 3 && Array.isArray(details.timeline);
+      const isRun = details.version === 4 && Array.isArray(details.timeline);
       if (!isRun) {
         const isResume = name === "resume_subagent";
         const lc = subagentLifecycle(details, context.isError);

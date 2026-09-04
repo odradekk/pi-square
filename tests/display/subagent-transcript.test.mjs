@@ -43,11 +43,11 @@ const ARGS_DELEGATE = { agent: "explorer", task: "Find all display adapters", co
 const ARGS_RESUME = { id: "subagent_abcdef12", task: "Continue exploring" };
 
 const RUN_DETAILS = {
-  version: 3,
+  version: 4,
   id: "subagent_abcdef12",
   agent: { name: "explorer", effort: "high" },
-  mode: "bg",
-  phase: "done",
+  operation: "delegate",
+  phase: "completed",
   model: "cpa/deepseek-v4-flash",
   durationMs: 12_000,
   retries: 0,
@@ -89,9 +89,12 @@ function renderResult(decorated, args, details, opts = {}) {
   // visible only when expanded.
   assert.equal(collapsed.render(80).length, 1, "collapsed delegation renders exactly one row");
   assert.doesNotMatch(collapsedText, /display adapters/, "collapsed hides the result preview");
-  assert.match(collapsedText, /done · 6 turns/, "collapsed inline summary states the outcome head");
-  assert.match(collapsedText, /2\.4k/, "collapsed inline summary states the token total");
+  assert.match(collapsedText, /completed · 6 turns/, "collapsed inline summary states the outcome head");
+  // At 80 columns the longer completed word elides the middle of the summary
+  // (head and tail stay); the full token total is asserted at the wide tier.
   assert.match(collapsedText, /\$0\.020 · run abcdef12/, "collapsed inline summary keeps the cost and run id tail");
+  const unelided = stripVTControlCharacters(collapsed.render(90).join("\n"));
+  assert.match(unelided, /2\.4k/, "a full-width row below the wide tier states the token total");
 
   const expanded = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: true });
   const expandedText = stripVTControlCharacters(expanded.render(80).join("\n"));
@@ -106,7 +109,7 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
-  const details = { ...RUN_DETAILS, phase: "running" };
+  const details = { ...RUN_DETAILS, phase: "queued" };
   const result = renderResult(decorated, ARGS_DELEGATE, details);
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^–/, "queued delegation shows the en-dash fallback");
@@ -119,13 +122,13 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateSubagentTool(makeDef("resume_subagent"), () => runtime);
-  const details = { ...RUN_DETAILS, mode: "resume", phase: "running" };
+  const details = { ...RUN_DETAILS, operation: "resume", phase: "queued" };
   const result = renderResult(decorated, ARGS_RESUME, details);
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^–/, "queued resume shows the en-dash fallback");
   assert.match(text, /Resume abcdef12/, "queued resume keeps the Resume title and short run id target");
   assert.match(text, /Queued in the parent session · run abcdef12/, "queued resume summary states the queued state");
-  assert.doesNotMatch(text, /done/, "a queued resume never reads as completed");
+  assert.doesNotMatch(text, /completed ·/, "a queued resume never reads as a completed run");
 
   runtime.dispose();
 }
@@ -153,7 +156,7 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
-  const details = { ...RUN_DETAILS, phase: "error", error: "Model returned an error" };
+  const details = { ...RUN_DETAILS, phase: "failed", error: "Model returned an error" };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { isError: true, expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^×/, "failed delegate renders ×");
@@ -186,7 +189,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^!/, "completed with retries renders the warning fallback marker");
-  assert.match(text, /done · 6 turns/, "completion summary head still visible");
+  assert.match(text, /completed · 6 turns/, "completion summary head still visible");
   assert.match(text, /\$0\.020 · run abcdef12/, "completion summary tail still visible");
 
   runtime.dispose();
@@ -197,7 +200,7 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
-  const details = { ...RUN_DETAILS, phase: "running", retries: 1 };
+  const details = { ...RUN_DETAILS, phase: "queued", retries: 1 };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /^–/, "queued delegation with retries shows the en-dash fallback");
@@ -277,7 +280,7 @@ function renderResult(decorated, args, details, opts = {}) {
 {
   const runtime = newRuntime();
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
-  const details = { ...RUN_DETAILS, mode: "bg", phase: "running" };
+  const details = { ...RUN_DETAILS, operation: "delegate", phase: "queued" };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
   assert.match(text, /Queued in the parent session/, "expanded queued result carries the queued row");

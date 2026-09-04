@@ -12,11 +12,7 @@ import { OperationalDisplayComponent } from "../display/components";
 import { DEFAULT_DISPLAY_POLICY } from "../display/types";
 import { sanitizeSubagentDisplay } from "./display";
 import { describeSubagentRun } from "./display-adapter";
-import type {
-  AnySubagentNotificationDetails,
-  LegacySubagentNotificationDetails,
-  SubagentRunDetails,
-} from "./types";
+import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
 
 export { sanitizeSubagentDisplay } from "./display";
 
@@ -24,7 +20,7 @@ class OneVisualLine implements Component {
   constructor(private readonly text: string) {}
 
   render(width: number): string[] {
-    return [truncateToWidth(this.text, Math.max(1, width), "\u2026")];
+    return [truncateToWidth(this.text, Math.max(1, width), "…")];
   }
 
   invalidate(): void {}
@@ -32,42 +28,39 @@ class OneVisualLine implements Component {
 
 function isRunDetails(value: unknown): value is SubagentRunDetails {
   const details = value as Partial<SubagentRunDetails> | undefined;
-  return details?.version === 3
+  return details?.version === 4
     && typeof details.id === "string"
-    && (details.mode === "fg" || details.mode === "bg" || details.mode === "resume")
-    && (details.phase === "running" || details.phase === "cancelling" || details.phase === "done" || details.phase === "error" || details.phase === "aborted");
+    && (details.operation === "delegate" || details.operation === "resume")
+    && (details.phase === "queued"
+      || details.phase === "running"
+      || details.phase === "cancelling"
+      || details.phase === "completed"
+      || details.phase === "failed"
+      || details.phase === "aborted");
 }
 
 interface NotificationEntry {
-  status: "done" | "error" | "aborted";
+  status: "completed" | "failed";
   result: SubagentRunDetails;
 }
 
-/**
- * Reads the runs of one completion message. A V4 delivery carries a list of
- * results; a V3 message persisted by an earlier session carries exactly one.
- */
-function notificationEntries(details: AnySubagentNotificationDetails | undefined): NotificationEntry[] {
-  if (!details) return [];
-  if ("results" in details && Array.isArray(details.results)) {
-    return details.results
-      .filter((entry) => isRunDetails(entry?.result))
-      .map((entry) => ({ status: entry.status, result: entry.result }));
-  }
-  const legacy = details as LegacySubagentNotificationDetails;
-  return isRunDetails(legacy.result) ? [{ status: legacy.status, result: legacy.result }] : [];
+/** Reads the runs of one completion message; only V5 payloads are current. */
+function notificationEntries(details: SubagentNotificationDetails | undefined): NotificationEntry[] {
+  if (!details || details.version !== 5 || !Array.isArray(details.results)) return [];
+  return details.results
+    .filter((entry) => isRunDetails(entry?.result))
+    .map((entry) => ({ status: entry.status, result: entry.result }));
 }
 
 export function renderSubagentNotification(
-  message: { content?: unknown; details?: AnySubagentNotificationDetails },
+  message: { content?: unknown; details?: SubagentNotificationDetails },
   options: { expanded: boolean },
   theme: Theme,
 ): Component {
   const entries = notificationEntries(message.details);
   const error = entries.some((entry) => (
-    entry.status === "error"
-    || entry.status === "aborted"
-    || entry.result.phase === "error"
+    entry.status === "failed"
+    || entry.result.phase === "failed"
     || entry.result.phase === "aborted"
   ));
   const shell = new Box(1, 1, (text) => theme.bg(error ? "toolErrorBg" : "toolSuccessBg", text));
@@ -78,18 +71,18 @@ export function renderSubagentNotification(
   }
 
   // One delivery may carry several runs. Each run reuses the canonical
-  // description of its own transcript entry, named by the run kind so a
+  // description of its own transcript entry, named by the run operation so a
   // resumed run keeps its Resume identity; only a single-run delivery can
   // fall back to the message text, because that text describes one run.
   const fallbackText = entries.length === 1 ? sanitizeSubagentDisplay(message.content ?? "") : "";
   entries.forEach((entry, index) => {
     if (index > 0) shell.addChild(new Spacer(1));
     const description = describeSubagentRun(
-      entry.result.mode === "resume" ? "resume_subagent" : "delegate_subagent",
+      entry.result.operation === "resume" ? "resume_subagent" : "delegate_subagent",
       entry.result,
       {
         expanded: options.expanded,
-        isError: entry.status === "error",
+        isError: entry.status === "failed",
       },
       fallbackText,
     );

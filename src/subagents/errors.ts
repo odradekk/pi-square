@@ -134,7 +134,7 @@ export function failureToolResult(error: SubagentError | SubagentErrorInfo) {
 
 export function applyRunFailure(details: SubagentRunDetails, error: SubagentError | SubagentErrorInfo): void {
   const info = error instanceof SubagentError ? error.info : error;
-  details.phase = info.code === "ABORTED" ? "aborted" : "error";
+  details.phase = info.code === "ABORTED" ? "aborted" : "failed";
   details.errorInfo = info;
   details.error = formatSubagentError(info);
   details.retries = Math.max(details.retries, info.retries);

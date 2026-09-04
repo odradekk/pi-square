@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { validateRunArtifacts } from "./artifacts";
 import { isRunLeaseActive } from "./lease";
-import { isStaleRunning } from "./status";
+import { isStaleActiveRecord } from "./status";
 import type { SubagentRunDetails } from "./types";
 
 const MAX_TIMELINE_EVENTS = 8;
@@ -32,9 +32,9 @@ export function inspectRun(id: string, now = Date.now()): InspectionReport {
     // Fall back to startedAt when stat is unavailable.
   }
 
-  const stale = !active && isStaleRunning(persisted, mtimeMs, now);
+  const stale = !active && isStaleActiveRecord(persisted, mtimeMs, now);
   const warnings: string[] = [];
-  if (stale) warnings.push("The last execution ended without updating its recorded running phase; no live lease remains.");
+  if (stale) warnings.push("The last execution ended without updating its recorded active phase; no live lease remains.");
   if (persisted.toolErrors.length > 0) warnings.push(`${persisted.toolErrors.length} tool call(s) failed during the run.`);
 
   const resumable = !active;

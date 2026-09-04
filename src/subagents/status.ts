@@ -7,12 +7,15 @@ import type { BackgroundJobSnapshot } from "./types";
 
 export const STALE_RUNNING_THRESHOLD_MS = 60 * 60 * 1000;
 
-export function isStaleRunning(
+/** An active-phase record whose artifacts stopped changing and whose activity
+ * lease is gone: the process died before writing a terminal phase. */
+export function isStaleActiveRecord(
   persisted: { phase?: string },
   mtimeMs: number,
   now: number = Date.now(),
 ): boolean {
-  return persisted.phase === "running" && now - mtimeMs > STALE_RUNNING_THRESHOLD_MS;
+  return (persisted.phase === "queued" || persisted.phase === "running")
+    && now - mtimeMs > STALE_RUNNING_THRESHOLD_MS;
 }
 
 export const SUBAGENT_STATUS_KEY = "pi-square.subagents";

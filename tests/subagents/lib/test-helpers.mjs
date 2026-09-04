@@ -104,12 +104,12 @@ export function renderSubagentNotification() {
 
 export function createPromptSnapshot(overrides = {}) {
   return {
-    version: 2,
+    version: 3,
     system: "test system prompt",
     instructions: "test instructions",
     output: "test output",
     manifest: {
-      contractVersion: 2,
+      contractVersion: 3,
       governanceVersion: 1,
       inheritParentSystem: true,
       effectiveSystemHash: "system-hash",

@@ -28,9 +28,9 @@ const { deriveTerminalPhase, collectLastMessages } = __testables;
 function baseDetails(overrides = {}) {
   const id = "subagent_00000000-0000-4000-8000-000000000051";
   return {
-    version: 3,
+    version: 4,
     id,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: `/tmp/subagents/${id}`,
     sessionFile: `/tmp/subagents/${id}/session.jsonl`,
     sessionId: "native-session",
@@ -57,14 +57,14 @@ function assistantMessage(text) {
 test("scenario 0: streaming completed with finalText is done", () => {
   const details = baseDetails({ streamingCompleted: true, finalText: "hello world" });
   deriveTerminalPhase(details, []);
-  assert.equal(details.phase, "done");
+  assert.equal(details.phase, "completed");
   assert.equal(details.finalText, "hello world");
 });
 
 test("scenario 1: incomplete stream salvages assistant text from history", () => {
   const details = baseDetails({ streamingCompleted: false, finalText: "" });
   deriveTerminalPhase(details, [{ role: "user", content: [{ type: "text", text: "prompt" }] }, assistantMessage("from-history")]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.finalText, "from-history");
   assert.equal(details.salvagedFinalText, "from-history");
   assert.match(details.error, /salvaged/);
@@ -73,7 +73,7 @@ test("scenario 1: incomplete stream salvages assistant text from history", () =>
 test("scenario 1: completed stream with empty finalText still salvages as error", () => {
   const details = baseDetails({ streamingCompleted: true, finalText: "" });
   deriveTerminalPhase(details, [assistantMessage("from-history")]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.finalText, "from-history");
   assert.equal(details.salvagedFinalText, "from-history");
 });
@@ -87,7 +87,7 @@ test("scenario 2: no assistant text returns last 3 messages", () => {
   ];
   const details = baseDetails({ streamingCompleted: true, finalText: "" });
   deriveTerminalPhase(details, messages);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.match(details.rawSessionOutput, /two/);
   assert.match(details.rawSessionOutput, /three/);
   assert.match(details.rawSessionOutput, /four/);
@@ -97,14 +97,14 @@ test("scenario 2: no assistant text returns last 3 messages", () => {
 test("scenario 2: fewer than 3 messages returns only available messages", () => {
   const details = baseDetails();
   deriveTerminalPhase(details, [{ role: "user", content: [{ type: "text", text: "only" }] }]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.match(details.rawSessionOutput, /only/);
 });
 
 test("scenario 3: empty messages returns explicit no messages error", () => {
   const details = baseDetails();
   deriveTerminalPhase(details, []);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.error, "subagent produced no messages at all");
   assert.equal(details.rawSessionOutput, undefined);
 });
@@ -112,7 +112,7 @@ test("scenario 3: empty messages returns explicit no messages error", () => {
 test("existing details.error is not overwritten", () => {
   const details = baseDetails({ error: "preexisting failure" });
   deriveTerminalPhase(details, [assistantMessage("ignored")]);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.equal(details.error, "preexisting failure");
   assert.equal(details.finalText, "");
 });
@@ -120,7 +120,7 @@ test("existing details.error is not overwritten", () => {
 test("terminal error records keep the collected tool errors for delivery", () => {
   const details = baseDetails({ toolErrors: [{ tool: "grep", message: "failed" }] });
   deriveTerminalPhase(details, []);
-  assert.equal(details.phase, "error");
+  assert.equal(details.phase, "failed");
   assert.deepEqual(details.toolErrors, [{ tool: "grep", message: "failed" }]);
 });
 
