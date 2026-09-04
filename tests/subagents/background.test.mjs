@@ -31,9 +31,9 @@ function usage() {
 
 function details(phase = "running", overrides = {}) {
   return {
-    version: 3,
+    version: 4,
     id: ID,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: `/tmp/subagents/${ID}`,
     sessionFile: `/tmp/subagents/${ID}/session.jsonl`,
     sessionId: "native-session",
@@ -44,7 +44,7 @@ function details(phase = "running", overrides = {}) {
     task: "smoke task",
     cwd: "/tmp/subagents",
     startedAt: 10,
-    finalText: phase === "done" ? "ACK" : "",
+    finalText: phase === "completed" ? "ACK" : "",
     retries: 0,
     toolErrors: [],
     usage: usage(),
@@ -64,7 +64,7 @@ function assertCompletion(pi, status) {
   assert.equal(pi.sent.length, 1);
   assert.equal(pi.sent[0].message.customType, "pi-square.subagent-notification");
   assert.equal(pi.sent[0].message.display, true);
-  assert.equal(pi.sent[0].message.details.version, 4);
+  assert.equal(pi.sent[0].message.details.version, 5);
   assert.equal(pi.sent[0].message.details.resent, false);
   assert.equal(pi.sent[0].message.details.results.length, 1);
   assert.equal(pi.sent[0].message.details.results[0].id, ID);
@@ -110,7 +110,7 @@ test("queue insertion stores the unified public id and emits", () => {
   assert.equal(observed.changes(), 1);
   assert.equal(job.id, ID);
   assert.equal(job.details.id, ID);
-  assert.equal(job.details.mode, "bg");
+  assert.equal(job.details.operation, "delegate");
   assert.equal(observed.state.jobs.get(ID), job);
 });
 
@@ -183,24 +183,24 @@ test("queued, detail-update, and final transitions preserve one id", async () =>
   const pi = createPiStub();
   setRunSubagentTaskMock(async (input) => {
     input.onUpdate(details("running"));
-    return { details: details("done", { endedAt: 20, durationMs: 10 }) };
+    return { details: details("completed", { endedAt: 20, durationMs: 10 }) };
   });
 
   const contextMessages = [{ role: "user", text: "parent context" }];
   startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session", contextMessages });
-  await waitFor(() => job.status === "done", "done background job");
+  await waitFor(() => job.status === "completed", "completed background job");
   // start, detail update, final, and one change for the pending delivery set.
   assert.equal(observed.changes(), 4);
   assert.equal(getRunSubagentTaskCalls()[0].id, ID);
   assert.deepEqual(getRunSubagentTaskCalls()[0].contextMessages, contextMessages);
   assert.equal(job.details.id, ID);
-  assertCompletion(pi, "done");
+  assertCompletion(pi, "completed");
 });
 
 test("manager resumes use the cancellable background lifecycle and frozen snapshot", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
-  const persisted = details("done", { finalText: "first", promptSnapshot: createPromptSnapshot() });
+  const persisted = details("completed", { finalText: "first", promptSnapshot: createPromptSnapshot() });
   const job = createQueuedResumeJob({
     state: observed.state,
     details: persisted,
@@ -211,15 +211,15 @@ test("manager resumes use the cancellable background lifecycle and frozen snapsh
   setRunSubagentTaskMock(async (input) => {
     assert.equal(input.id, ID);
     assert.equal(input.task, "continue");
-    input.onUpdate(details("running", { mode: "resume", promptSnapshot: persisted.promptSnapshot }));
-    return { details: details("done", { mode: "resume", finalText: "continued", promptSnapshot: persisted.promptSnapshot }) };
+    input.onUpdate(details("running", { operation: "resume", promptSnapshot: persisted.promptSnapshot }));
+    return { details: details("completed", { operation: "resume", finalText: "continued", promptSnapshot: persisted.promptSnapshot }) };
   });
 
   startBackgroundResumeJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "continue", parentSessionId: "parent-session" });
-  await waitFor(() => job.status === "done", "done background resume");
-  assert.equal(job.details.mode, "resume");
+  await waitFor(() => job.status === "completed", "completed background resume");
+  assert.equal(job.details.operation, "resume");
   assert.equal(job.details.promptSnapshot, persisted.promptSnapshot);
-  assertCompletion(pi, "done");
+  assertCompletion(pi, "completed");
 });
 
 test("thrown background failures become structured run failures", async () => {
@@ -231,10 +231,10 @@ test("thrown background failures become structured run failures", async () => {
   setRunSubagentTaskMock(async () => { throw new Error("synthetic failure"); });
 
   startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session" });
-  await waitFor(() => job.status === "error", "error background job");
+  await waitFor(() => job.status === "failed", "failed background job");
   assert.equal(job.details.errorInfo.code, "SUBAGENT_FAILED");
   assert.match(job.details.error, /synthetic failure/);
-  assertCompletion(pi, "error");
+  assertCompletion(pi, "failed");
 });
 
 test("undelivered results survive job compaction and stay visible in the indicator", async () => {
@@ -244,7 +244,7 @@ test("undelivered results survive job compaction and stay visible in the indicat
   // A parent that never becomes idle keeps every completion pending, which is
   // the state that job compaction must not destroy.
   observed.state.delivery = createDeliveryController({ pi: pi.api, isIdle: () => false });
-  setRunSubagentTaskMock(async () => ({ content: "ACK", details: details("done", { endedAt: 20, durationMs: 10 }) }));
+  setRunSubagentTaskMock(async () => ({ content: "ACK", details: details("completed", { endedAt: 20, durationMs: 10 }) }));
 
   const total = 22;
   for (let index = 0; index < total; index += 1) {

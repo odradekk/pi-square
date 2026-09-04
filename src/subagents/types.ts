@@ -1,8 +1,9 @@
-/** Persisted run dimension. New records carry only `"bg"` and `"resume"`;
- * `"fg"` is the retired foreground value and is still read so persisted
- * records from earlier versions keep rendering and stay resumable. */
-export type SubagentMode = "fg" | "bg" | "resume";
-export type SubagentPhase = "running" | "cancelling" | "done" | "error" | "aborted";
+/** Persisted operation that produced the run record. Background is the only
+ * execution mode, so it is not a persisted dimension. */
+export type SubagentOperation = "delegate" | "resume";
+/** Active states are `queued`, `running`, and `cancelling`; terminal states are
+ * `completed`, `failed`, and `aborted`. */
+export type SubagentPhase = "queued" | "running" | "cancelling" | "completed" | "failed" | "aborted";
 
 export type SubagentErrorCode =
   | "INVALID_ARGUMENT"
@@ -68,7 +69,7 @@ export interface PromptSourceRef {
 }
 
 export interface PromptManifest {
-  contractVersion: 2;
+  contractVersion: 3;
   governanceVersion: 1;
   inheritParentSystem: boolean;
   effectiveSystemHash: string;
@@ -85,12 +86,12 @@ export interface PromptManifest {
 }
 
 export interface SubagentPromptSnapshot {
-  version: 2;
+  version: 3;
   /** Complete effective SYSTEM without Pi's volatile date/cwd suffix. */
   system: string;
-  /** V2 profile instructions replayed for every task. */
+  /** Profile instructions replayed for every task. */
   instructions?: string;
-  /** V2 output contract replayed after every task. */
+  /** Output contract replayed after every task. */
   output?: string;
   manifest: PromptManifest;
 }
@@ -110,9 +111,9 @@ export interface ActiveSubagentConfig {
 }
 
 export interface SubagentRunDetails {
-  version: 3;
+  version: 4;
   id: string;
-  mode: SubagentMode;
+  operation: SubagentOperation;
   artifactsDir: string;
   sessionFile: string;
   /** Native child Pi session UUID; never used as a public identifier. */
@@ -151,7 +152,7 @@ export interface SubagentRunDetails {
 
 export interface BackgroundJobSnapshot {
   id: string;
-  status: "queued" | "running" | "cancelling" | "done" | "error" | "aborted";
+  status: "queued" | "running" | "cancelling" | "completed" | "failed" | "aborted";
   createdAt: number;
   updatedAt: number;
   details: SubagentRunDetails;
@@ -181,33 +182,23 @@ export interface SubagentCancelDetails {
 
 export interface SubagentNotificationResult {
   id: string;
-  status: "done" | "error";
+  status: "completed" | "failed";
   result: SubagentRunDetails;
 }
 
 /**
- * V4 completion payload: one delivery carries every finished run that the
+ * V5 completion payload: one delivery carries every finished run that the
  * parent has not confirmed yet, so a burst of background results costs one
- * parent turn instead of one turn for each result.
+ * parent turn instead of one turn for each result. Result statuses use the
+ * V4 terminal vocabulary.
  */
 export interface SubagentNotificationDetails {
-  version: 4;
+  version: 5;
   deliveryId: string;
   /** The parent never confirmed an earlier delivery of these results. */
   resent: boolean;
   results: SubagentNotificationResult[];
 }
-
-/** V3 payload written by earlier sessions; still rendered when one is resumed. */
-export interface LegacySubagentNotificationDetails {
-  id: string;
-  status: "done" | "error" | "aborted";
-  result: SubagentRunDetails;
-}
-
-export type AnySubagentNotificationDetails =
-  | SubagentNotificationDetails
-  | LegacySubagentNotificationDetails;
 
 export interface SubagentAlreadyRunningDetails {
   status: "already_running";

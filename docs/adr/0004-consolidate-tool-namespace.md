@@ -4,7 +4,7 @@ status: accepted
 
 # Consolidate the model-facing tool namespace
 
-The GitHub-tool portion of this decision is superseded by ADR-0015. The `delegate` and `resume` naming decision remains in force.
+The GitHub-tool portion of this decision is superseded by ADR-0015. The `delegate` and `resume` naming decision — and with it the `fg`/`bg` execution-mode vocabulary this ADR's tool split assumed — is superseded by ADR-0016: the tools are `delegate_subagent` and `resume_subagent`, and background is the only execution mode. ADR-0016 also records why the two-tool split itself survives the rename.
 
 The model-facing tool surface had four github tools (`github_search`, `github_read`, `github_tree`, `github_commit`) and two long subagent tool names (`subagent_delegate`, `subagent_resume`). Every registered schema costs context budget, and the six names together consumed more of that budget than the work they describe warrants.
 

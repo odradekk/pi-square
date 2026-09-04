@@ -9,6 +9,8 @@ import type {
   ActiveSubagentConfig,
   BackgroundJobSnapshot,
   SubagentCancelDetails,
+  SubagentOperation,
+  SubagentPhase,
   SubagentPromptSnapshot,
   SubagentRunDetails,
   SubagentStatusDetails,
@@ -17,7 +19,7 @@ import type {
 /** Mutable runtime record for one session-owned background subagent job. */
 export interface BackgroundJob {
   id: string;
-  status: "queued" | "running" | "cancelling" | "done" | "error" | "aborted";
+  status: "queued" | "running" | "cancelling" | "completed" | "failed" | "aborted";
   createdAt: number;
   updatedAt: number;
   /** YAML definition used for routing and display, when the job is named. */
@@ -63,6 +65,12 @@ function now(): number {
   return Date.now();
 }
 
+/** Maps a terminal run phase onto the job status vocabulary. */
+function terminalStatusFromPhase(phase: SubagentPhase): BackgroundJob["status"] {
+  if (phase === "failed" || phase === "aborted") return phase;
+  return "completed";
+}
+
 function jobWasAborted(job: BackgroundJob): boolean {
   return job.status === "aborted" || job.status === "cancelling" || job.abortController.signal.aborted;
 }
@@ -87,7 +95,7 @@ function compactFinishedJobs(state: BackgroundState): void {
   // compaction: dropping it here would destroy the only copy of a result that
   // is still waiting for delivery. The pending set has its own hard bound.
   const finished = Array.from(state.jobs.values())
-    .filter((job) => job.status === "done" || job.status === "error" || job.status === "aborted")
+    .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "aborted")
     .filter((job) => !state.delivery?.isPending(job.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
@@ -112,7 +120,7 @@ function ensureAbortedDetails(job: BackgroundJob, reason = DEFAULT_CANCEL_REASON
   applyRunFailure(details, createSubagentError({
     code: "ABORTED",
     message: reason,
-    operation: "bg",
+    operation: job.details.operation,
     id: job.id,
     retryable: false,
     retries: details.retries,
@@ -140,7 +148,7 @@ function snapshot(job: BackgroundJob): BackgroundJobSnapshot {
  * dropped for a missing session registration.
  */
 function deliverCompletion(pi: ExtensionAPI, state: BackgroundState, job: BackgroundJob): void {
-  if (job.status !== "done" && job.status !== "error") return;
+  if (job.status !== "completed" && job.status !== "failed") return;
 
   const delivery = state.delivery ?? (state.delivery = createDeliveryController({
     pi,
@@ -189,16 +197,16 @@ export function createQueuedJob(input: {
     definition: input.definition,
     abortController: new AbortController(),
     details: {
-      version: 3,
+      version: 4,
       id: input.id,
-      mode: "bg",
+      operation: "delegate",
       artifactsDir: artifactsDirFor(input.id),
       sessionFile: "",
       sessionId: "",
       originParentSessionId: input.parentSessionId,
       lastParentSessionId: input.parentSessionId,
       promptSnapshot: input.promptSnapshot,
-      phase: "running",
+      phase: "queued",
       agent: buildAgentConfig(input.definition, input.modelOverride, input.effortOverride),
       task: input.task,
       cwd: input.cwd,
@@ -239,10 +247,10 @@ export function createQueuedResumeJob(input: {
     abortController: new AbortController(),
     details: {
       ...input.details,
-      mode: "resume",
+      operation: "resume",
       task: input.task,
       lastParentSessionId: input.parentSessionId,
-      phase: "running",
+      phase: "queued",
       startedAt: createdAt,
       endedAt: undefined,
       durationMs: undefined,
@@ -270,7 +278,7 @@ export function getBackgroundStatusDetails(state: BackgroundState): SubagentStat
   return {
     queued: jobs.filter((job) => job.status === "queued").length,
     running: jobs.filter((job) => job.status === "running" || job.status === "cancelling").length,
-    finished: jobs.filter((job) => job.status === "done" || job.status === "error" || job.status === "aborted").length,
+    finished: jobs.filter((job) => job.status === "completed" || job.status === "failed" || job.status === "aborted").length,
     jobs,
   };
 }
@@ -287,11 +295,11 @@ export function formatBackgroundIndicator(state: BackgroundState): string | null
   const cancelling = details.jobs.filter((job) => job.status === "cancelling").length;
   if (cancelling > 0) parts.push(`cancelling ${cancelling}`);
 
-  const done = details.jobs.filter((job) => job.status === "done").length;
-  const failed = details.jobs.filter((job) => job.status === "error").length;
+  const completed = details.jobs.filter((job) => job.status === "completed").length;
+  const failed = details.jobs.filter((job) => job.status === "failed").length;
   const aborted = details.jobs.filter((job) => job.status === "aborted").length;
 
-  if (done > 0) parts.push(`✓ ${done}`);
+  if (completed > 0) parts.push(`✓ ${completed}`);
   if (failed > 0) parts.push(`✗ ${failed}`);
   if (aborted > 0) parts.push(`× ${aborted}`);
   if (undelivered > 0) parts.push(`undelivered ${undelivered}`);
@@ -370,7 +378,7 @@ function startBackgroundLifecycle(input: {
   pi: ExtensionAPI;
   state: BackgroundState;
   job: BackgroundJob;
-  operation: "bg" | "resume";
+  operation: SubagentOperation;
   execute: (onUpdate: (details: SubagentRunDetails) => void) => Promise<{ details: SubagentRunDetails }>;
 }): void {
   const { pi, state, job } = input;
@@ -384,6 +392,7 @@ function startBackgroundLifecycle(input: {
     }
 
     job.status = "running";
+    job.details.phase = "running";
     job.updatedAt = now();
     job.details.timeline.push({ kind: "status", text: "background subagent job started" });
     emitChange(state);
@@ -405,7 +414,7 @@ function startBackgroundLifecycle(input: {
       return;
     }
 
-    job.status = result.details.phase === "error" ? "error" : result.details.phase === "aborted" ? "aborted" : "done";
+    job.status = terminalStatusFromPhase(result.details.phase);
     compactFinishedJobs(state);
     emitChange(state);
     deliverCompletion(pi, state, job);
@@ -420,7 +429,7 @@ function startBackgroundLifecycle(input: {
       return;
     }
 
-    job.status = "error";
+    job.status = "failed";
     const failure = normalizeSubagentError(error, {
       operation: input.operation,
       id: job.id,
@@ -458,7 +467,7 @@ export function startBackgroundJob(input: {
     pi: input.pi,
     state: input.state,
     job: input.job,
-    operation: "bg",
+    operation: "delegate",
     execute: (onUpdate) => runSubagentTask({
       ctx: input.ctx,
       id: input.job.id,

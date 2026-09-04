@@ -166,13 +166,14 @@ function jobStatusPresentation(status: string, theme: any): string {
  */
 function sessionPhasePresentation(active: boolean, phase: string, theme: any): string {
   if (active) return theme.fg("warning", "→ active");
-  const suffix = phase === "running" || phase === "cancelling" ? " (inactive)" : "";
+  const suffix = phase === "queued" || phase === "running" || phase === "cancelling" ? " (inactive)" : "";
   switch (phase) {
-    case "done": return theme.fg("success", `✓ done`);
-    case "error": return theme.fg("error", `✗ error`);
+    case "completed": return theme.fg("success", `✓ completed`);
+    case "failed": return theme.fg("error", `✗ failed`);
     case "aborted": return theme.fg("muted", `× aborted`);
     case "cancelling": return theme.fg("muted", `× cancelling${suffix}`);
     case "running": return theme.fg("muted", `→ running${suffix}`);
+    case "queued": return theme.fg("muted", `– queued${suffix}`);
     default: return theme.fg("muted", phase);
   }
 }
@@ -602,7 +603,7 @@ export class SubagentManager implements Component, Focusable {
           lines: [
             `Agent: ${run.agent?.name ?? "generic"}`,
             `Source ID: ${run.id}`,
-            `Prompt: ${kind === "resume" ? "frozen V2 snapshot" : "current effective definition"}`,
+            `Prompt: ${kind === "resume" ? "frozen V3 snapshot" : "current effective definition"}`,
             "",
             "TASK",
             ...task.split("\n"),
@@ -904,7 +905,7 @@ export class SubagentManager implements Component, Focusable {
       });
     }
     if (this.tab() === "session") {
-      if (this.data.session.length === 0) return [this.theme.fg("dim", "No V3 subagents in this session")];
+      if (this.data.session.length === 0) return [this.theme.fg("dim", "No V4 subagents in this session")];
       return this.data.session.map((run, index) => {
         const marker = index === selected ? this.theme.fg("accent", "›") : " ";
         const name = run.agent?.name ?? "generic";
@@ -939,7 +940,7 @@ export class SubagentManager implements Component, Focusable {
     }
     if (this.tab() === "session") {
       const run = this.selectedRun();
-      if (!run) return ["Completed and resumable V3 children are scoped to this parent session."];
+      if (!run) return ["Completed and resumable V4 children are scoped to this parent session."];
       const current = run.agent?.name ? this.data.definitions.find((item) => item.name === run.agent?.name) : undefined;
       const currentHash = current ? promptDefinitionHash(current) : undefined;
       const originalHash = run.promptSnapshot.manifest.definitionHash;

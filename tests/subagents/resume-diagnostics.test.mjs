@@ -39,16 +39,16 @@ function writeValidRun() {
   mkdirSync(artifactsDir, { recursive: true });
   writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "native-91", timestamp: new Date(0).toISOString(), cwd: "/tmp" })}\n`, "utf8");
   writeFileSync(join(artifactsDir, "run.json"), JSON.stringify({
-    version: 3,
+    version: 4,
     id: ID,
-    mode: "bg",
+    operation: "delegate",
     artifactsDir,
     sessionFile,
     sessionId: "native-91",
     originParentSessionId: "parent-resume-session",
     lastParentSessionId: "parent-resume-session",
     promptSnapshot: createPromptSnapshot(),
-    phase: "done",
+    phase: "completed",
     task: "task",
     cwd: "/tmp",
     startedAt: 1,

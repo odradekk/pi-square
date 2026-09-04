@@ -95,17 +95,17 @@ export function ensureArtifactsDir(id: string): string {
 
 function validateRunStateShape(value: unknown, expectedId?: string): SubagentRunDetails {
   const details = value as SubagentRunDetails;
-  if (!details || typeof details !== "object" || details.version !== 3) {
+  if (!details || typeof details !== "object" || details.version !== 4) {
     throw new Error("run.json has an unsupported format version");
   }
   if (!isValidSubagentId(details.id) || (expectedId && details.id !== expectedId)) {
     throw new Error("run.json subagent ID does not match its artifacts directory");
   }
-  if (!["running", "cancelling", "done", "error", "aborted"].includes(details.phase)) {
+  if (!["queued", "running", "cancelling", "completed", "failed", "aborted"].includes(details.phase)) {
     throw new Error("run.json has an invalid phase");
   }
-  if (!["fg", "bg", "resume"].includes(details.mode)) {
-    throw new Error("run.json has an invalid mode");
+  if (details.operation !== "delegate" && details.operation !== "resume") {
+    throw new Error("run.json has an invalid operation");
   }
   if (typeof details.sessionFile !== "string" || typeof details.sessionId !== "string") {
     throw new Error("run.json does not identify a native session");
@@ -113,10 +113,10 @@ function validateRunStateShape(value: unknown, expectedId?: string): SubagentRun
   if (typeof details.originParentSessionId !== "string" || typeof details.lastParentSessionId !== "string") {
     throw new Error("run.json does not identify its parent session");
   }
-  if (details.promptSnapshot?.version !== 2 || typeof details.promptSnapshot.system !== "string") {
-    throw new Error("run.json has no V2 prompt snapshot");
+  if (details.promptSnapshot?.version !== 3 || typeof details.promptSnapshot.system !== "string") {
+    throw new Error("run.json has no V3 prompt snapshot");
   }
-  if (details.promptSnapshot.manifest?.contractVersion !== 2 || typeof details.promptSnapshot.manifest.effectiveSystemHash !== "string") {
+  if (details.promptSnapshot.manifest?.contractVersion !== 3 || typeof details.promptSnapshot.manifest.effectiveSystemHash !== "string") {
     throw new Error("run.json has an invalid prompt manifest");
   }
   if (typeof details.artifactsDir !== "string" || typeof details.task !== "string" || typeof details.cwd !== "string") {

@@ -103,10 +103,10 @@ for (const [name, args, expected] of cases) {
 const subagentArgs = { agent: "explorer", task: "inspect runtime" };
 const subagent = decorateSubagentTool(fake("delegate_subagent"), runtime);
 const queuedDetails = {
-  version: 3,
+  version: 4,
   id: "subagent_12345678-1234-4123-8123-123456789abc",
-  mode: "bg",
-  phase: "running",
+  operation: "delegate",
+  phase: "queued",
   agent: { name: "explorer", effort: "high" },
   task: "inspect runtime",
   cwd: process.cwd(),

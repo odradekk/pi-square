@@ -4,6 +4,13 @@ status: accepted
 
 # Reliable background subagent result delivery
 
+> Status note: ADR-0016 supersedes the portions of this decision that named
+> the terminal vocabulary (`done`/`error`) for delivered results and defined
+> the V4 notification payload with its single-result V3 notification
+> compatibility. The reliable-delivery mechanics themselves — the pending set,
+> safe timing, confirmation, resend, batching, budgets, and bounds — remain in
+> force.
+
 Background subagent results were sent with one fire-and-forget
 `pi.sendMessage` for each finished run, clipped to 1600 characters. Two defects
 follow from that design, both reproduced against a live Pi 0.84.2 session:
@@ -49,9 +56,10 @@ boundary itself. A `sendMessage` that throws leaves the result pending.
 
 Up to six results are coalesced into one message; the surplus follows at the
 next safe moment. A burst of background completions therefore costs one parent
-turn instead of one turn for each result. The payload is `SubagentNotification`
-V4 (`version`, `deliveryId`, `resent`, `results[]`); V3 payloads persisted by
-earlier sessions still render.
+turn instead of one turn for each result. The payload described here as V4
+with single-result V3 compatibility is superseded by the V5 notification of
+ADR-0016, which carries the current terminal vocabulary and no legacy
+parsing.
 
 ### Budgets
 

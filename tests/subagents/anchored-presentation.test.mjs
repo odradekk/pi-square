@@ -29,21 +29,30 @@ function plainLines(component, width = 80) {
   return component.render(width).map((line) => stripVTControlCharacters(line));
 }
 
+function v5(result, status) {
+  return {
+    version: 5,
+    deliveryId: "delivery-1",
+    resent: false,
+    results: [{ id: result.id, status, result }],
+  };
+}
+
 function details(overrides = {}) {
   return {
-    version: 3,
+    version: 4,
     id: "subagent_12345678-abcd-4abc-8abc-123456789abc",
-    mode: "bg",
+    operation: "delegate",
     artifactsDir: "/tmp/private-artifacts",
     sessionFile: "/tmp/private-artifacts/session.jsonl",
     sessionId: "native-private-id",
     originParentSessionId: "parent-private-id",
     lastParentSessionId: "parent-private-id",
     promptSnapshot: {
-      version: 2,
+      version: 3,
       system: "private system",
       manifest: {
-        contractVersion: 2,
+        contractVersion: 3,
         governanceVersion: 1,
         inheritParentSystem: true,
         effectiveSystemHash: "hash",
@@ -53,7 +62,7 @@ function details(overrides = {}) {
         sourceFiles: [],
       },
     },
-    phase: "done",
+    phase: "completed",
     agent: { promptVersion: 2, name: "worker", effort: "high", inheritParentSystem: true },
     task: "Edit src/a.txt.",
     cwd: "/tmp/project",
@@ -234,7 +243,7 @@ test("expanded notification shows the anchored activity and the refusal, without
     finalText: "Done.",
   });
   const rendered = plainLines(renderSubagentNotification(
-    { content: "done", details: { id: refused.id, status: "done", result: refused } },
+    { content: "done", details: v5(refused, "completed") },
     { expanded: true },
     plainTheme,
   ), 80).join("\n");
@@ -256,7 +265,7 @@ test("collapsed notification keeps the warning marker and no payload", () => {
     finalText: "Done.",
   });
   const collapsed = plainLines(renderSubagentNotification(
-    { content: "done", details: { id: refused.id, status: "done", result: refused } },
+    { content: "done", details: v5(refused, "completed") },
     { expanded: false },
     plainTheme,
   ), 80).join("\n");

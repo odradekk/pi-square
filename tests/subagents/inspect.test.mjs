@@ -26,16 +26,16 @@ function writeRun(agentRoot, overrides = {}) {
   mkdirSync(artifactsDir, { recursive: true });
   writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: SESSION_ID, timestamp: new Date(0).toISOString(), cwd: agentRoot })}\n`, "utf8");
   const details = {
-    version: 3,
+    version: 4,
     id: ID,
-    mode: "fg",
+    operation: "delegate",
     artifactsDir,
     sessionFile,
     sessionId: SESSION_ID,
     originParentSessionId: "parent-session",
     lastParentSessionId: "parent-session",
     promptSnapshot: createPromptSnapshot(),
-    phase: "done",
+    phase: "completed",
     task: "inspect task",
     cwd: agentRoot,
     startedAt: 1_700_000_000_000,
@@ -51,16 +51,20 @@ function writeRun(agentRoot, overrides = {}) {
   return { artifactsDir, details };
 }
 
-test("completed runs are resumable when inactive", () => {
+test("inactive terminal V4 records are resumable without an effective lease", () => {
   const agentRoot = root();
   process.env.PI_AGENT_DIR = agentRoot;
   try {
-    writeRun(agentRoot);
-    const report = inspectRun(ID, 1_700_000_020_000);
-    assert.equal(report.resumable, true);
-    assert.equal(report.active, false);
-    assert.match(report.rendered, /same ID and native session history/);
-    assert.match(report.rendered, /resume_subagent\(\{ id:/);
+    for (const phase of ["completed", "failed", "aborted"]) {
+      writeRun(agentRoot, { phase });
+      const report = inspectRun(ID, 1_700_000_020_000);
+      assert.equal(report.phase, phase);
+      assert.equal(report.active, false);
+      assert.equal(report.resumable, true, `${phase} records stay resumable when inactive`);
+      assert.equal(report.resumeBlockReason, undefined);
+      assert.match(report.rendered, /same ID and native session history/);
+      assert.match(report.rendered, /resume_subagent\(\{ id:/);
+    }
   } finally {
     rmSync(agentRoot, { recursive: true, force: true });
   }

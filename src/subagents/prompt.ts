@@ -4,7 +4,7 @@ import type { ParentContextMessage } from "./context";
 import type { PromptManifest, PromptSourceRef, SubagentPromptSnapshot } from "./types";
 
 export const SUBAGENT_GOVERNANCE_VERSION = 1 as const;
-export const SUBAGENT_PROMPT_CONTRACT_VERSION = 2 as const;
+export const SUBAGENT_PROMPT_CONTRACT_VERSION = 3 as const;
 
 export const SUBAGENT_GOVERNANCE = `You are a delegated Pi subagent operating in an isolated child session.
 
@@ -103,7 +103,7 @@ export function compileFreshPrompt(input: {
     ...((input.parentMessages?.length ?? 0) > 0 ? { contextHash: hashPromptValue(contextText) } : {}),
     ...sources,
   };
-  return { version: 2, system, instructions, output, manifest };
+  return { version: 3, system, instructions, output, manifest };
 }
 
 export function finalizePromptSnapshot(

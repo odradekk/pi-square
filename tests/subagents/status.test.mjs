@@ -61,7 +61,7 @@ test("native status prioritizes active jobs and exposes no tool results", () => 
     job("subagent_11111111-1111-4111-8111-111111111111", "queued", 1, "crawler", toolTimeline("search docs")),
     job("subagent_22222222-2222-4222-8222-222222222222", "running", 2, "explorer", toolTimeline("rg token in src")),
     job("subagent_33333333-3333-4333-8333-333333333333", "cancelling", 3, "oracle", toolTimeline("read Authorization: Bearer exposed-token")),
-    job("subagent_44444444-4444-4444-8444-444444444444", "done", 0, "generalist", toolTimeline("write output")),
+    job("subagent_44444444-4444-4444-8444-444444444444", "completed", 0, "generalist", toolTimeline("write output")),
   ];
 
   const rendered = renderNativeSubagentStatus(plainTheme(), jobs);
@@ -70,12 +70,12 @@ test("native status prioritizes active jobs and exposes no tool results", () => 
   assert.match(rendered, /│ \+1$/);
   assert.doesNotMatch(rendered, /crawler|generalist|SECRET TOOL RESULT|exposed-token/);
   assert.match(rendered, /Authorization: \[REDACTED\]/);
-  assert.equal(renderNativeSubagentStatus(plainTheme(), [{ ...jobs[0], status: "done" }]), undefined);
+  assert.equal(renderNativeSubagentStatus(plainTheme(), [{ ...jobs[0], status: "completed" }]), undefined);
 });
 
 test("native status keeps undelivered results visible without any active job", () => {
   const jobs = [
-    job("subagent_55555555-5555-4555-8555-555555555555", "done", 0, "explorer", toolTimeline("read file")),
+    job("subagent_55555555-5555-4555-8555-555555555555", "completed", 0, "explorer", toolTimeline("read file")),
   ];
 
   assert.equal(renderNativeSubagentStatus(plainTheme(), jobs), undefined);

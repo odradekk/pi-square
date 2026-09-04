@@ -154,19 +154,19 @@ export function classifyToolEnd(
 
 
 // Tool errors are recoverable events; only true session-level exceptions or
-// missing/incomplete final output trigger phase="error". Empty finalText is
+// missing/incomplete final output trigger phase="failed". Empty finalText is
 // no longer considered a successful run — see deriveTerminalPhase for the
 // four-way classification.
 function deriveTerminalPhase(details: SubagentRunDetails, messages: any): void {
   // Already marked by a session-level exception; keep the original error text.
   if (details.error) {
-    details.phase = "error";
+    details.phase = "failed";
     return;
   }
 
   // Scenario 0: clean stream completion with final text captured directly.
   if (details.streamingCompleted && details.finalText && details.finalText.trim()) {
-    details.phase = "done";
+    details.phase = "completed";
     return;
   }
 
@@ -177,7 +177,7 @@ function deriveTerminalPhase(details: SubagentRunDetails, messages: any): void {
       details.salvagedFinalText = salvaged;
       details.finalText = salvaged;
       details.error = "stream did not complete cleanly; recovered final text from message history (salvaged)";
-      details.phase = "error";
+      details.phase = "failed";
       return;
     }
   }
@@ -186,13 +186,13 @@ function deriveTerminalPhase(details: SubagentRunDetails, messages: any): void {
   if (Array.isArray(messages) && messages.length > 0) {
     details.rawSessionOutput = collectLastMessages(messages, 3);
     details.error = "subagent produced no final assistant text; showing last 3 messages in details";
-    details.phase = "error";
+    details.phase = "failed";
     return;
   }
 
   // Scenario 3: no messages at all.
   details.error = "subagent produced no messages at all";
-  details.phase = "error";
+  details.phase = "failed";
 }
 
 function collectFinalAssistantText(messages: any): string {
@@ -478,7 +478,7 @@ function finishRunFailure(
     : normalizeSubagentError(error, {
         code: defaults.code,
         message: defaults.message,
-        operation: details.mode,
+        operation: details.operation,
         id: details.id,
         retries: details.retries,
         retryable: defaults.retryable,
@@ -540,7 +540,7 @@ async function promptSession(input: {
       persistenceFailure = normalizeSubagentError(error, {
         code: "PERSISTENCE_FAILED",
         message: "Unable to persist subagent progress.",
-        operation: details.mode,
+        operation: details.operation,
         id: details.id,
         retries: 3,
       });
@@ -620,7 +620,7 @@ async function promptSession(input: {
           const failure = createSubagentError({
             code: "RETRY_EXHAUSTED",
             message: "The child model request failed after three retries.",
-            operation: details.mode,
+            operation: details.operation,
             id: details.id,
             retryable: true,
             retries: Math.max(details.retries, Number(event.attempt ?? 0)),
@@ -639,7 +639,7 @@ async function promptSession(input: {
             message: isContextOverflowMessage(event.errorMessage)
               ? "The child session still exceeds the model context after compaction."
               : "Child-session compaction failed.",
-            operation: details.mode,
+            operation: details.operation,
             id: details.id,
             retryable: false,
             retries: details.retries,
@@ -671,7 +671,7 @@ async function promptSession(input: {
         ? outcome.error ?? new Error("Child session execution failed.")
         : Object.assign(new Error("Subagent execution was aborted before it started."), { name: "AbortError" });
       const normalized = normalizeSubagentError(raw, {
-        operation: details.mode,
+        operation: details.operation,
         id: details.id,
         retries: details.retries,
         suggestedAction: isContextOverflowMessage(raw) ? "Reduce context and retry." : undefined,
@@ -685,28 +685,28 @@ async function promptSession(input: {
     }
     if (outcome.terminalAssistantError && !details.errorInfo) {
       applyRunFailure(details, normalizeSubagentError(new Error(outcome.terminalAssistantError), {
-        operation: details.mode,
+        operation: details.operation,
         id: details.id,
         retries: details.retries,
       }));
     }
     deriveTerminalPhase(details, outcome.messages);
-    if (details.phase === "error" && !details.errorInfo) {
+    if (details.phase === "failed" && !details.errorInfo) {
       applyRunFailure(details, createSubagentError({
         code: "SUBAGENT_FAILED",
         message: details.error ?? "Subagent execution failed.",
-        operation: details.mode,
+        operation: details.operation,
         id: details.id,
         retryable: false,
         retries: details.retries,
         cause: details.error,
       }));
     }
-    if (input.signal?.aborted && details.phase !== "done") {
+    if (input.signal?.aborted && details.phase !== "completed") {
       applyRunFailure(details, createSubagentError({
         code: "ABORTED",
         message: "Subagent execution was aborted.",
-        operation: details.mode,
+        operation: details.operation,
         id: details.id,
         retryable: false,
         retries: details.retries,
@@ -718,7 +718,7 @@ async function promptSession(input: {
     return { details };
   } catch (error) {
     const normalized = normalizeSubagentError(error, {
-      operation: details.mode,
+      operation: details.operation,
       id: details.id,
       retries: details.retries,
       suggestedAction: isContextOverflowMessage(error) ? "Reduce context and retry." : undefined,
@@ -816,7 +816,7 @@ export async function runSubagentTask(input: {
     throw createSubagentError({
       code: "PERSISTENCE_FAILED",
       message: "The newly allocated subagent ID already has persisted state.",
-      operation: "bg",
+      operation: "delegate",
       retryable: false,
     });
   }
@@ -825,7 +825,7 @@ export async function runSubagentTask(input: {
     throw createSubagentError({
       code: "PERSISTENCE_FAILED",
       message: "A newly allocated subagent ID is already active.",
-      operation: "bg",
+      operation: "delegate",
       retryable: false,
     });
   }
@@ -840,15 +840,15 @@ export async function runSubagentTask(input: {
       throw createSubagentError({
         code: "PERSISTENCE_FAILED",
         message: "Pi did not create a persistent native session.",
-        operation: "bg",
+        operation: "delegate",
         retryable: false,
       });
     }
 
     details = {
-      version: 3,
+      version: 4,
       id: input.id,
-      mode: "bg",
+      operation: "delegate",
       artifactsDir,
       sessionFile,
       sessionId,
@@ -896,7 +896,7 @@ export async function runSubagentTask(input: {
       return finishRunFailure(details, createSubagentError({
         code: resolvedModel.error ? "UNKNOWN_MODEL" : "INVALID_ARGUMENT",
         message,
-        operation: "bg",
+        operation: "delegate",
         id: input.id,
         retryable: false,
         cause: message,
@@ -906,7 +906,7 @@ export async function runSubagentTask(input: {
     assertPromptCanFit({
       prompt,
       model: resolvedModel.model ?? input.ctx.model ?? undefined,
-      operation: "bg",
+      operation: "delegate",
       id: input.id,
       selectedMessages: input.contextMessages?.length ?? 0,
     });
@@ -925,7 +925,7 @@ export async function runSubagentTask(input: {
       return finishRunFailure(details, createSubagentError({
         code: "INVALID_ARGUMENT",
         message,
-        operation: "bg",
+        operation: "delegate",
         id: input.id,
         retryable: false,
       }));
@@ -962,7 +962,7 @@ export async function runSubagentTask(input: {
     throw normalizeSubagentError(error, {
       code: "PERSISTENCE_FAILED",
       message: "Unable to initialize the subagent session.",
-      operation: "bg",
+      operation: "delegate",
     });
   } finally {
     leaseResult.lease.release();
@@ -1064,7 +1064,7 @@ export async function resumeSubagentTask(input: {
               : undefined,
           }
         : undefined,
-      mode: "resume",
+      operation: "resume",
       task: input.task,
       lastParentSessionId: parentSessionId,
       promptSnapshot,
