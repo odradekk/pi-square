@@ -22,12 +22,14 @@ the background completion notification contract. It supersedes:
   ADR-0004's `fg`/`bg` execution-mode vocabulary is retired with them:
   background is the only execution mode and is no longer a selectable or
   persisted dimension.
-- **ADR-0009's lifecycle, persistence, and notification-version portions:**
-  the `done`/`error` terminal vocabulary, the V3 run-record compatibility
-  reading, the single-result legacy notification parsing, and the V4
-  notification payload. ADR-0009's reliable-delivery mechanics — the
-  memory-only session-scoped pending set, safe delivery timing, transcript
-  confirmation, resend, batching, budgets, and bounds — remain in force.
+- **ADR-0009's lifecycle and delivery-notification portions:** the
+  `done`/`error` terminal vocabulary used in delivered results, the V4
+  notification payload, and its single-result V3 notification compatibility.
+  ADR-0009's reliable-delivery mechanics — the memory-only session-scoped
+  pending set, safe delivery timing, transcript confirmation, resend,
+  batching, budgets, and bounds — remain in force. The V4 run-artifact break
+  below is this ADR's own decision; ADR-0009 governed delivery, not run
+  persistence.
 
 ## Decision
 
@@ -115,8 +117,8 @@ defensive spellings for values that can no longer occur.
 - **ADR-0002** established the retirement mechanic this ADR reuses for the
   bare `delegate`/`resume` names and the foreground protocol.
 - **ADR-0009** remains authoritative for the reliable-delivery core this ADR
-  builds on; only its lifecycle, persistence, and notification-version
-  portions are superseded here.
+  builds on; only its lifecycle and delivery-notification portions are
+  superseded here.
 - **ADR-0015** recorded the same explicit-supersession style over ADR-0004's
   GitHub-tool portion.
 

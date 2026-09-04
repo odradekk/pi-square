@@ -5,9 +5,9 @@ status: accepted
 # Reliable background subagent result delivery
 
 > Status note: ADR-0016 supersedes the portions of this decision that named
-> the terminal vocabulary (`done`/`error`), read V3 run records for
-> compatibility, and defined the V4 notification payload with single-result
-> V3 rendering. The reliable-delivery mechanics themselves — the pending set,
+> the terminal vocabulary (`done`/`error`) for delivered results and defined
+> the V4 notification payload with its single-result V3 notification
+> compatibility. The reliable-delivery mechanics themselves — the pending set,
 > safe timing, confirmation, resend, batching, budgets, and bounds — remain in
 > force.
 
