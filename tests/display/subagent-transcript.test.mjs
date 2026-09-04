@@ -84,10 +84,10 @@ function renderResult(decorated, args, details, opts = {}) {
   const decorated = decorateSubagentTool(makeDef(), () => runtime);
   const collapsed = renderResult(decorated, ARGS_DELEGATE, RUN_DETAILS, { expanded: false });
   const collapsedText = stripVTControlCharacters(collapsed.render(80).join("\n"));
-  assert.match(collapsedText, /^✓/, "completed delegate renders the check-mark fallback");
+  assert.match(collapsedText, /^✓/, "completed delegation renders the check-mark fallback");
   // C4 revision: the collapsed entry is one row; the result preview is
   // visible only when expanded.
-  assert.equal(collapsed.render(80).length, 1, "collapsed delegate renders exactly one row");
+  assert.equal(collapsed.render(80).length, 1, "collapsed delegation renders exactly one row");
   assert.doesNotMatch(collapsedText, /display adapters/, "collapsed hides the result preview");
   assert.match(collapsedText, /done · 6 turns/, "collapsed inline summary states the outcome head");
   assert.match(collapsedText, /2\.4k/, "collapsed inline summary states the token total");
@@ -101,7 +101,7 @@ function renderResult(decorated, args, details, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 2. A queued background record shows the queued state ──────────
+// ─── 2. A queued record shows the queued state with the run ID ─────
 
 {
   const runtime = newRuntime();
@@ -109,9 +109,23 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = { ...RUN_DETAILS, phase: "running" };
   const result = renderResult(decorated, ARGS_DELEGATE, details);
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^–/, "queued delegate shows the en-dash fallback");
+  assert.match(text, /^–/, "queued delegation shows the en-dash fallback");
   assert.match(text, /explorer/, "agent name visible while queued");
-  assert.match(text, /Queued in the parent session/, "queued message states the delivery state");
+  assert.match(text, /Queued in the parent session · run abcdef12/, "queued summary states the delivery state and the run id");
+
+  runtime.dispose();
+}
+
+{
+  const runtime = newRuntime();
+  const decorated = decorateSubagentTool(makeDef("resume_subagent"), () => runtime);
+  const details = { ...RUN_DETAILS, mode: "resume", phase: "running" };
+  const result = renderResult(decorated, ARGS_RESUME, details);
+  const text = stripVTControlCharacters(result.render(80).join("\n"));
+  assert.match(text, /^–/, "queued resume shows the en-dash fallback");
+  assert.match(text, /Resume abcdef12/, "queued resume keeps the Resume title and short run id target");
+  assert.match(text, /Queued in the parent session · run abcdef12/, "queued resume summary states the queued state");
+  assert.doesNotMatch(text, /done/, "a queued resume never reads as completed");
 
   runtime.dispose();
 }
@@ -186,7 +200,7 @@ function renderResult(decorated, args, details, opts = {}) {
   const details = { ...RUN_DETAILS, phase: "running", retries: 1 };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(80).join("\n"));
-  assert.match(text, /^–/, "queued delegate with retries shows the en-dash fallback");
+  assert.match(text, /^–/, "queued delegation with retries shows the en-dash fallback");
   assert.doesNotMatch(text.split("\n")[0], /\[retrying\]/, "no retrying badge renders");
 
   runtime.dispose();

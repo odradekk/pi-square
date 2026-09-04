@@ -23,7 +23,7 @@ Call:
 Queued result, collapsed:
 
 ```
-– Resume subagent 12345678   Queued in the parent session           0.0s
+– Resume subagent 12345678   Queued in the parent session · run 12345678   0.0s
 ```
 
 ## Target design
@@ -31,7 +31,7 @@ Queued result, collapsed:
 ### Header
 
 ```
-– Resume 12345678             Queued in the parent session          0.0s
+– Resume 12345678     Queued in the parent session · run 12345678   0.0s
 ```
 
 The title is `Resume`. The target is the short run ID, and it is **identical**
@@ -58,14 +58,16 @@ call named.
 ### Completed result
 
 Rendered through the background completion message, identical to
-[subagent-delegate.md](subagent-delegate.md), with one addition in the inline
-summary: a resumed run states the cumulative turn count and marks it as
-cumulative.
+[subagent-delegate.md](subagent-delegate.md), except that the notification
+names the run by its kind: a resumed completion uses the `resume_subagent`
+identity (`Resume` title, short run ID target) instead of the fresh-delegation
+`Subagent` title. A resumed run also states the cumulative turn count and
+marks it as cumulative in the inline summary.
 
 | Case | Row |
 |---|---|
 | Completed | `done · 9 turns total · 48.2k tokens · $0.031 · run 12345678` |
-| Queued in background | `Queued in the parent session` |
+| Queued in background | `Queued in the parent session · run 12345678` |
 | Active lease conflict | `Run 12345678 is already active` |
 | Unknown run | `Unknown run 12345678` |
 | Not resumable | `Run 12345678 has no resumable artifacts` |

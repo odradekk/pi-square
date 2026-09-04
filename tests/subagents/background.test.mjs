@@ -175,7 +175,7 @@ test("pre-aborted jobs never invoke the child", async () => {
   assert.equal(pi.sent.length, 0);
 });
 
-test("running, partial, and final transitions preserve one id", async () => {
+test("queued, detail-update, and final transitions preserve one id", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
   const job = queuedJob(observed);
@@ -189,7 +189,7 @@ test("running, partial, and final transitions preserve one id", async () => {
   const contextMessages = [{ role: "user", text: "parent context" }];
   startBackgroundJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "smoke task", parentSessionId: "parent-session", contextMessages });
   await waitFor(() => job.status === "done", "done background job");
-  // running, partial, final, and one change for the pending delivery set.
+  // start, detail update, final, and one change for the pending delivery set.
   assert.equal(observed.changes(), 4);
   assert.equal(getRunSubagentTaskCalls()[0].id, ID);
   assert.deepEqual(getRunSubagentTaskCalls()[0].contextMessages, contextMessages);

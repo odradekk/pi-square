@@ -125,7 +125,7 @@ const queued = subagent.renderResult(
   context(subagentArgs),
 ).render(80).join("\n");
 assert.match(queued, /explorer/);
-assert.match(queued, /Queued in the parent session/, "queued result states the queued outcome");
+assert.match(queued, /Queued in the parent session · run 12345678/, "queued result states the queued outcome with the run id");
 const unnamedQueued = subagent.renderResult(
   { content: [{ type: "text", text: "Queued background subagent subagent_12345678." }], details: { ...queuedDetails, agent: undefined } },
   { expanded: false, isPartial: false },

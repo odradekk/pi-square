@@ -100,7 +100,7 @@ Rules:
 
 - Todo restore, damaged snapshot, and idempotent operation displays.
 - Ask partial progress shows counts only; submitted answers appear only after terminal submission.
-- Subagent running state includes live text and `ACTIVITY`, never `Completed`.
+- Subagent queued state states the queued outcome with the run ID, never `Completed`.
 - Expanded subagent output includes up to eight bounded activity rows and up to four issues.
 - Background notification keeps success/error shell color and privacy boundaries.
 - All outputs remain bounded and theme-portable across the standard width matrix.

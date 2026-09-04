@@ -32,7 +32,7 @@ Call:
 Queued result, collapsed (the immediate tool outcome):
 
 ```
-– Subagent explorer           Queued in the parent session            0.0s
+– Subagent explorer   Queued in the parent session · run 12345678      0.0s
 ```
 
 Completed background completion, collapsed:
@@ -63,10 +63,12 @@ One row (C4). The immediate result of a delegation call states the queued
 state and identifies the run:
 
 ```
-– Subagent explorer           Queued in the parent session            0.0s
+– Subagent explorer   Queued in the parent session · run 12345678      0.0s
 ```
 
-A generic run without a named agent shows the short run ID as the target.
+The queued summary keeps the short run ID visible for named agents too,
+because the queued outcome and the ID are one fact for the caller. A generic
+run without a named agent shows the short run ID as the target as well.
 Rules:
 
 1. The queued row never implies completion.
@@ -97,7 +99,7 @@ Inline summary cases:
 | Case | Row |
 |---|---|
 | Completed | `done · 6 turns · 31.5k tokens · $0.018 · run 12345678` |
-| Queued in background | `Queued in the parent session` |
+| Queued in background | `Queued in the parent session · run 12345678` |
 | Failed | `error · 6 turns · run 12345678` |
 | Aborted | `aborted · run 12345678` |
 | Tool errors present | adds `· 1 tool error` and the `warning` qualifier |

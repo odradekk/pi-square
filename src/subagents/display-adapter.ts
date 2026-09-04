@@ -31,8 +31,9 @@ function subagentLifecycle(
   const detailPhase = String(details.phase ?? "").toLowerCase();
   const qualifiers: OperationalQualifier[] = [];
 
-  // A running background record is the queued tool outcome.
-  if (detailPhase === "running" && details.mode === "bg") {
+  // A running record of a background run kind (fresh or resumed) is the
+  // queued tool outcome both tools return immediately.
+  if (detailPhase === "running" && (details.mode === "bg" || details.mode === "resume")) {
     return { lifecycle: "queued", qualifiers };
   }
 
@@ -251,8 +252,8 @@ function subagentSummary(
 // ─── Target ────────────────────────────────────────────────────────
 
 /**
- * Target for delegate: the agent name.
- * For resume: agent name + short run ID, identical in call and result.
+ * Target for delegate_subagent: the agent name.
+ * For resume_subagent: the short run ID, identical in call and result.
  */
 function subagentTarget(
   details: Record<string, unknown>,
@@ -298,15 +299,18 @@ export function describeSubagentRun(
   const isTerminal = lc.lifecycle === "completed" || lc.lifecycle === "failed" || lc.lifecycle === "aborted";
 
   // C4 revision: collapsed entries are exactly one row, so state messages
-  // that used to live in the collapsed body move into the inline summary.
-  const queuedMessage = !isTerminal && lc.lifecycle === "queued" && run.mode === "bg"
-    ? "Queued in the parent session"
+  // that used to live in the collapsed body move into the inline summary. The
+  // queued summary keeps the short run ID visible for named agents too,
+  // because the queued outcome and the ID are one fact for the caller.
+  const queuedRunId = lc.lifecycle === "queued" ? shortId(details.id ?? args.id) : undefined;
+  const queuedMessage = !isTerminal && lc.lifecycle === "queued"
+    ? ["Queued in the parent session", queuedRunId ? `run ${queuedRunId}` : undefined].filter(Boolean).join(" · ")
     : undefined;
   const effectiveSummary = queuedMessage ?? summary;
 
   // Rows for the queued state render only when expanded.
   const rows: DisplayRow[] = [];
-  if (!isTerminal && lc.lifecycle === "queued" && run.mode === "bg") {
+  if (!isTerminal && lc.lifecycle === "queued") {
     rows.push({ text: "Queued in the parent session", tone: "muted" as DisplayTone });
   }
 
@@ -368,7 +372,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       const id = shortId(args.id);
       const agentName = typeof args.agent === "string" && args.agent ? args.agent : undefined;
 
-      // Target: agent name for delegate, agent + id for resume
+      // Target: agent name for delegate_subagent, short run ID for resume_subagent
       let target: string | undefined;
       if (isResume) {
         target = id; // Will be updated when run details are available

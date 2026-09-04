@@ -96,8 +96,8 @@ const message = {
 // ─── 1. Completion content uses the canonical transcript description ──
 
 {
-  const shared = describeSubagentRun("delegate", run, { expanded: false, isPartial: false, isError: false }, "background content");
-  assert.equal(shared.tool, "delegate", "notification reuses the transcript tool identity");
+  const shared = describeSubagentRun("delegate_subagent", run, { expanded: false, isError: false }, "background content");
+  assert.equal(shared.tool, "delegate_subagent", "notification reuses the transcript tool identity");
   assert.equal(shared.family, "agent", "notification reuses the agent family");
   assert.equal(shared.lifecycle, "completed", "done phase resolves to the completed lifecycle");
   assert.equal(shared.title, "Subagent");
@@ -169,6 +169,25 @@ const abortedText = plainLines(renderSubagentNotification(
 assert.match(abortedText, /· Subagent/, "aborted renders the aborted marker, not the failed marker");
 assert.doesNotMatch(abortedText, /× Subagent/, "aborted does not render the failed marker");
 assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses the error shell");
+
+// ─── 6b. A resumed run's completion keeps its Resume identity ─────────
+
+{
+  const resumed = details({ mode: "resume" });
+  const resumedText = plainLines(renderSubagentNotification(
+    { content: "resumed content", details: { id: resumed.id, status: "done", result: resumed } },
+    { expanded: false },
+    plainTheme,
+  ), 80).join("\n");
+  assert.match(resumedText, /✓ Resume\s+12345678/, "a resumed completion renders the Resume title and short run id");
+  assert.doesNotMatch(resumedText, /Subagent\s+explorer/, "a resumed completion does not render as a fresh delegation");
+  const resumedExpanded = plainLines(renderSubagentNotification(
+    { content: "resumed content", details: { id: resumed.id, status: "done", result: resumed } },
+    { expanded: true },
+    plainTheme,
+  ), 80).join("\n");
+  assert.match(resumedExpanded, /resume/, "the identity row states the resumed run kind");
+}
 
 // ─── 7. Unknown payloads fall back without breaking the shell ────────
 
