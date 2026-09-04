@@ -75,13 +75,3 @@ _Avoid_: vendored dependency, native module
 **Retired tool**:
 An extension tool that a major release deletes completely, including its code, dependencies, assets, catalog entry, and documented rules. A retired name stays invalid rather than becoming an alias.
 _Avoid_: deprecated tool, disabled tool, legacy tool
-
-### Context memory
-
-**Context Memory**:
-The planned experimental parent-agent capability that replaces old conversation history on one session branch with compact, source-backed context while retaining recent original conversation.
-_Avoid_: project memory, knowledge base, observational memory
-
-**Memory block**:
-The main agent's Markdown compression of one continuous range of original entries on a session branch. It is a non-authoritative continuity aid, not an instruction or truth record.
-_Avoid_: project fact, knowledge node, checkpoint

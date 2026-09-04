@@ -4,7 +4,6 @@ import registerAnchoredAutoRead, { createParentAnchoredWrite } from "./anchored-
 import registerAnchoredReplace from "./anchored-edit/workspace-replace";
 import registerBanner from "./banner";
 import registerCodeGraph from "./codegraph";
-import registerContextMemory, { CONTEXT_MEMORY_OWNED_TOOL_NAMES } from "./context-memory";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config";
 import { ConfirmationCoordinator } from "./core/confirmation";
 import { emitDiagnostics } from "./core/diagnostics";
@@ -39,15 +38,6 @@ export default function piSquare(pi: ExtensionAPI): void {
   });
 
   registerDisplay(pi, display);
-  // Context Memory registers after configuration and the display runtime and
-  // before Prompt Manager and the built-in overrides (#215): its session-start
-  // active-tool synchronization runs before display/builtins captures its
-  // active-tool baseline, so the two owned tool names never enter it, while
-  // the built-in baseline restore preserves their dynamic selection (#217).
-  const contextMemory = registerContextMemory(pi, {
-    configProvider: () => display.config,
-    displayRuntimeProvider: () => display.runtime,
-  });
   let anchoredReadAvailable = false;
   // One parent anchored-write session is shared between the write definition
   // the display registration constructs and the appendix presentation
@@ -57,7 +47,8 @@ export default function piSquare(pi: ExtensionAPI): void {
     pi,
     display,
     (available) => { anchoredReadAvailable = available; },
-    CONTEXT_MEMORY_OWNED_TOOL_NAMES,
+    // No module owns dynamic tool names right now; the slot is positional.
+    [],
     parentAnchoredWrite,
   );
   registerAnchoredReplace(
@@ -86,5 +77,5 @@ export default function piSquare(pi: ExtensionAPI): void {
   registerShellTools(pi, {}, () => display.runtime);
   registerSshTool(pi, () => display.config, confirmations, () => display.runtime);
   registerBanner(pi, () => display.config);
-  registerPromptManager(pi, { ...subagents, contextMemory });
+  registerPromptManager(pi, subagents);
 }
