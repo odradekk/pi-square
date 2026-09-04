@@ -75,13 +75,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     description: "Search file contents using literal or regex patterns",
   },
   {
-    name: "codegraph",
-    family: "search",
-    parent: true,
-    child: true,
-    description: "Query a local semantic code graph index",
-  },
-  {
     name: "pdf_search",
     family: "search",
     parent: true,
@@ -140,13 +133,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     parent: true,
     child: false,
     description: "Parse selected local PDF pages through Firecrawl",
-  },
-  {
-    name: "github",
-    family: "remote",
-    parent: true,
-    child: true,
-    description: "Search, read, browse, and inspect GitHub repositories",
   },
   {
     name: "ssh",

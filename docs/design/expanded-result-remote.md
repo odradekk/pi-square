@@ -1,7 +1,7 @@
 # Remote Expanded Results
 
-Scope: `search`, `fetch`, `libs`, `docs`, `parse`, `github_search`, `github_read`, `github_tree`, `github_commit`, `ssh`
-Parent tools: all ten. Child availability follows the existing catalog: `parse` and `ssh` remain parent-only.
+Scope: `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`
+Parent tools: all six. Child availability follows the existing catalog: `parse` and `ssh` remain parent-only.
 Primary family contract: remote identity and provenance first, bounded remote content second, failures and retries explicit.
 
 ## Shared remote grammar
@@ -100,70 +100,6 @@ Rules:
 - ZDR remains disabled and the standard data-handling consequence stays explicit.
 - The tool remains parent-only and absent from child catalogs.
 
-## github_search
-
-Expanded sections:
-
-- `ERROR` for missing PAT, network, rate-limit, provider, or budget failures.
-- `QUERY`: kind, query, page, and per-page limit.
-- `SUMMARY`: result counts, completeness, remote window, and rate-limit metadata.
-- `RESULTS`: repository or code records with repository, path/ref where available, safe URL, description/fragments, and bounded provider metadata.
-- `RATE`: reset and remaining information when exposed.
-
-Rules:
-
-- Non-GitHub and credentialed provider URLs remain rejected and are never linked.
-- The 1,000-result search window failure is explicit before network execution.
-- PAT resolution order (`GITHUB_TOKEN` before `auth.json github.key`) is documented but neither value is displayed.
-
-## github_read
-
-Expanded sections:
-
-- `ERROR` for missing PAT, binary/oversized file, network, provider, or budget failures.
-- `TARGET`: repository, path/README, ref, line, and limit.
-- `SUMMARY`: returned line range, continuation, completeness, size, encoding, and rate metadata.
-- `CONTENT`: bounded numbered source block.
-- `LINK`: safe repository URL and raw-media note where relevant.
-
-Rules:
-
-- Binary and oversized files render metadata, never decoded bytes.
-- Line numbers remain exact for the returned page.
-- Redirects remain constrained to GitHub API origin.
-
-## github_tree
-
-Expanded sections:
-
-- `ERROR` for missing PAT, request budget, network, provider, or budget failures.
-- `TARGET`: repository, path, ref, depth, offset, and limit.
-- `SUMMARY`: entry counts, paging, request budget, completeness, and rate metadata.
-- `ENTRIES`: bounded path/type records with depth-aware indentation.
-- `PAGING`: offset, next offset, and incomplete reason.
-
-Rules:
-
-- Tree ordering remains deterministic path sorting.
-- Remote request-budget truncation is visible and distinct from local output truncation.
-- The display does not turn remote paths into local links.
-
-## github_commit
-
-Expanded sections:
-
-- `ERROR` for missing PAT, network, provider, or budget failures.
-- `TARGET`: repository, ref, page, and limit.
-- `SUMMARY`: commit identity, author/committer, message title, changed-file counts, and rate metadata.
-- `FILES`: changed-file records with status, additions/deletions, and patch state.
-- `PATCHES`: bounded available patches with explicit `included`, `missing`, or `omitted` states.
-
-Rules:
-
-- Missing, binary, and omitted patches remain distinct.
-- Commit and safe repository links are bounded and sanitized.
-- Commit details never imply write capability.
-
 ## ssh
 
 Expanded sections:
@@ -187,6 +123,5 @@ Rules:
 - Provider error text strips controls and redacts current and previous keys.
 - Unsafe URLs never become clickable.
 - `parse` cancellation before confirmation performs zero upload.
-- GitHub binary/oversized reads never emit decoded content.
 - SSH command output retains latest visible state after carriage-return progress updates.
 - All expanded results remain bounded at 39/40/63/64/80/99/100/120 columns.

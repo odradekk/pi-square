@@ -85,7 +85,7 @@ test("create passes the full native contract and defaults to an in-memory sessio
     model: { id: "m" },
     thinkingLevel: "high",
     tools: ["read"],
-    customTools: [{ name: "github" }],
+    customTools: [{ name: "docs" }],
     resourceLoader,
     settingsManager,
   });
@@ -98,7 +98,7 @@ test("create passes the full native contract and defaults to an in-memory sessio
   assert.deepEqual(call.model, { id: "m" });
   assert.equal(call.thinkingLevel, "high");
   assert.deepEqual(call.tools, ["read"]);
-  assert.deepEqual(call.customTools, [{ name: "github" }]);
+  assert.deepEqual(call.customTools, [{ name: "docs" }]);
   assert.equal(call.resourceLoader, resourceLoader);
   assert.deepEqual(call.sessionManager, { kind: "in-memory", cwd: "/work" });
   assert.equal(call.settingsManager, settingsManager);

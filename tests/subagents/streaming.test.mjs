@@ -105,8 +105,8 @@ function createSession(script) {
       isError: false,
       result: { content: [{ type: "text", text: "1 match" }] },
     });
-    emit({ type: "tool_execution_start", toolName: "github", args: { operation: "read", repo: "owner/name", path: "README.md", ref: "main", token: "private" } });
-    emit({ type: "tool_execution_end", toolName: "github", isError: false, result: { content: [{ type: "text", text: "SECRET GITHUB RESULT" }] } });
+    emit({ type: "tool_execution_start", toolName: "pdf_search", args: { query: "installation guide", path: "manual.pdf", secret: "private" } });
+    emit({ type: "tool_execution_end", toolName: "pdf_search", isError: false, result: { content: [{ type: "text", text: "SECRET SEARCH RESULT" }] } });
 
     const burstStart = updates.length;
     for (let index = 0; index < 20; index += 1) {
@@ -154,7 +154,7 @@ function createSession(script) {
   const toolStarts = returned.details.timeline.filter((item) => item.kind === "tool" && item.phase === "start").map((item) => item.text);
   assert.deepEqual(toolStarts, [
     "grep /needle/ in .",
-    "github owner/name:README.md @main",
+    "pdf_search installation guide in manual.pdf",
   ]);
   assert.doesNotMatch(toolStarts.join("\n"), /password|token|private|SECRET/);
   assert.equal(returned.details.liveText, "");

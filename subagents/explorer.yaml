@@ -47,9 +47,6 @@ tools:
   - grep
   - find
 
-extensionTools:
-  - codegraph
-
 skills:
   - none
 

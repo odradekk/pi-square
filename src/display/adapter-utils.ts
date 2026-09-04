@@ -88,15 +88,6 @@ export function formatBytes(bytes: number): string {
   return `${scaled >= 100 ? Math.round(scaled) : scaled.toFixed(1)} ${units[unitIndex]}`;
 }
 
-/** C4 count nouns for the tools whose paging details compose a sentence. */
-const SUMMARY_NOUNS: Readonly<Record<string, string>> = Object.freeze({
-  github: "results",
-});
-
-function summaryNoun(name: string): string {
-  return SUMMARY_NOUNS[name] ?? "results";
-}
-
 /**
  * C4 collapsed summary sentence for the extension tools, composed from the
  * structured details every tool already returns. Returns undefined when no
@@ -168,22 +159,10 @@ export function composeInternalSummary(
     }
   }
 
-  // Read-like tools (github read) report returned lines instead of a page.
-  const returnedLines = numberOf(details.returnedLines);
-  if (returnedLines !== undefined) {
-    if (returnedLines === 0) return "Empty file";
-    const head = `${returnedLines} lines`;
-    if (details.hasMore === true) {
-      const next = (numberOf(args.line) ?? 1) + returnedLines;
-      return `${head} · continue at line ${next}`;
-    }
-    return head;
-  }
-
   const returned = numberOf(page.returned) ?? numberOf(details.returned);
   const total = numberOf(page.total) ?? numberOf(details.total) ?? numberOf(details.totalMatches);
   if (returned !== undefined) {
-    const noun = summaryNoun(name);
+    const noun = "results";
     if (returned === 0) return `No ${noun}`;
     const head = total !== undefined && total > returned
       ? `${returned} of ${total} ${noun}`

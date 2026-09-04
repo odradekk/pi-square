@@ -100,8 +100,8 @@ function policyFor(result, toolName) {
   assert.equal(pdf.policy.previewLines, 12);
   assert.equal(pdf.provenance.previewLines, "/agent/config/pi-square.json");
   // Other tools unaffected
-  const codegraph = policyFor(result, "codegraph");
-  assert.equal(codegraph.provenance.previewLines, "default");
+  const ssh = policyFor(result, "ssh");
+  assert.equal(ssh.provenance.previewLines, "default");
 }
 
 // ── Specificity within agent: tool > family > defaults ──────────────

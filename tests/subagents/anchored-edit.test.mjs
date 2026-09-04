@@ -287,7 +287,7 @@ try {
   const { resolveSubagentTools } = await load("../../src/subagents/tool-policy.ts");
   const generalist = resolveSubagentTools({
     tools: ["read", "write", "edit", "shell", "ls"],
-    extensionTools: ["rg", "fd", "codegraph", "search", "fetch", "libs", "docs"],
+    extensionTools: ["pdf_search", "search", "fetch", "libs", "docs"],
   }, "linux");
   assert.ok(!generalist.persistedTools.includes("replace"), "the persisted selection never freezes the anchored tool names");
   assert.ok(generalist.persistedTools.includes("edit"), "the persisted selection keeps the logical edit capability");

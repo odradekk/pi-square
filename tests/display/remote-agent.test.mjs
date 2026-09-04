@@ -52,10 +52,6 @@ const cases = [
   ["libs", { libraryName: "react", query: "context" }, /react/],
   ["docs", { libraryId: "/facebook/react", query: "context" }, /facebook\/react/],
   ["parse", { path: "manual.pdf", pages: "1-3", mode: "auto" }, /manual\.pdf/],
-  ["github", { operation: "search", kind: "code", query: "repo:owner/name ghp_SECRET" }, /repo:owner\/name/],
-  ["github", { operation: "read", repo: "owner/name", path: "README.md", ref: "main" }, /README\.md/],
-  ["github", { operation: "tree", repo: "owner/name", path: "src", ref: "main" }, /src/],
-  ["github", { operation: "commit", repo: "owner/name", ref: "abcdef" }, /abcdef/],
   ["ask", { questions: [{ id: "secret-question", text: "private question", options: [] }] }, /Questions/],
   ["todo", { action: "set", todos: [{ text: "private task" }] }, /set/],
   ["delegate", { agent: "explorer", mode: "fg", task: "inspect runtime" }, /inspect runtime/],
@@ -93,7 +89,7 @@ for (const [name, args, expected] of cases) {
   // through records or empty-state indicators rather than the raw text
   // fallback; other tools expose the text via output fallback or a
   // content/markdown section.
-  const hasStructuredDomain = name === "github" || name === "todo" || name === "ask";
+  const hasStructuredDomain = name === "todo" || name === "ask";
   const isWebTool = ["search", "fetch", "libs", "docs", "parse"].includes(name);
   if (!hasStructuredDomain && !isWebTool) {
     assert.match(expandedText, /private result body/);
@@ -162,9 +158,7 @@ const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works
 assert.ok(webExpanded[0]?.startsWith("● Web search"), "tool header remains flush-left");
 assert.ok(resultTitleLine?.startsWith("  ") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under the quiet body indent");
 
-for (const child of createChildTools([
-  "search", "fetch", "libs", "docs", "github_search", "github_read", "github_tree", "github_commit",
-]).definitions) {
+for (const child of createChildTools(["search", "fetch", "libs", "docs", "pdf_search"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child factory remains runtime-independent`);
 }
 

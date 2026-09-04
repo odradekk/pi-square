@@ -57,23 +57,12 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "codegraph", "delegate", "docs", "fetch", "github",
+    "ask", "delegate", "docs", "fetch",
     "libs", "parse", "pdf_search", "resume", "search",
     "ssh", "todo",
   ]);
-  assert.ok(childToolNames.includes("codegraph"));
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
   assert.deepEqual(createChildTools(["pdf_search"]).definitions.map((definition) => definition.name), ["pdf_search"]);
-  const childCodeGraph = createChildTools(["codegraph"]).definitions[0];
-  assert.equal(childCodeGraph.parameters.type, "object");
-  assert.equal(childCodeGraph.parameters.anyOf, undefined);
-  assert.deepEqual(childCodeGraph.parameters.required, ["operation"]);
-  assert.deepEqual(childCodeGraph.parameters.properties.operation.enum, ["explore", "status"]);
-  const parentCodeGraph = tools.get("codegraph");
-  assert.equal(parentCodeGraph.parameters.type, "object");
-  assert.equal(parentCodeGraph.parameters.anyOf, undefined);
-  assert.deepEqual(parentCodeGraph.parameters.required, ["operation"]);
-  assert.deepEqual(parentCodeGraph.parameters.properties.operation.enum, ["explore", "status", "init", "sync", "reindex"]);
   assert.ok(!childToolNames.includes("scheme_eval"));
   assert.ok(!childToolNames.includes("parse"), "parse requires parent-session confirmation");
   assert.equal(createChildTools(["parse"]).definitions.length, 0);
@@ -97,13 +86,9 @@ try {
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
   const delegateTool = tools.get("delegate");
   const resumeTool = tools.get("resume");
-  // Old tool names must be absent after consolidation.
+  // Old subagent tool names must be absent after consolidation.
   assert.equal(tools.get("subagent_delegate"), undefined);
   assert.equal(tools.get("subagent_resume"), undefined);
-  assert.equal(tools.get("github_search"), undefined);
-  assert.equal(tools.get("github_read"), undefined);
-  assert.equal(tools.get("github_tree"), undefined);
-  assert.equal(tools.get("github_commit"), undefined);
   for (const subagentTool of [delegateTool, resumeTool]) {
     assert.equal(typeof subagentTool?.renderCall, "function");
     assert.equal(typeof subagentTool?.renderResult, "function");
@@ -131,14 +116,6 @@ try {
   assert.deepEqual(todoTool?.parameters?.required, ["action"]);
   assert.equal(todoTool?.parameters?.properties?.action?.enum?.length, 9);
   assert.ok(!childToolNames.includes("todo"));
-  const githubTool = tools.get("github");
-  assert.equal(githubTool?.parameters?.type, "object");
-  assert.equal(githubTool?.parameters?.anyOf, undefined);
-  assert.equal(githubTool?.parameters?.additionalProperties, false);
-  assert.deepEqual(githubTool?.parameters?.required, ["operation"]);
-  assert.deepEqual(githubTool?.parameters?.properties?.operation?.enum, ["search", "read", "tree", "commit"]);
-  assert.ok(childToolNames.includes("github"), "github must be opt-in for child sessions");
-  assert.deepEqual(createChildTools(["github"]).definitions.map((definition) => definition.name), ["github"]);
   assert.equal(createChildTools(["scheme_eval"]).definitions.length, 0);
   assert.deepEqual([...commands.keys()].sort(), ["context", "display", "prompt-manager", "shadow", "subagent"]);
   assert.equal(commands.has("prompt-inspect"), false);
@@ -179,10 +156,9 @@ try {
   assert.equal(tools.get("anchored-edit"), undefined, "anchored editing must not register a second tool");
 
   for (const name of [
-    "pdf_search", "codegraph", "ssh", "bash",
+    "pdf_search", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
-    "github",
     "ask", "todo", "delegate", "resume",
   ]) {
     const tool = tools.get(name);

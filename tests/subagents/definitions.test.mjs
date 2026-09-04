@@ -44,13 +44,13 @@ async function withRoot(fn) {
   }
 }
 
-test("package V2 definitions expose the five inherited-model roles without diagnostics", async () => {
+test("package V2 definitions expose the three inherited-model roles without diagnostics", async () => {
   await withRoot((dir) => {
     const registry = discoverSubagents(join(dir, "repo"));
     assert.deepEqual(registry.errors, []);
     assert.deepEqual(
       filterVisibleSubagents(registry).definitions.map((item) => item.name),
-      ["crawler", "explorer", "generalist", "librarian", "oracle"],
+      ["crawler", "explorer", "generalist"],
     );
     assert.equal(registry.definitions.find((item) => item.name === "example_profile").visible, false);
     for (const definition of registry.definitions) {

@@ -74,10 +74,9 @@ const expectedTools = [
   // Platform shell
   "bash", "pwsh",
   // pi-square search
-  "codegraph", "pdf_search",
+  "pdf_search",
   // pi-square remote
   "search", "fetch", "libs", "docs", "parse",
-  "github",
   "ssh",
   // pi-square workflow
   "todo", "ask",

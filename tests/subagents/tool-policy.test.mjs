@@ -43,12 +43,7 @@ function test(name, fn) { tests.push({ name, fn }); }
 const matrix = {
   "explorer.yaml": {
     tools: ["read", "ls", "grep", "find"],
-    extensionTools: ["codegraph"],
-    skills: ["none"],
-  },
-  "oracle.yaml": {
-    tools: ["read", "ls", "shell", "grep", "find"],
-    extensionTools: ["codegraph", "search", "fetch", "libs", "docs"],
+    extensionTools: [],
     skills: ["none"],
   },
   "crawler.yaml": {
@@ -56,14 +51,9 @@ const matrix = {
     extensionTools: ["search", "fetch", "libs", "docs"],
     skills: ["none"],
   },
-  "librarian.yaml": {
-    tools: ["none"],
-    extensionTools: ["github"],
-    skills: ["none"],
-  },
   "generalist.yaml": {
     tools: ["read", "write", "edit", "shell", "ls", "grep", "find"],
-    extensionTools: ["codegraph", "search", "fetch", "libs", "docs"],
+    extensionTools: ["search", "fetch", "libs", "docs"],
     skills: [],
   },
 };
@@ -80,13 +70,13 @@ test("bundled role tool and skill capabilities match the least-privilege matrix"
 test("none disables every built-in while preserving explicit extension tools", () => {
   const resolved = resolveSubagentTools({
     tools: ["none"],
-    extensionTools: ["github"],
+    extensionTools: ["docs"],
   }, "linux");
   assert.deepEqual(resolved.errors, []);
   assert.deepEqual(resolved.builtInTools, []);
-  assert.deepEqual(resolved.extensionTools, ["github"]);
+  assert.deepEqual(resolved.extensionTools, ["docs"]);
   assert.deepEqual(resolved.persistedTools, ["none"]);
-  assert.deepEqual(resolved.persistedExtensionTools, ["github"]);
+  assert.deepEqual(resolved.persistedExtensionTools, ["docs"]);
 });
 
 test("none is case-insensitive, mutually exclusive, and fails closed", () => {
@@ -136,7 +126,7 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
     unknownBuiltIn.errors.some((error) => error.includes("scheme")),
     "an unknown built-in name must be reported",
   );
-  for (const retired of ["sg", "scheme_eval", "time", "github_search", "subagent_delegate", "docs_search"]) {
+  for (const retired of ["sg", "scheme_eval", "time", "subagent_delegate", "docs_search"]) {
     const resolved = resolveSubagentTools({ extensionTools: [retired] }, "linux");
     const child = createChildTools(resolved.extensionTools, "linux");
     assert.ok(
@@ -147,7 +137,7 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
 });
 
 test("child tool construction accepts a child working directory without changing tools", () => {
-  const names = ["codegraph", "pdf_search"];
+  const names = ["pdf_search", "docs"];
   const plain = createChildTools(names);
   const withCwd = createChildTools(names, undefined, "/workspace/child");
   assert.deepEqual(withCwd.errors, []);

@@ -119,21 +119,19 @@ removes the majority of the individual defects that the tool documents list.
 | Pattern | Tools affected | Typical fix |
 |---|---|---|
 | Uppercase built-in titles and absolute paths | `read`, `ls`, `edit`, `write`, `find`, `grep` | C1 and C2 |
-| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `codegraph`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`, `github` | C4 one-row collapsed entry; the payload moves to the expanded body |
-| Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `codegraph`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
+| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh` | C4 one-row collapsed entry; the payload moves to the expanded body |
+| Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
 | Key-value metadata rows and coded fields | every family | State the same facts in the inline summary |
 | A failure body is rendered twice | `pwsh`, `ssh`, `delegate`, `resume` | Render the error stream once |
 | Raw platform or provider text as the failure message | every family | C6 one sentence, raw text in the expanded `ERROR` section |
-| Empty result presented as a fake list entry | `ls`, `find`, `grep`, `codegraph` | A muted state row and no section |
+| Empty result presented as a fake list entry | `ls`, `find`, `grep` | A muted state row and no section |
 | Truncation without the `truncated` badge | `read`, `write`, `bash` | C7 |
-| Raw timestamps and full hashes | `codegraph`, `libs`, `github` | Relative time and short SHA |
-| Content that is not what it claims to be | `github` (read), `codegraph`, `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
+| Raw timestamps and full hashes | `libs` | Relative time and short SHA |
+| Content that is not what it claims to be | `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
 
-Three defects are correctness defects rather than presentation defects:
+One defect is a correctness defect rather than a presentation defect:
 
-1. `github` (read) renders the tool's own header as numbered remote file content,
-   so both the content and every line number are wrong.
-2. `delegate`/`resume` parse each end-phase timeline entry into a malformed activity
+1. `delegate`/`resume` parse each end-phase timeline entry into a malformed activity
    row such as `read:  working`.
 
 ## Status
@@ -150,7 +148,6 @@ Three defects are correctness defects rather than presentation defects:
 | 4 | `write` | filesystem | [write.md](write.md) | Designed |
 | 5 | `find` | filesystem | [find.md](find.md) | Designed |
 | 6 | `grep` | search | [grep.md](grep.md) | Designed |
-| 7 | `codegraph` | search | [codegraph.md](codegraph.md) | Designed |
 | 8 | `pdf_search` | search | [pdf-search.md](pdf-search.md) | Designed |
 | 9 | `bash` | execution | [bash.md](bash.md) | Designed |
 | 10 | `pwsh` | execution | [pwsh.md](pwsh.md) | Designed (Linux-host evidence; Windows run required) |
@@ -159,7 +156,6 @@ Three defects are correctness defects rather than presentation defects:
 | 13 | `libs` | remote | [libs.md](libs.md) | Designed |
 | 14 | `docs` | remote | [docs.md](docs.md) | Designed |
 | 15 | `parse` | remote | [parse.md](parse.md) | Designed |
-| 16 | `github` | remote | [github-search.md](github-search.md) | Designed |
 | 17 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
 | 18 | `todo` | workflow | [todo.md](todo.md) | Designed |
 | 19 | `ask` | workflow | [ask.md](ask.md) | Designed |

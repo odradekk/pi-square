@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text, file, structural, and semantic code search, persistent SSH shells, web, PDF, GitHub, and documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
+`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text and file search, persistent SSH shells, web, PDF, and documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
 
 ## Installation
 
@@ -83,16 +83,6 @@ The local `pdf_search` tool accepts a workspace PDF `path`, a required `query`, 
 
 `pdf_search` canonicalizes paths through symlinks, rejects encrypted, malformed, non-PDF, and textless/scanned documents, and supports at most 50 MB, 1,000 pages, 1,000,000 extracted characters per page, and 20,000,000 per document. Extraction times out after 30 seconds and returns no partial search result. Page text is kept only in a session-local LRU keyed by canonical file identity; changed files invalidate immediately, one entry is limited to 64 MiB, the cache to 128 MiB, and nothing is written to disk. Complex columns, tables, formulae, and rotated text have best-effort context ordering; OCR and semantic search are out of scope. The parent registers the tool by default, and trusted child definitions may request it explicitly through `extensionTools`; no bundled child profile enables it by default.
 
-## Semantic CodeGraph tool
-
-The `codegraph` tool integrates the exact `@colbymchenry/codegraph` `1.4.1` platform bundle for local semantic code intelligence. Use `operation: explore` for cross-file behavior, call paths, architecture, and impact; exact text remains a `grep` concern, and known files should be read directly. Explore returns CodeGraph's line-numbered source and relationship Markdown with a 24,000-character model-facing cap. `status` returns structured index health and statistics.
-
-The parent session also exposes index lifecycle operations. `init` creates `.codegraph/codegraph.db` only after Pi confirmation, `sync` performs an incremental update, and `reindex` replaces an unhealthy or version-stale database only after separate confirmation. Explore checks index health first and automatically runs a bounded incremental sync when files changed; it never silently initializes or fully rebuilds an index. Missing indexes and rebuild requirements are recoverable results so the model can request initialization once or fall back to `grep` and `read`.
-
-Every path is canonicalized and must remain at or below the session cwd, including through symlinks. CodeGraph runs as a cancellable foreground process with bounded stdout/stderr and process-tree termination; pi-square does not start its MCP daemon or watcher. The wrapper resolves the installed platform package directly and invokes its bundled Node runtime without PATH lookup or the npm shim, so the shim's network download fallback is unreachable. It also forces `DO_NOT_TRACK=1`, disables CodeGraph telemetry/update checks/downloads/watchers, and performs no CodeGraph network requests. The platform package is large because it includes a complete runtime; the installed Linux x64 package is approximately 226 MiB unpacked.
-
-Explorer, Oracle, and Generalist receive a read-only child definition limited to `explore` and `status`. Only the parent definition can initialize, synchronize, or rebuild an index. Crawler and Librarian do not receive CodeGraph.
-
 ## Subagent tools
 
 Delegation uses two model-callable tools. `delegate` starts a new child with `mode: "fg"` (waits for the result) or `mode: "bg"` (queues and returns an ID), plus optional `agent`, `context`, `cwd`, `systemPrompt`, `model`, and `thinkingLevel` overrides; blank optional strings are treated as unset so they never override YAML definition or parent-session values. `resume` continues an inactive persisted child in the foreground and accepts only `id`, `task`, and optional `context`; the ID comes from an earlier background run or the `/subagent` manager.
@@ -111,7 +101,7 @@ The `delegate` and `resume` tools use the shared collapsible operational interfa
 
 While a foreground or resumed child is running, incoming partial results retain the agent identity and phase, show the last five logical lines of the bounded live-text tail, and add an `ACTIVITY` row from the latest allowlisted tool-call summary. There is no independent 100 ms renderer timer; animation uses the shared session scheduler at 34 ms intervals in `full`, 120 ms intervals in `reduced`, and static in `off`. Completed compact results show a bounded conclusion and usage metadata. Expanded primary results show the bounded full result, up to eight recent allowlisted activity rows, and up to four tool issues. Status uses monochrome text glyphs such as `✓`, `!`, `×`, and `–`, never emoji presentation characters.
 
-The shared allowlisted activity formatter includes per-operation repository/query/path/ref summaries for the `github` tool; unknown tools expose only `called`, and no surface renders tool result payloads. Every surface uses shortened run IDs; the full ID is never rendered. Normal results omit system prompts, raw session JSON, and artifact paths. Rendering removes terminal controls and redacts common credential forms without changing model-facing content or background delivery.
+The shared allowlisted activity formatter summarizes known tools with bounded target and argument summaries; unknown tools expose only `called`, and no surface renders tool result payloads. Every surface uses shortened run IDs; the full ID is never rendered. Normal results omit system prompts, raw session JSON, and artifact paths. Rendering removes terminal controls and redacts common credential forms without changing model-facing content or background delivery.
 
 ## Subagent V2 prompts and manager
 
@@ -131,26 +121,24 @@ instructions: |
 output: |
   Return findings, relevant files, gaps, and confidence.
 tools: [read, ls]
-extensionTools: [rg, fd, codegraph]
+extensionTools: [pdf_search]
 skills: [none]
 visible: true
 ```
 
 Package profiles omit `model` and `effort`. A fresh run inherits the parent session's current values and freezes the resolved values for deterministic same-ID resume; an explicit call override still takes precedence, and following a newly selected parent model requires a fresh ID. Omitted or empty `tools` selects the runtime built-in defaults, while the exclusive `tools: [none]` sentinel disables every built-in tool. Extension tools remain explicit opt-ins. Omitted or empty `skills` loads all discovered skills; `skills: [none]` disables them.
 
-The five visible package roles are intentionally complementary. Oracle's capabilities contain Crawler's, so those two are separated by purpose and cost rather than by tools: reach for Crawler when the task is focused external research, and for Oracle when a hard local question also needs external confirmation. See ADR-0006.
+The three visible package roles are intentionally complementary. Reach for `crawler` when the task is focused external research, for `explorer` when it needs local repository evidence, and for `generalist` when it needs scoped writable work.
 
 | Role | Responsibility | Default capabilities |
 | --- | --- | --- |
-| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `grep`, `find`, read-only `codegraph`; no skills |
-| `oracle` | Analyze difficult defects, architecture, algorithms, and trade-offs | `read`, `ls`, `shell`, `grep`, `find`, read-only `codegraph`, `search`, `fetch`, `libs`, `docs`; no skills; non-mutating by policy, not by tools |
+| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `grep`, `find`; no skills |
 | `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `search`, `fetch`, `libs`, `docs`; no skills |
-| `librarian` | Research authorized GitHub repositories, files, trees, and commits | Only the authenticated `github` tool; no skills |
-| `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, read-only CodeGraph, search, web, Context7, and all discovered skills; no GitHub PAT tools |
+| `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, read, search, web, Context7, and all discovered skills |
 
-This catalog replaces the former package `thinker` and `worker` IDs; the former external-research `librarian` role becomes `crawler`, and `librarian` now means GitHub-only research. Existing agent/project overlays are trusted local definitions and are not renamed automatically, so migrate those filenames and `name` fields explicitly when the new package roles should apply.
+Agent and project overlays remain free to define roles with any name, including the retired `oracle` and `librarian` names. Existing agent/project overlays are trusted local definitions and are not renamed automatically, so migrate those filenames and `name` fields explicitly when the new package roles should apply.
 
-Anchored editing follows the same capability boundary. Only `generalist`, the one bundled writable role, declares `read`, `write`, and `edit`, so while anchored editing is on it receives the anchored read, replace, and write tools. The read-only roles (`explorer`, `oracle`, `crawler`, `librarian`) declare no editing capability and receive no anchored tools. See [Hash-anchored editing](#hash-anchored-editing).
+Anchored editing follows the same capability boundary. Only `generalist`, the one bundled writable role, declares `read`, `write`, and `edit`, so while anchored editing is on it receives the anchored read, replace, and write tools. The read-only roles (`explorer`, `crawler`) declare no editing capability and receive no anchored tools. See [Hash-anchored editing](#hash-anchored-editing).
 
 The child SYSTEM is assembled as immutable subagent governance, optional parent system core, YAML `policy`, and call-specific `systemPrompt`; Pi then adds child-cwd project context, selected skills, and a volatile working-directory suffix. That suffix is frozen out of the persisted snapshot (together with the former date-plus-working-directory form written by earlier Pi versions), so an unchanged policy resumes to byte-identical effective SYSTEM prompts instead of appending another suffix per resume. The delegated user message is assembled as replayed `instructions`, reference-only parent history, the current task, and replayed `output`. Parent history may provide facts and confirmed decisions but is not task authorization. Fresh runs persist a frozen effective SYSTEM plus instructions/output and a hash/provenance manifest. Resume replays those snapshots under the same ID; applying a changed definition starts a fresh ID instead.
 
@@ -220,8 +208,8 @@ What ships today:
   trajectory, the Shadow responsibility, the canonical output schema, and
   the note. The child's evidence tools come from the approved strictly
   read-only Shadow-safe catalog — local `read`, `grep`, `find`, `ls`,
-  `codegraph` (explore/status), `pdf_search`, plus the public `search`,
-  `fetch`, `libs`, `docs` remote tools when a definition lists them — built
+  `pdf_search`, plus the public `search`, `fetch`, `libs`, `docs` remote
+  tools when a definition lists them — built
   from Pi public factories and child-safe pi-square factories, never from
   parent registry overrides; omitted `tools` select the default local
   evidence set, `tools: []` keeps the no-tool trial, and required tools must
@@ -378,7 +366,7 @@ The parent session exposes one `ssh` tool for bounded persistent remote POSIX sh
 
 Profiles and target fingerprints are accepted only from agent-level `config/pi-square.json`; a project layer containing `ssh` is rejected atomically. Selecting a non-default allowlisted target requires confirmation the first time that exact endpoint is used in each parent Pi session. Remote commands run without per-command confirmation after a session connects; the profile/target allowlist, pinned host verification, and alternate-target confirmation remain the authorization boundary. Unknown and changed host keys fail closed.
 
-Pi exposes only one extension confirmation selector at a time, so pi-square serializes its remaining SSH endpoint, CodeGraph lifecycle, and Firecrawl upload confirmations in FIFO order. Only the confirmation prompts are serialized; approved operations can continue concurrently.
+Pi exposes only one extension confirmation selector at a time, so pi-square serializes its remaining SSH endpoint and Firecrawl upload confirmations in FIFO order. Only the confirmation prompts are serialized; approved operations can continue concurrently.
 
 Connections live only for the current parent Pi session. The default limits are eight sessions globally, three per profile, and a 30-minute idle timeout; running foreground commands are not treated as idle. Handshake and transport errors remain contained within the SSH tool, and transport loss invalidates the session instead of silently reconnecting with lost shell state. Output uses a raw 256 KiB in-memory ring per session and 24,000-character cursor pages, reports expired cursors and truncation, and never spills remote output to local files. Model and TUI copies apply bounded single-line terminal semantics before removing remaining controls, so carriage-return, backspace, and erase-line progress refreshes retain only their latest visible state while newline-completed logs remain intact. Profile and session listings are also bounded. The first version supports direct connections and Bourne-compatible POSIX shells; full-screen TUI programs, SFTP/remote file tools, ProxyJump, proxies, port forwarding, arbitrary targets, child-agent access, and cross-Pi-session persistence are out of scope.
 
@@ -419,24 +407,6 @@ Set `FIRECRAWL_API_KEY` or add the key to Pi-owned `auth.json`; the environment 
 ```
 
 The key is redacted from content, errors, details, and rendering. Zero Data Retention is deliberately disabled, so Firecrawl's standard data handling applies; PDF parsing may consume per-page credits under the account's current plan. The tool is not exposed to child sessions because every local-file upload requires parent-session confirmation. Tests use generated PDFs and mocked HTTP only; an optional real one-page validation requires separate approval, a non-sensitive fixture, and configured credits.
-
-## GitHub tool
-
-The parent Pi session exposes one authenticated, read-only GitHub.com tool: `github` with `operation: search|read|tree|commit`. `search` finds repositories or default-branch code; `read` reads a UTF-8 file or the repository README with line pagination; `tree` browses a repository-relative path with depth 1-4; and `commit` returns commit metadata, changed-file pages, and available bounded patches. The same definition is an opt-in child capability for trusted local subagent configurations. Of the bundled roles, only Librarian requests it; it uses `tools: [none]` and has no general web, Context7, local filesystem, shell, or write tools. Generalist and the other specialists do not receive GitHub PAT capabilities. It uses the GitHub REST API version `2026-03-10`, Node's native `fetch`, and the shared operational interface renderer with allowlisted repository, query, path, ref, and paging metadata.
-
-Set `GITHUB_TOKEN` or add a PAT to Pi-owned `auth.json`; the environment variable takes precedence:
-
-```json
-{
-  "github": {
-    "key": "github_pat_..."
-  }
-}
-```
-
-A fine-grained PAT should grant access only to the repositories it needs and use read-only Contents permission when private repository contents or commits must be read. All tools fail before network access when no token is configured. Requests stay on `https://api.github.com`, carry an explicit API version and user agent, accept at most one same-origin redirect, retry one transient `502`/`503`/`504`, and never send the PAT to another origin. Authentication failures, SSO/permission failures, rate limits, inaccessible resources, validation failures, cancellation, malformed responses, and local response caps remain distinct result states.
-
-Results are deliberately bounded and explicit about incompleteness. Search exposes GitHub's `incomplete_results`, 1,000-result window, pagination, and rate metadata; GitHub itself limits code search to the default branch, files smaller than 384 KiB, and 10 authenticated requests per minute. File reads accept at most 2 MiB and return at most 50 KiB/2,000 lines per call. Tree traversal uses at most 20 API requests, 100 KiB of output, 200 returned entries, and reports the Contents API's 1,000-entry directory boundary. Commit output is capped at 100 KiB with at most 50 changed files per page and a separate patch budget; unavailable binary patches and locally omitted patches are labeled. The module creates no cache, log, or GitHub-specific artifact, and redacts PAT-shaped text from model and TUI output. Normal Pi persistence still applies: private paths, source excerpts, and commit patches are written to the parent session JSONL or, when Librarian invokes the tools, its persistent child session and resumable artifacts.
 
 ## Built-in ownership and adapters
 
@@ -588,12 +558,6 @@ npm run typecheck
 npm run smoke
 npm run package:check
 npm run changeset:status
-```
-
-Run the optional, non-blocking deterministic CodeGraph retrieval comparison separately. It reports one semantic query against a fixed three-file fixture; it is not a model-quality benchmark and is not part of `npm test`:
-
-```bash
-npm run eval:codegraph
 ```
 
 Run the optional, non-blocking frame-cost report to measure the render cost of pi-square TUI surfaces. It reports the cost of one operational display entry, the frame cost of a synthetic history at 10, 50, and 100 entries (cold and cached), and the footer cost, in both bundled themes at width 120. It is a development report, not a required CI gate, and wall-clock timings are never asserted in CI:

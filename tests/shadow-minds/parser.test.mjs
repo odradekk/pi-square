@@ -54,7 +54,7 @@ const full = parseOk(file([
   "timeoutSeconds: 90",
   "maxTurns: 4",
   "maxToolCalls: 8",
-  "tools: [read, grep, codegraph]",
+  "tools: [read, grep, pdf_search]",
   "requiredTools: [read]",
   "debug: false",
 ].join("\n")));
@@ -76,7 +76,7 @@ assert.equal(full.fields.thinking, "high");
 assert.equal(full.fields.timeoutSeconds, 90);
 assert.equal(full.fields.maxTurns, 4);
 assert.equal(full.fields.maxToolCalls, 8);
-assert.deepEqual(full.fields.tools, ["read", "grep", "codegraph"]);
+assert.deepEqual(full.fields.tools, ["read", "grep", "pdf_search"]);
 assert.deepEqual(full.fields.requiredTools, ["read"]);
 assert.equal(full.fields.debug, false);
 assert.equal(full.fields.body, body);
@@ -99,7 +99,7 @@ assert.equal(full.contentHash, createHash("sha256").update(file([
   "timeoutSeconds: 90",
   "maxTurns: 4",
   "maxToolCalls: 8",
-  "tools: [read, grep, codegraph]",
+  "tools: [read, grep, pdf_search]",
   "requiredTools: [read]",
   "debug: false",
 ].join("\n"))).digest("hex"), "content hash is the sha256 of the raw file bytes");

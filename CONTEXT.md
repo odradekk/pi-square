@@ -68,6 +68,10 @@ _Avoid_: custom tool, plugin, native tool
 The fixed set of extension tools that a subagent definition may request by name.
 _Avoid_: tool list, allowlist
 
+**Bundled subagent definition**:
+A subagent role definition shipped in pi-square's package layer. Agent and project overlays may independently define roles with the same or different names, so removing a bundled definition does not reserve or invalidate its name.
+_Avoid_: built-in agent, reserved role
+
 **Platform package**:
 A native executable that an npm optional dependency delivers per platform, resolved through the installed package rather than PATH.
 _Avoid_: vendored dependency, native module

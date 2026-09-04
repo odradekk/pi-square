@@ -27,7 +27,7 @@ const ctxFor = (cwd, extra = {}) => ({
   ...extra,
 });
 const BUILTIN = { path: "<builtin>", source: "built-in", scope: "temporary", origin: "top-level" };
-const PROBES = ["pdf_search", "codegraph", "delegate", "todo"];
+const PROBES = ["pdf_search", "delegate", "todo"];
 const BUILTINS = ["read", "grep", "find", "ls", "edit", "write", "bash"];
 
 function createHarness(config) {

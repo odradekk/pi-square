@@ -42,10 +42,10 @@ lifecycle, and never inherits Subagent write policy, resume, or artifacts.
 ### Strict read-only policy
 
 Every run's tool envelope comes from the closed Shadow-safe catalog
-(`read`, `grep`, `find`, `ls`, `codegraph`, `pdf_search`, `search`,
-`fetch`, `libs`, `docs`) built from Pi public factories and child-safe
+(`read`, `grep`, `find`, `ls`, `pdf_search`, `search`, `fetch`, `libs`,
+`docs`) built from Pi public factories and child-safe
 read-only extension factories — never parent registry overrides. Shell,
-writes, SSH, Firecrawl parse, authenticated GitHub, and delegation are
+writes, SSH, Firecrawl parse, and delegation are
 excluded capabilities: requested-but-excluded tools drop with visible
 warnings, while required ones fail before prompting. The optional
 `pdf_search` capability stays an explicit opt-in. No runnable package-owned

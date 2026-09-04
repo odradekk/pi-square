@@ -351,8 +351,8 @@ function resolveParentSessionId(ctx: ExtensionContext, explicit?: string): strin
 
 /**
  * A child is writable when its declared built-in tools include a file-writing
- * tool. Read-only roles (Explorer, Oracle, Crawler, Librarian) carry `read` but
- * no `write`/`edit`, so they must receive no anchored read.
+ * tool. Read-only roles (Explorer, Crawler) carry `read` but no
+ * `write`/`edit`, so they must receive no anchored read.
  */
 function isWritableChild(builtInTools: string[]): boolean {
   return builtInTools.includes("write") || builtInTools.includes("edit");
