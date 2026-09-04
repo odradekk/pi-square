@@ -33,18 +33,16 @@ function definition(overrides = {}) {
   };
 }
 
-test("V2 composes immutable governance, parent core, policy, and call policy in order", () => {
+test("V2 composes immutable governance, parent core, and policy in order", () => {
   const snapshot = compileFreshPrompt({
     definition: definition(),
     inheritedSystemCore: "PARENT CORE",
-    callPolicy: "CALL POLICY",
     parentMessages: [{ role: "user", text: "fact" }],
   });
   const positions = [
     snapshot.system.indexOf(SUBAGENT_GOVERNANCE),
     snapshot.system.indexOf("PARENT CORE"),
     snapshot.system.indexOf("PROJECT POLICY"),
-    snapshot.system.indexOf("CALL POLICY"),
   ];
   assert.deepEqual([...positions].sort((a, b) => a - b), positions);
   assert.equal(snapshot.instructions, "PROFILE INSTRUCTIONS");

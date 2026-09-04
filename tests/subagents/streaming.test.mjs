@@ -9,23 +9,14 @@ import jiti from "jiti";
 const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { __testables } = await load(join(packageRoot, "src", "subagents", "session.ts"));
-const {
-  appendLiveTextTail,
-  promptSession,
-  LIVE_UPDATE_THROTTLE_MS,
-  MAX_LIVE_TEXT,
-} = __testables;
-
-function wait(ms) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
-}
+const { promptSession } = __testables;
 
 function makeDetails(artifactsDir, overrides = {}) {
   const id = `subagent_${randomUUID()}`;
   return {
     version: 3,
     id,
-    mode: "fg",
+    mode: "bg",
     artifactsDir,
     sessionFile: join(artifactsDir, "session.jsonl"),
     sessionId: randomUUID(),
@@ -78,26 +69,15 @@ function createSession(script) {
 }
 
 {
-  assert.equal(appendLiveTextTail("Hello ", "world"), "Hello world");
-  assert.equal(appendLiveTextTail("line\n", "  indented "), "line\n  indented ");
-  const unicode = appendLiveTextTail("😀".repeat(MAX_LIVE_TEXT), "终");
-  assert.equal(Array.from(unicode).length, MAX_LIVE_TEXT);
-  assert.ok(unicode.endsWith("终"));
-  assert.equal(unicode.includes("�"), false);
-}
-
-{
+  // The background lifecycle consumes per-event detail snapshots: tool calls
+  // publish immediately with the sanitized timeline entry, and the terminal
+  // result carries the completed assistant text.
   const artifactsDir = mkdtempSync(join(tmpdir(), "pi-square-subagent-stream-"));
   const details = makeDetails(artifactsDir);
   const updates = [];
-  const burstMarker = "TAIL-终-😀";
   const session = createSession(async (emit, current) => {
     emit({ type: "agent_start" });
-    emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Hello " } });
-    emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed " } });
-    emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "world" } });
-    await wait(LIVE_UPDATE_THROTTLE_MS + 30);
-
+    emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed but not observed" } });
     emit({ type: "tool_execution_start", toolName: "grep", args: { pattern: "needle", path: "." } });
     emit({
       type: "tool_execution_end",
@@ -107,14 +87,6 @@ function createSession(script) {
     });
     emit({ type: "tool_execution_start", toolName: "pdf_search", args: { query: "installation guide", path: "manual.pdf", secret: "private" } });
     emit({ type: "tool_execution_end", toolName: "pdf_search", isError: false, result: { content: [{ type: "text", text: "SECRET SEARCH RESULT" }] } });
-
-    const burstStart = updates.length;
-    for (let index = 0; index < 20; index += 1) {
-      emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "😀".repeat(120) } });
-    }
-    emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: burstMarker } });
-    await wait(LIVE_UPDATE_THROTTLE_MS + 30);
-    assert.ok(updates.length - burstStart <= 2, `expected throttled burst, received ${updates.length - burstStart} updates`);
 
     const message = {
       role: "assistant",
@@ -133,20 +105,13 @@ function createSession(script) {
     prompt: "test prompt",
     details,
     definitionName: "worker",
-    onUpdate(partial) {
-      updates.push({ at: Date.now(), partial });
+    onUpdate(published) {
+      updates.push({ at: Date.now(), details: published });
     },
   });
 
-  const streamed = updates.find(({ partial }) => partial.details.liveText === "Hello streamed world");
-  assert.ok(streamed, "whitespace-preserving live update should be published");
-  const tailed = updates.find(({ partial }) => partial.details.liveText.endsWith(burstMarker));
-  assert.ok(tailed, "latest Unicode tail should remain visible");
-  assert.ok(Array.from(tailed.partial.details.liveText).length <= MAX_LIVE_TEXT);
-  assert.equal(tailed.partial.details.liveText.includes("�"), false);
-
-  const toolStart = updates.find(({ partial }) => partial.details.timeline.some((item) => item.kind === "tool" && item.phase === "start"));
-  const toolEnd = updates.find(({ partial }) => partial.details.timeline.some((item) => item.kind === "tool" && item.phase === "end"));
+  const toolStart = updates.find(({ details: published }) => published.timeline.some((item) => item.kind === "tool" && item.phase === "start"));
+  const toolEnd = updates.find(({ details: published }) => published.timeline.some((item) => item.kind === "tool" && item.phase === "end"));
   assert.ok(toolStart, "tool start should publish immediately");
   assert.ok(toolEnd, "tool end should publish immediately");
 
@@ -157,18 +122,14 @@ function createSession(script) {
     "pdf_search installation guide in manual.pdf",
   ]);
   assert.doesNotMatch(toolStarts.join("\n"), /password|token|private|SECRET/);
-  assert.equal(returned.details.liveText, "");
   assert.equal(returned.details.finalText, "# Final\n\nComplete answer.");
-  assert.equal(returned.content, `ID: ${details.id}\n\n# Final\n\nComplete answer.`);
+  // Each published snapshot is a detached clone, so the job mirror never
+  // mutates together with the still-running record.
+  assert.notEqual(toolStart.details.timeline, returned.details.timeline);
 
   const persisted = JSON.parse(readFileSync(join(artifactsDir, "run.json"), "utf8"));
   assert.equal(persisted.phase, "done");
-  assert.equal(persisted.liveText, "");
   assert.equal(persisted.finalText, "# Final\n\nComplete answer.");
-
-  const finalUpdateCount = updates.length;
-  await wait(LIVE_UPDATE_THROTTLE_MS + 30);
-  assert.equal(updates.length, finalUpdateCount, "no delayed partial update may follow the terminal result");
   rmSync(artifactsDir, { recursive: true, force: true });
 }
 
@@ -177,7 +138,7 @@ function createSession(script) {
   const details = makeDetails(artifactsDir);
   const updates = [];
   const session = createSession(async (emit) => {
-    emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "late partial" } });
+    emit({ type: "agent_start" });
     throw new Error("controlled session failure");
   });
 
@@ -185,13 +146,11 @@ function createSession(script) {
     session,
     prompt: "test failure",
     details,
-    onUpdate(partial) { updates.push(partial); },
+    onUpdate(published) { updates.push(published); },
   });
   assert.equal(returned.details.phase, "error");
-  assert.equal(returned.details.liveText, "");
-  const count = updates.length;
-  await wait(LIVE_UPDATE_THROTTLE_MS + 30);
-  assert.equal(updates.length, count, "error cleanup must cancel delayed updates");
+  assert.match(returned.details.error, /controlled session failure/);
+  assert.ok(updates.length >= 1, "progress before the failure was published");
   rmSync(artifactsDir, { recursive: true, force: true });
 }
 
@@ -218,4 +177,4 @@ function createSession(script) {
   rmSync(artifactsDir, { recursive: true, force: true });
 }
 
-console.log("subagent live streaming: bounded, throttled, and terminal-safe");
+console.log("subagent background detail mirroring: event-bounded and terminal-safe");

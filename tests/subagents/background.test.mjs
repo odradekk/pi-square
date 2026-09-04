@@ -182,8 +182,8 @@ test("running, partial, and final transitions preserve one id", async () => {
   observed.reset();
   const pi = createPiStub();
   setRunSubagentTaskMock(async (input) => {
-    input.onUpdate({ content: [{ type: "text", text: "partial" }], details: details("running", { liveText: "partial" }) });
-    return { content: "ACK", details: details("done", { endedAt: 20, durationMs: 10 }) };
+    input.onUpdate(details("running"));
+    return { details: details("done", { endedAt: 20, durationMs: 10 }) };
   });
 
   const contextMessages = [{ role: "user", text: "parent context" }];
@@ -192,7 +192,6 @@ test("running, partial, and final transitions preserve one id", async () => {
   // running, partial, final, and one change for the pending delivery set.
   assert.equal(observed.changes(), 4);
   assert.equal(getRunSubagentTaskCalls()[0].id, ID);
-  assert.equal(getRunSubagentTaskCalls()[0].mode, "bg");
   assert.deepEqual(getRunSubagentTaskCalls()[0].contextMessages, contextMessages);
   assert.equal(job.details.id, ID);
   assertCompletion(pi, "done");
@@ -201,7 +200,7 @@ test("running, partial, and final transitions preserve one id", async () => {
 test("manager resumes use the cancellable background lifecycle and frozen snapshot", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
-  const persisted = details("done", { mode: "fg", finalText: "first", promptSnapshot: createPromptSnapshot() });
+  const persisted = details("done", { finalText: "first", promptSnapshot: createPromptSnapshot() });
   const job = createQueuedResumeJob({
     state: observed.state,
     details: persisted,
@@ -212,8 +211,8 @@ test("manager resumes use the cancellable background lifecycle and frozen snapsh
   setRunSubagentTaskMock(async (input) => {
     assert.equal(input.id, ID);
     assert.equal(input.task, "continue");
-    input.onUpdate({ content: [{ type: "text", text: "partial" }], details: details("running", { mode: "resume", promptSnapshot: persisted.promptSnapshot }) });
-    return { status: "completed", content: "continued", details: details("done", { mode: "resume", finalText: "continued", promptSnapshot: persisted.promptSnapshot }) };
+    input.onUpdate(details("running", { mode: "resume", promptSnapshot: persisted.promptSnapshot }));
+    return { details: details("done", { mode: "resume", finalText: "continued", promptSnapshot: persisted.promptSnapshot }) };
   });
 
   startBackgroundResumeJob({ pi: pi.api, state: observed.state, job, ctx: {}, task: "continue", parentSessionId: "parent-session" });

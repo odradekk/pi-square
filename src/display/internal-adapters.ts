@@ -21,8 +21,8 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
-  delegate: ["agent", "mode", "task", "cwd", "model", "thinkingLevel", "context"],
-  resume: ["id", "task", "context"],
+  delegate_subagent: ["agent", "task", "cwd", "model", "thinkingLevel", "context"],
+  resume_subagent: ["id", "task", "context"],
 });
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -31,7 +31,7 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
   docs: ["libraryId"], parse: ["path"], replace: ["path"],
   ask: [], todo: ["action"],
-  delegate: ["agent"], resume: ["id"],
+  delegate_subagent: ["agent"], resume_subagent: ["id"],
 });
 
 /** C1 sentence-case titles; unique within each family (`grep` is `Text search`). */
@@ -41,7 +41,7 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", replace: "Replace",
   ask: "Questions", todo: "Tasks",
-  delegate: "Subagent", resume: "Resume subagent",
+  delegate_subagent: "Subagent", resume_subagent: "Resume subagent",
 });
 
 /** Target fields that hold a local filesystem path and follow C2. */
@@ -94,7 +94,7 @@ function metadataForArgs(name: string, args: unknown): DisplayMetadataEntry[] {
     if (!Object.hasOwn(source, key) || source[key] === undefined) return [];
     if (name === "ssh" && key === "prompt") return [{ label: key, value: "secure input requested", tone: "warning" as const }];
     if ((name === "bash" || name === "pwsh") && key === "command") return [];
-    if ((name === "delegate" || name === "resume") && key === "task") return [];
+    if ((name === "delegate_subagent" || name === "resume_subagent") && key === "task") return [];
     if (name === "ask" && key === "questions") {
       return [{ label: "questions", value: String(Array.isArray(source[key]) ? source[key].length : 0) }];
     }
@@ -121,7 +121,7 @@ function targetFor(name: string, args: unknown, cwd: string): { value?: string; 
 function callPreview(name: string, args: unknown): string | undefined {
   const source = record(args);
   if ((name === "bash" || name === "pwsh") && typeof source.command === "string") return source.command;
-  if ((name === "delegate" || name === "resume") && typeof source.task === "string") return source.task;
+  if ((name === "delegate_subagent" || name === "resume_subagent") && typeof source.task === "string") return source.task;
   return undefined;
 }
 

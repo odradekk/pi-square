@@ -22,7 +22,7 @@ function formatSubagentCatalog(state: SubagentRuntimeState): string {
 
   const lines = [
     "## Available YAML-defined subagents",
-    "Use the delegate tool with agent: \"name\" when one of these specialized child agents fits the task.",
+    "Use the delegate_subagent tool with agent: \"name\" when one of these specialized child agents fits the task.",
   ];
 
   for (const definition of definitions) {

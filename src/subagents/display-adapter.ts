@@ -23,28 +23,15 @@ function shortId(value: unknown): string | undefined {
   return suffix.slice(0, 8);
 }
 
-/** Derive an explicit lifecycle + qualifiers from phase, partial, and isError. */
+/** Derive an explicit lifecycle + qualifiers from phase and isError. */
 function subagentLifecycle(
   details: Record<string, unknown>,
-  partial: boolean,
   isError: boolean,
-  phase: "call" | "result",
 ): { lifecycle: OperationalLifecycle; qualifiers: OperationalQualifier[] } {
-  if (phase === "call") {
-    return { lifecycle: "pending", qualifiers: [] };
-  }
   const detailPhase = String(details.phase ?? "").toLowerCase();
   const qualifiers: OperationalQualifier[] = [];
 
-  if (partial) {
-    const partialQualifiers: OperationalQualifier[] = ["partial"];
-    if (typeof details.retries === "number" && details.retries > 0) {
-      partialQualifiers.push("retrying");
-    }
-    return { lifecycle: "running", qualifiers: partialQualifiers };
-  }
-
-  // Background running without partial → queued
+  // A running background record is the queued tool outcome.
   if (detailPhase === "running" && details.mode === "bg") {
     return { lifecycle: "queued", qualifiers };
   }
@@ -291,15 +278,14 @@ function subagentTarget(
 export function describeSubagentRun(
   name: string,
   run: SubagentRunDetails,
-  options: { expanded: boolean; isPartial: boolean; isError: boolean },
+  options: { expanded: boolean; isError: boolean },
   fallbackText: string,
   args: Record<string, unknown> = {},
 ): DisplayDescriptionV1 {
   const details = run as unknown as Record<string, unknown>;
-  const live = String(run.liveText || run.finalText || fallbackText || "").trim();
-  const lc = subagentLifecycle(details, options.isPartial, options.isError, "result");
-  // Also accept the retired name so persisted records from before the rename still render.
-  const isResume = name === "resume" || name === "subagent_resume";
+  const live = String(run.finalText || fallbackText || "").trim();
+  const lc = subagentLifecycle(details, options.isError);
+  const isResume = name === "resume_subagent";
   const summary = subagentSummary(details, lc.lifecycle);
   const qualifiers: OperationalQualifier[] = [...lc.qualifiers];
   if (Array.isArray(details.toolErrors) && details.toolErrors.length > 0 && !qualifiers.includes("warning")) {
@@ -318,16 +304,10 @@ export function describeSubagentRun(
     : undefined;
   const effectiveSummary = queuedMessage ?? summary;
 
-  // Rows for non-terminal states (running, queued) render only when expanded.
+  // Rows for the queued state render only when expanded.
   const rows: DisplayRow[] = [];
-  if (!isTerminal) {
-    if (lc.lifecycle === "queued" && run.mode === "bg") {
-      rows.push({ text: "Queued in the parent session", tone: "muted" as DisplayTone });
-    } else if (live) {
-      for (const line of tailLines(live, 5).text.split("\n")) {
-        rows.push({ text: line, tone: options.isError ? ("error" as DisplayTone) : undefined });
-      }
-    }
+  if (!isTerminal && lc.lifecycle === "queued" && run.mode === "bg") {
+    rows.push({ text: "Queued in the parent session", tone: "muted" as DisplayTone });
   }
 
   // Collapsed result preview (compact sections render in collapsed mode).
@@ -352,7 +332,7 @@ export function describeSubagentRun(
     }
     expandedSections.push(...[
       taskSection(details),
-      resultSection(options.isPartial ? "Live" : "Result", live),
+      resultSection("Result", live),
       activitySection(run.timeline),
       refusalSection(details),
       issueSection(details),
@@ -384,8 +364,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
     describeCall(argsValue, context) {
       const args = record(argsValue);
       const task = typeof args.task === "string" ? args.task : undefined;
-      // Also accept the retired name so persisted records from before the rename still render.
-      const isResume = name === "resume" || name === "subagent_resume";
+      const isResume = name === "resume_subagent";
       const id = shortId(args.id);
       const agentName = typeof args.agent === "string" && args.agent ? args.agent : undefined;
 
@@ -397,7 +376,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
         target = agentName ?? id;
       }
 
-      // Call rows: task preview + mode/context info
+      // Call rows: task preview + context info
       const rows: DisplayRow[] = [];
       if (task) {
         rows.push({ text: task });
@@ -405,12 +384,13 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       if (isResume) {
         rows.push({ text: "frozen model and effort", tone: "muted" as DisplayTone });
       } else {
-        const mode = typeof args.mode === "string" ? args.mode : "fg";
         const contextCount = typeof args.context === "number" ? args.context : undefined;
         const contextStr = contextCount !== undefined
           ? `${contextCount} ${contextCount === 1 ? "context message" : "context messages"}`
           : undefined;
-        rows.push({ text: [mode, contextStr].filter(Boolean).join(" · "), tone: "muted" as DisplayTone });
+        if (contextStr) {
+          rows.push({ text: contextStr, tone: "muted" as DisplayTone });
+        }
       }
 
       return {
@@ -430,9 +410,8 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       const text = textResult(result);
       const isRun = details.version === 3 && Array.isArray(details.timeline);
       if (!isRun) {
-        // Also accept the retired name so persisted records from before the rename still render.
-        const isResume = name === "resume" || name === "subagent_resume";
-        const lc = subagentLifecycle(details, options.isPartial, context.isError, "result");
+        const isResume = name === "resume_subagent";
+        const lc = subagentLifecycle(details, context.isError);
         const summary = subagentSummary(details, lc.lifecycle);
         return {
           version: 1,
@@ -453,7 +432,7 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
       return describeSubagentRun(
         name,
         details as unknown as SubagentRunDetails,
-        { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError },
+        { expanded: options.expanded, isError: context.isError },
         text,
         args,
       );

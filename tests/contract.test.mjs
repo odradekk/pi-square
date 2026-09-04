@@ -57,8 +57,8 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "delegate", "docs", "fetch",
-    "libs", "parse", "pdf_search", "resume", "search",
+    "ask", "delegate_subagent", "docs", "fetch",
+    "libs", "parse", "pdf_search", "resume_subagent", "search",
     "ssh", "todo",
   ]);
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
@@ -84,27 +84,23 @@ try {
   assert.equal(askTool?.parameters?.properties?.questions?.maxItems, 10);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.allowComment?.default, false);
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
-  const delegateTool = tools.get("delegate");
-  const resumeTool = tools.get("resume");
-  // Old subagent tool names must be absent after consolidation.
-  assert.equal(tools.get("subagent_delegate"), undefined);
-  assert.equal(tools.get("subagent_resume"), undefined);
+  const delegateTool = tools.get("delegate_subagent");
+  const resumeTool = tools.get("resume_subagent");
   for (const subagentTool of [delegateTool, resumeTool]) {
     assert.equal(typeof subagentTool?.renderCall, "function");
     assert.equal(typeof subagentTool?.renderResult, "function");
     assert.equal(subagentTool?.renderShell, "self");
   }
   // Provider-compatibility contract: both subagent schemas are strict top-level
-  // objects without unions; delegate must not declare id (GPT models populate
-  // every declared property, which the fg/bg validation rejected).
+  // objects without unions; delegate_subagent must not declare id (GPT models
+  // populate every declared property, which the validation would reject).
   for (const schema of [delegateTool?.parameters, resumeTool?.parameters]) {
     assert.equal(schema?.type, "object");
     assert.equal(schema?.anyOf, undefined);
     assert.equal(schema?.additionalProperties, false);
   }
-  assert.deepEqual(delegateTool?.parameters?.required, ["mode", "task"]);
+  assert.deepEqual(delegateTool?.parameters?.required, ["task"]);
   assert.equal(delegateTool?.parameters?.properties?.id, undefined);
-  assert.deepEqual(delegateTool?.parameters?.properties?.mode?.anyOf?.map((branch) => branch.const), ["fg", "bg"]);
   assert.deepEqual(resumeTool?.parameters?.required, ["id", "task"]);
   assert.equal(typeof renderers.get("pi-square.subagent-notification"), "function");
   assert.equal(typeof renderers.get("pi-square.subagent-config-guide"), "function");
@@ -159,7 +155,7 @@ try {
     "pdf_search", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
-    "ask", "todo", "delegate", "resume",
+    "ask", "todo", "delegate_subagent", "resume_subagent",
   ]) {
     const tool = tools.get(name);
     assert.equal(tool?.renderShell, "self", `${name} parent tool must use the shared display shell`);

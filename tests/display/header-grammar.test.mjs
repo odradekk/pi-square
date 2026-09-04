@@ -115,8 +115,8 @@ const EXPECTED_TITLES = {
   ask: "Questions",
   submit_memory: "Memory submit",
   read_memory_source: "Memory source",
-  delegate: "Subagent",
-  resume: "Resume",
+  delegate_subagent: "Subagent",
+  resume_subagent: "Resume subagent",
 };
 
 // ─── C1: every catalog tool renders a sentence-case title ───────────
@@ -522,7 +522,7 @@ const EXPECTED_TITLES = {
       qualifiers: ["truncated"], durationMs: 1250, rows: [{ text: "60 lines" }], truncated: true,
     },
     {
-      version: 1, tool: "delegate", family: "agent", lifecycle: "running",
+      version: 1, tool: "delegate_subagent", family: "agent", lifecycle: "running",
       title: "Subagent", target: "explorer", qualifiers: ["cancelling", "partial"], durationMs: 4000,
     },
   ];

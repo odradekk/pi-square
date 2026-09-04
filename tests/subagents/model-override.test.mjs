@@ -116,7 +116,7 @@ function definition(overrides = {}) {
 }
 
 function freshInput(overrides = {}) {
-  return { ctx: ctx(), id: nextId(), mode: "fg", task: "task", thinkingLevel: "medium", definition: definition(), ...overrides };
+  return { ctx: ctx(), id: nextId(), task: "task", thinkingLevel: "medium", definition: definition(), ...overrides };
 }
 
 function lastCall() {
@@ -164,18 +164,6 @@ test("child layers immutable governance before the parent SYSTEM core and expose
   assert.match(system, /^You are a delegated Pi subagent/);
   assert.match(system, /<parent_system_core>\nPARENT SYSTEM\n\nPARENT APPEND\n<\/parent_system_core>/);
   assert.deepEqual(lastCall().resourceLoader.getAgentsFiles().agentsFiles, sdkState.agentsFiles);
-});
-
-test("V2 policy layers after the parent core and before call-specific policy", async () => {
-  reset();
-  await runSubagentTask(freshInput({
-    inheritedSystemCore: "PARENT SYSTEM",
-    systemPrompt: "CALL-SPECIFIC POLICY",
-    definition: definition({ policy: "PROFILE POLICY" }),
-  }));
-  const system = lastCall().resourceLoader.getSystemPrompt();
-  assert.ok(system.indexOf("PARENT SYSTEM") < system.indexOf("PROFILE POLICY"));
-  assert.ok(system.indexOf("PROFILE POLICY") < system.indexOf("CALL-SPECIFIC POLICY"));
 });
 
 test("fresh sessions resolve and persist the portable shell capability", async () => {
