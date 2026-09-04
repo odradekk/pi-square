@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension vendors a hash-anchored editing implementation and exact semantic-code-intelligence, PDF-processing, SSH, and related native runtime dependencies. It vendors no prebuilt executables: the retired `rg` and `fd` binaries were removed in 11.0, and local search now uses Pi's own built-in tools.
+This extension vendors a hash-anchored editing implementation and exact PDF-processing, SSH, and related native runtime dependencies. It vendors no prebuilt executables: the retired `rg` and `fd` binaries were removed in 11.0, and local search now uses Pi's own built-in tools.
 
 ## Included Software
 

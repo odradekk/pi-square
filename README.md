@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text, file, and structural code search, persistent SSH shells, web, PDF, and documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
+`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text and file search, persistent SSH shells, web, PDF, and documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
 
 ## Installation
 

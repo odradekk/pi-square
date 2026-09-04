@@ -129,7 +129,7 @@ removes the majority of the individual defects that the tool documents list.
 | Raw timestamps and full hashes | `libs` | Relative time and short SHA |
 | Content that is not what it claims to be | `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
 
-Two defects are correctness defects rather than presentation defects:
+One defect is a correctness defect rather than a presentation defect:
 
 1. `delegate`/`resume` parse each end-phase timeline entry into a malformed activity
    row such as `read:  working`.

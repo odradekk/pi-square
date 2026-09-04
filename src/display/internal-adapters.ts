@@ -130,7 +130,8 @@ function callPreview(name: string, args: unknown): string | undefined {
  * `truncated` flag, a truncation detail object (content budgets), a
  * truncated output or stderr stream, a paged result with more entries
  * available, and over-long truncated lines. Any of them raises the
- * `truncated` header badge.
+ * `truncated` qualifier on the operational state; qualifiers refine the
+ * state and never render header badges.
  */
 function isBoundedResult(details: Record<string, unknown>): boolean {
   const truncation = record(details.truncation);

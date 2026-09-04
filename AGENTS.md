@@ -4,7 +4,7 @@
 
 - **Name:** `pi-square` (pi-squared).
 - **Language:** TypeScript using ECMAScript modules. Tests and supporting scripts also use JavaScript ESM.
-- **Purpose:** A unified local extension package for the Pi coding agent. It provides prompt management, interactive and session tools, local text, file, and structural code search, persistent SSH shells, web, PDF, and documentation tools, subagents, TUI customizations, PowerShell execution, and themes.
+- **Purpose:** A unified local extension package for the Pi coding agent. It provides prompt management, interactive and session tools, local text and file search, persistent SSH shells, web, PDF, and documentation tools, subagents, TUI customizations, PowerShell execution, and themes.
 - **Built on:** Node.js 24, Pi 0.84.2, the Pi extension API, Pi TUI and AI packages, and TypeBox. The public npm package is loaded by Pi directly from `src/index.ts`.
 
 ## Architecture
