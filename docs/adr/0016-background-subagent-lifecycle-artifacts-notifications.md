@@ -125,9 +125,13 @@ aborted-result policy.
   aborted entry makes the tool result an error without discarding completed
   siblings. The versioned wait details state the ordered IDs, each terminal
   state, and the explicit pending-result consumption, and each entry is an
-  explicitly bounded projection — identity, terminal outcome, a 300-character
-  task line, and 4,000-character head/tail-clipped result or error evidence —
-  never the full run record.
+  explicitly bounded projection: format-bounded identifiers (the public ID,
+  the operation, the terminal status), a 300-character task line, and
+  4,000-character head/tail-clipped result or error evidence. Every string in
+  the projection is bounded by one of those rules — the agent name and the
+  model string are omitted precisely because neither has a source-side
+  length limit, and the full run record with its prompt snapshot, session
+  paths, and unbounded texts never enters.
 - Interrupting the wait releases its claims without aborting any child.
   Released completed and failed results rejoin the automatic delivery
   schedule; released aborted results are removed from delivery storage, and

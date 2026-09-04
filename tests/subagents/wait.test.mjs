@@ -482,6 +482,34 @@ test("wait details carry a bounded projection, never the full run record", async
   assert.ok(result.content[0].text.length > summary.result.length);
 });
 
+test("an oversized agent name and model string never enter the wait details", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1);
+  probe.finish(1, "completed", { finalText: "bounded output" });
+  const job = probe.state.background.jobs.get(id(1));
+  // Neither field has a length limit at its source: the definition name has a
+  // format check only, and the model is an arbitrary override string.
+  job.details.agent = { promptVersion: 2, name: `A-${"a".repeat(6_000)}`, inheritParentSystem: true };
+  job.details.model = `M-${"m".repeat(6_000)}`;
+
+  const result = await probe.waitTool.execute("call", { ids: [id(1)] }, undefined, undefined, probe.ctx);
+  assert.equal(result.isError, undefined);
+  const summary = result.details.results[0].run;
+  assert.equal(summary.agent, undefined, "the agent name is omitted from the projection");
+  assert.equal(summary.model, undefined, "the model string is omitted from the projection");
+
+  // Every string in the structured details is bounded: none carries any
+  // meaningful slice of the oversized values.
+  const serialized = JSON.stringify(result.details);
+  assert.ok(!serialized.includes("a".repeat(64)), "no unbounded agent-name slice leaks into details");
+  assert.ok(!serialized.includes("m".repeat(64)), "no unbounded model slice leaks into details");
+  for (const [field, value] of Object.entries(summary)) {
+    if (typeof value === "string") {
+      assert.ok(value.length <= 4_100, `the ${field} string stays inside the wait budgets: ${value.length}`);
+    }
+  }
+});
+
 // ─── History deletion while waiting (manager delete-history path) ────
 
 test("deleting a claimed run's history ends the wait deterministically without touching a later claim", async () => {

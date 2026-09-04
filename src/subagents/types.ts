@@ -218,17 +218,17 @@ export type SubagentResultStatus = "completed" | "failed" | "aborted";
 /**
  * The bounded per-run projection a wait result carries: the identity, the
  * terminal outcome, and bounded task/result/error evidence. The full V4 run
- * record never enters wait details — its prompt snapshot, session paths, and
- * unbounded texts stay out, and every string is clipped to an explicit wait
- * budget (odradekk/pi-square#277).
+ * record never enters wait details — its prompt snapshot, session paths,
+ * unbounded texts, agent name, and model string stay out, and every string
+ * in the projection is either a format-bounded identifier (the public ID,
+ * the operation, the terminal status) or clipped to an explicit wait budget
+ * (odradekk/pi-square#277).
  */
 export interface SubagentWaitRunSummary {
   id: string;
   operation: SubagentOperation;
   status: SubagentResultStatus;
-  agent?: string;
   task: string;
-  model?: string;
   startedAt: number;
   endedAt?: number;
   durationMs?: number;

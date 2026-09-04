@@ -368,7 +368,6 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
     id: run.id,
     operation: "delegate",
     status,
-    agent: run.agent?.name,
     task: run.task,
     startedAt: run.startedAt,
     endedAt: run.endedAt,
