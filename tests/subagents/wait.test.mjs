@@ -248,7 +248,7 @@ test("an unsent pending result is claimed and returned immediately", async () =>
   assert.equal(result.details.consumed, true);
   assert.equal(typeof result.details.waitedMs, "number");
   assert.equal(result.details.results[0].status, "completed");
-  assert.equal(result.details.results[0].result.id, id(1));
+  assert.equal(result.details.results[0].run.id, id(1));
   assert.equal(probe.delivery.pendingCount(), 0, "the consumed result left the pending set");
   assert.equal(probe.sent.length, 0, "the consumed result was never auto-delivered");
 });
@@ -409,6 +409,113 @@ test("session replacement terminates outstanding waits and clears claims", async
   assert.match(result.content[0].text, /terminated by the parent session/);
   assert.equal(probe.delivery.isClaimed(id(1)), false);
   assert.equal(probe.delivery.pendingCount(), 0);
+});
+
+// ─── Parent-session isolation ────────────────────────────────────────
+
+test("a job carried from another parent session is foreign and rejected", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1, { parentSessionId: "earlier-parent-session" });
+
+  const result = await probe.waitTool.execute("call", { ids: [id(1)] }, undefined, undefined, probe.ctx);
+  assert.equal(result.isError, true);
+  assert.equal(result.details.error.code, "SUBAGENT_NOT_FOUND");
+  assert.match(result.content[0].text, /belongs to another parent session/);
+  assert.equal(probe.delivery.isClaimed(id(1)), false);
+});
+
+test("after a session replacement the previous session's jobs are not waitable", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1); // queued under PARENT_SESSION
+
+  // The session lifecycle on replacement: outstanding waits terminate, the
+  // pending set and claims clear, and the background jobs keep running.
+  probe.registry.terminateAll("session replaced");
+  probe.delivery.reset();
+
+  const replaced = await probe.waitTool.execute("call", { ids: [id(1)] }, undefined, undefined, {
+    ...probe.ctx,
+    sessionManager: { getSessionId: () => "new-parent-session", getBranch: () => [] },
+  });
+  assert.equal(replaced.isError, true);
+  assert.equal(replaced.details.error.code, "SUBAGENT_NOT_FOUND");
+  assert.match(replaced.content[0].text, /belongs to another parent session/);
+});
+
+test("a wait without a stable parent session ID fails before claiming", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1);
+  const result = await probe.waitTool.execute("call", { ids: [id(1)] }, undefined, undefined, {
+    ...probe.ctx,
+    sessionManager: { getSessionId: () => "", getBranch: () => [] },
+  });
+  assert.equal(result.isError, true);
+  assert.equal(result.details.error.code, "PERSISTENCE_FAILED");
+  assert.equal(probe.delivery.isClaimed(id(1)), false);
+});
+
+// ─── Bounded wait details ────────────────────────────────────────────
+
+test("wait details carry a bounded projection, never the full run record", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1);
+  const oversizedText = `HEAD-EVIDENCE-${"x".repeat(20_000)}-TAIL-EVIDENCE`;
+  const oversizedTask = "t".repeat(2_000);
+  probe.finish(1, "completed", { finalText: oversizedText });
+  // The stored pending entry references the same details object, so the
+  // oversized task reaches the projection path exactly like a real run's.
+  probe.state.background.jobs.get(id(1)).details.task = oversizedTask;
+
+  const result = await probe.waitTool.execute("call", { ids: [id(1)] }, undefined, undefined, probe.ctx);
+  assert.equal(result.isError, undefined);
+  const summary = result.details.results[0].run;
+  assert.ok(summary.result.length <= 4_100, `evidence stays inside the wait budget: ${summary.result.length}`);
+  assert.match(summary.result, /HEAD-EVIDENCE/, "the head survives the clip");
+  assert.match(summary.result, /TAIL-EVIDENCE/, "the conclusion survives the clip");
+  assert.match(summary.result, /\[omitted /, "the clip is visible");
+  assert.ok(summary.task.length <= 300, "the task line is clipped");
+  assert.equal(summary.promptSnapshot, undefined, "the prompt snapshot never enters wait details");
+  assert.equal(summary.artifactsDir, undefined, "artifact paths never enter wait details");
+  assert.equal(summary.timeline, undefined, "the timeline never enters wait details");
+  // The model-facing content keeps the established 24,000-character budget,
+  // so it stays far larger than the bounded evidence projection.
+  assert.ok(result.content[0].text.length > summary.result.length);
+});
+
+// ─── History deletion while waiting (manager delete-history path) ────
+
+test("deleting a claimed run's history ends the wait deterministically without touching a later claim", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1);
+  probe.queue(2);
+
+  const pending = probe.waitTool.execute("call", { ids: [id(1), id(2)] }, undefined, undefined, probe.ctx);
+  await waitFor(() => probe.delivery.isClaimed(id(1)) && probe.delivery.isClaimed(id(2)), "claims registered");
+
+  // The manager delete-history action on a claimed active run: the persisted
+  // history goes and delivery.remove ends the reservation for the identity.
+  probe.delivery.remove(id(1));
+
+  const result = await pending;
+  assert.equal(result.isError, true);
+  assert.equal(result.details.error.code, "SESSION_HISTORY_UNAVAILABLE");
+  assert.match(result.content[0].text, /deleted while waiting/);
+  assert.equal(probe.delivery.isClaimed(id(2)), false, "the sibling claim was released, not left hanging");
+  assert.equal(probe.state.background.jobs.get(id(2)).status, "queued", "the sibling child was untouched");
+
+  // A later waiter may claim the freed identity; the old handle cannot
+  // consume or release the new owner's result.
+  probe.finish(2, "completed");
+  probe.queue(1);
+  const second = probe.waitTool.execute("call-2", { ids: [id(1)] }, undefined, undefined, probe.ctx);
+  await waitFor(() => probe.delivery.isClaimed(id(1)), "second claim registered");
+  probe.finish(1, "completed");
+  const secondResult = await second;
+  assert.equal(secondResult.isError, undefined, "the new owner consumes its own result");
+  // The released sibling's completed result rejoined the automatic schedule
+  // and stays pending for its delivery; the re-claimed identity was consumed.
+  assert.equal(probe.delivery.isPending(id(2)), true);
+  assert.equal(probe.delivery.isPending(id(1)), false);
 });
 
 // ─── Resume blocking ─────────────────────────────────────────────────

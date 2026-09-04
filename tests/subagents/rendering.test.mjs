@@ -364,18 +364,34 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
 
 // wait result description: ordered terminal evidence and aggregate summary
 {
+  const summary = (run, status, overrides = {}) => ({
+    id: run.id,
+    operation: "delegate",
+    status,
+    agent: run.agent?.name,
+    task: run.task,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    durationMs: run.durationMs,
+    result: status === "completed" ? run.finalText : "",
+    error: status === "completed" ? undefined : (run.error ?? `run ${status}`),
+    usage: run.usage,
+    toolErrors: 0,
+    toolWarnings: 0,
+    ...overrides,
+  });
   const one = details({ id: waitId("11111111"), task: "first task" });
-  const two = details({ id: waitId("22222222"), task: "second task", phase: "failed", finalText: "" });
-  const three = details({ id: waitId("33333333"), task: "third task", phase: "aborted", finalText: "" });
+  const two = details({ id: waitId("22222222"), task: "second task", phase: "failed", finalText: "", error: "RAW-FAILURE-TEXT" });
+  const three = details({ id: waitId("33333333"), task: "third task", phase: "aborted", finalText: "", error: "RAW-ABORT-TEXT" });
   const result = {
     content: [{ type: "text", text: "waited" }],
     details: {
       version: 1,
       ids: [waitId("22222222"), waitId("11111111"), waitId("33333333")],
       results: [
-        { id: waitId("22222222"), status: "failed", result: two },
-        { id: waitId("11111111"), status: "completed", result: one },
-        { id: waitId("33333333"), status: "aborted", result: three },
+        { id: waitId("22222222"), status: "failed", run: summary(two, "failed") },
+        { id: waitId("11111111"), status: "completed", run: summary(one, "completed") },
+        { id: waitId("33333333"), status: "aborted", run: summary(three, "aborted") },
       ],
       consumed: true,
       waitedMs: 2500,
@@ -388,16 +404,25 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
   assert.equal(collapsed.title, "Wait");
   assert.equal(collapsed.target, "3 runs");
   assert.equal(collapsed.summary, "completed · failed · aborted");
-  assert.deepEqual(collapsed.sections, [], "a collapsed wait entry is exactly one row");
+  assert.deepEqual(collapsed.sections, [], "a collapsed wait entry is exactly one row and shows no payload");
   assert.ok(collapsed.error.includes("2 of 3"));
 
   const expanded = waitAdapter.describeResult(result, { expanded: true }, { isError: true, args });
-  assert.equal(expanded.sections.length, 1);
-  assert.equal(expanded.sections[0].title, "Results");
+  // Ordered rows plus one bounded evidence section per run with payload.
+  assert.deepEqual(expanded.sections.map((section) => section.title), [
+    "Results",
+    "Error 22222222",
+    "Result 11111111",
+    "Error 33333333",
+  ]);
   const rows = expanded.sections[0].blocks;
   assert.deepEqual(rows.map((row) => row.tone), ["error", "default", "muted"]);
   assert.ok(rows[0].text.startsWith("22222222 · failed · second task"), rows[0].text);
   assert.ok(rows[1].text.startsWith("11111111 · completed · first task"), rows[1].text);
+  assert.equal(expanded.sections[1].blocks[0].text, "RAW-FAILURE-TEXT", "the failure raw text appears in its own Error section");
+  assert.equal(expanded.sections[1].blocks[0].tone, "error");
+  assert.equal(expanded.sections[2].blocks[0].text.includes("Unique expanded tail"), true, "the completed evidence carries the result text");
+  assert.equal(expanded.sections[3].blocks[0].text, "RAW-ABORT-TEXT");
   assert.equal(expanded.durationMs, 2500);
 
   const allGood = waitAdapter.describeResult(
@@ -406,7 +431,7 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
       details: {
         version: 1,
         ids: [waitId("11111111")],
-        results: [{ id: waitId("11111111"), status: "completed", result: one }],
+        results: [{ id: waitId("11111111"), status: "completed", run: summary(one, "completed") }],
         consumed: true,
         waitedMs: 10,
       },

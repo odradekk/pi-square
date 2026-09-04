@@ -116,7 +116,8 @@ const EXPECTED_TITLES = {
   submit_memory: "Memory submit",
   read_memory_source: "Memory source",
   delegate_subagent: "Subagent",
-  resume_subagent: "Resume subagent",
+  resume_subagent: "Resume",
+  wait_subagent: "Wait",
 };
 
 // ─── C1: every catalog tool renders a sentence-case title ───────────
@@ -137,7 +138,7 @@ const EXPECTED_TITLES = {
       };
     const decorated = BUILTIN_FACTORIES[entry.name]
       ? decorateBuiltinDefinition(definition, TMP, () => runtime)
-      : entry.name.startsWith("subagent_")
+      : entry.family === "agent"
         ? decorateSubagentTool(definition, () => runtime)
         : decorateInternalTool(definition, () => runtime);
     // Complete arguments, execution not started → a quiet fallback marker.
