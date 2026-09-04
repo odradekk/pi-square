@@ -58,6 +58,8 @@ interface ManagerSnapshot {
   activeSessionIds?: string[];
   /** Finished runs whose result the parent has not received yet. */
   undeliveredIds?: string[];
+  /** Runs whose result an explicit wait_subagent call currently owns. */
+  claimedIds?: string[];
   definitions: SubagentDefinition[];
   errors: string[];
 }
@@ -217,6 +219,7 @@ function snapshot(state: SubagentRuntimeState, parentSessionId: string): Manager
     session,
     activeSessionIds: session.filter((run) => isRunLeaseActive(run.id)).map((run) => run.id),
     undeliveredIds: state.background.delivery?.pendingIds() ?? [],
+    claimedIds: state.background.delivery?.pendingIds().filter((id) => state.background.delivery?.isClaimed(id)) ?? [],
     definitions: [...state.registry.definitions].sort((a, b) => a.name.localeCompare(b.name)),
     errors: [...state.registry.errors],
   };
@@ -282,7 +285,7 @@ function createProductionServices(
     cancel(id) {
       const job = state.background.jobs.get(id);
       if (!job) return { ok: false, message: `Background subagent '${id}' is no longer active.` };
-      cancelBackgroundJobs({ state: state.background, id, reason: "Canceled from /subagent manager." });
+      cancelBackgroundJobs({ pi, state: state.background, id, reason: "Canceled from /subagent manager." });
       return { ok: true, message: `Cancellation requested for ${job.details.agent?.name ?? "generic"} ${shortId(id)}.` };
     },
     queueResume(id, task) {
@@ -290,6 +293,21 @@ function createProductionServices(
       if (!details) return { ok: false, message: `Subagent '${id}' does not belong to the current session.` };
       if (isRunLeaseActive(id)) {
         return { ok: false, message: `Subagent '${id}' is active and cannot be resumed concurrently.` };
+      }
+      // An unconsumed prior result or an explicit wait claim blocks resume for
+      // the same reason the model tool rejects it: a new run under the same
+      // public ID would overwrite output the parent has not seen.
+      if (state.background.delivery?.isClaimed(id)) {
+        return {
+          ok: false,
+          message: `Subagent '${shortId(id)}' is claimed by an active wait_subagent call; wait for it to consume the result before resuming.`,
+        };
+      }
+      if (state.background.delivery?.isPending(id)) {
+        return {
+          ok: false,
+          message: `Subagent '${shortId(id)}' has an undelivered result; wait for the background completion delivery or consume it with wait_subagent before resuming.`,
+        };
       }
       const job = createQueuedResumeJob({ state: state.background, details, task, parentSessionId });
       startBackgroundResumeJob({
@@ -884,6 +902,16 @@ export class SubagentManager implements Component, Focusable {
       if (!run) return;
       if (this.runIsActive(run)) {
         this.flash = { kind: "error", text: `Subagent '${run.id}' is active and cannot be resumed concurrently.` };
+        this.tui.requestRender();
+        return;
+      }
+      if (this.data.claimedIds?.includes(run.id)) {
+        this.flash = { kind: "error", text: `Subagent ${shortId(run.id)} is claimed by an active wait_subagent call; let the wait consume the result first.` };
+        this.tui.requestRender();
+        return;
+      }
+      if (this.data.undeliveredIds?.includes(run.id)) {
+        this.flash = { kind: "error", text: `Subagent ${shortId(run.id)} has an undelivered result; consume it with wait_subagent or let it deliver.` };
         this.tui.requestRender();
         return;
       }
