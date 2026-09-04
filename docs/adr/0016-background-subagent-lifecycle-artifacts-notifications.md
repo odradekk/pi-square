@@ -100,23 +100,34 @@ aborted-result policy.
   deduplicates repeated IDs in first-occurrence order, and validates the
   complete request before any state change: one malformed, unknown, foreign,
   ineligible, already-claimed, or already-sent ID rejects the whole call.
-- Current-session queued, running, and cancelling jobs can be claimed before
-  completion; an unsent pending completed or failed result can be claimed and
-  returned immediately. A result already sent to Pi but not yet
-  transcript-confirmed cannot be withdrawn into a wait; a confirmed result and
-  a run that finished aborted before being claimed hold nothing to wait for.
+- Only runs of the current parent session are waitable — the boundary is the
+  parent session identity, so background jobs an earlier parent session left
+  in the process are as foreign as persisted records on disk. Current-session
+  queued, running, and cancelling jobs can be claimed before completion; an
+  unsent pending completed or failed result can be claimed and returned
+  immediately. A result already sent to Pi but not yet transcript-confirmed
+  cannot be withdrawn into a wait; a confirmed result and a run that finished
+  aborted before being claimed hold nothing to wait for.
 - Claimed results stay in the pending store but are excluded from automatic
   delivery and from pending-set eviction. Claims are all-or-nothing, at most
   one waiter owns one ID, and at most 50 reservations are held at once —
-  including reservations of active IDs whose results do not exist yet.
+  including reservations of active IDs whose results do not exist yet. The
+  pending set's 50-result bound stays total: claimed entries count toward it
+  but are never evicted, so an incoming unclaimed result is the one dropped
+  when every older entry is claimed. Deleting a run's history ends its
+  reservation as well; every claim operation is owner-checked, so the
+  previous holder wakes and ends deterministically and a stale handle can
+  never take or release a later waiter's claim on the same ID.
 - The waiter returns only after every claimed run reaches `completed`,
   `failed`, or `aborted`, takes the complete claimed set atomically, and
   returns every entry in requested-ID order. Output reuses the background
   delivery formatter and its budgets with no `(resent)` marker; a failed or
   aborted entry makes the tool result an error without discarding completed
-  siblings, and the versioned wait details state the ordered IDs, each
-  terminal state, the bounded run details, and the explicit pending-result
-  consumption.
+  siblings. The versioned wait details state the ordered IDs, each terminal
+  state, and the explicit pending-result consumption, and each entry is an
+  explicitly bounded projection — identity, terminal outcome, a 300-character
+  task line, and 4,000-character head/tail-clipped result or error evidence —
+  never the full run record.
 - Interrupting the wait releases its claims without aborting any child.
   Released completed and failed results rejoin the automatic delivery
   schedule; released aborted results are removed from delivery storage, and
