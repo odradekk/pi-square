@@ -227,6 +227,50 @@ assert.ok(abortedBackgrounds.includes("toolErrorBg"), "aborted notification uses
   assert.match(plainLines(fallback, 80).join("\n"), /Background subagent finished/);
 }
 
+// ─── 7b. A malformed V5 entry renders nothing ────────────────────────
+
+{
+  const valid = details({ id: "subagent_99999999-9999-4999-8999-999999999999" });
+  const malformed = renderSubagentNotification(
+    {
+      content: "one structured run and one malformed entry",
+      details: {
+        version: 5,
+        deliveryId: "delivery-6",
+        resent: false,
+        results: [
+          { id: "run-missing-status", result: details({ id: "subagent_88888888-8888-4888-8888-888888888888" }) },
+          { id: "run-non-v4-result", status: "completed", result: { ...valid, version: 3 } },
+          { id: "run-mismatched-id", status: "failed", result: valid },
+          { id: valid.id, status: "completed", result: valid },
+        ],
+      },
+    },
+    { expanded: false },
+    plainTheme,
+  );
+  const text = plainLines(malformed, 80).join("\n");
+  const renderedRuns = text.split("\n").filter((line) => /Subagent\s+explorer/.test(line));
+  assert.equal(renderedRuns.length, 1, "only the complete entry renders a run");
+  assert.match(renderedRuns[0], /✓ Subagent\s+explorer/, "the complete entry renders its own run");
+  assert.doesNotMatch(text, /88888888/, "a malformed entry renders no run of its own");
+  // With every entry malformed, the delivery falls back to the bounded content.
+  const allMalformed = renderSubagentNotification(
+    {
+      content: "only malformed entries",
+      details: {
+        version: 5,
+        deliveryId: "delivery-7",
+        resent: false,
+        results: [{ id: "run-no-result", status: "completed" }],
+      },
+    },
+    { expanded: false },
+    plainTheme,
+  );
+  assert.match(plainLines(allMalformed, 80).join("\n"), /only malformed entries/);
+}
+
 // ─── 8. Bounded in bundled themes at every boundary width ────────────
 
 for (const themeName of ["pi-square-theme-dark", "pi-square-theme-light"]) {

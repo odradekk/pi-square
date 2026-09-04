@@ -321,7 +321,7 @@ export function describeSubagentRun(
   // Expanded sections
   const expandedSections: DisplaySection[] = [];
   if (options.expanded) {
-    // Identity row: mode · model · effort
+    // Identity row: operation · model · effort
     const agent = record(details.agent);
     const identityParts: string[] = [];
     if (typeof details.operation === "string") identityParts.push(details.operation);

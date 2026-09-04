@@ -9,7 +9,8 @@
  * safe delivery timing, confirmation, resend, interruption suppression, and
  * send-failure retention — live in `confirmed-delivery.ts`; this module is the
  * Subagent adapter: it supplies the run identity, the V5 notification payload
- * and message construction, and the transcript confirmation parser.
+ * with its entry validation, the message construction, and the transcript
+ * confirmation parser.
  *
  * Scope is the current parent session. Nothing here persists across sessions.
  */
@@ -46,6 +47,52 @@ export interface SubagentDeliveryEntry {
   id: string;
   status: DeliverableStatus;
   details: SubagentRunDetails;
+}
+
+/** One fully validated result entry of a delivered V5 notification. */
+export interface ValidatedNotificationEntry {
+  id: string;
+  status: DeliverableStatus;
+  result: SubagentRunDetails;
+}
+
+/** Shape guard for a current V4 run record carried inside a payload. */
+export function isV4RunDetails(value: unknown): value is SubagentRunDetails {
+  const details = value as Partial<SubagentRunDetails> | undefined;
+  return details?.version === 4
+    && typeof details.id === "string"
+    && (details.operation === "delegate" || details.operation === "resume")
+    && (details.phase === "queued"
+      || details.phase === "running"
+      || details.phase === "cancelling"
+      || details.phase === "completed"
+      || details.phase === "failed"
+      || details.phase === "aborted");
+}
+
+function validatedEntry(value: unknown): ValidatedNotificationEntry | undefined {
+  const entry = value as { id?: unknown; status?: unknown; result?: unknown };
+  if (!entry || typeof entry !== "object") return undefined;
+  const id = typeof entry.id === "string" ? entry.id : "";
+  if (!id) return undefined;
+  if (entry.status !== "completed" && entry.status !== "failed") return undefined;
+  if (!isV4RunDetails(entry.result) || entry.result.id !== id) return undefined;
+  return { id, status: entry.status, result: entry.result };
+}
+
+/**
+ * Parses the current V5 notification payload into its fully validated result
+ * entries. A payload that is not V5, or whose results are not a list, yields
+ * undefined. An entry contributes only when it is complete — a current
+ * terminal status, a valid V4 run record, and an entry id that names that
+ * record — so a malformed entry can neither confirm nor render as a run.
+ */
+export function parseV5NotificationDetails(details: unknown): ValidatedNotificationEntry[] | undefined {
+  const payload = details as { version?: unknown; results?: unknown } | undefined;
+  if (payload?.version !== 5 || !Array.isArray(payload.results)) return undefined;
+  return payload.results
+    .map((entry) => validatedEntry(entry))
+    .filter((entry): entry is ValidatedNotificationEntry => entry !== undefined);
 }
 
 export interface DeliveryController {
@@ -133,16 +180,12 @@ export function buildDeliveryContent(results: SubagentDeliveryEntry[], resent: b
   return lines.join("\n");
 }
 
-/** Reads the run IDs carried by a delivered V5 notification. */
+/** Reads the run IDs carried by a delivered V5 notification. Only fully valid
+ * entries confirm, so a malformed payload never clears pending results. */
 export function notificationResultIds(message: unknown): string[] {
-  const candidate = message as { customType?: unknown; details?: { version?: unknown; results?: { id?: unknown }[] } } | undefined;
+  const candidate = message as { customType?: unknown; details?: unknown } | undefined;
   if (candidate?.customType !== SUBAGENT_NOTIFICATION_TYPE) return [];
-  if (candidate.details?.version !== 5) return [];
-  const results = candidate.details?.results;
-  if (!Array.isArray(results)) return [];
-  return results
-    .map((entry) => (typeof entry?.id === "string" ? entry.id : ""))
-    .filter((id): id is string => id.length > 0);
+  return parseV5NotificationDetails(candidate.details)?.map((entry) => entry.id) ?? [];
 }
 
 export function createDeliveryController(options: {

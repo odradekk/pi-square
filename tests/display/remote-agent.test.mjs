@@ -150,7 +150,7 @@ const webExpanded = webSearch.renderResult({
     queries: ["Pi coding agent GitHub repository"],
     failedQueries: [],
     count: 1,
-    phase: "completed",
+    phase: "done",
     totalBeforeDedup: 1,
     totalAfterDedup: 1,
     results: [{ title: "earendil-works/pi", url: "https://github.com/earendil-works/pi", description: "Pi agent toolkit", provenance: "[q1#1]" }],

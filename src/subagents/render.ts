@@ -2,8 +2,9 @@
  * Background subagent completion messages.
  *
  * The completion message is the deliberate native-shell exception: Pi owns the
- * success/error message shell, while the bounded result inside it uses the same
- * canonical operational description as the `delegate_subagent` transcript entry.
+ * success/error message shell, while the bounded result inside it reuses the
+ * canonical operational description of the run's own transcript entry —
+ * `delegate_subagent` for a fresh run, `resume_subagent` for a resumed one.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -11,8 +12,9 @@ import { Box, Spacer, Text, truncateToWidth, type Component } from "@earendil-wo
 import { OperationalDisplayComponent } from "../display/components";
 import { DEFAULT_DISPLAY_POLICY } from "../display/types";
 import { sanitizeSubagentDisplay } from "./display";
+import { parseV5NotificationDetails } from "./delivery";
 import { describeSubagentRun } from "./display-adapter";
-import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
+import type { SubagentNotificationDetails } from "./types";
 
 export { sanitizeSubagentDisplay } from "./display";
 
@@ -26,38 +28,14 @@ class OneVisualLine implements Component {
   invalidate(): void {}
 }
 
-function isRunDetails(value: unknown): value is SubagentRunDetails {
-  const details = value as Partial<SubagentRunDetails> | undefined;
-  return details?.version === 4
-    && typeof details.id === "string"
-    && (details.operation === "delegate" || details.operation === "resume")
-    && (details.phase === "queued"
-      || details.phase === "running"
-      || details.phase === "cancelling"
-      || details.phase === "completed"
-      || details.phase === "failed"
-      || details.phase === "aborted");
-}
-
-interface NotificationEntry {
-  status: "completed" | "failed";
-  result: SubagentRunDetails;
-}
-
-/** Reads the runs of one completion message; only V5 payloads are current. */
-function notificationEntries(details: SubagentNotificationDetails | undefined): NotificationEntry[] {
-  if (!details || details.version !== 5 || !Array.isArray(details.results)) return [];
-  return details.results
-    .filter((entry) => isRunDetails(entry?.result))
-    .map((entry) => ({ status: entry.status, result: entry.result }));
-}
-
 export function renderSubagentNotification(
   message: { content?: unknown; details?: SubagentNotificationDetails },
   options: { expanded: boolean },
   theme: Theme,
 ): Component {
-  const entries = notificationEntries(message.details);
+  // Malformed entries are rejected by the shared V5 payload parser, so a
+  // corrupted entry neither renders as a run nor confirms on delivery.
+  const entries = parseV5NotificationDetails(message.details) ?? [];
   const error = entries.some((entry) => (
     entry.status === "failed"
     || entry.result.phase === "failed"

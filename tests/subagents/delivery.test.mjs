@@ -267,22 +267,63 @@ test("a session reset clears every pending result", () => {
 
 // ─── Confirmation payloads ───────────────────────────────────────────
 
-test("confirmation reads V5 payloads and ignores foreign messages", () => {
+function v5Payload(entries) {
+  return { version: 5, deliveryId: "delivery-9", resent: false, results: entries };
+}
+
+function v5Entry(id, overrides = {}) {
+  return {
+    id,
+    status: "completed",
+    result: runDetails(id, { id }),
+    ...overrides,
+  };
+}
+
+test("confirmation reads fully valid V5 entries", () => {
   assert.deepEqual(
     notificationResultIds({
       customType: SUBAGENT_NOTIFICATION_TYPE,
-      details: { version: 5, results: [{ id: "a" }, { id: "b" }] },
+      details: v5Payload([
+        v5Entry("run-a", { status: "completed" }),
+        v5Entry("run-b", { status: "failed" }),
+      ]),
     }),
-    ["a", "b"],
+    ["run-a", "run-b"],
+  );
+});
+
+test("a malformed V5 entry confirms nothing", () => {
+  const malformed = [
+    v5Entry("no-status", { status: undefined }),
+    v5Entry("retired-status", { status: "aborted" }),
+    v5Entry("missing-result", { result: undefined }),
+    v5Entry("non-v4-result", { result: { ...runDetails("non-v4-result"), version: 3 } }),
+    { ...v5Entry("mismatched-id"), id: "other-run" },
+    { ...v5Entry("run-blank"), id: "" },
+    "not an entry",
+  ];
+  const ids = notificationResultIds({
+    customType: SUBAGENT_NOTIFICATION_TYPE,
+    details: v5Payload([...malformed, v5Entry("run-valid")]),
+  });
+  assert.deepEqual(ids, ["run-valid"], "only the complete entry confirms");
+});
+
+test("confirmation ignores foreign messages and non-V5 payloads", () => {
+  assert.deepEqual(
+    notificationResultIds({ customType: "other", details: v5Payload([v5Entry("run-a")]) }),
+    [],
   );
   assert.deepEqual(
-    notificationResultIds({
-      customType: SUBAGENT_NOTIFICATION_TYPE,
-      details: { version: 5, results: [{ id: "skipped" }, { id: "" }] },
-    }),
-    ["skipped"],
+    notificationResultIds({ customType: SUBAGENT_NOTIFICATION_TYPE, details: { results: [v5Entry("run-a")] } }),
+    [],
+    "a payload without the V5 version marker confirms nothing",
   );
-  assert.deepEqual(notificationResultIds({ customType: "other", details: { version: 5, results: [{ id: "a" }] } }), []);
+  assert.deepEqual(
+    notificationResultIds({ customType: SUBAGENT_NOTIFICATION_TYPE, details: undefined }),
+    [],
+  );
   assert.deepEqual(notificationResultIds(undefined), []);
 });
 
