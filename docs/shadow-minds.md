@@ -118,7 +118,7 @@ priority: 0
 triggers: [tool_turn, completion]
 delivery: steer
 completionGate: false
-tools: [read, grep, find, ls, codegraph, pdf_search]
+tools: [read, grep, find, ls, pdf_search, search]
 timeoutSeconds: 120
 maxTurns: 8
 maxToolCalls: 16
@@ -203,10 +203,10 @@ replaying paused events. Manual trials always stay available.
 ## Tool and model boundaries
 
 The Shadow-safe tool catalog is exactly: `read`, `grep`, `find`, `ls`,
-`codegraph`, `pdf_search`, `search`, `fetch`, `libs`, `docs`. Omitted
+`pdf_search`, `search`, `fetch`, `libs`, `docs`. Omitted
 `tools` select the default local evidence set (`read`, `grep`, `find`,
 `ls`); `tools: []` is the no-tool trial. Shell, file writes, SSH, Firecrawl
-parse, authenticated GitHub, and delegation are excluded capabilities — a
+parse, and delegation are excluded capabilities — a
 requested-but-excluded tool drops with a run-start warning, while a
 `requiredTools` miss fails before prompting. `pdf_search` is an explicit
 opt-in outside the default local evidence set; a definition lists it in
