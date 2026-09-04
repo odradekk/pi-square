@@ -100,9 +100,14 @@ function writePersistedRun(id) {
   return artifactsDir;
 }
 
-test("registerSubagentTool exposes the delegate_subagent and resume_subagent tools", () => {
+test("registerSubagentTool exposes the delegate_subagent, resume_subagent, and wait_subagent tools", () => {
   const pi = registered();
-  assert.deepEqual([...pi.tools.keys()], ["delegate_subagent", "resume_subagent"]);
+  assert.deepEqual([...pi.tools.keys()], ["wait_subagent", "delegate_subagent", "resume_subagent"]);
+  const waitSchema = pi.tools.get("wait_subagent").parameters;
+  assert.equal(waitSchema.additionalProperties, false);
+  assert.equal(waitSchema.anyOf, undefined);
+  assert.deepEqual(waitSchema.required, ["ids"]);
+  assert.equal(waitSchema.properties.ids.maxItems, 6);
   const delegateSchema = pi.tools.get("delegate_subagent").parameters;
   assert.equal(delegateSchema.additionalProperties, false);
   assert.ok(delegateSchema.properties.context);

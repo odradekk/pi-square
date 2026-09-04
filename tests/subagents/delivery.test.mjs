@@ -13,6 +13,7 @@ const {
   MAX_BATCH_RESULTS,
   MAX_PENDING_RESULTS,
   MAX_RESULT_CHARS,
+  MAX_WAIT_RESERVATIONS,
   notificationResultIds,
   SUBAGENT_NOTIFICATION_TYPE,
 } = await load(join(packageRoot, "src", "subagents", "delivery.ts"));
@@ -325,6 +326,72 @@ test("confirmation ignores foreign messages and non-V5 payloads", () => {
     [],
   );
   assert.deepEqual(notificationResultIds(undefined), []);
+});
+
+
+// ─── Explicit result ownership (odradekk/pi-square#277) ──────────────
+
+test("an aborted result is stored only while a waiter owns the claim", () => {
+  const probe = harness({ idle: true });
+  const details = runDetails("run-aborted", { phase: "aborted", finalText: "", error: "Subagent failed: ABORTED\n..." });
+
+  // Unclaimed: the ordinary policy — aborted runs notify nobody.
+  enqueue(probe.controller, "run-aborted", { status: "aborted", details });
+  assert.equal(probe.controller.pendingCount(), 0);
+  assert.equal(probe.sent.length, 0);
+
+  // Claimed first: the aborted outcome enters the store for the waiter only.
+  const claim = probe.controller.claim(["run-aborted"]);
+  assert.equal(claim.ok, true);
+  probe.controller.enqueue({ id: "run-aborted", status: "aborted", details });
+  assert.equal(probe.controller.pendingCount(), 1, "the claimed aborted result is stored");
+  assert.equal(probe.sent.length, 0, "it never enters automatic delivery");
+  const taken = claim.claim.take();
+  assert.equal(taken[0].status, "aborted");
+  assert.equal(taken[0].details.id, "run-aborted");
+});
+
+test("a claim of an unsent pending result returns it immediately through take", () => {
+  const probe = harness({ idle: false });
+  enqueue(probe.controller, "run-ready", { details: { finalText: "ACK" } });
+
+  const claim = probe.controller.claim(["run-ready"]);
+  assert.equal(claim.ok, true);
+  assert.equal(probe.controller.isSent("run-ready"), false);
+  assert.deepEqual([...claim.claim.ids], ["run-ready"]);
+
+  const entry = claim.claim.result("run-ready");
+  assert.equal(entry.status, "completed");
+  const taken = claim.claim.take();
+  assert.deepEqual(taken.map((item) => item?.id), ["run-ready"]);
+  assert.equal(probe.controller.pendingCount(), 0, "the taken result leaves the pending set");
+});
+
+test("release routes completed and failed results back and drops aborted ones", () => {
+  const probe = harness({ idle: false });
+  enqueue(probe.controller, "run-done");
+  enqueue(probe.controller, "run-failed", { status: "failed", details: { phase: "failed", finalText: "", error: "boom" } });
+
+  const claim = probe.controller.claim(["run-done", "run-failed"]);
+  assert.equal(claim.ok, true);
+  claim.claim.release();
+
+  assert.equal(probe.controller.isPending("run-done"), true);
+  assert.equal(probe.controller.isPending("run-failed"), true);
+  probe.controller.handleTurnEnd();
+  assert.equal(probe.sent.length, 1, "released deliverable results rejoin the automatic schedule");
+
+  // An aborted stored result leaves delivery storage entirely on release.
+  const abortedDetails = runDetails("run-stopped", { phase: "aborted", finalText: "", error: "canceled" });
+  const abortedClaim = probe.controller.claim(["run-stopped"]);
+  probe.controller.enqueue({ id: "run-stopped", status: "aborted", details: abortedDetails });
+  assert.equal(probe.controller.isPending("run-stopped"), true);
+  abortedClaim.claim.release();
+  assert.equal(probe.controller.isPending("run-stopped"), false);
+});
+
+test("the wait reservation bound matches the documented contract", () => {
+  assert.equal(MAX_WAIT_RESERVATIONS, 50);
 });
 
 await run();

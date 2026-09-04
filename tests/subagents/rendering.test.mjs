@@ -332,3 +332,106 @@ assert.doesNotMatch(`${collapsed}\n${expanded}`, /[⌛⏳◐◌\uFE0F]/u, "no em
 }
 
 console.log("subagent notification rendering: shared description, privacy, shells, and width contracts passed");
+
+// ─── wait_subagent calm operational display (#277) ───────────────────
+
+const { __testables: subagentAdapterTestables } = await load(join(packageRoot, "src", "subagents", "display-adapter.ts"));
+const waitAdapter = subagentAdapterTestables.createWaitAdapter();
+
+const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
+
+// wait call description: selected count and ordered short ids
+{
+  const single = waitAdapter.describeCall(
+    { ids: [waitId("11111111")] },
+    { executionStarted: false },
+  );
+  assert.equal(single.title, "Wait");
+  assert.equal(single.family, "agent");
+  assert.equal(single.lifecycle, "queued");
+  assert.equal(single.target, "11111111");
+  assert.equal(single.qualifiers, undefined);
+
+  const multi = waitAdapter.describeCall(
+    { ids: [waitId("22222222"), waitId("11111111"), waitId("22222222")] },
+    { executionStarted: true },
+  );
+  assert.equal(multi.lifecycle, "running");
+  assert.equal(multi.target, "2 runs");
+  assert.equal(multi.rows.length, 1);
+  assert.equal(multi.rows[0].tone, "muted");
+}
+
+// wait result description: ordered terminal evidence and aggregate summary
+{
+  const one = details({ id: waitId("11111111"), task: "first task" });
+  const two = details({ id: waitId("22222222"), task: "second task", phase: "failed", finalText: "" });
+  const three = details({ id: waitId("33333333"), task: "third task", phase: "aborted", finalText: "" });
+  const result = {
+    content: [{ type: "text", text: "waited" }],
+    details: {
+      version: 1,
+      ids: [waitId("22222222"), waitId("11111111"), waitId("33333333")],
+      results: [
+        { id: waitId("22222222"), status: "failed", result: two },
+        { id: waitId("11111111"), status: "completed", result: one },
+        { id: waitId("33333333"), status: "aborted", result: three },
+      ],
+      consumed: true,
+      waitedMs: 2500,
+    },
+  };
+  const args = { ids: [waitId("22222222"), waitId("11111111"), waitId("33333333")] };
+
+  const collapsed = waitAdapter.describeResult(result, { expanded: false }, { isError: true, args });
+  assert.equal(collapsed.lifecycle, "failed");
+  assert.equal(collapsed.title, "Wait");
+  assert.equal(collapsed.target, "3 runs");
+  assert.equal(collapsed.summary, "completed · failed · aborted");
+  assert.deepEqual(collapsed.sections, [], "a collapsed wait entry is exactly one row");
+  assert.ok(collapsed.error.includes("2 of 3"));
+
+  const expanded = waitAdapter.describeResult(result, { expanded: true }, { isError: true, args });
+  assert.equal(expanded.sections.length, 1);
+  assert.equal(expanded.sections[0].title, "Results");
+  const rows = expanded.sections[0].blocks;
+  assert.deepEqual(rows.map((row) => row.tone), ["error", "default", "muted"]);
+  assert.ok(rows[0].text.startsWith("22222222 · failed · second task"), rows[0].text);
+  assert.ok(rows[1].text.startsWith("11111111 · completed · first task"), rows[1].text);
+  assert.equal(expanded.durationMs, 2500);
+
+  const allGood = waitAdapter.describeResult(
+    {
+      content: [{ type: "text", text: "waited" }],
+      details: {
+        version: 1,
+        ids: [waitId("11111111")],
+        results: [{ id: waitId("11111111"), status: "completed", result: one }],
+        consumed: true,
+        waitedMs: 10,
+      },
+    },
+    { expanded: false },
+    { isError: false, args: { ids: [waitId("11111111")] } },
+  );
+  assert.equal(allGood.lifecycle, "completed");
+  assert.equal(allGood.summary, "completed");
+  assert.equal(allGood.error, undefined);
+}
+
+// a rejected wait renders as one failed row without terminal evidence
+{
+  const description = waitAdapter.describeResult(
+    {
+      content: [{ type: "text", text: "Subagent failed: RESULT_CLAIMED" }],
+      details: { status: "error", error: { code: "RESULT_CLAIMED" } },
+    },
+    { expanded: true },
+    { isError: true, args: { ids: [waitId("11111111"), waitId("22222222")] } },
+  );
+  assert.equal(description.title, "Wait");
+  assert.equal(description.lifecycle, "failed");
+  assert.equal(description.target, "2 runs");
+  assert.deepEqual(description.sections, []);
+  assert.match(description.error, /RESULT_CLAIMED/);
+}

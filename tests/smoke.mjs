@@ -73,7 +73,7 @@ try {
   const expectedTools = [
     "ask", "delegate_subagent", "docs", "fetch",
     "libs", "parse", "pdf_search", "replace", "resume_subagent", "search",
-    "todo",
+    "todo", "wait_subagent",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));

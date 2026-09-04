@@ -59,7 +59,7 @@ try {
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "delegate_subagent", "docs", "fetch",
     "libs", "parse", "pdf_search", "resume_subagent", "search",
-    "ssh", "todo",
+    "ssh", "todo", "wait_subagent",
   ]);
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
   assert.deepEqual(createChildTools(["pdf_search"]).definitions.map((definition) => definition.name), ["pdf_search"]);
@@ -86,7 +86,8 @@ try {
   assert.equal(askTool?.parameters?.properties?.questions?.items?.properties?.required?.default, true);
   const delegateTool = tools.get("delegate_subagent");
   const resumeTool = tools.get("resume_subagent");
-  for (const subagentTool of [delegateTool, resumeTool]) {
+  const waitTool = tools.get("wait_subagent");
+  for (const subagentTool of [delegateTool, resumeTool, waitTool]) {
     assert.equal(typeof subagentTool?.renderCall, "function");
     assert.equal(typeof subagentTool?.renderResult, "function");
     assert.equal(subagentTool?.renderShell, "self");
@@ -94,7 +95,7 @@ try {
   // Provider-compatibility contract: both subagent schemas are strict top-level
   // objects without unions; delegate_subagent must not declare id (GPT models
   // populate every declared property, which the validation would reject).
-  for (const schema of [delegateTool?.parameters, resumeTool?.parameters]) {
+  for (const schema of [delegateTool?.parameters, resumeTool?.parameters, waitTool?.parameters]) {
     assert.equal(schema?.type, "object");
     assert.equal(schema?.anyOf, undefined);
     assert.equal(schema?.additionalProperties, false);
@@ -102,6 +103,8 @@ try {
   assert.deepEqual(delegateTool?.parameters?.required, ["task"]);
   assert.equal(delegateTool?.parameters?.properties?.id, undefined);
   assert.deepEqual(resumeTool?.parameters?.required, ["id", "task"]);
+  assert.deepEqual(waitTool?.parameters?.required, ["ids"]);
+  assert.equal(waitTool?.parameters?.properties?.ids?.maxItems, 6);
   assert.equal(typeof renderers.get("pi-square.subagent-notification"), "function");
   assert.equal(typeof renderers.get("pi-square.subagent-config-guide"), "function");
   const todoTool = tools.get("todo");
@@ -155,7 +158,7 @@ try {
     "pdf_search", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
-    "ask", "todo", "delegate_subagent", "resume_subagent",
+    "ask", "todo", "delegate_subagent", "resume_subagent", "wait_subagent",
   ]) {
     const tool = tools.get(name);
     assert.equal(tool?.renderShell, "self", `${name} parent tool must use the shared display shell`);
