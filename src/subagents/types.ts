@@ -215,11 +215,35 @@ export interface SubagentNotificationDetails {
  * automatically deliverable, `aborted` flows to an explicit waiter only. */
 export type SubagentResultStatus = "completed" | "failed" | "aborted";
 
+/**
+ * The bounded per-run projection a wait result carries: the identity, the
+ * terminal outcome, and bounded task/result/error evidence. The full V4 run
+ * record never enters wait details — its prompt snapshot, session paths, and
+ * unbounded texts stay out, and every string is clipped to an explicit wait
+ * budget (odradekk/pi-square#277).
+ */
+export interface SubagentWaitRunSummary {
+  id: string;
+  operation: SubagentOperation;
+  status: SubagentResultStatus;
+  agent?: string;
+  task: string;
+  model?: string;
+  startedAt: number;
+  endedAt?: number;
+  durationMs?: number;
+  result: string;
+  error?: string;
+  usage: SubagentUsage;
+  toolErrors: number;
+  toolWarnings: number;
+}
+
 /** One selected run's terminal outcome as `wait_subagent` returns it. */
 export interface SubagentWaitResult {
   id: string;
   status: SubagentResultStatus;
-  result: SubagentRunDetails;
+  run: SubagentWaitRunSummary;
 }
 
 /**

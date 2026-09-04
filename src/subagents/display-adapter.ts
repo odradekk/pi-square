@@ -537,19 +537,43 @@ function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> 
           ? "aborted"
           : "completed";
 
-      // Ordered terminal evidence: one row per selected run, in requested
-      // order, bounded to the selection (at most six).
-      const resultsSection: DisplaySection = {
+      // Ordered terminal evidence, one block per selected run in requested
+      // order (at most six): the compact outcome row, then the bounded result
+      // or error text of each run. The payload appears only in the expanded
+      // body — a collapsed wait entry is exactly one row — and each failure's
+      // raw text appears exactly once, in its own expanded Error section.
+      const rowsSection: DisplaySection = {
         title: "Results",
         blocks: entries.map((entry) => {
           const status = String(entry.status);
-          const run = record(entry.result);
+          const run = record(entry.run);
           const id = shortId(run.id ?? entry.id);
           const task = clipTaskPreview(run.task);
           const tone: DisplayTone = status === "failed" ? "error" : status === "aborted" ? "muted" : "default";
           return { kind: "text" as const, text: [id, status, task].filter(Boolean).join(" · "), tone };
         }),
       };
+
+      const evidenceSections: DisplaySection[] = [];
+      for (const entry of entries) {
+        const status = String(entry.status);
+        const run = record(entry.run);
+        const id = shortId(run.id ?? entry.id);
+        const resultText = typeof run.result === "string" ? run.result.trim() : "";
+        const errorText = typeof run.error === "string" ? run.error.trim() : "";
+        if (status === "completed" && resultText) {
+          evidenceSections.push({
+            title: `Result ${id}`,
+            blocks: [{ kind: "markdown", text: resultText }],
+            compact: false,
+          });
+        } else if (status !== "completed" && errorText) {
+          evidenceSections.push({
+            title: `Error ${id}`,
+            blocks: [{ kind: "text", text: errorText, tone: "error" as DisplayTone }],
+          });
+        }
+      }
 
       const notCompleted = statuses.filter((status) => status !== "completed").length;
       const ids = Array.isArray(details.ids) ? details.ids.map((id) => String(id)) : [];
@@ -563,7 +587,7 @@ function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> 
         target: waitTarget(ids),
         metadata: [],
         rows: [],
-        sections: options.expanded ? [resultsSection] : [],
+        sections: options.expanded ? [rowsSection, ...evidenceSections] : [],
         summary: waitSummary(entries.map((entry) => ({ status: String(entry.status) }))),
         durationMs: typeof details.waitedMs === "number" ? details.waitedMs : undefined,
         ...(notCompleted > 0

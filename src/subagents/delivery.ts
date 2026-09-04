@@ -114,7 +114,13 @@ export interface SubagentDeliveryClaim {
   readonly ids: readonly string[];
   /** False once the claim was taken, released, or cleared by a reset. */
   readonly active: boolean;
-  /** The stored result of one claimed ID once its run finished; the waiter's
+  /**
+   * True while this wait is the current owner of the run's result. Deleting
+   * the run's history (manager delete-history) ends the reservation, so the
+   * waiter wakes and ends deterministically instead of hanging.
+   */
+  holds(id: string): boolean;
+  /** The stored result of one still-held run once it finished; the waiter's
    * completeness signal before it takes. */
   result(id: string): SubagentDeliveryEntry | undefined;
   /** Consumes every claimed result in request order; missing results yield undefined. */
@@ -317,8 +323,9 @@ export function createDeliveryController(options: {
           get active() {
             return inner.active;
           },
+          holds: (id) => inner.holds(id),
           result(id) {
-            const value = core.claimedValue(id);
+            const value = inner.result(id);
             return value ? toEntry(id, value) : undefined;
           },
           take() {

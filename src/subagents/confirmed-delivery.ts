@@ -70,6 +70,18 @@ export interface ConfirmedDeliveryClaim<T> {
   /** False once the claim was taken, released, or cleared by a reset. */
   readonly active: boolean;
   /**
+   * True while this claim is the current owner of the identity. An identity
+   * whose reservation was removed (its history was deleted) is no longer
+   * held, even before the holder observes it.
+   */
+  holds(id: string): boolean;
+  /**
+   * The stored result of one still-held identity, once its run entered the
+   * store; undefined for identities this claim no longer owns or whose
+   * result has not arrived yet.
+   */
+  result(id: string): T | undefined;
+  /**
    * Removes every claimed result from the store and returns the values in
    * request order. An identity whose result has not entered the store yet
    * yields undefined; the holder normally waits for terminal results first.
@@ -101,8 +113,6 @@ export interface ConfirmedDeliveryCore<T> {
   isClaimed(id: string): boolean;
   /** True while the stored result of this identity was sent but not confirmed. */
   isSent(id: string): boolean;
-  /** The stored result of one claimed identity, once its run entered the store. */
-  claimedValue(id: string): T | undefined;
   /** Offers one observed consumer message for confirmation. */
   observeMessage(message: unknown): void;
   /** Turn boundary of a running consumer; an aborted terminal message suppresses delivery. */
@@ -232,18 +242,15 @@ export function createConfirmedDeliveryCore<T>(options: {
     notify();
   };
 
-  // Evicts the oldest unclaimed entries beyond the pending bound. Claimed
-  // entries are never evicted: their explicit consumer owns the only copy.
+  // The pending bound is total: claimed entries count toward it but are never
+  // evicted, because their explicit consumer owns the only copy. Beyond the
+  // bound the oldest unclaimed entries leave first; an incoming unclaimed
+  // result is therefore the one dropped when every older entry is claimed.
   const evictOverflow = () => {
-    let unclaimed = 0;
-    for (const entry of pending.values()) {
-      if (!entry.claimed) unclaimed += 1;
-    }
-    while (unclaimed > maxPending) {
+    while (pending.size > maxPending) {
       const oldest = [...pending.values()].find((entry) => !entry.claimed);
-      if (!oldest) break;
+      if (!oldest) break; // only reachable when maxPending < the reservation bound
       pending.delete(oldest.id);
-      unclaimed -= 1;
     }
   };
 
@@ -268,10 +275,14 @@ export function createConfirmedDeliveryCore<T>(options: {
     },
 
     remove(id) {
-      // Deleting a run's history states that its result is no longer wanted,
-      // so an outstanding reservation for it ends as well.
-      reservations.delete(id);
-      if (pending.delete(id)) notify();
+      // Deleting a run's history states that its result is no longer wanted:
+      // the pending entry and any outstanding reservation for it end together.
+      // The previous holder wakes (the notify below) and can neither consume
+      // nor release a later waiter's claim on the same identity, because every
+      // claim operation is checked against the identity's current owner.
+      const hadReservation = reservations.delete(id);
+      const hadEntry = pending.delete(id);
+      if (hadReservation || hadEntry) notify();
     },
 
     claim(ids) {
@@ -302,6 +313,12 @@ export function createConfirmedDeliveryCore<T>(options: {
       }
       notify();
 
+      // Every claim operation is checked against the identity's current
+      // owner: an id whose reservation was removed (history deleted) and
+      // later re-claimed by another waiter is never touched again by the
+      // previous holder.
+      const holds = (id: string) => reservation.active && reservations.get(id) === reservation;
+
       const finish = () => {
         if (!reservation.active) return false;
         reservation.active = false;
@@ -318,23 +335,39 @@ export function createConfirmedDeliveryCore<T>(options: {
           get active() {
             return reservation.active;
           },
+          holds,
+          result(id) {
+            if (!holds(id)) return undefined;
+            const entry = pending.get(id);
+            return entry?.claimed ? entry.value : undefined;
+          },
           take() {
-            if (!finish()) return reservation.ids.map(() => undefined);
+            if (!reservation.active) return reservation.ids.map(() => undefined);
+            // Capture ownership before finish() clears what this claim holds:
+            // an identity whose reservation was removed (history deleted) and
+            // re-claimed belongs to a later waiter and stays untouched.
+            const ownedIds = new Set(reservation.ids.filter((id) => reservations.get(id) === reservation));
+            finish();
             const values: (T | undefined)[] = [];
             let changed = false;
             for (const id of reservation.ids) {
               const entry = pending.get(id);
-              if (entry?.claimed && pending.delete(id)) changed = true;
-              values.push(entry?.value);
+              if (ownedIds.has(id) && entry?.claimed && pending.delete(id)) changed = true;
+              values.push(ownedIds.has(id) ? entry?.value : undefined);
             }
             if (changed) notify();
             return values;
           },
           release(keep) {
-            if (!finish()) return;
+            if (!reservation.active) return;
+            // Same ownership capture as take(): only entries this claim still
+            // owns are routed back to the automatic schedule or dropped.
+            const ownedIds = new Set(reservation.ids.filter((id) => reservations.get(id) === reservation));
+            finish();
             let changed = false;
             let releasedUnsent = false;
             for (const id of reservation.ids) {
+              if (!ownedIds.has(id)) continue;
               const entry = pending.get(id);
               if (!entry?.claimed) continue;
               if (keep(entry.value)) {
@@ -362,10 +395,6 @@ export function createConfirmedDeliveryCore<T>(options: {
       return pending.get(id)?.sent === true;
     },
 
-    claimedValue(id) {
-      const entry = pending.get(id);
-      return entry?.claimed ? entry.value : undefined;
-    },
     observeMessage(message) {
       const ids = options.confirmIds(message);
       if (ids.length === 0) return;

@@ -20,10 +20,27 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { Type } from "typebox";
 import { artifactsDirFor, isValidSubagentId } from "./artifacts";
 import { ensureDeliveryController, subscribeBackgroundState } from "./background";
-import { buildDeliveryContent, MAX_WAIT_IDS, type SubagentDeliveryClaim } from "./delivery";
+import { buildDeliveryContent, type SubagentDeliveryClaim, type SubagentDeliveryEntry, MAX_WAIT_IDS } from "./delivery";
+import { clipWithHeadTail } from "./confirmed-delivery";
 import { createSubagentError, failureToolResult } from "./errors";
-import type { SubagentWaitDetails, SubagentWaitResult } from "./types";
+import type {
+  SubagentResultStatus,
+  SubagentRunDetails,
+  SubagentWaitDetails,
+  SubagentWaitResult,
+  SubagentWaitRunSummary,
+} from "./types";
 import type { SubagentRuntimeState } from "./tool";
+
+/** Budget for the task line inside wait details; matches the delivery task line. */
+export const MAX_WAIT_TASK_CHARS = 300;
+/**
+ * Budget for the bounded result/error evidence each wait entry carries in
+ * details. The model-facing content keeps the established 24,000-character
+ * budget; wait details are the bounded projection, so their evidence is
+ * clipped separately with the same head/tail retention.
+ */
+export const MAX_WAIT_EVIDENCE_CHARS = 4_000;
 
 const WAIT_FIELDS = new Set(["ids"]);
 
@@ -81,34 +98,56 @@ export function normalizeWaitIds(params: any): { ids: string[] } | { error: Retu
   return { ids };
 }
 
-/** One claimed ID's eligibility: current-session background jobs are waitable
- * while active or while an unsent result is pending. Everything else rejects
- * the complete request with its concrete reason and safe next action. */
+/** Another waiter already owns this run's result. */
+function claimedError(id: string | undefined) {
+  return createSubagentError({
+    code: "RESULT_CLAIMED",
+    message: `Subagent '${id}' is already claimed by another wait_subagent call.`,
+    operation: "wait",
+    ...(id ? { id } : {}),
+    retryable: true,
+    suggestedAction: "Let the active wait consume the result, then wait again or resume the child.",
+  });
+}
+
+/** The result was already sent for delivery and cannot be withdrawn. */
+function sentError(id: string | undefined) {
+  return createSubagentError({
+    code: "RESULT_SENT",
+    message: `Subagent '${id}' is already scheduled for automatic delivery, and a sent delivery cannot be withdrawn.`,
+    operation: "wait",
+    ...(id ? { id } : {}),
+    retryable: true,
+    suggestedAction: "Wait for the delivery to appear in the transcript instead of calling wait_subagent again.",
+  });
+}
+
+/**
+ * One claimed ID's eligibility: background jobs owned by the current parent
+ * session are waitable while active or while an unsent result is pending.
+ * Everything else rejects the complete request with its concrete reason and
+ * safe next action.
+ */
 function checkEligibility(input: {
   state: SubagentRuntimeState;
   id: string;
+  parentSessionId: string;
 }): ReturnType<typeof failureToolResult> | undefined {
-  const { state, id } = input;
+  const { state, id, parentSessionId } = input;
   const delivery = state.background.delivery;
   if (delivery?.isClaimed(id)) {
-    return failureToolResult(createSubagentError({
-      code: "RESULT_CLAIMED",
-      message: `Subagent '${id}' is already claimed by another wait_subagent call.`,
-      operation: "wait",
-      id,
-      retryable: true,
-      suggestedAction: "Let the active wait consume the result, then wait again or resume the child.",
-    }));
+    return failureToolResult(claimedError(id));
   }
 
   const job = state.background.jobs.get(id);
-  if (!job) {
-    // A persisted record that exists on disk belongs to another parent
-    // session; everything else is simply unknown to this session.
-    const persisted = existsSync(artifactsDirFor(id));
+  if (!job || job.details.lastParentSessionId !== parentSessionId) {
+    // Background jobs survive a session replacement in-process, so ownership
+    // is decided by the parent session identity: a job still carried from an
+    // earlier parent session is as foreign as a persisted record on disk.
+    const foreign = job !== undefined || existsSync(artifactsDirFor(id));
     return failureToolResult(createSubagentError({
       code: "SUBAGENT_NOT_FOUND",
-      message: persisted
+      message: foreign
         ? `Subagent '${id}' belongs to another parent session; only current-session background runs can be waited on.`
         : `Subagent '${id}' is not a background subagent of the current session.`,
       operation: "wait",
@@ -142,40 +181,15 @@ function checkEligibility(input: {
     }));
   }
   if (delivery.isSent(id)) {
-    return failureToolResult(createSubagentError({
-      code: "RESULT_SENT",
-      message: `Subagent '${id}' is already scheduled for automatic delivery, and a sent delivery cannot be withdrawn.`,
-      operation: "wait",
-      id,
-      retryable: true,
-      suggestedAction: "Wait for the delivery to appear in the transcript instead of calling wait_subagent again.",
-    }));
+    return failureToolResult(sentError(id));
   }
   return undefined;
 }
 
 /** Maps an atomic core claim failure onto its structured recovery action. */
 function claimFailureResult(failure: { kind: string; id?: string; limit?: number }): ReturnType<typeof failureToolResult> {
-  if (failure.kind === "already-claimed") {
-    return failureToolResult(createSubagentError({
-      code: "RESULT_CLAIMED",
-      message: `Subagent '${failure.id}' is already claimed by another wait_subagent call.`,
-      operation: "wait",
-      id: failure.id,
-      retryable: true,
-      suggestedAction: "Let the active wait consume the result, then wait again or resume the child.",
-    }));
-  }
-  if (failure.kind === "sent") {
-    return failureToolResult(createSubagentError({
-      code: "RESULT_SENT",
-      message: `Subagent '${failure.id}' is already scheduled for automatic delivery, and a sent delivery cannot be withdrawn.`,
-      operation: "wait",
-      id: failure.id,
-      retryable: true,
-      suggestedAction: "Wait for the delivery to appear in the transcript instead of calling wait_subagent again.",
-    }));
-  }
+  if (failure.kind === "already-claimed") return failureToolResult(claimedError(failure.id));
+  if (failure.kind === "sent") return failureToolResult(sentError(failure.id));
   return failureToolResult(createSubagentError({
     code: "WAIT_CAPACITY",
     message: `The wait reservation bound of ${failure.limit} is reached, so no ID was claimed.`,
@@ -257,6 +271,9 @@ async function awaitClaimedResults(input: {
 
       let complete = true;
       for (const id of claim.ids) {
+        // A reservation this claim no longer owns (its history was deleted)
+        // ends the wait deterministically instead of hanging.
+        if (!claim.holds(id)) return { kind: "lost", id };
         const job = state.background.jobs.get(id);
         if (!job) return { kind: "lost", id };
         if (
@@ -312,6 +329,44 @@ function waitEndResult(reason: WaitEndReason, claim: SubagentDeliveryClaim): Ret
   }));
 }
 
+/** Clips the task line for the bounded wait projection. */
+function clipWaitTask(task: unknown): string {
+  const normalized = String(task ?? "").trim();
+  if (normalized.length <= MAX_WAIT_TASK_CHARS) return normalized;
+  return `${normalized.slice(0, MAX_WAIT_TASK_CHARS - 3)}...`;
+}
+
+/**
+ * The bounded per-run projection for wait details: identity, terminal
+ * outcome, and evidence clipped to the wait budgets. The full V4 run record
+ * — prompt snapshot, session paths, timeline, unbounded texts — never enters.
+ */
+export function buildWaitRunSummary(
+  status: SubagentResultStatus,
+  details: SubagentRunDetails,
+): SubagentWaitRunSummary {
+  return {
+    id: details.id,
+    operation: details.operation,
+    status,
+    agent: details.agent?.name,
+    task: clipWaitTask(details.task),
+    model: details.model,
+    startedAt: details.startedAt,
+    endedAt: details.endedAt,
+    durationMs: details.durationMs,
+    result: status === "completed"
+      ? clipWithHeadTail(details.finalText || "", MAX_WAIT_EVIDENCE_CHARS)
+      : "",
+    error: status === "completed"
+      ? undefined
+      : clipWithHeadTail(details.error || (status === "aborted" ? "Subagent run aborted." : "Subagent failed."), MAX_WAIT_EVIDENCE_CHARS),
+    usage: details.usage,
+    toolErrors: details.toolErrors?.length ?? 0,
+    toolWarnings: details.toolWarnings?.length ?? 0,
+  };
+}
+
 function buildWaitDetails(ids: string[], results: SubagentWaitResult[], waitedMs: number): SubagentWaitDetails {
   return {
     version: 1,
@@ -319,7 +374,7 @@ function buildWaitDetails(ids: string[], results: SubagentWaitResult[], waitedMs
     results: results.map((entry) => ({
       id: entry.id,
       status: entry.status,
-      result: entry.result,
+      run: entry.run,
     })),
     consumed: true,
     waitedMs: Math.max(0, waitedMs),
@@ -343,7 +398,7 @@ export function registerWaitSubagentTool(
       "Interrupting wait_subagent releases its claims without stopping the children; unsent completed and failed results then arrive as ordinary background completions.",
     ],
     parameters: WaitParams,
-    async execute(_toolCallId, params: any, signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params: any, signal, _onUpdate, ctx) {
       const normalized = normalizeWaitIds(params);
       if ("error" in normalized) return normalized.error;
       const ids = normalized.ids;
@@ -358,11 +413,23 @@ export function registerWaitSubagentTool(
         }));
       }
 
+      // Only runs of the current parent session are waitable, so the session
+      // identity is part of every eligibility decision.
+      const parentSessionId = String(ctx?.sessionManager?.getSessionId?.() ?? "").trim();
+      if (!parentSessionId) {
+        return failureToolResult(createSubagentError({
+          code: "PERSISTENCE_FAILED",
+          message: "The parent Pi session has no stable session ID.",
+          operation: "wait",
+          retryable: false,
+        }));
+      }
+
       // The complete request is validated before any state changes: one
       // unknown, foreign, ineligible, claimed, or sent ID rejects the whole
       // call and nothing is claimed.
       for (const id of ids) {
-        const failure = checkEligibility({ state, id });
+        const failure = checkEligibility({ state, id, parentSessionId });
         if (failure) return failure;
       }
       const claimed = delivery.claim(ids);
@@ -374,7 +441,7 @@ export function registerWaitSubagentTool(
 
       const entries = claimed.claim.take();
       const results: SubagentWaitResult[] = ids.map((id, index) => {
-        const entry = entries[index];
+        const entry: SubagentDeliveryEntry | undefined = entries[index];
         if (!entry) {
           throw createSubagentError({
             code: "SUBAGENT_FAILED",
@@ -384,17 +451,18 @@ export function registerWaitSubagentTool(
             retryable: false,
           });
         }
-        return { id, status: entry.status, result: entry.details };
+        // The model-facing content keeps the established full budgets; the
+        // structured details carry only the bounded projection.
+        return { id, status: entry.status, run: buildWaitRunSummary(entry.status, entry.details) };
       });
 
       const hasFailure = results.some((entry) => entry.status === "failed" || entry.status === "aborted");
       return {
         content: [{
           type: "text" as const,
-          text: buildDeliveryContent(
-            results.map((entry) => ({ id: entry.id, status: entry.status, details: entry.result })),
-            false,
-          ),
+          // The model-facing content uses the taken entries with their
+          // established full budgets, in the same requested order.
+          text: buildDeliveryContent(entries as SubagentDeliveryEntry[], false),
         }],
         details: buildWaitDetails(ids, results, Date.now() - startedAt),
         ...(hasFailure ? { isError: true as const } : {}),

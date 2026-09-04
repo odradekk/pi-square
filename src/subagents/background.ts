@@ -35,9 +35,10 @@ export interface BackgroundState {
   onChange?: () => void;
   listeners: Set<() => void>;
   /**
-   * Owns the pending completion results. It is attached by the session
-   * registrar; a state without one falls back to immediate delivery, which
-   * keeps headless and unit-test lifecycles working.
+   * Owns the pending completion results and the explicit wait claims. It is
+   * attached by the session registrar and otherwise created on the first
+   * terminal completion when a Pi API is available; a state with neither
+   * (headless unit-test lifecycles) has nowhere to deliver and keeps none.
    */
   delivery?: DeliveryController;
 }
