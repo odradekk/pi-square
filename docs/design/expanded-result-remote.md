@@ -1,7 +1,7 @@
 # Remote Expanded Results
 
 Scope: `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`
-Parent tools: all seven. Child availability follows the existing catalog: `parse` and `ssh` remain parent-only.
+Parent tools: all six. Child availability follows the existing catalog: `parse` and `ssh` remain parent-only.
 Primary family contract: remote identity and provenance first, bounded remote content second, failures and retries explicit.
 
 ## Shared remote grammar

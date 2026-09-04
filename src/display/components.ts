@@ -206,10 +206,10 @@ function progressText(description: DisplayDescriptionV1): string | undefined {
 }
 
 function resolveState(description: DisplayDescriptionV1): ResolvedOperationalState {
-  // C7: a bounded, truncated, or partial result carries the `truncated`
-  // qualifier. Adapters report result boundedness through the `truncated`
-  // flag; it is added exactly once here, and qualifiers refine the state
-  // without ever rendering a header badge.
+  // C7: a bounded or truncated result carries the `truncated` qualifier.
+  // Adapters report result boundedness through the `truncated` flag; it is
+  // added exactly once here, and qualifiers refine the state without ever
+  // rendering a header badge.
   const qualifiers = [...(description.qualifiers ?? [])];
   if (description.truncated === true && !qualifiers.includes("truncated")) {
     qualifiers.push("truncated");
