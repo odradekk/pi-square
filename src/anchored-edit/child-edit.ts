@@ -11,8 +11,8 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
  * range-editing path (#187 removed revert and the undo store): the child maps
  * the built-in edit capability to this tool alone.
  *
- * Native path authority (#186): the child tool passes `confineToWorkspace:
- * false`, so a child can replace any Pi-native-accessible external target
+ * Native path authority (#186): the child tool keeps Pi-native path
+ * authority, so a child can replace any Pi-native-accessible external target
  * while its `requireServed` gate still refuses anchors the child was never
  * served (recoverably, with the current range as fresh rows). External targets
  * keep the initiating workspace's store and lock area: two different
@@ -39,5 +39,5 @@ type GenericToolDefinition = ToolDefinition<any, any, any>;
  *   parent session.
  */
 export function createChildAnchoredReplaceTool(cwd: string, owner: string, sessionDir: string): GenericToolDefinition {
-  return createAnchoredReplaceToolDefinition(cwd, () => true, owner, true, false, sessionDir) as GenericToolDefinition;
+  return createAnchoredReplaceToolDefinition(cwd, () => true, owner, true, sessionDir) as GenericToolDefinition;
 }

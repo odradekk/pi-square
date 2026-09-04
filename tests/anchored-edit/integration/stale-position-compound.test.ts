@@ -62,8 +62,9 @@ describe("stale-position compound edits", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
-      expect(result.content[0].text).toContain("Added 2 line(s), removed 3 line(s).");
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.details?.metrics?.added_lines).toBe(2);
+        expect(result.details?.metrics?.removed_lines).toBe(3);
     });
   });
 
@@ -87,8 +88,9 @@ describe("stale-position compound edits", () => {
         undefined,
         ctx,
       );
-      expect(result.content[0].text).toContain("Successfully replaced");
-      expect(result.content[0].text).toContain("Added 2 line(s), removed 3 line(s).");
+      expect(result.details?.metrics?.classification).toBe("applied");
+      expect(result.details?.metrics?.added_lines).toBe(2);
+        expect(result.details?.metrics?.removed_lines).toBe(3);
     });
   });
 });

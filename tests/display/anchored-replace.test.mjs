@@ -73,7 +73,7 @@ try {
   const last = initialRows.find((row) => row.text === "last");
   assert.ok(first && middle && last, "anchored read serves each source row");
 
-  const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, undefined, sessionDir);
+  const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, sessionDir);
   const changed = await replace.execute(
     "replace-1",
     {
@@ -107,7 +107,7 @@ try {
   );
   const silentRow = readRows(silentRead)[0];
   assert.ok(silentRow);
-  const silentReplace = await createAnchoredReplaceToolDefinition(workspace, () => false, undefined, undefined, undefined, sessionDir).execute(
+  const silentReplace = await createAnchoredReplaceToolDefinition(workspace, () => false, undefined, undefined, sessionDir).execute(
     "replace-silent",
     { path: "silent.txt", remove_from: silentRow.hash, remove_to: silentRow.hash, replacement_text: "after" },
     undefined,
@@ -331,12 +331,12 @@ try {
     { path: "../outside.txt" },
     workspace,
     "parent",
-    { confineToWorkspace: false, sessionDir },
+    { sessionDir },
   );
   const externalMiddle = readRows(externalRead).find((row) => row.text === "external-middle");
   assert.ok(externalMiddle, "the parent anchored read serves external rows");
 
-  const parentReplace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, false, sessionDir);
+  const parentReplace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, sessionDir);
   const externalEdit = await parentReplace.execute(
     "replace-external",
     {
@@ -394,13 +394,13 @@ try {
   // parent-served external anchor recoverably — the child must read the range
   // itself — instead of refusing the external path.
   {
-    const childComposition = createAnchoredReplaceToolDefinition(workspace, undefined, "subagent_child_probe", true, false, sessionDir);
+    const childComposition = createAnchoredReplaceToolDefinition(workspace, undefined, "subagent_child_probe", true, sessionDir);
     const servedChildRead = await transformAnchoredReadContent(
       [{ type: "text", text: "factory content" }],
       { path: "../outside.txt" },
       workspace,
       "subagent_child_probe",
-      { confineToWorkspace: false, sessionDir },
+      { sessionDir },
     );
     const servedRow = readRows(servedChildRead).find((row) => row.text === "edited externally");
     assert.ok(servedRow, "the child-surface read serves the external row");

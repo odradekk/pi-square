@@ -50,9 +50,9 @@ try {
     { path: "../shared-external.txt" },
     workspace,
     "parent",
-    { confineToWorkspace: false, sessionDir },
+    { sessionDir },
   );
-  const replaceIn = (workspace, sessionDir) => createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, false, sessionDir);
+  const replaceIn = (workspace, sessionDir) => createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, sessionDir);
 
   const readA1 = readRows(await readIn(workspaceA, sessionDirA));
   const readB1 = readRows(await readIn(workspaceB, sessionDirB));
@@ -86,7 +86,7 @@ try {
     const store = new DatabaseSync(storePath, { timeout: 500 });
     try {
       assert.ok(
-        store.prepare("SELECT COUNT(*) AS count FROM served WHERE path = ?").get(canonical).count > 0,
+        store.prepare("SELECT COUNT(*) AS count FROM served WHERE owner = 'parent' AND path = ?").get(canonical).count > 0,
         "each workspace's store records its own served rows for the external target",
       );
     } finally {
@@ -100,19 +100,24 @@ try {
   // and a concurrent pair can interleave (accepted last-write-wins).
   const held = await acquireFileLock(lockFilePath(storeDirOf(workspaceA, sessionDirA), canonical));
   try {
-    const readA2 = readRows(await readIn(workspaceA, sessionDirA));
-    const oneA2 = readA2.find((row) => row.text === "one");
-    assert.ok(oneA2, "workspace A can still read while holding its own lock");
+    // Under the integrated operation boundary (#264) the lock is never
+    // re-entrant: while the target lock is held, workspace A's own anchored
+    // read cannot enter the boundary and reports classified contention
+    // rather than unanchored content presented as anchored evidence.
+    const contendedRead = await readIn(workspaceA, sessionDirA);
+    const contendedText = contendedRead.filter((part) => part.type === "text").map((part) => part.text).join("");
+    assert.match(contendedText, /\[E_FILE_LOCKED\]/, "a read behind a held lock reports classified contention");
+
     const blocked = await replaceIn(workspaceA, sessionDirA).execute(
       "replace-a-locked",
-      { path: "../shared-external.txt", remove_from: oneA2.hash, remove_to: oneA2.hash, replacement_text: "must not apply" },
+      { path: "../shared-external.txt", remove_from: "aaa", remove_to: "aaa", replacement_text: "must not apply" },
       undefined,
       undefined,
       { cwd: workspaceA },
     );
     assert.match(
       blocked.content[0].text,
-      /\[E_RANGE_STALE\].*write lock/,
+      /\[E_FILE_LOCKED\]/,
       "a same-workspace contender is still refused by the shared lock",
     );
 

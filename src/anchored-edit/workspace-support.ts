@@ -5,19 +5,12 @@ export const PARENT_OWNER = "parent";
 
 /**
  * Opens the anchored hash store rooted at the session-resolved store
- * directory (`anchoredStoreDir`), under the given owner partition.
+ * directory (`anchoredStoreDir`) under the required owner partition. Owner
+ * identity is part of the type: an ownerless store cannot be constructed.
  */
 export async function loadAnchoredHashStore(
   storeDir: string,
-  owner: string = PARENT_OWNER,
+  owner: string,
 ): Promise<HashStoreHandle> {
-  return loadHashStoreAt(anchoredHashStorePath(storeDir), {
-    owner,
-  });
-}
-
-export function outsideWorkspaceError(path: string): Error {
-  return new Error(
-    `[E_OUTSIDE_WORKSPACE] ${path} resolves outside the workspace. Disable anchoredEditing.enabled to use Pi's built-in edit for that path.`,
-  );
+  return loadHashStoreAt(anchoredHashStorePath(storeDir), owner);
 }

@@ -1,4 +1,3 @@
-import { isEphemeralMemorySnapshot, type ContextMemorySnapshot } from "../context-memory/view";
 import type { PromptManagerSegment } from "./types";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ByRoleChars, CollapsedEntries, MessageEntrySummary } from "./decompose";
@@ -260,154 +259,6 @@ function renderSystemSection(
   return lines;
 }
 
-/**
- * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #218, #220, #221): the
- * selected Variant A inline hierarchy, rendered between the system-prompt
- * section and the message section. Inactive states stay one bounded line;
- * active Memory shows state, Memory/budget estimate, block count, stable
- * prefix, next operation, current usage, and one bounded chronological row
- * per block. No format versions, entry ranges/IDs, paths, timestamps, or
- * storage details ever appear. Never part of the usage bar — Memory
- * accounting leaves the total usage bar unchanged (#215). Ephemeral
- * in-memory sessions are reported as such (#221); the scale-limit line
- * states that Pi native compaction owns the boundary (#220).
- */
-function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySnapshot): string[] {
-  if (memory.state !== "active") {
-    let description: string;
-    switch (memory.state) {
-      case "disabled":
-        description = "disabled · enable through agent-level contextMemory configuration";
-        break;
-      case "unsupported":
-        // Capability detection (#255): the only unsupported cause is missing
-        // interfaces; the running host version rides along as information.
-        description = typeof memory.hostVersion === "string"
-          ? `unsupported Pi host ${memory.hostVersion} · required interfaces unavailable · native compaction unchanged`
-          : "required Pi interfaces unavailable · native compaction unchanged";
-        break;
-      case "no-memory":
-        description = "enabled · no Memory blocks yet";
-        break;
-      case "opaque":
-        description = "opaque · latest compaction is not valid Context Memory · native summary retained";
-        break;
-      case "scale-limit":
-        description = "scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary";
-        break;
-      case "due":
-        description = "due · threshold reached · the next run authors the first Memory block";
-        break;
-      case "pending":
-        description = "pending · Memory candidate accepted this run · compaction follows at run end";
-        break;
-      case "committing":
-        description = "committing · writing the Memory compaction";
-        break;
-    }
-    if (isEphemeralMemorySnapshot(memory)) {
-      description += " · ephemeral session";
-    }
-    return [
-      RAIL_CONT +
-      paint(theme, "text", "memory[]") +
-      "     " +
-      paint(theme, "dim", description),
-    ];
-  }
-
-  const lines: string[] = [];
-  const budget = memory.budgetTokens !== null ? `${formatShort(memory.budgetTokens)} budget` : "budget unknown";
-  const headParts = [
-    paint(theme, "success", "active"),
-    ` ${paint(theme, "dim", "·")} `,
-    paint(theme, "text", `~${formatShort(memory.memoryTokens)} tok`),
-    ` ${paint(theme, "dim", "/")} `,
-    paint(theme, "muted", budget),
-    ` ${paint(theme, "dim", "·")} `,
-    paint(theme, "text", `${memory.blocks} ${memory.blocks === 1 ? "block" : "blocks"}`),
-  ];
-  if (memory.stablePrefix !== null && memory.nextOperation !== null) {
-    headParts.push(
-      ` ${paint(theme, "dim", "·")} `,
-      paint(theme, "muted", `stable ${memory.stablePrefix}/${memory.blocks}`),
-      ` ${paint(theme, "dim", "· next:")} `,
-      paint(theme, "text", memory.nextOperation),
-    );
-  }
-  if (isEphemeralMemorySnapshot(memory)) {
-    headParts.push(
-      ` ${paint(theme, "dim", "·")} `,
-      paint(theme, "muted", "ephemeral session"),
-    );
-  }
-  lines.push(RAIL_CONT + paint(theme, "text", "memory[]") + "     " + headParts.join(""));
-
-  if (memory.currentTokens !== null && memory.contextWindow !== null) {
-    lines.push(
-      RAIL_CONT + "     " +
-      paint(theme, "dim", `usage ${formatShort(memory.currentTokens)} / ${formatShort(memory.contextWindow)} window`),
-    );
-  }
-
-  const previewWidth = Math.min(
-    Math.max(...memory.rows.map((row) => charCount(row.preview)), 16),
-    48,
-  );
-  for (let i = 0; i < memory.rows.length; i++) {
-    const row = memory.rows[i]!;
-    const indexStr = paint(theme, "dim", `${i + 1}.`);
-    const previewStr = paint(theme, "text", padRight(clean(row.preview), previewWidth));
-    const tokensStr = paint(theme, "syntaxNumber", `${formatShort(row.tokens)} tok`);
-    const sourcesStr = paint(theme, "muted", `${row.sources} ${row.sources === 1 ? "source" : "sources"}`);
-    lines.push(
-      RAIL_CONT + "  " +
-      indexStr + " " +
-      previewStr + "  " +
-      tokensStr + ` ${paint(theme, "dim", "·")} ` + sourcesStr,
-    );
-  }
-  if (memory.rows.length < memory.blocks) {
-    lines.push(
-      RAIL_CONT + "  " +
-      paint(theme, "dim", `⋯ +${memory.blocks - memory.rows.length} more blocks`),
-    );
-  }
-  return lines;
-}
-
-/**
- * Parse `/context` view arguments: empty shows the overview; the read-only
- * `memory <block> [page]` form (1-based, page defaulting to 1) inspects one
- * Memory block without a model call or session write (#217); any other
- * non-empty text is a natural-language configuration request that receives
- * the bounded Context Memory Config Guide (#254). Malformed `memory …`
- * syntax keeps the fixed usage line so existing behavior is unchanged.
- */
-export type ContextCommand =
-  | { readonly kind: "overview" }
-  | { readonly kind: "memory"; readonly block: number; readonly page: number }
-  | { readonly kind: "request"; readonly text: string }
-  | { readonly kind: "invalid" };
-
-export function parseContextCommandArgs(args: unknown): ContextCommand {
-  const text = typeof args === "string" ? args.trim() : "";
-  if (text.length === 0) return { kind: "overview" };
-  const parts = text.split(/\s+/);
-  if (parts[0] === "memory") {
-    const block = parts.length >= 2 ? Number(parts[1]) : NaN;
-    if (!Number.isInteger(block) || block < 1) return { kind: "invalid" };
-    let page = 1;
-    if (parts.length >= 3) {
-      page = Number(parts[2]);
-      if (!Number.isInteger(page) || page < 1) return { kind: "invalid" };
-    }
-    if (parts.length > 3) return { kind: "invalid" };
-    return { kind: "memory", block, page };
-  }
-  return { kind: "request", text };
-}
-
 function roleColor(role: string, inLlmContext: boolean): string {
   if (!inLlmContext) return "dim";
   if (role === "user") return "userMessageText";
@@ -493,8 +344,6 @@ export interface PromptManagerViewInput {
   tools: ToolInfoLite[];
   segments: PromptManagerSegment[];
   promptOrder: string[];
-  /** Read-only Context Memory snapshot; rendered as the `memory[]` section. */
-  memory: ContextMemorySnapshot;
   systemPromptChars: number;
   collapsedMessages: CollapsedEntries;
   totalMessageEntries: number;
@@ -582,7 +431,6 @@ export function renderVerbose(input: PromptManagerViewInput, theme: ThemeWrapper
     input.systemPromptChars,
   ));
   lines.push(blankInner(theme));
-  lines.push(...renderMemorySection(theme, input.memory));
   lines.push(blankInner(theme));
   lines.push(...renderMessagesSection(
     theme,

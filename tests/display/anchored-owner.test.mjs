@@ -18,7 +18,6 @@ const {
 } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
 const { shutdownHashStore } = await load("../../src/anchored-edit/hash-store.ts");
-const { getServed } = await load("../../src/anchored-edit/served.ts");
 
 const CHILD_OWNER = "child";
 
@@ -34,6 +33,11 @@ function readRows(content) {
     const match = /^([A-Za-z0-9]{3})│(.*)$/.exec(line);
     return match ? [{ hash: match[1], text: match[2] }] : [];
   });
+}
+
+async function servedFor(store, path, content) {
+  const lookup = store.getServedState(path, content);
+  return lookup !== undefined && "served" in lookup ? lookup.served : undefined;
 }
 
 const root = mkdtempSync(join(tmpdir(), "pi-square-anchored-owner-"));
@@ -73,7 +77,7 @@ try {
   );
   assert.ok(readRows(parentRead).length > 0, "parent read serves anchored rows");
   assert.ok(
-    getServed(await openStore(PARENT_OWNER), source),
+    await servedFor(await openStore(PARENT_OWNER), source, "first\nmiddle\nlast\n"),
     "parent read records served rows under the parent owner",
   );
 
@@ -88,14 +92,14 @@ try {
   const middle = readRows(childRead).find((row) => row.text === "middle");
   assert.ok(middle, "child read serves anchored rows");
   assert.ok(
-    getServed(await openStore(CHILD_OWNER), source),
+    await servedFor(await openStore(CHILD_OWNER), source, "first\nmiddle\nlast\n"),
     "read transform records served rows under the child owner",
   );
 
   // A child-owner replace records its post-edit rows only in the child
   // partition (#187: replace is the only range-editing path; the undo store is
   // gone, so served rows are the per-owner state).
-  const childReplace = createAnchoredReplaceToolDefinition(workspace, () => true, CHILD_OWNER, undefined, undefined, sessionDir);
+  const childReplace = createAnchoredReplaceToolDefinition(workspace, () => true, CHILD_OWNER, undefined, sessionDir);
   const changed = await childReplace.execute(
     "replace-1",
     {
@@ -110,14 +114,15 @@ try {
   );
   assert.equal(readFileSync(source, "utf8"), "first\nreplaced\nlast\n");
   assert.equal(changed.details.status, undefined, "child replace applies without a warning");
-  const childServed = getServed(await openStore(CHILD_OWNER), source);
+  const childServed = await servedFor(await openStore(CHILD_OWNER), source, "first\nreplaced\nlast\n");
   assert.ok(childServed, "the child replace records post-edit rows under the child owner");
-  const parentServed = getServed(await openStore(PARENT_OWNER), source);
+  const parentServed = await servedFor(await openStore(PARENT_OWNER), source, "first\nreplaced\nlast\n");
   const freshAnchor = changed.details.diff.match(/([A-Za-z0-9]{3})│replaced/)?.[1];
   assert.ok(freshAnchor, "the child's fresh anchor is identified");
-  assert.ok(
-    parentServed && !parentServed.has(freshAnchor),
-    "the parent partition is not credited with the child's fresh anchor",
+  assert.equal(
+    parentServed,
+    undefined,
+    "the parent partition has no served rows for the child's new content version, so it cannot be credited with the child's fresh anchor",
   );
 
   console.log("anchored owner partition tests: OK");

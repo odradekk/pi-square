@@ -20,8 +20,9 @@ describe("chained edit anchors", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Successfully replaced in sample.ts");
-      expect(editResult.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
+      expect(editResult.details?.metrics?.added_lines).toBe(1);
+        expect(editResult.details?.metrics?.removed_lines).toBe(1);
       const secondRead = await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx);
       const freshRef = secondRead.content[0].text
         .split("\n")
@@ -36,8 +37,9 @@ describe("chained edit anchors", () => {
         ctx,
       );
 
-      expect(editResult2.content[0].text).toContain("Successfully replaced in sample.ts");
-      expect(editResult2.content[0].text).toContain("Added 1 line(s), removed 1 line(s).");
+      expect(editResult2.details?.metrics?.classification).toBe("applied");
+      expect(editResult2.details?.metrics?.added_lines).toBe(1);
+        expect(editResult2.details?.metrics?.removed_lines).toBe(1);
     });
   });
 
@@ -69,7 +71,7 @@ describe("chained edit anchors", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Successfully replaced in big.ts");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
     });
   });
   it("omits anchors when single-line replace expands beyond budget", async () => {
@@ -92,7 +94,7 @@ describe("chained edit anchors", () => {
         ctx,
       );
 
-      expect(editResult.content[0].text).toContain("Successfully replaced in expand.ts");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
     });
   });
 
@@ -134,7 +136,7 @@ describe("chained edit anchors", () => {
         undefined,
         ctx,
       );
-      expect(alphaEdit.content[0].text).toContain("Successfully replaced in stale.ts");
+      expect(alphaEdit.details?.metrics?.classification).toBe("applied");
     });
   });
 
@@ -163,7 +165,7 @@ describe("chained edit anchors", () => {
         undefined,
         ctx,
       );
-      expect(editResult.content[0].text).toContain("Successfully replaced in stable.ts");
+      expect(editResult.details?.metrics?.classification).toBe("applied");
       expect(editResult.content[0].text).toContain("Warnings:");
 
       const alphaEdit = await editTool.execute(
@@ -173,7 +175,7 @@ describe("chained edit anchors", () => {
         undefined,
         ctx,
       );
-      expect(alphaEdit.content[0].text).toContain("Successfully replaced in stable.ts");
+      expect(alphaEdit.details?.metrics?.classification).toBe("applied");
     });
   });
 });

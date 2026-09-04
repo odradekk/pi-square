@@ -62,7 +62,7 @@ describe("read tool — store resilience", () => {
       const { ctx, readTool } = setupIntegrationTest(cwd);
       const hashStore = await import("../../../src/anchored-edit/hash-store");
       const spy = vi
-        .spyOn(hashStore, "upsertSnapshot")
+        .spyOn(hashStore.__testables.HashStoreHandleImpl.prototype, "upsertSnapshot")
         .mockImplementation(() => {
           throw new Error("store down");
         });
@@ -90,7 +90,7 @@ describe("read tool — store resilience", () => {
       const { ctx, readTool } = setupIntegrationTest(cwd);
       const hashStore = await import("../../../src/anchored-edit/hash-store");
       const spy = vi
-        .spyOn(hashStore, "upsertSnapshot")
+        .spyOn(hashStore.__testables.HashStoreHandleImpl.prototype, "upsertSnapshot")
         .mockImplementation(() => {
           throw new Error("store down");
         });

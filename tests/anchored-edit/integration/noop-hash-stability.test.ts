@@ -105,7 +105,7 @@ describe("noop replace hash stability", () => {
         undefined,
         ctx,
       );
-      expect(getText(result)).toContain("Successfully replaced");
+      expect(result.details?.metrics?.classification).toBe("applied");
 
       const r2 = getText(
         await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx),
@@ -148,7 +148,7 @@ describe("noop replace hash stability", () => {
         undefined,
         ctx,
       );
-      expect(getText(followUp)).toContain("Successfully replaced");
+      expect(followUp.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("aaa\nBBB\nccc\n");
     });
   });

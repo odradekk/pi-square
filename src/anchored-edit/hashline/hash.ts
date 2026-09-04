@@ -1,8 +1,6 @@
 import { splitLines } from "../utils";
 import {
-  type HashStore,
-  getSnapshot,
-  upsertSnapshot,
+  type HashStoreHandle,
 } from "../hash-store";
 import { xxh32, contentChecksum, initHasher } from "./hasher";
 import { HASH_LEN, ALPH, ALPH_RE, HASH_CLASS } from "./alphabet";
@@ -103,7 +101,7 @@ export async function lineHashes(
   content: string,
   path?: string,
   previous?: { content: string; hashes: string[]; removedHashes?: Set<string> },
-  store?: HashStore,
+  store?: HashStoreHandle,
   persist?: boolean,
 ): Promise<string[]> {
   await initHasher();
@@ -126,7 +124,7 @@ export async function lineHashes(
     );
     if (persist !== false) {
       try {
-        upsertSnapshot(hashStore, path, contentChecksum(content), splitLines(content).length, newHashes);
+        hashStore.upsertSnapshot(path, contentChecksum(content), splitLines(content).length, newHashes);
       } catch (error) {
         console.error("Failed to persist hash snapshot:", error);
       }
@@ -136,7 +134,9 @@ export async function lineHashes(
 
   let cached: string[] | undefined;
   try {
-    cached = getSnapshot(hashStore, path, content, persist !== false);
+    cached = persist === false
+      ? hashStore.peekSnapshot(path, content)
+      : hashStore.getSnapshot(path, content);
   } catch (error) {
     console.error("Failed to read hash store snapshot:", error);
   }
@@ -147,7 +147,7 @@ export async function lineHashes(
   const newHashes = _lineHashesPure(content);
   if (persist !== false) {
     try {
-      upsertSnapshot(hashStore, path, contentChecksum(content), splitLines(content).length, newHashes);
+      hashStore.upsertSnapshot(path, contentChecksum(content), splitLines(content).length, newHashes);
     } catch (error) {
       console.error("Failed to persist hash snapshot:", error);
     }

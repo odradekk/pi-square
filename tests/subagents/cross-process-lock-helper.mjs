@@ -9,6 +9,10 @@ import { resolve } from "node:path";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
+// A caching loader for jobs that must patch one shared module instance (the
+// crash-at-boundary failpoint patches the hash-store class the replace
+// coordinator actually uses, so both loads must resolve to one instance).
+const sharedLoad = jiti(import.meta.url);
 const { acquireFileLock, lockFilePath } = await load("../../src/anchored-edit/file-lock.ts");
 const { resolveTarget } = await load("../../src/anchored-edit/fs-write.ts");
 const { createAnchoredReplaceToolDefinition } = await load("../../src/anchored-edit/workspace-replace.ts");
@@ -52,7 +56,7 @@ async function main() {
   }
 
   if (mode === "replace") {
-    const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, undefined, sessionDir);
+    const replace = createAnchoredReplaceToolDefinition(workspace, undefined, undefined, undefined, sessionDir);
     const result = await replace.execute(
       "replace",
       {
@@ -83,6 +87,58 @@ async function main() {
     } catch (error) {
       writeResult(resultPath, { ok: false, error: error.message });
     }
+    return;
+  }
+
+  // Simulates a replace whose process died exactly at the post-commit
+  // boundary, through the real operation coordinator: the target lock is
+  // acquired, the range is prepared and validated, the filesystem commit
+  // runs, and the process exits inside the store publication that follows —
+  // so the crash point is the coordinator's own publication seam, not a
+  // synthetic write.
+  if (mode === "crash-after-write") {
+    const hashStoreModule = await sharedLoad("../../src/anchored-edit/hash-store.ts");
+    hashStoreModule.__testables.HashStoreHandleImpl.prototype.publishMutation = function () {
+      writeResult(resultPath, { crashed: true });
+      process.exit(0);
+    };
+    const { createAnchoredReplaceToolDefinition: createSharedReplace } = await sharedLoad("../../src/anchored-edit/workspace-replace.ts");
+    const replace = createSharedReplace(workspace, undefined, undefined, undefined, sessionDir);
+    await replace.execute(
+      "crash-after-write",
+      {
+        path,
+        remove_from: job.removeFrom,
+        remove_to: job.removeTo,
+        replacement_text: job.replacement,
+      },
+      undefined,
+      undefined,
+      { cwd: workspace },
+    );
+    throw new Error("crash-after-write: the publication failpoint did not fire");
+  }
+
+  if (mode === "read") {
+    const readToolModule = await load("../../src/anchored-edit/read-tool.ts");
+    const readTransformModule = await load("../../src/anchored-edit/read-transform.ts");
+    const piPackage = await load("@earendil-works/pi-coding-agent");
+    const readTool = readToolModule.withAnchoredReadTransform(
+      piPackage.createReadToolDefinition(workspace),
+      workspace,
+      async (content, value, executionCwd, executionSessionDir) =>
+        readTransformModule.transformAnchoredReadContent(
+          content, value, executionCwd, "parent", { sessionDir: executionSessionDir },
+        ),
+    );
+    const result = await readTool.execute(
+      "read",
+      { path },
+      undefined,
+      undefined,
+      { cwd: workspace, sessionManager: { getSessionDir: () => sessionDir } },
+    );
+    writeResult(resultPath, result);
     return;
   }
 

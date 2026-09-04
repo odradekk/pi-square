@@ -8,7 +8,10 @@ const state = vi.hoisted(() => ({
   busyOnce: null as Error | null,
   persistentBusy: false,
   runCalls: 0,
-  rename: vi.fn(async () => undefined),
+  rename: vi.fn(async (from: string, to: string) => {
+    void from;
+    void to;
+  }),
   readFile: vi.fn(async () => {
     const err = new Error("no such file") as NodeJS.ErrnoException;
     err.code = "ENOENT";
@@ -56,13 +59,38 @@ vi.mock("node:sqlite", () => ({
   },
 }));
 
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  return {
+    ...actual,
+    // Quarantine renames the store file synchronously; assert only those,
+    // pass every other sync rename through.
+    renameSync: (from: string, to: string) => {
+      if (/hash-store\.sqlite$/.test(from)) {
+        state.rename(from, to);
+        return;
+      }
+      return actual.renameSync(from, to);
+    },
+  };
+});
+
 vi.mock("fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs/promises")>();
   return {
     ...actual,
-    rename: state.rename,
+    // The store schema lock (src/anchored-edit/file-lock.ts) renames its lock
+    // files through retirement names during normal release; only store-file
+    // quarantine renames are asserted, so everything else passes through.
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      const [from] = args;
+      if (typeof from === "string" && /hash-store\.sqlite$/.test(from)) {
+        return state.rename(from, args[1] as string);
+      }
+      return (actual.rename as any)(...args);
+    },
     readFile: async (path: Parameters<typeof actual.readFile>[0], ...args: any[]) =>
-      String(path).endsWith(".schema.lock")
+      String(path).endsWith(".schema.lock") || /[.]retired-|publish-/.test(String(path))
         ? (actual.readFile as any)(path, ...args)
         : state.readFile(),
   };
@@ -101,7 +129,7 @@ describe("hash store open error handling", () => {
     state.openError = busyError("database is locked");
     const { loadHashStoreAt, shutdownHashStore } = await import("../../../src/anchored-edit/hash-store");
     shutdownHashStore();
-    await expect(loadHashStoreAt(storePath())).rejects.toThrow(/locked/);
+    await expect(loadHashStoreAt(storePath(), "parent")).rejects.toThrow(/locked/);
     expect(state.rename).not.toHaveBeenCalled();
   });
 
@@ -111,7 +139,7 @@ describe("hash store open error handling", () => {
     }) as Error;
     const { loadHashStoreAt, shutdownHashStore } = await import("../../../src/anchored-edit/hash-store");
     shutdownHashStore();
-    await expect(loadHashStoreAt(storePath())).rejects.toThrow(/permission denied/);
+    await expect(loadHashStoreAt(storePath(), "parent")).rejects.toThrow(/permission denied/);
     expect(state.rename).not.toHaveBeenCalled();
   });
 
@@ -122,7 +150,7 @@ describe("hash store open error handling", () => {
     }) as Error;
     const { loadHashStoreAt, shutdownHashStore } = await import("../../../src/anchored-edit/hash-store");
     shutdownHashStore();
-    await expect(loadHashStoreAt(storePath())).rejects.toThrow(/not a database/);
+    await expect(loadHashStoreAt(storePath(), "parent")).rejects.toThrow(/not a database/);
     expect(state.rename).toHaveBeenCalledWith(
       expect.stringMatching(/hash-store\.sqlite$/),
       expect.stringMatching(/\.corrupt-/),
@@ -130,25 +158,25 @@ describe("hash store open error handling", () => {
   });
 
   it("retries a transient busy error on statement execution", async () => {
-    const { loadHashStoreAt, shutdownHashStore, upsertSnapshot } = await import("../../../src/anchored-edit/hash-store");
+    const { loadHashStoreAt, shutdownHashStore } = await import("../../../src/anchored-edit/hash-store");
     shutdownHashStore();
-    const store = await loadHashStoreAt(storePath());
+    const store = await loadHashStoreAt(storePath(), "parent");
     state.busyOnce = busyError("database is locked");
     expect(() => {
-      upsertSnapshot(store, "/p.ts", "checksum", 1, ["AAA"]);
+      store.upsertSnapshot("/p.ts", "checksum", 1, ["AAA"]);
     }).not.toThrow();
     expect(state.runCalls).toBeGreaterThan(1);
   });
 
   it("propagates a persistent busy error after exhausting retries", async () => {
-    const { loadHashStoreAt, shutdownHashStore, upsertSnapshot } = await import("../../../src/anchored-edit/hash-store");
+    const { loadHashStoreAt, shutdownHashStore } = await import("../../../src/anchored-edit/hash-store");
     shutdownHashStore();
-    const store = await loadHashStoreAt(storePath());
+    const store = await loadHashStoreAt(storePath(), "parent");
     state.busyOnce = busyError("database is locked");
     state.persistentBusy = true;
     const callsBefore = state.runCalls;
     expect(() => {
-      upsertSnapshot(store, "/p.ts", "checksum", 1, ["AAA"]);
+      store.upsertSnapshot("/p.ts", "checksum", 1, ["AAA"]);
     }).toThrow(/locked/);
     expect(state.runCalls - callsBefore).toBe(4);
   });

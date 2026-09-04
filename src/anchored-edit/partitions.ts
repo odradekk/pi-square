@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { deleteOwnerPartition, listOwnerPartitions, pruneMissing } from "./hash-store";
+import { pruneMissing } from "./hash-store";
 import { loadAnchoredHashStore, PARENT_OWNER } from "./workspace-support";
 import { anchoredStoreDir } from "./paths";
 
@@ -49,7 +49,7 @@ export async function dropChildPartition(cwd: string, owner: string, sessionDir?
   if (!storeDir) return;
   const store = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
   try {
-    deleteOwnerPartition(store, owner);
+    store.deleteOwnerPartition(owner);
   } finally {
     store.release();
   }
@@ -66,7 +66,7 @@ export async function pruneMissingForAllOwners(cwd: string, sessionDir?: string)
   const store = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
   let owners: string[];
   try {
-    owners = [...new Set([PARENT_OWNER, ...listOwnerPartitions(store).map((p) => p.owner)])];
+    owners = [...new Set([PARENT_OWNER, ...store.listOwners().map((p) => p.owner)])];
   } finally {
     store.release();
   }
@@ -101,19 +101,19 @@ export async function reconcileChildPartitions(
   const store = await loadAnchoredHashStore(storeDir, PARENT_OWNER);
   const evicted: string[] = [];
   try {
-    const partitions = listOwnerPartitions(store)
+    const partitions = store.listOwners()
       .filter((p) => isChildOwner(p.owner))
       .sort((a, b) => a.updatedAt - b.updatedAt);
     const retained = partitions.filter((p) => retainedOwners.has(p.owner));
     const orphans = partitions.filter((p) => !retainedOwners.has(p.owner));
     for (const partition of orphans) {
-      deleteOwnerPartition(store, partition.owner);
+      store.deleteOwnerPartition(partition.owner);
       evicted.push(partition.owner);
     }
     let retainedCount = retained.length;
     for (const partition of retained) {
       if (retainedCount <= MAX_RETAINED_CHILD_PARTITIONS) break;
-      deleteOwnerPartition(store, partition.owner);
+      store.deleteOwnerPartition(partition.owner);
       evicted.push(partition.owner);
       retainedCount -= 1;
     }

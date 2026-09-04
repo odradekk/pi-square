@@ -170,20 +170,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     child: false,
     description: "Present interactive questions to the user",
   },
-  {
-    name: "submit_memory",
-    family: "workflow",
-    parent: true,
-    child: false,
-    description: "Submit one Memory block during a due compression run",
-  },
-  {
-    name: "read_memory_source",
-    family: "workflow",
-    parent: true,
-    child: false,
-    description: "Read one Memory block's original conversation page",
-  },
   // ── agent ───────────────────────────────────────────────────────
   {
     name: "delegate",
