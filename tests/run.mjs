@@ -29,6 +29,7 @@ const suites = [
   "display/anchored-read.test.mjs",
   "display/anchored-replace.test.mjs",
   "display/anchored-insert.test.mjs",
+  "display/anchored-insert-gates.test.mjs",
   "display/anchored-auto-read.test.mjs",
   "display/anchored-cross-workspace.test.mjs",
   "display/anchored-owner.test.mjs",
