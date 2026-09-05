@@ -21,6 +21,7 @@ import {
 import { isRunLeaseActive } from "./lease";
 import { renderSubagentNotification } from "./render";
 import { compileFreshPrompt } from "./prompt";
+import { registerAbortSubagentTool } from "./abort";
 import { resolveSubagentCwd } from "./session";
 import { createSubagentWaitRegistry, registerWaitSubagentTool, type SubagentWaitRegistry } from "./wait";
 import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
@@ -175,7 +176,10 @@ export function registerSubagentTool(
   const register = (definition: ToolDefinition<any, any, any>) => {
     pi.registerTool(decorate ? decorate(definition) : definition);
   };
-  registerWaitSubagentTool(pi, state, waitRegistry ?? createSubagentWaitRegistry(), decorate);
+  // Wait and abort share one session-scoped registry so a session replacement
+  // or shutdown terminates both kinds of outstanding wait together.
+  const sharedWaitRegistry = waitRegistry ?? createSubagentWaitRegistry();
+  registerWaitSubagentTool(pi, state, sharedWaitRegistry, decorate);
 
 
   register({
@@ -353,6 +357,8 @@ export function registerSubagentTool(
       };
     },
   });
+
+  registerAbortSubagentTool(pi, state, sharedWaitRegistry, decorate);
 }
 
 export const __testables = {

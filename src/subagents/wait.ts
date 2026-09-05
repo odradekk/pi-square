@@ -42,27 +42,26 @@ export const MAX_WAIT_TASK_CHARS = 300;
  */
 export const MAX_WAIT_EVIDENCE_CHARS = 4_000;
 
-const WAIT_FIELDS = new Set(["ids"]);
+const IDS_FIELDS = new Set(["ids"]);
 
-const WaitParams = Type.Object({
-  ids: Type.Array(Type.String(), {
-    minItems: 1,
-    maxItems: MAX_WAIT_IDS,
-    description: `One to six public IDs of current-session background subagents, in the order the results should return.`,
-  }),
-}, { additionalProperties: false });
-
-/** Normalizes and fully validates the ids request; a malformed request rejects
- * the whole call before any state is touched. Repeated IDs are silently
- * deduplicated while preserving first-occurrence order. */
-export function normalizeWaitIds(params: any): { ids: string[] } | { error: ReturnType<typeof failureToolResult> } {
-  const unknown = Object.keys(params ?? {}).filter((key) => !WAIT_FIELDS.has(key));
+/**
+ * Normalizes and fully validates the strict `ids` request shared by the
+ * multi-ID subagent tools (`wait_subagent`, `abort_subagent`); a malformed
+ * request rejects the whole call before any state is touched. Repeated IDs are
+ * silently deduplicated while preserving first-occurrence order.
+ */
+export function normalizeSubagentIdsRequest(
+  params: any,
+  options: { toolName: string; operation: string },
+): { ids: string[] } | { error: ReturnType<typeof failureToolResult> } {
+  const { toolName, operation } = options;
+  const unknown = Object.keys(params ?? {}).filter((key) => !IDS_FIELDS.has(key));
   if (unknown.length > 0) {
     return {
       error: failureToolResult(createSubagentError({
         code: "INVALID_ARGUMENT",
-        message: `Unknown wait_subagent parameter(s): ${unknown.join(", ")}.`,
-        operation: "wait",
+        message: `Unknown ${toolName} parameter(s): ${unknown.join(", ")}.`,
+        operation,
         retryable: false,
       })),
     };
@@ -73,7 +72,7 @@ export function normalizeWaitIds(params: any): { ids: string[] } | { error: Retu
       error: failureToolResult(createSubagentError({
         code: "INVALID_ARGUMENT",
         message: `ids must be an array of 1 to ${MAX_WAIT_IDS} subagent IDs.`,
-        operation: "wait",
+        operation,
         retryable: false,
       })),
     };
@@ -84,7 +83,7 @@ export function normalizeWaitIds(params: any): { ids: string[] } | { error: Retu
         error: failureToolResult(createSubagentError({
           code: "INVALID_ARGUMENT",
           message: `ids must contain public subagent IDs as returned by delegate_subagent or resume_subagent; '${String(item)}' is not one.`,
-          operation: "wait",
+          operation,
           retryable: false,
         })),
       };
@@ -96,6 +95,18 @@ export function normalizeWaitIds(params: any): { ids: string[] } | { error: Retu
     if (!ids.includes(id)) ids.push(id);
   }
   return { ids };
+}
+const WaitParams = Type.Object({
+  ids: Type.Array(Type.String(), {
+    minItems: 1,
+    maxItems: MAX_WAIT_IDS,
+    description: `One to six public IDs of current-session background subagents, in the order the results should return.`,
+  }),
+}, { additionalProperties: false });
+
+/** Normalizes and fully validates the wait ids request. */
+export function normalizeWaitIds(params: any): { ids: string[] } | { error: ReturnType<typeof failureToolResult> } {
+  return normalizeSubagentIdsRequest(params, { toolName: "wait_subagent", operation: "wait" });
 }
 
 /** Another waiter already owns this run's result. */

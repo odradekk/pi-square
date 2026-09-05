@@ -261,11 +261,51 @@ export interface SubagentWaitDetails {
   waitedMs?: number;
 }
 
+/** The lifecycle states an abort request can observe on a target run. */
+export type SubagentAbortBeforeState = SubagentPhase;
+
+/**
+ * The bounded per-target projection an `abort_subagent` result carries: the
+ * lifecycle observed before the request, the terminal state observed when the
+ * request resolved, whether this request applied an abort signal, and the
+ * bounded failure or abort reason. Like the wait projection, the full V4 run
+ * record — prompt snapshot, session paths, timeline, agent name, model string,
+ * and unbounded texts — never enters (odradekk/pi-square#278).
+ */
+export interface SubagentAbortRunSummary {
+  id: string;
+  before: SubagentAbortBeforeState;
+  status: SubagentResultStatus;
+  /** True when this request sent an abort signal to an active target. */
+  abortApplied: boolean;
+  /** Bounded abort reason, present for aborted outcomes. */
+  reason?: string;
+  /** Bounded established failure text, present for failed outcomes. */
+  error?: string;
+  task: string;
+  startedAt: number;
+  endedAt?: number;
+  durationMs?: number;
+}
+
+/**
+ * V1 `abort_subagent` result: the requested IDs in first-occurrence order and
+ * every selected run's outcome in that same order. A successful abort request
+ * is a successful tool call even though its active targets end `aborted`
+ * (odradekk/pi-square#278).
+ */
+export interface SubagentAbortDetails {
+  version: 1;
+  ids: string[];
+  results: SubagentAbortRunSummary[];
+  /** Wall-clock duration of the wait for active targets to stop, for display only. */
+  waitedMs?: number;
+}
+
 export interface SubagentAlreadyRunningDetails {
   status: "already_running";
   id: string;
 }
-
 export interface SubagentFailureDetails {
   status: "error";
   error: SubagentErrorInfo;
