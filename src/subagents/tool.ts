@@ -60,7 +60,7 @@ const DelegateParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Named YAML subagent profile." })),
   cwd: Type.Optional(Type.String({ description: "Working directory. Relative paths resolve from the parent cwd." })),
   model: Type.Optional(Type.String({ description: "Model override in provider/id form." })),
-  thinkingLevel: Type.Optional(Type.String({ description: "Thinking override: off, minimal, low, medium, high, or xhigh." })),
+  thinkingLevel: Type.Optional(Type.String({ description: "Thinking override: off, minimal, low, medium, high, xhigh, or max." })),
 }, { additionalProperties: false });
 
 const ResumeParams = Type.Object({

@@ -202,12 +202,13 @@ test("resume restores original model, tools, effort, and system prompt", async (
       id,
       task: "initial",
       modelOverride: "fake-provider/fake-model",
-      effortOverride: "high",
+      effortOverride: "max",
       definition: definition({ tools: ["read", "edit"] }),
     });
     const original = state.createCalls.at(-1);
     await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next" });
     const resumed = state.createCalls.at(-1);
+    assert.equal(original.thinkingLevel, "max");
     assert.deepEqual(resumed.model, original.model);
     assert.equal(resumed.thinkingLevel, original.thinkingLevel);
     assert.deepEqual(resumed.tools, original.tools);

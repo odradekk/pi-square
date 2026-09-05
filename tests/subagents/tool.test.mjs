@@ -121,6 +121,7 @@ test("registerSubagentTool exposes the delegate_subagent, resume_subagent, wait_
   assert.ok(delegateSchema.properties.agent);
   assert.ok(delegateSchema.properties.model);
   assert.ok(delegateSchema.properties.thinkingLevel);
+  assert.match(delegateSchema.properties.thinkingLevel.description, /max/);
   // Regression: GPT models via the OpenAI Responses API populate every declared
   // property, so id must stay out of the delegation schema entirely.
   assert.equal(delegateSchema.properties.id, undefined);

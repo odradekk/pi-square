@@ -46,7 +46,7 @@ const MAX_TIMELINE_ITEMS = 120;
 const MAX_TIMELINE_TEXT = 1600;
 const MAX_RAW_SESSION_OUTPUT = 12000;
 const MAX_TOOL_ERRORS = 20;
-const ALLOWED_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const ALLOWED_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 type AllowedEffort = typeof ALLOWED_EFFORTS[number];
 
 function clip(text: string, max = MAX_TIMELINE_TEXT): string {

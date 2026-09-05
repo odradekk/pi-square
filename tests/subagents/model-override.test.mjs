@@ -209,6 +209,22 @@ test("YAML defaults, inherited model and effort, and model registry compat remai
   assert.equal(inherited.details.agent.effort, "medium");
 });
 
+test("Pi-native max effort works for profile defaults and parent inheritance", async () => {
+  reset();
+  const configured = await runSubagentTask(freshInput({ definition: definition({ effort: "max" }) }));
+  assert.equal(configured.details.phase, "completed");
+  assert.equal(lastCall().thinkingLevel, "max");
+  assert.equal(configured.details.agent.effort, "max");
+
+  const inherited = await runSubagentTask(freshInput({
+    thinkingLevel: "max",
+    definition: definition({ model: undefined, effort: undefined }),
+  }));
+  assert.equal(inherited.details.phase, "completed");
+  assert.equal(lastCall().thinkingLevel, "max");
+  assert.equal(inherited.details.agent.effort, "max");
+});
+
 test("a bare provider response cannot downgrade the qualified model frozen for resume", async () => {
   reset();
   sdkState.sessionFactory = (input) => {
