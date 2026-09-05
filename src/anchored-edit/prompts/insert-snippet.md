@@ -1,0 +1,1 @@
+Insert literal lines immediately before or after one observed 3-char HASH anchor — the anchor line is kept unchanged; requires a served anchor from the current file version

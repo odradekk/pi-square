@@ -19,6 +19,7 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
   parse: ["path", "pages", "mode", "max_tokens", "timeout"],
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
+  insert: ["path", "anchor", "direction", "lines"],
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
   delegate_subagent: ["agent", "task", "cwd", "model", "thinkingLevel", "context"],
@@ -29,7 +30,7 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   pdf_search: ["query"],
   bash: ["command"], pwsh: ["command"],
   ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
-  docs: ["libraryId"], parse: ["path"], replace: ["path"],
+  docs: ["libraryId"], parse: ["path"], replace: ["path"], insert: ["path"],
   ask: [], todo: ["action"],
   delegate_subagent: ["agent"], resume_subagent: ["id"],
 });
@@ -39,7 +40,7 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
   pdf_search: "PDF search",
   bash: "Bash", pwsh: "PowerShell",
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
-  docs: "Documentation", parse: "PDF parse", replace: "Replace",
+  docs: "Documentation", parse: "PDF parse", replace: "Replace", insert: "Insert",
   ask: "Questions", todo: "Tasks",
   delegate_subagent: "Subagent", resume_subagent: "Resume subagent",
 });
@@ -48,6 +49,7 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
 const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   parse: ["path"],
   replace: ["path"],
+  insert: ["path"],
 });
 
 function record(value: unknown): Record<string, unknown> {
@@ -208,7 +210,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
       const details = record(result.details);
       const durationMs = typeof details.durationMs === "number" ? details.durationMs : undefined;
       const target = targetFor(name, context.args, context.cwd);
-      const replacePath = record(context.args).path;
+      const anchoredPath = record(context.args).path;
       const failed = (result as AgentToolResult<unknown> & { isError?: boolean }).isError === true;
       // C6: the error row states one human sentence; the raw platform text
       // moves to errorRaw and renders exactly once as an expanded ERROR section.
@@ -229,10 +231,10 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
         rows: outcome.rows,
         durationMs,
         ...(text ? { preview: { text } } : {}),
-        ...(name === "replace" && !failed && typeof details.diff === "string" && details.diff
+        ...((name === "replace" || name === "insert") && !failed && typeof details.diff === "string" && details.diff
           ? {
               diff: {
-                path: typeof replacePath === "string" ? replacePath : undefined,
+                path: typeof anchoredPath === "string" ? anchoredPath : undefined,
                 patch: details.diff,
               },
             }
