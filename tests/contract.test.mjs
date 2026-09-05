@@ -57,7 +57,7 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "ask", "delegate_subagent", "docs", "fetch",
+    "abort_subagent", "ask", "delegate_subagent", "docs", "fetch",
     "libs", "parse", "pdf_search", "resume_subagent", "search",
     "ssh", "todo", "wait_subagent",
   ]);
@@ -87,7 +87,8 @@ try {
   const delegateTool = tools.get("delegate_subagent");
   const resumeTool = tools.get("resume_subagent");
   const waitTool = tools.get("wait_subagent");
-  for (const subagentTool of [delegateTool, resumeTool, waitTool]) {
+  const abortTool = tools.get("abort_subagent");
+  for (const subagentTool of [delegateTool, resumeTool, waitTool, abortTool]) {
     assert.equal(typeof subagentTool?.renderCall, "function");
     assert.equal(typeof subagentTool?.renderResult, "function");
     assert.equal(subagentTool?.renderShell, "self");
@@ -95,7 +96,7 @@ try {
   // Provider-compatibility contract: both subagent schemas are strict top-level
   // objects without unions; delegate_subagent must not declare id (GPT models
   // populate every declared property, which the validation would reject).
-  for (const schema of [delegateTool?.parameters, resumeTool?.parameters, waitTool?.parameters]) {
+  for (const schema of [delegateTool?.parameters, resumeTool?.parameters, waitTool?.parameters, abortTool?.parameters]) {
     assert.equal(schema?.type, "object");
     assert.equal(schema?.anyOf, undefined);
     assert.equal(schema?.additionalProperties, false);
@@ -105,6 +106,8 @@ try {
   assert.deepEqual(resumeTool?.parameters?.required, ["id", "task"]);
   assert.deepEqual(waitTool?.parameters?.required, ["ids"]);
   assert.equal(waitTool?.parameters?.properties?.ids?.maxItems, 6);
+  assert.deepEqual(abortTool?.parameters?.required, ["ids"]);
+  assert.equal(abortTool?.parameters?.properties?.ids?.maxItems, 6);
   assert.equal(typeof renderers.get("pi-square.subagent-notification"), "function");
   assert.equal(typeof renderers.get("pi-square.subagent-config-guide"), "function");
   const todoTool = tools.get("todo");
@@ -158,7 +161,7 @@ try {
     "pdf_search", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
-    "ask", "todo", "delegate_subagent", "resume_subagent", "wait_subagent",
+    "ask", "todo", "delegate_subagent", "resume_subagent", "wait_subagent", "abort_subagent",
   ]) {
     const tool = tools.get(name);
     assert.equal(tool?.renderShell, "self", `${name} parent tool must use the shared display shell`);

@@ -25,6 +25,8 @@ export interface BackgroundJob {
   /** YAML definition used for routing and display, when the job is named. */
   definition?: SubagentDefinition;
   abortController: AbortController;
+  /** First explicit cancellation reason, retained until an active run terminalizes. */
+  abortReason?: string;
   /** Serializable run details mirrored into notifications and status output. */
   details: SubagentRunDetails;
 }
@@ -358,6 +360,7 @@ export function cancelBackgroundJobs(input: {
   let changed = false;
   for (const job of targets) {
     if (job.status === "queued") {
+      job.abortReason = reason;
       job.abortController.abort();
       job.status = "aborted";
       job.updatedAt = now();
@@ -373,6 +376,7 @@ export function cancelBackgroundJobs(input: {
       job.status = "cancelling";
       job.details.phase = "cancelling";
       job.updatedAt = now();
+      job.abortReason = reason;
       job.abortController.abort();
       details.canceled.push(snapshot(job));
       changed = true;
@@ -404,7 +408,7 @@ function startBackgroundLifecycle(input: {
   const { pi, state, job } = input;
   void (async () => {
     if (jobWasAborted(job)) {
-      ensureAbortedDetails(job, job.details.error || DEFAULT_CANCEL_REASON);
+      ensureAbortedDetails(job, job.abortReason || job.details.error || DEFAULT_CANCEL_REASON);
       job.updatedAt = now();
       compactFinishedJobs(state);
       emitChange(state);
@@ -430,7 +434,7 @@ function startBackgroundLifecycle(input: {
 
     if (jobWasAborted(job)) {
       job.status = "aborted";
-      ensureAbortedDetails(job, job.details.error || DEFAULT_CANCEL_REASON);
+      ensureAbortedDetails(job, job.abortReason || job.details.error || DEFAULT_CANCEL_REASON);
       compactFinishedJobs(state);
       emitChange(state);
       // A waiter that already claimed this run owns its aborted outcome.
@@ -447,7 +451,7 @@ function startBackgroundLifecycle(input: {
     job.updatedAt = now();
     if (jobWasAborted(job)) {
       job.status = "aborted";
-      ensureAbortedDetails(job, job.details.error || DEFAULT_CANCEL_REASON);
+      ensureAbortedDetails(job, job.abortReason || job.details.error || DEFAULT_CANCEL_REASON);
       compactFinishedJobs(state);
       emitChange(state);
       // A waiter that already claimed this run owns its aborted outcome.

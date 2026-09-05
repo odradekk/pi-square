@@ -42,27 +42,26 @@ export const MAX_WAIT_TASK_CHARS = 300;
  */
 export const MAX_WAIT_EVIDENCE_CHARS = 4_000;
 
-const WAIT_FIELDS = new Set(["ids"]);
+const IDS_FIELDS = new Set(["ids"]);
 
-const WaitParams = Type.Object({
-  ids: Type.Array(Type.String(), {
-    minItems: 1,
-    maxItems: MAX_WAIT_IDS,
-    description: `One to six public IDs of current-session background subagents, in the order the results should return.`,
-  }),
-}, { additionalProperties: false });
-
-/** Normalizes and fully validates the ids request; a malformed request rejects
- * the whole call before any state is touched. Repeated IDs are silently
- * deduplicated while preserving first-occurrence order. */
-export function normalizeWaitIds(params: any): { ids: string[] } | { error: ReturnType<typeof failureToolResult> } {
-  const unknown = Object.keys(params ?? {}).filter((key) => !WAIT_FIELDS.has(key));
+/**
+ * Normalizes and fully validates the strict `ids` request shared by the
+ * multi-ID subagent tools (`wait_subagent`, `abort_subagent`); a malformed
+ * request rejects the whole call before any state is touched. Repeated IDs are
+ * silently deduplicated while preserving first-occurrence order.
+ */
+export function normalizeSubagentIdsRequest(
+  params: any,
+  options: { toolName: string; operation: string },
+): { ids: string[] } | { error: ReturnType<typeof failureToolResult> } {
+  const { toolName, operation } = options;
+  const unknown = Object.keys(params ?? {}).filter((key) => !IDS_FIELDS.has(key));
   if (unknown.length > 0) {
     return {
       error: failureToolResult(createSubagentError({
         code: "INVALID_ARGUMENT",
-        message: `Unknown wait_subagent parameter(s): ${unknown.join(", ")}.`,
-        operation: "wait",
+        message: `Unknown ${toolName} parameter(s): ${unknown.join(", ")}.`,
+        operation,
         retryable: false,
       })),
     };
@@ -73,7 +72,7 @@ export function normalizeWaitIds(params: any): { ids: string[] } | { error: Retu
       error: failureToolResult(createSubagentError({
         code: "INVALID_ARGUMENT",
         message: `ids must be an array of 1 to ${MAX_WAIT_IDS} subagent IDs.`,
-        operation: "wait",
+        operation,
         retryable: false,
       })),
     };
@@ -84,7 +83,7 @@ export function normalizeWaitIds(params: any): { ids: string[] } | { error: Retu
         error: failureToolResult(createSubagentError({
           code: "INVALID_ARGUMENT",
           message: `ids must contain public subagent IDs as returned by delegate_subagent or resume_subagent; '${String(item)}' is not one.`,
-          operation: "wait",
+          operation,
           retryable: false,
         })),
       };
@@ -96,6 +95,18 @@ export function normalizeWaitIds(params: any): { ids: string[] } | { error: Retu
     if (!ids.includes(id)) ids.push(id);
   }
   return { ids };
+}
+const WaitParams = Type.Object({
+  ids: Type.Array(Type.String(), {
+    minItems: 1,
+    maxItems: MAX_WAIT_IDS,
+    description: `One to six public IDs of current-session background subagents, in the order the results should return.`,
+  }),
+}, { additionalProperties: false });
+
+/** Normalizes and fully validates the wait ids request. */
+export function normalizeWaitIds(params: any): { ids: string[] } | { error: ReturnType<typeof failureToolResult> } {
+  return normalizeSubagentIdsRequest(params, { toolName: "wait_subagent", operation: "wait" });
 }
 
 /** Another waiter already owns this run's result. */
@@ -199,37 +210,40 @@ function claimFailureResult(failure: { kind: string; id?: string; limit?: number
   }));
 }
 
+/** Session lifecycle reason shared by blocking subagent tool calls. */
+export type BlockingCallEndReason = { kind: "terminated"; reason: string };
+
 /** How the wait ended before every result was taken. */
 export type WaitEndReason =
   | { kind: "interrupted" }
-  | { kind: "terminated"; reason: string }
+  | BlockingCallEndReason
   | { kind: "lost"; id: string };
 
-/** Session-scoped registry of outstanding waits: a session replacement, reload,
- * or shutdown terminates every one of them and the delivery reset clears their
- * memory-only claims. */
-export interface SubagentWaitRegistry {
-  /** Registers one outstanding wait; returns its unregister function. */
-  register(wait: { end(reason: WaitEndReason): void }): () => void;
-  /** Terminates every outstanding wait with the given reason. */
+/** Session-scoped registry of blocking subagent tool calls. A session
+ * replacement, reload, or shutdown terminates every registered call; each
+ * caller owns its operation-specific interruption and lost-state handling. */
+export interface SubagentBlockingCallRegistry {
+  /** Registers one outstanding blocking call; returns its unregister function. */
+  register(call: { end(reason: BlockingCallEndReason): void }): () => void;
+  /** Terminates every outstanding call with the given reason. */
   terminateAll(reason: string): void;
 }
 
-export function createSubagentWaitRegistry(): SubagentWaitRegistry {
-  const waits = new Set<{ end(reason: WaitEndReason): void }>();
+export function createSubagentBlockingCallRegistry(): SubagentBlockingCallRegistry {
+  const calls = new Set<{ end(reason: BlockingCallEndReason): void }>();
   return {
-    register(wait) {
-      waits.add(wait);
-      return () => waits.delete(wait);
+    register(call) {
+      calls.add(call);
+      return () => calls.delete(call);
     },
     terminateAll(reason) {
-      const outstanding = [...waits];
-      waits.clear();
-      for (const wait of outstanding) {
+      const outstanding = [...calls];
+      calls.clear();
+      for (const call of outstanding) {
         try {
-          wait.end({ kind: "terminated", reason });
+          call.end({ kind: "terminated", reason });
         } catch {
-          // a terminating wait never blocks the session lifecycle
+          // a terminating tool call never blocks the session lifecycle
         }
       }
     },
@@ -244,7 +258,7 @@ async function awaitClaimedResults(input: {
   state: SubagentRuntimeState;
   claim: SubagentDeliveryClaim;
   signal?: AbortSignal;
-  registry: SubagentWaitRegistry;
+  registry: SubagentBlockingCallRegistry;
 }): Promise<WaitEndReason | undefined> {
   const { state, claim, registry } = input;
   let wake: () => void = () => {};
@@ -382,7 +396,7 @@ function buildWaitDetails(ids: string[], results: SubagentWaitResult[], waitedMs
 export function registerWaitSubagentTool(
   pi: ExtensionAPI,
   state: SubagentRuntimeState,
-  registry: SubagentWaitRegistry,
+  registry: SubagentBlockingCallRegistry,
   decorate?: (definition: ToolDefinition<any, any, any>) => ToolDefinition<any, any, any>,
 ): void {
   const definition: ToolDefinition<any, any, any> = {

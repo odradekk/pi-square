@@ -440,9 +440,148 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
   };
 }
 
-// ─── wait_subagent adapter ──────────────────────────────────────────
+// ─── abort_subagent adapter ─────────────────────────────────────────
 
-/** The requested-ID selection of one wait call, deduplicated in order. */
+/** One human sentence for a failed abort request, derived from its structured
+ * error code; the full raw text stays in errorRaw for the expanded body. */
+function abortFailureSentence(code: string | undefined): string {
+  if (code === "ABORTED") {
+    return "The abort wait ended before every selected target reached a terminal state; abort signals already sent stay in effect.";
+  }
+  if (code === "SUBAGENT_NOT_FOUND") {
+    return "The abort request was rejected because a selected subagent is unknown or belongs to another parent session.";
+  }
+  if (code === "INVALID_ARGUMENT") {
+    return "The abort request was rejected because the ids selection is invalid.";
+  }
+  if (code === "PERSISTENCE_FAILED") {
+    return "The abort request failed because the parent session has no stable session ID.";
+  }
+  return "The abort request failed.";
+}
+
+function createAbortAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> {
+  return {
+    describeCall(argsValue, context) {
+      const args = record(argsValue);
+      const ids = waitSelection(args.ids);
+
+      const rows: DisplayRow[] = [];
+      const shortIds = ids.map((id) => shortId(id)).filter(Boolean);
+      if (shortIds.length > 0) {
+        rows.push({ text: shortIds.join(" "), tone: "muted" as DisplayTone });
+      }
+
+      return {
+        version: 1,
+        tool: "abort_subagent",
+        family: "agent",
+        lifecycle: context.executionStarted ? "running" : "queued",
+        title: "Abort",
+        target: waitTarget(ids),
+        metadata: [],
+        rows,
+      };
+    },
+    describeResult(result, options, context) {
+      const details = record(result.details);
+      const text = textResult(result);
+
+      // The V1 abort details carry the ordered per-target outcomes; anything
+      // else is a rejected or interrupted request rendered as one failure row.
+      const entries = Array.isArray(details.results)
+        ? details.results.map((entry) => record(entry))
+        : [];
+      const isAbort = details.version === 1 && entries.length > 0;
+
+      if (!isAbort) {
+        // C6 error contract: the header states one human sentence derived from
+        // the structured error code; the full raw failure text moves to
+        // errorRaw and renders exactly once as an expanded Error section, so a
+        // collapsed failure stays one row and never leaks the raw text.
+        const errorInfo = record(details.error);
+        const code = typeof errorInfo.code === "string" ? errorInfo.code : undefined;
+        return {
+          version: 1,
+          tool: "abort_subagent",
+          family: "agent",
+          lifecycle: context.isError ? "failed" : "completed",
+          title: "Abort",
+          target: waitTarget(waitSelection(record(context.args).ids)),
+          metadata: [],
+          rows: [],
+          sections: [],
+          summary: undefined,
+          ...(context.isError
+            ? { error: abortFailureSentence(code), ...(text ? { errorRaw: text } : {}) }
+            : {}),
+        };
+      }
+
+      // A successful abort request is a successful call: aborted is the
+      // expected outcome, so the lifecycle stays completed unless the call
+      // itself failed (validation, ownership, infrastructure, interruption).
+      const lifecycle: OperationalLifecycle = context.isError ? "failed" : "completed";
+
+      // Ordered target evidence, one row per selected run in requested order
+      // (at most six): the terminal outcome, the pre-request state, and the
+      // bounded task line. Payload evidence appears only in the expanded body.
+      const rowsSection: DisplaySection = {
+        title: "Targets",
+        blocks: entries.map((entry) => {
+          const status = String(entry.status);
+          const before = String(entry.before ?? "");
+          const task = clipTaskPreview(entry.task);
+          const tone: DisplayTone = status === "failed" ? "error" : status === "aborted" ? "muted" : "default";
+          return {
+            kind: "text" as const,
+            text: [shortId(entry.id), status, before ? `was ${before}` : undefined, task].filter(Boolean).join(" · "),
+            tone,
+          };
+        }),
+      };
+
+      const evidenceSections: DisplaySection[] = [];
+      for (const entry of entries) {
+        const status = String(entry.status);
+        const id = shortId(entry.id);
+        const reasonText = typeof entry.reason === "string" ? entry.reason.trim() : "";
+        const errorText = typeof entry.error === "string" ? entry.error.trim() : "";
+        if (status === "failed" && errorText) {
+          evidenceSections.push({
+            title: `Error ${id}`,
+            blocks: [{ kind: "text", text: errorText, tone: "error" as DisplayTone }],
+          });
+        } else if (status === "aborted" && reasonText) {
+          evidenceSections.push({
+            title: `Reason ${id}`,
+            blocks: [{ kind: "text", text: reasonText, tone: "muted" as DisplayTone }],
+          });
+        }
+      }
+
+      const ids = Array.isArray(details.ids) ? details.ids.map((id) => String(id)) : [];
+
+      return {
+        version: 1,
+        tool: "abort_subagent",
+        family: "agent",
+        lifecycle,
+        title: "Abort",
+        target: waitTarget(ids),
+        metadata: [],
+        rows: [],
+        sections: options.expanded ? [rowsSection, ...evidenceSections] : [],
+        summary: waitSummary(entries.map((entry) => ({ status: String(entry.status) }))),
+        durationMs: typeof details.waitedMs === "number" ? details.waitedMs : undefined,
+      };
+    },
+  };
+}
+
+// ─── shared multi-ID selection helpers (wait/abort) ─────────────────
+
+/** The requested-ID selection of one multi-ID call, deduplicated in order. */
 function waitSelection(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const ids: string[] = [];
@@ -480,6 +619,29 @@ export function waitSummary(results: { status: string }[]): string | undefined {
   return parts.join(" · ");
 }
 
+// ─── wait_subagent adapter ──────────────────────────────────────────
+
+/** One bounded human sentence from the structured wait failure. The complete
+ * model-facing failure stays separate in `errorRaw` for expanded evidence. */
+function waitFailureSentence(errorInfo: Record<string, unknown>): string {
+  const message = typeof errorInfo.message === "string"
+    ? errorInfo.message.replace(/\s+/g, " ").trim()
+    : "";
+  if (message) return message;
+
+  const code = typeof errorInfo.code === "string" ? errorInfo.code : undefined;
+  if (code === "ABORTED") return "The wait was interrupted before every selected subagent reached a terminal state.";
+  if (code === "SESSION_HISTORY_UNAVAILABLE") return "A selected subagent's history became unavailable while waiting.";
+  if (code === "SUBAGENT_NOT_FOUND") return "The wait request was rejected because a selected subagent is unknown or belongs to another parent session.";
+  if (code === "INVALID_ARGUMENT") return "The wait request was rejected because the ids selection is invalid.";
+  if (code === "RESULT_CLAIMED") return "A selected subagent result is already claimed by another wait_subagent call.";
+  if (code === "RESULT_SENT") return "A selected subagent result is already scheduled for automatic delivery.";
+  if (code === "WAIT_CAPACITY") return "The wait request exceeded the active reservation capacity.";
+  if (code === "RESULT_UNAVAILABLE" || code === "RESULT_DELIVERED") return "A selected subagent result is no longer available to wait for.";
+  if (code === "PERSISTENCE_FAILED") return "The wait request failed because the parent session has no stable session ID.";
+  return "The wait request failed.";
+}
+
 function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> {
   return {
     describeCall(argsValue, context) {
@@ -515,6 +677,7 @@ function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> 
       const isWait = details.version === 1 && entries.length > 0;
 
       if (!isWait) {
+        const errorInfo = record(details.error);
         return {
           version: 1,
           tool: "wait_subagent",
@@ -526,7 +689,9 @@ function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> 
           rows: [],
           sections: [],
           summary: undefined,
-          ...(context.isError && text ? { error: text } : {}),
+          ...(context.isError
+            ? { error: waitFailureSentence(errorInfo), ...(text ? { errorRaw: text } : {}) }
+            : {}),
         };
       }
 
@@ -604,11 +769,14 @@ export function decorateSubagentTool<T extends ToolDefinition<any, any, any>>(
 ): T {
   const adapter = definition.name === "wait_subagent"
     ? createWaitAdapter()
-    : createSubagentAdapter(definition.name);
+    : definition.name === "abort_subagent"
+      ? createAbortAdapter()
+      : createSubagentAdapter(definition.name);
   return decorateToolDefinition(definition, runtime, adapter) as T;
 }
 
 export const __testables = {
   createWaitAdapter,
+  createAbortAdapter,
   waitSummary,
 };

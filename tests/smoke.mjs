@@ -71,7 +71,7 @@ try {
   assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
-    "ask", "delegate_subagent", "docs", "fetch",
+    "abort_subagent", "ask", "delegate_subagent", "docs", "fetch",
     "libs", "parse", "pdf_search", "replace", "resume_subagent", "search",
     "todo", "wait_subagent",
   ];

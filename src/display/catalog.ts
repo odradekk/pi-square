@@ -178,6 +178,13 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     child: false,
     description: "Wait for selected background subagents and consume their results",
   },
+  {
+    name: "abort_subagent",
+    family: "agent",
+    parent: true,
+    child: false,
+    description: "Stop selected background subagents and wait until they abort",
+  },
 ] satisfies readonly DisplayToolCatalogEntry[]).map((entry) => Object.freeze(entry)));
 
 // ── Lookup helpers ───────────────────────────────────────────────────

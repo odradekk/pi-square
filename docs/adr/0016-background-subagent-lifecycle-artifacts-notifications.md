@@ -144,6 +144,57 @@ aborted-result policy.
   (`RESULT_PENDING`, `RESULT_CLAIMED`), because a new run under the same
   public ID would overwrite unseen output.
 
+### Explicit abort (`abort_subagent`)
+
+The parent gains `abort_subagent` as the wait-aware way to stop selected
+background runs (#278), completing the four-tool background-only contract.
+
+- `abort_subagent` accepts the same strict `ids` array as `wait_subagent`
+  (one to six public IDs, deduplicated in first-occurrence order) and
+  validates the complete selection before any abort signal: one malformed,
+  unknown, or foreign ID rejects the whole call and nothing is aborted. Only
+  runs of the current parent session are abortable.
+- Queued and running targets receive this request's abort signal through the
+  same `cancelBackgroundJobs` seam the `/subagent` manager's Cancel action
+  uses, and the tool waits until every active target has actually reached the
+  `aborted` terminal state. A target that was already cancelling keeps the
+  signal of its earlier cancellation — the seam's cancelling branch sends no
+  new signal — so the request truthfully reports that it applied none and only
+  waits for that stop to complete. Once a signal has linearized against an
+  active job, abort wins a simultaneous natural-completion race — the
+  lifecycle's aborted check resolves a natural completion as `aborted` — while
+  a target that was already terminal before the request keeps its real state.
+- Already-terminal targets are valid targets and are only reported:
+  `completed` without repeating its successful result, `failed` with its
+  complete established bounded error, and `aborted` with its abort reason.
+  Aborting is not a second result-consumption path.
+- A successful abort request is a successful tool call even though its active
+  targets end `aborted`. Tool-level error marks a request that was rejected —
+  validation, ownership, or infrastructure failure — or one whose
+  terminal-state observation could not complete: an interrupted tool wait, or
+  one ended by a session replacement or shutdown, has not observed every
+  target's final state and reports that failure truthfully without fabricating
+  complete details. Abort signals already sent are never retracted; the
+  targets keep stopping on their own.
+- Abort never claims or consumes a result. A run claimed by `wait_subagent`
+  stays owned by that waiter, which receives the aborted terminal outcome
+  through the established claimed-aborted delivery policy, and an ordinary
+  aborted run still never enters the automatic completion delivery.
+- The versioned V1 abort details preserve request order and record each
+  target's state before the request, its terminal state, whether an abort
+  signal was applied, and its bounded failure or abort reason, under the same
+  bounded projection discipline as the wait details.
+- The `/subagent` manager keeps its Resume, Fresh, and Cancel interaction and
+  adds no Wait action; manager Cancel and `abort_subagent` share the
+  cancellation seam and the same lifecycle and safety rules, and the manager
+  lists and cancels only the current parent session's active jobs — the live
+  job record is re-checked for session ownership at action time, never trusted
+  from the rendered snapshot.
+- The display follows the calm operational grammar: the selected count while
+  stopping, a completed lifecycle for a successful request with truthful
+  per-target outcome counts, one ordered expanded row per target, and one
+  quiet evidence section for each failed or aborted target.
+
 ## Why now
 
 The background-only rename left the domain carrying its retired vocabulary:
@@ -183,9 +234,10 @@ defensive spellings for values that can no longer occur.
 - **ADR-0015** recorded the same explicit-supersession style over ADR-0004's
   GitHub-tool portion.
 
-## Future slices
+## Completion
 
-The parent specification (#274) continues with an explicit `abort_subagent`
-with abort races, abort display, manager cancel alignment, and the four-tool
-wrap-up. That decision will be recorded when it lands; nothing here
-anticipates it.
+With the explicit abort recorded above, the parent specification (#274) is
+complete: delegation and resume queue background-only, waiting is explicit and
+ownership-transferring, aborting is explicit and wait-aware, and the four
+parent-only tools — `delegate_subagent`, `resume_subagent`, `wait_subagent`,
+and `abort_subagent` — form one contract over one lifecycle vocabulary.

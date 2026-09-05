@@ -447,8 +447,14 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
 {
   const description = waitAdapter.describeResult(
     {
-      content: [{ type: "text", text: "Subagent failed: RESULT_CLAIMED" }],
-      details: { status: "error", error: { code: "RESULT_CLAIMED" } },
+      content: [{ type: "text", text: "Subagent failed: RESULT_CLAIMED\nMessage: raw claim detail" }],
+      details: {
+        status: "error",
+        error: {
+          code: "RESULT_CLAIMED",
+          message: "A selected subagent result is already claimed by another wait_subagent call.",
+        },
+      },
     },
     { expanded: true },
     { isError: true, args: { ids: [waitId("11111111"), waitId("22222222")] } },
@@ -457,5 +463,126 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
   assert.equal(description.lifecycle, "failed");
   assert.equal(description.target, "2 runs");
   assert.deepEqual(description.sections, []);
-  assert.match(description.error, /RESULT_CLAIMED/);
+  assert.match(description.error, /already claimed by another wait_subagent call/);
+  assert.doesNotMatch(description.error, /\n/);
+  assert.match(description.errorRaw, /raw claim detail/);
 }
+
+// ─── abort_subagent calm operational display (#278) ──────────────────
+
+{
+  const abortAdapter = subagentAdapterTestables.createAbortAdapter();
+  const abortId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
+
+  // abort call description: selected count and ordered short ids
+  {
+    const single = abortAdapter.describeCall(
+      { ids: [abortId("11111111")] },
+      { executionStarted: false },
+    );
+    assert.equal(single.title, "Abort");
+    assert.equal(single.family, "agent");
+    assert.equal(single.lifecycle, "queued");
+    assert.equal(single.target, "11111111");
+    assert.equal(single.qualifiers, undefined);
+
+    const multi = abortAdapter.describeCall(
+      { ids: [abortId("22222222"), abortId("11111111"), abortId("22222222")] },
+      { executionStarted: true },
+    );
+    assert.equal(multi.lifecycle, "running");
+    assert.equal(multi.target, "2 runs");
+    assert.equal(multi.rows.length, 1);
+    assert.equal(multi.rows[0].tone, "muted");
+  }
+
+  // abort result description: truthful per-target outcomes, success lifecycle
+  // for a successful request even though every active target aborted
+  {
+    const target = (id, before, status, extra = {}) => ({
+      id,
+      before,
+      status,
+      abortApplied: before === "queued" || before === "running" || before === "cancelling",
+      task: `${id} task line`,
+      startedAt: 1,
+      endedAt: 2,
+      durationMs: 1,
+      ...extra,
+    });
+    const result = {
+      content: [{ type: "text", text: "aborted" }],
+      details: {
+        version: 1,
+        ids: [abortId("22222222"), abortId("11111111"), abortId("33333333")],
+        results: [
+          target(abortId("22222222"), "running", "aborted", { reason: "RAW-REASON-7T4K stopped by request" }),
+          target(abortId("11111111"), "completed", "completed"),
+          target(abortId("33333333"), "failed", "failed", { error: "RAW-FAILURE-2V8N earlier failure" }),
+        ],
+        waitedMs: 1200,
+      },
+    };
+    const args = { ids: [abortId("22222222"), abortId("11111111"), abortId("33333333")] };
+
+    const collapsed = abortAdapter.describeResult(result, { expanded: false }, { isError: false, args });
+    assert.equal(collapsed.lifecycle, "completed", "a successful abort request renders as a completed call");
+    assert.equal(collapsed.title, "Abort");
+    assert.equal(collapsed.target, "3 runs");
+    assert.equal(collapsed.summary, "completed · failed · aborted");
+    assert.deepEqual(collapsed.sections, [], "a collapsed abort entry is exactly one row and shows no payload");
+    assert.equal(collapsed.error, undefined, "aborted targets are the expected outcome, not a header failure");
+
+    const expanded = abortAdapter.describeResult(result, { expanded: true }, { isError: false, args });
+    assert.deepEqual(expanded.sections.map((section) => section.title), [
+      "Targets",
+      "Reason 22222222",
+      "Error 33333333",
+    ]);
+    const rows = expanded.sections[0].blocks;
+    assert.deepEqual(rows.map((row) => row.tone), ["muted", "default", "error"]);
+    assert.ok(rows[0].text.startsWith("22222222 · aborted · was running"), rows[0].text);
+    assert.ok(rows[1].text.startsWith("11111111 · completed · was completed"), rows[1].text);
+    assert.ok(rows[2].text.startsWith("33333333 · failed · was failed"), rows[2].text);
+    assert.equal(expanded.sections[1].blocks[0].text, "RAW-REASON-7T4K stopped by request");
+    assert.equal(expanded.sections[1].blocks[0].tone, "muted", "an abort reason is quiet evidence, not a failure");
+    assert.equal(expanded.sections[2].blocks[0].text, "RAW-FAILURE-2V8N earlier failure");
+    assert.equal(expanded.sections[2].blocks[0].tone, "error");
+    assert.equal(expanded.durationMs, 1200);
+    assert.equal(expanded.error, undefined);
+  }
+
+  // a rejected or interrupted abort renders one sentence in the header and
+  // keeps the full raw failure text for the expanded Error section only
+  {
+    const description = abortAdapter.describeResult(
+      {
+        content: [{ type: "text", text: "Subagent failed: ABORTED\nMessage: RAW-INTERRUPTION-6Y3T detail" }],
+        details: { status: "error", error: { code: "ABORTED" } },
+      },
+      { expanded: true },
+      { isError: true, args: { ids: [abortId("11111111")] } },
+    );
+    assert.equal(description.title, "Abort");
+    assert.equal(description.lifecycle, "failed");
+    assert.equal(description.target, "11111111");
+    assert.deepEqual(description.sections, [], "the Error section comes from errorRaw in the component, not the adapter");
+    assert.match(description.error, /abort wait ended before every selected target/);
+    assert.doesNotMatch(description.error, /\n/, "the header error is one sentence");
+    assert.match(description.errorRaw, /RAW-INTERRUPTION-6Y3T/, "the raw text moves to errorRaw");
+    assert.doesNotMatch(description.error, /RAW-INTERRUPTION-6Y3T/);
+
+    const rejected = abortAdapter.describeResult(
+      {
+        content: [{ type: "text", text: "Subagent failed: SUBAGENT_NOT_FOUND\nMessage: RAW-REJECTION-1W7Q detail" }],
+        details: { status: "error", error: { code: "SUBAGENT_NOT_FOUND" } },
+      },
+      { expanded: false },
+      { isError: true, args: { ids: [abortId("22222222")] } },
+    );
+    assert.match(rejected.error, /rejected because a selected subagent is unknown/);
+    assert.match(rejected.errorRaw, /RAW-REJECTION-1W7Q/);
+  }
+}
+
+console.log("abort_subagent rendering: adapter grammar passed");
