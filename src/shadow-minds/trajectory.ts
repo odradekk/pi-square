@@ -44,6 +44,7 @@ const KNOWN_TOOL_FIELDS: Readonly<Record<string, readonly string[]>> = Object.fr
   edit: ["path"],
   write: ["path"],
   replace: ["path"],
+  insert: ["path"],
   pdf_search: ["query", "path"],
   search: ["queries"],
   fetch: ["urls"],
