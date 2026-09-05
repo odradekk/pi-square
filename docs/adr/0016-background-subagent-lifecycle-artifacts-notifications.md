@@ -27,9 +27,12 @@ the background completion notification contract. It supersedes:
   notification payload, and its single-result V3 notification compatibility.
   ADR-0009's reliable-delivery mechanics — the memory-only session-scoped
   pending set, safe delivery timing, transcript confirmation, resend,
-  batching, budgets, and bounds — remain in force. The V4 run-artifact break
-  below is this ADR's own decision; ADR-0009 governed delivery, not run
-  persistence.
+  batching, budgets, and bounds — remain in force, extended by the atomic
+  result-ownership operations this ADR adds below (the single automatic
+  consumer becomes one automatic consumer plus explicitly claiming waiters;
+  adapters that never claim, such as Shadow Minds, keep their exact previous
+  semantics). The V4 run-artifact break below is this ADR's own decision;
+  ADR-0009 governed delivery, not run persistence.
 
 ## Decision
 
@@ -83,6 +86,64 @@ removed. A V4 notification persisted by an earlier session therefore renders
 through the bounded content fallback rather than as a structured run, and
 confirms nothing.
 
+### Explicit result ownership (`wait_subagent`)
+
+The confirmed-delivery core gains atomic claim, take, and release operations,
+and the parent gains `wait_subagent` as the ordered, bounded consumer of
+claimed terminal results (#277). The core owns what is genuinely shared —
+synchronization with the automatic flush, the sent-state check, capacity, and
+the single-consumer guarantee — while the Subagent adapter owns job
+eligibility, terminal-state mapping, result formatting, and the
+aborted-result policy.
+
+- `wait_subagent` accepts a strict `ids` array of one to six public IDs,
+  deduplicates repeated IDs in first-occurrence order, and validates the
+  complete request before any state change: one malformed, unknown, foreign,
+  ineligible, already-claimed, or already-sent ID rejects the whole call.
+- Only runs of the current parent session are waitable — the boundary is the
+  parent session identity, so background jobs an earlier parent session left
+  in the process are as foreign as persisted records on disk. Current-session
+  queued, running, and cancelling jobs can be claimed before completion; an
+  unsent pending completed or failed result can be claimed and returned
+  immediately. A result already sent to Pi but not yet transcript-confirmed
+  cannot be withdrawn into a wait; a confirmed result and a run that finished
+  aborted before being claimed hold nothing to wait for.
+- Claimed results stay in the pending store but are excluded from automatic
+  delivery and from pending-set eviction. Claims are all-or-nothing, at most
+  one waiter owns one ID, and at most 50 reservations are held at once —
+  including reservations of active IDs whose results do not exist yet. The
+  pending set's 50-result bound stays total: claimed entries count toward it
+  but are never evicted, so an incoming unclaimed result is the one dropped
+  when every older entry is claimed. Deleting a run's history ends its
+  reservation as well; every claim operation is owner-checked, so the
+  previous holder wakes and ends deterministically and a stale handle can
+  never take or release a later waiter's claim on the same ID.
+- The waiter returns only after every claimed run reaches `completed`,
+  `failed`, or `aborted`, takes the complete claimed set atomically, and
+  returns every entry in requested-ID order. Output reuses the background
+  delivery formatter and its budgets with no `(resent)` marker; a failed or
+  aborted entry makes the tool result an error without discarding completed
+  siblings. The versioned wait details state the ordered IDs, each terminal
+  state, and the explicit pending-result consumption, and each entry is an
+  explicitly bounded projection: format-bounded identifiers (the public ID,
+  the operation, the terminal status), a 300-character task line, and
+  4,000-character head/tail-clipped result or error evidence. Every string in
+  the projection is bounded by one of those rules — the agent name and the
+  model string are omitted precisely because neither has a source-side
+  length limit, and the full run record with its prompt snapshot, session
+  paths, and unbounded texts never enters.
+- Interrupting the wait releases its claims without aborting any child.
+  Released completed and failed results rejoin the automatic delivery
+  schedule; released aborted results are removed from delivery storage, and
+  an aborted outcome enters the store at all only while a waiter already owns
+  the ID, so an ordinary aborted run still never notifies the parent.
+- Session replacement, reload, and shutdown terminate every outstanding wait
+  and clear the memory-only claims together with the pending set.
+- While a result is pending or claimed, `resume_subagent` and the `/subagent`
+  manager both reject a resume with distinct recovery-oriented errors
+  (`RESULT_PENDING`, `RESULT_CLAIMED`), because a new run under the same
+  public ID would overwrite unseen output.
+
 ## Why now
 
 The background-only rename left the domain carrying its retired vocabulary:
@@ -124,8 +185,7 @@ defensive spellings for values that can no longer occur.
 
 ## Future slices
 
-The parent specification (#274) continues with an explicit `wait_subagent`
-built on atomic claim/take/release operations in the confirmed-delivery core,
-and an explicit `abort_subagent` with abort races and the four-tool wrap-up.
-Those decisions will be recorded when they land; nothing here anticipates
-them.
+The parent specification (#274) continues with an explicit `abort_subagent`
+with abort races, abort display, manager cancel alignment, and the four-tool
+wrap-up. That decision will be recorded when it lands; nothing here
+anticipates it.

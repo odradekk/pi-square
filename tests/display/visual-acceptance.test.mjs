@@ -626,7 +626,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
       parameters: { type: "object", properties: {}, additionalProperties: false },
       execute() { return { content: [] }; },
     };
-    const decorated = entry.name.startsWith("subagent_")
+    const decorated = entry.family === "agent"
       ? decorateSubagentTool(definition, () => runtime)
       : decorateInternalTool(definition, () => runtime);
     assert.equal(decorated.renderShell, "self", `${entry.name} must own its render shell`);
@@ -748,6 +748,169 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   assert.ok(header.includes(darkTheme.fg("success", "\u2713")), "marker uses the success state tone");
   assert.ok(header.includes(darkTheme.fg("toolTitle", darkTheme.bold("Bash"))), "title carries the identity tone");
   assert.ok(header.includes(darkTheme.fg("muted", "npm test")), "target stays neutral");
+}
+
+// ── 21. wait_subagent: production catalog/adapter path (#277) ──
+
+{
+  const waitEntry = DISPLAY_CATALOG.find((entry) => entry.name === "wait_subagent");
+  assert.ok(waitEntry, "wait_subagent must be declared in the display catalog");
+  assert.equal(waitEntry.family, "agent");
+  assert.equal(waitEntry.parent, true);
+  assert.equal(waitEntry.child, false);
+
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true, test: true },
+  });
+  const definition = {
+    name: "wait_subagent",
+    description: "wait",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute() { return { content: [] }; },
+  };
+  const decorated = decorateSubagentTool(definition, () => runtime);
+  assert.equal(decorated.renderShell, "self", "wait_subagent must own its render shell");
+
+  const ids = [
+    "subagent_11111111-1111-4111-8111-111111111111",
+    "subagent_22222222-2222-4222-8222-222222222222",
+    "subagent_33333333-3333-4333-8333-333333333333",
+  ];
+  const args = { ids };
+  const waitDetails = {
+    version: 1,
+    ids,
+    consumed: true,
+    waitedMs: 2500,
+    results: [
+      {
+        id: ids[0],
+        status: "failed",
+        run: {
+          id: ids[0],
+          operation: "delegate",
+          status: "failed",
+          task: "first selected task",
+          startedAt: 1,
+          endedAt: 2,
+          durationMs: 1,
+          result: "",
+          error: "RAW-FAILURE-9Z7Q first run stopped",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          toolErrors: 0,
+          toolWarnings: 0,
+        },
+      },
+      {
+        id: ids[1],
+        status: "completed",
+        run: {
+          id: ids[1],
+          operation: "delegate",
+          status: "completed",
+          task: "second selected task",
+          startedAt: 1,
+          endedAt: 2,
+          durationMs: 1,
+          result: "COMPLETED-EVIDENCE-4K2P sibling output",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          toolErrors: 0,
+          toolWarnings: 0,
+        },
+      },
+      {
+        id: ids[2],
+        status: "aborted",
+        run: {
+          id: ids[2],
+          operation: "delegate",
+          status: "aborted",
+          task: "third selected task",
+          startedAt: 1,
+          endedAt: 2,
+          durationMs: 1,
+          result: "",
+          error: "RAW-ABORT-6C1M third run was stopped",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          toolErrors: 0,
+          toolWarnings: 0,
+        },
+      },
+    ],
+  };
+
+  function context(overrides = {}) {
+    return {
+      args,
+      toolCallId: "wait-call-1",
+      invalidate() {},
+      lastComponent: undefined,
+      state: {},
+      cwd: root,
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: true,
+      ...overrides,
+    };
+  }
+
+  const call = decorated.renderCall(args, darkTheme, context());
+  const resultComponent = decorated.renderResult(
+    { content: [{ type: "text", text: "waited" }], details: waitDetails },
+    { expanded: false, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call }),
+  );
+
+  // Collapsed: exactly one row, ordered counts in the summary, one failure
+  // sentence in the header, and no payload anywhere.
+  const collapsed = stripVTControlCharacters(resultComponent.render(120).join("\n"));
+  assert.match(collapsed, /^× Wait 3 runs/, "collapsed wait keeps the failed fallback marker, title, and selected count");
+  assert.match(collapsed, /2 of 3 selected runs failed or aborted/, "the header carries the one-sentence failure");
+  assert.doesNotMatch(collapsed, /RAW-FAILURE-9Z7Q|COMPLETED-EVIDENCE-4K2P|RAW-ABORT-6C1M/, "collapsed shows no payload");
+  assert.doesNotMatch(collapsed, /\n.*\n/, "a collapsed wait entry is exactly one row");
+
+  // Expanded: the ordered rows plus one bounded evidence section per run;
+  // each failure's raw text appears exactly once, in an Error section.
+  const expanded = decorated.renderResult(
+    { content: [{ type: "text", text: "waited" }], details: waitDetails },
+    { expanded: true, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call, expanded: true }),
+  );
+  const expandedPlain = stripVTControlCharacters(expanded.render(120).join("\n"));
+  const rowIndex = expandedPlain.indexOf("11111111");
+  const secondIndex = expandedPlain.indexOf("22222222");
+  const thirdIndex = expandedPlain.indexOf("33333333");
+  assert.ok(rowIndex >= 0 && secondIndex > rowIndex && thirdIndex > secondIndex, "expanded rows follow requested-ID order");
+  assert.match(expandedPlain, /Results/);
+  assert.match(expandedPlain, /COMPLETED-EVIDENCE-4K2P/, "expanded shows the completed sibling's result evidence");
+  assert.equal(
+    expandedPlain.split("RAW-FAILURE-9Z7Q").length - 1,
+    1,
+    "the failed run's raw text appears exactly once",
+  );
+  assert.equal(
+    expandedPlain.split("RAW-ABORT-6C1M").length - 1,
+    1,
+    "the aborted run's raw text appears exactly once",
+  );
+  const errorHeaderCount = (expandedPlain.match(/Error 11111111/g) ?? []).length
+    + (expandedPlain.match(/Error 33333333/g) ?? []).length;
+  assert.equal(errorHeaderCount, 2, "each failure evidence section is titled with its run");
+
+  for (const width of [40, 63, 80, 120]) {
+    for (const component of [call, expanded]) {
+      const lines = component.render(width);
+      assert.ok(
+        lines.every((line) => visibleWidth(line) <= width),
+        `wait_subagent exceeded ${width} through the production decoration path`,
+      );
+    }
+  }
 }
 
 console.log("visual acceptance tests: OK");

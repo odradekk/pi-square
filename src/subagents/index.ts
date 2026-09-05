@@ -15,6 +15,7 @@ import { registerSubagentManager } from "./manager";
 import { createNativeSubagentStatusController } from "./status";
 import { anchoredEditingEnabled, registerSubagentTool, type SubagentRuntimeState } from "./tool";
 import { decorateSubagentTool } from "./display-adapter";
+import { createSubagentWaitRegistry } from "./wait";
 
 function formatSubagentCatalog(state: SubagentRuntimeState): string {
   const definitions = filterVisibleSubagents(state.registry).definitions;
@@ -67,17 +68,25 @@ export default function registerSubagents(
     isIdle: () => state.sessionCtx?.isIdle() ?? true,
     notify: () => notifyBackgroundChange(state.background),
   });
+  // Outstanding explicit waits are session-scoped: a session replacement,
+  // reload, or shutdown terminates every one of them, and the delivery reset
+  // clears their memory-only claims.
+  const waitRegistry = createSubagentWaitRegistry();
   state.background.delivery = delivery;
   const nativeStatus = createNativeSubagentStatusController(state.background);
 
-  registerSubagentTool(pi, state, runtime
-    ? (definition) => decorateSubagentTool(definition, runtime)
-    : undefined);
+  registerSubagentTool(
+    pi,
+    state,
+    runtime ? (definition) => decorateSubagentTool(definition, runtime) : undefined,
+    waitRegistry,
+  );
   registerSubagentManager(pi, state, runtime);
 
   pi.on("session_start", async (_event, ctx) => {
     state.sessionCtx = ctx;
     state.inheritedSystemCore = undefined;
+    waitRegistry.terminateAll("session replaced");
     delivery.reset();
     refresh(ctx.cwd);
     // Child anchor-store partitions follow subagent artifacts: reconcile the
@@ -125,7 +134,8 @@ export default function registerSubagents(
 
   pi.on("session_shutdown", async () => {
     nativeStatus.stop();
-    abortAllBackgroundJobs(state.background);
+    waitRegistry.terminateAll("session shutdown");
+    abortAllBackgroundJobs(pi, state.background);
     delivery.reset();
     state.sessionCtx = undefined;
     state.inheritedSystemCore = undefined;

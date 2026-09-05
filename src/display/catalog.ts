@@ -171,6 +171,13 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     child: false,
     description: "Queue a continuation for an existing child subagent",
   },
+  {
+    name: "wait_subagent",
+    family: "agent",
+    parent: true,
+    child: false,
+    description: "Wait for selected background subagents and consume their results",
+  },
 ] satisfies readonly DisplayToolCatalogEntry[]).map((entry) => Object.freeze(entry)));
 
 // ── Lookup helpers ───────────────────────────────────────────────────

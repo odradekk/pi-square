@@ -485,4 +485,31 @@ test("inactive stale running session shows marker with inactive suffix", () => {
   manager.dispose();
 });
 
+test("manager blocks resume while a result is claimed or undelivered with distinct messages", () => {
+  const finished = runDetails({ phase: "completed", finalText: "done" });
+
+  const claimedData = data({ running: [], session: [finished], claimedIds: [finished.id], undeliveredIds: [finished.id] });
+  const claimedFake = fakeServices(claimedData);
+  const claimedManager = new SubagentManager(claimedData, tui(), theme, keybindings, () => {}, claimedFake.services);
+  claimedManager.handleInput("\x1b[C");
+  claimedManager.handleInput("\r");
+  const claimedRendered = render(claimedManager, 120);
+  assert.match(claimedRendered, /claimed by an active wait_subagent/);
+  assert.doesNotMatch(claimedRendered, /SESSION \/ RESUME/);
+  assert.equal(claimedFake.calls.some((call) => call[0] === "resume"), false);
+  claimedManager.dispose();
+
+  const pendingData = data({ running: [], session: [finished], claimedIds: [], undeliveredIds: [finished.id] });
+  const pendingFake = fakeServices(pendingData);
+  const pendingManager = new SubagentManager(pendingData, tui(), theme, keybindings, () => {}, pendingFake.services);
+  pendingManager.handleInput("\x1b[C");
+  pendingManager.handleInput("\r");
+  const pendingRendered = render(pendingManager, 120);
+  assert.match(pendingRendered, /has an undelivered result/);
+  assert.match(pendingRendered, /wait_subagent/);
+  assert.doesNotMatch(pendingRendered, /SESSION \/ RESUME/);
+  assert.equal(pendingFake.calls.some((call) => call[0] === "resume"), false);
+  pendingManager.dispose();
+});
+
 await run();

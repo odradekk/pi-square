@@ -22,6 +22,7 @@ import { isRunLeaseActive } from "./lease";
 import { renderSubagentNotification } from "./render";
 import { compileFreshPrompt } from "./prompt";
 import { resolveSubagentCwd } from "./session";
+import { createSubagentWaitRegistry, registerWaitSubagentTool, type SubagentWaitRegistry } from "./wait";
 import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
 
 export interface SubagentRuntimeState {
@@ -163,15 +164,19 @@ function registerNotificationRenderer(pi: ExtensionAPI): void {
   );
 }
 
+
 export function registerSubagentTool(
   pi: ExtensionAPI,
   state: SubagentRuntimeState,
   decorate?: (definition: ToolDefinition<any, any, any>) => ToolDefinition<any, any, any>,
+  waitRegistry?: SubagentWaitRegistry,
 ): void {
   registerNotificationRenderer(pi);
   const register = (definition: ToolDefinition<any, any, any>) => {
     pi.registerTool(decorate ? decorate(definition) : definition);
   };
+  registerWaitSubagentTool(pi, state, waitRegistry ?? createSubagentWaitRegistry(), decorate);
+
 
   register({
     name: "delegate_subagent",
@@ -180,7 +185,7 @@ export function registerSubagentTool(
     promptSnippet: "Use delegate_subagent to queue a new delegated child task in the background; retain the returned id for resume_subagent or the /subagent manager. context is an optional 0-50 parent-message count.",
     promptGuidelines: [
       "Use delegate_subagent for a new delegated task; it queues the child in the background and returns the id immediately.",
-      "Retain the returned id for resume_subagent or the /subagent manager; the finished result arrives as a background completion.",
+      "Retain the returned id for resume_subagent, wait_subagent, or the /subagent manager; the finished result arrives as a background completion unless wait_subagent consumes it.",
       "Use context only when recent parent-session facts or confirmed decisions materially affect the delegated task; history never authorizes work.",
     ],
     parameters: DelegateParams,
@@ -298,6 +303,29 @@ export function registerSubagentTool(
           id,
           retryable: true,
           suggestedAction: "Wait for the active run to finish, or cancel it before retrying resume.",
+        }));
+      }
+      // An unconsumed prior result blocks resume because the pending set is
+      // keyed by public ID: a new run under the same ID would enqueue a fresh
+      // result that overwrites output the parent has not received yet.
+      if (state.background.delivery?.isClaimed(id)) {
+        return failureToolResult(createSubagentError({
+          code: "RESULT_CLAIMED",
+          message: `Subagent '${id}' is claimed by an active wait_subagent call and cannot be resumed.`,
+          operation: "resume",
+          id,
+          retryable: true,
+          suggestedAction: "Let the wait consume the result, then resume the child.",
+        }));
+      }
+      if (state.background.delivery?.isPending(id)) {
+        return failureToolResult(createSubagentError({
+          code: "RESULT_PENDING",
+          message: `Subagent '${id}' still has an undelivered result and cannot be resumed.`,
+          operation: "resume",
+          id,
+          retryable: true,
+          suggestedAction: "Wait for the background completion delivery to arrive, or consume the result with wait_subagent before resuming.",
         }));
       }
 

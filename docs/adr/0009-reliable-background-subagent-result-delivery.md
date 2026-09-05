@@ -9,7 +9,12 @@ status: accepted
 > the V4 notification payload with its single-result V3 notification
 > compatibility. The reliable-delivery mechanics themselves — the pending set,
 > safe timing, confirmation, resend, batching, budgets, and bounds — remain in
-> force.
+> force. ADR-0016 additionally extends this pending set with the atomic
+> claim/take/release result-ownership operations of `wait_subagent`: claimed
+> results are excluded from automatic delivery and eviction under a
+> 50-reservation bound with a single-consumer guarantee, while every adapter
+> that never claims — Shadow Minds included — keeps exactly the automatic
+> semantics recorded here.
 
 Background subagent results were sent with one fire-and-forget
 `pi.sendMessage` for each finished run, clipped to 1600 characters. Two defects

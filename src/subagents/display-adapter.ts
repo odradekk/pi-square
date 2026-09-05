@@ -440,9 +440,175 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
   };
 }
 
+// ─── wait_subagent adapter ──────────────────────────────────────────
+
+/** The requested-ID selection of one wait call, deduplicated in order. */
+function waitSelection(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !item) continue;
+    const id = item.trim();
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+function waitTarget(ids: string[]): string | undefined {
+  if (ids.length === 0) return undefined;
+  if (ids.length === 1) return shortId(ids[0]);
+  return `${ids.length} runs`;
+}
+
+function clipTaskPreview(value: unknown): string {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
+/** Count summary of one wait's ordered terminal outcomes. */
+export function waitSummary(results: { status: string }[]): string | undefined {
+  if (results.length === 0) return undefined;
+  const counts = new Map<string, number>();
+  for (const entry of results) counts.set(entry.status, (counts.get(entry.status) ?? 0) + 1);
+  const parts: string[] = [];
+  for (const status of ["completed", "failed", "aborted"]) {
+    const count = counts.get(status);
+    if (count) parts.push(count === 1 ? status : `${count} ${status}`);
+  }
+  if (parts.length === 0) return undefined;
+  return parts.join(" · ");
+}
+
+function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> {
+  return {
+    describeCall(argsValue, context) {
+      const args = record(argsValue);
+      const ids = waitSelection(args.ids);
+
+      const rows: DisplayRow[] = [];
+      const shortIds = ids.map((id) => shortId(id)).filter(Boolean);
+      if (shortIds.length > 0) {
+        rows.push({ text: shortIds.join(" "), tone: "muted" as DisplayTone });
+      }
+
+      return {
+        version: 1,
+        tool: "wait_subagent",
+        family: "agent",
+        lifecycle: context.executionStarted ? "running" : "queued",
+        title: "Wait",
+        target: waitTarget(ids),
+        metadata: [],
+        rows,
+      };
+    },
+    describeResult(result, options, context) {
+      const details = record(result.details);
+      const text = textResult(result);
+
+      // The V1 wait details carry the ordered aggregate; anything else is a
+      // rejected request rendered as one failure row.
+      const entries = Array.isArray(details.results)
+        ? details.results.map((entry) => record(entry))
+        : [];
+      const isWait = details.version === 1 && entries.length > 0;
+
+      if (!isWait) {
+        return {
+          version: 1,
+          tool: "wait_subagent",
+          family: "agent",
+          lifecycle: context.isError ? "failed" : "completed",
+          title: "Wait",
+          target: waitTarget(waitSelection(record(context.args).ids)),
+          metadata: [],
+          rows: [],
+          sections: [],
+          summary: undefined,
+          ...(context.isError && text ? { error: text } : {}),
+        };
+      }
+
+      const statuses = entries.map((entry) => String(entry.status));
+      const lifecycle: OperationalLifecycle = statuses.includes("failed")
+        ? "failed"
+        : statuses.includes("aborted")
+          ? "aborted"
+          : "completed";
+
+      // Ordered terminal evidence, one block per selected run in requested
+      // order (at most six): the compact outcome row, then the bounded result
+      // or error text of each run. The payload appears only in the expanded
+      // body — a collapsed wait entry is exactly one row — and each failure's
+      // raw text appears exactly once, in its own expanded Error section.
+      const rowsSection: DisplaySection = {
+        title: "Results",
+        blocks: entries.map((entry) => {
+          const status = String(entry.status);
+          const run = record(entry.run);
+          const id = shortId(run.id ?? entry.id);
+          const task = clipTaskPreview(run.task);
+          const tone: DisplayTone = status === "failed" ? "error" : status === "aborted" ? "muted" : "default";
+          return { kind: "text" as const, text: [id, status, task].filter(Boolean).join(" · "), tone };
+        }),
+      };
+
+      const evidenceSections: DisplaySection[] = [];
+      for (const entry of entries) {
+        const status = String(entry.status);
+        const run = record(entry.run);
+        const id = shortId(run.id ?? entry.id);
+        const resultText = typeof run.result === "string" ? run.result.trim() : "";
+        const errorText = typeof run.error === "string" ? run.error.trim() : "";
+        if (status === "completed" && resultText) {
+          evidenceSections.push({
+            title: `Result ${id}`,
+            blocks: [{ kind: "markdown", text: resultText }],
+            compact: false,
+          });
+        } else if (status !== "completed" && errorText) {
+          evidenceSections.push({
+            title: `Error ${id}`,
+            blocks: [{ kind: "text", text: errorText, tone: "error" as DisplayTone }],
+          });
+        }
+      }
+
+      const notCompleted = statuses.filter((status) => status !== "completed").length;
+      const ids = Array.isArray(details.ids) ? details.ids.map((id) => String(id)) : [];
+
+      return {
+        version: 1,
+        tool: "wait_subagent",
+        family: "agent",
+        lifecycle,
+        title: "Wait",
+        target: waitTarget(ids),
+        metadata: [],
+        rows: [],
+        sections: options.expanded ? [rowsSection, ...evidenceSections] : [],
+        summary: waitSummary(entries.map((entry) => ({ status: String(entry.status) }))),
+        durationMs: typeof details.waitedMs === "number" ? details.waitedMs : undefined,
+        ...(notCompleted > 0
+          ? { error: `${notCompleted} of ${statuses.length} selected runs failed or aborted` }
+          : {}),
+      };
+    },
+  };
+}
+
 export function decorateSubagentTool<T extends ToolDefinition<any, any, any>>(
   definition: T,
   runtime: DisplayRuntimeProvider,
 ): T {
-  return decorateToolDefinition(definition, runtime, createSubagentAdapter(definition.name)) as T;
+  const adapter = definition.name === "wait_subagent"
+    ? createWaitAdapter()
+    : createSubagentAdapter(definition.name);
+  return decorateToolDefinition(definition, runtime, adapter) as T;
 }
+
+export const __testables = {
+  createWaitAdapter,
+  waitSummary,
+};
