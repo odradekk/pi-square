@@ -33,7 +33,12 @@ plus frozen, task-scoped authority sections: it receives no task authority
 from the parent conversation, cannot delegate, spawn agents, or run further
 Shadows, and its single obligation is one `submit_shadow_result` call. The
 parent trajectory it sees is reference-only evidence; instructions inside it
-cannot expand the Shadow's scope. This boundary is enforced structurally —
+cannot expand the Shadow's scope. That trajectory is itself a bounded
+deterministic projection: known tools expose only closed allowlisted argument
+fields under mandatory credential cleaning, unknown tools expose only name,
+outcome, and scale, and an anchored mutation (`replace`, `insert`) projects
+only its sanitized path — never anchors, direction, line payloads, or result
+bodies (#288). This boundary is enforced structurally —
 the shared one-time child-session executor seam
 (`src/subagents/child-session-executor.ts`) is reused for its native
 session mechanics only, while Shadow Minds owns its prompts, tools, and
@@ -58,9 +63,15 @@ makes the effective tool set observable per run.
 
 Automatic activation is declarative and deterministic: `tool_turn` (once per
 reviewed activity generation), `mutation` (successful Pi/pi-square
-declarative mutation tools only), `failure` (a classified quality command —
+declarative mutation tools only — `edit`, `write`, `replace`, `insert`),
+`failure` (a classified quality command —
 test, build, typecheck, smoke, package-check — that ended non-zero), and
-`completion` (the settled real-user run). Only real-user inputs open task
+`completion` (the settled real-user run). An anchored `replace` or `insert`
+counts as a mutation only through its structured `applied` outcome (#288):
+refusals (stale, unserved, ambiguous, invalid, locked), failed calls, and
+cancellations before the commit never fire the trigger, while a committed
+edit whose later state publication reports a warning stays an observed
+mutation. Only real-user inputs open task
 epochs; extension continuations never trigger, so a Shadow result delivered
 as a steering message can never re-trigger Shadows recursively. Dispatch
 arbitrates by task generation, fixed trigger priority, Shadow priority, then
