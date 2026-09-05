@@ -20,10 +20,13 @@ const packageRoot = resolve(import.meta.dirname, "..", "..");
 const load = jiti(import.meta.url, { moduleCache: false });
 const { discoverSubagents } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
 const { registerSubagentManager, __testables } = await load(join(packageRoot, "src", "subagents", "manager.ts"));
+const { createBackgroundState, createQueuedJob } = await load(join(packageRoot, "src", "subagents", "background.ts"));
 const {
   SubagentManager,
+  createProductionServices,
   managerPanelWidth,
   managerRowBudget,
+  snapshot,
 } = __testables;
 const themeModulePath = pathToFileURL(join(
   packageRoot,
@@ -510,6 +513,74 @@ test("manager blocks resume while a result is claimed or undelivered with distin
   assert.doesNotMatch(pendingRendered, /SESSION \/ RESUME/);
   assert.equal(pendingFake.calls.some((call) => call[0] === "resume"), false);
   pendingManager.dispose();
+});
+
+// ─── Parent-session ownership of the RUNNING list and Cancel (#278) ──
+
+test("the manager lists and cancels only current-parent-session active jobs", () => {
+  const currentId = "subagent_11111111-1111-4111-8111-111111111111";
+  const foreignId = "subagent_22222222-2222-4222-8222-222222222222";
+  const state = {
+    registry: { definitions: [], errors: [], projectDir: null },
+    background: createBackgroundState(),
+  };
+  createQueuedJob({
+    state: state.background,
+    id: currentId,
+    task: "current session work",
+    cwd: "/tmp",
+    parentSessionId: "parent-session",
+    promptSnapshot: promptSnapshot(),
+  });
+  const foreign = createQueuedJob({
+    state: state.background,
+    id: foreignId,
+    task: "earlier session work",
+    cwd: "/tmp",
+    parentSessionId: "earlier-parent-session",
+    promptSnapshot: promptSnapshot(),
+  });
+
+  const snap = snapshot(state, "parent-session");
+  assert.deepEqual(
+    snap.running.map((job) => job.id),
+    [currentId],
+    "an active job carried from an earlier parent session is not listed",
+  );
+
+  const services = createProductionServices({ sendMessage() {} }, { cwd: "/tmp" }, state, "parent-session");
+  const rejected = services.cancel(foreignId);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.message, /no longer active in this session/);
+  assert.equal(foreign.status, "queued", "the foreign job was not cancelled");
+  assert.equal(foreign.abortController.signal.aborted, false);
+
+  const accepted = services.cancel(currentId);
+  assert.equal(accepted.ok, true);
+  assert.equal(state.background.jobs.get(currentId).status, "aborted");
+});
+
+test("manager cancel re-reads the live job and refuses a finished one", () => {
+  const currentId = "subagent_33333333-3333-4333-8333-333333333333";
+  const state = {
+    registry: { definitions: [], errors: [], projectDir: null },
+    background: createBackgroundState(),
+  };
+  const job = createQueuedJob({
+    state: state.background,
+    id: currentId,
+    task: "work",
+    cwd: "/tmp",
+    parentSessionId: "parent-session",
+    promptSnapshot: promptSnapshot(),
+  });
+  job.status = "completed";
+  job.details.phase = "completed";
+
+  const services = createProductionServices({ sendMessage() {} }, { cwd: "/tmp" }, state, "parent-session");
+  const result = services.cancel(currentId);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /already finished as completed/);
 });
 
 await run();

@@ -206,16 +206,24 @@ function displayValue(value: unknown): string {
   return String(value);
 }
 
-function activeJobs(state: SubagentRuntimeState): BackgroundJobSnapshot[] {
+/**
+ * Active background jobs of the current parent session only. Background jobs
+ * survive a session replacement in-process, so without this filter the
+ * manager would list — and offer Cancel for — runs owned by an earlier parent
+ * session, exactly the runs `wait_subagent` and `abort_subagent` treat as
+ * foreign.
+ */
+function activeJobs(state: SubagentRuntimeState, parentSessionId: string): BackgroundJobSnapshot[] {
   return listBackgroundJobs(state.background).filter((job) => (
-    job.status === "queued" || job.status === "running" || job.status === "cancelling"
+    (job.status === "queued" || job.status === "running" || job.status === "cancelling")
+    && job.details.lastParentSessionId === parentSessionId
   ));
 }
 
 function snapshot(state: SubagentRuntimeState, parentSessionId: string): ManagerSnapshot {
   const session = listParentSessionRuns(parentSessionId);
   return {
-    running: activeJobs(state),
+    running: activeJobs(state, parentSessionId),
     session,
     activeSessionIds: session.filter((run) => isRunLeaseActive(run.id)).map((run) => run.id),
     undeliveredIds: state.background.delivery?.pendingIds() ?? [],
@@ -283,8 +291,16 @@ function createProductionServices(
       },
     } : {}),
     cancel(id) {
+      // Ownership is re-read from the live job record at action time, never
+      // from the snapshot the UI rendered: a job carried from an earlier
+      // parent session must not be cancellable from this session's manager.
       const job = state.background.jobs.get(id);
-      if (!job) return { ok: false, message: `Background subagent '${id}' is no longer active.` };
+      if (!job || job.details.lastParentSessionId !== parentSessionId) {
+        return { ok: false, message: `Background subagent '${id}' is no longer active in this session.` };
+      }
+      if (job.status !== "queued" && job.status !== "running" && job.status !== "cancelling") {
+        return { ok: false, message: `Background subagent ${shortId(id)} already finished as ${job.status}.` };
+      }
       cancelBackgroundJobs({ pi, state: state.background, id, reason: "Canceled from /subagent manager." });
       return { ok: true, message: `Cancellation requested for ${job.details.agent?.name ?? "generic"} ${shortId(id)}.` };
     },
@@ -1251,6 +1267,7 @@ export function registerSubagentManager(
 
 export const __testables = {
   SubagentManager,
+  createProductionServices,
   displayValue,
   managerPanelWidth,
   managerRowBudget,
