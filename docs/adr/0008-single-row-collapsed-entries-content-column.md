@@ -21,6 +21,13 @@ The only exception is the mutation family (`edit`, `replace`, `revert`, `write`)
 which keeps a bounded diff/preview body below the row in every state so file
 mutations stay reviewable without expanding; the anchored replace/revert tools
 are covered so anchored editing keeps its diff-forward review experience.
+
+> Superseded in parts by later records: `revert` was removed with the undo
+> store (#187), and the mutation family is now the four tools `edit`,
+> `insert`, `replace`, and `write`, with the anchored mutations (`replace`,
+> `insert`) rendering only their authoritative diff as the success body
+> (#285, ADR-0012's calm-palette grammar). This record's single-row rule
+> and content column stand unchanged.
 Payloads of every other tool — command output, search results, subagent reports,
 and so on — are visible only when the entry is expanded. Running and queued
 entries are also one row and never stream a live tail into the collapsed view.

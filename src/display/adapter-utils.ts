@@ -47,13 +47,15 @@ export function asRecord(value: unknown): UnknownRecord {
 
 /**
  * Mutation family: the only tools whose collapsed entries keep a bounded
- * evidence body below the single row — edit, replace, and write. Anchored
- * replace keeps the strictest shape: its body is the authoritative diff only.
+ * evidence body below the single row — edit, insert, replace, and write. The
+ * anchored mutations keep the strictest shape: their body is the
+ * authoritative diff only.
  * Every other tool's collapsed entry is exactly one row; its evidence is
  * visible only when expanded.
  */
 export const MUTATION_FAMILY_TOOLS: ReadonlySet<string> = new Set([
   "edit",
+  "insert",
   "replace",
   "write",
 ]);
@@ -104,25 +106,27 @@ export function composeInternalSummary(
   const counts = asRecord(details.counts);
   const page = asRecord(details.page);
 
-  if (name === "replace") {
+  if (name === "replace" || name === "insert") {
     const status = stringOf(details.status)?.toLowerCase();
     if (status === "warning") {
       const code = stringOf(details.errorCode);
       if (code === "E_RANGE_STALE") return "Nothing was modified · stale range";
-      return "Nothing was modified · replace refused";
+      return `Nothing was modified · ${name} refused`;
     }
     const metrics = asRecord(details.metrics);
     const classification = stringOf(metrics.classification);
     if (classification === "noop") return "No changes";
     const attempted = numberOf(metrics.edits_attempted);
     if (attempted !== undefined) {
-      const ranges = `${attempted} ${attempted === 1 ? "range" : "ranges"} replaced`;
+      const action = name === "insert"
+        ? `${numberOf(metrics.added_lines) ?? attempted} ${numberOf(metrics.added_lines) === 1 ? "line" : "lines"} inserted`
+        : `${attempted} ${attempted === 1 ? "range" : "ranges"} replaced`;
       const added = numberOf(metrics.added_lines);
       const removed = numberOf(metrics.removed_lines);
       const changes = added !== undefined || removed !== undefined
         ? ` · +${added ?? 0}/-${removed ?? 0} lines`
         : "";
-      return `${ranges}${changes}`;
+      return `${action}${changes}`;
     }
   }
 

@@ -52,7 +52,39 @@ describe("prompts/read.md (model-facing contract)", () => {
   });
 });
 
+const insertPrompt = readFileSync(
+  new URL("../../../src/anchored-edit/prompts/insert.md", import.meta.url),
+  "utf-8",
+);
+
+describe("prompts/insert.md (model-facing contract)", () => {
+  it("declares the tool purpose, anchor form, and direction semantics", () => {
+    expect(insertPrompt).toMatch(/Insert one or more literal lines/);
+    expect(insertPrompt).toMatch(/before or after one observed line/);
+    expect(insertPrompt).toMatch(/BARE 3-character hash/);
+    expect(insertPrompt).toContain("direction");
+  });
+
+  it("does not leak replace-only request fields", () => {
+    expect(insertPrompt).not.toContain("remove_from");
+    expect(insertPrompt).not.toContain("remove_to");
+    expect(insertPrompt).not.toContain("replacement_text");
+  });
+});
+
 describe("prompt guidelines", () => {
+  it("insert-guidelines.md loads without template variables and names the insert fields", () => {
+    const content = readFileSync(
+      new URL("../../../src/anchored-edit/prompts/insert-guidelines.md", import.meta.url),
+      "utf-8",
+    );
+    expect(content).toContain('"anchor"');
+    expect(content).toContain("`lines` items");
+    expect(content).not.toContain("remove_from");
+    expect(content).not.toContain("replacement_text");
+    expect(content).not.toContain("{{");
+  });
+
   it("replace-guidelines.md loads without template variables", () => {
     const content = readFileSync(
       new URL("../../../src/anchored-edit/prompts/replace-guidelines.md", import.meta.url),

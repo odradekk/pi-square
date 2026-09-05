@@ -798,7 +798,7 @@ export default function registerDisplayBuiltins(
     ];
     const names = new Set(definitions.map((definition) => definition.name as BuiltinName));
     for (const definition of definitions) {
-      const anchoredRead = definition.name === "read" && anchoredReadEnabled;
+      const anchoredRead = definition.name === "read" && anchoredReadEnabled && anchoredStoreReady;
       // Native path authority (#185): the parent anchored read follows Pi
       // 0.84.2's native path semantics (absolute, ~, cwd-relative, ../, and
       // symlinked targets) instead of refusing workspace-external paths, while
@@ -821,6 +821,7 @@ export default function registerDisplayBuiltins(
     const expected = process.platform === "win32" ? NON_SHELL_NAMES : BUILTIN_NAMES;
     const losing = expected.filter((name) => names.has(name) && !sameSource(winners.get(name), owner));
     const anchoredReadAvailable = anchoredReadEnabled
+      && anchoredStoreReady
       && names.has("read")
       && !losing.includes("read");
     // The write's anchored behavior requires the complete anchored surface:

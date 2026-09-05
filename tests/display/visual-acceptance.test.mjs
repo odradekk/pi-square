@@ -664,7 +664,7 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
 // ── 18. C4 revision: every non-mutation collapsed entry is one row ──
 
 {
-  const mutationFamily = new Set(["edit", "replace", "write"]);
+  const mutationFamily = new Set(["edit", "insert", "replace", "write"]);
   const runStates = ["queued", "pending", "running", "completed", "failed", "aborted"];
   for (const entry of DISPLAY_CATALOG) {
     for (const lifecycle of runStates) {

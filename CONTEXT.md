@@ -51,7 +51,7 @@ The resting presentation of a tool entry in the operational interface: exactly o
 _Avoid_: folded card, multi-row summary
 
 **Mutation family**:
-The three tools whose collapsed entries keep a bounded evidence body below the header row: edit, replace, and write. Replace has the narrowest shape: its successful evidence body is the authoritative diff only; every non-mutation tool keeps its evidence body visible only when expanded.
+The four tools whose collapsed entries keep a bounded evidence body below the header row: edit, insert, replace, and write. The anchored mutations have the narrowest shape: their successful evidence body is the authoritative diff only; every non-mutation tool keeps its evidence body visible only when expanded.
 _Avoid_: payload tools, edit tools
 
 **Content column**:

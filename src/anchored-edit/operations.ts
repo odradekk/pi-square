@@ -20,6 +20,13 @@ import { AnchorMismatchError, RangeStaleError } from "./hashline/index.ts";
 import { anchoredStoreDir, toCwd } from "./paths.ts";
 import { fmtReadPreview, fmtReadPreviewSync } from "./read.ts";
 import { prepareReplace, ReplaceValidationError, type PipelineResult, type ReplaceDetails, type ReqParams } from "./replace.ts";
+import {
+  buildInserted,
+  InsertValidationError,
+  prepareInsert,
+  type InsertDetails,
+  type InsertParams,
+} from "./insert.ts";
 import { buildChanged, buildNoop, type RMeta } from "./replace-response.ts";
 import { restoreEndings } from "./replace-diff.ts";
 import { servedHashesFromDiff } from "./served.ts";
@@ -34,15 +41,15 @@ import { errCode, visLines } from "./utils.ts";
  * One coordinator owns target resolution, in-process queue participation,
  * cross-process exclusion, disk observation or mutation, and the matching
  * owner-scoped store transaction for parent and writable-child reads,
- * replaces, and writes. Tool integrations delegate canonicalization to this
- * module and never implement lock files, queue ordering, filesystem mechanics,
- * cache ownership, or database transactions directly.
+ * inserts, replaces, and writes. Tool integrations delegate canonicalization
+ * to this module and never implement lock files, queue ordering, filesystem
+ * mechanics, cache ownership, or database transactions directly.
  *
  * Ordering is fixed for every mutation: Pi's per-file mutation queue is the
  * outer in-process serializer and the anchored cross-process lock is the
- * inner serializer — replace enters the queue explicitly, and the writes
- * join the same order through the public write factory's injected
- * filesystem-operation seam. Anchored reads hold the same target exclusion
+ * inner serializer — replace and the parent insert enter the queue
+ * explicitly, and the writes join the same order through the public write
+ * factory's injected filesystem-operation seam. Anchored reads hold the same target exclusion
  * from the byte read through snapshot and served-state publication.
  * `E_FILE_LOCKED` reports failure to enter the operation boundary (bounded
  * wait exhausted *or cancelled*); `E_RANGE_STALE` is reserved for validation
@@ -52,8 +59,8 @@ import { errCode, visLines } from "./utils.ts";
  * Authorization is version-bound: served rows authorize only the exact
  * content version they were recorded for, so a mutation whose post-commit
  * publication failed (or a process that died at that boundary) leaves the
- * previous version unable to authorize any replace until a fresh read
- * republishes current rows.
+ * previous version unable to authorize any replace or insert until a fresh
+ * read republishes current rows.
  */
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];
@@ -476,6 +483,180 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           }];
         }
         return changed;
+      } finally {
+        await boundary.release();
+      }
+    });
+  } finally {
+    store.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Insert operation
+// ---------------------------------------------------------------------------
+
+export type AnchoredInsertResult = {
+  content: Array<{ type: "text"; text: string }>;
+  details: InsertDetails;
+};
+
+export interface AnchoredInsertInput {
+  cwd: string;
+  params: InsertParams;
+  owner: string;
+  autoRead: () => boolean;
+  sessionDir?: string;
+  signal?: AbortSignal;
+  /** Warnings discovered before the boundary (path autocorrect); prepended. */
+  leadingWarnings?: string[];
+}
+
+/** Success text composed from structured pieces; with the authoritative diff
+ *  rendered (auto-read on) the model consumes the diff rows themselves, exactly
+ *  as an anchored replace does. */
+function insertedText(path: string, addedLines: number, warnings: string[], diff: string): string {
+  const warningBlock = warnings.length > 0 ? `\n\nWarnings:\n${warnings.join("\n")}` : "";
+  if (diff) return `${diff}${warningBlock}`;
+  return `Successfully inserted into ${path}. Added ${addedLines} line(s), removed 0 line(s).${warningBlock}`;
+}
+
+/**
+ * @internal Deterministic test seam: awaited inside the boundary immediately
+ * before the insert's irreversible filesystem commit, so tests can hold an
+ * insert at the commit point and prove ordering against other operations
+ * without sleeps. Production never sets it.
+ */
+export const insertBarrier: {
+  /** Fired inside the target boundary before the insert pipeline reads and
+   *  validates the file — the seam that proves the boundary covers the read
+   *  and authorization. */
+  beforePrepare?: (info: { canonicalPath: string }) => Promise<void>;
+  beforeCommit?: (info: { canonicalPath: string }) => Promise<void>;
+} = {};
+
+/**
+ * One anchored insert as a single operation: Pi's mutation queue, then the
+ * cross-process target lock, then pure preparation, then the filesystem
+ * commit, then the store publication — all before the boundary releases, in
+ * the same order as an anchored replace (#264, #285).
+ *
+ * Preparation performs no cache or database mutations. After a successful
+ * file commit the candidate snapshot and the diff's served rows are published
+ * in one transaction while the lock is still held; if that publication fails,
+ * the result still reports the truthful mutation success, suppresses fresh
+ * anchors, emits a bounded actionable warning, and — because served
+ * authorization is bound to the content version — leaves the previous version
+ * unable to authorize another anchored mutation until a fresh read republishes
+ * current rows.
+ */
+export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<AnchoredInsertResult> {
+  const session = sessionContextFor(input.cwd, input.sessionDir);
+  const store = await loadAnchoredHashStore(session.storeDir, input.owner);
+  try {
+    const target = await resolveAnchoredTarget(input.cwd, input.params.path);
+    return await withTargetMutationQueue(target, async () => {
+      const lockedRefusal = (): AnchoredInsertResult => ({
+        content: [{ type: "text", text: fileLockedMessage(input.params.path, "insert") }],
+        details: {
+          diff: "",
+          status: "warning",
+          errorCode: "E_FILE_LOCKED",
+        } satisfies InsertDetails,
+      });
+      if (input.signal?.aborted) return lockedRefusal();
+      const boundary = await enterTargetBoundary(session.storeDir, target, { signal: input.signal });
+      if (!boundary) return lockedRefusal();
+      try {
+        await insertBarrier.beforePrepare?.({ canonicalPath: target.canonicalPath });
+        let prep;
+        try {
+          prep = await prepareInsert(input.params, input.cwd, {
+            accessMode: fsConstants.R_OK | fsConstants.W_OK,
+            signal: input.signal,
+            store,
+            canonicalPath: target.canonicalPath,
+          });
+        } catch (error) {
+          if (error instanceof InsertValidationError) {
+            // The refusal's fresh rows were observed under the boundary;
+            // publishing them for exactly the current content version keeps
+            // the immediate retry authorized.
+            if (error.feedbackSnapshotHashes) {
+              store.publishSnapshotRepair({
+                path: target.canonicalPath,
+                content: error.content,
+                hashes: error.feedbackSnapshotHashes,
+                servedHashes: error.feedbackHashes,
+              });
+            } else {
+              store.mergeServed(target.canonicalPath, error.feedbackHashes, error.content);
+            }
+            return {
+              content: [{ type: "text", text: error.anchorError.message }],
+              details: {
+                diff: "",
+                status: "warning",
+                errorCode: errorCode(error.anchorError),
+              },
+            };
+          }
+          throw error;
+        }
+
+        const warnings = [...(input.leadingWarnings ?? []), ...prep.warnings];
+        if (prep.hadUtf8DecodeErrors) {
+          warnings.push(
+            "Non-UTF-8 bytes were shown as U+FFFD; this edit rewrote the file as UTF-8.",
+          );
+        }
+
+        await insertBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
+        if (input.signal?.aborted) return lockedRefusal();
+        // The filesystem commit is the irreversible point.
+        await writeAtomic(target.canonicalPath, prep.bom + restoreEndings(prep.result, prep.originalEnding));
+        const snapshotId = await safeSnapId(target.canonicalPath, "post-anchored-insert");
+        const inserted = buildInserted({
+          path: input.params.path,
+          prep,
+          warnings,
+          snapshotId,
+        });
+        const diff = inserted.details.diff;
+        if (diff) {
+          try {
+            store.publishMutation({
+              path: target.canonicalPath,
+              content: prep.result,
+              hashes: prep.resultHashes,
+              ...(input.autoRead() ? { servedHashes: servedHashesFromDiff(diff) } : {}),
+            });
+          } catch (error) {
+            // The file changed; never report otherwise. Suppress fresh
+            // anchors, surface a bounded actionable warning, and leave the
+            // pre-mutation state unable to authorize another anchored
+            // mutation: its served rows are bound to the previous content
+            // version.
+            store.invalidateSnapshotCache(target.canonicalPath);
+            inserted.details.diff = "";
+            warnings.push(
+              `[E_STATE_UNAVAILABLE] The file was changed, but recording fresh anchors failed (${boundedReason(error)}). The insert is applied; call read to get fresh anchors before the next insert or replace.`,
+            );
+            inserted.content = [{
+              type: "text",
+              text: insertedText(input.params.path, prep.insertedLines.length, warnings, ""),
+            }];
+          }
+        }
+        inserted.details.warnings = warnings.slice();
+        if (!input.autoRead()) inserted.details.diff = "";
+        else if (inserted.details.diff) {
+          inserted.content = [{
+            type: "text",
+            text: insertedText(input.params.path, prep.insertedLines.length, warnings, inserted.details.diff),
+          }];
+        }
+        return inserted;
       } finally {
         await boundary.release();
       }

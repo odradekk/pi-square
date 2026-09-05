@@ -1,3 +1,4 @@
+- `replace`: use replace to modify or delete existing lines; when you are only adding lines adjacent to an existing line, use `insert` instead of reconstructing the anchor line inside replacement_text.
 - `replace`: remove_from and remove_to take ONLY the bare 3-char hash — read row `ve7│function hello() {` means `"remove_from": "ve7"`. Never paste the line content, a code line, a paragraph, or the whole `HASH│content` row into these fields.
 - `replace`: remove_from and remove_to mark the exact lines that are REMOVED, and replacement_text is their complete replacement applied in order; nothing outside the range changes. Every line inside the range that is not reproduced byte-exact in replacement_text is deleted from the file.
 - `replace`: keep the range as tight as the change — anchor only the first and last line that actually change, never a whole function, class, or import block when only part of it changes.

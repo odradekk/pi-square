@@ -70,7 +70,7 @@ for (const family of DISPLAY_FAMILIES) {
 
 const expectedTools = [
   // Pi built-in
-  "read", "ls", "edit", "replace", "write", "find", "grep",
+  "read", "ls", "edit", "replace", "insert", "write", "find", "grep",
   // Platform shell
   "bash", "pwsh",
   // pi-square search
@@ -94,8 +94,9 @@ const parentOnly = allNames.filter((n) => {
   const e = getCatalogEntry(n);
   return e.parent && !e.child;
 });
-// parse, replace, ssh, todo, ask, delegate_subagent, resume_subagent, wait_subagent, abort_subagent are parent-only
+// parse, replace, insert, ssh, todo, ask, delegate_subagent, resume_subagent, wait_subagent, abort_subagent are parent-only
 assert.ok(parentOnly.includes("replace"), "replace must be parent-only");
+assert.ok(parentOnly.includes("insert"), "insert must be parent-only");
 assert.ok(parentOnly.includes("parse"), "parse must be parent-only");
 assert.ok(parentOnly.includes("ssh"), "ssh must be parent-only");
 assert.ok(parentOnly.includes("todo"), "todo must be parent-only");
@@ -104,7 +105,7 @@ assert.ok(parentOnly.includes("delegate_subagent"), "delegate_subagent must be p
 assert.ok(parentOnly.includes("resume_subagent"), "resume_subagent must be parent-only");
 assert.ok(parentOnly.includes("wait_subagent"), "wait_subagent must be parent-only");
 assert.ok(parentOnly.includes("abort_subagent"), "abort_subagent must be parent-only");
-assert.equal(parentOnly.length, 9, `expected 9 parent-only tools, got ${parentOnly.length}`);
+assert.equal(parentOnly.length, 10, `expected 10 parent-only tools, got ${parentOnly.length}`);
 
 // ── Platform shell ownership ─────────────────────────────────────────
 

@@ -395,14 +395,15 @@ export class OperationalDisplayComponent implements Component {
     // blank so groups have breathing room without decorative rules.
     const bodyWidth = Math.max(1, column - BODY_INDENT_CELLS);
     const body: string[] = [];
-    const replaceDiffOnly = description.tool === "replace";
+    const anchoredDiffOnly = description.tool === "replace" || description.tool === "insert";
 
-    // Metadata is opt-in and stays one muted row; replace is diff-only and
-    // never renders metadata, even when the policy field is enabled.
+    // Metadata is opt-in and stays one muted row; the anchored mutations
+    // (replace, insert) are diff-only and never render metadata, even when
+    // the policy field is enabled.
     if (
       this.policy.showMetadata
       && this.options.expanded
-      && !replaceDiffOnly
+      && !anchoredDiffOnly
       && description.metadata?.length
     ) {
       const selectedFields = description.metadata.slice(0, MAX_METADATA_FIELDS);
@@ -422,7 +423,7 @@ export class OperationalDisplayComponent implements Component {
 
     // Flat rows are expanded evidence only. A terminal result states its
     // outcome in the header rather than repeating it below.
-    if (this.options.expanded && !hidden && !replaceDiffOnly && description.rows?.length) {
+    if (this.options.expanded && !hidden && !anchoredDiffOnly && description.rows?.length) {
       const selectedRows = description.rows.slice(0, MAX_ROWS);
       for (const row of selectedRows) {
         const indent = " ".repeat(Math.min(8, Math.max(0, Math.floor(row.indent ?? 2))));
@@ -444,8 +445,8 @@ export class OperationalDisplayComponent implements Component {
 
     if (collapsed && !hidden && MUTATION_FAMILY_TOOLS.has(description.tool)) {
       // The mutation family is the only collapsed-entry body exception:
-      // edit/write keep their bounded preview/diff, while replace renders
-      // exactly one authoritative diff payload.
+      // edit/write keep their bounded preview/diff, while replace and insert
+      // render exactly one authoritative diff payload.
       body.push(...this.mutationFamilyBody(description, isError, bodyWidth));
     } else if (this.options.expanded) {
       const showPreview = this.options.expanded
@@ -459,7 +460,7 @@ export class OperationalDisplayComponent implements Component {
         ? [{ title: "Error", blocks: [{ kind: "text", text: description.errorRaw }] }]
         : [];
 
-      if (replaceDiffOnly) {
+      if (anchoredDiffOnly) {
         if (errorSection.length > 0) {
           body.push(...renderDisplaySections(errorSection, this.policy, this.theme, bodyWidth, true, true));
         } else if (!isError && description.diff) {
@@ -532,8 +533,9 @@ export class OperationalDisplayComponent implements Component {
 
   /**
    * Mutation-family collapsed body: edit and write keep a bounded
-   * preview/diff body; replace renders only its authoritative diff. A failed
-   * mutation renders no payload body; the failure sentence is inline.
+   * preview/diff body; replace and insert render only their authoritative
+   * diff. A failed mutation renders no payload body; the failure sentence is
+   * inline.
    */
   private mutationFamilyBody(
     description: DisplayDescriptionV1,
@@ -541,7 +543,7 @@ export class OperationalDisplayComponent implements Component {
     bodyWidth: number,
   ): string[] {
     if (isError) return [];
-    if (description.tool === "replace") {
+    if (description.tool === "replace" || description.tool === "insert") {
       return description.diff
         ? renderDisplayDiffLines(description.diff, this.policy, this.theme, bodyWidth, this.options)
         : [];

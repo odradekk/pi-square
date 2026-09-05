@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAskUser from "./ask-user";
 import registerAnchoredAutoRead, { createParentAnchoredWrite } from "./anchored-edit/auto-read";
 import registerAnchoredReplace from "./anchored-edit/workspace-replace";
+import registerAnchoredInsert from "./anchored-edit/workspace-insert";
 import registerBanner from "./banner";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config";
 import { ConfirmationCoordinator } from "./core/confirmation";
@@ -50,6 +51,12 @@ export default function piSquare(pi: ExtensionAPI): void {
     parentAnchoredWrite,
   );
   registerAnchoredReplace(
+    pi,
+    () => display.config,
+    () => display.runtime,
+    () => anchoredReadAvailable,
+  );
+  registerAnchoredInsert(
     pi,
     () => display.config,
     () => display.runtime,

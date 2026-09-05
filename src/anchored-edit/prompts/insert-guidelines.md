@@ -1,0 +1,9 @@
+- `insert`: anchor takes ONLY the bare 3-char hash — read row `ve7│function hello() {` means `"anchor": "ve7"`. Never paste the line content, a code line, a paragraph, or the whole `HASH│content` row into the field.
+- `insert`: use insert when you are only ADDING lines adjacent to an existing line; use replace when you need to modify or delete existing lines, and write for whole-file changes.
+- `insert`: one call inserts one ordered block at one anchor in one file. To add several lines, pass them as separate `lines` items in order; multi-anchor and cross-file batches are not supported.
+- `insert`: every `lines` item is exactly one logical line — no `\n` or `\r` inside an item, and no empty strings (use replace to add blank lines). Items are kept literally: hash-like or diff-like prefixes and duplicate lines are inserted as written, never stripped or deduplicated.
+- `insert`: `"direction": "before"` places the block immediately before the anchor line; `"after"` places it immediately after. The anchor line itself never changes. Reusing the same anchor always inserts directly adjacent to it, before any previously inserted block after that line.
+- `insert`: always provide `path`. It is resolved from the anchor only when the anchor is unambiguous across exactly one known file, with a warning.
+- `insert`: the anchor must come from a read (or a post-edit diff) of the current file version. `[E_RANGE_STALE]`, `[E_STALE_ANCHOR]`, and `[E_AMBIGUOUS_ANCHOR]` refusals change nothing and return bounded current anchored rows — retry immediately with those anchors, or read again for wider context.
+- `insert`: when auto-read shows the post-edit diff, its `+HASH│` and ` HASH│` rows are the fresh anchors for the new file, so you can anchor follow-up edits on the diff without re-reading.
+- `insert`: do not issue multiple insert or replace calls on the same file in one message. Issue the next edit only after verifying the previous diff.

@@ -53,6 +53,13 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     description: "Replace an anchored range in a workspace file",
   },
   {
+    name: "insert",
+    family: "filesystem",
+    parent: true,
+    child: false,
+    description: "Insert lines before or after an anchored line in a workspace file",
+  },
+  {
     name: "write",
     family: "filesystem",
     parent: true,
