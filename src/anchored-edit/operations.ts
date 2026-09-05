@@ -41,15 +41,15 @@ import { errCode, visLines } from "./utils.ts";
  * One coordinator owns target resolution, in-process queue participation,
  * cross-process exclusion, disk observation or mutation, and the matching
  * owner-scoped store transaction for parent and writable-child reads,
- * replaces, and writes. Tool integrations delegate canonicalization to this
- * module and never implement lock files, queue ordering, filesystem mechanics,
- * cache ownership, or database transactions directly.
+ * inserts, replaces, and writes. Tool integrations delegate canonicalization
+ * to this module and never implement lock files, queue ordering, filesystem
+ * mechanics, cache ownership, or database transactions directly.
  *
  * Ordering is fixed for every mutation: Pi's per-file mutation queue is the
  * outer in-process serializer and the anchored cross-process lock is the
- * inner serializer — replace enters the queue explicitly, and the writes
- * join the same order through the public write factory's injected
- * filesystem-operation seam. Anchored reads hold the same target exclusion
+ * inner serializer — replace and the parent insert enter the queue
+ * explicitly, and the writes join the same order through the public write
+ * factory's injected filesystem-operation seam. Anchored reads hold the same target exclusion
  * from the byte read through snapshot and served-state publication.
  * `E_FILE_LOCKED` reports failure to enter the operation boundary (bounded
  * wait exhausted *or cancelled*); `E_RANGE_STALE` is reserved for validation
@@ -59,8 +59,8 @@ import { errCode, visLines } from "./utils.ts";
  * Authorization is version-bound: served rows authorize only the exact
  * content version they were recorded for, so a mutation whose post-commit
  * publication failed (or a process that died at that boundary) leaves the
- * previous version unable to authorize any replace until a fresh read
- * republishes current rows.
+ * previous version unable to authorize any replace or insert until a fresh
+ * read republishes current rows.
  */
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];

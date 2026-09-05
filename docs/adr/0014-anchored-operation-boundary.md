@@ -78,10 +78,14 @@ and serving those rows for the immediate retry. The child `requireServed`
 gate is unchanged. Insert is stricter than replace on one axis (#285): its
 served-anchor authorization is mandatory for every owner, the parent
 included — an insert adds content adjacent to a line the caller must have
-observed, so there is no edit-without-prior-read path — and its refusal
-returns bounded current anchored context (the anchor row with its
-neighbours, or the ambiguous candidates) published against the observed
-version for the immediate retry.
+observed, so there is no edit-without-prior-read path — and every
+recoverable refusal (stale, ambiguous, or unserved) returns bounded
+current anchored context (the anchor row with its neighbours, the
+ambiguous candidates, or — when the anchor vanished entirely — the
+deterministic head of the current file) published against the observed
+version for the immediate retry. The anchor's public form is validated
+before any store, target, or file I/O, so a malformed anchor is rejected
+without entering the boundary.
 
 ### Replace: pure preparation, version-bound authorization, atomic publication
 
