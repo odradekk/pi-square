@@ -16,6 +16,7 @@ try {
   const register = (await load("../src/index.ts")).default;
   const { childToolNames, createChildTools } = await load("../src/tool-catalog.ts");
   const { createAnchoredReplaceToolDefinition } = await load("../src/anchored-edit/workspace-replace.ts");
+  const { createAnchoredInsertToolDefinition } = await load("../src/anchored-edit/workspace-insert.ts");
   const { createChildAnchoredReplaceTool } = await load("../src/anchored-edit/child-edit.ts");
   const replaceTool = createAnchoredReplaceToolDefinition(process.cwd());
   assert.equal(replaceTool.parameters.type, "object");
@@ -24,7 +25,17 @@ try {
   assert.deepEqual(replaceTool.parameters.required, ["remove_from", "remove_to", "replacement_text"]);
   assert.equal(replaceTool.renderCall, undefined, "replace definitions stay renderer-free before parent decoration");
   assert.equal(replaceTool.renderResult, undefined, "replace definitions stay renderer-free before parent decoration");
+  const insertTool = createAnchoredInsertToolDefinition(process.cwd());
+  assert.equal(insertTool.parameters.type, "object");
+  assert.equal(insertTool.parameters.anyOf, undefined);
+  assert.equal(insertTool.parameters.oneOf, undefined);
+  assert.equal(insertTool.parameters.additionalProperties, false);
+  assert.deepEqual(insertTool.parameters.required, ["anchor", "direction", "lines"]);
+  assert.deepEqual(insertTool.parameters.properties.direction.enum, ["before", "after"]);
+  assert.equal(insertTool.renderCall, undefined, "insert definitions stay renderer-free before parent decoration");
+  assert.equal(insertTool.renderResult, undefined, "insert definitions stay renderer-free before parent decoration");
   assert.ok(!childToolNames.includes("replace"), "replace stays out of the extension catalog; the capability mapping grants it to children");
+  assert.ok(!childToolNames.includes("insert"), "insert stays out of the extension catalog; the child edit capability is a later slice (#287)");
   const childReplace = createChildAnchoredReplaceTool(process.cwd(), "subagent-child");
   assert.deepEqual(childReplace.parameters, replaceTool.parameters, "the child replace schema matches the parent's exactly");
   assert.equal(childReplace.renderCall, undefined, "child replace definitions stay renderer-free");
