@@ -4,7 +4,7 @@ import type { LineEnding } from "./replace-diff";
 import { readNormFile } from "./file-reader";
 import { HASH_CLASS, HASH_SEP, MAX_HASH_LINES } from "./hashline";
 import { AnchorMismatchError, RangeStaleError } from "./hashline";
-import { _insertLineHashesPure } from "./hashline";
+import { _insertLineHashesPure, _lineHashesPure } from "./hashline";
 import { buildMetrics, type RMetrics } from "./replace-response";
 import { genDiff } from "./replace-diff";
 import { isRec, rejectUnknownFields, splitLines, clipLine } from "./utils";
@@ -254,11 +254,19 @@ function contextRows(
 export class InsertValidationError extends Error {
   readonly anchorError: RangeStaleError | AnchorMismatchError;
   readonly content: string;
-  constructor(cause: RangeStaleError | AnchorMismatchError, content: string) {
+  /** A repaired full snapshot to publish with the feedback rows. This is
+   *  present only when the stored mapping itself was ambiguous. */
+  readonly feedbackSnapshotHashes?: string[];
+  constructor(
+    cause: RangeStaleError | AnchorMismatchError,
+    content: string,
+    feedbackSnapshotHashes?: string[],
+  ) {
     super(cause.message, { cause });
     this.name = "InsertValidationError";
     this.anchorError = cause;
     this.content = content;
+    this.feedbackSnapshotHashes = feedbackSnapshotHashes;
   }
   get feedbackHashes(): string[] {
     return this.anchorError instanceof RangeStaleError ? this.anchorError.rangeHashes : this.anchorError.feedbackHashes;
@@ -330,15 +338,22 @@ export async function prepareInsert(
   if (candidates.length > 1) {
     const sample = candidates.slice(0, 5);
     const more = candidates.length > sample.length ? `, ... (+${candidates.length - sample.length} more)` : "";
+    // A repeated hash means the stored mapping itself cannot identify either
+    // candidate. Rebuild one unique mapping for the observed bytes and return
+    // the corresponding candidate rows. The coordinator atomically publishes
+    // this repaired snapshot with the feedback hashes, so any returned row is
+    // a valid immediate-retry anchor instead of the same ambiguous hash again.
+    const freshHashes = _lineHashesPure(originalNormalized);
     const rows = sample
-      .map((line) => `    ${line}: ${originalHashes[line - 1]}${HASH_SEP}${clipLine(fileLines[line - 1] ?? "")}`)
+      .map((line) => `${freshHashes[line - 1]}${HASH_SEP}${clipLine(fileLines[line - 1] ?? "")}`)
       .join("\n");
     throw new InsertValidationError(
       new AnchorMismatchError(
-        `[E_AMBIGUOUS_ANCHOR] 1 ambiguous anchor in ${path}. The anchor hash matches lines ${sample.join(", ")}${more}; insertion never guesses a location. Nothing was inserted. Call read to get fresh anchors, then anchor a single unambiguous line.\n${rows}`,
-        sample.map((line) => originalHashes[line - 1]!),
+        `[E_AMBIGUOUS_ANCHOR] 1 ambiguous anchor in ${path}. The anchor hash matches lines ${sample.join(", ")}${more}; insertion never guesses a location. Nothing was inserted. Current candidate rows with fresh unique anchors (retry immediately with the intended row, or read for wider context):\n\n${rows}`,
+        sample.map((line) => freshHashes[line - 1]!),
       ),
       originalNormalized,
+      freshHashes,
     );
   }
   const anchorLine = candidates[0]!;

@@ -582,7 +582,16 @@ export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<Anc
             // The refusal's fresh rows were observed under the boundary;
             // publishing them for exactly the current content version keeps
             // the immediate retry authorized.
-            store.mergeServed(target.canonicalPath, error.feedbackHashes, error.content);
+            if (error.feedbackSnapshotHashes) {
+              store.publishSnapshotRepair({
+                path: target.canonicalPath,
+                content: error.content,
+                hashes: error.feedbackSnapshotHashes,
+                servedHashes: error.feedbackHashes,
+              });
+            } else {
+              store.mergeServed(target.canonicalPath, error.feedbackHashes, error.content);
+            }
             return {
               content: [{ type: "text", text: error.anchorError.message }],
               details: {

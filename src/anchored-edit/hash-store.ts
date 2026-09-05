@@ -119,6 +119,12 @@ export interface HashStoreHandle {
    */
   publishRead(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void;
   /**
+   * Replaces an invalid snapshot mapping and its complete served set in one
+   * transaction. Used when feedback repairs an ambiguous stored mapping: old
+   * same-version rows must not authorize hashes under the replacement map.
+   */
+  publishSnapshotRepair(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void;
+  /**
    * Publishes one completed mutation's store state — the snapshot for the
    * installed content and, when the diff rows were model-visible, the served
    * rows for exactly that content version — as a single repository
@@ -476,6 +482,15 @@ class HashStoreHandleImpl implements HashStoreHandle {
     this.publishSnapshotAndServed(input.path, { content: input.content, hashes: input.hashes }, input.servedHashes);
   }
 
+  publishSnapshotRepair(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void {
+    this.publishSnapshotAndServed(
+      input.path,
+      { content: input.content, hashes: input.hashes },
+      input.servedHashes,
+      true,
+    );
+  }
+
   publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void {
     this.publishSnapshotAndServed(input.path, { content: input.content, hashes: input.hashes }, input.servedHashes);
   }
@@ -487,6 +502,7 @@ class HashStoreHandleImpl implements HashStoreHandle {
     path: string,
     snapshot: { content: string; hashes: string[] },
     servedHashes?: string[],
+    replaceServed = false,
   ): void {
     const entry = this.requireOpen();
     const checksum = contentChecksum(snapshot.content);
@@ -494,6 +510,7 @@ class HashStoreHandleImpl implements HashStoreHandle {
     const updatedAt = Date.now();
     this.withTransaction(() => {
       entry.stmts.upsertSnapshot(this.owner, path, checksum, lineCount, JSON.stringify(snapshot.hashes), updatedAt);
+      if (replaceServed) entry.stmts.clearServed(this.owner, path);
       if (servedHashes && servedHashes.length > 0) {
         entry.stmts.mergeServedVersioned(this.owner, path, servedHashes, checksum, updatedAt);
       }
@@ -512,17 +529,7 @@ class HashStoreHandleImpl implements HashStoreHandle {
       });
       return;
     }
-    const checksum = contentChecksum(input.snapshot.content);
-    const lineCount = splitLines(input.snapshot.content).length;
-    const updatedAt = Date.now();
-    this.withTransaction(() => {
-      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.snapshot.hashes), updatedAt);
-      entry.stmts.clearServed(this.owner, input.path);
-      if (input.servedHashes && input.servedHashes.length > 0) {
-        entry.stmts.mergeServedVersioned(this.owner, input.path, input.servedHashes, checksum, updatedAt);
-      }
-    });
-    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.snapshot.hashes);
+    this.publishSnapshotAndServed(input.path, input.snapshot, input.servedHashes, true);
   }
 
   listOwners(): OwnerPartition[] {

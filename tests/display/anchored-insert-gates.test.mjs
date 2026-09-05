@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import jiti from "jiti";
@@ -13,10 +13,10 @@ const { default: registerAnchoredInsert } = await load("../../src/anchored-edit/
 
 const KNOWN_PI_TOOL_DISPLAY = Symbol.for("pi-tool-display.api.v1");
 
-const ctxFor = (cwd) => ({
+const ctxFor = (cwd, sessionDir = join(cwd, ".test-session")) => ({
   cwd,
   sessionManager: {
-    getSessionDir: () => join(cwd, ".test-session"),
+    getSessionDir: () => sessionDir,
     getSessionId: () => "test-session",
     getSessionFile: () => undefined,
   },
@@ -63,14 +63,20 @@ function createHarness(config) {
   registerDisplayBuiltins(pi, controller, (available) => { anchoredReadAvailable = available; });
   registerAnchoredReplace(pi, () => controller.config, () => controller.runtime, () => anchoredReadAvailable);
   registerAnchoredInsert(pi, () => controller.config, () => controller.runtime, () => anchoredReadAvailable);
-  return { events, definitions, controller, availability: () => anchoredReadAvailable };
+  return {
+    events,
+    definitions,
+    controller,
+    availability: () => anchoredReadAvailable,
+    activeTools: () => [...active],
+  };
 }
 
 const OWN = { path: "/package/src/index.ts", source: "@odradekk/pi-square", scope: "user", origin: "package" };
 
-async function start(harness, cwd) {
+async function start(harness, cwd, sessionDir) {
   for (const handler of harness.events.get("session_start") ?? []) {
-    await handler({ type: "session_start", reason: "startup" }, ctxFor(cwd));
+    await handler({ type: "session_start", reason: "startup" }, ctxFor(cwd, sessionDir));
   }
 }
 
@@ -105,6 +111,26 @@ try {
     assert.equal(off.definitions.get("insert"), undefined, "disabled anchored editing registers no insert tool");
     assert.equal(off.definitions.get("replace"), undefined, "disabled anchored editing registers no replace tool");
     off.controller.dispose();
+  }
+
+  // ── A real store initialization failure closes the complete anchored
+  //    surface: read stays native, edit stays active, and neither anchored
+  //    mutation registrar sees availability. ──
+  {
+    const badSessionDir = join(root, "session-path-is-a-file");
+    writeFileSync(badSessionDir, "not a directory", "utf8");
+    const unavailable = createHarness({ ...DEFAULT_CONFIG, anchoredEditing: { enabled: true, autoRead: true } });
+    await start(unavailable, workspace, badSessionDir);
+    assert.equal(unavailable.availability(), false, "store initialization failure closes anchored-read availability");
+    assert.equal(unavailable.definitions.get("insert"), undefined, "store initialization failure registers no insert tool");
+    assert.equal(unavailable.definitions.get("replace"), undefined, "store initialization failure registers no replace tool");
+    assert.ok(unavailable.activeTools().includes("edit"), "store initialization failure keeps Pi edit active");
+    assert.ok(
+      !(unavailable.definitions.get("read")?.promptGuidelines ?? []).some((entry) => entry.includes("Do not invent anchors")),
+      "store initialization failure keeps the read definition native",
+    );
+    assert.ok(unavailable.controller.diagnostics.some((entry) => entry.includes("Anchored read store unavailable")));
+    unavailable.controller.dispose();
   }
 
   // ── Anchored-read ownership conflict: the shared availability flag closes

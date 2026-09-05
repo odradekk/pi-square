@@ -556,7 +556,11 @@ describe("anchored insert tool", () => {
       const message = (refusal as InsertValidationError).message;
       expect(message).toContain("[E_AMBIGUOUS_ANCHOR]");
       expect(message).toContain("matches lines");
-      expect((refusal as InsertValidationError).feedbackHashes).toEqual(["a01", "a01"]);
+      const validation = refusal as InsertValidationError;
+      expect(validation.feedbackHashes).toHaveLength(2);
+      expect(new Set(validation.feedbackHashes).size).toBe(2);
+      expect(validation.feedbackSnapshotHashes).toHaveLength(3);
+      expect(new Set(validation.feedbackSnapshotHashes).size).toBe(3);
       expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\nccc\n");
     });
   });

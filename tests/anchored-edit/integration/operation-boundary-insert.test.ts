@@ -58,6 +58,52 @@ afterEach(() => {
 });
 
 describe("operation boundary — insert (#285)", () => {
+  it("publishes fresh unique candidate anchors after an ambiguous refusal so either row can be retried immediately", async () => {
+    await withTempDir("boundary-insert-ambiguous-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const ctx = makeTestCtx(cwd);
+      await anchoredReadOf(cwd, ctx);
+
+      const currentHashes = _lineHashesPure(SAMPLE);
+      const ambiguousHash = currentHashes[1]!;
+      const hashStoreModule = await import("../../../src/anchored-edit/hash-store");
+      const peekSpy = vi.spyOn(hashStoreModule.__testables.HashStoreHandleImpl.prototype, "peekSnapshot")
+        .mockReturnValueOnce([ambiguousHash, currentHashes[0]!, ambiguousHash]);
+      const insert = createAnchoredInsertToolDefinition(cwd, () => true, PARENT_OWNER);
+      try {
+        const refusal = await insert.execute(
+          "insert-ambiguous",
+          { path: "sample.txt", anchor: ambiguousHash, direction: "after", lines: ["NEW"] },
+          undefined, undefined, ctx,
+        );
+        expect(refusal.details?.errorCode).toBe("E_AMBIGUOUS_ANCHOR");
+        const candidates = rowsOf(refusal.content);
+        expect(candidates.map((row) => row.text)).toEqual(["aaa", "ccc"]);
+        expect(new Set(candidates.map((row) => row.hash)).size).toBe(2);
+
+        const unsafeOldRetry = await insert.execute(
+          "insert-old-ambiguous-retry",
+          { path: "sample.txt", anchor: ambiguousHash, direction: "after", lines: ["WRONG"] },
+          undefined, undefined, ctx,
+        );
+        expect(unsafeOldRetry.details?.status).toBe("warning");
+        expect(unsafeOldRetry.details?.errorCode).toBe("E_RANGE_STALE");
+        expect(await readFile(path, "utf-8")).toBe(SAMPLE);
+
+        const retry = await insert.execute(
+          "insert-retry",
+          { path: "sample.txt", anchor: candidates[0]!.hash, direction: "after", lines: ["NEW"] },
+          undefined, undefined, ctx,
+        );
+        expect(retry.details?.metrics?.classification).toBe("applied");
+        expect(await readFile(path, "utf-8")).toBe("aaa\nNEW\nbbb\nccc\n");
+      } finally {
+        peekSpy.mockRestore();
+      }
+    });
+  });
+
   it("a read held at its publication boundary blocks an insert until the read's version is fully published", async () => {
     await withTempDir("boundary-readinsert-", async (cwd) => {
       const path = join(cwd, "sample.txt");
