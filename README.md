@@ -296,7 +296,10 @@ What ships today:
   or rpc input) create trigger opportunities — extension continuations never
   trigger Shadows recursively. A `tool_turn` subscription runs at most once
   per reviewed activity generation, `mutation` recognizes only the successful
-  Pi and pi-square declarative mutation tools (`edit`, `write`, `replace`),
+  Pi and pi-square declarative mutation tools (`edit`, `write`, `replace`,
+  `insert`) — an anchored `replace` or `insert` counts only when its
+  structured outcome proves the edit was applied, so refusals, lock
+  failures, and pre-commit cancellations never fire it —
   and `failure` fires only for a declaratively classified quality
   command (test, build, typecheck, smoke, package-check) that ended non-zero.
   Mutation, failure, and tool-turn reasons from one parent turn coalesce into
