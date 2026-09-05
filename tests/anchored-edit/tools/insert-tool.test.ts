@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { InsertValidationError, insertToolSchema, prepareInsert, resInsertAnchor } from "../../../src/anchored-edit/insert";
@@ -210,6 +210,83 @@ describe("anchored insert tool", () => {
     });
   });
 
+  it("keeps the observed anchor's hash on the anchor row when an identical line is inserted before it", async () => {
+    await withTempFile("sample.txt", "aaa\nanchor\n", async ({ cwd, path }) => {
+      const { ctx, insertTool, readTool } = setupIntegrationTest(cwd);
+      const anchor = await servedAnchorOf(readTool, ctx, "anchor");
+      await insertTool.execute("i1", { path: "sample.txt", anchor, direction: "before", lines: ["anchor"] }, undefined, undefined, ctx);
+      expect(await readFile(path, "utf-8")).toBe("aaa\nanchor\nanchor\n");
+
+      // Exactly one current line carries the observed hash — the ORIGINAL
+      // line, now shifted to the end of the identical run — and the inserted
+      // copy received a different hash.
+      const reread = await readTool.execute("r2", { path: "sample.txt" }, undefined, undefined, ctx);
+      const rows = rowsOf(reread.content);
+      expect(rows.map((row) => row.text)).toEqual(["aaa", "anchor", "anchor"]);
+      const originalRows = rows.filter((row) => row.hash === anchor);
+      expect(originalRows).toHaveLength(1);
+      expect(originalRows[0], "the observed hash stays on the original line, not the inserted copy").toBe(rows[2]);
+
+      // Addressing the observed hash still inserts adjacent to the ORIGINAL
+      // line: MARK lands between the inserted copy and the original.
+      await insertTool.execute("i2", { path: "sample.txt", anchor, direction: "before", lines: ["MARK"] }, undefined, undefined, ctx);
+      expect(await readFile(path, "utf-8")).toBe("aaa\nanchor\nMARK\nanchor\n");
+    });
+  });
+
+  it("keeps the observed anchor's hash when identical lines are inserted after it and on repeated calls", async () => {
+    await withTempFile("sample.txt", "aaa\nanchor\n", async ({ cwd, path }) => {
+      const { ctx, insertTool, readTool } = setupIntegrationTest(cwd);
+      const anchor = await servedAnchorOf(readTool, ctx, "anchor");
+      // Two same-text blocks after the anchor, then one more: every inserted
+      // copy receives a fresh unique hash and the original keeps its own.
+      await insertTool.execute("i1", { path: "sample.txt", anchor, direction: "after", lines: ["anchor", "anchor"] }, undefined, undefined, ctx);
+      await insertTool.execute("i2", { path: "sample.txt", anchor, direction: "after", lines: ["anchor"] }, undefined, undefined, ctx);
+      expect(await readFile(path, "utf-8")).toBe("aaa\nanchor\nanchor\nanchor\nanchor\n");
+
+      const reread = await readTool.execute("r3", { path: "sample.txt" }, undefined, undefined, ctx);
+      const rows = rowsOf(reread.content);
+      const anchorHashes = rows.slice(1).map((row) => row.hash);
+      expect(new Set(anchorHashes).size, "each of the four identical lines has a unique hash").toBe(4)
+      const originalRows = rows.filter((row) => row.hash === anchor);
+      expect(originalRows).toHaveLength(1);
+      expect(originalRows[0], "the observed hash stays on the original line at the start of the run").toBe(rows[1]);
+
+      // Addressing the original hash inserts directly after the original
+      // line, before the previously inserted blocks.
+      await insertTool.execute("i3", { path: "sample.txt", anchor, direction: "after", lines: ["MARK"] }, undefined, undefined, ctx);
+      expect(await readFile(path, "utf-8")).toBe("aaa\nanchor\nMARK\nanchor\nanchor\nanchor\n");
+    });
+  });
+
+  it("returns bounded current anchored context for a vanished anchor and publishes it for an immediate retry", async () => {
+    await withTempFile("sample.txt", "aaa\nbbb\nccc\n", async ({ cwd, path }) => {
+      const { ctx, insertTool, readTool } = setupIntegrationTest(cwd);
+      const anchor = await servedAnchorOf(readTool, ctx, "bbb");
+      await writeFile(path, "aaa\nzzz\nccc\n", "utf8");
+      const refusal = await insertTool.execute("i1", { path: "sample.txt", anchor, direction: "after", lines: ["x"] }, undefined, undefined, ctx);
+      expect(refusal.details?.status).toBe("warning");
+      expect(refusal.details?.errorCode).toBe("E_STALE_ANCHOR");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nzzz\nccc\n");
+      const refusalRows = rowsOf(refusal.content);
+      expect(refusalRows.length, "a stale refusal returns current anchored rows").toBeGreaterThan(0);
+      expect(refusalRows.map((row) => row.text)).toEqual(["aaa", "zzz", "ccc"]);
+      // The returned rows are published against the observed version: a
+      // direct retry with one of them applies without another read.
+      const retry = await insertTool.execute("i2", { path: "sample.txt", anchor: refusalRows[1]!.hash, direction: "after", lines: ["x"] }, undefined, undefined, ctx);
+      expect(retry.details?.metrics?.classification).toBe("applied");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nzzz\nx\nccc\n");
+
+      // The publication is version-bound: after another external change the
+      // same rows no longer authorize anything until a fresh refusal or read.
+      await writeFile(path, "aaa\nyyy\nccc\n", "utf8");
+      const staleRetry = await insertTool.execute("i3", { path: "sample.txt", anchor: refusalRows[1]!.hash, direction: "after", lines: ["y"] }, undefined, undefined, ctx);
+      expect(staleRetry.details?.status).toBe("warning");
+      expect(["E_RANGE_STALE", "E_STALE_ANCHOR"]).toContain(staleRetry.details?.errorCode);
+      expect(await readFile(path, "utf-8")).toBe("aaa\nyyy\nccc\n");
+    });
+  });
+
   it("keeps repeated-anchor calls on literal adjacency with no hidden cursor", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd, path }) => {
       const { ctx, insertTool, readTool } = setupIntegrationTest(cwd);
@@ -267,6 +344,60 @@ describe("anchored insert tool", () => {
       const retry = await insertTool.execute("i2", { path: "sample.txt", anchor: retryAnchor, direction: "after", lines: ["x"] }, undefined, undefined, ctx);
       expect(retry.details?.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\nx\nCHANGED\n");
+    });
+  });
+
+  it("rejects a malformed anchor before any store, target, or file I/O", async () => {
+    await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd, path }) => {
+      const { ctx, insertTool } = setupIntegrationTest(cwd);
+      const workspaceSupport = await import("../../../src/anchored-edit/workspace-support");
+      const fileReader = await import("../../../src/anchored-edit/file-reader");
+      const storeSpy = vi.spyOn(workspaceSupport, "loadAnchoredHashStore");
+      const readSpy = vi.spyOn(fileReader, "readNormFile");
+      try {
+        for (const anchor of ["12abc", "12: aaa", "aB3 extra", "-aB3│copied removed row", "aB34", "ab"]) {
+          await expect(
+            insertTool.execute("bad-anchor", { path: "sample.txt", anchor, direction: "after", lines: ["x"] }, undefined, undefined, ctx),
+            `anchor ${JSON.stringify(anchor)} must be rejected before any I/O`,
+          ).rejects.toThrow(/\[E_BAD_REF\]/);
+        }
+        expect(storeSpy.mock.calls, "no store is loaded for a malformed anchor").toHaveLength(0);
+        expect(readSpy.mock.calls, "no file is read for a malformed anchor").toHaveLength(0);
+        expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\n");
+      } finally {
+        storeSpy.mockRestore();
+        readSpy.mockRestore();
+      }
+    });
+  });
+
+  it("rejects a malformed anchor before the omitted-path recovery loads the store", async () => {
+    await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd, path }) => {
+      const { ctx, insertTool } = setupIntegrationTest(cwd);
+      const workspaceSupport = await import("../../../src/anchored-edit/workspace-support");
+      const storeSpy = vi.spyOn(workspaceSupport, "loadAnchoredHashStore");
+      try {
+        await expect(
+          insertTool.execute("bad-anchor-no-path", { anchor: "12abc", direction: "after", lines: ["x"] }, undefined, undefined, ctx),
+          "the anchor format is rejected before the missing-path store lookup",
+        ).rejects.toThrow(/\[E_BAD_REF\]/);
+        expect(storeSpy.mock.calls, "the omitted-path recovery never loads the store for a malformed anchor").toHaveLength(0);
+        expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\n");
+      } finally {
+        storeSpy.mockRestore();
+      }
+    });
+  });
+
+  it("reports the recognized anchor-prefix correction exactly once with an omitted path", async () => {
+    await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd, path }) => {
+      const { ctx, insertTool, readTool } = setupIntegrationTest(cwd);
+      const anchor = await servedAnchorOf(readTool, ctx, "bbb");
+      const result = await insertTool.execute("i1", { anchor: `+${anchor}│bbb`, direction: "after", lines: ["x"] }, undefined, undefined, ctx);
+      expect(result.details?.metrics?.classification).toBe("applied");
+      const warnings: string[] = result.details?.warnings ?? [];
+      expect(warnings.filter((warning) => warning.includes("[E_BAD_REF]"))).toHaveLength(1);
+      expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\nx\n");
     });
   });
 

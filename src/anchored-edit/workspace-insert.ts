@@ -8,6 +8,7 @@ import { anchoredStoreDir } from "./paths.ts";
 import {
   assertInsertReq,
   insertToolSchema,
+  resInsertAnchor,
   resolveMissingInsertPath,
   type InsertDetails,
   type InsertParams,
@@ -58,16 +59,24 @@ export function createAnchoredInsertToolDefinition(
       const effectiveSessionDir = sessionDir ?? ctx?.sessionManager?.getSessionDir?.() ?? "";
       const canonical = normReq(params);
       assertInsertReq(canonical, { allowMissingPath: true });
+      // The anchor's public form resolves once, before any store, target, or
+      // file I/O: a malformed anchor is rejected here rather than inside the
+      // operation boundary, and the recognized read-row / added-diff prefix
+      // is stripped with its single E_BAD_REF warning. The boundary-side
+      // parse in prepareInsert then sees a bare hash and adds no second
+      // warning.
+      const anchorWarnings: string[] = [];
+      (canonical as { anchor: string }).anchor = resInsertAnchor(canonical.anchor, anchorWarnings);
       const workspace = resolveWorkspacePath(cwd, ".");
       const storeDir = anchoredStoreDir(effectiveSessionDir, workspace.workspaceRoot);
-      let leadingWarnings: string[] | undefined;
+      const leadingWarnings = [...anchorWarnings];
       if (!Object.hasOwn(canonical as Record<string, unknown>, "path")) {
         const store = await loadAnchoredHashStore(storeDir, owner);
         try {
           const resolution = await resolveMissingInsertPath(canonical, store);
           if (resolution) {
             (canonical as { path?: string }).path = resolution.path;
-            leadingWarnings = [resolution.warning];
+            leadingWarnings.push(resolution.warning);
           }
         } finally {
           store.release();
@@ -82,7 +91,7 @@ export function createAnchoredInsertToolDefinition(
         autoRead,
         sessionDir: effectiveSessionDir,
         signal,
-        ...(leadingWarnings ? { leadingWarnings } : {}),
+        ...(leadingWarnings.length > 0 ? { leadingWarnings } : {}),
       });
     },
   };

@@ -83,6 +83,37 @@ function assignHash(used: Uint32Array, baseIdx: number, hint: { value: number })
   return hashAt(nextIdx);
 }
 
+/**
+ * Position-stable hashes for one pure insertion (#285): every surviving line
+ * keeps its exact hash (an insertion never reorders, rewrites, or removes
+ * lines), and each inserted line receives a fresh hash unique against the
+ * whole result. Unlike the content-matched stable mapping — which may move an
+ * old hash onto a newly inserted line with identical text — this assignment
+ * is positional, so the anchor row the caller observed always keeps its hash.
+ */
+export function _insertLineHashesPure(
+	originalHashes: readonly string[],
+	insertedLines: readonly string[],
+	insertAt: number,
+): string[] {
+	const used = new Uint32Array(BITSET_WORDS);
+	const hint = { value: 0 };
+	for (const hash of originalHashes) {
+		const idx = hashToIndex(hash);
+		if (idx >= 0) setBit(used, idx);
+	}
+	const fresh = new Array<string>(insertedLines.length);
+	for (let i = 0; i < insertedLines.length; i++) {
+		const baseIdx = (xxh32(canon(insertedLines[i]!)) >>> 14) % HASH_SPACE;
+		fresh[i] = assignHash(used, baseIdx, hint);
+	}
+	return [
+		...originalHashes.slice(0, insertAt),
+		...fresh,
+		...originalHashes.slice(insertAt),
+	];
+}
+
 export function _lineHashesPure(content: string): string[] {
   const lines = splitLines(content);
   const hashes = new Array<string>(lines.length);

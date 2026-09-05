@@ -4,7 +4,7 @@ import type { LineEnding } from "./replace-diff";
 import { readNormFile } from "./file-reader";
 import { HASH_CLASS, HASH_SEP, MAX_HASH_LINES } from "./hashline";
 import { AnchorMismatchError, RangeStaleError } from "./hashline";
-import { lineHashes } from "./hashline";
+import { _insertLineHashesPure } from "./hashline";
 import { buildMetrics, type RMetrics } from "./replace-response";
 import { genDiff } from "./replace-diff";
 import { isRec, rejectUnknownFields, splitLines, clipLine } from "./utils";
@@ -313,10 +313,16 @@ export async function prepareInsert(
     if (originalHashes[i] === anchorHash) candidates.push(i + 1);
   }
   if (candidates.length === 0) {
+    // The anchor is gone entirely, so no current position can be derived
+    // from it; the deterministic bounded context is the head of the current
+    // file. The coordinator publishes exactly these rows against the
+    // observed version, so an immediate retry with any returned row
+    // verifies.
+    const context = contextRows(1, fileLines, originalHashes, 2);
     throw new InsertValidationError(
       new AnchorMismatchError(
-        `[E_STALE_ANCHOR] 1 stale anchor in ${path}: "${anchorHash}". The file content has changed since that anchor was read. Nothing was inserted. Call read to get fresh anchors, then copy the 3-char HASH of an adjacent line into the anchor field of your next insert call.`,
-        [],
+        `[E_STALE_ANCHOR] 1 stale anchor in ${path}: "${anchorHash}". The file content has changed since that anchor was read, so the line it named no longer exists. Nothing was inserted. Current head of the file with fresh anchors (retry with any of these rows, or read for wider context):\n\n${context.rows.join("\n")}`,
+        context.hashes,
       ),
       originalNormalized,
     );
@@ -368,10 +374,13 @@ export async function prepareInsert(
   const terminated = originalNormalized.endsWith("\n");
   const result = newLines.join("\n") + (terminated ? "\n" : "");
 
-  const resultHashes = await lineHashes(result, absolutePath, {
-    content: originalNormalized,
-    hashes: originalHashes,
-  }, hashStore, false);
+  // Position-stable hash mapping: a pure insertion never reorders or removes
+  // lines, so every surviving line — the anchor row included — keeps its
+  // exact hash and only the inserted lines receive fresh unique hashes. The
+  // content-matched stable mapping is deliberately not used here: it may move
+  // the anchor's hash onto a newly inserted line with identical text, which
+  // would make the observed anchor address the wrong line on the next call.
+  const resultHashes = _insertLineHashesPure(originalHashes, params.lines, insertAt);
 
   const firstChangedLine = insertAt + 1;
   return {
