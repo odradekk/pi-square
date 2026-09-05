@@ -8,19 +8,19 @@ source.
 | Code | Meaning |
 | --- | --- |
 | `[E_BAD_SHAPE]` | Request envelope or edit item has unknown, missing, or wrongly-typed fields (for example `replacement_text` must be a string with `\n` line separators). |
-| `[E_BAD_REF]` | An anchor in `remove_from`/`remove_to` is not a bare 3-char hash. |
+| `[E_BAD_REF]` | An anchor in `remove_from`/`remove_to`, or the insert `anchor`, is not a bare 3-char hash. A copied read row (`HASH│…`) or added diff row (`+HASH│…`) is stripped automatically with a warning. |
 | `[E_STALE_ANCHOR]` | An anchor does not match any line in the current file; call `read` for fresh anchors. |
 | `[E_AMBIGUOUS_ANCHOR]` | An anchor matches multiple lines; call `read` for fresh anchors. |
 | `[E_INVALID_PATCH]` | A `replacement_text` line is a diff-preview row (`+HASH│`, `-HASH│`, `-   │`). The marker is stripped automatically with a warning. |
 | `[E_BARE_HASH_PREFIX]` | A `replacement_text` line starts with a hash-like `HASH│` prefix. The prefix is stripped automatically with a warning. |
-| `[E_BAD_OP]` | Range start line is after range end line. The implementation swaps the pair with a warning when it can resolve the range; otherwise it refuses the invalid range. |
+| `[E_BAD_OP]` | Range start line is after range end line. The implementation swaps the pair with a warning when it can resolve the range; otherwise it refuses the invalid range. Also refuses `insert` into an empty file (use `write`); empty-file and blank-line insertion are planned follow-ups. |
 | `[E_WOULD_EMPTY]` | An edit would empty a non-empty file; use `write` instead. |
 | `[E_NOT_FOUND]` | The path does not exist. |
 | `[E_ACCESS]` | The file is not readable or writable. |
 | `[E_READ_PATH]` | The requested `read` path cannot be resolved (an unresolvable cwd or a symlink loop). A missing path is not this code: Pi's native read failure is preserved. |
 | `[E_READ_FAILED]` | Anchored-read guarding or post-factory transformation failed. The message gives the cause and may provide an appropriate fallback. |
 | `[E_NOT_TEXT]` | The path is a directory, binary file, image, or UTF-16/UTF-32 encoded text; hashline editing only supports text files. |
-| `[E_FILE_LOCKED]` | Failure to enter the per-target operation boundary: the cross-process target lock could not be acquired within the bounded wait (or the wait was cancelled) because another editor holds it. Emitted by anchored `read`, `replace`, and the anchored writes alike; the refusal changes nothing and is always safe to retry. |
-| `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
+| `[E_FILE_LOCKED]` | Failure to enter the per-target operation boundary: the cross-process target lock could not be acquired within the bounded wait (or the wait was cancelled) because another editor holds it. Emitted by anchored `read`, `insert`, `replace`, and the anchored writes alike; the refusal changes nothing and is always safe to retry. |
+| `[E_RANGE_STALE]` | A line in the replaced range — or the insert's target anchor — no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current anchored context is returned with fresh anchors. Insert requires the anchor to be served for the current content version for every owner, the parent included. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 238,328-line hashline limit or the 100MB size limit. |
-| `[E_STATE_UNAVAILABLE]` | The replace's or write's file commit succeeded but recording fresh anchored state failed. The file change is reported truthfully, fresh anchors are suppressed, and the message directs a `read` to republish current anchors; the previous version's stale state cannot authorize another replace until then (#264). |
+| `[E_STATE_UNAVAILABLE]` | The replace's, insert's, or write's file commit succeeded but recording fresh anchored state failed. The file change is reported truthfully, fresh anchors are suppressed, and the message directs a `read` to republish current anchors; the previous version's stale state cannot authorize another anchored mutation until then (#264). |

@@ -24,10 +24,15 @@ record supersedes the affected decisions.
 `src/anchored-edit/operations.ts` owns target resolution, in-process queue
 participation, cross-process exclusion, disk observation or mutation, and the
 matching owner-scoped store transaction for parent and writable-child reads,
-replaces, and writes. Tool integrations delegate canonicalization to that
-module and never implement lock files, queue ordering, filesystem mechanics,
-cache ownership, or database transactions directly. The invariant stated in
-one place and tested there: model-visible anchors correspond to exact file
+inserts, replaces, and writes. Tool integrations delegate canonicalization to
+that module and never implement lock files, queue ordering, filesystem
+mechanics, cache ownership, or database transactions directly. `insert` is a
+first-class insertion mutation through the same boundary (odradekk/pi-square#285):
+it never constructs a replacement containing the anchor line, splices one
+literal ordered block at one before/after position of one observed anchor,
+and reports the number of inserted lines as added and zero removed. The
+invariant stated in one place and tested there: model-visible anchors
+correspond to exact file
 bytes, belong to one physical store and owner, and are published only for a
 completed operation.
 
@@ -35,9 +40,10 @@ completed operation.
 
 Pi's per-file mutation queue is the outer in-process serializer and the
 anchored cross-process lock is the inner serializer for **every** mutation.
-`replace` enters the queue explicitly; parent and child writes are still
-constructed from Pi's public write factory, but the anchored write operation
-is injected through the factory's supported filesystem-operation seam
+`replace` and the parent `insert` enter the queue explicitly; parent and
+child writes are still constructed from Pi's public write factory, but the
+anchored write operation is injected through the factory's supported
+filesystem-operation seam
 (`WriteOperations.writeFile`), so the lock is acquired *inside* the native
 queue. This deliberately reopens ADR-0007's accepted same-process lock-order
 inversion: the audit showed that bounded waiting converts the internal
@@ -69,7 +75,13 @@ completed write was aborted. `[E_RANGE_STALE]` is reserved for validation
 performed after the lock is acquired against a file that no longer matches
 the served range; it keeps returning the current range with fresh anchors
 and serving those rows for the immediate retry. The child `requireServed`
-gate is unchanged.
+gate is unchanged. Insert is stricter than replace on one axis (#285): its
+served-anchor authorization is mandatory for every owner, the parent
+included — an insert adds content adjacent to a line the caller must have
+observed, so there is no edit-without-prior-read path — and its refusal
+returns bounded current anchored context (the anchor row with its
+neighbours, or the ambiguous candidates) published against the observed
+version for the immediate retry.
 
 ### Replace: pure preparation, version-bound authorization, atomic publication
 
@@ -266,6 +278,22 @@ resolution returns one discriminated success-or-failure result;
 normalization, duplicate-boundary correction, and application consume the
 already-resolved range without re-resolving.
 
+### Insert through the same boundary (#285)
+
+`insert` reuses this record's boundary, publication, and truthfulness rules
+without a second coordinator: the same queue-then-lock order, canonical
+target resolution with hard-link identity and frozen symlink targets, the
+same atomic write and abort checks, the same `publishMutation` transaction
+(serving the authoritative diff's visible rows under auto-read, publishing
+the new version's snapshot with no served rows when auto-read is off), and
+the same truthful post-commit contract (`[E_STATE_UNAVAILABLE]` keeps the
+success and suppresses fresh anchors). The staged slice covers the parent,
+existing non-empty files, and non-empty logical lines; empty-file and
+blank-line insertion, the writable-child edit capability, and Shadow Minds
+mutation observation are deliberately later tickets. The parent registers
+`insert` under the same anchored-edit configuration, store-readiness,
+anchored-read ownership, and conflict gates as `replace`.
+
 ### Removed and unchanged
 
 The workspace-confinement mode is removed from the anchored-edit runtime
@@ -275,8 +303,12 @@ everywhere. The session-directory store placement, ephemeral
 workspace-keyed fallback, parent owner, child partitioning, partition
 bounds, corruption recovery, and busy retry behavior are unchanged.
 `replace` remains the only range-editing path with no persistent undo or
-revert state. The store's undo-free quarantine-and-rebuild policy from #187
-now simply covers one more incompatible layout.
+revert state — superseded in part by #285: `insert` now also edits files
+adjacent to one anchor through the same boundary, so the earlier
+replace-only phrasing of the anchored mutation surface applies to the pair.
+There is still no persistent undo or revert state. The store's undo-free
+quarantine-and-rebuild policy from #187 now simply covers one more
+incompatible layout.
 
 ## Superseded decisions
 

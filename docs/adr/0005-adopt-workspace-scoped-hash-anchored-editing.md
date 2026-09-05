@@ -25,6 +25,14 @@ changed Pi `write` calls append bounded fresh anchors, while successful
 `replace` and `revert` retain their authoritative anchored diffs. Disabling it
 suppresses those post-edit anchors but still clears write state.
 
+> Partially superseded by #285: the parent mutation surface now also exposes
+> `insert`, which adds one or more literal lines immediately before or after
+> one observed anchor through the same operation boundary and the same
+> gates, with mandatory served-anchor authorization for every owner. The
+> replace-only phrasing above predates that tool; `replace` itself is
+> unchanged. See
+> [ADR-0014](0014-anchored-operation-boundary.md#insert-through-the-same-boundary-285).
+
 > The store placement and persistence paragraphs below are superseded: the
 > store lives in the session directory (`<sessionDir>/anchored-edit/`) with a
 > workspace-keyed temp fallback, and preparation no longer persists before
