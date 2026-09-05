@@ -291,10 +291,15 @@ same atomic write and abort checks, the same `publishMutation` transaction
 (serving the authoritative diff's visible rows under auto-read, publishing
 the new version's snapshot with no served rows when auto-read is off), and
 the same truthful post-commit contract (`[E_STATE_UNAVAILABLE]` keeps the
-success and suppresses fresh anchors). The staged slice covers the parent,
-existing non-empty files, and non-empty logical lines; empty-file and
-blank-line insertion, the writable-child edit capability, and Shadow Minds
-mutation observation are deliberately later tickets. The parent registers
+success and suppresses fresh anchors). The staged slice covered the parent,
+existing non-empty files, and non-empty logical lines; #286 completed the
+logical-line contract: an empty-string item is one real blank logical line
+(a blank row appended after an unterminated last row brings its own
+terminator, so the bytes gain two terminal newlines), and an empty file
+initializes through the synthetic anchor its read serves, with `before` and
+`after` as the same initialization and no insert-specific resource limits.
+The writable-child edit capability and Shadow Minds mutation observation
+remain deliberately later tickets. The parent registers
 `insert` under the same anchored-edit configuration, store-readiness,
 anchored-read ownership, and conflict gates as `replace`.
 
