@@ -913,4 +913,133 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 }
 
+// ── 22. abort_subagent: production catalog/adapter path (#278) ──
+
+{
+  const abortEntry = DISPLAY_CATALOG.find((entry) => entry.name === "abort_subagent");
+  assert.ok(abortEntry, "abort_subagent must be declared in the display catalog");
+  assert.equal(abortEntry.family, "agent");
+  assert.equal(abortEntry.parent, true);
+  assert.equal(abortEntry.child, false);
+
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true, test: true },
+  });
+  const definition = {
+    name: "abort_subagent",
+    description: "abort",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute() { return { content: [] }; },
+  };
+  const decorated = decorateSubagentTool(definition, () => runtime);
+  assert.equal(decorated.renderShell, "self", "abort_subagent must own its render shell");
+
+  const ids = [
+    "subagent_11111111-1111-4111-8111-111111111111",
+    "subagent_22222222-2222-4222-8222-222222222222",
+    "subagent_33333333-3333-4333-8333-333333333333",
+  ];
+  const args = { ids };
+  const abortDetails = {
+    version: 1,
+    ids,
+    waitedMs: 800,
+    results: [
+      {
+        id: ids[0],
+        before: "running",
+        status: "aborted",
+        abortApplied: true,
+        reason: "ABORT-REASON-5K3N stopped by request",
+        task: "first stopped task",
+        startedAt: 1,
+        endedAt: 2,
+        durationMs: 1,
+      },
+      {
+        id: ids[1],
+        before: "completed",
+        status: "completed",
+        abortApplied: false,
+        task: "second completed task",
+        startedAt: 1,
+        endedAt: 2,
+        durationMs: 1,
+      },
+      {
+        id: ids[2],
+        before: "failed",
+        status: "failed",
+        abortApplied: false,
+        error: "FAILURE-TEXT-8Q2M earlier failure",
+        task: "third failed task",
+        startedAt: 1,
+        endedAt: 2,
+        durationMs: 1,
+      },
+    ],
+  };
+
+  function context(overrides = {}) {
+    return {
+      args,
+      toolCallId: "abort-call-1",
+      invalidate() {},
+      lastComponent: undefined,
+      state: {},
+      cwd: root,
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: false,
+      ...overrides,
+    };
+  }
+
+  const call = decorated.renderCall(args, darkTheme, context());
+  const resultComponent = decorated.renderResult(
+    { content: [{ type: "text", text: "aborted" }], details: abortDetails },
+    { expanded: false, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call }),
+  );
+
+  // Collapsed: exactly one row; a successful abort request is a completed call
+  // whose summary states the truthful outcome counts, with no payload.
+  const collapsed = stripVTControlCharacters(resultComponent.render(120).join("\n"));
+  assert.match(collapsed, /^\u2713 Abort 3 runs/, "a successful abort renders as a completed call with the selected count");
+  assert.match(collapsed, /completed · failed · aborted/, "the inline summary states the outcome counts");
+  assert.doesNotMatch(collapsed, /ABORT-REASON-5K3N|FAILURE-TEXT-8Q2M/, "collapsed shows no payload");
+  assert.doesNotMatch(collapsed, /\n.*\n/, "a collapsed abort entry is exactly one row");
+
+  // Expanded: the ordered target rows plus one evidence section per non-
+  // completed target; each raw text appears exactly once.
+  const expanded = decorated.renderResult(
+    { content: [{ type: "text", text: "aborted" }], details: abortDetails },
+    { expanded: true, isPartial: false },
+    darkTheme,
+    context({ lastComponent: call, expanded: true }),
+  );
+  const expandedPlain = stripVTControlCharacters(expanded.render(120).join("\n"));
+  const firstIndex = expandedPlain.indexOf("11111111");
+  const secondIndex = expandedPlain.indexOf("22222222");
+  const thirdIndex = expandedPlain.indexOf("33333333");
+  assert.ok(firstIndex >= 0 && secondIndex > firstIndex && thirdIndex > secondIndex, "expanded rows follow requested-ID order");
+  assert.match(expandedPlain, /Targets/);
+  assert.equal(expandedPlain.split("ABORT-REASON-5K3N").length - 1, 1, "the abort reason appears exactly once");
+  assert.equal(expandedPlain.split("FAILURE-TEXT-8Q2M").length - 1, 1, "the failure text appears exactly once");
+
+  for (const width of [40, 63, 80, 120]) {
+    for (const component of [call, expanded]) {
+      const lines = component.render(width);
+      assert.ok(
+        lines.every((line) => visibleWidth(line) <= width),
+        `abort_subagent exceeded ${width} through the production decoration path`,
+      );
+    }
+  }
+}
+
 console.log("visual acceptance tests: OK");

@@ -143,7 +143,7 @@ function writePersistedRun(publicId) {
 
 test("registerSubagentTool exposes wait_subagent beside delegate and resume", () => {
   const probe = createHarness();
-  assert.deepEqual([...probe.pi.tools.keys()], ["wait_subagent", "delegate_subagent", "resume_subagent"]);
+  assert.deepEqual([...probe.pi.tools.keys()], ["wait_subagent", "delegate_subagent", "resume_subagent", "abort_subagent"]);
   const schema = probe.waitTool.parameters;
   assert.equal(schema.type, "object");
   assert.equal(schema.additionalProperties, false);

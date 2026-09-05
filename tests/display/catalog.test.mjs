@@ -81,7 +81,7 @@ const expectedTools = [
   // pi-square workflow
   "todo", "ask",
   // pi-square agent
-  "delegate_subagent", "resume_subagent", "wait_subagent",
+  "delegate_subagent", "resume_subagent", "wait_subagent", "abort_subagent",
 ];
 for (const name of expectedTools) {
   assert.ok(getCatalogEntry(name), `expected tool '${name}' must be in catalog`);
@@ -94,7 +94,7 @@ const parentOnly = allNames.filter((n) => {
   const e = getCatalogEntry(n);
   return e.parent && !e.child;
 });
-// parse, replace, ssh, todo, ask, delegate_subagent, resume_subagent, wait_subagent are parent-only
+// parse, replace, ssh, todo, ask, delegate_subagent, resume_subagent, wait_subagent, abort_subagent are parent-only
 assert.ok(parentOnly.includes("replace"), "replace must be parent-only");
 assert.ok(parentOnly.includes("parse"), "parse must be parent-only");
 assert.ok(parentOnly.includes("ssh"), "ssh must be parent-only");
@@ -103,7 +103,8 @@ assert.ok(parentOnly.includes("ask"), "ask must be parent-only");
 assert.ok(parentOnly.includes("delegate_subagent"), "delegate_subagent must be parent-only");
 assert.ok(parentOnly.includes("resume_subagent"), "resume_subagent must be parent-only");
 assert.ok(parentOnly.includes("wait_subagent"), "wait_subagent must be parent-only");
-assert.equal(parentOnly.length, 8, `expected 8 parent-only tools, got ${parentOnly.length}`);
+assert.ok(parentOnly.includes("abort_subagent"), "abort_subagent must be parent-only");
+assert.equal(parentOnly.length, 9, `expected 9 parent-only tools, got ${parentOnly.length}`);
 
 // ── Platform shell ownership ─────────────────────────────────────────
 

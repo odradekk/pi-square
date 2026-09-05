@@ -118,6 +118,7 @@ const EXPECTED_TITLES = {
   delegate_subagent: "Subagent",
   resume_subagent: "Resume",
   wait_subagent: "Wait",
+  abort_subagent: "Abort",
 };
 
 // ─── C1: every catalog tool renders a sentence-case title ───────────
