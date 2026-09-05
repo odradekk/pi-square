@@ -154,22 +154,28 @@ background runs (#278), completing the four-tool background-only contract.
   validates the complete selection before any abort signal: one malformed,
   unknown, or foreign ID rejects the whole call and nothing is aborted. Only
   runs of the current parent session are abortable.
-- Queued, running, and cancelling targets receive an abort signal through the
+- Queued and running targets receive this request's abort signal through the
   same `cancelBackgroundJobs` seam the `/subagent` manager's Cancel action
   uses, and the tool waits until every active target has actually reached the
-  `aborted` terminal state. Once a signal has linearized against an active
-  job, abort wins a simultaneous natural-completion race — the lifecycle's
-  aborted check resolves a natural completion as `aborted` — while a target
-  that was already terminal before the request keeps its real state.
+  `aborted` terminal state. A target that was already cancelling keeps the
+  signal of its earlier cancellation — the seam's cancelling branch sends no
+  new signal — so the request truthfully reports that it applied none and only
+  waits for that stop to complete. Once a signal has linearized against an
+  active job, abort wins a simultaneous natural-completion race — the
+  lifecycle's aborted check resolves a natural completion as `aborted` — while
+  a target that was already terminal before the request keeps its real state.
 - Already-terminal targets are valid targets and are only reported:
   `completed` without repeating its successful result, `failed` with its
   complete established bounded error, and `aborted` with its abort reason.
   Aborting is not a second result-consumption path.
 - A successful abort request is a successful tool call even though its active
-  targets end `aborted`; tool-level error is reserved for request validation,
-  ownership conflicts, and infrastructure failures. Interrupting the tool's
-  own wait — or a session termination ending it — never retracts abort
-  signals already sent; the targets keep stopping on their own.
+  targets end `aborted`. Tool-level error marks a request that was rejected —
+  validation, ownership, or infrastructure failure — or one whose
+  terminal-state observation could not complete: an interrupted tool wait, or
+  one ended by a session replacement or shutdown, has not observed every
+  target's final state and reports that failure truthfully without fabricating
+  complete details. Abort signals already sent are never retracted; the
+  targets keep stopping on their own.
 - Abort never claims or consumes a result. A run claimed by `wait_subagent`
   stays owned by that waiter, which receives the aborted terminal outcome
   through the established claimed-aborted delivery policy, and an ordinary
@@ -180,7 +186,10 @@ background runs (#278), completing the four-tool background-only contract.
   bounded projection discipline as the wait details.
 - The `/subagent` manager keeps its Resume, Fresh, and Cancel interaction and
   adds no Wait action; manager Cancel and `abort_subagent` share the
-  cancellation seam and the same lifecycle and safety rules.
+  cancellation seam and the same lifecycle and safety rules, and the manager
+  lists and cancels only the current parent session's active jobs — the live
+  job record is re-checked for session ownership at action time, never trusted
+  from the rendered snapshot.
 - The display follows the calm operational grammar: the selected count while
   stopping, a completed lifecycle for a successful request with truthful
   per-target outcome counts, one ordered expanded row per target, and one
