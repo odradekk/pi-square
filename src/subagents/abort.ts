@@ -34,7 +34,11 @@ import { cancelBackgroundJobs, type BackgroundJob, subscribeBackgroundState } fr
 import { budgetResultText, MAX_WAIT_IDS } from "./delivery";
 import { clipWithHeadTail } from "./confirmed-delivery";
 import { createSubagentError, failureToolResult } from "./errors";
-import { normalizeSubagentIdsRequest, type SubagentWaitRegistry, type WaitEndReason } from "./wait";
+import {
+  normalizeSubagentIdsRequest,
+  type BlockingCallEndReason,
+  type SubagentBlockingCallRegistry,
+} from "./wait";
 import type {
   SubagentAbortDetails,
   SubagentAbortRunSummary,
@@ -126,10 +130,8 @@ function resolveAbortTarget(input: {
   return { id, job, before: job.status };
 }
 
-/** How the abort wait ended before every target stopped. Abort never loses a
- * target — the job records are held by reference — so the wait's `lost` end
- * reason cannot occur here. */
-type AbortEndReason = Exclude<WaitEndReason, { kind: "lost" }>;
+/** How the abort wait ended before every target stopped. */
+type AbortEndReason = { kind: "interrupted" } | BlockingCallEndReason;
 
 /**
  * Resolves when every aborted job reaches a terminal state. Ends early on an
@@ -142,7 +144,7 @@ async function awaitAbortTargets(input: {
   state: SubagentRuntimeState;
   jobs: BackgroundJob[];
   signal?: AbortSignal;
-  registry: SubagentWaitRegistry;
+  registry: SubagentBlockingCallRegistry;
 }): Promise<AbortEndReason | undefined> {
   const { state, jobs, registry } = input;
   let wake: () => void = () => {};
@@ -159,11 +161,7 @@ async function awaitAbortTargets(input: {
   let unregister: (() => void) | undefined;
   const unsubscribeState = subscribeBackgroundState(state.background, onStateChange);
   input.signal?.addEventListener("abort", onAbort, { once: true });
-  // The registry only ever terminates outstanding waits; the wait's `lost`
-  // end reason is mapped defensively so the abort end vocabulary stays closed.
-  unregister = registry.register({
-    end: (reason) => end(reason.kind === "lost" ? { kind: "interrupted" } : reason),
-  });
+  unregister = registry.register({ end });
 
   try {
     while (true) {
@@ -307,7 +305,7 @@ function buildAbortDetails(ids: string[], summaries: SubagentAbortRunSummary[], 
 export function registerAbortSubagentTool(
   pi: ExtensionAPI,
   state: SubagentRuntimeState,
-  registry: SubagentWaitRegistry,
+  registry: SubagentBlockingCallRegistry,
   decorate?: (definition: ToolDefinition<any, any, any>) => ToolDefinition<any, any, any>,
 ): void {
   const definition: ToolDefinition<any, any, any> = {

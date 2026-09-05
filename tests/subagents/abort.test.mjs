@@ -21,7 +21,7 @@ const { registerSubagentTool } = await loadToolModule();
 const { cancelBackgroundJobs, createBackgroundState, createQueuedJob, notifyBackgroundChange } = await loadBackgroundModule();
 const { createDeliveryController } = await loadDeliveryModule();
 const loadLocal = jiti(import.meta.url, { moduleCache: false });
-const { createSubagentWaitRegistry } = await loadLocal(join(
+const { createSubagentBlockingCallRegistry } = await loadLocal(join(
   import.meta.dirname, "..", "..", "src", "subagents", "wait.ts",
 ));
 
@@ -62,7 +62,7 @@ function createHarness(options = {}) {
     notify: () => notifyBackgroundChange(state.background),
   });
   state.background.delivery = delivery;
-  const registry = createSubagentWaitRegistry();
+  const registry = createSubagentBlockingCallRegistry();
   registerSubagentTool(pi.api, state, undefined, registry);
   const abortTool = pi.tools.get("abort_subagent");
   assert.ok(abortTool, "abort_subagent is registered");
@@ -314,6 +314,11 @@ test("a running target passes through cancelling and the tool waits for aborted"
   assert.equal(result.details.results[0].before, "running");
   assert.equal(result.details.results[0].status, "aborted");
   assert.equal(result.details.results[0].abortApplied, true);
+  assert.match(
+    result.details.results[0].reason,
+    /aborted through abort_subagent/,
+    "the running target retains this request's explicit abort reason",
+  );
   assert.equal(probe.state.background.jobs.get(publicId).status, "aborted");
   assert.equal(probe.sent.length, 0, "the aborted run never enters automatic delivery");
 });

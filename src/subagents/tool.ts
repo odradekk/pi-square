@@ -23,7 +23,11 @@ import { renderSubagentNotification } from "./render";
 import { compileFreshPrompt } from "./prompt";
 import { registerAbortSubagentTool } from "./abort";
 import { resolveSubagentCwd } from "./session";
-import { createSubagentWaitRegistry, registerWaitSubagentTool, type SubagentWaitRegistry } from "./wait";
+import {
+  createSubagentBlockingCallRegistry,
+  registerWaitSubagentTool,
+  type SubagentBlockingCallRegistry,
+} from "./wait";
 import type { SubagentNotificationDetails, SubagentRunDetails } from "./types";
 
 export interface SubagentRuntimeState {
@@ -170,16 +174,16 @@ export function registerSubagentTool(
   pi: ExtensionAPI,
   state: SubagentRuntimeState,
   decorate?: (definition: ToolDefinition<any, any, any>) => ToolDefinition<any, any, any>,
-  waitRegistry?: SubagentWaitRegistry,
+  blockingCallRegistry?: SubagentBlockingCallRegistry,
 ): void {
   registerNotificationRenderer(pi);
   const register = (definition: ToolDefinition<any, any, any>) => {
     pi.registerTool(decorate ? decorate(definition) : definition);
   };
   // Wait and abort share one session-scoped registry so a session replacement
-  // or shutdown terminates both kinds of outstanding wait together.
-  const sharedWaitRegistry = waitRegistry ?? createSubagentWaitRegistry();
-  registerWaitSubagentTool(pi, state, sharedWaitRegistry, decorate);
+  // or shutdown terminates both blocking calls together.
+  const sharedBlockingCallRegistry = blockingCallRegistry ?? createSubagentBlockingCallRegistry();
+  registerWaitSubagentTool(pi, state, sharedBlockingCallRegistry, decorate);
 
 
   register({
@@ -358,7 +362,7 @@ export function registerSubagentTool(
     },
   });
 
-  registerAbortSubagentTool(pi, state, sharedWaitRegistry, decorate);
+  registerAbortSubagentTool(pi, state, sharedBlockingCallRegistry, decorate);
 }
 
 export const __testables = {

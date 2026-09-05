@@ -447,8 +447,14 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
 {
   const description = waitAdapter.describeResult(
     {
-      content: [{ type: "text", text: "Subagent failed: RESULT_CLAIMED" }],
-      details: { status: "error", error: { code: "RESULT_CLAIMED" } },
+      content: [{ type: "text", text: "Subagent failed: RESULT_CLAIMED\nMessage: raw claim detail" }],
+      details: {
+        status: "error",
+        error: {
+          code: "RESULT_CLAIMED",
+          message: "A selected subagent result is already claimed by another wait_subagent call.",
+        },
+      },
     },
     { expanded: true },
     { isError: true, args: { ids: [waitId("11111111"), waitId("22222222")] } },
@@ -457,7 +463,9 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
   assert.equal(description.lifecycle, "failed");
   assert.equal(description.target, "2 runs");
   assert.deepEqual(description.sections, []);
-  assert.match(description.error, /RESULT_CLAIMED/);
+  assert.match(description.error, /already claimed by another wait_subagent call/);
+  assert.doesNotMatch(description.error, /\n/);
+  assert.match(description.errorRaw, /raw claim detail/);
 }
 
 // ─── abort_subagent calm operational display (#278) ──────────────────

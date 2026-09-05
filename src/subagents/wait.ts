@@ -210,37 +210,40 @@ function claimFailureResult(failure: { kind: string; id?: string; limit?: number
   }));
 }
 
+/** Session lifecycle reason shared by blocking subagent tool calls. */
+export type BlockingCallEndReason = { kind: "terminated"; reason: string };
+
 /** How the wait ended before every result was taken. */
 export type WaitEndReason =
   | { kind: "interrupted" }
-  | { kind: "terminated"; reason: string }
+  | BlockingCallEndReason
   | { kind: "lost"; id: string };
 
-/** Session-scoped registry of outstanding waits: a session replacement, reload,
- * or shutdown terminates every one of them and the delivery reset clears their
- * memory-only claims. */
-export interface SubagentWaitRegistry {
-  /** Registers one outstanding wait; returns its unregister function. */
-  register(wait: { end(reason: WaitEndReason): void }): () => void;
-  /** Terminates every outstanding wait with the given reason. */
+/** Session-scoped registry of blocking subagent tool calls. A session
+ * replacement, reload, or shutdown terminates every registered call; each
+ * caller owns its operation-specific interruption and lost-state handling. */
+export interface SubagentBlockingCallRegistry {
+  /** Registers one outstanding blocking call; returns its unregister function. */
+  register(call: { end(reason: BlockingCallEndReason): void }): () => void;
+  /** Terminates every outstanding call with the given reason. */
   terminateAll(reason: string): void;
 }
 
-export function createSubagentWaitRegistry(): SubagentWaitRegistry {
-  const waits = new Set<{ end(reason: WaitEndReason): void }>();
+export function createSubagentBlockingCallRegistry(): SubagentBlockingCallRegistry {
+  const calls = new Set<{ end(reason: BlockingCallEndReason): void }>();
   return {
-    register(wait) {
-      waits.add(wait);
-      return () => waits.delete(wait);
+    register(call) {
+      calls.add(call);
+      return () => calls.delete(call);
     },
     terminateAll(reason) {
-      const outstanding = [...waits];
-      waits.clear();
-      for (const wait of outstanding) {
+      const outstanding = [...calls];
+      calls.clear();
+      for (const call of outstanding) {
         try {
-          wait.end({ kind: "terminated", reason });
+          call.end({ kind: "terminated", reason });
         } catch {
-          // a terminating wait never blocks the session lifecycle
+          // a terminating tool call never blocks the session lifecycle
         }
       }
     },
@@ -255,7 +258,7 @@ async function awaitClaimedResults(input: {
   state: SubagentRuntimeState;
   claim: SubagentDeliveryClaim;
   signal?: AbortSignal;
-  registry: SubagentWaitRegistry;
+  registry: SubagentBlockingCallRegistry;
 }): Promise<WaitEndReason | undefined> {
   const { state, claim, registry } = input;
   let wake: () => void = () => {};
@@ -393,7 +396,7 @@ function buildWaitDetails(ids: string[], results: SubagentWaitResult[], waitedMs
 export function registerWaitSubagentTool(
   pi: ExtensionAPI,
   state: SubagentRuntimeState,
-  registry: SubagentWaitRegistry,
+  registry: SubagentBlockingCallRegistry,
   decorate?: (definition: ToolDefinition<any, any, any>) => ToolDefinition<any, any, any>,
 ): void {
   const definition: ToolDefinition<any, any, any> = {

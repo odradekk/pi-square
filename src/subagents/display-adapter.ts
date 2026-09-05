@@ -621,6 +621,27 @@ export function waitSummary(results: { status: string }[]): string | undefined {
 
 // ─── wait_subagent adapter ──────────────────────────────────────────
 
+/** One bounded human sentence from the structured wait failure. The complete
+ * model-facing failure stays separate in `errorRaw` for expanded evidence. */
+function waitFailureSentence(errorInfo: Record<string, unknown>): string {
+  const message = typeof errorInfo.message === "string"
+    ? errorInfo.message.replace(/\s+/g, " ").trim()
+    : "";
+  if (message) return message;
+
+  const code = typeof errorInfo.code === "string" ? errorInfo.code : undefined;
+  if (code === "ABORTED") return "The wait was interrupted before every selected subagent reached a terminal state.";
+  if (code === "SESSION_HISTORY_UNAVAILABLE") return "A selected subagent's history became unavailable while waiting.";
+  if (code === "SUBAGENT_NOT_FOUND") return "The wait request was rejected because a selected subagent is unknown or belongs to another parent session.";
+  if (code === "INVALID_ARGUMENT") return "The wait request was rejected because the ids selection is invalid.";
+  if (code === "RESULT_CLAIMED") return "A selected subagent result is already claimed by another wait_subagent call.";
+  if (code === "RESULT_SENT") return "A selected subagent result is already scheduled for automatic delivery.";
+  if (code === "WAIT_CAPACITY") return "The wait request exceeded the active reservation capacity.";
+  if (code === "RESULT_UNAVAILABLE" || code === "RESULT_DELIVERED") return "A selected subagent result is no longer available to wait for.";
+  if (code === "PERSISTENCE_FAILED") return "The wait request failed because the parent session has no stable session ID.";
+  return "The wait request failed.";
+}
+
 function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> {
   return {
     describeCall(argsValue, context) {
@@ -656,6 +677,7 @@ function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> 
       const isWait = details.version === 1 && entries.length > 0;
 
       if (!isWait) {
+        const errorInfo = record(details.error);
         return {
           version: 1,
           tool: "wait_subagent",
@@ -667,7 +689,9 @@ function createWaitAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> 
           rows: [],
           sections: [],
           summary: undefined,
-          ...(context.isError && text ? { error: text } : {}),
+          ...(context.isError
+            ? { error: waitFailureSentence(errorInfo), ...(text ? { errorRaw: text } : {}) }
+            : {}),
         };
       }
 

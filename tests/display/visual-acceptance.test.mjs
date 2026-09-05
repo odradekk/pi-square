@@ -911,6 +911,68 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
       );
     }
   }
+
+  // Rejected and interrupted waits keep one human sentence in the collapsed
+  // header and expose the complete raw failure exactly once when expanded.
+  for (const failure of [
+    {
+      name: "validation failure",
+      raw: "Subagent failed: RESULT_CLAIMED\nMessage: RAW-WAIT-CLAIM-4M8Q is already claimed by another wait_subagent call.\nOperation: wait\nRetryable: yes",
+      details: {
+        status: "error",
+        error: {
+          code: "RESULT_CLAIMED",
+          message: "A selected subagent result is already claimed by another wait_subagent call.",
+        },
+      },
+      sentence: /A selected subagent resul/,
+      marker: "RAW-WAIT-CLAIM-4M8Q",
+    },
+    {
+      name: "interruption failure",
+      raw: "Subagent failed: ABORTED\nMessage: RAW-WAIT-INTERRUPT-9T2N claims were released without stopping the selected children.\nOperation: wait\nRetryable: no",
+      details: {
+        status: "error",
+        error: {
+          code: "ABORTED",
+          message: "The wait was interrupted; its claims were released without stopping the selected children.",
+        },
+      },
+      sentence: /The wait was interrup/,
+      marker: "RAW-WAIT-INTERRUPT-9T2N",
+    },
+  ]) {
+    const result = {
+      content: [{ type: "text", text: failure.raw }],
+      details: failure.details,
+      isError: true,
+    };
+    const collapsedFailure = decorated.renderResult(
+      result,
+      { expanded: false, isPartial: false },
+      darkTheme,
+      context({ lastComponent: call }),
+    );
+    const collapsedFailurePlain = stripVTControlCharacters(collapsedFailure.render(120).join("\n"));
+    assert.match(collapsedFailurePlain, /^× Wait 3 runs/, `${failure.name}: the collapsed failure keeps one header row`);
+    assert.match(collapsedFailurePlain, failure.sentence, `${failure.name}: the header states the failure in one sentence`);
+    assert.doesNotMatch(collapsedFailurePlain, new RegExp(failure.marker), `${failure.name}: the collapsed row hides raw failure details`);
+    assert.doesNotMatch(collapsedFailurePlain, /\n.*\n/, `${failure.name}: the collapsed failure is exactly one row`);
+
+    const expandedFailure = decorated.renderResult(
+      result,
+      { expanded: true, isPartial: false },
+      darkTheme,
+      context({ lastComponent: collapsedFailure, expanded: true }),
+    );
+    const expandedFailurePlain = stripVTControlCharacters(expandedFailure.render(120).join("\n"));
+    assert.match(expandedFailurePlain, /Error/, `${failure.name}: expanded output contains the Error evidence section`);
+    assert.equal(
+      expandedFailurePlain.split(failure.marker).length - 1,
+      1,
+      `${failure.name}: raw failure details appear exactly once when expanded`,
+    );
+  }
 }
 
 // ── 22. abort_subagent: production catalog/adapter path (#278) ──

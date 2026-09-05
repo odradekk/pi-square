@@ -21,7 +21,7 @@ const { registerSubagentTool } = await loadToolModule();
 const { createBackgroundState, createQueuedJob, notifyBackgroundChange } = await loadBackgroundModule();
 const { createDeliveryController } = await loadDeliveryModule();
 const loadLocal = jiti(import.meta.url, { moduleCache: false });
-const { createSubagentWaitRegistry } = await loadLocal(join(
+const { createSubagentBlockingCallRegistry } = await loadLocal(join(
   import.meta.dirname, "..", "..", "src", "subagents", "wait.ts",
 ));
 
@@ -62,7 +62,7 @@ function createHarness(options = {}) {
     notify: () => notifyBackgroundChange(state.background),
   });
   state.background.delivery = delivery;
-  const registry = createSubagentWaitRegistry();
+  const registry = createSubagentBlockingCallRegistry();
   registerSubagentTool(pi.api, state, undefined, registry);
   const waitTool = pi.tools.get("wait_subagent");
   assert.ok(waitTool, "wait_subagent is registered");
