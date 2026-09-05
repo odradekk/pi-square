@@ -279,6 +279,7 @@ test("a queued target is aborted synchronously and the request stays a success",
   assert.equal(result.details.results[0].abortApplied, true);
   assert.match(result.details.results[0].reason, /aborted through abort_subagent/);
   assert.match(result.content[0].text, /^\[Background subagent abort\]/);
+  assert.match(result.content[0].text, /abort: abort applied/);
   assert.match(result.content[0].text, /outcome: aborted/);
   assert.match(result.content[0].text, /Aborted:/);
 
@@ -336,7 +337,10 @@ test("a cancelling target is a valid active target and the tool waits for aborte
   assert.equal(result.isError, undefined);
   assert.equal(result.details.results[0].before, "cancelling");
   assert.equal(result.details.results[0].status, "aborted");
-  assert.equal(result.details.results[0].abortApplied, true);
+  // The earlier cancellation already fired this run's abort signal, so this
+  // request applied no new signal through the seam and reports that truth.
+  assert.equal(result.details.results[0].abortApplied, false);
+  assert.match(result.content[0].text, /already cancelling, no new signal/);
 });
 
 test("once abort linearizes, it wins a simultaneous natural-completion race", async () => {
@@ -376,7 +380,7 @@ test("an already-completed target is reported without repeating its result", asy
   assert.equal(result.details.results[0].result, undefined, "no result text enters the abort projection");
   assert.doesNotMatch(result.content[0].text, /SECRET-COMPLETED-RESULT/, "the successful result is not repeated");
   assert.match(result.content[0].text, /state before: completed/);
-  assert.match(result.content[0].text, /abort applied: no/);
+  assert.match(result.content[0].text, /abort: already completed before the request/);
   assert.match(result.content[0].text, /outcome: completed/);
   // The pending completion stays pending: abort is not a second result-consumption path.
   assert.equal(probe.delivery.isPending(id(1)), true);
@@ -458,6 +462,9 @@ test("interrupting the abort tool's own wait does not retract the sent signals",
   const result = await pending;
   assert.equal(result.isError, true);
   assert.equal(result.details.error.code, "ABORTED");
+  // The error states the incomplete terminal-state observation, matching the
+  // documented tool-error boundary for interrupted waits.
+  assert.match(result.content[0].text, /final states were not observed/);
   assert.match(result.content[0].text, /stays in effect/);
   const job = probe.state.background.jobs.get(publicId);
   assert.equal(job.abortController.signal.aborted, true, "the abort signal is not retracted");
@@ -477,6 +484,7 @@ test("a pre-aborted signal still sends the requested aborts and reports the inte
   const result = await probe.abortTool.execute("call", { ids: [id(1)] }, controller.signal, undefined, probe.ctx);
   assert.equal(result.isError, true);
   assert.equal(result.details.error.code, "ABORTED");
+  assert.match(result.content[0].text, /final states were not observed/);
   assert.match(result.content[0].text, /stays in effect/);
   assert.equal(probe.state.background.jobs.get(id(1)).status, "aborted", "the abort was applied");
 });
@@ -498,6 +506,7 @@ test("session replacement terminates the abort wait while the aborts stand", asy
   assert.equal(result.isError, true);
   assert.equal(result.details.error.code, "ABORTED");
   assert.match(result.content[0].text, /terminated by the parent session/);
+  assert.match(result.content[0].text, /final states were not observed/);
   assert.equal(probe.state.background.jobs.get(publicId).abortController.signal.aborted, true);
 
   deferred.release();
@@ -585,6 +594,64 @@ test("abort details carry a bounded projection, never the full run record", asyn
   // The model-facing content keeps the established delivery budget, so it can
   // stay larger than the bounded projection.
   assert.ok(result.content[0].text.length >= failed.error.length);
+});
+
+// ─── Model-facing error budget vs bounded details projection ─────────
+
+test("a 4K-24K failed error keeps the full 24,000-character budget in content", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1);
+  // ~10K total: markers at the head, beyond the 4K projection window, and the tail.
+  const errorText = [
+    "BUDGET-HEAD-4T1M",
+    "h".repeat(5_000),
+    "BUDGET-MID-7K2Q",
+    "m".repeat(4_000),
+    "BUDGET-TAIL-9X5N",
+  ].join("");
+  probe.finish(1, "failed", { error: errorText });
+
+  const result = await probe.abortTool.execute("call", { ids: [id(1)] }, undefined, undefined, probe.ctx);
+  assert.equal(result.isError, undefined);
+  const summary = result.details.results[0];
+  assert.ok(summary.error.length <= 4_100, "details keep the 4,000-character projection");
+  assert.match(summary.error, /\[omitted /, "the projection clip is visible");
+  assert.doesNotMatch(summary.error, /BUDGET-MID-7K2Q/, "the mid error sits outside the 4K projection window");
+
+  const content = result.content[0].text;
+  assert.ok(content.length > summary.error.length, "content is not derived from the details projection");
+  assert.match(content, /BUDGET-HEAD-4T1M/, "the head survives");
+  assert.match(content, /BUDGET-MID-7K2Q/, "content keeps error text far beyond the 4K projection window");
+  assert.match(content, /BUDGET-TAIL-9X5N/, "the tail survives");
+  assert.doesNotMatch(content, /\[omitted /, "a 10K error fits the 24K budget with no omission");
+});
+
+test("an over-24K failed error keeps head and tail under the delivery budget in content", async () => {
+  const probe = createHarness({ busy: true });
+  probe.queue(1);
+  // ~30K total: the late marker sits beyond both the 4K projection window and
+  // inside the 24K budget's tail retention.
+  const errorText = [
+    "BUDGET-HEAD-4T1M",
+    "h".repeat(27_000),
+    "BUDGET-LATE-3R8W",
+    "l".repeat(1_500),
+    "BUDGET-TAIL-9X5N",
+  ].join("");
+  probe.finish(1, "failed", { error: errorText });
+
+  const result = await probe.abortTool.execute("call", { ids: [id(1)] }, undefined, undefined, probe.ctx);
+  assert.equal(result.isError, undefined);
+  const summary = result.details.results[0];
+  assert.ok(summary.error.length <= 4_100, "details stay at the 4,000-character projection");
+  assert.doesNotMatch(summary.error, /BUDGET-LATE-3R8W/);
+
+  const content = result.content[0].text;
+  assert.match(content, /BUDGET-HEAD-4T1M/, "the 24K head retention keeps the head");
+  assert.match(content, /BUDGET-LATE-3R8W/, "the 24K tail retention keeps text far beyond the 4K projection");
+  assert.match(content, /BUDGET-TAIL-9X5N/, "the conclusion survives");
+  assert.match(content, /\[omitted \d+ characters\]/, "the 24K budget clip is visible");
+  assert.ok(content.length < errorText.length + 500, "content stays inside the established delivery budget");
 });
 
 await run();

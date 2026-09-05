@@ -276,7 +276,13 @@ export interface SubagentAbortRunSummary {
   id: string;
   before: SubagentAbortBeforeState;
   status: SubagentResultStatus;
-  /** True when this request sent an abort signal to an active target. */
+  /**
+   * True when this request fired the abort signal through the cancellation
+   * seam: a queued target was aborted outright or a running target moved to
+   * cancelling. An already-cancelling target kept the signal of its earlier
+   * cancellation, so this request applied no new signal and only waited; a
+   * target that was already terminal received none either way.
+   */
   abortApplied: boolean;
   /** Bounded abort reason, present for aborted outcomes. */
   reason?: string;

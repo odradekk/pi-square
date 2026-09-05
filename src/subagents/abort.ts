@@ -3,21 +3,27 @@
  *
  * The wait-aware way to stop selected current-session background subagents:
  * one call validates one to six public IDs completely — one malformed, unknown,
- * or foreign ID rejects the whole call — then sends an abort signal to every
- * active target through the same cancellation seam the `/subagent` manager's
- * Cancel action uses, and waits until each active target has actually reached
- * a terminal state. Once an abort signal has linearized against an active job,
- * the background lifecycle resolves a simultaneous natural completion as
- * `aborted`; a target that was already terminal before the request keeps its
- * real state and is only reported.
+ * or foreign ID rejects the whole call — then applies the cancellation seam
+ * that the `/subagent` manager's Cancel action also uses and waits until every
+ * active target has actually reached a terminal state. A queued target is
+ * aborted outright and a running target moves to `cancelling` with its abort
+ * signal fired by this request; a target that was already `cancelling` keeps
+ * the signal its earlier cancellation applied, so this request sends no
+ * duplicate signal and only waits for that stop to complete. Once an abort
+ * signal has linearized against an active job, the background lifecycle
+ * resolves a simultaneous natural completion as `aborted`; a target that was
+ * already terminal before the request keeps its real state and is only
+ * reported.
  *
- * A successful abort request is a successful tool call: tool-level error is
- * reserved for request validation, ownership conflicts, and infrastructure
- * failures. Interrupting the tool's own wait never retracts abort signals that
- * were already sent, and abort never claims or consumes a result — a target
- * claimed by `wait_subagent` stays owned by that waiter, which receives the
- * aborted terminal outcome, while an ordinary aborted run still never enters
- * automatic delivery.
+ * A successful abort request is a successful tool call. Tool-level error marks
+ * a request that was rejected (validation, ownership, infrastructure) or whose
+ * terminal-state observation could not complete: when the tool's own wait is
+ * interrupted or ended by a session replacement or shutdown, the request has
+ * not observed every target's final state and reports that failure truthfully
+ * — the abort signals already sent are never retracted. Abort never claims or
+ * consumes a result: a target claimed by `wait_subagent` stays owned by that
+ * waiter, which receives the aborted terminal outcome, while an ordinary
+ * aborted run still never enters automatic delivery.
  */
 
 import { existsSync } from "node:fs";
@@ -70,6 +76,20 @@ interface AbortTarget {
 
 function isActiveStatus(status: BackgroundJob["status"]): boolean {
   return status === "queued" || status === "running" || status === "cancelling";
+}
+
+/**
+ * Whether this request fired the abort signal through the cancellation seam,
+ * exactly as the seam behaves: a queued target is aborted outright and a
+ * running target moves to cancelling with its signal fired, so both receive an
+ * abort from this request. An already-cancelling target keeps the signal its
+ * earlier cancellation applied — the seam's cancelling branch sends no new
+ * signal — so this request truthfully reports that it applied none and only
+ * waited for the stop to finish. The value never follows from "before was
+ * active" alone.
+ */
+function abortAppliedByRequest(before: BackgroundJob["status"]): boolean {
+  return before === "queued" || before === "running";
 }
 
 function isTerminalStatus(status: BackgroundJob["status"]): status is SubagentResultStatus {
@@ -163,12 +183,17 @@ async function awaitAbortTargets(input: {
   }
 }
 
-/** The tool's own wait ended before every target stopped; the aborts stand. */
+/**
+ * The tool's own wait ended before every active target reached a terminal
+ * state, so the request could not complete its terminal-state observation and
+ * reports that failure as a tool error. The aborts already applied through the
+ * seam stand and are never retracted.
+ */
 function abortEndResult(reason: AbortEndReason): ReturnType<typeof failureToolResult> {
   if (reason.kind === "interrupted") {
     return failureToolResult(createSubagentError({
       code: "ABORTED",
-      message: "abort_subagent was interrupted: every abort signal already sent stays in effect, and the selected active runs continue to stop on their own.",
+      message: "abort_subagent was interrupted before every selected active target reached a terminal state, so their final states were not observed; every abort signal already sent stays in effect and the runs continue to stop on their own.",
       operation: "abort",
       retryable: false,
       suggestedAction: "Check the /subagent manager or the background status for the final states instead of calling abort_subagent again.",
@@ -176,7 +201,7 @@ function abortEndResult(reason: AbortEndReason): ReturnType<typeof failureToolRe
   }
   return failureToolResult(createSubagentError({
     code: "ABORTED",
-    message: `The abort wait was terminated by the parent session (${reason.reason}); the abort signals already sent stay in effect.`,
+    message: `The abort wait was terminated by the parent session (${reason.reason}) before every selected active target reached a terminal state, so their final states were not observed; the abort signals already sent stay in effect.`,
     operation: "abort",
     retryable: false,
     suggestedAction: "Check the /subagent manager or the background status for the final states in the current session.",
@@ -203,7 +228,7 @@ export function buildAbortRunSummary(target: AbortTarget): SubagentAbortRunSumma
     id: target.id,
     before: target.before,
     status,
-    abortApplied: isActiveStatus(target.before),
+    abortApplied: abortAppliedByRequest(target.before),
     ...(status === "aborted"
       ? { reason: clipWithHeadTail(job.details.error || "Subagent run aborted.", MAX_ABORT_EVIDENCE_CHARS) }
       : {}),
@@ -217,37 +242,55 @@ export function buildAbortRunSummary(target: AbortTarget): SubagentAbortRunSumma
   };
 }
 
-/** Builds the model-facing content in requested order, within the established
- * result budgets; a completed target contributes its outcome only, never its
- * successful result text. */
-export function buildAbortContent(summaries: SubagentAbortRunSummary[]): string {
-  const entryLine = (summary: SubagentAbortRunSummary): string => {
-    const applied = summary.abortApplied
-      ? "abort applied"
-      : `already ${summary.status} before the request`;
-    return `--- ${summary.status} · id: ${summary.id} · before: ${summary.before} · ${applied}`;
+/** The terminal outcome a target reached, read from its live job record. */
+function targetStatus(target: AbortTarget): SubagentResultStatus {
+  return isTerminalStatus(target.job.status) ? target.job.status : "aborted";
+}
+
+/** How this request acted on one target, in one bounded phrase. */
+function appliedLabel(target: AbortTarget): string {
+  if (abortAppliedByRequest(target.before)) return "abort applied";
+  if (target.before === "cancelling") return "already cancelling, no new signal";
+  return `already ${targetStatus(target)} before the request`;
+}
+
+/**
+ * Builds the model-facing content in requested order directly from the live
+ * job records, so a failed target's error keeps the established 24,000-result
+ * character budget with head/tail retention — the 4,000-character details
+ * projection is never the source. A completed target contributes its outcome
+ * only, never its successful result text.
+ */
+export function buildAbortContent(targets: AbortTarget[]): string {
+  const entryLine = (target: AbortTarget): string => {
+    return `--- ${targetStatus(target)} · id: ${target.id} · before: ${target.before} · ${appliedLabel(target)}`;
   };
-  const payload = (summary: SubagentAbortRunSummary): string[] => {
-    if (summary.status === "aborted") return ["Aborted:", budgetResultText(summary.reason || "Subagent run aborted.")];
-    if (summary.status === "failed") return ["Error:", budgetResultText(summary.error || "Subagent failed.")];
+  const payload = (target: AbortTarget): string[] => {
+    const status = targetStatus(target);
+    if (status === "aborted") {
+      return ["Aborted:", budgetResultText(target.job.details.error || "Subagent run aborted.")];
+    }
+    if (status === "failed") {
+      return ["Error:", budgetResultText(target.job.details.error || "Subagent failed.")];
+    }
     return [];
   };
 
-  if (summaries.length === 1) {
-    const only = summaries[0]!;
+  if (targets.length === 1) {
+    const only = targets[0]!;
     return [
       "[Background subagent abort]",
       `id: ${only.id}`,
       `state before: ${only.before}`,
-      `abort applied: ${only.abortApplied ? "yes" : "no"}`,
-      `outcome: ${only.status}`,
+      `abort: ${appliedLabel(only)}`,
+      `outcome: ${targetStatus(only)}`,
       ...payload(only),
     ].join("\n");
   }
 
-  const lines = [`[Background subagent abort: ${summaries.length} targets]`];
-  summaries.forEach((summary) => {
-    lines.push("", entryLine(summary), ...payload(summary));
+  const lines = [`[Background subagent abort: ${targets.length} targets]`];
+  targets.forEach((target) => {
+    lines.push("", entryLine(target), ...payload(target));
   });
   return lines.join("\n");
 }
@@ -270,11 +313,11 @@ export function registerAbortSubagentTool(
   const definition: ToolDefinition<any, any, any> = {
     name: "abort_subagent",
     label: "Subagent Abort",
-    description: "Stop one to six current-session background subagents and wait until the active ones have actually aborted. The complete selection is validated first; already-terminal targets keep their real state and are only reported. Returns a successful result for a successful abort request.",
+    description: "Stop one to six current-session background subagents and wait until the active ones have actually aborted. The complete selection is validated first; a queued or running target receives this request's abort signal, an already-cancelling target is waited on without a duplicate signal, and an already-terminal target keeps its real state and is only reported. Returns a successful result for a successful abort request; an error means the request was rejected or its terminal-state observation did not complete.",
     promptSnippet: "Use abort_subagent with ids to stop selected background subagents; it returns after the active targets reach aborted and reports each target's real terminal state.",
     promptGuidelines: [
-      "abort_subagent stops selected background runs and returns only after the active ones have actually aborted; a target that already finished keeps its real terminal state in the report.",
-      "A successful abort request is a successful result: an aborted target is the expected outcome, while an already-failed target is reported with its bounded error and an already-completed one without repeating its result.",
+      "abort_subagent stops selected background runs and returns only after the active ones have actually aborted; a queued or running target receives this request's abort signal, an already-cancelling one is joined without a duplicate signal, and a target that already finished keeps its real terminal state in the report.",
+      "A successful abort request is a successful result: an aborted target is the expected outcome, while an already-failed target is reported with its bounded error and an already-completed one without repeating its result. An error means the request was rejected or its wait ended before every final state was observed.",
       "Aborting does not consume results: a run claimed by wait_subagent stays owned by that waiter, which receives the aborted outcome, and an ordinary aborted run never notifies the parent.",
     ],
     parameters: AbortParams,
@@ -305,11 +348,14 @@ export function registerAbortSubagentTool(
         targets.push(target);
       }
 
-      // Abort signals are applied synchronously right after the complete
-      // selection was validated, so no lifecycle transition can interleave and
-      // make the batch partial. Once a signal has linearized against an active
-      // job, the lifecycle resolves a simultaneous natural completion as
-      // aborted, so abort wins that race.
+      // The cancellation seam is applied synchronously right after the
+      // complete selection was validated, so no lifecycle transition can
+      // interleave and make the batch partial. The seam fires this request's
+      // abort signal for queued and running targets; an already-cancelling
+      // target is acknowledged without a duplicate signal, keeping only the
+      // wait. Once a signal has linearized against an active job, the
+      // lifecycle resolves a simultaneous natural completion as aborted, so
+      // abort wins that race.
       const active = targets.filter((target) => isActiveStatus(target.before));
       for (const target of active) {
         cancelBackgroundJobs({ pi, state: state.background, id: target.id, reason: ABORT_SUBAGENT_REASON });
@@ -330,7 +376,10 @@ export function registerAbortSubagentTool(
 
       const summaries = targets.map((target) => buildAbortRunSummary(target));
       return {
-        content: [{ type: "text" as const, text: buildAbortContent(summaries) }],
+        // The model-facing content is built from the live job records so the
+        // failed-error budget stays the established delivery budget; the
+        // structured details keep the bounded 4,000-character projection.
+        content: [{ type: "text" as const, text: buildAbortContent(targets) }],
         details: buildAbortDetails(ids, summaries, waitedMs),
       };
     },
