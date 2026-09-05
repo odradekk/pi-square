@@ -322,6 +322,22 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
 }
 
 {
+  // #288 acceptance: a plain successful insert — structured `applied`
+  // metrics, no warnings — is independently an observed mutation, separate
+  // from the warning-bearing and post-commit-warning successes above.
+  const { state, scheduler } = makeHarness({ definitions: [definition({ triggers: ["mutation"] })] });
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.observeToolStart("insert", { path: "src/plain.ts", anchor: "aB3", direction: "after", lines: ["x"] });
+  scheduler.observeToolEnd("insert", false, { path: "src/plain.ts" }, {
+    details: { metrics: { classification: "applied", addedLines: 1, removedLines: 0 } },
+  });
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 1, "a plain applied insert with no warnings triggers the subscribed Shadow");
+  assert.equal(state.starts[0].reasons.find((reason) => reason.trigger === "mutation").detail, "insert src/plain.ts");
+}
+
+{
   // Quality-command failure classification.
   const { state, scheduler } = makeHarness({ definitions: [definition({ triggers: ["failure"] })] });
   runRealUserTurn({ state, scheduler }, [
