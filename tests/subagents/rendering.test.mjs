@@ -544,11 +544,12 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
     assert.equal(expanded.error, undefined);
   }
 
-  // a rejected or interrupted abort renders as one failed row without evidence
+  // a rejected or interrupted abort renders one sentence in the header and
+  // keeps the full raw failure text for the expanded Error section only
   {
     const description = abortAdapter.describeResult(
       {
-        content: [{ type: "text", text: "Subagent failed: ABORTED" }],
+        content: [{ type: "text", text: "Subagent failed: ABORTED\nMessage: RAW-INTERRUPTION-6Y3T detail" }],
         details: { status: "error", error: { code: "ABORTED" } },
       },
       { expanded: true },
@@ -557,8 +558,22 @@ const waitId = (prefix) => `subagent_${prefix}abcd-4abc-8abc-123456789abc`;
     assert.equal(description.title, "Abort");
     assert.equal(description.lifecycle, "failed");
     assert.equal(description.target, "11111111");
-    assert.deepEqual(description.sections, []);
-    assert.match(description.error, /ABORTED/);
+    assert.deepEqual(description.sections, [], "the Error section comes from errorRaw in the component, not the adapter");
+    assert.match(description.error, /abort wait ended before every selected target/);
+    assert.doesNotMatch(description.error, /\n/, "the header error is one sentence");
+    assert.match(description.errorRaw, /RAW-INTERRUPTION-6Y3T/, "the raw text moves to errorRaw");
+    assert.doesNotMatch(description.error, /RAW-INTERRUPTION-6Y3T/);
+
+    const rejected = abortAdapter.describeResult(
+      {
+        content: [{ type: "text", text: "Subagent failed: SUBAGENT_NOT_FOUND\nMessage: RAW-REJECTION-1W7Q detail" }],
+        details: { status: "error", error: { code: "SUBAGENT_NOT_FOUND" } },
+      },
+      { expanded: false },
+      { isError: true, args: { ids: [abortId("22222222")] } },
+    );
+    assert.match(rejected.error, /rejected because a selected subagent is unknown/);
+    assert.match(rejected.errorRaw, /RAW-REJECTION-1W7Q/);
   }
 }
 

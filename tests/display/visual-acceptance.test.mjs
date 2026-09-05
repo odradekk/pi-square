@@ -1042,4 +1042,94 @@ for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.jso
   }
 }
 
+// ── 22b. abort_subagent failure display: one sentence header, raw once ──
+
+{
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true, test: true },
+  });
+  const definition = {
+    name: "abort_subagent",
+    description: "abort",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute() { return { content: [] }; },
+  };
+  const decorated = decorateSubagentTool(definition, () => runtime);
+  const ids = ["subagent_11111111-1111-4111-8111-111111111111"];
+
+  const failureCases = [
+    {
+      name: "validation failure",
+      raw: "Subagent failed: SUBAGENT_NOT_FOUND\nMessage: Subagent 'subagent_11111111-1111-4111-8111-111111111111' belongs to another parent session; only current-session background runs can be aborted.\nOperation: abort\nRetryable: no\nRetries: 0\nID: subagent_11111111-1111-4111-8111-111111111111\nSuggested action: Use an ID returned by delegate_subagent or resume_subagent in this parent session.",
+      details: { status: "error", error: { code: "SUBAGENT_NOT_FOUND" } },
+      // The header elides a long sentence with middle retention, so the
+      // assertion matches the stable head of the sentence.
+      sentence: /The abort request was re/,
+    },
+    {
+      name: "interruption failure",
+      raw: "Subagent failed: ABORTED\nMessage: abort_subagent was interrupted before every selected active target reached a terminal state, so their final states were not observed; every abort signal already sent stays in effect and the runs continue to stop on their own.\nOperation: abort\nRetryable: no\nRetries: 0\nSuggested action: Check the /subagent manager or the background status for the final states instead of calling abort_subagent again.",
+      details: { status: "error", error: { code: "ABORTED" } },
+      sentence: /The abort wait ended/,
+    },
+  ];
+
+  for (const failure of failureCases) {
+    const result = {
+      content: [{ type: "text", text: failure.raw }],
+      details: failure.details,
+      isError: true,
+    };
+    const context = (overrides = {}) => ({
+      args: { ids },
+      toolCallId: `abort-fail-${failure.name}`,
+      invalidate() {},
+      lastComponent: undefined,
+      state: {},
+      cwd: root,
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: true,
+      ...overrides,
+    });
+
+    const collapsed = decorated.renderResult(
+      result,
+      { expanded: false, isPartial: false },
+      darkTheme,
+      context(),
+    );
+    const collapsedPlain = stripVTControlCharacters(collapsed.render(120).join("\n"));
+    assert.match(collapsedPlain, /^× Abort 11111111/, `${failure.name}: the collapsed failure keeps the failed marker, title, and target`);
+    assert.match(collapsedPlain, failure.sentence, `${failure.name}: the header carries the one-sentence summary`);
+    assert.doesNotMatch(collapsedPlain, /Operation: abort|Suggested action/, `${failure.name}: the collapsed row never leaks the raw failure text`);
+    assert.doesNotMatch(collapsedPlain, /\n.*\n/, `${failure.name}: a collapsed failure is exactly one row`);
+
+    const expanded = decorated.renderResult(
+      result,
+      { expanded: true, isPartial: false },
+      darkTheme,
+      context({ lastComponent: collapsed, expanded: true }),
+    );
+    const expandedPlain = stripVTControlCharacters(expanded.render(120).join("\n"));
+    assert.match(expandedPlain, /Error/, `${failure.name}: the expanded body carries an Error section`);
+    assert.equal(
+      expandedPlain.split("Operation: abort").length - 1,
+      1,
+      `${failure.name}: the raw failure text appears exactly once`,
+    );
+
+    for (const width of [40, 63, 80, 120]) {
+      const lines = expanded.render(width);
+      assert.ok(
+        lines.every((line) => visibleWidth(line) <= width),
+        `${failure.name}: expanded failure exceeded ${width} through the production decoration path`,
+      );
+    }
+  }
+}
+
 console.log("visual acceptance tests: OK");

@@ -442,6 +442,24 @@ function createSubagentAdapter(name: string): InternalToolDisplayAdapter<any, un
 
 // ─── abort_subagent adapter ─────────────────────────────────────────
 
+/** One human sentence for a failed abort request, derived from its structured
+ * error code; the full raw text stays in errorRaw for the expanded body. */
+function abortFailureSentence(code: string | undefined): string {
+  if (code === "ABORTED") {
+    return "The abort wait ended before every selected target reached a terminal state; abort signals already sent stay in effect.";
+  }
+  if (code === "SUBAGENT_NOT_FOUND") {
+    return "The abort request was rejected because a selected subagent is unknown or belongs to another parent session.";
+  }
+  if (code === "INVALID_ARGUMENT") {
+    return "The abort request was rejected because the ids selection is invalid.";
+  }
+  if (code === "PERSISTENCE_FAILED") {
+    return "The abort request failed because the parent session has no stable session ID.";
+  }
+  return "The abort request failed.";
+}
+
 function createAbortAdapter(): InternalToolDisplayAdapter<any, unknown, unknown> {
   return {
     describeCall(argsValue, context) {
@@ -477,6 +495,12 @@ function createAbortAdapter(): InternalToolDisplayAdapter<any, unknown, unknown>
       const isAbort = details.version === 1 && entries.length > 0;
 
       if (!isAbort) {
+        // C6 error contract: the header states one human sentence derived from
+        // the structured error code; the full raw failure text moves to
+        // errorRaw and renders exactly once as an expanded Error section, so a
+        // collapsed failure stays one row and never leaks the raw text.
+        const errorInfo = record(details.error);
+        const code = typeof errorInfo.code === "string" ? errorInfo.code : undefined;
         return {
           version: 1,
           tool: "abort_subagent",
@@ -488,7 +512,9 @@ function createAbortAdapter(): InternalToolDisplayAdapter<any, unknown, unknown>
           rows: [],
           sections: [],
           summary: undefined,
-          ...(context.isError && text ? { error: text } : {}),
+          ...(context.isError
+            ? { error: abortFailureSentence(code), ...(text ? { errorRaw: text } : {}) }
+            : {}),
         };
       }
 
