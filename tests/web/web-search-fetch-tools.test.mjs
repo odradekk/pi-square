@@ -80,12 +80,12 @@ function readerOk({ title = "", url, finalUrl, description = "", content, usage,
 // Load tool modules
 // ---------------------------------------------------------------------------
 
-const searchModule = load(join(packageRoot, "src", "web", "tools", "search.ts"));
-const fetchModule = load(join(packageRoot, "src", "web", "tools", "fetch.ts"));
+const webSearchModule = load(join(packageRoot, "src", "web", "tools", "web-search.ts"));
+const webFetchModule = load(join(packageRoot, "src", "web", "tools", "web-fetch.ts"));
 const renderModule = load(join(packageRoot, "src", "web", "shared", "render.ts"));
 
-const { createSearchToolDefinition, registerSearchTool } = searchModule;
-const { createFetchToolDefinition, registerFetchTool } = fetchModule;
+const { createWebSearchToolDefinition, registerWebSearchTool } = webSearchModule;
+const { createWebFetchToolDefinition, registerWebFetchTool } = webFetchModule;
 const { formatMarkdownLink, formatMarkdownUrl, sanitizeMarkdownForTerminal } = renderModule;
 
 // ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ const tempAgentDir = mkdtempSync(join(tmpdir(), "pi-square-web-tools-test-"));
 writeFileSync(join(tempAgentDir, "settings.json"), "{}");
 writeFileSync(join(tempAgentDir, "auth.json"), "{}");
 
-// Bodies with >= 200 non-whitespace characters so the fetch thin-content
+// Bodies with >= 200 non-whitespace characters so the web_fetch thin-content
 // retry threshold is NOT triggered by default.
 const LONG_BODY = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(6);
 const LONG_BODY_B = "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris. ".repeat(6);
@@ -195,22 +195,22 @@ test("Markdown display sanitization removes terminal controls and neutralizes so
   assert.ok(safe.includes("```md\n[code](javascript:literal)\n```"), "fenced code stays exact");
 });
 
-test("registerSearchTool registers tool named search", () => {
+test("registerWebSearchTool registers tool named web_search", () => {
   const tools = new Map();
-  registerSearchTool({ registerTool: (def) => tools.set(def.name, def) });
-  assert.ok(tools.has("search"));
+  registerWebSearchTool({ registerTool: (def) => tools.set(def.name, def) });
+  assert.ok(tools.has("web_search"));
 });
 
-test("registerFetchTool registers tool named fetch", () => {
+test("registerWebFetchTool registers tool named web_fetch", () => {
   const tools = new Map();
-  registerFetchTool({ registerTool: (def) => tools.set(def.name, def) });
-  assert.ok(tools.has("fetch"));
+  registerWebFetchTool({ registerTool: (def) => tools.set(def.name, def) });
+  assert.ok(tools.has("web_fetch"));
 });
 
-// === Search: content regression + details ===
+// === Web search: content regression + details ===
 
 test(
-  "search content is the stable ranked text and details.results carries provenance",
+  "web_search content is the stable ranked text and details.results carries provenance",
   withKey(async () => {
     const mock = installMockFetch(() =>
       searchOk([
@@ -219,7 +219,7 @@ test(
       ]),
     );
     try {
-      const result = await createSearchToolDefinition().execute("t", { queries: ["alpha"] });
+      const result = await createWebSearchToolDefinition().execute("t", { queries: ["alpha"] });
       const expected = [
         "[1] Alpha Result",
         "    https://alpha.example/x",
@@ -247,14 +247,14 @@ test(
 );
 
 test(
-  "search merges and de-duplicates across queries, reporting before/after counts",
+  "web_search merges and de-duplicates across queries, reporting before/after counts",
   withKey(async () => {
     // Both queries return the same URL -> one merged result with two matches.
     const mock = installMockFetch(() =>
       searchOk([{ title: "Shared", url: "https://shared.example", description: "d" }]),
     );
     try {
-      const result = await createSearchToolDefinition().execute("t", {
+      const result = await createWebSearchToolDefinition().execute("t", {
         queries: ["a", "b"],
       });
       assert.equal(result.details.totalBeforeDedup, 2);
@@ -267,14 +267,14 @@ test(
   }),
 );
 
-test("search fails before network when key missing", async () => {
+test("web_search fails before network when key missing", async () => {
   const savedKey = process.env.JINA_API_KEY;
   const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   delete process.env.JINA_API_KEY;
   process.env.PI_CODING_AGENT_DIR = tempAgentDir;
   const mock = installMockFetch(() => searchOk([]));
   try {
-    const result = await createSearchToolDefinition().execute("t", { queries: ["x"] });
+    const result = await createWebSearchToolDefinition().execute("t", { queries: ["x"] });
     assert.match(result.content[0].text, /JINA_API_KEY|Missing.*key/i);
     assert.equal(result.details.error, "Missing JINA_API_KEY");
     assert.equal(mock.calls.length, 0);
@@ -286,16 +286,16 @@ test("search fails before network when key missing", async () => {
   }
 });
 
-// === Fetch: content regression + offset details ===
+// === Web fetch: content regression + offset details ===
 
 test(
-  "search partial failure with no results preserves the per-query error details",
+  "web_search partial failure with no results preserves the per-query error details",
   withKey(async () => {
     const mock = installMockFetch((_url, _init, i) =>
       i === 0 ? jsonResponse(500, { error: "down" }) : searchOk([]),
     );
     try {
-      const result = await createSearchToolDefinition().execute("t", { queries: ["bad", "empty"] });
+      const result = await createWebSearchToolDefinition().execute("t", { queries: ["bad", "empty"] });
       assert.equal(result.details.results.length, 0);
       assert.equal(result.details.failedQueries.length, 1);
       assert.equal(result.details.failedQueries[0].query, "bad");
@@ -307,13 +307,13 @@ test(
 );
 
 test(
-  "fetch single-page content is stable and page offsets slice the section and body",
+  "web_fetch single-page content is stable and page offsets slice the section and body",
   withKey(async () => {
     const mock = installMockFetch(() =>
       readerOk({ title: "Example Page", url: "https://example.com/page", description: "An example page.", content: LONG_BODY }),
     );
     try {
-      const result = await createFetchToolDefinition().execute("t", { urls: ["https://example.com/page"] });
+      const result = await createWebFetchToolDefinition().execute("t", { urls: ["https://example.com/page"] });
       const expected =
         "## Example Page\nURL: https://example.com/page\nDescription: An example page.\n\n" + LONG_BODY;
       assert.equal(result.content[0].text, expected);
@@ -331,7 +331,7 @@ test(
 );
 
 test(
-  "fetch multi-page content joins sections with the separator and preserves order",
+  "web_fetch multi-page content joins sections with the separator and preserves order",
   withKey(async () => {
     const mock = installMockFetch((url) => {
       if (url.includes("first.example")) {
@@ -340,7 +340,7 @@ test(
       return readerOk({ title: "Second", url: "https://second.example", content: LONG_BODY_B });
     });
     try {
-      const result = await createFetchToolDefinition().execute("t", {
+      const result = await createWebFetchToolDefinition().execute("t", {
         urls: ["https://first.example", "https://second.example"],
       });
       const text = result.content[0].text;
@@ -363,7 +363,7 @@ test(
 );
 
 test(
-  "fetch keeps links and image summaries in both model content and the display body slice",
+  "web_fetch keeps links and image summaries in both model content and the display body slice",
   withKey(async () => {
     const mock = installMockFetch(() =>
       readerOk({
@@ -375,7 +375,7 @@ test(
       }),
     );
     try {
-      const result = await createFetchToolDefinition().execute("t", {
+      const result = await createWebFetchToolDefinition().execute("t", {
         urls: ["https://example.com/rich"],
         include_links: true,
         describe_images: true,
@@ -401,14 +401,14 @@ test(
   }),
 );
 
-test("fetch fails before network when key missing", async () => {
+test("web_fetch fails before network when key missing", async () => {
   const savedKey = process.env.JINA_API_KEY;
   const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   delete process.env.JINA_API_KEY;
   process.env.PI_CODING_AGENT_DIR = tempAgentDir;
   const mock = installMockFetch(() => readerOk({ url: "https://x.example", content: LONG_BODY }));
   try {
-    const result = await createFetchToolDefinition().execute("t", { urls: ["https://x.example"] });
+    const result = await createWebFetchToolDefinition().execute("t", { urls: ["https://x.example"] });
     assert.match(result.content[0].text, /JINA_API_KEY|Missing.*key/i);
     assert.equal(result.details.error, "Missing JINA_API_KEY");
     assert.equal(mock.calls.length, 0);

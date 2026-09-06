@@ -62,10 +62,10 @@ function ok(input) {
   const envelope = ok({ cwd, tools: [...SHADOW_SAFE_TOOLS] });
   assert.deepEqual(envelope.toolNames, [
     "read", "grep", "find", "ls",
-    "pdf_search", "search", "fetch", "libs", "docs",
+    "web_search", "web_fetch", "library_search", "library_docs",
   ]);
   assert.deepEqual(envelope.customTools.map((tool) => tool.name), [
-    "pdf_search", "search", "fetch", "libs", "docs",
+    "web_search", "web_fetch", "library_search", "library_docs",
   ]);
 }
 
@@ -98,9 +98,9 @@ function ok(input) {
 
 {
   // Definition text order never changes the envelope or its hash.
-  const forward = ok({ cwd, tools: ["docs", "search", "ls", "read", "pdf_search"] });
-  const reverse = ok({ cwd, tools: ["pdf_search", "read", "ls", "search", "docs"] });
-  assert.deepEqual(forward.toolNames, ["read", "ls", "pdf_search", "search", "docs"]);
+  const forward = ok({ cwd, tools: ["library_docs", "web_search", "ls", "read", "web_fetch"] });
+  const reverse = ok({ cwd, tools: ["web_fetch", "read", "ls", "web_search", "library_docs"] });
+  assert.deepEqual(forward.toolNames, ["read", "ls", "web_search", "web_fetch", "library_docs"]);
   assert.equal(forward.schemaHash, reverse.schemaHash);
 }
 
@@ -113,8 +113,8 @@ function ok(input) {
 
 {
   // The hash is stable across working directories.
-  const here = ok({ cwd, tools: ["read", "pdf_search"] });
-  const elsewhere = ok({ cwd: "/tmp/elsewhere", tools: ["read", "pdf_search"] });
+  const here = ok({ cwd, tools: ["read", "web_search"] });
+  const elsewhere = ok({ cwd: "/tmp/elsewhere", tools: ["read", "web_search"] });
   assert.equal(here.schemaHash, elsewhere.schemaHash);
 }
 
@@ -152,7 +152,7 @@ function ok(input) {
   // Extension tools come from the child-safe read-only factories: the
   // Shadow envelope only ever receives catalog definitions, never a
   // shell definition even when adjacent names are requested.
-  const envelope = ok({ cwd, tools: ["pdf_search", "search"] });
+  const envelope = ok({ cwd, tools: ["web_fetch", "web_search"] });
   assert.equal(envelope.customTools.length, 2);
   for (const tool of envelope.customTools) {
     assert.equal(SHADOW_EXTENSION_BASE_ORDER.includes(tool.name), true);

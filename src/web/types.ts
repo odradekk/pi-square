@@ -9,24 +9,24 @@ export const CONTEXT7_API_BASE = "https://context7.com/api/v2";
 
 export const PREVIEW_LINES = 25;
 
-// === Search tool defaults and bounds ===
+// === Web search tool defaults and bounds ===
 
-export const DEFAULT_SEARCH_LIMIT = 10;
-export const MIN_SEARCH_LIMIT = 1;
-export const MAX_SEARCH_LIMIT = 10;
+export const DEFAULT_WEB_SEARCH_LIMIT = 10;
+export const MIN_WEB_SEARCH_LIMIT = 1;
+export const MAX_WEB_SEARCH_LIMIT = 10;
 export const RRF_K = 60;
 
-// === Fetch tool defaults and bounds ===
+// === Web fetch tool defaults and bounds ===
 
-export const FETCH_MODES = ["readable", "full"] as const;
-export type FetchMode = typeof FETCH_MODES[number];
+export const WEB_FETCH_MODES = ["readable", "full"] as const;
+export type WebFetchMode = typeof WEB_FETCH_MODES[number];
 
-export const DEFAULT_FETCH_MODE: FetchMode = "readable";
-export const DEFAULT_MAX_TOKENS = 12_000;
-export const MIN_MAX_TOKENS = 500;
-export const MAX_MAX_TOKENS = 50_000;
-export const FETCH_THIN_CONTENT_THRESHOLD = 200;
-export const FETCH_RETRY_TIMEOUT = 30;
+export const DEFAULT_WEB_FETCH_MODE: WebFetchMode = "readable";
+export const DEFAULT_WEB_FETCH_MAX_TOKENS = 12_000;
+export const MIN_WEB_FETCH_MAX_TOKENS = 500;
+export const MAX_WEB_FETCH_MAX_TOKENS = 50_000;
+export const WEB_FETCH_THIN_CONTENT_THRESHOLD = 200;
+export const WEB_FETCH_RETRY_TIMEOUT = 30;
 
 // === Shared infra ===
 
@@ -35,18 +35,18 @@ export interface SpinnerState {
   interval: ReturnType<typeof setInterval> | null;
 }
 
-// === Search ===
+// === Web search ===
 
-export interface SearchResultMatch {
+export interface WebSearchResultMatch {
   query: string;
   rank: number;
 }
 
-export interface SearchResult {
+export interface WebSearchResult {
   title: string;
   url: string;
   description: string;
-  matches: SearchResultMatch[];
+  matches: WebSearchResultMatch[];
 }
 
 /**
@@ -54,33 +54,33 @@ export interface SearchResult {
  * Holds only the lightweight fields the TUI needs to render the expanded
  * result list; the full model-facing text stays in `content`.
  */
-export interface SearchResultDetail {
+export interface WebSearchResultDetail {
   title: string;
   url: string;
   description: string;
   provenance: string;
 }
 
-export interface SearchFailedQuery {
+export interface WebSearchFailedQuery {
   query: string;
   error: string;
 }
 
-export interface SearchDetails {
+export interface WebSearchDetails {
   queries: string[];
-  failedQueries: SearchFailedQuery[];
+  failedQueries: WebSearchFailedQuery[];
   count: number;
   phase: "searching" | "merging" | "done";
   totalBeforeDedup?: number;
   totalAfterDedup?: number;
   /** Structured render copy of the merged results (success path only). */
-  results?: SearchResultDetail[];
+  results?: WebSearchResultDetail[];
   error?: string;
 }
 
-// === Fetch ===
+// === Web fetch ===
 
-export interface FetchPageMeta {
+export interface WebFetchPageMeta {
   url: string;
   finalUrl: string;
   lines: number;
@@ -88,7 +88,7 @@ export interface FetchPageMeta {
   retried: boolean;
 }
 
-export interface FetchFailedUrl {
+export interface WebFetchFailedUrl {
   url: string;
   error: string;
   retried: boolean;
@@ -103,7 +103,7 @@ export interface FetchFailedUrl {
  * header. Renderers slice `result.content[0].text` with these offsets so the
  * large body text is never duplicated inside `details`.
  */
-export interface FetchDisplayPage {
+export interface WebFetchDisplayPage {
   url: string;
   title: string;
   description?: string;
@@ -121,14 +121,14 @@ export interface FetchDisplayPage {
   bodyStart?: number;
 }
 
-export interface FetchDetails {
+export interface WebFetchDetails {
   urls: string[];
   succeeded: number;
   failed: number;
-  results: FetchPageMeta[];
-  failedUrls: FetchFailedUrl[];
+  results: WebFetchPageMeta[];
+  failedUrls: WebFetchFailedUrl[];
   /** Ordered per-page display metadata with content offsets (completed batch only). */
-  pages?: FetchDisplayPage[];
+  pages?: WebFetchDisplayPage[];
   phase: "fetching" | "done";
   error?: string;
 }
@@ -137,22 +137,22 @@ export interface FetchDetails {
 
 export const CONTEXT7_ORIGIN = "https://context7.com";
 export const CONTEXT7_RAW_CAP = 2 * 1024 * 1024; // 2 MiB
-export const CONTEXT7_LIBS_MARKDOWN_CAP = 32_000;
-export const CONTEXT7_LIBS_DETAILS_CAP = 128_000;
-export const CONTEXT7_DOCS_MARKDOWN_CAP = 200_000;
-export const CONTEXT7_DOCS_DETAILS_CAP = 128_000;
+export const CONTEXT7_LIBRARY_SEARCH_MARKDOWN_CAP = 32_000;
+export const CONTEXT7_LIBRARY_SEARCH_DETAILS_CAP = 128_000;
+export const CONTEXT7_LIBRARY_DOCS_MARKDOWN_CAP = 200_000;
+export const CONTEXT7_LIBRARY_DOCS_DETAILS_CAP = 128_000;
 export const CONTEXT7_RETRY_WAIT_CAP_MS = 5_000;
 export const CONTEXT7_ERROR_BODY_CAP = 8 * 1024;
 export const CONTEXT7_RETRY_AFTER_METADATA_CAP_SECONDS = 86_400;
 export const CONTEXT7_MAX_REQUESTS = 3;
 
-export const DEFAULT_LIBS_LIMIT = 5;
-export const MIN_LIBS_LIMIT = 1;
-export const MAX_LIBS_LIMIT = 10;
+export const DEFAULT_LIBRARY_SEARCH_LIMIT = 5;
+export const MIN_LIBRARY_SEARCH_LIMIT = 1;
+export const MAX_LIBRARY_SEARCH_LIMIT = 10;
 
-export const DEFAULT_DOCS_MAX_TOKENS = 12_000;
-export const MIN_DOCS_MAX_TOKENS = 500;
-export const MAX_DOCS_MAX_TOKENS = 50_000;
+export const DEFAULT_LIBRARY_DOCS_MAX_TOKENS = 12_000;
+export const MIN_LIBRARY_DOCS_MAX_TOKENS = 500;
+export const MAX_LIBRARY_DOCS_MAX_TOKENS = 50_000;
 
 export const CONTEXT7_LIBRARY_ID_PATTERN = "^\\/[^\/]+\/[^\/]+([\\/@][^\/]+)?$";
 
@@ -180,9 +180,9 @@ export interface Context7ContextResult {
   error?: string;
 }
 
-// === Context7 libs tool detail types ===
+// === Context7 library_search tool detail types ===
 
-export interface LibsCandidateDetail {
+export interface LibrarySearchCandidateDetail {
   rank: number;
   id: string;
   title: string;
@@ -199,7 +199,7 @@ export interface LibsCandidateDetail {
   source?: string;
 }
 
-export interface LibsCounts {
+export interface LibrarySearchCounts {
   received: number;
   invalid: number;
   eligible: number;
@@ -208,45 +208,45 @@ export interface LibsCounts {
   omitted: number;
 }
 
-export interface LibsDetails {
+export interface LibrarySearchDetails {
   libraryName: string;
   query: string;
   status: Context7Status;
   mode: Context7Mode;
   limit: number;
   searchFilterApplied?: boolean;
-  candidates: LibsCandidateDetail[];
-  counts: LibsCounts;
+  candidates: LibrarySearchCandidateDetail[];
+  counts: LibrarySearchCounts;
   phase: "searching" | "done";
   retryAfter?: number;
   error?: string;
 }
 
-// === Context7 docs tool detail types ===
+// === Context7 library_docs tool detail types ===
 
-export interface DocsCodeItemDetail {
+export interface LibraryDocsCodeItemDetail {
   language?: string;
   code: string;
 }
 
-export interface DocsCodeSnippetDetail {
+export interface LibraryDocsCodeSnippetDetail {
   title: string;
   description?: string;
   language?: string;
   source?: string;
   pageTitle?: string;
   tokens: number;
-  codeList: DocsCodeItemDetail[];
+  codeList: LibraryDocsCodeItemDetail[];
 }
 
-export interface DocsInfoSnippetDetail {
+export interface LibraryDocsInfoSnippetDetail {
   source?: string;
   breadcrumb?: string;
   tokens: number;
   content: string;
 }
 
-export interface DocsKindCounts {
+export interface LibraryDocsKindCounts {
   received: number;
   invalid: number;
   eligible: number;
@@ -255,7 +255,7 @@ export interface DocsKindCounts {
   omitted: number;
 }
 
-export interface DocsDetails {
+export interface LibraryDocsDetails {
   libraryId: string;
   finalLibraryId: string;
   query: string;
@@ -266,10 +266,10 @@ export interface DocsDetails {
   maxTokens: number;
   rules: Record<string, unknown> | null;
   rulesOmitted: boolean;
-  codeSnippets: DocsCodeSnippetDetail[];
-  infoSnippets: DocsInfoSnippetDetail[];
-  codeCounts: DocsKindCounts;
-  infoCounts: DocsKindCounts;
+  codeSnippets: LibraryDocsCodeSnippetDetail[];
+  infoSnippets: LibraryDocsInfoSnippetDetail[];
+  codeCounts: LibraryDocsKindCounts;
+  infoCounts: LibraryDocsKindCounts;
   estimatedTokens: number;
   phase: "fetching" | "done";
   retryAfter?: number;

@@ -68,15 +68,16 @@ try {
   register(pi);
 
   assert.deepEqual([...tools.keys()].sort(), [
-    "abort_subagent", "ask", "delegate_subagent", "docs", "fetch",
-    "libs", "parse", "pdf_search", "resume_subagent", "search",
-    "ssh", "todo", "wait_subagent",
+    "abort_subagent", "ask", "delegate_subagent", "library_docs",
+    "library_search", "resume_subagent", "ssh", "todo", "wait_subagent",
+    "web_fetch", "web_search",
   ]);
-  assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
-  assert.deepEqual(createChildTools(["pdf_search"]).definitions.map((definition) => definition.name), ["pdf_search"]);
+  assert.ok(childToolNames.includes("web_search"), "web_search must be available through explicit child opt-in");
+  assert.deepEqual(createChildTools(["web_search"]).definitions.map((definition) => definition.name), ["web_search"]);
   assert.ok(!childToolNames.includes("scheme_eval"));
-  assert.ok(!childToolNames.includes("parse"), "parse requires parent-session confirmation");
-  assert.equal(createChildTools(["parse"]).definitions.length, 0);
+  assert.ok(!childToolNames.includes("pdf_search"), "pdf_search is retired and stays invalid");
+  assert.ok(!childToolNames.includes("parse"), "parse is retired and stays invalid");
+  assert.equal(createChildTools(["pdf_search", "parse", "search", "fetch", "libs", "docs"]).definitions.length, 0);
   assert.ok(!childToolNames.includes("ssh"), "ssh must remain parent-only");
   assert.equal(createChildTools(["ssh"]).definitions.length, 0);
   const sshTool = tools.get("ssh");
@@ -169,9 +170,9 @@ try {
   assert.equal(tools.get("anchored-edit"), undefined, "anchored editing must not register a second tool");
 
   for (const name of [
-    "pdf_search", "ssh", "bash",
+    "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
-    "search", "fetch", "parse", "libs", "docs",
+    "web_search", "web_fetch", "library_search", "library_docs",
     "ask", "todo", "delegate_subagent", "resume_subagent", "wait_subagent", "abort_subagent",
   ]) {
     const tool = tools.get(name);

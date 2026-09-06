@@ -85,8 +85,8 @@ function createSession(script) {
       isError: false,
       result: { content: [{ type: "text", text: "1 match" }] },
     });
-    emit({ type: "tool_execution_start", toolName: "pdf_search", args: { query: "installation guide", path: "manual.pdf", secret: "private" } });
-    emit({ type: "tool_execution_end", toolName: "pdf_search", isError: false, result: { content: [{ type: "text", text: "SECRET SEARCH RESULT" }] } });
+    emit({ type: "tool_execution_start", toolName: "web_search", args: { queries: ["installation guide"], secret: "private" } });
+    emit({ type: "tool_execution_end", toolName: "web_search", isError: false, result: { content: [{ type: "text", text: "SECRET SEARCH RESULT" }] } });
 
     const message = {
       role: "assistant",
@@ -119,7 +119,7 @@ function createSession(script) {
   const toolStarts = returned.details.timeline.filter((item) => item.kind === "tool" && item.phase === "start").map((item) => item.text);
   assert.deepEqual(toolStarts, [
     "grep /needle/ in .",
-    "pdf_search installation guide in manual.pdf",
+    "web_search 1 query: installation guide",
   ]);
   assert.doesNotMatch(toolStarts.join("\n"), /password|token|private|SECRET/);
   assert.equal(returned.details.finalText, "# Final\n\nComplete answer.");

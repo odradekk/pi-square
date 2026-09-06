@@ -1,20 +1,20 @@
-# `docs`
+# `library_docs`
 
 **Family:** remote · **Scope:** parent and child · **Owner:**
-`src/web/tools/docs.ts`, rendered by `src/display/remote-adapters.ts`
+`src/web/tools/library-docs.ts`, rendered by `src/display/remote-adapters.ts`
 
 **Status:** Implemented.
 
-`docs` uses the remote-record grammar of [search.md](search.md). This document
+`library_docs` uses the remote-record grammar of [web-search.md](web-search.md). This document
 records only what differs.
 
 ## Current output
 
 ```
-⠋ ⌬ Documentation /burntsushi/ripgrep                                        1ms
+⠋ ⌬ Library docs /burntsushi/ripgrep                                        1ms
 └─   library=/burntsushi/ripgrep · query=json output format · maxTokens=800
 
-✓ ⌬ Documentation /burntsushi/ripgrep                                        1ms
+✓ ⌬ Library docs /burntsushi/ripgrep                                        1ms
 │    status=ready · phase=done · library=/burntsushi/ripgrep · query=json output
 │    format · maxTokens=800
 │  ### SubMatch serialization: each submatch has 'match', 'start', 'end' fields
@@ -48,7 +48,7 @@ Expanded:
 
 ## Defects
 
-The remote-record defects 48 to 53 of [search.md](search.md) apply. In
+The remote-record defects 48 to 53 of [web-search.md](web-search.md) apply. In
 addition:
 
 | # | Defect | Convention |
@@ -62,7 +62,7 @@ addition:
 ### Header
 
 ```
-● Documentation /burntsushi/ripgrep                                       2.3s
+● Library docs /burntsushi/ripgrep                                       2.3s
 ```
 
 The target is the library ID. The query belongs to the expanded option row.
@@ -73,13 +73,13 @@ The collapsed entry is one row (C4) with the snippet counts inline. The
 records render only when the entry is expanded, two rows per snippet:
 
 ```
-● Documentation /burntsushi/ripgrep 3 code snippets · 770 of 800 tokens…   2.3s
+● Library docs /burntsushi/ripgrep 3 code snippets · 770 of 800 tokens…   2.3s
 ```
 
 Expanded:
 
 ```
-● Documentation /burntsushi/ripgrep                                       2.3s
+● Library docs /burntsushi/ripgrep                                       2.3s
 │    1  SubMatch serialization: each submatch has 'match', 'start', 'end'…
 │       rust · 277 tokens
 │    2  JSON line format for match events
@@ -121,7 +121,7 @@ One muted option row above the section states the query and any non-default
 
 ### Failure
 
-The failure rows of [libs.md](libs.md) apply, plus:
+The failure rows of [library-search.md](library-search.md) apply, plus:
 
 | Cause | Row |
 |---|---|

@@ -71,9 +71,9 @@ try {
   assert.equal(paths[0], expectedExtensionPath);
 
   const expectedTools = [
-    "abort_subagent", "ask", "delegate_subagent", "docs", "fetch",
-    "insert", "libs", "parse", "pdf_search", "replace", "resume_subagent",
-    "search", "todo", "wait_subagent",
+    "abort_subagent", "ask", "delegate_subagent", "insert",
+    "library_docs", "library_search", "replace", "resume_subagent",
+    "todo", "wait_subagent", "web_fetch", "web_search",
   ];
   const allToolNames = extensionsResult.runtime.getAllTools().map((tool) => tool.name).sort();
   const extensionTools = allToolNames.filter((name) => expectedTools.includes(name));

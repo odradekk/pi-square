@@ -47,11 +47,10 @@ function context(args, overrides = {}) {
 }
 
 const cases = [
-  ["search", { queries: ["display systems"], sites: ["example.test"], limit: 5 }, /display systems/],
-  ["fetch", { urls: ["https://example.test/a"], mode: "readable" }, /example\.test/],
-  ["libs", { libraryName: "react", query: "context" }, /react/],
-  ["docs", { libraryId: "/facebook/react", query: "context" }, /facebook\/react/],
-  ["parse", { path: "manual.pdf", pages: "1-3", mode: "auto" }, /manual\.pdf/],
+  ["web_search", { queries: ["display systems"], sites: ["example.test"], limit: 5 }, /display systems/],
+  ["web_fetch", { urls: ["https://example.test/a"], mode: "readable" }, /example\.test/],
+  ["library_search", { libraryName: "react", query: "context" }, /react/],
+  ["library_docs", { libraryId: "/facebook/react", query: "context" }, /facebook\/react/],
   ["ask", { questions: [{ id: "secret-question", text: "private question", options: [] }] }, /Questions/],
   ["todo", { action: "set", todos: [{ text: "private task" }] }, /set/],
   ["delegate_subagent", { agent: "explorer", task: "inspect runtime" }, /inspect runtime/],
@@ -90,7 +89,7 @@ for (const [name, args, expected] of cases) {
   // fallback; other tools expose the text via output fallback or a
   // content/markdown section.
   const hasStructuredDomain = name === "todo" || name === "ask";
-  const isWebTool = ["search", "fetch", "libs", "docs", "parse"].includes(name);
+  const isWebTool = ["web_search", "web_fetch", "library_search", "library_docs"].includes(name);
   if (!hasStructuredDomain && !isWebTool) {
     assert.match(expandedText, /private result body/);
   }
@@ -143,7 +142,7 @@ assert.match(expandedQueued, /Queued in the parent session/);
 assert.match(expandedQueued, /Task/);
 assert.doesNotMatch(expandedQueued, /inspect runtime\n.*inspect runtime\n.*inspect runtime/, "task evidence stays bounded");
 
-const webSearch = decorateInternalTool(fake("search"), runtime);
+const webSearch = decorateInternalTool(fake("web_search"), runtime);
 const webExpanded = webSearch.renderResult({
   content: [{ type: "text", text: "model output" }],
   details: {
@@ -160,7 +159,7 @@ const resultTitleLine = webExpanded.find((line) => line.includes("earendil-works
 assert.ok(webExpanded[0]?.startsWith("● Web search"), "tool header remains flush-left");
 assert.ok(resultTitleLine?.startsWith("  ") && resultTitleLine?.includes("earendil-works/pi"), "result record is indented under the quiet body indent");
 
-for (const child of createChildTools(["search", "fetch", "libs", "docs", "pdf_search"]).definitions) {
+for (const child of createChildTools(["web_search", "web_fetch", "library_search", "library_docs"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child factory remains runtime-independent`);
 }
 

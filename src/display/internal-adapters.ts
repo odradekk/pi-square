@@ -4,20 +4,17 @@ import { getCatalogEntry } from "./catalog";
 import { createExecutionAdapter } from "./execution-adapters";
 import { createRemoteAdapter } from "./remote-adapters";
 import { createWorkflowAdapter } from "./workflow-adapters";
-import { createSearchAdapter } from "./search-adapters";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
 import type { DisplayFamily, DisplayMetadataEntry, OperationalLifecycle, OperationalQualifier } from "./types";
 
 const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  pdf_search: ["path", "query", "limit"],
   bash: ["command", "timeout"],
   pwsh: ["command", "cwd", "timeoutMs"],
   ssh: ["operation", "profile", "target", "label", "session", "command", "prompt", "cursor", "waitMs", "newline"],
-  search: ["queries", "sites", "language", "country", "limit", "no_cache"],
-  fetch: ["urls", "mode", "include_links", "describe_images", "max_tokens", "no_cache"],
-  libs: ["libraryName", "query", "mode", "limit"],
-  docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
-  parse: ["path", "pages", "mode", "max_tokens", "timeout"],
+  web_search: ["queries", "sites", "language", "country", "limit", "no_cache"],
+  web_fetch: ["urls", "mode", "include_links", "describe_images", "max_tokens", "no_cache"],
+  library_search: ["libraryName", "query", "mode", "limit"],
+  library_docs: ["libraryId", "query", "mode", "kind", "max_tokens"],
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
   insert: ["path", "anchor", "direction", "lines"],
   ask: ["questions"],
@@ -27,27 +24,24 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 });
 
 const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  pdf_search: ["query"],
   bash: ["command"], pwsh: ["command"],
-  ssh: ["operation"], search: ["queries"], fetch: ["urls"], libs: ["libraryName"],
-  docs: ["libraryId"], parse: ["path"], replace: ["path"], insert: ["path"],
+  ssh: ["operation"], web_search: ["queries"], web_fetch: ["urls"], library_search: ["libraryName"],
+  library_docs: ["libraryId"], replace: ["path"], insert: ["path"],
   ask: [], todo: ["action"],
   delegate_subagent: ["agent"], resume_subagent: ["id"],
 });
 
 /** C1 sentence-case titles; unique within each family (`grep` is `Text search`). */
 const TITLES: Readonly<Record<string, string>> = Object.freeze({
-  pdf_search: "PDF search",
   bash: "Bash", pwsh: "PowerShell",
-  ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
-  docs: "Documentation", parse: "PDF parse", replace: "Replace", insert: "Insert",
+  ssh: "SSH", web_search: "Web search", web_fetch: "Web fetch", library_search: "Library search",
+  library_docs: "Library docs", replace: "Replace", insert: "Insert",
   ask: "Questions", todo: "Tasks",
   delegate_subagent: "Subagent", resume_subagent: "Resume subagent",
 });
 
 /** Target fields that hold a local filesystem path and follow C2. */
 const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  parse: ["path"],
   replace: ["path"],
   insert: ["path"],
 });
@@ -217,7 +211,7 @@ function createAdapter(name: string, family: DisplayFamily): InternalToolDisplay
       const sentence = failed
         ? stringOf(details.error) ?? stringOf(details.message) ?? stringOf(text.split("\n", 1)[0]) ?? "Tool failed"
         : undefined;
-      const outcomeSummary = failed ? undefined : composeInternalSummary(name, result.details, context.args, text);
+      const outcomeSummary = failed ? undefined : composeInternalSummary(name, result.details, text);
       return {
         version: 1,
         tool: name,
@@ -254,15 +248,12 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
   const entry = getCatalogEntry(definition.name);
   if (!entry) throw new Error(`Missing display catalog entry for '${definition.name}'`);
   const base = createAdapter(definition.name, entry.family);
-  const adapter = definition.name === "pdf_search"
-    ? createSearchAdapter(definition.name, base)
-    : definition.name === "bash" || definition.name === "pwsh"
-      ? createExecutionAdapter(definition.name, base)
-      : definition.name === "search"
-        || definition.name === "fetch"
-        || definition.name === "libs"
-        || definition.name === "docs"
-        || definition.name === "parse"
+  const adapter = definition.name === "bash" || definition.name === "pwsh"
+    ? createExecutionAdapter(definition.name, base)
+    : definition.name === "web_search"
+        || definition.name === "web_fetch"
+        || definition.name === "library_search"
+        || definition.name === "library_docs"
         || definition.name === "ssh"
         ? createRemoteAdapter(definition.name, base)
         : definition.name === "ask"

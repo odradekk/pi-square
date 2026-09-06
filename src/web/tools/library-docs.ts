@@ -4,20 +4,20 @@ import { Type } from "typebox";
 import { fetchContext7Context, resolveContext7ApiKey } from "../clients/context7";
 import { isAbortError } from "../shared/errors";
 import {
-  CONTEXT7_DOCS_MARKDOWN_CAP,
-  CONTEXT7_DOCS_DETAILS_CAP,
+  CONTEXT7_LIBRARY_DOCS_MARKDOWN_CAP,
+  CONTEXT7_LIBRARY_DOCS_DETAILS_CAP,
   CONTEXT7_LIBRARY_ID_PATTERN,
-  DEFAULT_DOCS_MAX_TOKENS,
-  MAX_DOCS_MAX_TOKENS,
-  MIN_DOCS_MAX_TOKENS,
+  DEFAULT_LIBRARY_DOCS_MAX_TOKENS,
+  MAX_LIBRARY_DOCS_MAX_TOKENS,
+  MIN_LIBRARY_DOCS_MAX_TOKENS,
   type Context7Kind,
   type Context7Mode,
   type Context7Status,
-  type DocsCodeItemDetail,
-  type DocsCodeSnippetDetail,
-  type DocsDetails,
-  type DocsInfoSnippetDetail,
-  type DocsKindCounts,
+  type LibraryDocsCodeItemDetail,
+  type LibraryDocsCodeSnippetDetail,
+  type LibraryDocsDetails,
+  type LibraryDocsInfoSnippetDetail,
+  type LibraryDocsKindCounts,
 } from "../types";
 
 // === Helpers ===
@@ -77,7 +77,7 @@ function codeFence(code: string): string {
 
 const LIBRARY_ID_RE = new RegExp(CONTEXT7_LIBRARY_ID_PATTERN);
 
-function normalizeCodeSnippet(raw: unknown): DocsCodeSnippetDetail | null {
+function normalizeCodeSnippet(raw: unknown): LibraryDocsCodeSnippetDetail | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
   if (!isString(value.codeTitle)) return null;
@@ -85,7 +85,7 @@ function normalizeCodeSnippet(raw: unknown): DocsCodeSnippetDetail | null {
   if (!title || !Array.isArray(value.codeList)) return null;
 
   const primaryLanguage = safeLanguage(value.codeLanguage);
-  const codeList: DocsCodeItemDetail[] = [];
+  const codeList: LibraryDocsCodeItemDetail[] = [];
   for (const rawItem of value.codeList) {
     if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) continue;
     const item = rawItem as Record<string, unknown>;
@@ -97,7 +97,7 @@ function normalizeCodeSnippet(raw: unknown): DocsCodeSnippetDetail | null {
   }
   if (codeList.length === 0) return null;
 
-  const detail: DocsCodeSnippetDetail = { title, tokens: 0, codeList };
+  const detail: LibraryDocsCodeSnippetDetail = { title, tokens: 0, codeList };
   if (isString(value.codeDescription)) detail.description = cleanContent(value.codeDescription).trim();
   if (primaryLanguage) detail.language = primaryLanguage;
   const source = safeSource(value.codeId);
@@ -106,21 +106,21 @@ function normalizeCodeSnippet(raw: unknown): DocsCodeSnippetDetail | null {
   return detail;
 }
 
-function normalizeInfoSnippet(raw: unknown): DocsInfoSnippetDetail | null {
+function normalizeInfoSnippet(raw: unknown): LibraryDocsInfoSnippetDetail | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
   if (!isString(value.content)) return null;
   const content = cleanContent(value.content).trim();
   if (!content) return null;
 
-  const detail: DocsInfoSnippetDetail = { tokens: 0, content };
+  const detail: LibraryDocsInfoSnippetDetail = { tokens: 0, content };
   const source = safeSource(value.pageId);
   if (source) detail.source = source;
   if (isString(value.breadcrumb)) detail.breadcrumb = inlineText(value.breadcrumb);
   return detail;
 }
 
-function serializeCodeSnippet(detail: DocsCodeSnippetDetail): string {
+function serializeCodeSnippet(detail: LibraryDocsCodeSnippetDetail): string {
   const lines: string[] = [`### ${inlineText(detail.title)}`];
   if (detail.description) lines.push("", cleanContent(detail.description));
   for (const item of detail.codeList) {
@@ -131,7 +131,7 @@ function serializeCodeSnippet(detail: DocsCodeSnippetDetail): string {
   return lines.join("\n");
 }
 
-function serializeInfoSnippet(detail: DocsInfoSnippetDetail): string {
+function serializeInfoSnippet(detail: LibraryDocsInfoSnippetDetail): string {
   const lines = [`### ${detail.breadcrumb ? inlineText(detail.breadcrumb) : "Documentation"}`, "", cleanContent(detail.content)];
   if (detail.source) lines.push("", `Source: ${detail.source}`);
   return lines.join("\n");
@@ -147,19 +147,19 @@ interface SelectionUnit {
   kind: "rules" | "code" | "info";
   markdown: string;
   tokens: number;
-  detail?: DocsCodeSnippetDetail | DocsInfoSnippetDetail;
+  detail?: LibraryDocsCodeSnippetDetail | LibraryDocsInfoSnippetDetail;
 }
 
 
 // === Tool definition factory ===
 
-export function createDocsToolDefinition() {
+export function createLibraryDocsToolDefinition() {
   return {
-    name: "docs" as const,
-    label: "Docs",
+    name: "library_docs" as const,
+    label: "Library docs",
     description:
       "Retrieve documentation for a specific library via Context7 using an exact library ID. Provide the Context7 library ID (e.g. /facebook/react) and a query. Returns code snippets and documentation text filtered by kind and bounded by a token budget.",
-    promptSnippet: "Use docs to fetch library documentation by exact Context7 ID. Pair with libs to discover the ID first.",
+    promptSnippet: "Use library_docs to fetch library documentation by exact Context7 ID. Pair with library_search to discover the ID first.",
     parameters: Type.Object({
       libraryId: Type.String({
         description: "Exact Context7 library ID (e.g. /facebook/react, /vercel/next.js@v15.1.8)",
@@ -182,10 +182,10 @@ export function createDocsToolDefinition() {
       ),
       max_tokens: Type.Optional(
         Type.Integer({
-          minimum: MIN_DOCS_MAX_TOKENS,
-          maximum: MAX_DOCS_MAX_TOKENS,
-          default: DEFAULT_DOCS_MAX_TOKENS,
-          description: `Local content budget in tokens (default: ${DEFAULT_DOCS_MAX_TOKENS}, range ${MIN_DOCS_MAX_TOKENS}-${MAX_DOCS_MAX_TOKENS}). Not sent upstream.`,
+          minimum: MIN_LIBRARY_DOCS_MAX_TOKENS,
+          maximum: MAX_LIBRARY_DOCS_MAX_TOKENS,
+          default: DEFAULT_LIBRARY_DOCS_MAX_TOKENS,
+          description: `Local content budget in tokens (default: ${DEFAULT_LIBRARY_DOCS_MAX_TOKENS}, range ${MIN_LIBRARY_DOCS_MAX_TOKENS}-${MAX_LIBRARY_DOCS_MAX_TOKENS}). Not sent upstream.`,
         }),
       ),
     }),
@@ -194,15 +194,15 @@ export function createDocsToolDefinition() {
       const query = String(params.query ?? "").trim();
       const mode: Context7Mode = params.mode === "fast" ? "fast" : "quality";
       const kind: Context7Kind = params.kind === "code" || params.kind === "info" ? params.kind : "all";
-      const maxTokens = clampInteger(params.max_tokens, DEFAULT_DOCS_MAX_TOKENS, MIN_DOCS_MAX_TOKENS, MAX_DOCS_MAX_TOKENS);
-      const emptyCounts = (): DocsKindCounts => ({ received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 });
-      const details = (status: Context7Status, extra: Partial<DocsDetails> = {}): DocsDetails => ({
+      const maxTokens = clampInteger(params.max_tokens, DEFAULT_LIBRARY_DOCS_MAX_TOKENS, MIN_LIBRARY_DOCS_MAX_TOKENS, MAX_LIBRARY_DOCS_MAX_TOKENS);
+      const emptyCounts = (): LibraryDocsKindCounts => ({ received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 });
+      const details = (status: Context7Status, extra: Partial<LibraryDocsDetails> = {}): LibraryDocsDetails => ({
         libraryId, finalLibraryId: libraryId, query, status, redirected: false, kind, mode, maxTokens,
         rules: null, rulesOmitted: false, codeSnippets: [], infoSnippets: [],
         codeCounts: emptyCounts(), infoCounts: emptyCounts(), estimatedTokens: 0, phase: "done",
         ...extra,
       });
-      const errorResult = (message: string, display = message, extra: Partial<DocsDetails> = {}) => ({
+      const errorResult = (message: string, display = message, extra: Partial<LibraryDocsDetails> = {}) => ({
         content: [{ type: "text" as const, text: `Error: ${display}` }],
         details: details("error", { error: message, ...extra }),
       });
@@ -266,7 +266,7 @@ export function createDocsToolDefinition() {
       const rules = rawRules && typeof rawRules === "object" && !Array.isArray(rawRules) && Object.keys(rawRules).length > 0
         ? rawRules as Record<string, unknown>
         : null;
-      const maxCounts = (received: number): DocsKindCounts => ({
+      const maxCounts = (received: number): LibraryDocsKindCounts => ({
         received, invalid: received, eligible: received, returned: received,
         oversized: received, omitted: received,
       });
@@ -295,8 +295,8 @@ export function createDocsToolDefinition() {
         return { kind: "info", markdown, tokens: detail.tokens, detail };
       };
       const runSelection = (summaryReserveChars: number) => {
-        const runCodeCounts: DocsKindCounts = { ...codeCounts, returned: 0, oversized: 0, omitted: 0 };
-        const runInfoCounts: DocsKindCounts = { ...infoCounts, returned: 0, oversized: 0, omitted: 0 };
+        const runCodeCounts: LibraryDocsKindCounts = { ...codeCounts, returned: 0, oversized: 0, omitted: 0 };
+        const runInfoCounts: LibraryDocsKindCounts = { ...infoCounts, returned: 0, oversized: 0, omitted: 0 };
         const selected: SelectionUnit[] = [];
         let rulesOmitted = false;
         let selectedChars = 0;
@@ -326,8 +326,8 @@ export function createDocsToolDefinition() {
               : 0
           );
           const individuallyOversized = unit.tokens > maxTokens
-            || unit.markdown.length > CONTEXT7_DOCS_MARKDOWN_CAP
-            || detailsBaseLength + detailLength > CONTEXT7_DOCS_DETAILS_CAP;
+            || unit.markdown.length > CONTEXT7_LIBRARY_DOCS_MARKDOWN_CAP
+            || detailsBaseLength + detailLength > CONTEXT7_LIBRARY_DOCS_DETAILS_CAP;
           if (individuallyOversized) {
             markOversized(unit);
             return;
@@ -340,8 +340,8 @@ export function createDocsToolDefinition() {
             Math.ceil(charsWithSummary / 4),
           );
           if (tokensWithSummary > maxTokens
-            || charsWithSummary > CONTEXT7_DOCS_MARKDOWN_CAP
-            || detailsBaseLength + detailsDelta + aggregateDetailDelta > CONTEXT7_DOCS_DETAILS_CAP) {
+            || charsWithSummary > CONTEXT7_LIBRARY_DOCS_MARKDOWN_CAP
+            || detailsBaseLength + detailsDelta + aggregateDetailDelta > CONTEXT7_LIBRARY_DOCS_DETAILS_CAP) {
             markOmitted(unit);
             return;
           }
@@ -403,19 +403,19 @@ export function createDocsToolDefinition() {
         rulesOmitted: selection.rulesOmitted,
         codeSnippets: selection.selected
           .filter((unit) => unit.kind === "code")
-          .map((unit) => unit.detail as DocsCodeSnippetDetail),
+          .map((unit) => unit.detail as LibraryDocsCodeSnippetDetail),
         infoSnippets: selection.selected
           .filter((unit) => unit.kind === "info")
-          .map((unit) => unit.detail as DocsInfoSnippetDetail),
+          .map((unit) => unit.detail as LibraryDocsInfoSnippetDetail),
         codeCounts: selection.codeCounts,
         infoCounts: selection.infoCounts,
         estimatedTokens: finalEstimate(selection),
       });
       const fitsFinalBounds = (selection: ReturnType<typeof runSelection>) => {
         const text = buildText(selection);
-        return text.length <= CONTEXT7_DOCS_MARKDOWN_CAP
+        return text.length <= CONTEXT7_LIBRARY_DOCS_MARKDOWN_CAP
           && finalEstimate(selection) <= maxTokens
-          && JSON.stringify(readyDetails(selection)).length <= CONTEXT7_DOCS_DETAILS_CAP;
+          && JSON.stringify(readyDetails(selection)).length <= CONTEXT7_LIBRARY_DOCS_DETAILS_CAP;
       };
 
       let selection = runSelection(0);
@@ -434,6 +434,6 @@ export function createDocsToolDefinition() {
   };
 }
 
-export function registerDocsTool(pi: ExtensionAPI): void {
-  pi.registerTool(createDocsToolDefinition());
+export function registerLibraryDocsTool(pi: ExtensionAPI): void {
+  pi.registerTool(createLibraryDocsToolDefinition());
 }

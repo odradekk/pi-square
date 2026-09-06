@@ -44,11 +44,9 @@ const suites = [
   "display/write-previews.test.mjs",
   "display/path-list.test.mjs",
   "display/text-search.test.mjs",
-  "display/pdf-search.test.mjs",
   "display/shell-execution.test.mjs",
   "display/web-search-fetch.test.mjs",
-  "display/context7-libs-docs.test.mjs",
-  "display/firecrawl-parse.test.mjs",
+  "display/library-search-docs.test.mjs",
   "display/ssh-sessions.test.mjs",
   "display/ssh-confirmation-input.test.mjs",
   "display/todo-transcript.test.mjs",
@@ -87,10 +85,8 @@ const suites = [
     .sort()
     .map((name) => `footer/${name}`),
   "web/context7-client.test.mjs",
-  "web/context7-tools.test.mjs",
-  "web/search-fetch-tools.test.mjs",
-  "web/parse-tool.test.mjs",
-  "pdf-search/pdf-search.test.mjs",
+  "web/library-search-docs-tools.test.mjs",
+  "web/web-search-fetch-tools.test.mjs",
   "anchored-edit/run.mjs",
   ...readdirSync(join(testsDir, "subagents"))
     .filter((name) => name.endsWith(".test.mjs"))

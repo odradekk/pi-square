@@ -3,7 +3,6 @@ import {
   asArray,
   asRecord,
   baseDescription,
-  formatBytes,
   formatRelativeAge,
   plural,
   stringOf,
@@ -28,7 +27,7 @@ function sshOutputText(text: string): string {
 
 // ── Web tool helpers ──────────────────────────────────────────────
 
-const WEB_TOOLS = new Set(["search", "fetch", "libs", "docs", "parse"]);
+const WEB_TOOLS = new Set(["web_search", "web_fetch", "library_search", "library_docs"]);
 
 /**
  * Strip the scheme (`https://`, `http://`) from a URL and elide the middle
@@ -71,7 +70,7 @@ function urlHost(url: string): string {
  * Strip the Jina reader header block (`URL:`, `Usage:`) and convert
  * Markdown link syntax `[text](url)` to `text` for display.
  */
-function sanitizeFetchContent(text: string): string {
+function sanitizeWebFetchContent(text: string): string {
   return text
     .replace(/^(URL:|Usage:).*$/gm, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -79,28 +78,9 @@ function sanitizeFetchContent(text: string): string {
     .trim();
 }
 
-/**
- * Strip the model-facing header block that the parse tool inserts:
- * `# Parsed PDF`, `Path:`, `Pages:`, `Selected pages:`, `Mode:`,
- * `Firecrawl parsed pages:`, `Firecrawl warning:`, and the horizontal rule.
- */
-function stripParseHeader(text: string): string {
-  return text
-    .replace(/^# Parsed PDF\s*\n?/, "")
-    .replace(/^Path:.*\n?/gm, "")
-    .replace(/^Pages:.*\n?/gm, "")
-    .replace(/^Selected pages:.*\n?/gm, "")
-    .replace(/^Mode:.*\n?/gm, "")
-    .replace(/^Firecrawl parsed pages:.*\n?/gm, "")
-    .replace(/^Firecrawl warning:.*\n?/gm, "")
-    .replace(/^\u2500{10,}\s*\n?/gm, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
 /** Build web-tool records in the two-row format (title with rank, body with secondary). */
 function webRecordItems(name: string, details: UnknownRecord, expanded: boolean): DisplayRecordItem[] {
-  if (name === "search") {
+  if (name === "web_search") {
     const multiQuery = asArray(details.queries).length > 1 || (typeof details.queryCount === "number" && details.queryCount > 1);
     return asArray(details.results).map((value, index) => {
       const item = asRecord(value);
@@ -113,7 +93,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "fetch") {
+  if (name === "web_fetch") {
     return asArray(details.pages).map((value, index) => {
       const page = asRecord(value);
       const url = stringOf(page.url) ?? "";
@@ -131,7 +111,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "libs") {
+  if (name === "library_search") {
     return asArray(details.candidates).map((value, index) => {
       const c = asRecord(value);
       const title = stringOf(c.title) ?? "Untitled";
@@ -154,7 +134,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "docs") {
+  if (name === "library_docs") {
     const snippets: UnknownRecord[] = [
       ...asArray(details.codeSnippets).map((v) => asRecord(v)),
       ...asArray(details.infoSnippets).map((v) => asRecord(v)),
@@ -173,23 +153,6 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
       };
     });
   }
-  if (name === "parse") {
-    // Parse shows one row per page with the page text.
-    const pages = asArray(details.parsedPages);
-    if (pages.length > 0) {
-      return pages.map((value, index) => {
-        const page = asRecord(value);
-        const pageNum = typeof page.pageNumber === "number" ? page.pageNumber : index + 1;
-        const text = stringOf(page.text) ?? stringOf(page.content) ?? "";
-        return {
-          title: `page ${pageNum}  ${text.split("\n")[0] ?? ""}`,
-        } satisfies DisplayRecordItem;
-      });
-    }
-    // Fall back to splitting the cleaned text on double-newlines as a
-    // best-effort page split when structured page data is not available.
-    return [];
-  }
   return [];
 }
 
@@ -198,7 +161,7 @@ function webRecordItems(name: string, details: UnknownRecord, expanded: boolean)
   }
  */
 function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): string | undefined {
-  if (name === "search") {
+  if (name === "web_search") {
     const results = asArray(details.results).length;
     const queries = asArray(details.queries).length
       || (typeof details.queryCount === "number" ? details.queryCount : 1);
@@ -213,7 +176,7 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (failed > 0) row += ` \u00b7 ${failed} ${plural(failed, "query", "queries")} failed`;
     return row;
   }
-  if (name === "fetch") {
+  if (name === "web_fetch") {
     const pages = asArray(details.pages);
     const succeeded = pages.filter((p) => !stringOf(asRecord(p).error)).length;
     const total = pages.length;
@@ -221,7 +184,7 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (succeeded < total) return `${succeeded} of ${total} pages fetched`;
     return total === 1 ? "1 page fetched" : `${total} pages fetched`;
   }
-  if (name === "libs") {
+  if (name === "library_search") {
     const candidates = asArray(details.candidates);
     const total = typeof details.total === "number" ? details.total : candidates.length;
     const omitted = total > candidates.length ? total - candidates.length : 0;
@@ -233,7 +196,7 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (omitted > 0) row += ` \u00b7 ${omitted} omitted`;
     return row;
   }
-  if (name === "docs") {
+  if (name === "library_docs") {
     const codeArr = asArray(details.codeSnippets);
     const infoArr = asArray(details.infoSnippets);
     const counts = asRecord(details.codeCounts);
@@ -256,43 +219,27 @@ function webSummary(name: string, details: UnknownRecord, args: UnknownRecord): 
     if (omitted > 0) row += ` \u00b7 ${omitted} omitted`;
     return row;
   }
-  if (name === "parse") {
-    const pageCount = typeof details.pageCount === "number" ? details.pageCount : 0;
-    const totalPages = typeof details.totalPages === "number" ? details.totalPages : undefined;
-    const uploaded = typeof details.uploadBytes === "number" ? formatBytes(details.uploadBytes) : undefined;
-    const tokens = typeof details.estimatedTokens === "number" ? details.estimatedTokens
-      : typeof details.tokens === "number" ? details.tokens : undefined;
-    const pageText = totalPages !== undefined && pageCount !== totalPages
-      ? `${pageCount} of ${totalPages} pages`
-      : plural(pageCount, "page");
-    const parts = [pageText];
-    if (uploaded) parts.push(`${uploaded} uploaded`);
-    if (tokens !== undefined) parts.push(`${tokens} tokens`);
-    let row = parts.join(" \u00b7 ");
-    if (details.outputTruncated === true) row += " \u00b7 output truncated";
-    return row;
-  }
   return undefined;
 }
 
 /** Build expanded-only option row for web tools. */
 function webOptionRow(name: string, args: UnknownRecord): string | undefined {
   const parts: string[] = [];
-  if (name === "search") {
+  if (name === "web_search") {
     if (typeof args.limit === "number") parts.push(`limit ${args.limit}`);
     const sites = asArray(args.sites);
     if (sites.length > 0) parts.push(`sites: ${sites.join(", ")}`);
     if (typeof args.language === "string") parts.push(`lang ${args.language}`);
     if (typeof args.country === "string") parts.push(`country ${args.country}`);
     if (args.no_cache === true) parts.push("cache bypassed");
-  } else if (name === "fetch") {
+  } else if (name === "web_fetch") {
     if (typeof args.mode === "string" && args.mode !== "readable") parts.push(`mode ${args.mode}`);
     if (typeof args.max_tokens === "number") parts.push(`max ${args.max_tokens} tokens`);
     if (args.no_cache === true) parts.push("cache bypassed");
-  } else if (name === "libs") {
+  } else if (name === "library_search") {
     if (typeof args.mode === "string" && args.mode !== "quality") parts.push(`mode ${args.mode}`);
     if (typeof args.limit === "number") parts.push(`limit ${args.limit}`);
-  } else if (name === "docs") {
+  } else if (name === "library_docs") {
     if (typeof args.kind === "string" && args.kind !== "all") parts.push(`kind ${args.kind}`);
     if (typeof args.mode === "string" && args.mode !== "quality") parts.push(`mode ${args.mode}`);
     if (typeof args.max_tokens === "number") parts.push(`max ${args.max_tokens} tokens`);
@@ -305,39 +252,21 @@ function webOptionRow(name: string, args: UnknownRecord): string | undefined {
 function webErrorSentence(name: string, text: string, details: UnknownRecord): string {
   const errorCode = stringOf(details.errorCode);
   const error = stringOf(details.error);
-  const missingKey = name === "search" || name === "fetch"
+  const jina = name === "web_search" || name === "web_fetch";
+  const missingKey = jina
     ? /no.*jina.*key|key.*not.*configured|missing.*key/i.test(text)
-    : name === "libs" || name === "docs"
-      ? /no.*context7.*key|key.*not.*configured|missing.*key/i.test(text)
-      : /no.*firecrawl.*key|key.*not.*configured|missing.*key/i.test(text);
+    : /no.*context7.*key|key.*not.*configured|missing.*key/i.test(text);
   if (missingKey) {
-    if (name === "search" || name === "fetch") return "No Jina key is configured";
-    if (name === "libs" || name === "docs") return "No Context7 key is configured";
-    return "No Firecrawl key is configured";
+    return jina ? "No Jina key is configured" : "No Context7 key is configured";
   }
   if (/401/.test(errorCode ?? text)) {
-    if (name === "search" || name === "fetch") return "Search provider returned 401";
-    if (name === "libs" || name === "docs") return "Context7 returned 401";
-    return "Firecrawl returned 401";
+    return jina ? "Search provider returned 401" : "Context7 returned 401";
   }
   if (/429|rate.?limit/i.test(errorCode ?? text)) {
-    if (name === "search" || name === "fetch") return "Search provider rate limit reached";
-    if (name === "libs" || name === "docs") return "Context7 rate limit reached";
-    return "Firecrawl rate limit reached";
+    return jina ? "Search provider rate limit reached" : "Context7 rate limit reached";
   }
   if (/timeout|timed.?out/i.test(error ?? text)) {
-    if (name === "search" || name === "fetch") return "Search did not answer in time";
-    if (name === "libs" || name === "docs") return "Context7 did not answer in time";
-    return "Firecrawl did not answer in time";
-  }
-  // Parse-specific errors
-  if (name === "parse") {
-    if (/ENOENT|no such file|not found/i.test(text)) return "PDF does not exist";
-    if (/outside.*workspace|beyond.*workspace/i.test(text)) return "PDF is outside the workspace";
-    if (/encrypt/i.test(text)) return "PDF is encrypted";
-    if (/too large|50.*MB/i.test(text)) return "PDF is larger than 50 MB";
-    if (/too many pages|50.*pages/i.test(text)) return "More than 50 pages were selected";
-    if (/402|payment/i.test(errorCode ?? text)) return "Firecrawl returned 402";
+    return jina ? "Search did not answer in time" : "Context7 did not answer in time";
   }
   if (error) return error;
   return text.split("\n", 1)[0]?.trim() || "Request failed";
@@ -360,25 +289,7 @@ function webDescribeResult(
 ): ReturnType<InternalToolDisplayAdapter<any, unknown, unknown>["describeResult"]> {
   const expanded = options.expanded;
 
-  // ── Declined parse ─────────────────────────────────────────────
-  if (name === "parse" && stringOf(details.status)?.toLowerCase() === "declined") {
-    return baseDescription(description, {
-      metadata: [],
-      sections: [],
-      preview: undefined,
-      rows: [],
-      lifecycle: "aborted",
-      summary: "Upload declined",
-      error: undefined,
-      errorRaw: undefined,
-      truncated: undefined,
-    });
-  }
-
-  // ── Parse: needs-input badge while confirmation is open ────────
   const status = stringOf(details.status)?.toLowerCase();
-  const phase = stringOf(details.phase)?.toLowerCase();
-  const needsInput = name === "parse" && (phase === "confirming" || status === "confirming");
 
   // ── Error ──────────────────────────────────────────────────────
   if (isError) {
@@ -392,7 +303,6 @@ function webDescribeResult(
       error: sentence,
       ...(errorRaw ? { errorRaw } : {}),
       summary: undefined,
-      ...(needsInput ? { qualifiers: ["needs-input"] } : {}),
       truncated: undefined,
     });
   }
@@ -409,14 +319,11 @@ function webDescribeResult(
       rows: [],
       error: sentence,
       summary: sentence,
-      ...(needsInput ? { qualifiers: ["needs-input"] } : {}),
       truncated: undefined,
     });
   }
 
-  // ── Warning qualifier (e.g. parse provider warning) ────────────
-  const hasWarning = stringOf(details.warning) !== undefined
-    || (name === "search" && typeof details.failed === "number" && details.failed > 0);
+  const hasWarning = name === "web_search" && typeof details.failed === "number" && details.failed > 0;
 
   // ── Truncation ─────────────────────────────────────────────────
   const isTruncated = details.truncated === true
@@ -425,13 +332,10 @@ function webDescribeResult(
 
   // ── Records ────────────────────────────────────────────────────
   const records = webRecordItems(name, details, expanded);
-  const recordsTitle = name === "docs" ? "Snippets" : "Results";
+  const recordsTitle = name === "library_docs" ? "Snippets" : "Results";
   const resultsSection: DisplaySection | undefined = records.length > 0
     ? { title: recordsTitle, blocks: [{ kind: "records", items: records }], compact: true }
     : undefined;
-
-  // ── Parse: use cleaned text as preview (not records) ──────────
-  const parseCleanText = name === "parse" ? stripParseHeader(text) : undefined;
 
   // ── Expanded-only sections ─────────────────────────────────────
   const expandedExtras: DisplaySection[] = [];
@@ -441,8 +345,8 @@ function webDescribeResult(
     if (optRow) {
       expandedExtras.push({ title: "Options", blocks: [{ kind: "text", text: optRow, tone: "muted" }] });
     }
-    // Search: add snippet per result
-    if (name === "search") {
+    // Web search: add snippet per result
+    if (name === "web_search") {
       const snippets = asArray(details.results).map((value) => {
         const item = asRecord(value);
         return {
@@ -455,8 +359,8 @@ function webDescribeResult(
         expandedExtras.push({ title: "Snippets", blocks: [{ kind: "records", items: snippets }] });
       }
     }
-    // Libs: add description per candidate
-    if (name === "libs") {
+    // Library search: add description per candidate
+    if (name === "library_search") {
       const descriptions = asArray(details.candidates).map((value) => {
         const c = asRecord(value);
         return {
@@ -469,21 +373,21 @@ function webDescribeResult(
         expandedExtras.push({ title: "Descriptions", blocks: [{ kind: "records", items: descriptions }] });
       }
     }
-    // Fetch: sanitized content per page
-    if (name === "fetch") {
+    // Web fetch: sanitized content per page
+    if (name === "web_fetch") {
       const pages: DisplayRecordItem[] = [];
       for (const value of asArray(details.pages)) {
         const p = asRecord(value);
         const url = stringOf(p.url) ?? "";
-        const content = sanitizeFetchContent(stringOf(p.content) ?? stringOf(p.text) ?? "");
+        const content = sanitizeWebFetchContent(stringOf(p.content) ?? stringOf(p.text) ?? "");
         if (content) pages.push({ title: urlHost(url), body: content });
       }
       if (pages.length > 0) {
         expandedExtras.push({ title: "Content", blocks: [{ kind: "records", items: pages }] });
       }
     }
-    // Docs: source location per snippet
-    if (name === "docs") {
+    // Library docs: source location per snippet
+    if (name === "library_docs") {
       const sources: DisplayRecordItem[] = [];
       for (const s of [...asArray(details.codeSnippets).map((v) => asRecord(v)), ...asArray(details.infoSnippets).map((v) => asRecord(v))]) {
         const sourceUrl = stringOf(s.source) ?? "";
@@ -494,27 +398,6 @@ function webDescribeResult(
       }
       if (sources.length > 0) {
         expandedExtras.push({ title: "Sources", blocks: [{ kind: "records", items: sources }] });
-      }
-    }
-    // Parse: full page text + diagnostics
-    if (name === "parse") {
-      const cleanText = stripParseHeader(text);
-      if (cleanText) {
-        expandedExtras.push({ title: "Pages", blocks: [{ kind: "code", text: cleanText, language: "markdown" }] });
-      }
-      const warning = stringOf(details.warning);
-      if (warning) {
-        expandedExtras.push({ title: "Diagnostics", blocks: [{ kind: "text", text: warning, tone: "warning" }] });
-      }
-      // Workspace-relative path, mode, destination host
-      const path = stringOf(args.path);
-      const mode = stringOf(args.mode);
-      if (path || mode) {
-        const metaParts: string[] = [];
-        if (path) metaParts.push(path);
-        if (mode) metaParts.push(`mode ${mode}`);
-        metaParts.push("\u2192 api.firecrawl.dev");
-        expandedExtras.push({ title: "Upload", blocks: [{ kind: "text", text: metaParts.join(" \u00b7 "), tone: "muted" }] });
       }
     }
   }
@@ -528,16 +411,13 @@ function webDescribeResult(
 
   // ── Qualifiers ─────────────────────────────────────────────────
   const qualifiers: import("./types").OperationalQualifier[] = [];
-  if (needsInput) qualifiers.push("needs-input");
   if (hasWarning) qualifiers.push("warning");
   if (isTruncated) qualifiers.push("truncated");
 
   return baseDescription(description, {
     metadata: [],
     sections: allSections,
-    // Parse uses the cleaned text as a preview fallback when no
-    // structured page records are available.
-    preview: !expanded && name === "parse" && parseCleanText && records.length === 0 ? { text: parseCleanText } : undefined,
+    preview: undefined,
     rows: [],
     ...(summary ? { summary } : {}),
     ...(qualifiers.length > 0 ? { qualifiers } : {}),
@@ -810,8 +690,7 @@ export function createRemoteAdapter(
       const description = base.describeCall(args, context);
       const source = asRecord(args);
       const needsInput = name === "ssh" && source.operation === "secret_input";
-      const parseConfirming = name === "parse" && stringOf(source.phase)?.toLowerCase() === "confirming";
-      const inputQualifier = (needsInput || parseConfirming) ? { qualifiers: ["needs-input"] as const } : {};
+      const inputQualifier = needsInput ? { qualifiers: ["needs-input"] as const } : {};
 
       // Web tools carry no key=value metadata.
       if (WEB_TOOLS.has(name)) {

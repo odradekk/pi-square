@@ -11,7 +11,6 @@ import registerDisplay, { DisplayController } from "./display";
 import registerDisplayBuiltins from "./display/builtins";
 import registerFooter from "./footer";
 import registerNotifications from "./notifications";
-import registerPdfSearch from "./pdf-search";
 import registerPromptManager from "./prompt-manager";
 import registerShellTools from "./shell";
 import registerShadowMinds from "./shadow-minds";
@@ -72,8 +71,7 @@ export default function piSquare(pi: ExtensionAPI): void {
   const notifications = registerNotifications(pi);
   registerAskUser(pi, notifications, () => display.runtime);
   registerTodo(pi, () => display.runtime);
-  registerPdfSearch(pi, () => display.runtime);
-  registerWebTools(pi, confirmations, () => display.runtime);
+  registerWebTools(pi, () => display.runtime);
   const subagents = registerSubagents(pi, () => display.runtime, () => display.config);
   registerShadowMinds(pi, () => display.config);
   registerFooter(pi);

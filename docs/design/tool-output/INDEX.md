@@ -119,15 +119,14 @@ removes the majority of the individual defects that the tool documents list.
 | Pattern | Tools affected | Typical fix |
 |---|---|---|
 | Uppercase built-in titles and absolute paths | `read`, `ls`, `edit`, `write`, `find`, `grep` | C1 and C2 |
-| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `search`, `fetch`, `libs`, `docs`, `parse`, `ssh` | C4 one-row collapsed entry; the payload moves to the expanded body |
-| Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, `pdf_search`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
+| Collapsed body dumps the model-facing payload | `read`, `write`, `grep`, `web_search`, `web_fetch`, `library_search`, `library_docs`, `ssh` | C4 one-row collapsed entry; the payload moves to the expanded body |
+| Expanded body adds only a section that repeats the header | `read`, `ls`, `write`, `find`, `grep`, and the whole remote family | Remove `QUERY`, `FILE`, `TARGET`, `DIRECTORY`, `REQUEST`, and `SUMMARY` |
 | Key-value metadata rows and coded fields | every family | State the same facts in the inline summary |
 | A failure body is rendered twice | `pwsh`, `ssh`, `delegate_subagent`, `resume_subagent` | Render the error stream once |
 | Raw platform or provider text as the failure message | every family | C6 one sentence, raw text in the expanded `ERROR` section |
 | Empty result presented as a fake list entry | `ls`, `find`, `grep` | A muted state row and no section |
 | Truncation without the `truncated` badge | `read`, `write`, `bash` | C7 |
-| Raw timestamps and full hashes | `libs` | Relative time and short SHA |
-| Content that is not what it claims to be | `parse` | Strip tool-owned headers, trailers, and model instructions before building rows |
+| Raw timestamps and full hashes | `library_search` | Relative time and short SHA |
 
 One defect is a correctness defect rather than a presentation defect:
 
@@ -148,14 +147,12 @@ One defect is a correctness defect rather than a presentation defect:
 | 4 | `write` | filesystem | [write.md](write.md) | Designed |
 | 5 | `find` | filesystem | [find.md](find.md) | Designed |
 | 6 | `grep` | search | [grep.md](grep.md) | Designed |
-| 8 | `pdf_search` | search | [pdf-search.md](pdf-search.md) | Designed |
 | 9 | `bash` | execution | [bash.md](bash.md) | Designed |
 | 10 | `pwsh` | execution | [pwsh.md](pwsh.md) | Designed (Linux-host evidence; Windows run required) |
-| 11 | `search` | remote | [search.md](search.md) | Designed |
-| 12 | `fetch` | remote | [fetch.md](fetch.md) | Designed |
-| 13 | `libs` | remote | [libs.md](libs.md) | Designed |
-| 14 | `docs` | remote | [docs.md](docs.md) | Designed |
-| 15 | `parse` | remote | [parse.md](parse.md) | Designed |
+| 11 | `web_search` | remote | [web-search.md](web-search.md) | Designed |
+| 12 | `web_fetch` | remote | [web-fetch.md](web-fetch.md) | Designed |
+| 13 | `library_search` | remote | [library-search.md](library-search.md) | Designed |
+| 14 | `library_docs` | remote | [library-docs.md](library-docs.md) | Designed |
 | 17 | `ssh` | remote | [ssh.md](ssh.md) | Designed (connected states need a real session) |
 | 18 | `todo` | workflow | [todo.md](todo.md) | Designed |
 | 19 | `ask` | workflow | [ask.md](ask.md) | Designed |

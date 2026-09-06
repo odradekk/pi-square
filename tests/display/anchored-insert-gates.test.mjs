@@ -28,7 +28,7 @@ const ctxFor = (cwd, sessionDir = join(cwd, ".test-session")) => ({
 const BUILTIN = { path: "<builtin>", source: "built-in", scope: "temporary", origin: "top-level" };
 const BUILTINS = ["read", "grep", "find", "ls", "edit", "write", "bash"];
 // The ownership check identifies this extension through its own probe tools.
-const PROBES = ["pdf_search", "delegate_subagent", "todo"];
+const PROBES = ["web_search", "delegate_subagent", "todo"];
 
 /**
  * The production wiring of `src/index.ts`: both anchored mutation registrars

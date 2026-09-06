@@ -1,11 +1,11 @@
-# `libs`
+# `library_search`
 
 **Family:** remote · **Scope:** parent and child · **Owner:**
-`src/web/tools/libs.ts`, rendered by `src/display/remote-adapters.ts`
+`src/web/tools/library-search.ts`, rendered by `src/display/remote-adapters.ts`
 
 **Status:** Implemented.
 
-`libs` uses the remote-record grammar of [search.md](search.md). This document
+`library_search` uses the remote-record grammar of [web-search.md](web-search.md). This document
 records only what differs.
 
 ## Current output
@@ -39,7 +39,7 @@ Expanded:
 
 ## Defects
 
-The remote-record defects 48 to 53 of [search.md](search.md) apply. In
+The remote-record defects 48 to 53 of [web-search.md](web-search.md) apply. In
 addition:
 
 | # | Defect | Convention |
@@ -61,7 +61,7 @@ The target is the library name that the model supplied.
 
 ### Record layout
 
-Two rows, as in [search.md](search.md), rendered only when the entry is
+Two rows, as in [web-search.md](web-search.md), rendered only when the entry is
 expanded. The collapsed entry is one row (C4) with the candidate counts
 inline:
 

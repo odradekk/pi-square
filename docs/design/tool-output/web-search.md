@@ -1,11 +1,11 @@
-# `search`
+# `web_search`
 
 **Family:** remote · **Scope:** parent and child · **Owner:**
-`src/web/tools/search.ts`, rendered by `src/display/remote-adapters.ts`
+`src/web/tools/web-search.ts`, rendered by `src/display/remote-adapters.ts`
 
 **Status:** Implemented.
 
-`search`, `fetch`, `libs`, and `docs` share one remote-record grammar. This
+`web_search`, `web_fetch`, `library_search`, and `library_docs` share one remote-record grammar. This
 document is the reference for the group; the other three record only their
 differences.
 

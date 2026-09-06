@@ -207,7 +207,6 @@ const secretValues = [
   "token: abc-token-xyz",
   "github_pat_ABCDE",
   "ghp_production_token",
-  "fc-api-key-12345",
 ];
 
 for (const secret of secretValues) {
@@ -224,7 +223,7 @@ for (const secret of secretValues) {
     };
     const lines = new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, theme, { expanded: false }).render(80);
     const plain = stripVTControlCharacters(lines.join("\n"));
-    for (const sensitive of ["ghp_SECRET123", "hidden-key", "do-not-show", "abc-token-xyz", "github_pat_ABCDE", "ghp_production_token", "fc-api-key-12345"]) {
+    for (const sensitive of ["ghp_SECRET123", "hidden-key", "do-not-show", "abc-token-xyz", "github_pat_ABCDE", "ghp_production_token"]) {
       assert.doesNotMatch(plain, new RegExp(sensitive), `secret '${sensitive}' leaked in ${themeName}`);
     }
     assert.match(plain, /\[REDACTED\]/, `failed state must show [REDACTED] in ${themeName}`);

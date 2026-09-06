@@ -1,14 +1,14 @@
 # Remote Expanded Results
 
-Scope: `search`, `fetch`, `libs`, `docs`, `parse`, `ssh`
-Parent tools: all six. Child availability follows the existing catalog: `parse` and `ssh` remain parent-only.
+Scope: `web_search`, `web_fetch`, `library_search`, `library_docs`, `ssh`
+Parent tools: all five. Child availability follows the existing catalog: `ssh` remains parent-only.
 Primary family contract: remote identity and provenance first, bounded remote content second, failures and retries explicit.
 
 ## Shared remote grammar
 
 Expanded remote results use this order:
 
-1. Error, auth, confirmation, cancellation, or incomplete state.
+1. Error, auth, cancellation, or incomplete state.
 2. Request identity and safe query metadata.
 3. Result summary, rate/truncation/redirect/retry state.
 4. Grouped remote records, page content, repository content, or terminal output.
@@ -16,7 +16,7 @@ Expanded remote results use this order:
 
 No API key, PAT, bearer token, or auth header is rendered. URL display neutralizes unsafe schemes and preserves only validated HTTP(S) links.
 
-## search
+## web_search
 
 Expanded sections:
 
@@ -32,7 +32,7 @@ Rules:
 - Provider-authored links are sanitized before display; only safe HTTP(S) values remain link-like.
 - Partial query failure is a warning section, not a silent omission.
 
-## fetch
+## web_fetch
 
 Expanded sections:
 
@@ -49,7 +49,7 @@ Rules:
 - Thin-content browser retry is visible as metadata, not as hidden mutation of source.
 - Unsafe source-authored links are neutralized in display copies only.
 
-## libs
+## library_search
 
 Expanded sections:
 
@@ -61,11 +61,11 @@ Expanded sections:
 
 Rules:
 
-- Context7 IDs remain exact and visually prominent because they are the input to `docs`.
+- Context7 IDs remain exact and visually prominent because they are the input to `library_docs`.
 - Invalid provider candidates remain omitted from model and display data.
 - Aggregate pressure and omission counts are visible in metadata.
 
-## docs
+## library_docs
 
 Expanded sections:
 
@@ -81,24 +81,6 @@ Rules:
 - Code fences use a fence longer than any embedded backtick run and sanitize metadata.
 - Provider token counts are not trusted as the only bound; local serialized budgets remain authoritative.
 - `202 pending` is a partial state, not a success result.
-
-## parse
-
-Expanded sections:
-
-- `ERROR` for missing key, cancellation, invalid PDF, page bounds, provider, or network failures.
-- `REQUEST`: workspace-relative path, sorted pages, mode, timeout, and local token budget.
-- `CONFIRMATION`: fixed Firecrawl destination and standard-retention consequence when declined or pending.
-- `SUMMARY`: page count, lines, truncated/incomplete/warning state, and remote metadata.
-- `MARKDOWN`: bounded parsed Markdown body.
-- `DIAGNOSTICS`: one stable HTTP/error code and redacted bounded message.
-
-Rules:
-
-- Confirmation remains required before any upload and is serialized through the parent FIFO coordinator.
-- Only the sorted unique selected pages are sent; the display must not imply full-document upload.
-- ZDR remains disabled and the standard data-handling consequence stays explicit.
-- The tool remains parent-only and absent from child catalogs.
 
 ## ssh
 
@@ -116,12 +98,11 @@ Rules:
 - Host fingerprint and auth details show method/state, never key material, passphrases, passwords, or masked input.
 - Terminal output applies the existing raw-cursor accounting and latest-visible projection; this is not full-screen emulation.
 - Connected sessions run commands without per-command confirmation; alternate endpoint confirmation remains once per parent session.
-- `parse`-style child exposure is unchanged: SSH remains parent-only.
+- Child exposure is unchanged: SSH remains parent-only.
 
 ## Remote regression cases
 
 - Provider error text strips controls and redacts current and previous keys.
 - Unsafe URLs never become clickable.
-- `parse` cancellation before confirmation performs zero upload.
 - SSH command output retains latest visible state after carriage-return progress updates.
 - All expanded results remain bounded at 39/40/63/64/80/99/100/120 columns.

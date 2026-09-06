@@ -66,7 +66,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   );
 }
 
-// ═══════════════════════ LIBS ═══════════════════════════════════════
+// ═══════════════════ library_search ════════════════════════════════
 
 // ─── 1. Lifecycle markers through production decoration path ─────────
 
@@ -79,8 +79,8 @@ function renderResult(decorated, args, details, text, opts = {}) {
     unref() {},
   };
   const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
-  const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
-  assert.equal(decorated.renderShell, "self", "libs uses self render shell");
+  const decorated = decorateInternalTool(makeDef("library_search"), () => runtime);
+  assert.equal(decorated.renderShell, "self", "library_search uses self render shell");
 
   const args = { libraryName: "react", query: "context provider" };
   const state = {};
@@ -104,11 +104,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 2. Libs title retains library name, no metadata duplication ────
+// ─── 2. Library search title retains library name, no metadata duplication ────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_search"), () => runtime);
   const args = { libraryName: "react", query: "how to create a context provider", mode: "quality", limit: 5 };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
@@ -121,11 +121,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 3. Libs expanded results preserve ranking, IDs, metadata ───────
+// ─── 3. Library search expanded results preserve ranking, IDs, metadata ───────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_search"), () => runtime);
   const args = { libraryName: "react", query: "context", mode: "quality", limit: 5 };
   const details = {
     libraryName: "react", query: "context", status: "ready", mode: "quality", limit: 5,
@@ -151,11 +151,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 4. Libs empty results state ────────────────────────────────────
+// ─── 4. Library search empty results state ────────────────────────────────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_search"), () => runtime);
   const args = { libraryName: "nonexistent", query: "test", mode: "quality", limit: 5 };
   const details = { libraryName: "nonexistent", query: "test", status: "ready", mode: "quality", limit: 5, candidates: [], counts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, phase: "done" };
   const result = renderResult(decorated, args, details, "No libraries found.", { expanded: true });
@@ -166,11 +166,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 5. Libs error visible without isError (actual tool behavior) ───
+// ─── 5. Library search error visible without isError (actual tool behavior) ───
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_search"), () => runtime);
   const args = { libraryName: "react", query: "test", mode: "quality", limit: 5 };
   const details = { libraryName: "react", query: "test", status: "error", mode: "quality", limit: 5, candidates: [], counts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, phase: "done", error: "Missing CONTEXT7_API_KEY" };
   // NOTE: no isError — these tools use details.status="error" + details.error
@@ -181,11 +181,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 6. Libs pending with retry hint ────────────────────────────────
+// ─── 6. Library search pending with retry hint ────────────────────────────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("libs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_search"), () => runtime);
   const args = { libraryName: "react", query: "test", mode: "quality", limit: 5 };
   const details = { libraryName: "react", query: "test", status: "pending", mode: "quality", limit: 5, candidates: [], counts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, phase: "done", retryAfter: 30 };
   const result = renderResult(decorated, args, details, "Library search pending. Retry in 30s.", { expanded: true });
@@ -195,7 +195,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ═══════════════════════ DOCS ═══════════════════════════════════════
+// ═══════════════════ library_docs ═══════════════════════════════════
 
 // ─── 7. Lifecycle markers through production decoration path ─────────
 
@@ -208,7 +208,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
     unref() {},
   };
   const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
 
   const args = { libraryId: "/facebook/react", query: "useState", mode: "quality", kind: "all", max_tokens: 12000 };
   const state = {};
@@ -221,15 +221,15 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 8. Docs title retains library ID, no metadata duplication ──────
+// ─── 8. Library docs title retains library ID, no metadata duplication ──────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
   const args = { libraryId: "/facebook/react", query: "how to use useState", mode: "quality", kind: "all", max_tokens: 12000 };
   const call = decorated.renderCall(args, plainTheme, makeCtx(args, {}, { argsComplete: true, executionStarted: true, expanded: true }));
   const text = stripVTControlCharacters(call.render(100).join("\n"));
-  assert.match(text, /Documentation/, "call shows Documentation title");
+  assert.match(text, /Library docs/, "call shows Library docs title");
   assert.match(text, /\/facebook\/react/, "call target shows library ID");
   // Web tools carry no key=value metadata in the header
   assert.doesNotMatch(text, /library=/, "no library key=value metadata in header");
@@ -242,11 +242,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 9. Docs expanded preserves code snippets, provenance, tokens ───
+// ─── 9. Library docs expanded preserves code snippets, provenance, tokens ───
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
   const args = { libraryId: "/facebook/react", query: "how to use useState", mode: "quality", kind: "code", max_tokens: 12000 };
   const details = {
     libraryId: "/facebook/react", finalLibraryId: "/facebook/react", query: "...", status: "ready", redirected: false,
@@ -272,11 +272,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 10. Docs expanded preserves info snippets, breadcrumb ──────────
+// ─── 10. Library docs expanded preserves info snippets, breadcrumb ──────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
   const args = { libraryId: "/facebook/react", query: "useState", mode: "quality", kind: "info", max_tokens: 12000 };
   const details = {
     libraryId: "/facebook/react", finalLibraryId: "/facebook/react", query: "...", status: "ready", redirected: false,
@@ -298,11 +298,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 11. Docs summary shows token budget and code/info counts ───────
+// ─── 11. Library docs summary shows token budget and code/info counts ───────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
   const args = { libraryId: "/facebook/react", query: "useState", mode: "quality", kind: "all", max_tokens: 12000 };
   const details = {
     libraryId: "/facebook/react", finalLibraryId: "/facebook/react", query: "...", status: "ready", redirected: false,
@@ -324,11 +324,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 12. Docs redirect is distinctly visible ────────────────────────
+// ─── 12. Library docs redirect is distinctly visible ────────────────────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
   const args = { libraryId: "/old/react", query: "test", mode: "quality", kind: "all", max_tokens: 12000 };
   const details = {
     libraryId: "/old/react", finalLibraryId: "/facebook/react", query: "test", status: "ready",
@@ -340,16 +340,16 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "doc content", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /Info/, "docs content visible after redirect");
+  assert.match(text, /Info/, "library_docs content visible after redirect");
 
   runtime.dispose();
 }
 
-// ─── 13. Docs error (invalid libraryId) is distinct ─────────────────
+// ─── 13. Library docs error (invalid libraryId) is distinct ─────────────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
   const args = { libraryId: "bad-id", query: "test", mode: "quality", kind: "all", max_tokens: 12000 };
   const details = {
     libraryId: "bad-id", finalLibraryId: "bad-id", query: "test", status: "error", redirected: false,
@@ -366,11 +366,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 14. Docs pending with retry hint ───────────────────────────────
+// ─── 14. Library docs pending with retry hint ───────────────────────────────
 
 {
   const runtime = newRuntime();
-  const decorated = decorateInternalTool(makeDef("docs"), () => runtime);
+  const decorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
   const args = { libraryId: "/facebook/react", query: "test", mode: "quality", kind: "all", max_tokens: 12000 };
   const details = {
     libraryId: "/facebook/react", finalLibraryId: "/facebook/react", query: "test", status: "pending", redirected: false,
@@ -391,11 +391,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  // Libs: the activity summary should NOT contain the candidate
+  // Library search: the activity summary should NOT contain the candidate
   // descriptions or arbitrary remote metadata in the header line
-  const libsDecorated = decorateInternalTool(makeDef("libs"), () => runtime);
-  const libsArgs = { libraryName: "react", query: "context", mode: "quality", limit: 5 };
-  const libsDetails = {
+  const librarySearchDecorated = decorateInternalTool(makeDef("library_search"), () => runtime);
+  const librarySearchArgs = { libraryName: "react", query: "context", mode: "quality", limit: 5 };
+  const librarySearchDetails = {
     libraryName: "react", query: "context", status: "ready", mode: "quality", limit: 5,
     candidates: [
       { rank: 1, id: "/facebook/react", title: "React", description: "SECRET_DESCRIPTION_THAT_SHOULD_NOT_LEAK" },
@@ -403,16 +403,16 @@ function renderResult(decorated, args, details, text, opts = {}) {
     counts: { received: 1, invalid: 0, eligible: 1, returned: 1, oversized: 0, omitted: 0 },
     phase: "done",
   };
-  const libsResult = renderResult(libsDecorated, libsArgs, libsDetails, "SECRET_DESCRIPTION_THAT_SHOULD_NOT_LEAK", { expanded: false });
-  const libsText = stripVTControlCharacters(libsResult.render(100).join("\n"));
+  const librarySearchResult = renderResult(librarySearchDecorated, librarySearchArgs, librarySearchDetails, "SECRET_DESCRIPTION_THAT_SHOULD_NOT_LEAK", { expanded: false });
+  const libsText = stripVTControlCharacters(librarySearchResult.render(100).join("\n"));
   // Header line (line 2) should NOT contain the description
   const libsHeaderLine = libsText.split("\n")[1] ?? "";
   assert.doesNotMatch(libsHeaderLine, /SECRET_DESCRIPTION/, "candidate description does not leak into activity header");
 
   // Docs: code snippet bodies should not leak into header
-  const docsDecorated = decorateInternalTool(makeDef("docs"), () => runtime);
-  const docsArgs = { libraryId: "/facebook/react", query: "test", mode: "quality", kind: "all", max_tokens: 12000 };
-  const docsDetails = {
+  const libraryDocsDecorated = decorateInternalTool(makeDef("library_docs"), () => runtime);
+  const libraryDocsArgs = { libraryId: "/facebook/react", query: "test", mode: "quality", kind: "all", max_tokens: 12000 };
+  const libraryDocsDetails = {
     libraryId: "/facebook/react", finalLibraryId: "/facebook/react", query: "test", status: "ready", redirected: false,
     kind: "all", mode: "quality", maxTokens: 12000, rules: null, rulesOmitted: false,
     codeSnippets: [{ title: "t", tokens: 10, codeList: [{ code: "SECRET_CODE_BODY" }] }],
@@ -420,10 +420,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
     infoCounts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 },
     estimatedTokens: 10, phase: "done",
   };
-  const docsResult = renderResult(docsDecorated, docsArgs, docsDetails, "SECRET_CODE_BODY", { expanded: false });
-  const docsText = stripVTControlCharacters(docsResult.render(100).join("\n"));
-  const docsHeaderLine = docsText.split("\n")[1] ?? "";
-  assert.doesNotMatch(docsHeaderLine, /SECRET_CODE_BODY/, "code snippet body does not leak into activity header");
+  const libraryDocsResult = renderResult(libraryDocsDecorated, libraryDocsArgs, libraryDocsDetails, "SECRET_CODE_BODY", { expanded: false });
+  const libraryDocsText = stripVTControlCharacters(libraryDocsResult.render(100).join("\n"));
+  const libraryDocsHeaderLine = libraryDocsText.split("\n")[1] ?? "";
+  assert.doesNotMatch(libraryDocsHeaderLine, /SECRET_CODE_BODY/, "code snippet body does not leak into activity header");
 
   runtime.dispose();
 }
@@ -433,11 +433,11 @@ function renderResult(decorated, args, details, text, opts = {}) {
 {
   const runtime = newRuntime();
   for (const [name, args, details, text] of [
-    ["libs",
+    ["library_search",
       { libraryName: "react", query: "context provider", mode: "quality", limit: 5 },
       { libraryName: "react", query: "...", status: "ready", mode: "quality", limit: 5, candidates: [{ rank: 1, id: "/facebook/react", title: "React", description: "UI lib" }], counts: { received: 1, invalid: 0, eligible: 1, returned: 1, oversized: 0, omitted: 0 }, phase: "done" },
       "[1] React\n    /facebook/react"],
-    ["docs",
+    ["library_docs",
       { libraryId: "/facebook/react", query: "useState", mode: "quality", kind: "all", max_tokens: 12000 },
       { libraryId: "/facebook/react", finalLibraryId: "/facebook/react", query: "...", status: "ready", redirected: false, kind: "all", mode: "quality", maxTokens: 12000, rules: null, rulesOmitted: false, codeSnippets: [{ title: "t", tokens: 10, codeList: [{ code: "x" }] }], infoSnippets: [], codeCounts: { received: 1, invalid: 0, eligible: 1, returned: 1, oversized: 0, omitted: 0 }, infoCounts: { received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 }, estimatedTokens: 10, phase: "done" },
       "content"],
@@ -459,7 +459,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 
 {
   const runtime = newRuntime();
-  for (const name of ["libs", "docs"]) {
+  for (const name of ["library_search", "library_docs"]) {
     const def = makeDef(name);
     const decorated = decorateInternalTool(def, () => runtime);
     assert.equal(decorated.execute, def.execute, `${name} execute unchanged`);
@@ -468,4 +468,4 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-console.log("Context7 library and docs display tests: OK");
+console.log("library_search and library_docs display tests: OK");

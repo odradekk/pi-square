@@ -24,13 +24,12 @@ const secrets = [
   "password: hunter2",
   "github_pat_ABC123",
   "ghp_ABC123",
-  "fc-ABC_def",
   "Bearer opaque-token",
   "exact-value",
 ].join("\n");
 const redacted = sanitizeDisplayText(secrets, { exactSecrets: ["exact-value"] });
-assert.doesNotMatch(redacted, /abc\.def|super-secret|plain-token|hunter2|github_pat_|ghp_|fc-ABC|opaque-token|exact-value/i);
-assert.ok((redacted.match(/\[REDACTED\]/g) ?? []).length >= 9);
+assert.doesNotMatch(redacted, /abc\.def|super-secret|plain-token|hunter2|github_pat_|ghp_|opaque-token|exact-value/i);
+assert.ok((redacted.match(/\[REDACTED\]/g) ?? []).length >= 8);
 assert.equal(redactDisplaySecrets("token one one", ["one"]), "token [REDACTED] [REDACTED]");
 
 const markdown = sanitizeMarkdownForDisplay("[bad](https://evil.test) www.evil.test a@b.test\n```js\n[code](x)\n```");

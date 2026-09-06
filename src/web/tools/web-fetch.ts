@@ -9,18 +9,18 @@ import {
   shortenUrl,
 } from "../shared/render";
 import {
-  DEFAULT_FETCH_MODE,
-  DEFAULT_MAX_TOKENS,
-  FETCH_MODES,
-  FETCH_RETRY_TIMEOUT,
-  FETCH_THIN_CONTENT_THRESHOLD,
-  MAX_MAX_TOKENS,
-  MIN_MAX_TOKENS,
-  type FetchDetails,
-  type FetchDisplayPage,
-  type FetchFailedUrl,
-  type FetchMode,
-  type FetchPageMeta,
+  DEFAULT_WEB_FETCH_MODE,
+  DEFAULT_WEB_FETCH_MAX_TOKENS,
+  WEB_FETCH_MODES,
+  WEB_FETCH_RETRY_TIMEOUT,
+  WEB_FETCH_THIN_CONTENT_THRESHOLD,
+  MAX_WEB_FETCH_MAX_TOKENS,
+  MIN_WEB_FETCH_MAX_TOKENS,
+  type WebFetchDetails,
+  type WebFetchDisplayPage,
+  type WebFetchFailedUrl,
+  type WebFetchMode,
+  type WebFetchPageMeta,
 } from "../types";
 
 function countNonWhitespace(text: string): number {
@@ -54,24 +54,24 @@ function formatTokenUsage(usage: JinaPageContent["tokenUsage"]): string | undefi
   return undefined;
 }
 
-interface FetchOutcome {
+interface WebFetchOutcome {
   url: string;
   result?: JinaPageContent;
   error?: string;
   retried: boolean;
 }
 
-async function fetchWithRetry(
+async function webFetchWithRetry(
   url: string,
   apiKey: string,
   options: FetchJinaOptions,
   signal?: AbortSignal,
-): Promise<FetchOutcome> {
+): Promise<WebFetchOutcome> {
   let retried = false;
 
   try {
     const result = await fetchJinaPage(url, apiKey, options, signal);
-    if (countNonWhitespace(result.content) >= FETCH_THIN_CONTENT_THRESHOLD) {
+    if (countNonWhitespace(result.content) >= WEB_FETCH_THIN_CONTENT_THRESHOLD) {
       return { url, result, retried: false };
     }
   } catch (error) {
@@ -86,7 +86,7 @@ async function fetchWithRetry(
     const result = await fetchJinaPage(
       url,
       apiKey,
-      { ...options, browser: true, timeout: FETCH_RETRY_TIMEOUT, respondTiming: "network-idle" },
+      { ...options, browser: true, timeout: WEB_FETCH_RETRY_TIMEOUT, respondTiming: "network-idle" },
       signal,
     );
     return { url, result, retried };
@@ -96,13 +96,13 @@ async function fetchWithRetry(
   }
 }
 
-export function createFetchToolDefinition(): ToolDefinition<any, any> {
+export function createWebFetchToolDefinition(): ToolDefinition<any, any> {
   return {
-    name: "fetch",
-    label: "Fetch",
+    name: "web_fetch",
+    label: "Web fetch",
     description:
       "Retrieve readable or full Markdown for one to five URLs via Jina Reader. Preserves input order, permits partial URL failure, and retries once on transient failure or thin content. Returns page metadata, content, and optional link/image summaries.",
-    promptSnippet: "Use fetch to read the content of web pages (1-5 URLs). Returns Markdown with metadata.",
+    promptSnippet: "Use web_fetch to read the content of web pages (1-5 URLs). Returns Markdown with metadata.",
     parameters: Type.Object({
       urls: Type.Array(Type.String(), {
         minItems: 1,
@@ -110,13 +110,13 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
         description: "One to five HTTP(S) URLs to fetch (normalized and de-duplicated, preserving input order)",
       }),
       mode: Type.Optional(
-        StringEnum(FETCH_MODES, { description: `"readable" extracts main content (default); "full" returns full page Markdown` }),
+        StringEnum(WEB_FETCH_MODES, { description: `"readable" extracts main content (default); "full" returns full page Markdown` }),
       ),
       max_tokens: Type.Optional(
         Type.Number({
-          minimum: MIN_MAX_TOKENS,
-          maximum: MAX_MAX_TOKENS,
-          description: `Maximum tokens per page (default: ${DEFAULT_MAX_TOKENS}, range ${MIN_MAX_TOKENS}-${MAX_MAX_TOKENS})`,
+          minimum: MIN_WEB_FETCH_MAX_TOKENS,
+          maximum: MAX_WEB_FETCH_MAX_TOKENS,
+          description: `Maximum tokens per page (default: ${DEFAULT_WEB_FETCH_MAX_TOKENS}, range ${MIN_WEB_FETCH_MAX_TOKENS}-${MAX_WEB_FETCH_MAX_TOKENS})`,
         }),
       ),
       no_cache: Type.Optional(Type.Boolean({ description: "Bypass Jina cache when true" })),
@@ -137,8 +137,8 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
         }
       }
 
-      const mode: FetchMode = params.mode === "full" ? "full" : DEFAULT_FETCH_MODE;
-      const maxTokens = clampInteger(params.max_tokens, DEFAULT_MAX_TOKENS, MIN_MAX_TOKENS, MAX_MAX_TOKENS);
+      const mode: WebFetchMode = params.mode === "full" ? "full" : DEFAULT_WEB_FETCH_MODE;
+      const maxTokens = clampInteger(params.max_tokens, DEFAULT_WEB_FETCH_MAX_TOKENS, MIN_WEB_FETCH_MAX_TOKENS, MAX_WEB_FETCH_MAX_TOKENS);
 
       if (urls.length === 0) {
         return {
@@ -151,7 +151,7 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
             failedUrls: [],
             phase: "done",
             error: "At least one HTTP(S) URL is required",
-          } as FetchDetails,
+          } as WebFetchDetails,
         };
       }
 
@@ -168,7 +168,7 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
             failedUrls: invalidUrls.map((url) => ({ url, error: "Invalid HTTP(S) URL", retried: false })),
             phase: "done",
             error: message,
-          } as FetchDetails,
+          } as WebFetchDetails,
         };
       }
 
@@ -189,7 +189,7 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
             failedUrls: [],
             phase: "done",
             error: "Missing JINA_API_KEY",
-          } as FetchDetails,
+          } as WebFetchDetails,
         };
       }
 
@@ -203,16 +203,16 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
 
       onUpdate?.({
         content: [{ type: "text" as const, text: "Fetching..." }],
-        details: { urls, succeeded: 0, failed: 0, results: [], failedUrls: [], phase: "fetching" } as FetchDetails,
+        details: { urls, succeeded: 0, failed: 0, results: [], failedUrls: [], phase: "fetching" } as WebFetchDetails,
       });
 
       try {
-        const outcomes = await Promise.all(urls.map((url) => fetchWithRetry(url, apiKey, options, signal)));
+        const outcomes = await Promise.all(urls.map((url) => webFetchWithRetry(url, apiKey, options, signal)));
 
         const parts: string[] = [];
-        const pages: FetchDisplayPage[] = [];
-        const results: FetchPageMeta[] = [];
-        const failedUrls: FetchFailedUrl[] = [];
+        const pages: WebFetchDisplayPage[] = [];
+        const results: WebFetchPageMeta[] = [];
+        const failedUrls: WebFetchFailedUrl[] = [];
 
         for (const outcome of outcomes) {
           if (outcome.result) {
@@ -229,7 +229,7 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
               tokens,
               retried: outcome.retried,
             });
-            const displayPage: FetchDisplayPage = {
+            const displayPage: WebFetchDisplayPage = {
               url: outcome.url,
               title: page.title || shortenUrl(outcome.url),
               lines,
@@ -294,7 +294,7 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
             failedUrls,
             pages,
             phase: "done",
-          } as FetchDetails,
+          } as WebFetchDetails,
         };
       } catch (error) {
         if (isAbortError(error)) {
@@ -308,7 +308,7 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
               failedUrls: [],
               phase: "done",
               error: "Cancelled",
-            } as FetchDetails,
+            } as WebFetchDetails,
           };
         }
         const message = errorMessage(error);
@@ -322,15 +322,15 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
             failedUrls: [],
             phase: "done",
             error: message,
-          } as FetchDetails,
+          } as WebFetchDetails,
         };
       }
     },
   };
 }
 
-export function registerFetchTool(pi: ExtensionAPI): void {
-  pi.registerTool(createFetchToolDefinition());
+export function registerWebFetchTool(pi: ExtensionAPI): void {
+  pi.registerTool(createWebFetchToolDefinition());
 }
 
 

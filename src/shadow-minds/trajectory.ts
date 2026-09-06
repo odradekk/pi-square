@@ -45,15 +45,13 @@ const KNOWN_TOOL_FIELDS: Readonly<Record<string, readonly string[]>> = Object.fr
   write: ["path"],
   replace: ["path"],
   insert: ["path"],
-  pdf_search: ["query", "path"],
-  search: ["queries"],
-  fetch: ["urls"],
-  libs: ["libraryName", "query"],
-  docs: ["libraryId", "query"],
+  web_search: ["queries"],
+  web_fetch: ["urls"],
+  library_search: ["libraryName", "query"],
+  library_docs: ["libraryId", "query"],
   delegate_subagent: ["agent"],
   resume_subagent: ["id"],
   todo: ["action"],
-  parse: ["path", "pages"],
 });
 
 /** One Shadow result as trajectory evidence; only delivered evidence renders. */

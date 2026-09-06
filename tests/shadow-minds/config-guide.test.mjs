@@ -91,7 +91,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.match(guide.content, /maxToolCalls/, "budgets are documented");
   assert.doesNotMatch(guide.content, /never write definition files directly/, "the manager-only write instruction is gone");
   assert.doesNotMatch(guide.content, /review and confirmation/, "no Shadow-specific confirmation remains");
-  assert.ok(guide.content.includes("read, grep, find, ls, pdf_search, search, fetch, libs, docs"), "the read-only catalog is documented");
+  assert.ok(guide.content.includes("read, grep, find, ls, web_search, web_fetch, library_search, library_docs"), "the read-only catalog is documented");
   assert.ok(JSON.stringify(guide.content).length < 60_000, "the guide stays bounded");
   assert.equal(guide.details.version, 1);
   assert.equal(guide.details.definitionCount, registry.definitions.length);
@@ -473,8 +473,8 @@ function fakePi() {
     // warning-role and project-grounding ran first; their tool envelopes
     // carry the canonical evidence names with the submit tool last.
     assert.deepEqual(created[0].tools, ["read", "submit_shadow_result"]);
-    assert.deepEqual(created[1].tools, ["read", "grep", "find", "ls", "pdf_search", "search", "submit_shadow_result"]);
-    assert.deepEqual(created[1].customTools.map((tool) => tool.name), ["pdf_search", "search", "submit_shadow_result"]);
+    assert.deepEqual(created[1].tools, ["read", "grep", "find", "ls", "web_search", "web_fetch", "submit_shadow_result"]);
+    assert.deepEqual(created[1].customTools.map((tool) => tool.name), ["web_search", "web_fetch", "submit_shadow_result"]);
     assert.ok(created[2].system.includes(SHADOW_GOVERNANCE.slice(0, 40)), "the versioned governance leads the child SYSTEM");
     assert.equal(created[2].thinkingLevel, undefined, "without a definition or config default the parent omission remains unset");
     assert.ok(created[2].system.includes("Live core policy."), "the parent core is captured at run start");

@@ -4,7 +4,6 @@ const AUTH_HEADER_PATTERN = /(authorization\s*:\s*)[^,;\r\n]+/gi;
 const SECRET_ASSIGNMENT_PATTERN = /((?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|password|passphrase|secret)\s*[=:]\s*)([^\s,;]+)/gi;
 const BEARER_PATTERN = /(bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
 const GITHUB_TOKEN_PATTERN = /\b(?:github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]+\b/g;
-const FIRECRAWL_TOKEN_PATTERN = /\bfc-[A-Za-z0-9_-]+\b/g;
 
 export interface SanitizeDisplayOptions {
   readonly multiline?: boolean;
@@ -23,8 +22,7 @@ export function redactDisplaySecrets(value: string, exactSecrets: readonly strin
     .replace(AUTH_HEADER_PATTERN, "$1[REDACTED]")
     .replace(SECRET_ASSIGNMENT_PATTERN, "$1[REDACTED]")
     .replace(BEARER_PATTERN, "$1[REDACTED]")
-    .replace(GITHUB_TOKEN_PATTERN, "[REDACTED]")
-    .replace(FIRECRAWL_TOKEN_PATTERN, "[REDACTED]");
+    .replace(GITHUB_TOKEN_PATTERN, "[REDACTED]");
   const secrets = [...new Set(exactSecrets.filter((secret) => secret.length > 0))]
     .sort((left, right) => right.length - left.length);
   for (const secret of secrets) output = output.split(secret).join("[REDACTED]");

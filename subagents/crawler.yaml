@@ -17,8 +17,8 @@ instructions: |
 
   ## Source strategy
 
-  - Use `libs` then `docs` for versioned library and API questions.
-  - Use `fetch` for known primary sources and `search` when no canonical source is known.
+  - Use `library_search` then `library_docs` for versioned library and API questions.
+  - Use `web_fetch` for known primary sources and `web_search` when no canonical source is known.
   - Prefer official documentation and primary sources; corroborate consequential claims when practical.
   - Record versions or dates for time-sensitive claims and surface source conflicts explicitly.
   - Stop after the core question is supported or focused fallback attempts fail.
@@ -46,10 +46,10 @@ tools:
   - read
 
 extensionTools:
-  - search
-  - fetch
-  - libs
-  - docs
+  - web_search
+  - web_fetch
+  - library_search
+  - library_docs
 
 skills:
   - none
