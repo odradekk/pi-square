@@ -120,7 +120,7 @@ describe("anchored insert tool", () => {
     expect(result.file_path).toBeUndefined();
   });
 
-  it("rejects unknown fields, wrong types, and blank or malformed line items before any file I/O", async () => {
+  it("rejects unknown fields, wrong types, and embedded newlines before any file I/O", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd, path }) => {
       const { ctx, insertTool } = setupIntegrationTest(cwd);
       const before = await readFile(path, "utf-8");
@@ -130,8 +130,6 @@ describe("anchored insert tool", () => {
         { path: "sample.txt", anchor: "AAA", lines: ["x"] },
         { path: "sample.txt", anchor: "AAA", direction: "after" },
         { path: "sample.txt", anchor: "AAA", direction: "after", lines: [] },
-        { path: "sample.txt", anchor: "AAA", direction: "after", lines: ["x", ""] },
-        { path: "sample.txt", anchor: "AAA", direction: "after", lines: [""] },
         { path: "sample.txt", anchor: "AAA", direction: "after", lines: ["a\nb"] },
         { path: "sample.txt", anchor: "AAA", direction: "after", lines: ["a\rb"] },
         { path: "sample.txt", anchor: "AAA", direction: "after", lines: "x" },
@@ -437,15 +435,6 @@ describe("anchored insert tool", () => {
     });
   });
 
-  it("refuses empty files without creating content", async () => {
-    await withTempFile("sample.txt", "", async ({ cwd, path }) => {
-      const { ctx, insertTool } = setupIntegrationTest(cwd);
-      await expect(
-        insertTool.execute("i1", { path: "sample.txt", anchor: "aaa", direction: "after", lines: ["x"] }, undefined, undefined, ctx),
-      ).rejects.toThrow(/\[E_BAD_OP\].*empty/);
-      expect(await readFile(path, "utf-8")).toBe("");
-    });
-  });
 
   it("refuses a missing file and never creates it", async () => {
     await withTempDir("insert-missing-", async (cwd) => {

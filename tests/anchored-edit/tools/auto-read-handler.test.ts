@@ -88,7 +88,7 @@ describe("auto-read appendix after a parent write", () => {
 
       expect(result.content).toHaveLength(2);
       expect(result.content[1]!.text).toContain("--- Auto-read (hashline anchors) ---");
-      expect(result.content[1]!.text).toContain("[File is empty. Use replace to insert content.]");
+      expect(result.content[1]!.text).toContain("[File is empty. Use insert with the anchor row above to add its first lines.]");
       expect(result.content[1]!.text).toMatch(/^[A-Za-z0-9]{3}│/m);
     });
   });

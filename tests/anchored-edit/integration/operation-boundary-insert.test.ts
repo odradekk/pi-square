@@ -456,3 +456,118 @@ describe("operation boundary — insert (#285)", () => {
     });
   });
 });
+
+describe("operation boundary — insert blank and empty initialization (#286)", () => {
+  it("serializes an empty-file initialization with an anchored read through one target boundary", async () => {
+    await withTempDir("boundary-insert-init-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "", "utf-8");
+      const ctx = makeTestCtx(cwd);
+
+      const read = await anchoredReadOf(cwd, ctx);
+      const synthetic = rowsOf(read.content)[0]!;
+      expect(synthetic.text).toBe("");
+
+      const order: string[] = [];
+      let releaseInsert!: () => void;
+      const insertEntered = new Promise<void>((resolveEntered) => {
+        insertBarrier.beforeCommit = () => {
+          order.push("insert-commit");
+          resolveEntered();
+          return new Promise<void>((resolveRelease) => { releaseInsert = resolveRelease; });
+        };
+      });
+      readBarrier.locked = () => {
+        order.push("read-bytes");
+        return Promise.resolve();
+      };
+
+      const insert = createAnchoredInsertToolDefinition(cwd, () => true, PARENT_OWNER);
+      const insertPromise = insert.execute(
+        "insert-1",
+        { path: "sample.txt", anchor: synthetic.hash, direction: "after", lines: ["hello", ""] },
+        undefined, undefined, ctx,
+      );
+      await insertEntered;
+
+      // The read cannot enter the boundary while the initialization holds the
+      // target exclusion, so its anchors can only describe the initialized
+      // bytes. The ordering log proves the serialization deterministically.
+      const readPromise = anchoredReadOf(cwd, ctx);
+      releaseInsert();
+      const inserted = await insertPromise;
+      expect(inserted.details.metrics?.classification).toBe("applied");
+      const postRead = await readPromise;
+      expect(order).toEqual(["insert-commit", "read-bytes"]);
+      expect(rowsOf(postRead.content).map((row) => row.text)).toEqual(["hello", ""]);
+      expect(await readFile(path, "utf-8")).toBe("hello\n\n");
+    });
+  });
+
+  it("reports classified E_FILE_LOCKED and initializes nothing when an external holder keeps the lock on an empty target", async () => {
+    await withTempDir("boundary-insert-initlock-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "", "utf-8");
+      const ctx = makeTestCtx(cwd);
+      const { acquireFileLock } = await import("../../../src/anchored-edit/file-lock");
+      const { anchoredStoreDir } = await import("../../../src/anchored-edit/paths");
+      const { testSessionDir } = await import("../support/fixtures");
+
+      const read = await anchoredReadOf(cwd, ctx);
+      const synthetic = rowsOf(read.content)[0]!;
+
+      const { resolveAnchoredTarget } = await import("../../../src/anchored-edit/operations");
+      const target = await resolveAnchoredTarget(cwd, "sample.txt");
+      const holder = await acquireFileLock(
+        lockFilePath(anchoredStoreDir(testSessionDir(cwd), cwd), target.opKey),
+        { waitMs: 60 },
+      );
+      expect(holder).not.toBeNull();
+
+      const insert = createAnchoredInsertToolDefinition(cwd, () => true, PARENT_OWNER);
+      const result = await insert.execute(
+        "insert-1",
+        { path: "sample.txt", anchor: synthetic.hash, direction: "before", lines: ["x"] },
+        undefined, undefined, ctx,
+      );
+      expect(result.details?.status).toBe("warning");
+      expect(result.details?.errorCode).toBe("E_FILE_LOCKED");
+      expect(textOf(result.content)).toContain("[E_FILE_LOCKED]");
+      expect(await readFile(path, "utf-8")).toBe("");
+
+      await holder!.release();
+    });
+  });
+
+  it("publishes a trailing blank insert's served rows under the boundary for an immediate chained replace", async () => {
+    await withTempDir("boundary-insert-blankchain-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, "aaa\nbbb", "utf-8");
+      const ctx = makeTestCtx(cwd);
+      const read = await anchoredReadOf(cwd, ctx);
+      const bbb = rowsOf(read.content).find((row) => row.text === "bbb")!;
+
+      const insert = createAnchoredInsertToolDefinition(cwd, () => true, PARENT_OWNER);
+      const inserted = await insert.execute(
+        "insert-1",
+        { path: "sample.txt", anchor: bbb.hash, direction: "after", lines: [""] },
+        undefined, undefined, ctx,
+      );
+      expect(inserted.details.metrics?.classification).toBe("applied");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\n\n");
+
+      // The re-added anchor row is served from the authoritative diff, so the
+      // chained replace verifies without another read.
+      const reAdded = /^\+([A-Za-z0-9]{3})│bbb$/m.exec(inserted.details.diff ?? "")?.[1];
+      expect(reAdded, "the diff carries the re-added anchor row").toBeTruthy();
+      const replace = createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false);
+      const replaced = await replace.execute(
+        "replace-1",
+        { path: "sample.txt", remove_from: reAdded!, remove_to: reAdded!, replacement_text: "BBB" },
+        undefined, undefined, ctx,
+      );
+      expect(replaced.details.metrics?.classification).toBe("applied");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nBBB\n\n");
+    });
+  });
+});

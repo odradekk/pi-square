@@ -24,7 +24,7 @@ const directionSchema = StringEnum(INSERT_DIRECTIONS, {
 
 const linesSchema = Type.Array(Type.String(), {
   description:
-    "One or more literal lines to insert, in order. Each item is exactly one logical line: no \\n or \\r inside an item (use separate items instead). Every item must be non-empty — to add a blank line use replace. Lines are inserted literally: no read/diff prefixes are stripped and duplicates are kept",
+    "One or more literal lines to insert, in order. Each item is exactly one logical line: no \\n or \\r inside an item (use separate items instead), and an empty string item \"\" inserts one real blank logical line. Lines are inserted literally: no read/diff prefixes are stripped and duplicates are kept",
   minItems: 1,
 });
 
@@ -115,7 +115,7 @@ export function assertInsertReq(
   }
   if (!Array.isArray(request.lines)) {
     throw new Error(
-      '[E_BAD_SHAPE] Insert request "lines" must be an array of one or more non-empty strings.',
+      '[E_BAD_SHAPE] Insert request "lines" must be an array of one or more strings, each exactly one logical line.',
     );
   }
   if (request.lines.length === 0) {
@@ -129,11 +129,8 @@ export function assertInsertReq(
         `[E_BAD_SHAPE] Insert request "lines" item ${index + 1} must be a string, not ${typeof line}.`,
       );
     }
-    if (line.length === 0) {
-      throw new Error(
-        `[E_BAD_SHAPE] Insert request "lines" item ${index + 1} is empty. Blank-line insertion is not supported by insert in this version; every item must be one non-empty logical line (use replace to add blank lines).`,
-      );
-    }
+    // An empty string is accepted as one real blank logical line (#286); only
+    // embedded newline characters break the one-item-one-line contract.
     if (line.includes("\n") || line.includes("\r")) {
       throw new Error(
         `[E_BAD_SHAPE] Insert request "lines" item ${index + 1} contains an embedded newline. Each item is exactly one logical line; pass additional items instead of a multi-line string.`,
@@ -307,12 +304,11 @@ export async function prepareInsert(
     options.canonicalPath ?? path, cwd, { signal: options.signal, accessMode: options.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: true },
   );
 
-  if (originalNormalized.length === 0) {
-    throw new Error(
-      `[E_BAD_OP] Cannot insert into ${path}: the file is empty. Insertion into an empty file is not supported; use write to create initial content.`,
-    );
-  }
-
+  // An empty file initializes through its synthetic anchor (#286): the read
+  // of empty content serves exactly one synthetic row — the hash of the empty
+  // line — and `fileLines` below holds that one synthetic row, which is not
+  // real content.
+  const isEmptyFile = originalNormalized.length === 0;
   const fileLines = splitLines(originalNormalized);
 
   // Anchor resolution: exactly one current line must carry the hash.
@@ -327,9 +323,12 @@ export async function prepareInsert(
     // observed version, so an immediate retry with any returned row
     // verifies.
     const context = contextRows(1, fileLines, originalHashes, 2);
+    const emptyNote = isEmptyFile
+      ? `The file is currently empty: its synthetic anchor row below initializes it on retry (before and after are the same initialization).\n\n${context.rows.join("\n")}`
+      : `Current head of the file with fresh anchors (retry with any of these rows, or read for wider context):\n\n${context.rows.join("\n")}`;
     throw new InsertValidationError(
       new AnchorMismatchError(
-        `[E_STALE_ANCHOR] 1 stale anchor in ${path}: "${anchorHash}". The file content has changed since that anchor was read, so the line it named no longer exists. Nothing was inserted. Current head of the file with fresh anchors (retry with any of these rows, or read for wider context):\n\n${context.rows.join("\n")}`,
+        `[E_STALE_ANCHOR] 1 stale anchor in ${path}: "${anchorHash}". The file content has changed since that anchor was read, so the line it named no longer exists. Nothing was inserted. ${emptyNote}`,
         context.hashes,
       ),
       originalNormalized,
@@ -377,18 +376,51 @@ export async function prepareInsert(
     );
   }
 
+  if (isEmptyFile) {
+    // Empty-file initialization (#286): the synthetic row is not real
+    // content, so both directions initialize the file with exactly the
+    // requested logical lines, terminated, in the file's own line-ending
+    // convention (an empty file defaults to LF). A single blank item yields
+    // one LF; the BOM, if any, is preserved by the shared commit path. The
+    // fresh hash assignment is content-derived, exactly like a plain read of
+    // the initialized bytes.
+    const result = params.lines.join("\n") + "\n";
+    return {
+      path,
+      anchorLine,
+      direction: params.direction,
+      insertedLines: params.lines.slice(),
+      originalNormalized,
+      result,
+      bom,
+      originalEnding,
+      hadUtf8DecodeErrors,
+      warnings,
+      firstChangedLine: 1,
+      lastChangedLine: params.lines.length,
+      originalHashes,
+      resultHashes: _insertLineHashesPure([], params.lines, 0),
+    };
+  }
+
   // First-class insertion: the anchor line is preserved and the literal block
   // is spliced at one adjacent position. No replacement containing the anchor
-  // line is constructed, and the file's terminal-newline state is preserved.
+  // line is constructed, and the file's terminal-newline state is preserved
+  // for non-blank insertions.
   const insertAt = params.direction === "before" ? anchorLine - 1 : anchorLine;
   const newLines = [
     ...fileLines.slice(0, insertAt),
     ...params.lines,
     ...fileLines.slice(insertAt),
   ];
-  const terminated = originalNormalized.endsWith("\n");
+  // A trailing blank item landing at EOF must terminate the file: without its
+  // own terminator the blank row would not exist as a real logical line, so
+  // one blank item after an unterminated last row produces two terminal LFs
+  // (#286). Every other insertion keeps the prior terminal-newline state.
+  const trailingBlankAtEof = insertAt === fileLines.length
+    && params.lines[params.lines.length - 1] === "";
+  const terminated = originalNormalized.endsWith("\n") || trailingBlankAtEof;
   const result = newLines.join("\n") + (terminated ? "\n" : "");
-
   // Position-stable hash mapping: a pure insertion never reorders or removes
   // lines, so every surviving line — the anchor row included — keeps its
   // exact hash and only the inserted lines receive fresh unique hashes. The
