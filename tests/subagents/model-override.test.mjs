@@ -180,12 +180,12 @@ test("fresh sessions resolve and persist the portable shell capability", async (
 test("none starts a child with only the requested custom tools", async () => {
   reset();
   const result = await runSubagentTask(freshInput({
-    definition: definition({ tools: ["none"], extensionTools: ["docs"], skills: ["none"] }),
+    definition: definition({ tools: ["none"], extensionTools: ["library_docs"], skills: ["none"] }),
   }));
-  assert.deepEqual(lastCall().tools, ["docs"]);
-  assert.deepEqual(lastCall().customTools.map((tool) => tool.name), ["docs"]);
+  assert.deepEqual(lastCall().tools, ["library_docs"]);
+  assert.deepEqual(lastCall().customTools.map((tool) => tool.name), ["library_docs"]);
   assert.deepEqual(result.details.agent.tools, ["none"]);
-  assert.deepEqual(result.details.agent.extensionTools, ["docs"]);
+  assert.deepEqual(result.details.agent.extensionTools, ["library_docs"]);
   assert.deepEqual(result.details.agent.skills, ["none"]);
 });
 

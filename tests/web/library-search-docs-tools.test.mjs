@@ -93,11 +93,11 @@ function streamingResponse(status, chunks, headers = {}) {
 // Load tool modules
 // ---------------------------------------------------------------------------
 
-const libsModule = load(join(packageRoot, "src", "web", "tools", "libs.ts"));
-const docsModule = load(join(packageRoot, "src", "web", "tools", "docs.ts"));
+const librarySearchModule = load(join(packageRoot, "src", "web", "tools", "library-search.ts"));
+const libraryDocsModule = load(join(packageRoot, "src", "web", "tools", "library-docs.ts"));
 
-const { createLibsToolDefinition, registerLibsTool } = libsModule;
-const { createDocsToolDefinition, registerDocsTool } = docsModule;
+const { createLibrarySearchToolDefinition, registerLibrarySearchTool } = librarySearchModule;
+const { createLibraryDocsToolDefinition, registerLibraryDocsTool } = libraryDocsModule;
 
 const CONTEXT7_BASE = "https://context7.com/api/v2";
 
@@ -122,7 +122,7 @@ function test(name, fn) {
 // === Schema tests ===
 
 test("libs schema has libraryName, query, mode, limit", () => {
-  const def = createLibsToolDefinition();
+  const def = createLibrarySearchToolDefinition();
   const props = def.parameters.properties;
   assert.ok(props.libraryName, "libraryName required");
   assert.ok(props.query, "query required");
@@ -133,7 +133,7 @@ test("libs schema has libraryName, query, mode, limit", () => {
 });
 
 test("libs limit default is 5, range 1-10", () => {
-  const def = createLibsToolDefinition();
+  const def = createLibrarySearchToolDefinition();
   const limit = def.parameters.properties.limit;
   assert.equal(limit.default, 5);
   assert.equal(limit.minimum, 1);
@@ -141,7 +141,7 @@ test("libs limit default is 5, range 1-10", () => {
 });
 
 test("docs schema has libraryId, query, mode, kind, max_tokens", () => {
-  const def = createDocsToolDefinition();
+  const def = createLibraryDocsToolDefinition();
   const props = def.parameters.properties;
   assert.ok(props.libraryId, "libraryId required");
   assert.ok(props.query, "query required");
@@ -153,7 +153,7 @@ test("docs schema has libraryId, query, mode, kind, max_tokens", () => {
 });
 
 test("docs max_tokens default is 12000, range 500-50000", () => {
-  const def = createDocsToolDefinition();
+  const def = createLibraryDocsToolDefinition();
   const mt = def.parameters.properties.max_tokens;
   assert.equal(mt.default, 12000);
   assert.equal(mt.minimum, 500);
@@ -161,33 +161,33 @@ test("docs max_tokens default is 12000, range 500-50000", () => {
 });
 
 test("docs libraryId has pattern constraint", () => {
-  const def = createDocsToolDefinition();
+  const def = createLibraryDocsToolDefinition();
   const lid = def.parameters.properties.libraryId;
   assert.ok(lid.pattern, "libraryId should have a pattern");
 });
 
 // === Registration wrapper tests ===
 
-test("registerLibsTool registers tool named libs", () => {
+test("registerLibrarySearchTool registers tool named library_search", () => {
   const tools = new Map();
   const pi = {
     registerTool(def) {
       tools.set(def.name, def);
     },
   };
-  registerLibsTool(pi);
-  assert.ok(tools.has("libs"), "libs tool should be registered");
+  registerLibrarySearchTool(pi);
+  assert.ok(tools.has("library_search"), "library_search tool should be registered");
 });
 
-test("registerDocsTool registers tool named docs", () => {
+test("registerLibraryDocsTool registers tool named library_docs", () => {
   const tools = new Map();
   const pi = {
     registerTool(def) {
       tools.set(def.name, def);
     },
   };
-  registerDocsTool(pi);
-  assert.ok(tools.has("docs"), "docs tool should be registered");
+  registerLibraryDocsTool(pi);
+  assert.ok(tools.has("library_docs"), "library_docs tool should be registered");
 });
 
 // === Missing key ===
@@ -199,7 +199,7 @@ test("libs fails before network when key missing", async () => {
   process.env.PI_CODING_AGENT_DIR = tempAgentDir;
   const mock = installMockFetch(() => searchOk([]));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     const text = result.content[0]?.text ?? "";
     assert.match(text, /CONTEXT7_API_KEY|Missing.*key/i);
@@ -220,7 +220,7 @@ test("docs fails before network when key missing", async () => {
   process.env.PI_CODING_AGENT_DIR = tempAgentDir;
   const mock = installMockFetch(() => contextOk());
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "hooks" });
     const text = result.content[0]?.text ?? "";
     assert.match(text, /CONTEXT7_API_KEY|Missing.*key/i);
@@ -240,7 +240,7 @@ test("libs propagates a pre-aborted signal", async () => {
   controller.abort();
   const mock = installMockFetch(() => searchOk([]));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     await assert.rejects(
       def.execute("test", { libraryName: "react", query: "hooks" }, controller.signal),
       (error) => error?.name === "AbortError",
@@ -258,7 +258,7 @@ test("docs propagates a pre-aborted signal", async () => {
   controller.abort();
   const mock = installMockFetch(() => contextOk());
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     await assert.rejects(
       def.execute("test", { libraryId: "/facebook/react", query: "hooks" }, controller.signal),
       (error) => error?.name === "AbortError",
@@ -294,7 +294,7 @@ test("libs normalizes valid candidates with all fields", async () => {
     ]),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.status, "ready");
     assert.equal(result.details.counts.received, 1);
@@ -335,7 +335,7 @@ test("libs skips candidates missing required id", async () => {
     ]),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.counts.received, 2);
     assert.equal(result.details.counts.invalid, 1);
@@ -357,7 +357,7 @@ test("libs skips candidates missing required title", async () => {
     ]),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.counts.invalid, 1);
     assert.equal(result.details.candidates.length, 1);
@@ -384,7 +384,7 @@ test("libs omits optional fields with wrong types", async () => {
     ]),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     const c = result.details.candidates[0];
     assert.equal(c.description, undefined, "wrong-type description omitted");
@@ -404,7 +404,7 @@ test("libs valid empty results is ready, not error", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => searchOk([]));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.status, "ready");
     assert.equal(result.details.candidates.length, 0);
@@ -422,7 +422,7 @@ test("libs caps oversized candidates and reports the omission", async () => {
     searchOk([{ id: "/large/library", title: "Large", description: "x".repeat(150_000) }]),
   );
   try {
-    const result = await createLibsToolDefinition().execute(
+    const result = await createLibrarySearchToolDefinition().execute(
       "test",
       { libraryName: "large", query: "usage" },
     );
@@ -445,7 +445,7 @@ test("libs reselects later candidates under high-cardinality aggregate pressure"
   ];
   const mock = installMockFetch(() => searchOk(candidates));
   try {
-    const result = await createLibsToolDefinition().execute(
+    const result = await createLibrarySearchToolDefinition().execute(
       "test",
       { libraryName: "many", query: "aggregate cap", limit: 10 },
     );
@@ -470,7 +470,7 @@ test("libs limit caps returned candidates", async () => {
   }));
   const mock = installMockFetch(() => searchOk(candidates));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks", limit: 3 });
     assert.equal(result.details.candidates.length, 3);
     assert.equal(result.details.counts.returned, 3);
@@ -493,7 +493,7 @@ test("libs preserves provider rank and reports limited candidates in content", a
     ]),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "valid", query: "usage", limit: 1 });
     assert.equal(result.details.candidates[0].rank, 2, "rank must refer to provider position before invalid records are skipped");
     assert.equal(result.details.counts.omitted, 1);
@@ -510,7 +510,7 @@ test("libs preserves searchFilterApplied flag", async () => {
     jsonResponse(200, { results: [{ id: "/x", title: "X" }], searchFilterApplied: true }),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.searchFilterApplied, true);
   } finally {
@@ -527,7 +527,7 @@ test("libs default limit is 5", async () => {
   }));
   const mock = installMockFetch(() => searchOk(candidates));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.candidates.length, 5, "default limit should be 5");
   } finally {
@@ -542,7 +542,7 @@ test("libs output Markdown includes rank, id, title", async () => {
     searchOk([{ id: "/facebook/react", title: "React", description: "UI lib" }]),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     const text = result.content[0].text;
     assert.match(text, /\[1\]/);
@@ -572,7 +572,7 @@ test("docs parses code snippets with valid codeList items", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.status, "ready");
     assert.equal(result.details.codeSnippets.length, 1);
@@ -604,7 +604,7 @@ test("docs preserves and renders every valid codeList item", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "variants" });
     assert.equal(result.details.codeSnippets[0].codeList.length, 2);
     assert.match(result.content[0].text, /const tsValue = 1;/);
@@ -623,7 +623,7 @@ test("docs parses info snippets", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.infoSnippets.length, 1);
     const s = result.details.infoSnippets[0];
@@ -644,7 +644,7 @@ test("docs skips code snippet with no valid codeList items", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.codeCounts.invalid, 1);
     assert.equal(result.details.codeSnippets.length, 1);
@@ -664,7 +664,7 @@ test("docs skips code snippet missing title", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.codeCounts.invalid, 1);
     assert.equal(result.details.codeSnippets.length, 1);
@@ -683,7 +683,7 @@ test("docs skips info snippet with no string content", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.infoCounts.invalid, 1);
     assert.equal(result.details.infoSnippets.length, 1);
@@ -697,7 +697,7 @@ test("docs valid empty arrays is ready", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk([], []));
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.status, "ready");
     assert.equal(result.details.codeSnippets.length, 0);
@@ -719,7 +719,7 @@ test("docs kind=code returns only code snippets", async () => {
     ),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState", kind: "code" });
     assert.equal(result.details.codeSnippets.length, 1);
     assert.equal(result.details.infoSnippets.length, 0);
@@ -740,7 +740,7 @@ test("docs kind=info returns only info snippets", async () => {
     ),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState", kind: "info" });
     assert.equal(result.details.codeSnippets.length, 0);
     assert.equal(result.details.infoSnippets.length, 1);
@@ -759,7 +759,7 @@ test("docs kind=all serializes code before info in Markdown", async () => {
     ),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     const text = result.content[0].text;
     const codeIdx = text.indexOf("Code Snippet");
@@ -784,7 +784,7 @@ test("docs respects max_tokens budget", async () => {
   }));
   const mock = installMockFetch(() => contextOk(snippets));
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", {
       libraryId: "/facebook/react",
       query: "useState",
@@ -810,7 +810,7 @@ test("docs over-budget snippet is skipped, later ones may fit", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", {
       libraryId: "/facebook/react",
       query: "useState",
@@ -833,7 +833,7 @@ test("docs missing token count uses ceil(length/4) estimate", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     const s = result.details.codeSnippets[0];
     // The serialized markdown for this snippet is longer than just the code,
@@ -855,7 +855,7 @@ test("docs uses serialized size when upstream token metadata is fractional or to
     }]),
   );
   try {
-    const result = await createDocsToolDefinition().execute(
+    const result = await createLibraryDocsToolDefinition().execute(
       "test",
       { libraryId: "/facebook/react", query: "tokens", max_tokens: 500 },
     );
@@ -882,7 +882,7 @@ test("docs skips a details-oversized snippet and retains a later small snippet",
     },
   ]));
   try {
-    const result = await createDocsToolDefinition().execute(
+    const result = await createLibraryDocsToolDefinition().execute(
       "test",
       { libraryId: "/facebook/react", query: "details cap", max_tokens: 50_000 },
     );
@@ -903,7 +903,7 @@ test("docs handles near-cap high-cardinality arrays without argument expansion",
   assert.ok(Buffer.byteLength(body) < 2 * 1024 * 1024, "fixture must remain below the raw cap");
   const mock = installMockFetch(() => jsonResponse(200, body));
   try {
-    const result = await createDocsToolDefinition().execute(
+    const result = await createLibraryDocsToolDefinition().execute(
       "test",
       { libraryId: "/facebook/react", query: "many records", kind: "info", max_tokens: 500 },
     );
@@ -929,7 +929,7 @@ test("docs preserves opaque rules when they fit", async () => {
     ),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.ok(result.details.rules, "rules should be preserved");
     assert.equal(result.details.rulesOmitted, false);
@@ -944,7 +944,7 @@ test("docs omits rules as whole unit when too large", async () => {
   const hugeRules = { text: "x".repeat(500000) };
   const mock = installMockFetch(() => contextOk([], [], hugeRules));
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", {
       libraryId: "/facebook/react",
       query: "useState",
@@ -966,7 +966,7 @@ test("docs applies the details cap to otherwise admissible rules", async () => {
     { text: "x".repeat(150_000) },
   ));
   try {
-    const result = await createDocsToolDefinition().execute(
+    const result = await createLibraryDocsToolDefinition().execute(
       "test",
       { libraryId: "/facebook/react", query: "rules", max_tokens: 50_000 },
     );
@@ -988,7 +988,7 @@ test("docs 202 returns pending status", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => pendingResponse("60"));
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.status, "pending");
     assert.equal(result.details.retryAfter, 60);
@@ -1003,7 +1003,7 @@ test("docs error returns error status", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => jsonResponse(404, { error: "not_found", message: "Library not found" }));
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.status, "error");
     assert.match(result.content[0].text, /404|not found|error/i);
@@ -1017,7 +1017,7 @@ test("libs 202 returns pending status", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => pendingResponse("30"));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.status, "pending");
     assert.equal(result.details.retryAfter, 30);
@@ -1032,14 +1032,14 @@ test("in-flight tool updates use pending status", async () => {
   const updates = [];
   const mock = installMockFetch((url) => url.includes("/libs/search") ? searchOk([]) : contextOk());
   try {
-    await createLibsToolDefinition().execute(
-      "libs",
+    await createLibrarySearchToolDefinition().execute(
+      "library_search",
       { libraryName: "react", query: "hooks" },
       undefined,
       (update) => updates.push(update),
     );
-    await createDocsToolDefinition().execute(
-      "docs",
+    await createLibraryDocsToolDefinition().execute(
+      "library_docs",
       { libraryId: "/facebook/react", query: "hooks" },
       undefined,
       (update) => updates.push(update),
@@ -1064,7 +1064,7 @@ test("docs Markdown uses code fences with language", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     const text = result.content[0].text;
     assert.match(text, /```python/);
@@ -1084,7 +1084,7 @@ test("docs handles code with unknown language safely", async () => {
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     const text = result.content[0].text;
     // Should still produce a fenced code block
@@ -1108,7 +1108,7 @@ test("docs chooses a fence longer than embedded backtick runs and sanitizes meta
     ]),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "fences" });
     const text = result.content[0].text;
     assert.match(text, /````\n(?:before\n```\nafter)\n````/);
@@ -1128,7 +1128,7 @@ test("docs rejects a non-array codeSnippets field", async () => {
     jsonResponse(200, { codeSnippets: "not an array", infoSnippets: [] }),
   );
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.status, "error");
     assert.match(result.details.error, /codeSnippets/i);
@@ -1144,7 +1144,7 @@ test("libs rejects a non-array results field", async () => {
     jsonResponse(200, { results: "not an array", searchFilterApplied: false }),
   );
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.status, "error");
     assert.match(result.details.error, /results/i);
@@ -1158,7 +1158,7 @@ test("libs rejects a missing results field", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => jsonResponse(200, { searchFilterApplied: false }));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     const result = await def.execute("test", { libraryName: "react", query: "hooks" });
     assert.equal(result.details.status, "error");
     assert.match(result.details.error, /results/i);
@@ -1174,7 +1174,7 @@ test("docs rejects a non-array infoSnippets field", async () => {
     jsonResponse(200, { codeSnippets: [], infoSnippets: "not an array" }),
   );
   try {
-    const result = await createDocsToolDefinition().execute(
+    const result = await createLibraryDocsToolDefinition().execute(
       "test",
       { libraryId: "/facebook/react", query: "useState" },
     );
@@ -1190,12 +1190,12 @@ test("libs and docs reject non-object top-level responses", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => jsonResponse(200, null));
   try {
-    const libs = await createLibsToolDefinition().execute(
-      "libs",
+    const libs = await createLibrarySearchToolDefinition().execute(
+      "library_search",
       { libraryName: "react", query: "hooks" },
     );
-    const docs = await createDocsToolDefinition().execute(
-      "docs",
+    const docs = await createLibraryDocsToolDefinition().execute(
+      "library_docs",
       { libraryId: "/facebook/react", query: "hooks" },
     );
     assert.equal(libs.details.status, "error");
@@ -1211,8 +1211,8 @@ test("libs and docs reject non-object top-level responses", async () => {
 // === Presentation tests ===
 
 for (const [name, createDefinition] of [
-  ["libs", createLibsToolDefinition],
-  ["docs", createDocsToolDefinition],
+  ["library_search", createLibrarySearchToolDefinition],
+  ["library_docs", createLibraryDocsToolDefinition],
 ]) {
   test(`${name} definitions remain headless before parent decoration`, () => {
     const definition = createDefinition();
@@ -1228,7 +1228,7 @@ test("libs fast mode sends fast=true", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => searchOk([]));
   try {
-    const def = createLibsToolDefinition();
+    const def = createLibrarySearchToolDefinition();
     await def.execute("test", { libraryName: "react", query: "hooks", mode: "fast" });
     const url = new URL(mock.calls[0].url);
     assert.equal(url.searchParams.get("fast"), "true");
@@ -1242,12 +1242,12 @@ test("libs and docs details record effective mode and local limits", async () =>
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch((url) => url.includes("/libs/search") ? searchOk([]) : contextOk());
   try {
-    const libs = await createLibsToolDefinition().execute(
-      "libs",
+    const libs = await createLibrarySearchToolDefinition().execute(
+      "library_search",
       { libraryName: "react", query: "hooks", mode: "fast", limit: 3 },
     );
-    const docs = await createDocsToolDefinition().execute(
-      "docs",
+    const docs = await createLibraryDocsToolDefinition().execute(
+      "library_docs",
       { libraryId: "/facebook/react", query: "hooks", mode: "fast", max_tokens: 900 },
     );
     assert.equal(libs.details.mode, "fast");
@@ -1264,7 +1264,7 @@ test("docs fast mode sends fast=true", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk());
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     await def.execute("test", { libraryId: "/facebook/react", query: "useState", mode: "fast" });
     const url = new URL(mock.calls[0].url);
     assert.equal(url.searchParams.get("fast"), "true");
@@ -1278,7 +1278,7 @@ test("docs always sends type=json", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk());
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     const url = new URL(mock.calls[0].url);
     assert.equal(url.searchParams.get("type"), "json");
@@ -1292,7 +1292,7 @@ test("docs max_tokens is not sent upstream", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk());
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     await def.execute("test", { libraryId: "/facebook/react", query: "useState", max_tokens: 5000 });
     const url = new URL(mock.calls[0].url);
     assert.equal(url.searchParams.has("max_tokens"), false, "max_tokens should not be sent upstream");
@@ -1317,7 +1317,7 @@ test("docs details include redirect info when redirected", async () => {
     return contextOk();
   });
   try {
-    const def = createDocsToolDefinition();
+    const def = createLibraryDocsToolDefinition();
     const result = await def.execute("test", { libraryId: "/facebook/react", query: "useState" });
     assert.equal(result.details.redirected, true);
     assert.equal(result.details.finalLibraryId, "/facebook/react-canonical");

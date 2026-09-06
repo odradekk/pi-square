@@ -54,7 +54,7 @@ priority: 0
 triggers: [mutation, completion]
 delivery: steer
 completionGate: false
-tools: [read, grep, find, ls, pdf_search, search]
+tools: [read, grep, find, ls, web_search, web_fetch]
 ---
 
 Review structural consequences of the changes being made.
@@ -81,7 +81,7 @@ priority: 0
 triggers: [completion]
 delivery: wake
 completionGate: true
-tools: [read, grep, find, ls, pdf_search]
+tools: [read, grep, find, ls, web_search]
 ---
 
 Check the finished answer before the task is considered done.
@@ -108,7 +108,7 @@ priority: 0
 triggers: [tool_turn, completion]
 delivery: steer
 completionGate: false
-tools: [read, grep, find, ls, pdf_search, search]
+tools: [read, grep, find, ls, web_search, web_fetch]
 ---
 
 Ground the current work in this repository's own evidence.

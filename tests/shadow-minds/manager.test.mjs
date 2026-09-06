@@ -518,7 +518,7 @@ function makeRuntimeService(initial) {
   withoutRun.handleInput("\r");
   const evidenceLines = render(withoutRun);
   assert.ok(evidenceLines.some((line) => line.includes("Run manually")), "evidence-tool definitions offer a manual run too");
-  assert.ok(evidenceLines.some((line) => line.includes("read, grep, find, ls, pdf_search, search + submit")), "the evidence label names the declared catalog tools");
+  assert.ok(evidenceLines.some((line) => line.includes("read, grep, find, ls, web_search, web_fetch + submit")), "the evidence label names the declared catalog tools");
 }
 
 {

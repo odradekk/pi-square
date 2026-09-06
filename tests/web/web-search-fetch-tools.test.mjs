@@ -80,12 +80,12 @@ function readerOk({ title = "", url, finalUrl, description = "", content, usage,
 // Load tool modules
 // ---------------------------------------------------------------------------
 
-const searchModule = load(join(packageRoot, "src", "web", "tools", "search.ts"));
-const fetchModule = load(join(packageRoot, "src", "web", "tools", "fetch.ts"));
+const webSearchModule = load(join(packageRoot, "src", "web", "tools", "web-search.ts"));
+const webFetchModule = load(join(packageRoot, "src", "web", "tools", "web-fetch.ts"));
 const renderModule = load(join(packageRoot, "src", "web", "shared", "render.ts"));
 
-const { createSearchToolDefinition, registerSearchTool } = searchModule;
-const { createFetchToolDefinition, registerFetchTool } = fetchModule;
+const { createWebSearchToolDefinition, registerWebSearchTool } = webSearchModule;
+const { createWebFetchToolDefinition, registerWebFetchTool } = webFetchModule;
 const { formatMarkdownLink, formatMarkdownUrl, sanitizeMarkdownForTerminal } = renderModule;
 
 // ---------------------------------------------------------------------------
@@ -195,16 +195,16 @@ test("Markdown display sanitization removes terminal controls and neutralizes so
   assert.ok(safe.includes("```md\n[code](javascript:literal)\n```"), "fenced code stays exact");
 });
 
-test("registerSearchTool registers tool named search", () => {
+test("registerWebSearchTool registers tool named web_search", () => {
   const tools = new Map();
-  registerSearchTool({ registerTool: (def) => tools.set(def.name, def) });
-  assert.ok(tools.has("search"));
+  registerWebSearchTool({ registerTool: (def) => tools.set(def.name, def) });
+  assert.ok(tools.has("web_search"));
 });
 
-test("registerFetchTool registers tool named fetch", () => {
+test("registerWebFetchTool registers tool named web_fetch", () => {
   const tools = new Map();
-  registerFetchTool({ registerTool: (def) => tools.set(def.name, def) });
-  assert.ok(tools.has("fetch"));
+  registerWebFetchTool({ registerTool: (def) => tools.set(def.name, def) });
+  assert.ok(tools.has("web_fetch"));
 });
 
 // === Search: content regression + details ===
@@ -219,7 +219,7 @@ test(
       ]),
     );
     try {
-      const result = await createSearchToolDefinition().execute("t", { queries: ["alpha"] });
+      const result = await createWebSearchToolDefinition().execute("t", { queries: ["alpha"] });
       const expected = [
         "[1] Alpha Result",
         "    https://alpha.example/x",
@@ -254,7 +254,7 @@ test(
       searchOk([{ title: "Shared", url: "https://shared.example", description: "d" }]),
     );
     try {
-      const result = await createSearchToolDefinition().execute("t", {
+      const result = await createWebSearchToolDefinition().execute("t", {
         queries: ["a", "b"],
       });
       assert.equal(result.details.totalBeforeDedup, 2);
@@ -274,7 +274,7 @@ test("search fails before network when key missing", async () => {
   process.env.PI_CODING_AGENT_DIR = tempAgentDir;
   const mock = installMockFetch(() => searchOk([]));
   try {
-    const result = await createSearchToolDefinition().execute("t", { queries: ["x"] });
+    const result = await createWebSearchToolDefinition().execute("t", { queries: ["x"] });
     assert.match(result.content[0].text, /JINA_API_KEY|Missing.*key/i);
     assert.equal(result.details.error, "Missing JINA_API_KEY");
     assert.equal(mock.calls.length, 0);
@@ -295,7 +295,7 @@ test(
       i === 0 ? jsonResponse(500, { error: "down" }) : searchOk([]),
     );
     try {
-      const result = await createSearchToolDefinition().execute("t", { queries: ["bad", "empty"] });
+      const result = await createWebSearchToolDefinition().execute("t", { queries: ["bad", "empty"] });
       assert.equal(result.details.results.length, 0);
       assert.equal(result.details.failedQueries.length, 1);
       assert.equal(result.details.failedQueries[0].query, "bad");
@@ -313,7 +313,7 @@ test(
       readerOk({ title: "Example Page", url: "https://example.com/page", description: "An example page.", content: LONG_BODY }),
     );
     try {
-      const result = await createFetchToolDefinition().execute("t", { urls: ["https://example.com/page"] });
+      const result = await createWebFetchToolDefinition().execute("t", { urls: ["https://example.com/page"] });
       const expected =
         "## Example Page\nURL: https://example.com/page\nDescription: An example page.\n\n" + LONG_BODY;
       assert.equal(result.content[0].text, expected);
@@ -340,7 +340,7 @@ test(
       return readerOk({ title: "Second", url: "https://second.example", content: LONG_BODY_B });
     });
     try {
-      const result = await createFetchToolDefinition().execute("t", {
+      const result = await createWebFetchToolDefinition().execute("t", {
         urls: ["https://first.example", "https://second.example"],
       });
       const text = result.content[0].text;
@@ -375,7 +375,7 @@ test(
       }),
     );
     try {
-      const result = await createFetchToolDefinition().execute("t", {
+      const result = await createWebFetchToolDefinition().execute("t", {
         urls: ["https://example.com/rich"],
         include_links: true,
         describe_images: true,
@@ -408,7 +408,7 @@ test("fetch fails before network when key missing", async () => {
   process.env.PI_CODING_AGENT_DIR = tempAgentDir;
   const mock = installMockFetch(() => readerOk({ url: "https://x.example", content: LONG_BODY }));
   try {
-    const result = await createFetchToolDefinition().execute("t", { urls: ["https://x.example"] });
+    const result = await createWebFetchToolDefinition().execute("t", { urls: ["https://x.example"] });
     assert.match(result.content[0].text, /JINA_API_KEY|Missing.*key/i);
     assert.equal(result.details.error, "Missing JINA_API_KEY");
     assert.equal(mock.calls.length, 0);

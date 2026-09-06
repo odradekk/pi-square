@@ -52,7 +52,7 @@ function context(args, overrides = {}) {
 
 let runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true } });
 for (const [name, args, expected] of [
-  ["pdf_search", { path: "manual.pdf", query: "retention", limit: 5 }, /retention/],
+  ["web_search", { queries: ["retention"], limit: 5 }, /retention/],
   ["bash", { command: "printf 'hello'", timeout: 10 }, /printf 'hello'/],
   ["pwsh", { command: "Get-ChildItem", timeoutMs: 1000 }, /Get-ChildItem/],
   ["ssh", { operation: "secret_input", session: "session-1", prompt: "credential", data: "never-show" }, /secret_input/],
@@ -70,7 +70,18 @@ for (const [name, args, expected] of [
   assert.match(renderedCall, expected, `${name} call identity`);
   assert.doesNotMatch(renderedCall, /never-show/);
 
-  const result = { content: [{ type: "text", text: "model output\nsecond line" }], details: { status: "success", returned: 2 } };
+  const result = {
+    content: [{ type: "text", text: "model output\nsecond line" }],
+    details: name === "web_search"
+      ? {
+          queries: ["retention"], failedQueries: [], count: 2, phase: "done", totalAfterDedup: 2,
+          results: [
+            { title: "First", url: "https://example.test/1", description: "", provenance: "q1#1" },
+            { title: "Second", url: "https://example.test/2", description: "", provenance: "q1#2" },
+          ],
+        }
+      : { status: "success", returned: 2 },
+  };
   const collapsed = decorated.renderResult(result, { expanded: false, isPartial: false }, theme, context(args));
   const collapsedText = collapsed.render(80).join("\n");
   // C4 revision: collapsed entries are exactly one row for every tool except
@@ -80,10 +91,11 @@ for (const [name, args, expected] of [
   assert.doesNotMatch(collapsedText, /model output/, `${name} collapsed hides the payload`);
   const expanded = decorated.renderResult(result, { expanded: true, isPartial: false }, theme, context(args, { expanded: true }));
   const expandedText = expanded.render(80).join("\n");
-  if (name === "ssh") {
-    // The ssh call renders an expanded-only structured section; a visible
-    // structured section takes priority over the flat text preview, so the
-    // raw "model output" fallback does not render here.
+  if (name === "ssh" || name === "web_search") {
+    // The ssh call renders an expanded-only structured section and web tools
+    // render structured result records; a visible structured section takes
+    // priority over the flat text preview, so the raw "model output"
+    // fallback does not render here.
   } else {
     assert.match(expandedText, /model output/);
   }
@@ -98,18 +110,18 @@ for (const [name, args, expected] of [
   }
 }
 
-const dynamic = decorateInternalTool(definition("pdf_search"), () => runtime);
+const dynamic = decorateInternalTool(definition("delegate_subagent"), () => runtime);
 const result = { content: [{ type: "text", text: "dynamic preview" }], details: { returned: 1 } };
-assert.match(dynamic.renderResult(result, { expanded: true, isPartial: false }, theme, context({ path: "manual.pdf", query: "x" }, { expanded: true })).render(80).join("\n"), /dynamic preview/, "expanded shows the preview content");
-assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ path: "manual.pdf", query: "x" })).render(80).join("\n"), /dynamic preview/, "collapsed hides the preview payload");
+assert.match(dynamic.renderResult(result, { expanded: true, isPartial: false }, theme, context({ agent: "explorer", task: "x" }, { expanded: true })).render(80).join("\n"), /dynamic preview/, "expanded shows the preview content");
+assert.doesNotMatch(dynamic.renderResult(result, { expanded: false, isPartial: false }, theme, context({ agent: "explorer", task: "x" })).render(80).join("\n"), /dynamic preview/, "collapsed hides the preview payload");
 runtime.dispose();
 const summaryConfig = structuredClone(DEFAULT_CONFIG);
 summaryConfig.display = {
   motion: "off",
-  agent: { path: "/agent/config/pi-square.json", config: { tools: { pdf_search: { resultMode: "summary" } } } },
+  agent: { path: "/agent/config/pi-square.json", config: { tools: { web_search: { resultMode: "summary" } } } },
 };
 
-for (const child of createChildTools(["pdf_search", "docs"]).definitions) {
+for (const child of createChildTools(["web_search", "library_docs"]).definitions) {
   assert.notEqual(child.renderShell, "self", `${child.name} child construction stays independent of parent runtime`);
 }
 runtime.dispose();

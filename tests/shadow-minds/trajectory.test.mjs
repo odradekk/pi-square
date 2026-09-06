@@ -80,10 +80,10 @@ function assistantCall(parts) {
 {
   // Arrays render joined and bounded; long values are clipped.
   const trajectory = buildTrajectory([
-    assistantCall([toolCall("c2", "search", { queries: ["alpha", "beta"] })]),
-    toolResult("c2", "search", [{ type: "text", text: "ok" }]),
+    assistantCall([toolCall("c2", "web_search", { queries: ["alpha", "beta"] })]),
+    toolResult("c2", "web_search", [{ type: "text", text: "ok" }]),
   ]);
-  assert.match(trajectory.text, /tool search ok · queries=alpha, beta · 2 chars/);
+  assert.match(trajectory.text, /tool web_search ok · queries=alpha, beta · 2 chars/);
 }
 
 // ── Mandatory bounded credential cleaning on known fields ───────────
@@ -99,8 +99,8 @@ function assistantCall(parts) {
 
 {
   const trajectory = buildTrajectory([
-    assistantCall([toolCall("c4", "fetch", { urls: ["https://x/api?api_key=sk-abc123"] })]),
-    toolResult("c4", "fetch", [{ type: "text", text: "page" }]),
+    assistantCall([toolCall("c4", "web_fetch", { urls: ["https://x/api?api_key=sk-abc123"] })]),
+    toolResult("c4", "web_fetch", [{ type: "text", text: "page" }]),
   ]);
   assert.ok(!trajectory.text.includes("sk-abc123"), "query secrets are redacted");
   assert.match(trajectory.text, /api_key=\[REDACTED\]/);

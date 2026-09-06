@@ -41,8 +41,8 @@ function policyFor(result, toolName) {
   assert.equal(result.motionProvenance, "default");
   // Every catalog tool resolves to the default policy with "default" provenance
   assert.equal(result.policies.size, DISPLAY_CATALOG.length);
-  const pdf = policyFor(result, "pdf_search");
-  assert.deepEqual({ ...pdf.policy }, { ...DEFAULT_DISPLAY_POLICY });
+  const grep = policyFor(result, "grep");
+  assert.deepEqual({ ...grep.policy }, { ...DEFAULT_DISPLAY_POLICY });
   for (const [, value] of result.policies) {
     for (const prov of Object.values(value.provenance)) {
       assert.equal(prov, "default");
@@ -54,11 +54,11 @@ function policyFor(result, toolName) {
 
 {
   const result = resolve(makeConfig({}));
-  const pdf = policyFor(result, "pdf_search");
+  const grep = policyFor(result, "grep");
   assert.ok(Object.isFrozen(result), "resolved display must be frozen");
-  assert.ok(Object.isFrozen(pdf), "effective policy wrapper must be frozen");
-  assert.ok(Object.isFrozen(pdf.policy), "effective policy must be frozen");
-  assert.ok(Object.isFrozen(pdf.provenance), "provenance must be frozen");
+  assert.ok(Object.isFrozen(grep), "effective policy wrapper must be frozen");
+  assert.ok(Object.isFrozen(grep.policy), "effective policy must be frozen");
+  assert.ok(Object.isFrozen(grep.provenance), "provenance must be frozen");
 }
 
 // ── Agent defaults overlay ───────────────────────────────────────────
@@ -67,12 +67,12 @@ function policyFor(result, toolName) {
   const result = resolve(makeConfig({
     agent: { config: { defaults: { previewLines: 20 } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 20);
-  assert.equal(pdf.provenance.previewLines, "/agent/config/pi-square.json");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 20);
+  assert.equal(grep.provenance.previewLines, "/agent/config/pi-square.json");
   // Fields not overridden keep default provenance
-  assert.equal(pdf.provenance.resultMode, "default");
-  assert.equal(pdf.policy.resultMode, DEFAULT_DISPLAY_POLICY.resultMode);
+  assert.equal(grep.provenance.resultMode, "default");
+  assert.equal(grep.policy.resultMode, DEFAULT_DISPLAY_POLICY.resultMode);
 }
 
 // ── Agent family overlay ─────────────────────────────────────────────
@@ -81,9 +81,9 @@ function policyFor(result, toolName) {
   const result = resolve(makeConfig({
     agent: { config: { families: { search: { previewLines: 15 } } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 15, "family overlay applies to family member");
-  assert.equal(pdf.provenance.previewLines, "/agent/config/pi-square.json");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 15, "family overlay applies to family member");
+  assert.equal(grep.provenance.previewLines, "/agent/config/pi-square.json");
   // Non-search tools keep default
   const bash = policyFor(result, "bash");
   assert.equal(bash.policy.previewLines, DEFAULT_DISPLAY_POLICY.previewLines);
@@ -94,11 +94,11 @@ function policyFor(result, toolName) {
 
 {
   const result = resolve(makeConfig({
-    agent: { config: { tools: { pdf_search: { previewLines: 12 } } } },
+    agent: { config: { tools: { grep: { previewLines: 12 } } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 12);
-  assert.equal(pdf.provenance.previewLines, "/agent/config/pi-square.json");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 12);
+  assert.equal(grep.provenance.previewLines, "/agent/config/pi-square.json");
   // Other tools unaffected
   const ssh = policyFor(result, "ssh");
   assert.equal(ssh.provenance.previewLines, "default");
@@ -112,12 +112,12 @@ function policyFor(result, toolName) {
       config: {
         defaults: { previewLines: 10 },
         families: { search: { previewLines: 11 } },
-        tools: { pdf_search: { previewLines: 12 } },
+        tools: { grep: { previewLines: 12 } },
       },
     },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 12, "agent tool wins over family and defaults");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 12, "agent tool wins over family and defaults");
 
 }
 
@@ -128,44 +128,44 @@ function policyFor(result, toolName) {
     agent: { config: { defaults: { previewLines: 10 } } },
     project: { config: { defaults: { previewLines: 20 } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 20, "project defaults override agent defaults");
-  assert.equal(pdf.provenance.previewLines, "/project/.pi/config/pi-square.json");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 20, "project defaults override agent defaults");
+  assert.equal(grep.provenance.previewLines, "/project/.pi/config/pi-square.json");
 }
 
 // ── Cross-axis: project defaults > agent tool ───────────────────────
 
 {
   const result = resolve(makeConfig({
-    agent: { config: { tools: { pdf_search: { previewLines: 99 } } } },
+    agent: { config: { tools: { grep: { previewLines: 99 } } } },
     project: { config: { defaults: { previewLines: 42 } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 42, "project defaults must win over agent tool specificity");
-  assert.equal(pdf.provenance.previewLines, "/project/.pi/config/pi-square.json");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 42, "project defaults must win over agent tool specificity");
+  assert.equal(grep.provenance.previewLines, "/project/.pi/config/pi-square.json");
 }
 
 // ── Cross-axis: project tool > project defaults > agent tool ────────
 
 {
   const result = resolve(makeConfig({
-    agent: { config: { tools: { pdf_search: { previewLines: 99 } } } },
-    project: { config: { defaults: { previewLines: 42 }, tools: { pdf_search: { previewLines: 7 } } } },
+    agent: { config: { tools: { grep: { previewLines: 99 } } } },
+    project: { config: { defaults: { previewLines: 42 }, tools: { grep: { previewLines: 7 } } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 7, "project tool wins over everything");
-  assert.equal(pdf.provenance.previewLines, "/project/.pi/config/pi-square.json");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 7, "project tool wins over everything");
+  assert.equal(grep.provenance.previewLines, "/project/.pi/config/pi-square.json");
 }
 
 // ── Cross-axis: project family > agent tool ─────────────────────────
 
 {
   const result = resolve(makeConfig({
-    agent: { config: { tools: { pdf_search: { previewLines: 99 } } } },
+    agent: { config: { tools: { grep: { previewLines: 99 } } } },
     project: { config: { families: { search: { previewLines: 33 } } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 33, "project family wins over agent tool");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 33, "project family wins over agent tool");
 }
 
 // ── Per-field independence ───────────────────────────────────────────
@@ -175,11 +175,11 @@ function policyFor(result, toolName) {
     agent: { config: { defaults: { previewLines: 10 } } },
     project: { config: { defaults: { wordWrap: false } } },
   }));
-  const pdf = policyFor(result, "pdf_search");
-  assert.equal(pdf.policy.previewLines, 10, "agent previewLines kept");
-  assert.equal(pdf.provenance.previewLines, "/agent/config/pi-square.json");
-  assert.equal(pdf.policy.wordWrap, false, "project wordWrap applied");
-  assert.equal(pdf.provenance.wordWrap, "/project/.pi/config/pi-square.json");
+  const grep = policyFor(result, "grep");
+  assert.equal(grep.policy.previewLines, 10, "agent previewLines kept");
+  assert.equal(grep.provenance.previewLines, "/agent/config/pi-square.json");
+  assert.equal(grep.policy.wordWrap, false, "project wordWrap applied");
+  assert.equal(grep.provenance.wordWrap, "/project/.pi/config/pi-square.json");
 }
 
 // ── Motion resolution ────────────────────────────────────────────────
@@ -231,14 +231,14 @@ try {
       motion: "reduced",
       defaults: { previewLines: 10 },
       families: { search: { resultMode: "preview" } },
-      tools: { pdf_search: { wordWrap: false } },
+      tools: { grep: { wordWrap: false } },
     },
   }));
   writeFileSync(join(projectDir, ".pi", "config", "pi-square.json"), JSON.stringify({
     version: 2,
     display: {
       defaults: { showDuration: false },
-      tools: { pdf_search: { previewLines: 5 } },
+      tools: { grep: { previewLines: 5 } },
     },
   }));
 
@@ -247,16 +247,16 @@ try {
   assert.equal(loaded.config.display.motion, "reduced", "agent motion applied (no project motion)");
 
   const resolved = resolveDisplayPolicies(loaded.config);
-  const pdf = policyFor(resolved, "pdf_search");
+  const grep = policyFor(resolved, "grep");
   // Agent defaults previewLines=10, agent tool wordWrap=false, project tool previewLines=5
-  assert.equal(pdf.policy.previewLines, 5, "project tool overrides agent defaults");
-  assert.equal(pdf.policy.wordWrap, false, "agent tool wordWrap kept (no project override)");
-  assert.equal(pdf.policy.showDuration, false, "project defaults showDuration applied");
-  assert.equal(pdf.policy.resultMode, "preview", "agent family resultMode applied to search");
-  assert.equal(pdf.provenance.previewLines, join(projectDir, ".pi", "config", "pi-square.json"));
-  assert.equal(pdf.provenance.wordWrap, join(agentDir, "config", "pi-square.json"));
-  assert.equal(pdf.provenance.showDuration, join(projectDir, ".pi", "config", "pi-square.json"));
-  assert.equal(pdf.provenance.resultMode, join(agentDir, "config", "pi-square.json"));
+  assert.equal(grep.policy.previewLines, 5, "project tool overrides agent defaults");
+  assert.equal(grep.policy.wordWrap, false, "agent tool wordWrap kept (no project override)");
+  assert.equal(grep.policy.showDuration, false, "project defaults showDuration applied");
+  assert.equal(grep.policy.resultMode, "preview", "agent family resultMode applied to search");
+  assert.equal(grep.provenance.previewLines, join(projectDir, ".pi", "config", "pi-square.json"));
+  assert.equal(grep.provenance.wordWrap, join(agentDir, "config", "pi-square.json"));
+  assert.equal(grep.provenance.showDuration, join(projectDir, ".pi", "config", "pi-square.json"));
+  assert.equal(grep.provenance.resultMode, join(agentDir, "config", "pi-square.json"));
 
   // Non-search tool does not get the family overlay
   const bash = policyFor(resolved, "bash");

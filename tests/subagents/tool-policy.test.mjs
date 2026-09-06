@@ -48,12 +48,12 @@ const matrix = {
   },
   "crawler.yaml": {
     tools: ["read"],
-    extensionTools: ["search", "fetch", "libs", "docs"],
+    extensionTools: ["web_search", "web_fetch", "library_search", "library_docs"],
     skills: ["none"],
   },
   "generalist.yaml": {
     tools: ["read", "write", "edit", "shell", "ls", "grep", "find"],
-    extensionTools: ["search", "fetch", "libs", "docs"],
+    extensionTools: ["web_search", "web_fetch", "library_search", "library_docs"],
     skills: [],
   },
 };
@@ -70,13 +70,13 @@ test("bundled role tool and skill capabilities match the least-privilege matrix"
 test("none disables every built-in while preserving explicit extension tools", () => {
   const resolved = resolveSubagentTools({
     tools: ["none"],
-    extensionTools: ["docs"],
+    extensionTools: ["library_docs"],
   }, "linux");
   assert.deepEqual(resolved.errors, []);
   assert.deepEqual(resolved.builtInTools, []);
-  assert.deepEqual(resolved.extensionTools, ["docs"]);
+  assert.deepEqual(resolved.extensionTools, ["library_docs"]);
   assert.deepEqual(resolved.persistedTools, ["none"]);
-  assert.deepEqual(resolved.persistedExtensionTools, ["docs"]);
+  assert.deepEqual(resolved.persistedExtensionTools, ["library_docs"]);
 });
 
 test("none is case-insensitive, mutually exclusive, and fails closed", () => {
@@ -126,7 +126,7 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
     unknownBuiltIn.errors.some((error) => error.includes("scheme")),
     "an unknown built-in name must be reported",
   );
-  for (const retired of ["sg", "scheme_eval", "time", "subagent_delegate", "docs_search"]) {
+  for (const retired of ["sg", "scheme_eval", "time", "subagent_delegate", "docs_search", "pdf_search", "parse", "search", "fetch", "libs", "docs"]) {
     const resolved = resolveSubagentTools({ extensionTools: [retired] }, "linux");
     const child = createChildTools(resolved.extensionTools, "linux");
     assert.ok(
@@ -137,7 +137,7 @@ test("the bundled-definition guard rejects retired and unknown tool names", () =
 });
 
 test("child tool construction accepts a child working directory without changing tools", () => {
-  const names = ["pdf_search", "docs"];
+  const names = ["web_search", "library_docs"];
   const plain = createChildTools(names);
   const withCwd = createChildTools(names, undefined, "/workspace/child");
   assert.deepEqual(withCwd.errors, []);

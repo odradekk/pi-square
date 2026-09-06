@@ -556,10 +556,10 @@ function baseRequest(overrides = {}) {
 {
   const fake = makeFake();
   const runtime = createShadowRuntime({ config: () => config(), deps: fake.deps });
-  const evidenceTool = { name: "pdf_search", parameters: { type: "object" }, execute: async () => ({}) };
+  const evidenceTool = { name: "web_search", parameters: { type: "object" }, execute: async () => ({}) };
   const run = runtime.startManualRun(baseRequest({
     envelope: {
-      toolNames: ["read", "pdf_search"],
+      toolNames: ["read", "web_search"],
       customTools: [evidenceTool],
       schemaHash: "0123456789abcdef",
       warnings: ["Tool 'bash' is not in the Shadow-safe catalog and was excluded."],
@@ -569,11 +569,11 @@ function baseRequest(overrides = {}) {
   await run.done;
   const created = fake.created[0];
   // Canonical evidence names first, submit tool always last.
-  assert.deepEqual(created.tools, ["read", "pdf_search", SUBMIT_SHADOW_RESULT_TOOL]);
+  assert.deepEqual(created.tools, ["read", "web_search", SUBMIT_SHADOW_RESULT_TOOL]);
   // Extension definitions precede the per-run submit tool.
-  assert.deepEqual(created.customTools.map((tool) => tool.name), ["pdf_search", SUBMIT_SHADOW_RESULT_TOOL]);
+  assert.deepEqual(created.customTools.map((tool) => tool.name), ["web_search", SUBMIT_SHADOW_RESULT_TOOL]);
   const view = runtime.snapshot().runs[0];
-  assert.deepEqual(view.toolNames, ["read", "pdf_search"]);
+  assert.deepEqual(view.toolNames, ["read", "web_search"]);
   assert.equal(view.cohorts.toolSchema, "0123456789abcdef");
   assert.deepEqual(view.toolWarnings, ["Tool 'bash' is not in the Shadow-safe catalog and was excluded."]);
   assert.match(view.cohorts.system, /^[0-9a-f]{16}$/);

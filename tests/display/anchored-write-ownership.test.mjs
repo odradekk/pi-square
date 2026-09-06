@@ -21,7 +21,7 @@ const EXTERNAL = { path: "/other/extension.ts", source: "other", scope: "user", 
 const BUILTINS = ["read", "grep", "find", "ls", "edit", "write", "bash"];
 // Extension tools registered by pi-square; ownSource() identifies our source
 // through them.
-const PROBES = ["pdf_search", "delegate_subagent", "todo"];
+const PROBES = ["web_search", "delegate_subagent", "todo"];
 
 function createHarness(options = {}) {
   const events = new Map();

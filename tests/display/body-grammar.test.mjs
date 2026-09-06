@@ -224,30 +224,6 @@ function assertNoTrailingEmptyRow(lines, label) {
 
 {
   const runtime = newRuntime();
-  const pdf = decorateInternalTool(stub("pdf_search"), () => runtime);
-  const args = { path: "reports/q3.pdf", query: "needle" };
-  const result = {
-    content: [{ type: "text", text: "pdf_search returned=12" }],
-    details: {
-      status: "success",
-      returned: 12,
-      totalMatches: 60,
-      pageCount: 40,
-      hasMore: true,
-      matches: [{ page: 3, type: "exact", context: "needle occurrence", matchedText: "needle" }],
-    },
-  };
-  const component = pdf.renderResult(result, { expanded: false, isPartial: false }, plainTheme, makeCtx(args));
-  const rendered = renderLines(component);
-  assert.equal(rendered.length, 1, "collapsed pdf_search renders exactly one row");
-  assert.match(rendered[0], /60 matches on 12 of 40 pages/, "the inline summary states returned and total");
-  assert.match(rendered[0], /in q3\.pdf/, "the inline summary states the searched document");
-  assert.ok(!rendered[0].includes("query=needle"), "no key=value metadata row in the collapsed row");
-  assert.ok(!rendered[0].includes("needle occurrence"), "no match payload in the collapsed row");
-  runtime.dispose();
-}
-{
-  const runtime = newRuntime();
   const grep = decorateBuiltinDefinition(createGrepToolDefinition(TMP), TMP, runtime);
   const lines = Array.from({ length: 12 }, (_, i) => `${join(TMP, "src", `f${i}.ts`)}:${i + 1}:needle();`);
   const result = {
@@ -345,24 +321,6 @@ function assertNoTrailingEmptyRow(lines, label) {
   assert.ok(!body.some((line) => line.includes("ACTION")), "no ACTION section that restates the header");
   assert.ok(!body.some((line) => line.includes("STATUS")), "no STATUS section that restates the header");
   runtime.dispose();
-
-  const pdfRuntime = newRuntime();
-  const pdf = decorateInternalTool(stub("pdf_search"), () => pdfRuntime);
-  const pdfResult = {
-    content: [{ type: "text", text: "pdf_search returned=1" }],
-    details: {
-      status: "success",
-      returned: 1,
-      totalMatches: 1,
-      hasMore: false,
-      matches: [{ page: 3, type: "exact", context: "needle occurrence", matchedText: "needle" }],
-    },
-  };
-  const pdfComponent = pdf.renderResult(pdfResult, { expanded: true, isPartial: false }, plainTheme, makeCtx({ path: "reports/q3.pdf", query: "needle" }));
-  const pdfBody = bodyLines(pdfComponent);
-  assert.ok(!pdfBody.some((line) => line.includes("QUERY")), "no QUERY section that restates the header");
-  assert.ok(!pdfBody.some((line) => line.includes("SUMMARY")), "no SUMMARY section that restates the header");
-  pdfRuntime.dispose();
 }
 
 // --------------------------------------- truncation notice is never numbered
@@ -420,22 +378,23 @@ for (const [label, theme] of themes) {
 // -------------------------------------------------- model output unchanged
 {
   const runtime = newRuntime();
-  const pdf = decorateInternalTool(stub("pdf_search"), () => runtime);
+  const webSearch = decorateInternalTool(stub("web_search"), () => runtime);
   const result = {
-    content: [{ type: "text", text: "pdf_search returned=1" }],
+    content: [{ type: "text", text: "web_search returned=1" }],
     details: {
-      status: "success",
-      returned: 1,
-      totalMatches: 1,
-      hasMore: false,
-      matches: [{ page: 3, type: "exact", context: "needle occurrence", matchedText: "needle" }],
+      queries: ["needle"],
+      failedQueries: [],
+      count: 1,
+      phase: "done",
+      totalAfterDedup: 1,
+      results: [{ title: "Needle", url: "https://example.test/needle", description: "", provenance: "q1#1" }],
     },
   };
   const frozen = structuredClone(result);
   Object.freeze(result);
   Object.freeze(result.content);
   Object.freeze(result.details);
-  pdf.renderResult(result, { expanded: true, isPartial: false }, plainTheme, makeCtx({ path: "reports/q3.pdf", query: "needle" }));
+  webSearch.renderResult(result, { expanded: true, isPartial: false }, plainTheme, makeCtx({ queries: ["needle"] }));
   assert.deepEqual(result, frozen, "rendering never mutates the model-facing result");
   runtime.dispose();
 }

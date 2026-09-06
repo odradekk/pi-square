@@ -103,14 +103,12 @@ const EXPECTED_TITLES = {
   write: "Write",
   find: "Find",
   grep: "Grep",
-  pdf_search: "PDF search",
   bash: "Bash",
   pwsh: "PowerShell",
-  search: "Web search",
-  fetch: "Web fetch",
-  libs: "Library search",
-  docs: "Documentation",
-  parse: "PDF parse",
+  web_search: "Web search",
+  web_fetch: "Web fetch",
+  library_search: "Library search",
+  library_docs: "Library docs",
   ssh: "SSH",
   todo: "Tasks",
   ask: "Questions",
@@ -431,10 +429,10 @@ const EXPECTED_TITLES = {
 {
   const description = {
     version: 1,
-    tool: "pdf_search",
+    tool: "grep",
     family: "search",
     lifecycle: "completed",
-    title: "PDF search",
+    title: "Grep",
     target: "needle",
     rows: [{ text: "3 matches" }],
     truncated: true,
@@ -476,38 +474,6 @@ const EXPECTED_TITLES = {
   const resultHeader = stripVTControlCharacters(result.render(80)[0]);
   assert.doesNotMatch(resultHeader, /\[truncated\]/, "a bounded read result renders no truncated badge");
   runtime.dispose();
-
-  // The search-family boundedness signals stay badge-free too: paged
-  // pdf_search results with more matches available.
-  const stub = (name) => ({
-    name,
-    description: name,
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    execute() { return { content: [] }; },
-  });
-  const pdfRuntime = newRuntime();
-  const pdf = decorateInternalTool(stub("pdf_search"), () => pdfRuntime);
-  const pdfResult = pdf.renderResult(
-    {
-      content: [{ type: "text", text: "pdf_search returned=5" }],
-      details: {
-        status: "success",
-        totalMatches: 24,
-        returned: 5,
-        hasMore: true,
-        matches: [{ page: 3, type: "exact", context: "needle found here", matchedText: "needle" }],
-      },
-    },
-    { expanded: false, isPartial: false },
-    plainTheme,
-    makeCtx({ path: "reports/q3.pdf", query: "needle" }, {}, { executionStarted: true, isError: false }),
-  );
-  assert.doesNotMatch(
-    stripVTControlCharacters(pdfResult.render(80)[0]),
-    /\[truncated\]/,
-    "a paged pdf_search result renders no truncated badge",
-  );
-  pdfRuntime.dispose();
 }
 
 // ─── Boundedness: every new header shape at every width and theme ───
