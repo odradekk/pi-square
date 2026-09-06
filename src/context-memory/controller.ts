@@ -73,11 +73,15 @@ import {
  * continues the same run after the pending acknowledgement, `submit_memory`
  * deactivates for the rest of the due run so exactly one submission is
  * taken, and post-submission work stays uncompressed because it falls after
- * the kept boundary — bounded by whatever distance remains to Pi's native
- * compaction boundary, at most the fixed ten-percent gap the due point is
- * clamped below it and smaller whenever usage already passed the due point
- * before the run opened, with the existing native fallback owning a run
- * that exhausts that distance before settling. The compatibility gate
+ * the kept boundary — bounded by the distance that remains to Pi's native
+ * compaction boundary when the run opens. The due point itself always sits
+ * at least ten percent of the window below that boundary (farther below
+ * when the configured threshold is lower), but usage is only re-checked at
+ * session start, model selection, and agent settle, so the remaining
+ * distance at open can be smaller than that gap — down toward zero when
+ * usage already passed the due point — or far larger near a low configured
+ * threshold, and the existing native fallback owns a run that exhausts it
+ * before settling. The compatibility gate
  * and owned active-tool synchronization stay.
  */
 

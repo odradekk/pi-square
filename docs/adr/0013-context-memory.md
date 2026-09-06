@@ -44,11 +44,14 @@ run at the submission bought nothing (compaction is settle-driven) and cost
 real work whenever the model submitted early; one submission per due run is
 enforced by deactivating the tool at acceptance, because a block covers one
 continuous entry range and a second block in the same run has no defined
-boundary. Post-submission work is bounded by whatever distance remains to
-Pi's native compaction boundary — at most the fixed ten-percent gap the due
-point is clamped below it, and smaller when usage already passed the due
-point before the run opened — and a run that exhausts it falls back to the
-native path. The current main agent already understands the task,
+boundary. Post-submission work is bounded by the distance that remains to
+Pi's native compaction boundary when the run opens: the due point itself
+always sits at least ten percent of the window below that boundary (farther
+below when the configured threshold is lower), but usage is only re-checked
+at session start, model selection, and agent settle, so the remaining
+distance at open can be smaller than that gap when usage already passed the
+due point — and a run that exhausts it falls back to the native path. The
+current main agent already understands the task,
 so no background summarizer, observer, child session, or extra model call
 authors continuity. Nothing is persisted from the advisory — no counter,
 timer, or queued work — and the feature never wakes the agent on its own.

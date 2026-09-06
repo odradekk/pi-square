@@ -411,17 +411,19 @@ try {
   // ── #253: threshold/fallback interaction around the due-point safety clamp ──
 
   {
-    // The ten-percent figure is the gap between the due point and Pi's native
-    // compaction boundary — window 200000, reserve 16384, native boundary
-    // 183616, clamp 163616, configured threshold 5000 — not a margin
-    // guaranteed to remain when a due run opens. Usage is only re-checked at
-    // session start, model selection, and agent settle, so the previous run
-    // can settle with usage already far past the due point: at 170000 tokens
-    // the distance left below the native boundary is 13616, under the 20000
-    // ten-percent figure, and the due run still opens. Margin exhaustion is
-    // then owned by Pi's own threshold path — checked after a completed run
-    // and before the next prompt, never mid-run — through the same
-    // `session_before_compact` seam, never by refusing or cutting the run.
+    // The ten-percent figure is the minimum gap between the due point and
+    // Pi's native compaction boundary — window 200000, reserve 16384, native
+    // boundary 183616, clamp 163616 — and the configured threshold of 5000
+    // sits far below the clamp, widening the actual gap to 178616. It is not
+    // a margin guaranteed to remain when a due run opens: usage is only
+    // re-checked at session start, model selection, and agent settle, so the
+    // previous run can settle with usage already far past the due point. At
+    // 170000 tokens the remaining distance below the native boundary is
+    // 13616 — under the 20000 ten-percent figure — and the due run still
+    // opens. Exhausting the remaining distance is then owned by Pi's own
+    // threshold path — checked after a completed run and before the next
+    // prompt, never mid-run — through the same `session_before_compact`
+    // seam, never by refusing or cutting the run.
     assert.equal(
       effectiveDuePoint(DUE_CONFIG.compressionThreshold, DUE_CONFIG.memoryBudgetPercent, 200000, 16384),
       5000,
@@ -434,41 +436,41 @@ try {
     // the Memory compaction commits through the takeover, post-submission
     // work stays in the retained tail, and the later settle never compacts a
     // second time.
-    const margin = createHarness({ usage: { tokens: 170000, contextWindow: 200000 } });
-    const marginSession = mutableSession(preRunBranch());
-    const marginCtx = margin.baseContext(marginSession);
-    await margin.emit("session_start", { type: "session_start", reason: "startup" }, marginCtx);
-    await margin.emit("input", { type: "input", text: "ship it", source: "interactive" }, marginCtx);
-    assert.ok(margin.activeTools().includes("submit_memory"),
+    const lateThreshold = createHarness({ usage: { tokens: 170000, contextWindow: 200000 } });
+    const lateThresholdSession = mutableSession(preRunBranch());
+    const lateThresholdCtx = lateThreshold.baseContext(lateThresholdSession);
+    await lateThreshold.emit("session_start", { type: "session_start", reason: "startup" }, lateThresholdCtx);
+    await lateThreshold.emit("input", { type: "input", text: "ship it", source: "interactive" }, lateThresholdCtx);
+    assert.ok(lateThreshold.activeTools().includes("submit_memory"),
       "the due run opens even though usage settled far past the due point before it");
-    appendDueRun(marginSession, BLOCK);
-    await margin.emit("message_end", {
+    appendDueRun(lateThresholdSession, BLOCK);
+    await lateThreshold.emit("message_end", {
       type: "message_end",
       message: { role: "assistant", content: [
         { type: "text", text: "done — submitting the Memory block" },
         { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
       ] },
-    }, marginCtx);
-    const submitTool = margin.tools.get("submit_memory");
-    const acceptedLate = await submitTool.execute("call-submit", { markdown: BLOCK }, undefined, undefined, marginCtx);
+    }, lateThresholdCtx);
+    const submitTool = lateThreshold.tools.get("submit_memory");
+    const acceptedLate = await submitTool.execute("call-submit", { markdown: BLOCK }, undefined, undefined, lateThresholdCtx);
     assert.equal(acceptedLate.terminate, undefined, "the accepted submission keeps the run going");
-    marginSession.__entries.push(assistantEntry("e7", "e6", [
+    lateThresholdSession.__entries.push(assistantEntry("e7", "e6", [
       { type: "text", text: "kept working past the remaining distance" },
     ]));
-    const takeover = await margin.emit("session_before_compact", beforeCompactEvent(marginSession, 190000, "threshold"), marginCtx);
+    const takeover = await lateThreshold.emit("session_before_compact", beforeCompactEvent(lateThresholdSession, 190000, "threshold"), lateThresholdCtx);
     assert.ok(takeover && takeover.compaction, "the threshold check consumes the pending candidate");
     assert.equal(takeover.compaction.firstKeptEntryId, "e4",
       "the run's real-user request stays the kept boundary");
     assert.equal(takeover.cancel, undefined, "the takeover never cancels");
-    const compactEvent = appendCompactionEntry(marginSession, takeover.compaction, true);
-    await margin.emit("session_compact", compactEvent, marginCtx);
-    assert.equal(margin.registration.snapshot({ tokens: 900, contextWindow: 200000 }).state, "active",
+    const compactEvent = appendCompactionEntry(lateThresholdSession, takeover.compaction, true);
+    await lateThreshold.emit("session_compact", compactEvent, lateThresholdCtx);
+    assert.equal(lateThreshold.registration.snapshot({ tokens: 900, contextWindow: 200000 }).state, "active",
       "the threshold-consumed candidate commits as Memory");
-    await margin.emit("agent_settled", { type: "agent_settled" }, marginCtx);
-    assert.equal(margin.compactCalls.length, 0,
+    await lateThreshold.emit("agent_settled", { type: "agent_settled" }, lateThresholdCtx);
+    assert.equal(lateThreshold.compactCalls.length, 0,
       "a candidate the threshold path consumed never triggers a second settle compaction");
-    const marginProjection = buildSessionContext(marginSession.getBranch(), marginSession.getLeafId()).messages;
-    assert.ok(marginProjection.some((message) => Array.isArray(message.content)
+    const lateThresholdProjection = buildSessionContext(lateThresholdSession.getBranch(), lateThresholdSession.getLeafId()).messages;
+    assert.ok(lateThresholdProjection.some((message) => Array.isArray(message.content)
       && message.content.some((part) => part?.text === "kept working past the remaining distance")),
       "post-submission work past the remaining distance stays in the retained tail");
 
@@ -482,7 +484,7 @@ try {
     assert.ok(noSubmit.activeTools().includes("submit_memory"), "the due run opens");
     noSubmitSession.__entries.push(userEntry("e4", "e3", "ship it"));
     noSubmitSession.__entries.push(assistantEntry("e5", "e4", [
-      { type: "text", text: "still working past the margin without submitting" },
+      { type: "text", text: "still working past the remaining distance without submitting" },
     ]));
     const native = await noSubmit.emit("session_before_compact", beforeCompactEvent(noSubmitSession, 190000, "threshold"), noSubmitCtx);
     assert.equal(native, undefined, "no submission means no custom compaction is offered");

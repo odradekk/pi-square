@@ -155,21 +155,25 @@ anything and without blocking native compaction.
 
 **The bound on post-submission work.** Because the run continues after a
 submission, its further output competes with the distance left before Pi's
-own compaction boundary. The ten-percent figure is the gap between the due
-point and that boundary, not a margin guaranteed to remain when the run
-opens: the effective due point is capped at window minus Pi's configured
-compaction reserve minus ten percent of the window (the configured threshold
-can sit lower still), but usage is only re-checked at session start, model
-selection, and agent settle — so the previous run can end with usage already
-past the due point, and the due run then opens with whatever distance
-remains below the native boundary, which can be smaller than ten percent.
-A run whose post-submission work exhausts that distance simply meets Pi's
-own compaction check — the existing safe fallback: Pi 0.84.2 checks
-threshold compaction after a completed run and before the next prompt,
-never mid-run. With an accepted candidate pending, Pi's compaction seam
-consumes it and the Memory compaction commits as usual; with no candidate
-submitted, Pi native compaction proceeds and its foreign entry closes the
-due run. Nothing is truncated or force-settled to stay inside the margin.
+own compaction boundary. The ten-percent figure is the minimum of that
+gap: the effective due point is at most window minus Pi's configured
+compaction reserve minus ten percent of the window (a lower configured
+threshold widens the gap further), so the due point always sits at least
+ten percent of the window below the boundary. The distance that remains
+when the due run opens is a different quantity, and it is not guaranteed in
+either direction: usage is only re-checked at session start, model
+selection, and agent settle, so the previous run can end with usage already
+past the due point and the due run then opens with less than ten percent
+left below the boundary, while a run that opens near a low configured
+threshold starts with far more than ten percent left. A run whose
+post-submission work exhausts the remaining distance simply meets Pi's own
+compaction check — the existing safe fallback: Pi 0.84.2 checks threshold
+compaction after a completed run and before the next prompt, never
+mid-run. With an accepted candidate pending, Pi's compaction seam consumes
+it and the Memory compaction commits as usual; with no candidate submitted,
+Pi native compaction proceeds and its foreign entry closes the due run.
+Nothing is truncated or force-settled to stay inside the remaining
+distance.
 
 ## The scale endpoint
 
