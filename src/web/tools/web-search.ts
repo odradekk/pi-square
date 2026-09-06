@@ -63,13 +63,13 @@ function formatProvenance(matches: SearchResultMatch[], queries: string[]): stri
   return `[${parts.join(", ")}]`;
 }
 
-export function createSearchToolDefinition(): ToolDefinition<any, any> {
+export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
   return {
-    name: "search",
-    label: "Search",
+    name: "web_search",
+    label: "Web search",
     description:
       "Search the web using one to three queries via Jina. Returns ranked result summaries with titles, URLs, and descriptions, merged across queries using Reciprocal Rank Fusion. Partial query failure is reported per query.",
-    promptSnippet: "Use search to find information on the web. Accepts one to three queries and returns ranked summaries.",
+    promptSnippet: "Use web_search to find information on the web. Accepts one to three queries and returns ranked summaries.",
     parameters: Type.Object({
       queries: Type.Array(Type.String(), {
         minItems: 1,
@@ -304,6 +304,6 @@ export function createSearchToolDefinition(): ToolDefinition<any, any> {
   };
 }
 
-export function registerSearchTool(pi: ExtensionAPI): void {
-  pi.registerTool(createSearchToolDefinition());
+export function registerWebSearchTool(pi: ExtensionAPI): void {
+  pi.registerTool(createWebSearchToolDefinition());
 }

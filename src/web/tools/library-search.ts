@@ -111,13 +111,13 @@ function candidateMarkdown(candidate: LibsCandidateDetail): string {
 
 // === Tool definition factory ===
 
-export function createLibsToolDefinition() {
+export function createLibrarySearchToolDefinition() {
   return {
-    name: "libs" as const,
-    label: "Libraries",
+    name: "library_search" as const,
+    label: "Library search",
     description:
-      "Search library documentation via Context7. Provide a library name and a query describing what you need. Returns ranked library candidates with IDs, descriptions, and metadata. Use the returned ID with the docs tool to fetch specific documentation.",
-    promptSnippet: "Use libs to discover libraries and frameworks. Returns ranked candidates with Context7 IDs for use with docs.",
+      "Search library documentation via Context7. Provide a library name and a query describing what you need. Returns ranked library candidates with IDs, descriptions, and metadata. Pass the returned ID to library_docs to retrieve specific documentation.",
+    promptSnippet: "Use library_search to discover libraries and frameworks. Returns ranked candidates with Context7 IDs for use with library_docs.",
     parameters: Type.Object({
       libraryName: Type.String({ description: "Library or framework name (e.g. 'react', 'nextjs', 'fastapi')", minLength: 1, maxLength: 500 }),
       query: Type.String({ description: "What you want to find (e.g. 'how to create a context provider')", minLength: 1, maxLength: 500 }),
@@ -293,6 +293,6 @@ export function createLibsToolDefinition() {
   };
 }
 
-export function registerLibsTool(pi: ExtensionAPI): void {
-  pi.registerTool(createLibsToolDefinition());
+export function registerLibrarySearchTool(pi: ExtensionAPI): void {
+  pi.registerTool(createLibrarySearchToolDefinition());
 }

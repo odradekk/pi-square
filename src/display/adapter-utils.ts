@@ -98,11 +98,9 @@ export function formatBytes(bytes: number): string {
 export function composeInternalSummary(
   name: string,
   detailsValue: unknown,
-  argsValue: unknown,
   text: string,
 ): string | undefined {
   const details = asRecord(detailsValue);
-  const args = asRecord(argsValue);
   const counts = asRecord(details.counts);
   const page = asRecord(details.page);
 
@@ -138,23 +136,12 @@ export function composeInternalSummary(
     return parts.join(" · ");
   }
 
-  if (name === "pdf_search") {
-    const file = stringOf(args.path)?.split(/[\\/]/).pop();
-    const matches = numberOf(details.totalMatches) ?? numberOf(details.returned);
-    if (matches === undefined) return undefined;
-    if (matches === 0) return file ? `No matches in ${file}` : "No matches";
-    const pages = numberOf(details.returned);
-    const pageCount = numberOf(details.pageCount);
-    const head = `${matches} matches on ${pages ?? 0}${pageCount !== undefined ? ` of ${pageCount}` : ""} pages`;
-    return file ? `${head} in ${file}` : head;
-  }
-
   if (name === "pwsh") {
     const outputLines = text ? text.split("\n").length : 0;
     return outputLines === 0 ? "No output" : `${outputLines} lines`;
   }
 
-  if (name === "fetch") {
+  if (name === "web_fetch") {
     const succeeded = numberOf(details.succeeded);
     if (succeeded !== undefined) {
       const head = `${succeeded} ${succeeded === 1 ? "page" : "pages"} fetched`;

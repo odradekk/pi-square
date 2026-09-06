@@ -225,8 +225,8 @@ function renderMatches(block: Extract<DisplaySectionBlock, { kind: "matches" }>,
   const items = block.items.slice(0, MAX_SECTION_ITEMS);
   if (items.length === 0) return [];
 
-  // Flat mode: items without line numbers (pdf_search page matches) render
-  // as one row per item: `page N  context…`, with optional right-aligned meta.
+  // Flat mode: items without line numbers render as one row per item:
+  // `path  context…`, with optional right-aligned meta.
   const flatMode = items.every((item) => item.line === undefined);
   if (flatMode) {
     const lines: string[] = [];

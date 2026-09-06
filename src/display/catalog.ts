@@ -81,13 +81,6 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     child: true,
     description: "Search file contents using literal or regex patterns",
   },
-  {
-    name: "pdf_search",
-    family: "search",
-    parent: true,
-    child: true,
-    description: "Search local PDF documents for text",
-  },
   // ── execution ───────────────────────────────────────────────────
   {
     name: "bash",
@@ -107,39 +100,32 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   // ── remote ──────────────────────────────────────────────────────
   {
-    name: "search",
+    name: "web_search",
     family: "remote",
     parent: true,
     child: true,
     description: "Search the web using Jina",
   },
   {
-    name: "fetch",
+    name: "web_fetch",
     family: "remote",
     parent: true,
     child: true,
     description: "Retrieve readable content from URLs",
   },
   {
-    name: "libs",
+    name: "library_search",
     family: "remote",
     parent: true,
     child: true,
     description: "Search library documentation via Context7",
   },
   {
-    name: "docs",
+    name: "library_docs",
     family: "remote",
     parent: true,
     child: true,
     description: "Retrieve library documentation via Context7",
-  },
-  {
-    name: "parse",
-    family: "remote",
-    parent: true,
-    child: false,
-    description: "Parse selected local PDF pages through Firecrawl",
   },
   {
     name: "ssh",

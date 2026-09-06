@@ -96,13 +96,13 @@ async function fetchWithRetry(
   }
 }
 
-export function createFetchToolDefinition(): ToolDefinition<any, any> {
+export function createWebFetchToolDefinition(): ToolDefinition<any, any> {
   return {
-    name: "fetch",
-    label: "Fetch",
+    name: "web_fetch",
+    label: "Web fetch",
     description:
       "Retrieve readable or full Markdown for one to five URLs via Jina Reader. Preserves input order, permits partial URL failure, and retries once on transient failure or thin content. Returns page metadata, content, and optional link/image summaries.",
-    promptSnippet: "Use fetch to read the content of web pages (1-5 URLs). Returns Markdown with metadata.",
+    promptSnippet: "Use web_fetch to read the content of web pages (1-5 URLs). Returns Markdown with metadata.",
     parameters: Type.Object({
       urls: Type.Array(Type.String(), {
         minItems: 1,
@@ -329,8 +329,8 @@ export function createFetchToolDefinition(): ToolDefinition<any, any> {
   };
 }
 
-export function registerFetchTool(pi: ExtensionAPI): void {
-  pi.registerTool(createFetchToolDefinition());
+export function registerWebFetchTool(pi: ExtensionAPI): void {
+  pi.registerTool(createWebFetchToolDefinition());
 }
 
 

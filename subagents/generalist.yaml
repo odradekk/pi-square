@@ -52,9 +52,9 @@ tools:
   - find
 
 extensionTools:
-  - search
-  - fetch
-  - libs
-  - docs
+  - web_search
+  - web_fetch
+  - library_search
+  - library_docs
 
 visible: true

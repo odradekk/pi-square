@@ -153,13 +153,13 @@ interface SelectionUnit {
 
 // === Tool definition factory ===
 
-export function createDocsToolDefinition() {
+export function createLibraryDocsToolDefinition() {
   return {
-    name: "docs" as const,
-    label: "Docs",
+    name: "library_docs" as const,
+    label: "Library docs",
     description:
       "Retrieve documentation for a specific library via Context7 using an exact library ID. Provide the Context7 library ID (e.g. /facebook/react) and a query. Returns code snippets and documentation text filtered by kind and bounded by a token budget.",
-    promptSnippet: "Use docs to fetch library documentation by exact Context7 ID. Pair with libs to discover the ID first.",
+    promptSnippet: "Use library_docs to fetch library documentation by exact Context7 ID. Pair with library_search to discover the ID first.",
     parameters: Type.Object({
       libraryId: Type.String({
         description: "Exact Context7 library ID (e.g. /facebook/react, /vercel/next.js@v15.1.8)",
@@ -434,6 +434,6 @@ export function createDocsToolDefinition() {
   };
 }
 
-export function registerDocsTool(pi: ExtensionAPI): void {
-  pi.registerTool(createDocsToolDefinition());
+export function registerLibraryDocsTool(pi: ExtensionAPI): void {
+  pi.registerTool(createLibraryDocsToolDefinition());
 }

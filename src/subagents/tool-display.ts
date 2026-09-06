@@ -38,9 +38,6 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
     case "find":
       summary = `${clipInline(args?.pattern || ".", 40)} in ${shortenPath(args?.path || ".")}`;
       break;
-    case "pdf_search":
-      summary = `${clipInline(args?.query || "...", 50)} in ${shortenPath(args?.path || "...")}`;
-      break;
     case "ls":
       summary = shortenPath(args?.path || ".");
       break;
@@ -54,20 +51,20 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
     case "insert":
       summary = shortenPath(args?.path || "...");
       break;
-    case "search": {
+    case "web_search": {
       const queries = Array.isArray(args?.queries) ? args.queries : [];
       summary = `${queries.length} quer${queries.length === 1 ? "y" : "ies"}: ${clipInline(queries[0] || "...", 50)}`;
       break;
     }
-    case "fetch": {
+    case "web_fetch": {
       const urls = Array.isArray(args?.urls) ? args.urls : [];
       summary = `${urls.length} URL${urls.length === 1 ? "" : "s"}`;
       break;
     }
-    case "libs":
+    case "library_search":
       summary = clipInline(args?.libraryName || "...", 60);
       break;
-    case "docs":
+    case "library_docs":
       summary = clipInline(args?.libraryId || "...", 60);
       break;
     default:
