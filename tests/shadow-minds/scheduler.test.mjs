@@ -18,7 +18,7 @@ const {
 
 {
   assert.deepEqual(TRIGGER_PRIORITY, { completion: 3, failure: 2, mutation: 1, tool_turn: 0 });
-  assert.deepEqual([...MUTATION_TOOL_NAMES], ["edit", "write", "replace"]);
+  assert.deepEqual([...MUTATION_TOOL_NAMES], ["edit", "write", "replace", "insert"]);
   assert.equal(isMutationToolName("edit"), true);
   assert.equal(isMutationToolName("bash"), false, "shell is never a declarative mutation");
   assert.equal(isMutationToolName("some_mcp_write_thing"), false, "unknown tools are never guessed");
@@ -255,6 +255,86 @@ function runRealUserTurn(harness, toolEvents = [], { turnEnd = true } = {}) {
   scheduler.observeToolEnd("replace", false, { path: "a.ts" }, { details: { metrics: { classification: "applied" } } });
   scheduler.handleTurnEnd({});
   assert.equal(state.starts.length, 1, "an applied anchored edit triggers the subscribed Shadow");
+}
+
+{
+  // #288: the parent insert joins the closed mutation set and counts as
+  // applied only from its structured successful outcome evidence.
+  const { state, scheduler } = makeHarness({ definitions: [definition({ triggers: ["mutation"] })] });
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+
+  // Stale, unserved, ambiguous, invalid, locked, and cancelled-before-commit
+  // refusals are non-error outcomes that changed nothing: one structured
+  // refusal shape covers the boundary-side refusals (E_FILE_LOCKED is also
+  // the pre-commit abort outcome) and the anchor-validation refusals.
+  const refusals = [
+    { details: { diff: "", status: "warning", errorCode: "E_FILE_LOCKED" } },
+    { details: { diff: "", status: "warning", errorCode: "E_STALE_ANCHOR" } },
+    { details: { diff: "", status: "warning", errorCode: "E_AMBIGUOUS_ANCHOR" } },
+    { details: { diff: "", status: "warning", errorCode: "E_RANGE_STALE" } },
+    { details: { diff: "", status: "warning", errorCode: "E_BAD_REF" } },
+  ];
+  for (const [index, result] of refusals.entries()) {
+    scheduler.observeToolStart("insert", { path: "a.ts", anchor: "aB3", direction: "after", lines: ["x"] });
+    scheduler.observeToolEnd("insert", false, { path: "a.ts" }, result);
+    scheduler.handleTurnEnd({});
+    assert.equal(state.starts.length, 0, `insert refusal ${refusals[index].details.errorCode} does not trigger`);
+  }
+
+  // A failed insert call is an error outcome and never a mutation.
+  scheduler.observeToolStart("insert", { path: "a.ts", anchor: "aB3", direction: "after", lines: [""] });
+  scheduler.observeToolEnd("insert", true, { path: "a.ts" }, undefined);
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 0, "failed inserts do not trigger mutation Shadows");
+
+  // A successful insert carrying autocorrection warnings is applied.
+  scheduler.observeToolStart("insert", { path: "src/a.ts", anchor: "aB3", direction: "after", lines: ["x"] });
+  scheduler.observeToolEnd("insert", false, { path: "src/a.ts" }, {
+    details: {
+      metrics: { classification: "applied", addedLines: 1, removedLines: 0 },
+      warnings: ["[E_BAD_REF] Autocorrected: stripped \"HASH│\" prefix copied from read output in the anchor entry \"aB3│content\"."],
+    },
+  });
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 1, "an applied insert triggers the subscribed Shadow");
+  assert.equal(state.starts[0].reasons.find((reason) => reason.trigger === "mutation").detail, "insert src/a.ts");
+
+  // Truthful post-commit rule: state publication failed after the filesystem
+  // commit, so the warning-bearing success stays an observed mutation.
+  scheduler.observeToolStart("insert", { path: "src/b.ts", anchor: "cD4", direction: "before", lines: ["x"] });
+  scheduler.observeToolEnd("insert", false, { path: "src/b.ts" }, {
+    details: {
+      diff: "",
+      metrics: { classification: "applied", addedLines: 1, removedLines: 0 },
+      warnings: ["[E_STATE_UNAVAILABLE] The file was changed, but recording fresh anchors failed (boom). The insert is applied; call read to get fresh anchors."],
+    },
+  });
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 2, "a committed insert with a post-commit publication warning is still a mutation");
+
+  // An insert result without structured applied evidence is never assumed
+  // to have mutated the file.
+  scheduler.observeToolStart("insert", { path: "c.ts", anchor: "eF5", direction: "after", lines: ["x"] });
+  scheduler.observeToolEnd("insert", false, { path: "c.ts" }, { details: {} });
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 2, "ambiguous insert evidence never triggers");
+}
+
+{
+  // #288 acceptance: a plain successful insert — structured `applied`
+  // metrics, no warnings — is independently an observed mutation, separate
+  // from the warning-bearing and post-commit-warning successes above.
+  const { state, scheduler } = makeHarness({ definitions: [definition({ triggers: ["mutation"] })] });
+  scheduler.handleInput("interactive");
+  scheduler.handleRunStart(true);
+  scheduler.observeToolStart("insert", { path: "src/plain.ts", anchor: "aB3", direction: "after", lines: ["x"] });
+  scheduler.observeToolEnd("insert", false, { path: "src/plain.ts" }, {
+    details: { metrics: { classification: "applied", addedLines: 1, removedLines: 0 } },
+  });
+  scheduler.handleTurnEnd({});
+  assert.equal(state.starts.length, 1, "a plain applied insert with no warnings triggers the subscribed Shadow");
+  assert.equal(state.starts[0].reasons.find((reason) => reason.trigger === "mutation").detail, "insert src/plain.ts");
 }
 
 {

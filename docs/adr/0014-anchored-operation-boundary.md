@@ -304,7 +304,9 @@ next to `replace` under the child's own owner partition, with the anchored
 names added to the effective child allowlist, capability-only (never
 requestable by name through the child extension catalog), and re-resolved
 identically on fresh and resumed sessions. Shadow Minds mutation observation
-remains a later ticket. The parent registers
+is completed by #288 under the applied-only and
+path-only trajectory rules recorded in [ADR-0011](0011-shadow-minds.md).
+The parent registers
 `insert` under the same anchored-edit configuration, store-readiness,
 anchored-read ownership, and conflict gates as `replace`.
 
