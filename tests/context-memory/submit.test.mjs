@@ -138,12 +138,12 @@ function appendDueRun(session, markdown) {
 
 const BLOCK = "# Repo tour\n\n- one entry point registers the modules";
 
-function beforeCompactEvent(session, tokensBefore = 4321) {
+function beforeCompactEvent(session, tokensBefore = 4321, reason = "manual") {
   return {
     type: "session_before_compact",
     preparation: { firstKeptEntryId: "e4", messagesToSummarize: [], turnPrefixMessages: [], isSplitTurn: false, tokensBefore, settings: {} },
     branchEntries: session.getBranch(),
-    reason: "manual",
+    reason,
     willRetry: false,
     signal: undefined,
   };
@@ -408,38 +408,95 @@ try {
     assert.equal(result, undefined, "no candidate returns no custom compaction");
   }
 
-  // ── #253: a run that exhausts the margin before submitting falls back to Pi native compaction ──
+  // ── #253: threshold/fallback interaction around the due-point safety clamp ──
 
   {
-    // The due point sits a fixed margin below Pi's native compaction boundary
-    // (window − reserve − ten percent of the window), so post-submission work
-    // is bounded by that margin. A due run that keeps working past the
-    // boundary without ever submitting meets Pi's own post-run threshold
-    // check: `session_before_compact` carries no candidate, native compaction
-    // proceeds, and the foreign entry closes the due run.
-    const margin = createHarness();
+    // The ten-percent figure is the gap between the due point and Pi's native
+    // compaction boundary — window 200000, reserve 16384, native boundary
+    // 183616, clamp 163616, configured threshold 5000 — not a margin
+    // guaranteed to remain when a due run opens. Usage is only re-checked at
+    // session start, model selection, and agent settle, so the previous run
+    // can settle with usage already far past the due point: at 170000 tokens
+    // the distance left below the native boundary is 13616, under the 20000
+    // ten-percent figure, and the due run still opens. Margin exhaustion is
+    // then owned by Pi's own threshold path — checked after a completed run
+    // and before the next prompt, never mid-run — through the same
+    // `session_before_compact` seam, never by refusing or cutting the run.
+    assert.equal(
+      effectiveDuePoint(DUE_CONFIG.compressionThreshold, DUE_CONFIG.memoryBudgetPercent, 200000, 16384),
+      5000,
+      "the configured threshold sits far below the safety clamp",
+    );
+    assert.ok(183616 - 170000 < 200000 / 10,
+      "this scenario opens the due run with less than ten percent of the window left below the native boundary");
+
+    // With an accepted candidate, Pi's post-run threshold check consumes it:
+    // the Memory compaction commits through the takeover, post-submission
+    // work stays in the retained tail, and the later settle never compacts a
+    // second time.
+    const margin = createHarness({ usage: { tokens: 170000, contextWindow: 200000 } });
     const marginSession = mutableSession(preRunBranch());
     const marginCtx = margin.baseContext(marginSession);
     await margin.emit("session_start", { type: "session_start", reason: "startup" }, marginCtx);
     await margin.emit("input", { type: "input", text: "ship it", source: "interactive" }, marginCtx);
-    assert.ok(margin.activeTools().includes("submit_memory"), "the due run opens");
-    marginSession.__entries.push(userEntry("e4", "e3", "ship it"));
-    marginSession.__entries.push(assistantEntry("e5", "e4", [
+    assert.ok(margin.activeTools().includes("submit_memory"),
+      "the due run opens even though usage settled far past the due point before it");
+    appendDueRun(marginSession, BLOCK);
+    await margin.emit("message_end", {
+      type: "message_end",
+      message: { role: "assistant", content: [
+        { type: "text", text: "done — submitting the Memory block" },
+        { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
+      ] },
+    }, marginCtx);
+    const submitTool = margin.tools.get("submit_memory");
+    const acceptedLate = await submitTool.execute("call-submit", { markdown: BLOCK }, undefined, undefined, marginCtx);
+    assert.equal(acceptedLate.terminate, undefined, "the accepted submission keeps the run going");
+    marginSession.__entries.push(assistantEntry("e7", "e6", [
+      { type: "text", text: "kept working past the remaining distance" },
+    ]));
+    const takeover = await margin.emit("session_before_compact", beforeCompactEvent(marginSession, 190000, "threshold"), marginCtx);
+    assert.ok(takeover && takeover.compaction, "the threshold check consumes the pending candidate");
+    assert.equal(takeover.compaction.firstKeptEntryId, "e4",
+      "the run's real-user request stays the kept boundary");
+    assert.equal(takeover.cancel, undefined, "the takeover never cancels");
+    const compactEvent = appendCompactionEntry(marginSession, takeover.compaction, true);
+    await margin.emit("session_compact", compactEvent, marginCtx);
+    assert.equal(margin.registration.snapshot({ tokens: 900, contextWindow: 200000 }).state, "active",
+      "the threshold-consumed candidate commits as Memory");
+    await margin.emit("agent_settled", { type: "agent_settled" }, marginCtx);
+    assert.equal(margin.compactCalls.length, 0,
+      "a candidate the threshold path consumed never triggers a second settle compaction");
+    const marginProjection = buildSessionContext(marginSession.getBranch(), marginSession.getLeafId()).messages;
+    assert.ok(marginProjection.some((message) => Array.isArray(message.content)
+      && message.content.some((part) => part?.text === "kept working past the remaining distance")),
+      "post-submission work past the remaining distance stays in the retained tail");
+
+    // Without a submission, the same threshold check offers no takeover:
+    // Pi native compaction proceeds and its foreign entry closes the due run.
+    const noSubmit = createHarness({ usage: { tokens: 170000, contextWindow: 200000 } });
+    const noSubmitSession = mutableSession(preRunBranch());
+    const noSubmitCtx = noSubmit.baseContext(noSubmitSession);
+    await noSubmit.emit("session_start", { type: "session_start", reason: "startup" }, noSubmitCtx);
+    await noSubmit.emit("input", { type: "input", text: "ship it", source: "interactive" }, noSubmitCtx);
+    assert.ok(noSubmit.activeTools().includes("submit_memory"), "the due run opens");
+    noSubmitSession.__entries.push(userEntry("e4", "e3", "ship it"));
+    noSubmitSession.__entries.push(assistantEntry("e5", "e4", [
       { type: "text", text: "still working past the margin without submitting" },
     ]));
-    const native = await margin.emit("session_before_compact", beforeCompactEvent(marginSession), marginCtx);
+    const native = await noSubmit.emit("session_before_compact", beforeCompactEvent(noSubmitSession, 190000, "threshold"), noSubmitCtx);
     assert.equal(native, undefined, "no submission means no custom compaction is offered");
     const nativeEntry = {
       id: "c-native", parentId: "e5", type: "compaction", timestamp: TS,
       summary: "a plain native summary", firstKeptEntryId: "e4", tokensBefore: 4321, fromExtension: false,
     };
-    marginSession.__entries.push(nativeEntry);
-    await margin.emit("session_compact", {
+    noSubmitSession.__entries.push(nativeEntry);
+    await noSubmit.emit("session_compact", {
       type: "session_compact", compactionEntry: nativeEntry, fromExtension: false, reason: "threshold", willRetry: false,
-    }, marginCtx);
-    assert.ok(!margin.activeTools().includes("submit_memory"),
+    }, noSubmitCtx);
+    assert.ok(!noSubmit.activeTools().includes("submit_memory"),
       "the foreign compaction closes the due run whose submission window is gone");
-    assert.deepEqual(margin.registration.snapshot(), { state: "opaque" },
+    assert.deepEqual(noSubmit.registration.snapshot(), { state: "opaque" },
       "the branch degrades to the ordinary opaque native summary");
   }
 
@@ -607,7 +664,7 @@ try {
       "unknown usage falls back to the deterministic branch estimate, which is not due here");
   }
 
-  // ── Submit artifacts leave every provider-bound request (#215) ──
+  // ── Submit artifacts leave provider-bound requests; the trailing pair passes whole (#215, #253) ──
 
   {
     const filtering = createHarness();
@@ -635,6 +692,33 @@ try {
     assert.ok(serialized.includes("kept ordinary text"), "ordinary assistant text survives its message");
     assert.ok(serialized.includes("read_memory_source"), "read artifacts stay provider-visible");
     assert.equal(filtered.messages.length, 5, "only the paired submit result drops as a whole message");
+  }
+
+  {
+    // The immediate continuation request keeps the trailing submitting
+    // exchange whole (#253): removing the call would end the request on an
+    // assistant turn, and removing only the result leaves an unpaired tool
+    // call — both shapes are rejected by providers.
+    const tailPair = createHarness();
+    const tailSession = mutableSession(preRunBranch());
+    const tailCtx = tailPair.baseContext(tailSession);
+    await tailPair.emit("session_start", { type: "session_start", reason: "startup" }, tailCtx);
+    const continuationRequest = [
+      { role: "user", content: "old task", timestamp: 1 },
+      { role: "assistant", content: [
+        { type: "text", text: "done — submitting the Memory block" },
+        { type: "toolCall", id: "call-submit", name: "submit_memory", arguments: { markdown: BLOCK } },
+      ], timestamp: 2 },
+      { role: "toolResult", toolCallId: "call-submit", toolName: "submit_memory", content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], timestamp: 3 },
+    ];
+    const tailTransform = await tailPair.emit("context", { type: "context", messages: continuationRequest }, tailCtx);
+    assert.equal(tailTransform?.messages.length, continuationRequest.length,
+      "the trailing submitting exchange passes through whole");
+    const tailSerialized = JSON.stringify(tailTransform?.messages);
+    assert.ok(tailSerialized.includes("call-submit"), "the submit call part stays");
+    assert.ok(tailSerialized.includes("Memory candidate accepted"), "its paired result stays");
+    assert.notEqual(tailTransform?.messages.at(-1)?.role, "assistant",
+      "the continuation request never ends on an assistant turn");
   }
 
   // ── #219: appending further blocks onto committed Memory ──
