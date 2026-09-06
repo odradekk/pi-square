@@ -156,8 +156,8 @@ message, and deletion stays the ordinary Pi session boundary.
   inspection surface (`/context` and `/context memory <block> [page]`), and
   native fallback for every unsupported case.
 - `submit_memory` call parts and paired results are filtered from
-  provider-bound requests while the feature is enabled, except the trailing
-  call/result pair of the just-accepted submission, which passes through
+  provider-bound requests while the feature is enabled, except the current
+  trailing call/result pair, accepted or refused, which passes through
   whole so the run's continuation request never ends on an assistant turn;
   disabling the feature stops the filtering and historical protocol entries
   become model-visible again.

@@ -15,5 +15,5 @@ does not support assistant message prefill`.
 
 The filter now puts that one paired result back when it would otherwise leave
 the request ending on an assistant turn, so the tail is a tool result and the
-model sees the acknowledgement for the call it just made. Every older submit
-artifact still leaves provider-bound requests.
+model sees the paired result — acknowledgement or refusal — for the call it
+just made. Every older submit artifact still leaves provider-bound requests.

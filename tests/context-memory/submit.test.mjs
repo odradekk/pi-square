@@ -700,7 +700,10 @@ try {
     // The immediate continuation request keeps the trailing submitting
     // exchange whole (#253): removing the call would end the request on an
     // assistant turn, and removing only the result leaves an unpaired tool
-    // call — both shapes are rejected by providers.
+    // call — both shapes are rejected by providers. The retention is
+    // outcome-agnostic — the filter never inspects acceptance state — so a
+    // refused tail pair also passes whole and the model can read its own
+    // error and correct it.
     const tailPair = createHarness();
     const tailSession = mutableSession(preRunBranch());
     const tailCtx = tailPair.baseContext(tailSession);
@@ -721,6 +724,21 @@ try {
     assert.ok(tailSerialized.includes("Memory candidate accepted"), "its paired result stays");
     assert.notEqual(tailTransform?.messages.at(-1)?.role, "assistant",
       "the continuation request never ends on an assistant turn");
+
+    const refusedRequest = [
+      { role: "user", content: "old task", timestamp: 1 },
+      { role: "assistant", content: [
+        { type: "toolCall", id: "call-refused", name: "submit_memory", arguments: { markdown: "# stale" } },
+      ], timestamp: 2 },
+      { role: "toolResult", toolCallId: "call-refused", toolName: "submit_memory", content: [{ type: "text", text: "SUBMIT_NOT_DUE: no Context Memory compression is due in this run" }], isError: true, timestamp: 3 },
+    ];
+    const refusedTransform = await tailPair.emit("context", { type: "context", messages: refusedRequest }, tailCtx);
+    assert.equal(refusedTransform?.messages.length, refusedRequest.length,
+      "the refused trailing pair also passes through whole");
+    assert.ok(JSON.stringify(refusedTransform?.messages).includes("SUBMIT_NOT_DUE"),
+      "the refusal stays visible for the model to correct itself");
+    assert.notEqual(refusedTransform?.messages.at(-1)?.role, "assistant",
+      "the refused continuation request never ends on an assistant turn");
   }
 
   // ── #219: appending further blocks onto committed Memory ──

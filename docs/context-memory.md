@@ -322,9 +322,10 @@ a session operation.
   create another sensitive copy.
 - **Protocol artifacts are filtered while enabled.** `submit_memory` calls and
   their results are removed from provider-bound requests while the feature is
-  enabled, except the trailing call/result pair of the just-accepted
-  submission, which passes through whole so the run's continuation request
-  does not end on an assistant turn; `read_memory_source` artifacts stay
+  enabled, except the current trailing call/result pair, which passes through
+  whole whether the call was accepted or refused — the continuation request
+  must not end on an assistant turn, and a refused result has to stay visible
+  so the model can correct itself; `read_memory_source` artifacts stay
   visible in their own run.
 - **Disabling or uninstalling affects future behavior only.** Existing
   compaction entries remain in Pi history as ordinary compaction summaries

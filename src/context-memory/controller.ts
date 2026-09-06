@@ -76,12 +76,13 @@ import {
  * the kept boundary — bounded by the distance that remains to Pi's native
  * compaction boundary when the run opens. The due point itself always sits
  * at least ten percent of the window below that boundary (farther below
- * when the configured threshold is lower), but usage is only re-checked at
- * session start, model selection, and agent settle, so the remaining
- * distance at open can be smaller than that gap — down toward zero when
- * usage already passed the due point — or far larger near a low configured
- * threshold, and the existing native fallback owns a run that exhausts it
- * before settling. The compatibility gate
+ * when the configured threshold is lower). That remaining distance ranges
+ * from near zero — usage is only re-checked at session start, model
+ * selection, and agent settle, so a run can open with usage already past
+ * the due point — up to the due-point gap itself, which means it can also
+ * exceed ten percent of the window when the run opens near a low
+ * configured due point; the existing native fallback owns a run that
+ * exhausts it before settling. The compatibility gate
  * and owned active-tool synchronization stay.
  */
 
@@ -683,12 +684,13 @@ export class ContextMemoryController {
    * supported host:
    *
    * - `submit_memory` tool-call parts and their paired results leave every
-   *   provider-bound request, with one exception (#253): while the run
-   *   continues after an accepted submission, the trailing submitting
-   *   exchange — the final submit call and its paired result — passes
-   *   through whole, because removing it would end the request on an
-   *   assistant turn. Ordinary assistant text in the same message survives
-   *   and `read_memory_source` artifacts stay visible.
+   *   provider-bound request, with one exception (#253): the current
+   *   trailing submit call/result pair, accepted or refused, passes through
+   *   whole, because removing it would end the request on an assistant turn
+   *   and a refused result must stay visible for the model to correct
+   *   itself — the accepted continuation is the success path #253 targets.
+   *   Ordinary assistant text in the same message survives and
+   *   `read_memory_source` artifacts stay visible.
    * - On the first provider request of a due run, one fixed custom advisory
    *   is appended after the current user message and never repeated.
    * - On the first provider request of a maintenance run only, the Memory
@@ -1276,9 +1278,8 @@ function sameMemoryDetails(actual: unknown, expected: MemoryCompactionDetails): 
  * (#215), with one #253 exception: paired submit tool results drop entirely,
  * submit tool-call parts drop from their assistant message while ordinary
  * text survives, and an assistant message left without any eligible part
- * drops as a whole — but while the run continues after an accepted
- * submission, the trailing submitting exchange (the final submit call and
- * its paired result) passes through whole; see the rationale below.
+ * drops as a whole — but the current trailing submit call/result pair,
+ * accepted or refused, passes through whole; see the rationale below.
  * `read_memory_source` artifacts stay visible; only future source streams
  * exclude them.
  */
@@ -1287,8 +1288,11 @@ function filterSubmitArtifacts(messages: readonly unknown[]): unknown[] {
   // (#253). Filtering it would end the request on an assistant turn, which
   // providers reject as an assistant prefill, and filtering only half of it
   // leaves an unpaired tool result that both wire formats reject outright.
-  // So the trailing pair passes through whole; every older submit artifact
-  // still leaves the request.
+  // The tail pair is kept whatever its outcome — a refused result must stay
+  // visible so the model can correct itself — and Pi's ordering pairs a
+  // result with its call, so an isolated trailing call is the only other
+  // tail shape that can occur. Every older submit artifact still leaves
+  // the request.
   const isSubmitResult = (m: unknown): boolean =>
     (m as { role?: unknown; toolName?: unknown } | null)?.role === "toolResult"
     && (m as { toolName?: unknown }).toolName === SUBMIT_MEMORY_TOOL_NAME;
