@@ -129,7 +129,7 @@ const tempAgentDir = mkdtempSync(join(tmpdir(), "pi-square-web-tools-test-"));
 writeFileSync(join(tempAgentDir, "settings.json"), "{}");
 writeFileSync(join(tempAgentDir, "auth.json"), "{}");
 
-// Bodies with >= 200 non-whitespace characters so the fetch thin-content
+// Bodies with >= 200 non-whitespace characters so the web_fetch thin-content
 // retry threshold is NOT triggered by default.
 const LONG_BODY = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(6);
 const LONG_BODY_B = "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris. ".repeat(6);
@@ -210,7 +210,7 @@ test("registerWebFetchTool registers tool named web_fetch", () => {
 // === Web search: content regression + details ===
 
 test(
-  "search content is the stable ranked text and details.results carries provenance",
+  "web_search content is the stable ranked text and details.results carries provenance",
   withKey(async () => {
     const mock = installMockFetch(() =>
       searchOk([
@@ -247,7 +247,7 @@ test(
 );
 
 test(
-  "search merges and de-duplicates across queries, reporting before/after counts",
+  "web_search merges and de-duplicates across queries, reporting before/after counts",
   withKey(async () => {
     // Both queries return the same URL -> one merged result with two matches.
     const mock = installMockFetch(() =>
@@ -289,7 +289,7 @@ test("web_search fails before network when key missing", async () => {
 // === Web fetch: content regression + offset details ===
 
 test(
-  "search partial failure with no results preserves the per-query error details",
+  "web_search partial failure with no results preserves the per-query error details",
   withKey(async () => {
     const mock = installMockFetch((_url, _init, i) =>
       i === 0 ? jsonResponse(500, { error: "down" }) : searchOk([]),
@@ -307,7 +307,7 @@ test(
 );
 
 test(
-  "fetch single-page content is stable and page offsets slice the section and body",
+  "web_fetch single-page content is stable and page offsets slice the section and body",
   withKey(async () => {
     const mock = installMockFetch(() =>
       readerOk({ title: "Example Page", url: "https://example.com/page", description: "An example page.", content: LONG_BODY }),
@@ -331,7 +331,7 @@ test(
 );
 
 test(
-  "fetch multi-page content joins sections with the separator and preserves order",
+  "web_fetch multi-page content joins sections with the separator and preserves order",
   withKey(async () => {
     const mock = installMockFetch((url) => {
       if (url.includes("first.example")) {
@@ -363,7 +363,7 @@ test(
 );
 
 test(
-  "fetch keeps links and image summaries in both model content and the display body slice",
+  "web_fetch keeps links and image summaries in both model content and the display body slice",
   withKey(async () => {
     const mock = installMockFetch(() =>
       readerOk({

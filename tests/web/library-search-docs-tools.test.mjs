@@ -1186,7 +1186,7 @@ test("library_docs rejects a non-array infoSnippets field", async () => {
   }
 });
 
-test("library_search and docs reject non-object top-level responses", async () => {
+test("library_search and library_docs reject non-object top-level responses", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => jsonResponse(200, null));
   try {

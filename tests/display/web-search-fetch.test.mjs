@@ -165,7 +165,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "[1] Good Result\n    https://example.com/good", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "partial-failure search renders completed (some results succeeded)");
+  assert.match(text, /^✓/, "partial-failure web_search renders completed (some results succeeded)");
   assert.match(text, /Good Result/, "partial-failure shows the successful results");
 
   runtime.dispose();
@@ -187,7 +187,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
 }
 
 // ─── 6. Error states: provider error visible without isError ─────
-// Search/fetch tools don't set isError:true for failures — they return
+// web_search and web_fetch don't set isError:true for failures — they return
 // details.error and let the display adapter surface it. The adapter must
 // make the error visible even without isError.
 
@@ -280,7 +280,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 10. Expanded fetch results preserve page title, URL, metadata ──
+// ─── 10. Expanded web_fetch results preserve page title, URL, metadata ──
 
 {
   const runtime = newRuntime();
@@ -329,7 +329,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const result = renderResult(decorated, args, details, "## Good Page\n\nContent\n\n---\n\n## bad.example.com\n\n[Failed: Jina 503]", { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /^✓/, "partial-URL-failure fetch renders completed (some pages succeeded)");
+  assert.match(text, /^✓/, "partial-URL-failure web_fetch renders completed (some pages succeeded)");
   assert.match(text, /1 of 2 pages fetched/, "summary row states succeeded and total counts");
 
   runtime.dispose();
@@ -353,7 +353,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 13. No metadata duplication in fetch header ────────────────────
+// ─── 13. No metadata duplication in web_fetch header ────────────────
 
 {
   const runtime = newRuntime();
@@ -375,7 +375,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const runtime = newRuntime();
   const decorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const args = { urls: ["https://example.com/huge-page"], mode: "readable" };
-  // A fetch result with remote and output truncation indicators set
+  // A web_fetch result with remote and output truncation indicators set
   const details = { urls: ["https://example.com/huge-page"], succeeded: 1, failed: 0, phase: "done",
     results: [{ url: "https://example.com/huge-page", finalUrl: "", lines: 500, retried: false }],
     failedUrls: [],
@@ -397,12 +397,12 @@ function renderResult(decorated, args, details, text, opts = {}) {
   const details = { queries: ["test query"], phase: "done", count: 3, totalAfterDedup: 2, results: [{ title: "R", url: "https://ex.com", description: "d", provenance: "[q1#1]" }] };
   const expandedResult = renderResult(decorated, args, details, "[1] R\n    https://ex.com\n    d", { expanded: true });
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
-    assert.ok(expandedResult.render(width).every((line) => visibleWidth(line) <= width), `search result bounded at ${width}`);
+    assert.ok(expandedResult.render(width).every((line) => visibleWidth(line) <= width), `web_search result bounded at ${width}`);
   }
   const webFetchDecorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
   const webFetchResult = renderResult(webFetchDecorated, { urls: ["https://example.com/page1"], mode: "readable" }, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "## Page\n\nContent", { expanded: true });
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
-    assert.ok(webFetchResult.render(width).every((line) => visibleWidth(line) <= width), `fetch result bounded at ${width}`);
+    assert.ok(webFetchResult.render(width).every((line) => visibleWidth(line) <= width), `web_fetch result bounded at ${width}`);
   }
 
   runtime.dispose();

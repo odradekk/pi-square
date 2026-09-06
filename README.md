@@ -420,7 +420,7 @@ Set `JINA_API_KEY` and `CONTEXT7_API_KEY`, or add the keys to Pi-owned `auth.jso
 }
 ```
 
-The keys are redacted from content, errors, details, and rendering. `web_fetch` keeps its ordinary generic HTTP(S) behavior: it accepts any ordinary URL, including a remote PDF URL when the Jina Reader can process it, with no dedicated PDF handling.
+`web_fetch` keeps its ordinary generic HTTP(S) behavior: it accepts any ordinary URL, including a remote PDF URL when the Jina Reader can process it, with no dedicated PDF handling.
 
 ## Built-in ownership and adapters
 
