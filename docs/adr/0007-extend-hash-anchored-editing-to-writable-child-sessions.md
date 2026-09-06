@@ -140,8 +140,10 @@ The undo-record, revert-authority, and retention-exception sections of this ADR
 are superseded: the child and parent revert tools, the file-global undo record,
 the `[E_UNDO_OWNER]`/`[E_UNDO_STALE]`/`[E_UNDO_UNAVAILABLE]` codes, and the
 `hasUndo` retention exception were removed with the undo-free store schema. The
-writable-child capability mapping now resolves `edit` to the anchored `replace`
-alone; partition retention, the served gate, lock ordering, and native path
+writable-child capability mapping resolves `edit` to the anchored `replace`
+alone — superseded in turn by #287, which grants the anchored `insert` through
+the same capability under the child's own owner; partition retention, the
+served gate, lock ordering, and native path
 authority are unchanged. Points 1 and 2 above are void; points 3 and 4 stand.
 
 ## Superseded by #264 (one operation boundary)
