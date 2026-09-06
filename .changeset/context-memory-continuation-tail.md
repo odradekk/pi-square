@@ -13,7 +13,8 @@ turn, which providers reject as an assistant prefill. Reproduced against a
 real gateway: `claude-sonnet-5` and `claude-opus-5` answer `400 This model
 does not support assistant message prefill`.
 
-The filter now puts that one paired result back when it would otherwise leave
-the request ending on an assistant turn, so the tail is a tool result and the
-model sees the paired result — acknowledgement or refusal — for the call it
-just made. Every older submit artifact still leaves provider-bound requests.
+The filter now keeps the current trailing submit call and its paired result
+whole when filtering them would otherwise leave the request ending on an
+assistant turn. The tail therefore stays a tool result, and the model sees the
+acknowledgement or refusal for the call it just made. Every older submit
+artifact still leaves provider-bound requests.
