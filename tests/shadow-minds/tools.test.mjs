@@ -71,12 +71,20 @@ function ok(input) {
 
 {
   // Excluded capabilities are not in the catalog and drop with a warning.
-  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "revert", "ssh", "parse", "delegate_subagent", "resume_subagent", "todo", "ask"]) {
+  // `insert` joins the anchored mutations that stay Shadow-excluded (#288).
+  for (const excluded of ["bash", "shell", "pwsh", "write", "edit", "replace", "insert", "revert", "ssh", "parse", "delegate_subagent", "resume_subagent", "todo", "ask"]) {
     const envelope = ok({ cwd, tools: ["read", excluded] });
     assert.deepEqual(envelope.toolNames, ["read"], excluded);
     assert.equal(envelope.warnings.length, 1, excluded);
     assert.match(envelope.warnings[0], new RegExp(`'${excluded}'`), excluded);
   }
+}
+
+{
+  // A required anchored mutation fails the run before prompting (#288).
+  const outcome = resolveShadowTools({ cwd, tools: ["read", "insert"], requiredTools: ["insert"] });
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.error, /Required Shadow tools are unavailable: insert/);
 }
 
 {
