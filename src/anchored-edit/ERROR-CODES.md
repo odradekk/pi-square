@@ -13,7 +13,7 @@ source.
 | `[E_AMBIGUOUS_ANCHOR]` | An anchor matches multiple lines; call `read` for fresh anchors. |
 | `[E_INVALID_PATCH]` | A `replacement_text` line is a diff-preview row (`+HASH│`, `-HASH│`, `-   │`). The marker is stripped automatically with a warning. |
 | `[E_BARE_HASH_PREFIX]` | A `replacement_text` line starts with a hash-like `HASH│` prefix. The prefix is stripped automatically with a warning. |
-| `[E_BAD_OP]` | Range start line is after range end line. The implementation swaps the pair with a warning when it can resolve the range; otherwise it refuses the invalid range. Also refuses `insert` into an empty file (use `write`); empty-file and blank-line insertion are planned follow-ups. |
+| `[E_BAD_OP]` | Range start line is after range end line. The implementation swaps the pair with a warning when it can resolve the range; otherwise it refuses the invalid range. An empty-file `insert` is no longer refused: the empty file's read serves one synthetic anchor row whose hash authorizes initialization (#286). |
 | `[E_WOULD_EMPTY]` | An edit would empty a non-empty file; use `write` instead. |
 | `[E_NOT_FOUND]` | The path does not exist. |
 | `[E_ACCESS]` | The file is not readable or writable. |
