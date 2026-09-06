@@ -7,7 +7,7 @@ const NO_BUILT_IN_TOOLS = "none";
 // Anchored editing tools are granted only by the edit capability, never by
 // name: a definition that lists `edit` resolves to them while anchored editing
 // is on, and a definition that names them directly is rejected.
-const CAPABILITY_ONLY_TOOL_NAMES = new Set(["replace"]);
+const CAPABILITY_ONLY_TOOL_NAMES = new Set(["replace", "insert"]);
 
 type BuiltInToolName = typeof BUILT_IN_TOOL_NAMES[number];
 

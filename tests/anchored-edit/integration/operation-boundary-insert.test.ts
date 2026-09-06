@@ -8,12 +8,14 @@ import {
   replaceBarrier,
   writeBarrier,
 } from "../../../src/anchored-edit/operations";
+import { createChildAnchoredInsertTool } from "../../../src/anchored-edit/child-edit";
 import { createAnchoredInsertToolDefinition } from "../../../src/anchored-edit/workspace-insert";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
-import { PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
+import { PARENT_OWNER, loadAnchoredHashStore } from "../../../src/anchored-edit/workspace-support";
+import { anchoredStoreDir } from "../../../src/anchored-edit/paths";
 import { lockFilePath } from "../../../src/anchored-edit/file-lock";
 import { _lineHashesPure } from "../../../src/anchored-edit/hashline";
-import { makeTestCtx, setupParentWrite, withTempDir } from "../support/fixtures";
+import { makeTestCtx, setupParentWrite, testSessionDir, withTempDir } from "../support/fixtures";
 
 const SAMPLE = "aaa\nbbb\nccc\n";
 
@@ -568,6 +570,117 @@ describe("operation boundary — insert blank and empty initialization (#286)", 
       );
       expect(replaced.details.metrics?.classification).toBe("applied");
       expect(await readFile(path, "utf-8")).toBe("aaa\nBBB\n\n");
+    });
+  });
+});
+
+describe("operation boundary — child insert (#287)", () => {
+  const CHILD = "subagent_insert_boundary";
+
+  /** Serves the sample rows to the child owner so its insert authorization
+   *  verifies exactly as a real child read would have. */
+  const setupChildServed = async (cwd: string) => {
+    const store = await loadAnchoredHashStore(anchoredStoreDir(testSessionDir(cwd), cwd), CHILD);
+    try {
+      store.mergeServed(join(cwd, "sample.txt"), [..._lineHashesPure(SAMPLE)], SAMPLE);
+    } finally {
+      store.release();
+    }
+  };
+
+  it("a child insert held before its commit blocks a parent replace on the same target until the insert publishes", async () => {
+    await withTempDir("boundary-cinsert-preplace-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const ctx = makeTestCtx(cwd);
+      await setupChildServed(cwd);
+      const hashes = _lineHashesPure(SAMPLE);
+
+      let releaseInsert!: () => void;
+      const insertEntered = new Promise<void>((resolveEntered) => {
+        insertBarrier.beforeCommit = () => {
+          insertBarrier.beforeCommit = undefined;
+          resolveEntered();
+          return new Promise<void>((resolveRelease) => { releaseInsert = resolveRelease; });
+        };
+      });
+      const insert = createChildAnchoredInsertTool(cwd, CHILD, testSessionDir(cwd));
+      const insertPromise = insert.execute(
+        "child-insert-1",
+        { path: "sample.txt", anchor: hashes[1]!, direction: "after", lines: ["NEW"] },
+        undefined, undefined, ctx,
+      );
+      await insertEntered;
+
+      const replace = createAnchoredReplaceToolDefinition(cwd, () => true, PARENT_OWNER, false);
+      const replacePromise = replace.execute(
+        "parent-replace-1",
+        { path: "sample.txt", remove_from: hashes[1]!, remove_to: hashes[1]!, replacement_text: "BBB" },
+        undefined, undefined, ctx,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(await readFile(path, "utf-8")).toBe(SAMPLE);
+
+      releaseInsert();
+      const inserted = await insertPromise;
+      expect(inserted.details.metrics?.classification).toBe("applied");
+      const replaced = await replacePromise;
+      expect(replaced.details.metrics?.classification).toBe("applied");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nBBB\nNEW\nccc\n");
+    });
+  });
+
+  it("a parent insert held before its commit blocks a child insert; the queued child validates against the inserted bytes and its stale authorization refuses", async () => {
+    await withTempDir("boundary-pinsert-cinsert-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      await writeFile(path, SAMPLE, "utf-8");
+      const ctx = makeTestCtx(cwd);
+      // The parent's own read serves its owner (insert authorization is
+      // mandatory for every owner), and the child's partition carries rows
+      // for the same version.
+      const read = await anchoredReadOf(cwd, ctx);
+      const bbb = rowsOf(read.content).find((row) => row.text === "bbb")!;
+      await setupChildServed(cwd);
+      const hashes = _lineHashesPure(SAMPLE);
+
+      let releaseInsert!: () => void;
+      const insertEntered = new Promise<void>((resolveEntered) => {
+        insertBarrier.beforeCommit = () => {
+          // One-shot: the queued child insert must not park on the same gate.
+          insertBarrier.beforeCommit = undefined;
+          resolveEntered();
+          return new Promise<void>((resolveRelease) => { releaseInsert = resolveRelease; });
+        };
+      });
+      const parentInsert = createAnchoredInsertToolDefinition(cwd, () => true, PARENT_OWNER);
+      const parentPromise = parentInsert.execute(
+        "parent-insert-1",
+        { path: "sample.txt", anchor: bbb.hash, direction: "after", lines: ["NEW"] },
+        undefined, undefined, ctx,
+      );
+      await insertEntered;
+
+      const childInsert = createChildAnchoredInsertTool(cwd, CHILD, testSessionDir(cwd));
+      const childPromise = childInsert.execute(
+        "child-insert-1",
+        { path: "sample.txt", anchor: hashes[1]!, direction: "before", lines: ["CHILD"] },
+        undefined, undefined, ctx,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(await readFile(path, "utf-8")).toBe(SAMPLE);
+
+      releaseInsert();
+      const inserted = await parentPromise;
+      expect(inserted.details.metrics?.classification).toBe("applied");
+
+      // The child insert ran strictly after the parent's publication: it
+      // observed the inserted bytes, and its rows — recorded for the previous
+      // content version — authorize nothing, so it refuses recoverably and
+      // changes nothing on top of the parent's mutation.
+      const refused = await childPromise;
+      expect(refused.details.status).toBe("warning");
+      expect(refused.details.errorCode).toBe("E_RANGE_STALE");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\nNEW\nccc\n");
     });
   });
 });

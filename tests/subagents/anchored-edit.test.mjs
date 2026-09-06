@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { createChildAnchoredReplaceTool } = await load("../../src/anchored-edit/child-edit.ts");
+const { createChildAnchoredReplaceTool, createChildAnchoredInsertTool } = await load("../../src/anchored-edit/child-edit.ts");
 const { createChildAnchoredReadTool } = await load("../../src/anchored-edit/child-read.ts");
 const { loadAnchoredHashStore, PARENT_OWNER } = await load("../../src/anchored-edit/workspace-support.ts");
 const { anchoredStoreDir } = await load("../../src/anchored-edit/paths.ts");
@@ -50,6 +50,10 @@ const openStore = (owner) => loadAnchoredHashStore(storeDir, owner);
 
 async function childReplace(owner) {
   return createChildAnchoredReplaceTool(workspace, owner, sessionDir);
+}
+
+async function childInsert(owner) {
+  return createChildAnchoredInsertTool(workspace, owner, sessionDir);
 }
 
 try {
@@ -222,9 +226,166 @@ try {
     "a missing external file is refused, never created by the child replace",
   );
 
+  // ── Child insert (#287): the edit capability grants the anchored insert
+  // next to replace, under the child's own owner partition, with the parent's
+  // schema and no renderer fields.
+  const insertTool = await childInsert(CHILD_ONE);
+  assert.equal(insertTool.name, "insert", "the child editing surface carries the anchored insert");
+  assert.equal(insertTool.renderShell, undefined, "child insert carries no pi-square display shell");
+  assert.equal(insertTool.renderCall, undefined, "child insert stays renderer-free");
+  assert.equal(insertTool.renderResult, undefined, "child insert stays renderer-free");
+  assert.equal(insertTool.parameters.type, "object");
+  assert.equal(insertTool.parameters.anyOf, undefined);
+  assert.equal(insertTool.parameters.additionalProperties, false);
+  assert.deepEqual(insertTool.parameters.required, ["anchor", "direction", "lines"]);
+
+  // A child inserting after an anchor its own read served succeeds; one
+  // empty-string item is one real blank logical line.
+  writeFileSync(source, "alpha\nbeta\ngamma\ndelta\n");
+  const insertRead = createChildAnchoredReadTool(workspace, CHILD_ONE, sessionDir);
+  const insertReadRows = readRows(
+    (await insertRead.execute("child-insert-read", { path: "source.txt" }, undefined, undefined, ctx)).content,
+  );
+  const betaAnchor = insertReadRows.find((row) => row.text === "beta").hash;
+  const inserted = await (await childInsert(CHILD_ONE)).execute(
+    "child-insert",
+    { path: "source.txt", anchor: betaAnchor, direction: "after", lines: ["BETA-NEXT", ""] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(inserted.details?.status, undefined, "a child inserting after an anchor it read itself succeeds");
+  assert.equal(
+    readFileSync(source, "utf8"),
+    "alpha\nbeta\nBETA-NEXT\n\ngamma\ndelta\n",
+    "the literal block landed with one real blank logical line",
+  );
+
+  // The insert recorded its served rows under the editing child's own owner;
+  // the parent's partition is not credited with the inserted rows.
+  const insertFresh = inserted.details.diff.match(/([A-Za-z0-9]{3})│BETA-NEXT/)?.[1];
+  assert.ok(insertFresh, "the child insert carries a fresh anchor for the inserted line");
+  const insertChildServed = servedLookup(await openStore(CHILD_ONE), source, "alpha\nbeta\nBETA-NEXT\n\ngamma\ndelta\n");
+  assert.ok(insertChildServed?.has(insertFresh), "the child insert records served rows under the child owner");
+  const insertParentServed = servedLookup(await openStore(PARENT_OWNER), source, "alpha\nbeta\nBETA-NEXT\n\ngamma\ndelta\n");
+  assert.ok(!insertParentServed?.has(insertFresh), "the parent partition is not credited with the child's inserted rows");
+
+  // The insert's returned rows authorize the child's next mutation without
+  // another read (the child keeps auto-read on).
+  const chained = await (await childInsert(CHILD_ONE)).execute(
+    "child-insert-chain",
+    { path: "source.txt", anchor: insertFresh, direction: "before", lines: ["BEFORE-BETA-NEXT"] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(chained.details?.status, undefined, "the insert's fresh rows authorize an immediate chained insert");
+  assert.equal(
+    readFileSync(source, "utf8"),
+    "alpha\nbeta\nBEFORE-BETA-NEXT\nBETA-NEXT\n\ngamma\ndelta\n",
+    "the chained insert landed literally at the fresh anchor",
+  );
+
+  // A child that never read the file cannot insert: authorization is mandatory
+  // for every owner. The refusal is recoverable and serves the current
+  // context to that child, so its immediate retry succeeds.
+  const blindInsert = await (await childInsert(CHILD_TWO)).execute(
+    "child-two-blind-insert",
+    { path: "source.txt", anchor: betaAnchor, direction: "after", lines: ["NOPE"] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(blindInsert.details?.status, "warning", "an insert naming an anchor the child was never served is refused");
+  assert.equal(blindInsert.details?.errorCode, "E_RANGE_STALE", "the unserved insert refusal uses the recoverable stale-range code");
+  assert.match(textOf(blindInsert.content), /fresh anchors/, "the refusal carries the current context as anchored rows");
+  const blindRetryRows = readRows(blindInsert.content);
+  assert.ok(blindRetryRows.length > 0, "the refusal serves fresh rows for the retry");
+  const blindRetry = await (await childInsert(CHILD_TWO)).execute(
+    "child-two-blind-retry",
+    { path: "source.txt", anchor: blindRetryRows[0].hash, direction: "after", lines: ["RETRY"] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(blindRetry.details?.status, undefined, "the refusal's fresh rows authorize the immediate retry");
+  assert.equal(
+    readFileSync(source, "utf8"),
+    "alpha\nRETRY\nbeta\nBEFORE-BETA-NEXT\nBETA-NEXT\n\ngamma\ndelta\n",
+    "the retry inserted exactly once after the first served row",
+  );
+
+  // An external modification invalidates the previous version's served rows
+  // even when the anchor line still exists: version-bound authorization
+  // refuses recoverably, and a fresh read republishes rows for the retry.
+  writeFileSync(source, "one\ntwo\nthree\n");
+  const staleReadRows = readRows(
+    (await insertRead.execute("child-stale-read", { path: "source.txt" }, undefined, undefined, ctx)).content,
+  );
+  const twoAnchor = staleReadRows.find((row) => row.text === "two").hash;
+  writeFileSync(source, "zero\none\ntwo\nthree\n");
+  const staleInsert = await (await childInsert(CHILD_ONE)).execute(
+    "child-stale-insert",
+    { path: "source.txt", anchor: twoAnchor, direction: "after", lines: ["STALE"] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(staleInsert.details?.status, "warning", "a version-stale anchor is refused");
+  assert.equal(staleInsert.details?.errorCode, "E_RANGE_STALE", "the stale-version refusal uses the recoverable code");
+  assert.equal(readFileSync(source, "utf8"), "zero\none\ntwo\nthree\n", "nothing was inserted by the stale refusal");
+  const rereadRows = readRows(
+    (await insertRead.execute("child-stale-reread", { path: "source.txt" }, undefined, undefined, ctx)).content,
+  );
+  const freshTwo = rereadRows.find((row) => row.text === "two").hash;
+  const staleRetry = await (await childInsert(CHILD_ONE)).execute(
+    "child-stale-retry",
+    { path: "source.txt", anchor: freshTwo, direction: "after", lines: ["AFTER-TWO"] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(staleRetry.details?.status, undefined, "a fresh read republishes rows that authorize the retry");
+  assert.equal(readFileSync(source, "utf8"), "zero\none\ntwo\nAFTER-TWO\nthree\n", "the retried insert applied");
+
+  // An empty file initializes through its served synthetic anchor; before
+  // and after are the same initialization and a blank item stays a real line.
+  const emptyTarget = join(workspace, "empty-init.txt");
+  writeFileSync(emptyTarget, "");
+  const emptyRows = readRows(
+    (await insertRead.execute("child-empty-read", { path: "empty-init.txt" }, undefined, undefined, ctx)).content,
+  );
+  assert.equal(emptyRows.length, 1, "an empty-file read serves exactly the synthetic anchor row");
+  const emptyInit = await (await childInsert(CHILD_ONE)).execute(
+    "child-empty-init",
+    { path: "empty-init.txt", anchor: emptyRows[0].hash, direction: "before", lines: ["first", ""] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(emptyInit.details?.status, undefined, "an empty file initializes through its synthetic anchor");
+  assert.equal(readFileSync(emptyTarget, "utf8"), "first\n\n", "initialization kept the blank item as one real logical line");
+
+  // Native path authority (#186): the child insert edits an existing external
+  // target it read itself, and its served rows land in the initiating
+  // workspace under the child owner.
+  const externalInsertFile = join(root, "external-insert.txt");
+  writeFileSync(externalInsertFile, "ext-one\next-two\n");
+  const extInsertRows = readRows(
+    (await insertRead.execute("child-ext-insert-read", { path: "../external-insert.txt" }, undefined, undefined, ctx)).content,
+  );
+  const extTwoAnchor = extInsertRows.find((row) => row.text === "ext-two").hash;
+  const extInsert = await (await childInsert(CHILD_ONE)).execute(
+    "child-ext-insert",
+    { path: "../external-insert.txt", anchor: extTwoAnchor, direction: "after", lines: ["EXT-NEW"] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(extInsert.details?.status, undefined, "a child inserting into an external target it read itself succeeds");
+  assert.equal(readFileSync(externalInsertFile, "utf8"), "ext-one\next-two\nEXT-NEW\n", "the external file changed as intended");
+  const extInsertServed = servedLookup(await openStore(CHILD_ONE), realpathSync(externalInsertFile), "ext-one\next-two\nEXT-NEW\n");
+  assert.ok(extInsertServed && extInsertServed.size > 0, "the external child insert records served rows under the child owner");
+
+  // A missing target is refused, never created by the child insert.
+  await assert.rejects(
+    async () => (await childInsert(CHILD_ONE)).execute(
+      "child-missing-insert",
+      { path: "../never-created-by-child-insert.txt", anchor: "abc", direction: "after", lines: ["x"] },
+      undefined, undefined, ctx,
+    ),
+    /E_NOT_FOUND/,
+    "a missing target is refused, never created by the child insert",
+  );
+  assert.ok(!existsSync(join(root, "never-created-by-child-insert.txt")), "insert never creates a missing target");
+
   // Session assembly: a writable child that declares edit with anchored editing
-  // on gets the anchored replace appended; read-only roles and disabled editing
-  // get none.
+  // on gets the anchored replace and insert appended; read-only roles and
+  // disabled editing get none.
   const assembled = { definitions: [] };
   const replaced = __testables.appendChildAnchoredEdit(assembled, {
     anchoredEditing: true,
@@ -236,8 +397,8 @@ try {
   assert.equal(replaced, true, "a writable child that declares edit replaces the capability");
   assert.deepEqual(
     assembled.definitions.map((definition) => definition.name),
-    ["replace"],
-    "the edit capability resolves to the anchored replace only",
+    ["replace", "insert"],
+    "the edit capability resolves to the anchored replace and insert only",
   );
 
   const readOnly = { definitions: [] };
@@ -272,10 +433,10 @@ try {
   assert.equal(disabledReplaced, false, "disabled anchored editing adds no anchored tools");
 
   // Capability resolution of the effective allowlist: replacing edit removes
-  // the built-in edit tool and adds the anchored tool names, so the child has
-  // exactly one editing path and the custom definitions stay active.
+  // the built-in edit tool and adds both anchored tool names, so the custom
+  // definitions stay active and no unrelated capability is broadened.
   const replacedList = __testables.resolveChildToolAllowlist(["read", "write", "edit", "ls"], true);
-  assert.deepEqual(replacedList, ["read", "write", "ls", "replace"], "edit is removed and replace is added");
+  assert.deepEqual(replacedList, ["read", "write", "ls", "replace", "insert"], "edit is removed and both anchored mutation names are added");
   const plainList = __testables.resolveChildToolAllowlist(["read", "write", "edit"], false);
   assert.deepEqual(plainList, ["read", "write", "edit"], "without replacement the allowlist is unchanged");
 
@@ -290,6 +451,8 @@ try {
     extensionTools: ["pdf_search", "search", "fetch", "libs", "docs"],
   }, "linux");
   assert.ok(!generalist.persistedTools.includes("replace"), "the persisted selection never freezes the anchored tool names");
+  assert.ok(!generalist.persistedTools.includes("insert"), "the persisted selection never freezes the anchored insert name");
+  assert.ok(!generalist.builtInTools.includes("insert"), "insert is never resolved as an ordinary built-in tool");
   assert.ok(generalist.persistedTools.includes("edit"), "the persisted selection keeps the logical edit capability");
   const resumedOn = { definitions: [] };
   const resumedOnReplaced = __testables.appendChildAnchoredEdit(resumedOn, {
@@ -299,7 +462,12 @@ try {
     owner: CHILD_ONE,
     sessionDir,
   });
-  assert.equal(resumedOnReplaced, true, "resume with anchored editing on re-maps the edit capability to the anchored replace");
+  assert.equal(resumedOnReplaced, true, "resume with anchored editing on re-maps the edit capability to both anchored tools");
+  assert.deepEqual(
+    resumedOn.definitions.map((definition) => definition.name),
+    ["replace", "insert"],
+    "a resumed writable child receives the same replace-plus-insert surface as a fresh one",
+  );
   const resumedOff = { definitions: [] };
   const resumedOffReplaced = __testables.appendChildAnchoredEdit(resumedOff, {
     anchoredEditing: false,

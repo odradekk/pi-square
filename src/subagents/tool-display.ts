@@ -51,6 +51,7 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
     case "edit":
     case "write":
     case "replace":
+    case "insert":
       summary = shortenPath(args?.path || "...");
       break;
     case "search": {
