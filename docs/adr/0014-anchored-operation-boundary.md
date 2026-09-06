@@ -40,7 +40,7 @@ completed operation.
 
 Pi's per-file mutation queue is the outer in-process serializer and the
 anchored cross-process lock is the inner serializer for **every** mutation.
-`replace` and the parent `insert` enter the queue explicitly; parent and
+`replace` and the `insert` of both the parent and writable children enter the queue explicitly; parent and
 child writes are still constructed from Pi's public write factory, but the
 anchored write operation is injected through the factory's supported
 filesystem-operation seam
@@ -298,8 +298,13 @@ logical-line contract: an empty-string item is one real blank logical line
 terminator, so the bytes gain two terminal newlines), and an empty file
 initializes through the synthetic anchor its read serves, with `before` and
 `after` as the same initialization and no insert-specific resource limits.
-The writable-child edit capability remains a later ticket. Shadow Minds
-mutation observation is completed by #288 under the applied-only and
+The writable-child edit capability is no longer a later ticket: since #287 a
+writable child that declares `edit` receives the same renderer-free `insert`
+next to `replace` under the child's own owner partition, with the anchored
+names added to the effective child allowlist, capability-only (never
+requestable by name through the child extension catalog), and re-resolved
+identically on fresh and resumed sessions. Shadow Minds mutation observation
+is completed by #288 under the applied-only and
 path-only trajectory rules recorded in [ADR-0011](0011-shadow-minds.md).
 The parent registers
 `insert` under the same anchored-edit configuration, store-readiness,

@@ -161,6 +161,23 @@ test("anchored editing tools are capability-gated and cannot be requested by nam
     "replace in extensionTools is rejected with the capability-gated error",
   );
   assert.ok(!inExtension.extensionTools.includes("replace"), "replace is never resolved as an extension tool");
+
+  // Insert (#287) is capability-only like replace: it is granted by the edit
+  // capability together with replace and can never be requested by name in
+  // either list, so it never enters the ordinary child extension catalog.
+  const insertInTools = resolveSubagentTools({ tools: ["read", "insert"] }, "linux");
+  assert.ok(
+    insertInTools.errors.some((error) => error.includes("insert") && error.includes("edit capability")),
+    "insert in tools is rejected with the capability-gated error",
+  );
+  assert.ok(!insertInTools.builtInTools.includes("insert"), "insert is never resolved as a built-in tool");
+  const insertInExtension = resolveSubagentTools({ tools: ["read"], extensionTools: ["insert"] }, "linux");
+  assert.ok(
+    insertInExtension.errors.some((error) => error.includes("insert") && error.includes("edit capability")),
+    "insert in extensionTools is rejected with the capability-gated error",
+  );
+  assert.ok(!insertInExtension.extensionTools.includes("insert"), "insert is never resolved as an extension tool");
+  assert.ok(!insertInExtension.errors.some((error) => error.includes("Unsupported extension tool 'insert'")), "the capability-gated rejection wins before the catalog message");
 });
 
 let failed = 0;

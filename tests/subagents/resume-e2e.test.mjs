@@ -186,6 +186,45 @@ test("done subagents resume with the same public and native session IDs", async 
   }
 });
 
+test("fresh and resumed sessions resolve edit to the same anchored mutation surface", async () => {
+  const cwd = root();
+  const id = "subagent_00000000-0000-4000-8000-000000000088";
+  process.env.PI_AGENT_DIR = cwd;
+  state.createCalls = [];
+  state.effectiveSystems = [];
+  state.openedPaths = [];
+  state.prompts = [];
+  state.messageSequence = 0;
+  state.agentsFiles = [];
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const first = await runSubagentTask({
+      ctx: ctx(cwd),
+      id,
+      task: "initial",
+      definition: definition({ tools: ["edit", "ls"] }),
+      anchoredEditing: true,
+    });
+    const fresh = state.createCalls.at(-1);
+    assert.deepEqual([...fresh.tools].sort(), ["insert", "ls", "replace"], "fresh resolution replaces only the edit capability");
+    assert.deepEqual(fresh.customTools.map((tool) => tool.name).sort(), ["insert", "replace"]);
+    assert.ok(fresh.customTools.every((tool) =>
+      tool.renderShell === undefined && tool.renderCall === undefined && tool.renderResult === undefined),
+      "fresh anchored mutation definitions stay renderer-free");
+    assert.deepEqual([...first.details.agent.tools].sort(), ["edit", "ls"], "persistence keeps the logical capability selection");
+
+    await resumeSubagentTask({ ctx: ctx(cwd), id, task: "next", anchoredEditing: true });
+    const resumed = state.createCalls.at(-1);
+    assert.deepEqual([...resumed.tools].sort(), [...fresh.tools].sort(), "resume re-resolves the same allowlist without broadening tools");
+    assert.deepEqual(resumed.customTools.map((tool) => tool.name).sort(), ["insert", "replace"]);
+    assert.ok(resumed.customTools.every((tool) =>
+      tool.renderShell === undefined && tool.renderCall === undefined && tool.renderResult === undefined),
+      "resumed anchored mutation definitions stay renderer-free");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("resume restores original model, tools, effort, and system prompt", async () => {
   const cwd = root();
   const id = "subagent_00000000-0000-4000-8000-000000000082";

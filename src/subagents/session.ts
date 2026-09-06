@@ -9,7 +9,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { createChildAnchoredReadTool } from "../anchored-edit/child-read";
-import { createChildAnchoredReplaceTool } from "../anchored-edit/child-edit";
+import { createChildAnchoredReplaceTool, createChildAnchoredInsertTool } from "../anchored-edit/child-edit";
 import { createChildAnchoredWriteTool } from "../anchored-edit/child-write";
 import { createChildTools } from "../tool-catalog";
 import {
@@ -98,7 +98,7 @@ const ANCHOR_REFUSAL_CODES = new Set([
 ]);
 
 /** Anchored tools whose refusal is a working mechanism, not a failed call. */
-const ANCHORED_TOOL_NAMES = new Set(["replace", "write"]);
+const ANCHORED_TOOL_NAMES = new Set(["replace", "insert", "write"]);
 
 /** Extracts the anchored-refusal code from a child tool result, or undefined.
  *  A warning result from an anchored tool with a refusal code is a working
@@ -336,13 +336,15 @@ function appendChildAnchoredRead(
 }
 
 /**
- * Grants the child the anchored replace tool when the child declares the
- * built-in edit capability and anchored editing is enabled. The definition is
- * the parent's own, executed under the child's owner. Returns true when the
- * edit capability was replaced, so the caller removes the built-in edit tool
- * and adds replace to the session allowlist; the child then has exactly one
- * range-editing path, as the parent does (#187 made replace the only such
- * path by removing revert and the undo store).
+ * Grants the child the anchored replace and insert tools when the child
+ * declares the built-in edit capability and anchored editing is enabled. The
+ * definitions are the parent's own, executed under the child's owner. Returns
+ * true when the edit capability was replaced, so the caller removes the
+ * built-in edit tool and adds both anchored tool names to the session
+ * allowlist; the child then has the same anchored mutation surface as the
+ * parent (replace is the only range-editing path and insert the only adjacent
+ * addition path; #187 removed revert and the undo store, and insert stays
+ * capability-only, never requestable by name).
  */
 function appendChildAnchoredEdit(
   customTools: { definitions: ToolDefinition[] },
@@ -351,6 +353,7 @@ function appendChildAnchoredEdit(
   if (!options.anchoredEditing) return false;
   if (!options.builtInTools.includes("edit")) return false;
   customTools.definitions.push(createChildAnchoredReplaceTool(options.cwd, options.owner, options.sessionDir));
+  customTools.definitions.push(createChildAnchoredInsertTool(options.cwd, options.owner, options.sessionDir));
   return true;
 }
 
@@ -376,13 +379,14 @@ function appendChildAnchoredWrite(
 
 /**
  * Computes the effective built-in tool allowlist after capability resolution:
- * when the child's edit capability was replaced by the anchored replace, the
- * built-in edit tool is removed and the anchored tool name is added so its
- * custom definition stays active in the child session registry.
+ * when the child's edit capability was replaced by the anchored tools, the
+ * built-in edit tool is removed and both anchored tool names are added so
+ * their custom definitions stay active in the child session registry. No
+ * other requested capability changes.
  */
 function resolveChildToolAllowlist(builtInTools: string[], editReplaced: boolean): string[] {
   if (!editReplaced) return [...builtInTools];
-  return [...builtInTools.filter((name) => name !== "edit"), "replace"];
+  return [...builtInTools.filter((name) => name !== "edit"), "replace", "insert"];
 }
 
 function updateSnapshotContext(

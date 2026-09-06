@@ -90,6 +90,14 @@ test("replace summaries name the target file", () => {
   assert.doesNotMatch(formatToolCall("replace", { path: "src/a.txt", secret: "private" }), /private/);
 });
 
+test("insert summaries name the target file", () => {
+  assert.equal(
+    formatToolCall("insert", { path: "src/a.txt", anchor: "abc", direction: "after", lines: ["x"], secret: "private" }),
+    "insert src/a.txt",
+  );
+  assert.doesNotMatch(formatToolCall("insert", { path: "src/a.txt", lines: ["secret-text"] }), /secret-text/);
+});
+
 test("anchored summaries shorten long paths and never leak arguments", () => {
   const long = `nested/${"segment/".repeat(20)}tail.txt`;
   const summary = formatToolCall("replace", { path: long, replacement_text: "secret-text" });
@@ -160,6 +168,21 @@ test("an anchored refusal is recorded as a warning, never as a tool error", () =
   const end = runDetails.timeline.find((item) => item.phase === "end");
   assert.equal(end.isError, false, "the timeline end is not an error");
   assert.equal(end.isWarning, true, "the timeline end carries the warning flag");
+});
+
+test("an anchored insert refusal is recorded as a warning, never as a tool error", () => {
+  const runDetails = details();
+  const code = __testables.classifyToolEnd(
+    runDetails,
+    "insert",
+    { content: [{ type: "text", text: "[E_RANGE_STALE] stale anchor" }], details: { status: "warning", errorCode: "E_RANGE_STALE" } },
+    false,
+  );
+  assert.equal(code, "E_RANGE_STALE");
+  assert.equal(runDetails.toolWarnings.length, 1, "the insert refusal lands in the warnings list");
+  assert.equal(runDetails.toolWarnings[0].tool, "insert");
+  assert.match(runDetails.toolWarnings[0].message, /\[E_RANGE_STALE\]/);
+  assert.equal(runDetails.toolErrors.length, 0, "an insert refusal is not a tool error");
 });
 
 test("a thrown write-lock refusal is reclassified to a warning, not a failure", () => {
