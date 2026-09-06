@@ -1,7 +1,7 @@
-# `libs`
+# `library_search`
 
 **Family:** remote · **Scope:** parent and child · **Owner:**
-`src/web/tools/libs.ts`, rendered by `src/display/remote-adapters.ts`
+`src/web/tools/library-search.ts`, rendered by `src/display/remote-adapters.ts`
 
 **Status:** Implemented.
 

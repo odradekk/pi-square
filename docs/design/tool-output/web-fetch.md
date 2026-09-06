@@ -1,7 +1,7 @@
-# `fetch`
+# `web_fetch`
 
 **Family:** remote · **Scope:** parent and child · **Owner:**
-`src/web/tools/fetch.ts`, rendered by `src/display/remote-adapters.ts`
+`src/web/tools/web-fetch.ts`, rendered by `src/display/remote-adapters.ts`
 
 **Status:** Implemented.
 

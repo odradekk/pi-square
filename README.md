@@ -8,7 +8,7 @@
 
 # pi-square
 
-`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text and file search, persistent SSH shells, web, PDF, and documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
+`pi-square` is a unified extension package for Pi. It provides Prompt Manager, session tools, local text and file search, persistent SSH shells, web search and fetch, library documentation tools, subagents, a unified operational interface TUI, and PowerShell execution.
 
 ## Installation
 
@@ -79,10 +79,6 @@ pi-square no longer ships text-search or file-discovery tools. Local search is t
 
 Pi resolves the `rg` and `fd` executables itself: it uses its own tools directory, then `PATH`, and otherwise downloads the current release from GitHub on first use. Search is therefore unavailable in an environment that has neither executable and no network access to GitHub, including a session started with `PI_OFFLINE=1`, a restricted corporate proxy, and Android/Termux, where Pi never downloads. Install ripgrep and fd through the platform package manager in such an environment.
 
-The local `pdf_search` tool accepts a workspace PDF `path`, a required `query`, and an optional result `limit` from 1-20 (default 10). It uses exact `pdfjs-dist` `6.1.200` with package-local CMap, standard-font, and WASM assets to extract embedded text page by page without network access. Unicode NFKC, case, whitespace, CJK spacing, and line-end hyphen normalization run before exact phrase matching; queries of 6-11 characters allow one edit, and longer queries allow at most 15% edits capped at four. Exact matches rank first. Each result contains the page, match type, score, edit count, matched text, and approximately 200 characters of best-effort context so the caller can select pages for `parse`.
-
-`pdf_search` canonicalizes paths through symlinks, rejects encrypted, malformed, non-PDF, and textless/scanned documents, and supports at most 50 MB, 1,000 pages, 1,000,000 extracted characters per page, and 20,000,000 per document. Extraction times out after 30 seconds and returns no partial search result. Page text is kept only in a session-local LRU keyed by canonical file identity; changed files invalidate immediately, one entry is limited to 64 MiB, the cache to 128 MiB, and nothing is written to disk. Complex columns, tables, formulae, and rotated text have best-effort context ordering; OCR and semantic search are out of scope. The parent registers the tool by default, and trusted child definitions may request it explicitly through `extensionTools`; no bundled child profile enables it by default.
-
 ## Subagent tools
 
 Delegation uses four model-callable tools. `delegate_subagent` and `resume_subagent` are background-only queueing tools: `delegate_subagent` queues a fresh child with a required `task` plus optional `agent`, `context`, `cwd`, `model`, and `thinkingLevel` overrides, and immediately returns the child's new public ID and queued state; blank optional strings are treated as unset so they never override YAML definition or parent-session values. `resume_subagent` queues a continuation for an inactive persisted child with `id`, `task`, and optional `context`, and immediately returns the same public ID and queued state. A resume reuses the frozen child history, prompt, model, effort, tools, skills, and working directory of the original run, and a child with an effective activity lease is rejected immediately with a specific `SUBAGENT_ACTIVE` error before anything is queued. Finished results arrive through the background completion delivery described below. `wait_subagent` joins one to six current-session background runs explicitly: it accepts a strict `ids` array, deduplicates repeated IDs while preserving first-occurrence order, validates the complete request before any state change, and rejects an unknown, foreign, ineligible, already-claimed, or already-sent ID together with the whole call. `abort_subagent` stops one to six current-session background runs explicitly: it applies the same strict `ids` validation, then applies the cancellation seam to every active target and returns only after each has actually stopped.
@@ -137,7 +133,7 @@ instructions: |
 output: |
   Return findings, relevant files, gaps, and confidence.
 tools: [read, ls]
-extensionTools: [pdf_search]
+extensionTools: [web_search]
 skills: [none]
 visible: true
 ```
@@ -149,7 +145,7 @@ The three visible package roles are intentionally complementary. Reach for `craw
 | Role | Responsibility | Default capabilities |
 | --- | --- | --- |
 | `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `grep`, `find`; no skills |
-| `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `search`, `fetch`, `libs`, `docs`; no skills |
+| `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `web_search`, `web_fetch`, `library_search`, `library_docs`; no skills |
 | `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, read, search, web, Context7, and all discovered skills |
 
 Agent and project overlays remain free to define roles with any name, including the retired `oracle` and `librarian` names. Existing agent/project overlays are trusted local definitions and are not renamed automatically, so migrate those filenames and `name` fields explicitly when the new package roles should apply.
@@ -224,8 +220,8 @@ What ships today:
   trajectory, the Shadow responsibility, the canonical output schema, and
   the note. The child's evidence tools come from the approved strictly
   read-only Shadow-safe catalog — local `read`, `grep`, `find`, `ls`,
-  `pdf_search`, plus the public `search`, `fetch`, `libs`, `docs` remote
-  tools when a definition lists them — built
+  plus the public `web_search`, `web_fetch`, `library_search`,
+  `library_docs` remote tools when a definition lists them — built
   from Pi public factories and child-safe pi-square factories, never from
   parent registry overrides; omitted `tools` select the default local
   evidence set, `tools: []` keeps the no-tool trial, and required tools must
@@ -385,7 +381,7 @@ The parent session exposes one `ssh` tool for bounded persistent remote POSIX sh
 
 Profiles and target fingerprints are accepted only from agent-level `config/pi-square.json`; a project layer containing `ssh` is rejected atomically. Selecting a non-default allowlisted target requires confirmation the first time that exact endpoint is used in each parent Pi session. Remote commands run without per-command confirmation after a session connects; the profile/target allowlist, pinned host verification, and alternate-target confirmation remain the authorization boundary. Unknown and changed host keys fail closed.
 
-Pi exposes only one extension confirmation selector at a time, so pi-square serializes its remaining SSH endpoint and Firecrawl upload confirmations in FIFO order. Only the confirmation prompts are serialized; approved operations can continue concurrently.
+Pi exposes only one extension confirmation selector at a time, so pi-square serializes its remaining SSH endpoint confirmations in FIFO order. Only the confirmation prompts are serialized; approved operations can continue concurrently.
 
 Connections live only for the current parent Pi session. The default limits are eight sessions globally, three per profile, and a 30-minute idle timeout; running foreground commands are not treated as idle. Handshake and transport errors remain contained within the SSH tool, and transport loss invalidates the session instead of silently reconnecting with lost shell state. Output uses a raw 256 KiB in-memory ring per session and 24,000-character cursor pages, reports expired cursors and truncation, and never spills remote output to local files. Model and TUI copies apply bounded single-line terminal semantics before removing remaining controls, so carriage-return, backspace, and erase-line progress refreshes retain only their latest visible state while newline-completed logs remain intact. Profile and session listings are also bounded. The first version supports direct connections and Bourne-compatible POSIX shells; full-screen TUI programs, SFTP/remote file tools, ProxyJump, proxies, port forwarding, arbitrary targets, child-agent access, and cross-Pi-session persistence are out of scope.
 
@@ -407,25 +403,24 @@ tools:
 
 `shell` resolves to built-in bash off Windows and extension tool pwsh on Windows, and the logical capability is persisted so resumed sessions re-resolve it for the current platform. Explicit platform-incompatible shell names are rejected. Existing persisted definitions containing the former `bash` plus `pwsh` pair, or the old full built-in default list, migrate to `shell` during resume.
 
-## Web parsing and documentation tools
+## Web and library documentation tools
 
-The `search`, `fetch`, `libs`, and `docs` tools run through Jina and Context7 and use the shared operational interface renderer. Calls expose allowlisted query, URL, mode, limit, and cache metadata. Collapsed results show bounded counts, status, phase, truncation, and error metadata without result content; expanded results reveal the unchanged model-facing ranked or Markdown text within the configured display budget. Display copies remove terminal controls, neutralize unsafe credential forms, and preserve provider ordering.
+The `web_search` and `web_fetch` tools run through Jina, and the `library_search` and `library_docs` tools run through Context7; all four use the shared operational interface renderer. `library_search` discovers library candidates and exact Context7 library IDs, and `library_docs` retrieves bounded documentation for one exact library ID — pass the ID returned by `library_search` into `library_docs`. Calls expose allowlisted query, URL, mode, limit, and cache metadata. Collapsed results show bounded counts, status, phase, truncation, and error metadata without result content; expanded results reveal the unchanged model-facing ranked or Markdown text within the configured display budget. Display copies remove terminal controls, neutralize unsafe credential forms, and preserve provider ordering.
 
-The parent-only `parse` tool reads explicitly selected pages from a workspace-local PDF through Firecrawl `POST /v2/parse`. `path` and `pages` are required; `pages` accepts comma-separated positive page numbers and ascending ranges such as `"1"`, `"1-3"`, or `"6, 1-4, 3, 20-22"`. Selections are sorted and de-duplicated, so the last example becomes `1-4, 6, 20-22`. A call may select at most 50 unique pages. `mode` accepts `fast`, `auto` (the default), or `ocr`; `timeout` accepts 30,000-300,000 ms; and `max_tokens` bounds the local Markdown result from 500-50,000 estimated tokens with a 12,000-token default.
-
-Before any upload, `parse` canonicalizes the path below the session cwd, rejects symlink escapes, non-PDF content, files over 50 MB, encrypted PDFs, malformed expressions, and pages beyond the document. It uses exact `@cantoo/pdf-lib` `2.7.3` to copy the sorted selected pages into an in-memory PDF, then presents an interactive confirmation containing the relative path, pages, mode, and fixed `https://api.firecrawl.dev/v2/parse` destination. Declining or cancelling sends nothing. Successful calls make one multipart request with no automatic retry, return one merged Markdown document plus bounded metadata, and explicitly report local truncation. Firecrawl does not guarantee per-page Markdown boundaries.
-
-Set `FIRECRAWL_API_KEY` or add the key to Pi-owned `auth.json`; the environment variable takes precedence:
+Set `JINA_API_KEY` and `CONTEXT7_API_KEY`, or add the keys to Pi-owned `auth.json`; environment variables take precedence:
 
 ```json
 {
-  "firecrawl": {
-    "key": "fc-..."
+  "jina": {
+    "key": "jina-..."
+  },
+  "context7": {
+    "key": "ctx7-..."
   }
 }
 ```
 
-The key is redacted from content, errors, details, and rendering. Zero Data Retention is deliberately disabled, so Firecrawl's standard data handling applies; PDF parsing may consume per-page credits under the account's current plan. The tool is not exposed to child sessions because every local-file upload requires parent-session confirmation. Tests use generated PDFs and mocked HTTP only; an optional real one-page validation requires separate approval, a non-sensitive fixture, and configured credits.
+The keys are redacted from content, errors, details, and rendering. `web_fetch` keeps its ordinary generic HTTP(S) behavior: it accepts any ordinary URL, including a remote PDF URL when the Jina Reader can process it, with no dedicated PDF handling.
 
 ## Built-in ownership and adapters
 

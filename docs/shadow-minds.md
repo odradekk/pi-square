@@ -118,7 +118,7 @@ priority: 0
 triggers: [tool_turn, completion]
 delivery: steer
 completionGate: false
-tools: [read, grep, find, ls, pdf_search, search]
+tools: [read, grep, find, ls, web_search, web_fetch]
 timeoutSeconds: 120
 maxTurns: 8
 maxToolCalls: 16
@@ -207,14 +207,14 @@ replaying paused events. Manual trials always stay available.
 ## Tool and model boundaries
 
 The Shadow-safe tool catalog is exactly: `read`, `grep`, `find`, `ls`,
-`pdf_search`, `search`, `fetch`, `libs`, `docs`. Omitted
+`web_search`, `web_fetch`, `library_search`, `library_docs`. Omitted
 `tools` select the default local evidence set (`read`, `grep`, `find`,
-`ls`); `tools: []` is the no-tool trial. Shell, file writes, SSH, Firecrawl
-parse, and delegation are excluded capabilities — a
+`ls`); `tools: []` is the no-tool trial. Shell, file writes, SSH, and
+delegation are excluded capabilities — a
 requested-but-excluded tool drops with a run-start warning, while a
-`requiredTools` miss fails before prompting. `pdf_search` is an explicit
-opt-in outside the default local evidence set; a definition lists it in
-`tools` when a task needs local PDF evidence.
+`requiredTools` miss fails before prompting. The remote evidence tools are
+explicit opt-ins outside the default local evidence set; a definition lists
+them in `tools` when a task needs web or library evidence.
 
 Models: omitting `model` inherits the activating parent model; an explicit
 `provider/model-id` resolves through the registry and requires configured

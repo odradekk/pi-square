@@ -47,13 +47,13 @@ lifecycle, and never inherits Subagent write policy, resume, or artifacts.
 ### Strict read-only policy
 
 Every run's tool envelope comes from the closed Shadow-safe catalog
-(`read`, `grep`, `find`, `ls`, `pdf_search`, `search`, `fetch`, `libs`,
-`docs`) built from Pi public factories and child-safe
-read-only extension factories — never parent registry overrides. Shell,
-writes, SSH, Firecrawl parse, and delegation are
+(`read`, `grep`, `find`, `ls`, `web_search`, `web_fetch`,
+`library_search`, `library_docs`) built from Pi public factories and
+child-safe read-only extension factories — never parent registry
+overrides. Shell, writes, SSH, and delegation are
 excluded capabilities: requested-but-excluded tools drop with visible
-warnings, while required ones fail before prompting. The optional
-`pdf_search` capability stays an explicit opt-in. No runnable package-owned
+warnings, while required ones fail before prompting. The remote evidence
+tools stay explicit opt-ins. No runnable package-owned
 Shadow definition ships (#188): the two packaged Markdown files are
 never-discovered format/schema references, not tool-bearing roles. The
 governance text restates the boundary for the model, and the envelope hash
