@@ -228,7 +228,10 @@ levels the model supports.
 Every run is one fresh, one-time child session with the versioned Shadow
 SYSTEM (governance plus the frozen parent core and project rules
 for that task) and a reference-only trajectory view of the parent's visible
-branch. Timeouts, turn limits, and tool-call budgets are enforced at native
+branch. The closed projection exposes only cleaned, bounded allowlisted fields
+for known tools; anchored `replace` and `insert` calls expose only `path`, not
+anchors, direction, line payloads, or result bodies. Timeouts, turn limits,
+and tool-call budgets are enforced at native
 pre-model and pre-validation boundaries; timeouts, cancellations, and model
 failures are observable lifecycle data, never results.
 

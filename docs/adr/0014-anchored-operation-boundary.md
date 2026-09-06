@@ -298,8 +298,10 @@ logical-line contract: an empty-string item is one real blank logical line
 terminator, so the bytes gain two terminal newlines), and an empty file
 initializes through the synthetic anchor its read serves, with `before` and
 `after` as the same initialization and no insert-specific resource limits.
-The writable-child edit capability and Shadow Minds mutation observation
-remain deliberately later tickets. The parent registers
+The writable-child edit capability remains a later ticket. Shadow Minds
+mutation observation is completed by #288 under the applied-only and
+path-only trajectory rules recorded in [ADR-0011](0011-shadow-minds.md).
+The parent registers
 `insert` under the same anchored-edit configuration, store-readiness,
 anchored-read ownership, and conflict gates as `replace`.
 

@@ -49,16 +49,18 @@ function assistantCall(parts) {
   // #288: the anchored insert projects only its bounded path field; anchor,
   // direction, and line payloads never reach the trajectory, and the result
   // body collapses to a scale descriptor.
+  const longPath = `src/${"a".repeat(90)}-PATH-TAIL.ts`;
   const trajectory = buildTrajectory([
     assistantCall([toolCall("ci", "insert", {
-      path: "src/a.ts",
+      path: longPath,
       anchor: "aB3",
       direction: "before",
       lines: ["INSERTED-PAYLOAD-LINE", "SECOND-PAYLOAD-LINE"],
     })]),
     toolResult("ci", "insert", [{ type: "text", text: "+ qW5│RESULT-DIFF-ROW\nunchanged context" }]),
   ]);
-  assert.match(trajectory.text, /tool insert ok · path=src\/a\.ts · 2 lines/);
+  assert.match(trajectory.text, /tool insert ok · path=src\/a+… · 2 lines/);
+  assert.ok(!trajectory.text.includes("PATH-TAIL"), "the path projection is bounded");
   assert.ok(!trajectory.text.includes("INSERTED-PAYLOAD-LINE"), "line payloads never reach the trajectory");
   assert.ok(!trajectory.text.includes("aB3"), "anchors never reach the trajectory");
   assert.ok(!trajectory.text.includes("before"), "non-registry argument fields never reach the trajectory");
