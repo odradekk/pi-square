@@ -1,5 +1,44 @@
 # @odradekk/pi-square
 
+## 14.1.0
+
+### Minor Changes
+
+- e0d2249: Complete blank-line and empty-file semantics for the anchored `insert` tool (#286)
+
+  - An empty-string `lines` item is now one real blank logical line instead of a rejected input: in normalized LF terms it adds one LF before a first row, one blank row between neighboring rows, and — appended after an unterminated last row — the two terminal LFs the blank row needs to exist; the empty `lines` array and embedded CR/LF remain rejected.
+  - An empty file is no longer refused: its anchored read serves one synthetic anchor row (`HASH│` with empty content), and `insert` initializes the file with exactly the requested logical lines, terminated, with `before` and `after` as the same initialization; a BOM is preserved and an empty file defaults to LF.
+  - Authorization, publication, and safety are unchanged: the synthetic anchor must be served for the empty file's exact content version like any other anchor, BOM and LF/CRLF/CR conventions and non-blank terminal-newline states are preserved, and all #285 operation-boundary guarantees (owner-scoped version-bound publication, literal content, truthful post-commit results) carry over.
+  - Metrics report every requested logical line, blank ones included, as added with zero removed, while the authoritative diff keeps the truthful remove/re-add representation the diff library produces when EOF terminator bytes change.
+  - The empty-file read and auto-read hints and the insert/read prompts now state the logical-line, blank-line, and synthetic-anchor contract explicitly.
+
+- 72c300b: Add the parent-only anchored `insert` tool (#285)
+
+  - `insert` adds one or more literal lines immediately before or after one observed 3-char HASH anchor in an existing non-empty file, through the same per-target operation boundary, safety, publication, and calm operational display treatment as anchored `replace`; the anchor line itself is never modified and the request is a strict object schema (`anchor`, `direction` ∈ {`before`, `after`}, `lines`) with no replace-specific fields.
+  - Insertion authorization is version-bound and mandatory for every owner, the parent included: the target anchor must have been served for the file's exact current content version, and stale, ambiguous, or unserved refusals change nothing and return bounded current anchored context whose immediate retry is authorized.
+  - A successful insert returns an authoritative anchored unified diff and accurate metrics (inserted lines added, zero removed); under `anchoredEditing.autoRead` the diff's visible rows are served as fresh anchors, and a post-commit state-publication failure keeps the truthful success with a bounded `[E_STATE_UNAVAILABLE]` warning.
+  - `Insert` joins the operational display's mutation family with normalized-path targeting and diff-only success evidence; anchored-read and editing prompts now prefer `insert` for adjacent additions and `replace` for modification or deletion, while the `replace` API and behavior are unchanged.
+  - Empty-file insertion, empty-string line items, the writable-subagent edit capability, and Shadow Minds mutation observation stay outside this slice (follow-ups #286, #287, #288).
+
+- a2fe832: Observe anchored insert mutations in Shadow Minds (#288)
+
+  - The automatic `mutation` trigger's closed Pi/pi-square mutation-tool set now includes the parent `insert` tool introduced by #285, alongside `edit`, `write`, and `replace`.
+  - An `insert` counts as a mutation only from its structured successful outcome (`metrics.classification: "applied"`), never from the invocation alone: stale, unserved, ambiguous, invalid, and locked refusals, cancellations before the commit, and failed calls never fire a false review trigger, while a successful insert carrying autocorrection warnings does.
+  - The truthful post-commit rule is preserved: an insert whose file commit succeeded but whose anchor-state publication later failed keeps its `applied` classification and remains an observed mutation.
+  - The Shadow trajectory projection exposes only the bounded safe `path` field for `insert`; anchors, directions, line payloads, and diff bodies never reach a Shadow run's evidence.
+  - `insert` stays excluded from the strictly read-only Shadow-safe tool catalog: requesting it drops with a warning and requiring it fails before prompting, so Shadow children can never execute it.
+
+- abc3f7a: Grant the anchored `insert` tool to writable subagents through the `edit` capability (#287)
+
+  - A writable child that declares `edit` with anchored editing on now receives the renderer-free anchored `replace` and `insert` definitions under its own anchor-store owner, and Pi's built-in `edit` tool stays absent; the effective child allowlist gains both anchored names while every unrelated requested capability is unchanged, and fresh and resumed sessions re-resolve the capability to the same surface.
+  - Child inserts verify the target anchor against the child's own served rows for the exact current content version, like the parent insert: a call naming anchors the child never read is refused recoverably with `[E_RANGE_STALE]` and fresh feedback rows, so the immediate retry succeeds; blank-line, empty-file initialization, external-target, and missing-target semantics match the parent tool, and the shared operation boundary keeps parent/child serialization, cross-process locking, and truthful post-commit behavior.
+  - `insert` stays capability-only: requesting it by name in `tools` or `extensionTools` is rejected with the anchored capability-gated error, and it is not part of the ordinary child extension tool catalog.
+  - Child tool summaries name the insert target file, and an anchored insert refusal renders as a warning qualifier (an anchored refusal, not a failed call) in activity, manager, and notification views.
+
+### Patch Changes
+
+- 691d670: Accept Pi's native `max` thinking level for fresh, inherited, and resumed subagent runs.
+
 ## 14.0.0
 
 ### Major Changes
