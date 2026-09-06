@@ -5,7 +5,7 @@
 
 **Status:** Implemented.
 
-`fetch` uses the remote-record grammar of [search.md](search.md). This
+`web_fetch` uses the remote-record grammar of [web-search.md](web-search.md). This
 document records only what differs.
 
 ## Current output
@@ -37,7 +37,7 @@ Expanded:
 
 ## Defects
 
-The remote-record defects 48 to 53 of [search.md](search.md) apply. In
+The remote-record defects 48 to 53 of [web-search.md](web-search.md) apply. In
 addition:
 
 | # | Defect | Convention |
@@ -66,7 +66,7 @@ One row (C4). The inline summary states the fetched page counts:
 ```
 
 The records render only when the entry is expanded, one record per URL, two
-rows, in the layout of [search.md](search.md):
+rows, in the layout of [web-search.md](web-search.md):
 
 ```
 │    1  Example Domain

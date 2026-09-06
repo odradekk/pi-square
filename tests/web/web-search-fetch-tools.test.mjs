@@ -207,7 +207,7 @@ test("registerWebFetchTool registers tool named web_fetch", () => {
   assert.ok(tools.has("web_fetch"));
 });
 
-// === Search: content regression + details ===
+// === Web search: content regression + details ===
 
 test(
   "search content is the stable ranked text and details.results carries provenance",
@@ -267,7 +267,7 @@ test(
   }),
 );
 
-test("search fails before network when key missing", async () => {
+test("web_search fails before network when key missing", async () => {
   const savedKey = process.env.JINA_API_KEY;
   const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   delete process.env.JINA_API_KEY;
@@ -286,7 +286,7 @@ test("search fails before network when key missing", async () => {
   }
 });
 
-// === Fetch: content regression + offset details ===
+// === Web fetch: content regression + offset details ===
 
 test(
   "search partial failure with no results preserves the per-query error details",
@@ -401,7 +401,7 @@ test(
   }),
 );
 
-test("fetch fails before network when key missing", async () => {
+test("web_fetch fails before network when key missing", async () => {
   const savedKey = process.env.JINA_API_KEY;
   const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   delete process.env.JINA_API_KEY;

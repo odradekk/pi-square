@@ -5,15 +5,15 @@ import { errorMessage, isAbortError } from "../shared/errors";
 import { searchJina, type JinaSearchEntry } from "../clients/jina";
 import { normalizeUrl } from "../shared/render";
 import {
-  DEFAULT_SEARCH_LIMIT,
-  MAX_SEARCH_LIMIT,
-  MIN_SEARCH_LIMIT,
+  DEFAULT_WEB_SEARCH_LIMIT,
+  MAX_WEB_SEARCH_LIMIT,
+  MIN_WEB_SEARCH_LIMIT,
   RRF_K,
-  type SearchDetails,
-  type SearchFailedQuery,
-  type SearchResult,
-  type SearchResultDetail,
-  type SearchResultMatch,
+  type WebSearchDetails,
+  type WebSearchFailedQuery,
+  type WebSearchResult,
+  type WebSearchResultDetail,
+  type WebSearchResultMatch,
 } from "../types";
 
 interface MergedEntry {
@@ -22,7 +22,7 @@ interface MergedEntry {
   description: string;
   normalizedUrl: string;
   score: number;
-  matches: SearchResultMatch[];
+  matches: WebSearchResultMatch[];
   bestRank: number;
   firstQueryIndex: number;
 }
@@ -48,14 +48,14 @@ function clampInteger(value: unknown, fallback: number, minimum: number, maximum
   return Math.max(minimum, Math.min(maximum, Math.floor(parsed)));
 }
 
-function searchInputError(queries: string[], count: number, message: string) {
+function webSearchInputError(queries: string[], count: number, message: string) {
   return {
     content: [{ type: "text" as const, text: `Error: ${message}` }],
-    details: { queries, failedQueries: [], count, phase: "done", error: message } as SearchDetails,
+    details: { queries, failedQueries: [], count, phase: "done", error: message } as WebSearchDetails,
   };
 }
 
-function formatProvenance(matches: SearchResultMatch[], queries: string[]): string {
+function formatProvenance(matches: WebSearchResultMatch[], queries: string[]): string {
   const parts = matches.map((m) => {
     const qi = queries.indexOf(m.query);
     return `q${qi >= 0 ? qi + 1 : 1}#${m.rank}`;
@@ -77,7 +77,7 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
         description: "One to three search queries (trimmed and de-duplicated)",
       }),
       limit: Type.Optional(
-        Type.Number({ minimum: MIN_SEARCH_LIMIT, maximum: MAX_SEARCH_LIMIT, description: `Maximum results after merging (default: ${DEFAULT_SEARCH_LIMIT})` }),
+        Type.Number({ minimum: MIN_WEB_SEARCH_LIMIT, maximum: MAX_WEB_SEARCH_LIMIT, description: `Maximum results after merging (default: ${DEFAULT_WEB_SEARCH_LIMIT})` }),
       ),
       sites: Type.Optional(
         Type.Array(Type.String(), {
@@ -99,7 +99,7 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
         .filter((query: string) => query.length > 0);
       const queries: string[] = [...new Set<string>(rawQueries)];
 
-      const count = clampInteger(params.limit, DEFAULT_SEARCH_LIMIT, MIN_SEARCH_LIMIT, MAX_SEARCH_LIMIT);
+      const count = clampInteger(params.limit, DEFAULT_WEB_SEARCH_LIMIT, MIN_WEB_SEARCH_LIMIT, MAX_WEB_SEARCH_LIMIT);
 
       const siteInputs: string[] = (Array.isArray(params.sites) ? params.sites : [])
         .map((site: unknown) => String(site).trim())
@@ -114,22 +114,22 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
       const country = countryInput ? countryInput.toUpperCase() : undefined;
 
       if (queries.length === 0) {
-        return searchInputError([], count, "At least one non-empty query is required");
+        return webSearchInputError([], count, "At least one non-empty query is required");
       }
       if (queries.length > 3) {
-        return searchInputError(queries, count, "At most three unique queries are allowed");
+        return webSearchInputError(queries, count, "At most three unique queries are allowed");
       }
       if (siteInputs.length > 5) {
-        return searchInputError(queries, count, "At most five sites are allowed");
+        return webSearchInputError(queries, count, "At most five sites are allowed");
       }
       if (invalidSites.length > 0) {
-        return searchInputError(queries, count, `Invalid site: ${invalidSites.join(", ")}`);
+        return webSearchInputError(queries, count, `Invalid site: ${invalidSites.join(", ")}`);
       }
       if (languageInput && !/^[A-Za-z]{2}$/.test(languageInput)) {
-        return searchInputError(queries, count, "language must be a two-letter code");
+        return webSearchInputError(queries, count, "language must be a two-letter code");
       }
       if (countryInput && !/^[A-Za-z]{2}$/.test(countryInput)) {
-        return searchInputError(queries, count, "country must be a two-letter code");
+        return webSearchInputError(queries, count, "country must be a two-letter code");
       }
 
       const apiKey = getServiceKey("jina", "JINA_API_KEY");
@@ -147,13 +147,13 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
             count,
             phase: "done",
             error: "Missing JINA_API_KEY",
-          } as SearchDetails,
+          } as WebSearchDetails,
         };
       }
 
       onUpdate?.({
         content: [{ type: "text" as const, text: "Searching..." }],
-        details: { queries, failedQueries: [], count, phase: "searching" } as SearchDetails,
+        details: { queries, failedQueries: [], count, phase: "searching" } as WebSearchDetails,
       });
 
       try {
@@ -178,7 +178,7 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
           }),
         );
 
-        const failedQueries: SearchFailedQuery[] = queryOutcomes
+        const failedQueries: WebSearchFailedQuery[] = queryOutcomes
           .filter((o): o is { ok: false; qi: number; query: string; error: string } => !o.ok)
           .map((o) => ({ query: o.query, error: o.error }));
 
@@ -196,13 +196,13 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
               count,
               phase: "done",
               error,
-            } as SearchDetails,
+            } as WebSearchDetails,
           };
         }
 
         onUpdate?.({
           content: [{ type: "text" as const, text: "Merging results..." }],
-          details: { queries, failedQueries, count, phase: "merging" } as SearchDetails,
+          details: { queries, failedQueries, count, phase: "merging" } as WebSearchDetails,
         });
 
         const merged = new Map<string, MergedEntry>();
@@ -249,7 +249,7 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
 
         const limited = sorted.slice(0, count);
 
-        const results: SearchResult[] = limited.map((e) => ({
+        const results: WebSearchResult[] = limited.map((e) => ({
           title: e.title,
           url: e.url,
           description: e.description,
@@ -258,7 +258,7 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
 
         // Lightweight structured copy for TUI rendering; the full model text
         // is assembled separately below and must stay byte-for-byte stable.
-        const resultDetails: SearchResultDetail[] = results.map((r) => ({
+        const resultDetails: WebSearchResultDetail[] = results.map((r) => ({
           title: r.title,
           url: r.url,
           description: r.description,
@@ -285,19 +285,19 @@ export function createWebSearchToolDefinition(): ToolDefinition<any, any> {
             totalBeforeDedup,
             totalAfterDedup: sorted.length,
             results: resultDetails,
-          } as SearchDetails,
+          } as WebSearchDetails,
         };
       } catch (error) {
         if (isAbortError(error)) {
           return {
             content: [{ type: "text" as const, text: "Search cancelled." }],
-            details: { queries, failedQueries: [], count, phase: "done", error: "Cancelled" } as SearchDetails,
+            details: { queries, failedQueries: [], count, phase: "done", error: "Cancelled" } as WebSearchDetails,
           };
         }
         const message = errorMessage(error);
         return {
           content: [{ type: "text" as const, text: `Search error: ${message}` }],
-          details: { queries, failedQueries: [], count, phase: "done", error: message } as SearchDetails,
+          details: { queries, failedQueries: [], count, phase: "done", error: message } as WebSearchDetails,
         };
       }
     },

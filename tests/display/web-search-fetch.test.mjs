@@ -66,7 +66,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   );
 }
 
-// ═══════════════════════ SEARCH ═════════════════════════════════════
+// ═════════════════════ web_search ══════════════════════════════════
 
 // ─── 1. Lifecycle markers through production decoration path ─────────
 
@@ -80,7 +80,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   };
   const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), { environment: { isTTY: true }, clock });
   const decorated = decorateInternalTool(makeDef("web_search"), () => runtime);
-  assert.equal(decorated.renderShell, "self", "search uses self render shell");
+  assert.equal(decorated.renderShell, "self", "web_search uses self render shell");
 
   const args = { queries: ["typescript generics"] };
   const state = {};
@@ -104,7 +104,7 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 2. Search titles retain deduplicated queries as target ─────────
+// ─── 2. Web search titles retain deduplicated queries as target ─────────
 
 {
   const runtime = newRuntime();
@@ -257,9 +257,9 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-// ═══════════════════════ FETCH ═════════════════════════════════════
+// ═════════════════════ web_fetch ════════════════════════════════════
 
-// ─── 9. Fetch titles retain safe normalized URLs as target ──────────
+// ─── 9. Web fetch titles retain safe normalized URLs as target ──────────
 
 {
   const runtime = newRuntime();
@@ -399,10 +399,10 @@ function renderResult(decorated, args, details, text, opts = {}) {
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
     assert.ok(expandedResult.render(width).every((line) => visibleWidth(line) <= width), `search result bounded at ${width}`);
   }
-  const fetchDecorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
-  const fetchResult = renderResult(fetchDecorated, { urls: ["https://example.com/page1"], mode: "readable" }, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "## Page\n\nContent", { expanded: true });
+  const webFetchDecorated = decorateInternalTool(makeDef("web_fetch"), () => runtime);
+  const webFetchResult = renderResult(webFetchDecorated, { urls: ["https://example.com/page1"], mode: "readable" }, { urls: ["https://example.com/page1"], succeeded: 1, failed: 0, phase: "done" }, "## Page\n\nContent", { expanded: true });
   for (const width of [39, 40, 63, 64, 80, 99, 100, 120]) {
-    assert.ok(fetchResult.render(width).every((line) => visibleWidth(line) <= width), `fetch result bounded at ${width}`);
+    assert.ok(webFetchResult.render(width).every((line) => visibleWidth(line) <= width), `fetch result bounded at ${width}`);
   }
 
   runtime.dispose();
@@ -421,4 +421,4 @@ function renderResult(decorated, args, details, text, opts = {}) {
   runtime.dispose();
 }
 
-console.log("web search and fetch display tests: OK");
+console.log("web_search and web_fetch display tests: OK");

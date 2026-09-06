@@ -45,9 +45,10 @@ while unrelated IDs stay active.
 Definitions and project text can never expand the fixed read-only Shadow
 tool catalog. Required tools that are excluded or unavailable fail before
 any model prompt; optional unavailable tools drop with a visible warning.
-The catalog is composed of Pi built-in `read`, `grep`, `find`, `ls` plus the
-opt-in local evidence tools; shell, writes, SSH, Firecrawl parse, and
-delegation are excluded.
+The catalog is composed of the default Pi built-ins `read`, `grep`, `find`,
+`ls` plus the optional opt-in remote evidence tools `web_search`, `web_fetch`,
+`library_search`, and `library_docs`; shell, writes, SSH, and delegation are
+excluded.
 
 ## Contract
 

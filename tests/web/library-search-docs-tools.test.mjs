@@ -121,7 +121,7 @@ function test(name, fn) {
 
 // === Schema tests ===
 
-test("libs schema has libraryName, query, mode, limit", () => {
+test("library_search schema has libraryName, query, mode, limit", () => {
   const def = createLibrarySearchToolDefinition();
   const props = def.parameters.properties;
   assert.ok(props.libraryName, "libraryName required");
@@ -132,7 +132,7 @@ test("libs schema has libraryName, query, mode, limit", () => {
   assert.equal(def.parameters.required?.includes("query"), true);
 });
 
-test("libs limit default is 5, range 1-10", () => {
+test("library_search limit default is 5, range 1-10", () => {
   const def = createLibrarySearchToolDefinition();
   const limit = def.parameters.properties.limit;
   assert.equal(limit.default, 5);
@@ -140,7 +140,7 @@ test("libs limit default is 5, range 1-10", () => {
   assert.equal(limit.maximum, 10);
 });
 
-test("docs schema has libraryId, query, mode, kind, max_tokens", () => {
+test("library_docs schema has libraryId, query, mode, kind, max_tokens", () => {
   const def = createLibraryDocsToolDefinition();
   const props = def.parameters.properties;
   assert.ok(props.libraryId, "libraryId required");
@@ -152,7 +152,7 @@ test("docs schema has libraryId, query, mode, kind, max_tokens", () => {
   assert.equal(def.parameters.required?.includes("query"), true);
 });
 
-test("docs max_tokens default is 12000, range 500-50000", () => {
+test("library_docs max_tokens default is 12000, range 500-50000", () => {
   const def = createLibraryDocsToolDefinition();
   const mt = def.parameters.properties.max_tokens;
   assert.equal(mt.default, 12000);
@@ -160,7 +160,7 @@ test("docs max_tokens default is 12000, range 500-50000", () => {
   assert.equal(mt.maximum, 50000);
 });
 
-test("docs libraryId has pattern constraint", () => {
+test("library_docs libraryId has pattern constraint", () => {
   const def = createLibraryDocsToolDefinition();
   const lid = def.parameters.properties.libraryId;
   assert.ok(lid.pattern, "libraryId should have a pattern");
@@ -192,7 +192,7 @@ test("registerLibraryDocsTool registers tool named library_docs", () => {
 
 // === Missing key ===
 
-test("libs fails before network when key missing", async () => {
+test("library_search fails before network when key missing", async () => {
   const savedKey = process.env.CONTEXT7_API_KEY;
   const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   delete process.env.CONTEXT7_API_KEY;
@@ -213,7 +213,7 @@ test("libs fails before network when key missing", async () => {
   }
 });
 
-test("docs fails before network when key missing", async () => {
+test("library_docs fails before network when key missing", async () => {
   const savedKey = process.env.CONTEXT7_API_KEY;
   const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   delete process.env.CONTEXT7_API_KEY;
@@ -234,7 +234,7 @@ test("docs fails before network when key missing", async () => {
   }
 });
 
-test("libs propagates a pre-aborted signal", async () => {
+test("library_search propagates a pre-aborted signal", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const controller = new AbortController();
   controller.abort();
@@ -252,7 +252,7 @@ test("libs propagates a pre-aborted signal", async () => {
   }
 });
 
-test("docs propagates a pre-aborted signal", async () => {
+test("library_docs propagates a pre-aborted signal", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const controller = new AbortController();
   controller.abort();
@@ -270,9 +270,9 @@ test("docs propagates a pre-aborted signal", async () => {
   }
 });
 
-// === libs normalization and counts ===
+// === library_search normalization and counts ===
 
-test("libs normalizes valid candidates with all fields", async () => {
+test("library_search normalizes valid candidates with all fields", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     searchOk([
@@ -326,7 +326,7 @@ test("libs normalizes valid candidates with all fields", async () => {
   }
 });
 
-test("libs skips candidates missing required id", async () => {
+test("library_search skips candidates missing required id", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     searchOk([
@@ -348,7 +348,7 @@ test("libs skips candidates missing required id", async () => {
   }
 });
 
-test("libs skips candidates missing required title", async () => {
+test("library_search skips candidates missing required title", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     searchOk([
@@ -368,7 +368,7 @@ test("libs skips candidates missing required title", async () => {
   }
 });
 
-test("libs omits optional fields with wrong types", async () => {
+test("library_search omits optional fields with wrong types", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     searchOk([
@@ -400,7 +400,7 @@ test("libs omits optional fields with wrong types", async () => {
   }
 });
 
-test("libs valid empty results is ready, not error", async () => {
+test("library_search valid empty results is ready, not error", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => searchOk([]));
   try {
@@ -416,7 +416,7 @@ test("libs valid empty results is ready, not error", async () => {
   }
 });
 
-test("libs caps oversized candidates and reports the omission", async () => {
+test("library_search caps oversized candidates and reports the omission", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     searchOk([{ id: "/large/library", title: "Large", description: "x".repeat(150_000) }]),
@@ -437,7 +437,7 @@ test("libs caps oversized candidates and reports the omission", async () => {
   }
 });
 
-test("libs reselects later candidates under high-cardinality aggregate pressure", async () => {
+test("library_search reselects later candidates under high-cardinality aggregate pressure", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const candidates = [
     { id: "/large/library", title: "Large", description: "x".repeat(31_940) },
@@ -462,7 +462,7 @@ test("libs reselects later candidates under high-cardinality aggregate pressure"
   }
 });
 
-test("libs limit caps returned candidates", async () => {
+test("library_search limit caps returned candidates", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const candidates = Array.from({ length: 8 }, (_, i) => ({
     id: `/lib/${i}`,
@@ -483,7 +483,7 @@ test("libs limit caps returned candidates", async () => {
   }
 });
 
-test("libs preserves provider rank and reports limited candidates in content", async () => {
+test("library_search preserves provider rank and reports limited candidates in content", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     searchOk([
@@ -504,7 +504,7 @@ test("libs preserves provider rank and reports limited candidates in content", a
   }
 });
 
-test("libs preserves searchFilterApplied flag", async () => {
+test("library_search preserves searchFilterApplied flag", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     jsonResponse(200, { results: [{ id: "/x", title: "X" }], searchFilterApplied: true }),
@@ -519,7 +519,7 @@ test("libs preserves searchFilterApplied flag", async () => {
   }
 });
 
-test("libs default limit is 5", async () => {
+test("library_search default limit is 5", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const candidates = Array.from({ length: 8 }, (_, i) => ({
     id: `/lib/${i}`,
@@ -536,7 +536,7 @@ test("libs default limit is 5", async () => {
   }
 });
 
-test("libs output Markdown includes rank, id, title", async () => {
+test("library_search output Markdown includes rank, id, title", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     searchOk([{ id: "/facebook/react", title: "React", description: "UI lib" }]),
@@ -554,9 +554,9 @@ test("libs output Markdown includes rank, id, title", async () => {
   }
 });
 
-// === docs normalization ===
+// === library_docs normalization ===
 
-test("docs parses code snippets with valid codeList items", async () => {
+test("library_docs parses code snippets with valid codeList items", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -589,7 +589,7 @@ test("docs parses code snippets with valid codeList items", async () => {
   }
 });
 
-test("docs preserves and renders every valid codeList item", async () => {
+test("library_docs preserves and renders every valid codeList item", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -615,7 +615,7 @@ test("docs preserves and renders every valid codeList item", async () => {
   }
 });
 
-test("docs parses info snippets", async () => {
+test("library_docs parses info snippets", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([], [
@@ -635,7 +635,7 @@ test("docs parses info snippets", async () => {
   }
 });
 
-test("docs skips code snippet with no valid codeList items", async () => {
+test("library_docs skips code snippet with no valid codeList items", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -655,7 +655,7 @@ test("docs skips code snippet with no valid codeList items", async () => {
   }
 });
 
-test("docs skips code snippet missing title", async () => {
+test("library_docs skips code snippet missing title", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -674,7 +674,7 @@ test("docs skips code snippet missing title", async () => {
   }
 });
 
-test("docs skips info snippet with no string content", async () => {
+test("library_docs skips info snippet with no string content", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([], [
@@ -693,7 +693,7 @@ test("docs skips info snippet with no string content", async () => {
   }
 });
 
-test("docs valid empty arrays is ready", async () => {
+test("library_docs valid empty arrays is ready", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk([], []));
   try {
@@ -710,7 +710,7 @@ test("docs valid empty arrays is ready", async () => {
 
 // === Kind filtering ===
 
-test("docs kind=code returns only code snippets", async () => {
+test("library_docs kind=code returns only code snippets", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk(
@@ -731,7 +731,7 @@ test("docs kind=code returns only code snippets", async () => {
   }
 });
 
-test("docs kind=info returns only info snippets", async () => {
+test("library_docs kind=info returns only info snippets", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk(
@@ -750,7 +750,7 @@ test("docs kind=info returns only info snippets", async () => {
   }
 });
 
-test("docs kind=all serializes code before info in Markdown", async () => {
+test("library_docs kind=all serializes code before info in Markdown", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk(
@@ -774,7 +774,7 @@ test("docs kind=all serializes code before info in Markdown", async () => {
 
 // === Budget behavior ===
 
-test("docs respects max_tokens budget", async () => {
+test("library_docs respects max_tokens budget", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   // Create code snippets with known token costs
   const snippets = Array.from({ length: 20 }, (_, i) => ({
@@ -801,7 +801,7 @@ test("docs respects max_tokens budget", async () => {
   }
 });
 
-test("docs over-budget snippet is skipped, later ones may fit", async () => {
+test("library_docs over-budget snippet is skipped, later ones may fit", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -824,7 +824,7 @@ test("docs over-budget snippet is skipped, later ones may fit", async () => {
   }
 });
 
-test("docs missing token count uses ceil(length/4) estimate", async () => {
+test("library_docs missing token count uses ceil(length/4) estimate", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const code = "const x = 1;"; // 13 chars → ceil(13/4) = 4 tokens
   const mock = installMockFetch(() =>
@@ -845,7 +845,7 @@ test("docs missing token count uses ceil(length/4) estimate", async () => {
   }
 });
 
-test("docs uses serialized size when upstream token metadata is fractional or too low", async () => {
+test("library_docs uses serialized size when upstream token metadata is fractional or too low", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([{
@@ -868,7 +868,7 @@ test("docs uses serialized size when upstream token metadata is fractional or to
   }
 });
 
-test("docs skips a details-oversized snippet and retains a later small snippet", async () => {
+test("library_docs skips a details-oversized snippet and retains a later small snippet", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk([
     {
@@ -896,7 +896,7 @@ test("docs skips a details-oversized snippet and retains a later small snippet",
   }
 });
 
-test("docs handles near-cap high-cardinality arrays without argument expansion", async () => {
+test("library_docs handles near-cap high-cardinality arrays without argument expansion", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const records = '{"content":"x"},'.repeat(130_999) + '{"content":"x"}';
   const body = `{"codeSnippets":[],"infoSnippets":[${records}]}`;
@@ -919,7 +919,7 @@ test("docs handles near-cap high-cardinality arrays without argument expansion",
 
 // === Opaque rules ===
 
-test("docs preserves opaque rules when they fit", async () => {
+test("library_docs preserves opaque rules when they fit", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk(
@@ -939,7 +939,7 @@ test("docs preserves opaque rules when they fit", async () => {
   }
 });
 
-test("docs omits rules as whole unit when too large", async () => {
+test("library_docs omits rules as whole unit when too large", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const hugeRules = { text: "x".repeat(500000) };
   const mock = installMockFetch(() => contextOk([], [], hugeRules));
@@ -958,7 +958,7 @@ test("docs omits rules as whole unit when too large", async () => {
   }
 });
 
-test("docs applies the details cap to otherwise admissible rules", async () => {
+test("library_docs applies the details cap to otherwise admissible rules", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk(
     [{ codeTitle: "Retained", codeList: [{ language: "ts", code: "const kept = true;" }] }],
@@ -984,7 +984,7 @@ test("docs applies the details cap to otherwise admissible rules", async () => {
 
 // === Pending and error results ===
 
-test("docs 202 returns pending status", async () => {
+test("library_docs 202 returns pending status", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => pendingResponse("60"));
   try {
@@ -999,7 +999,7 @@ test("docs 202 returns pending status", async () => {
   }
 });
 
-test("docs error returns error status", async () => {
+test("library_docs error returns error status", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => jsonResponse(404, { error: "not_found", message: "Library not found" }));
   try {
@@ -1013,7 +1013,7 @@ test("docs error returns error status", async () => {
   }
 });
 
-test("libs 202 returns pending status", async () => {
+test("library_search 202 returns pending status", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => pendingResponse("30"));
   try {
@@ -1056,7 +1056,7 @@ test("in-flight tool updates use pending status", async () => {
 
 // === Safe URLs and fences ===
 
-test("docs Markdown uses code fences with language", async () => {
+test("library_docs Markdown uses code fences with language", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -1076,7 +1076,7 @@ test("docs Markdown uses code fences with language", async () => {
   }
 });
 
-test("docs handles code with unknown language safely", async () => {
+test("library_docs handles code with unknown language safely", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -1095,7 +1095,7 @@ test("docs handles code with unknown language safely", async () => {
   }
 });
 
-test("docs chooses a fence longer than embedded backtick runs and sanitizes metadata", async () => {
+test("library_docs chooses a fence longer than embedded backtick runs and sanitizes metadata", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     contextOk([
@@ -1122,7 +1122,7 @@ test("docs chooses a fence longer than embedded backtick runs and sanitizes meta
 
 // === Malformed provider records ===
 
-test("docs rejects a non-array codeSnippets field", async () => {
+test("library_docs rejects a non-array codeSnippets field", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     jsonResponse(200, { codeSnippets: "not an array", infoSnippets: [] }),
@@ -1138,7 +1138,7 @@ test("docs rejects a non-array codeSnippets field", async () => {
   }
 });
 
-test("libs rejects a non-array results field", async () => {
+test("library_search rejects a non-array results field", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     jsonResponse(200, { results: "not an array", searchFilterApplied: false }),
@@ -1154,7 +1154,7 @@ test("libs rejects a non-array results field", async () => {
   }
 });
 
-test("libs rejects a missing results field", async () => {
+test("library_search rejects a missing results field", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => jsonResponse(200, { searchFilterApplied: false }));
   try {
@@ -1168,7 +1168,7 @@ test("libs rejects a missing results field", async () => {
   }
 });
 
-test("docs rejects a non-array infoSnippets field", async () => {
+test("library_docs rejects a non-array infoSnippets field", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() =>
     jsonResponse(200, { codeSnippets: [], infoSnippets: "not an array" }),
@@ -1186,22 +1186,22 @@ test("docs rejects a non-array infoSnippets field", async () => {
   }
 });
 
-test("libs and docs reject non-object top-level responses", async () => {
+test("library_search and docs reject non-object top-level responses", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => jsonResponse(200, null));
   try {
-    const libs = await createLibrarySearchToolDefinition().execute(
+    const librarySearch = await createLibrarySearchToolDefinition().execute(
       "library_search",
       { libraryName: "react", query: "hooks" },
     );
-    const docs = await createLibraryDocsToolDefinition().execute(
+    const libraryDocs = await createLibraryDocsToolDefinition().execute(
       "library_docs",
       { libraryId: "/facebook/react", query: "hooks" },
     );
-    assert.equal(libs.details.status, "error");
-    assert.match(libs.details.error, /expected an object/i);
-    assert.equal(docs.details.status, "error");
-    assert.match(docs.details.error, /expected an object/i);
+    assert.equal(librarySearch.details.status, "error");
+    assert.match(librarySearch.details.error, /expected an object/i);
+    assert.equal(libraryDocs.details.status, "error");
+    assert.match(libraryDocs.details.error, /expected an object/i);
   } finally {
     mock.restore();
     delete process.env.CONTEXT7_API_KEY;
@@ -1224,7 +1224,7 @@ for (const [name, createDefinition] of [
 
 // === Mode mapping (fast=true for fast mode) ===
 
-test("libs fast mode sends fast=true", async () => {
+test("library_search fast mode sends fast=true", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => searchOk([]));
   try {
@@ -1238,29 +1238,29 @@ test("libs fast mode sends fast=true", async () => {
   }
 });
 
-test("libs and docs details record effective mode and local limits", async () => {
+test("library_search and library_docs details record effective mode and local limits", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch((url) => url.includes("/libs/search") ? searchOk([]) : contextOk());
   try {
-    const libs = await createLibrarySearchToolDefinition().execute(
+    const librarySearch = await createLibrarySearchToolDefinition().execute(
       "library_search",
       { libraryName: "react", query: "hooks", mode: "fast", limit: 3 },
     );
-    const docs = await createLibraryDocsToolDefinition().execute(
+    const libraryDocs = await createLibraryDocsToolDefinition().execute(
       "library_docs",
       { libraryId: "/facebook/react", query: "hooks", mode: "fast", max_tokens: 900 },
     );
-    assert.equal(libs.details.mode, "fast");
-    assert.equal(libs.details.limit, 3);
-    assert.equal(docs.details.mode, "fast");
-    assert.equal(docs.details.maxTokens, 900);
+    assert.equal(librarySearch.details.mode, "fast");
+    assert.equal(librarySearch.details.limit, 3);
+    assert.equal(libraryDocs.details.mode, "fast");
+    assert.equal(libraryDocs.details.maxTokens, 900);
   } finally {
     mock.restore();
     delete process.env.CONTEXT7_API_KEY;
   }
 });
 
-test("docs fast mode sends fast=true", async () => {
+test("library_docs fast mode sends fast=true", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk());
   try {
@@ -1274,7 +1274,7 @@ test("docs fast mode sends fast=true", async () => {
   }
 });
 
-test("docs always sends type=json", async () => {
+test("library_docs always sends type=json", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk());
   try {
@@ -1288,7 +1288,7 @@ test("docs always sends type=json", async () => {
   }
 });
 
-test("docs max_tokens is not sent upstream", async () => {
+test("library_docs max_tokens is not sent upstream", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch(() => contextOk());
   try {
@@ -1305,7 +1305,7 @@ test("docs max_tokens is not sent upstream", async () => {
 
 // === redirect details ===
 
-test("docs details include redirect info when redirected", async () => {
+test("library_docs details include redirect info when redirected", async () => {
   process.env.CONTEXT7_API_KEY = "test-key";
   const mock = installMockFetch((_url, _init, i) => {
     if (i === 0) {

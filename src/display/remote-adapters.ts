@@ -70,7 +70,7 @@ function urlHost(url: string): string {
  * Strip the Jina reader header block (`URL:`, `Usage:`) and convert
  * Markdown link syntax `[text](url)` to `text` for display.
  */
-function sanitizeFetchContent(text: string): string {
+function sanitizeWebFetchContent(text: string): string {
   return text
     .replace(/^(URL:|Usage:).*$/gm, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -345,7 +345,7 @@ function webDescribeResult(
     if (optRow) {
       expandedExtras.push({ title: "Options", blocks: [{ kind: "text", text: optRow, tone: "muted" }] });
     }
-    // Search: add snippet per result
+    // Web search: add snippet per result
     if (name === "web_search") {
       const snippets = asArray(details.results).map((value) => {
         const item = asRecord(value);
@@ -359,7 +359,7 @@ function webDescribeResult(
         expandedExtras.push({ title: "Snippets", blocks: [{ kind: "records", items: snippets }] });
       }
     }
-    // Libs: add description per candidate
+    // Library search: add description per candidate
     if (name === "library_search") {
       const descriptions = asArray(details.candidates).map((value) => {
         const c = asRecord(value);
@@ -373,20 +373,20 @@ function webDescribeResult(
         expandedExtras.push({ title: "Descriptions", blocks: [{ kind: "records", items: descriptions }] });
       }
     }
-    // Fetch: sanitized content per page
+    // Web fetch: sanitized content per page
     if (name === "web_fetch") {
       const pages: DisplayRecordItem[] = [];
       for (const value of asArray(details.pages)) {
         const p = asRecord(value);
         const url = stringOf(p.url) ?? "";
-        const content = sanitizeFetchContent(stringOf(p.content) ?? stringOf(p.text) ?? "");
+        const content = sanitizeWebFetchContent(stringOf(p.content) ?? stringOf(p.text) ?? "");
         if (content) pages.push({ title: urlHost(url), body: content });
       }
       if (pages.length > 0) {
         expandedExtras.push({ title: "Content", blocks: [{ kind: "records", items: pages }] });
       }
     }
-    // Docs: source location per snippet
+    // Library docs: source location per snippet
     if (name === "library_docs") {
       const sources: DisplayRecordItem[] = [];
       for (const s of [...asArray(details.codeSnippets).map((v) => asRecord(v)), ...asArray(details.infoSnippets).map((v) => asRecord(v))]) {

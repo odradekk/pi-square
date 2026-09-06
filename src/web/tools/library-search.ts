@@ -4,16 +4,16 @@ import { Type } from "typebox";
 import { searchContext7Libraries, resolveContext7ApiKey } from "../clients/context7";
 import { isAbortError } from "../shared/errors";
 import {
-  CONTEXT7_LIBS_DETAILS_CAP,
-  CONTEXT7_LIBS_MARKDOWN_CAP,
-  DEFAULT_LIBS_LIMIT,
-  MAX_LIBS_LIMIT,
-  MIN_LIBS_LIMIT,
+  CONTEXT7_LIBRARY_SEARCH_DETAILS_CAP,
+  CONTEXT7_LIBRARY_SEARCH_MARKDOWN_CAP,
+  DEFAULT_LIBRARY_SEARCH_LIMIT,
+  MAX_LIBRARY_SEARCH_LIMIT,
+  MIN_LIBRARY_SEARCH_LIMIT,
   type Context7Mode,
   type Context7Status,
-  type LibsCandidateDetail,
-  type LibsCounts,
-  type LibsDetails,
+  type LibrarySearchCandidateDetail,
+  type LibrarySearchCounts,
+  type LibrarySearchDetails,
 } from "../types";
 
 // === Helpers ===
@@ -62,7 +62,7 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function normalizeCandidate(raw: unknown, rank: number): LibsCandidateDetail | null {
+function normalizeCandidate(raw: unknown, rank: number): LibrarySearchCandidateDetail | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
   if (!isString(value.id) || !isString(value.title)) return null;
@@ -70,7 +70,7 @@ function normalizeCandidate(raw: unknown, rank: number): LibsCandidateDetail | n
   const title = inlineText(value.title);
   if (!id || !title) return null;
 
-  const candidate: LibsCandidateDetail = { rank, id, title };
+  const candidate: LibrarySearchCandidateDetail = { rank, id, title };
   if (isString(value.description)) candidate.description = stripControls(value.description).replace(/\r\n?/g, "\n").trim();
   if (isString(value.branch)) candidate.branch = inlineText(value.branch);
   if (isString(value.lastUpdateDate)) candidate.lastUpdateDate = inlineText(value.lastUpdateDate);
@@ -91,7 +91,7 @@ function normalizeCandidate(raw: unknown, rank: number): LibsCandidateDetail | n
 
 // === Serialization for cap checking ===
 
-function candidateMarkdown(candidate: LibsCandidateDetail): string {
+function candidateMarkdown(candidate: LibrarySearchCandidateDetail): string {
   const lines = [`[${candidate.rank}] ${inlineText(candidate.title)}`, `    ${inlineText(candidate.id)}`];
   if (candidate.description) {
     for (const line of stripControls(candidate.description).split(/\r?\n/)) lines.push(`    ${line}`);
@@ -128,16 +128,16 @@ export function createLibrarySearchToolDefinition() {
         ),
       ),
       limit: Type.Optional(
-        Type.Integer({ minimum: MIN_LIBS_LIMIT, maximum: MAX_LIBS_LIMIT, default: DEFAULT_LIBS_LIMIT, description: `Maximum candidates to return (default: ${DEFAULT_LIBS_LIMIT})` }),
+        Type.Integer({ minimum: MIN_LIBRARY_SEARCH_LIMIT, maximum: MAX_LIBRARY_SEARCH_LIMIT, default: DEFAULT_LIBRARY_SEARCH_LIMIT, description: `Maximum candidates to return (default: ${DEFAULT_LIBRARY_SEARCH_LIMIT})` }),
       ),
     }),
     async execute(_toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: (update: any) => void) {
       const libraryName = String(params.libraryName ?? "").trim();
       const query = String(params.query ?? "").trim();
       const mode: Context7Mode = params.mode === "fast" ? "fast" : "quality";
-      const limit = clampInteger(params.limit, DEFAULT_LIBS_LIMIT, MIN_LIBS_LIMIT, MAX_LIBS_LIMIT);
-      const emptyCounts = (): LibsCounts => ({ received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 });
-      const details = (status: Context7Status, counts: LibsCounts, extra: Partial<LibsDetails> = {}): LibsDetails => ({
+      const limit = clampInteger(params.limit, DEFAULT_LIBRARY_SEARCH_LIMIT, MIN_LIBRARY_SEARCH_LIMIT, MAX_LIBRARY_SEARCH_LIMIT);
+      const emptyCounts = (): LibrarySearchCounts => ({ received: 0, invalid: 0, eligible: 0, returned: 0, oversized: 0, omitted: 0 });
+      const details = (status: Context7Status, counts: LibrarySearchCounts, extra: Partial<LibrarySearchDetails> = {}): LibrarySearchDetails => ({
         libraryName,
         query,
         mode,
@@ -197,7 +197,7 @@ export function createLibrarySearchToolDefinition() {
       const searchFilterApplied = typeof data.searchFilterApplied === "boolean"
         ? data.searchFilterApplied
         : undefined;
-      const maxCounts: LibsCounts = {
+      const maxCounts: LibrarySearchCounts = {
         received: rawResults.length,
         invalid: rawResults.length,
         eligible: rawResults.length,
@@ -210,7 +210,7 @@ export function createLibrarySearchToolDefinition() {
       const runSelection = (summaryReserveChars: number) => {
         const counts = emptyCounts();
         counts.received = rawResults.length;
-        const selected: Array<{ candidate: LibsCandidateDetail; markdown: string }> = [];
+        const selected: Array<{ candidate: LibrarySearchCandidateDetail; markdown: string }> = [];
         let selectedMarkdownChars = 0;
         let selectedDetailsDelta = 0;
 
@@ -228,8 +228,8 @@ export function createLibrarySearchToolDefinition() {
 
           const markdown = candidateMarkdown(candidate);
           const detailLength = JSON.stringify(candidate).length;
-          if (markdown.length > CONTEXT7_LIBS_MARKDOWN_CAP
-            || detailsBaseLength + detailLength > CONTEXT7_LIBS_DETAILS_CAP) {
+          if (markdown.length > CONTEXT7_LIBRARY_SEARCH_MARKDOWN_CAP
+            || detailsBaseLength + detailLength > CONTEXT7_LIBRARY_SEARCH_DETAILS_CAP) {
             counts.oversized++;
             continue;
           }
@@ -240,8 +240,8 @@ export function createLibrarySearchToolDefinition() {
           const charsWithSummary = proposedMarkdownChars
             + (summaryReserveChars ? summaryReserveChars + 2 : 0);
           const detailDelta = detailLength + (selected.length ? 1 : 0);
-          if (charsWithSummary > CONTEXT7_LIBS_MARKDOWN_CAP
-            || detailsBaseLength + selectedDetailsDelta + detailDelta > CONTEXT7_LIBS_DETAILS_CAP) {
+          if (charsWithSummary > CONTEXT7_LIBRARY_SEARCH_MARKDOWN_CAP
+            || detailsBaseLength + selectedDetailsDelta + detailDelta > CONTEXT7_LIBRARY_SEARCH_DETAILS_CAP) {
             counts.omitted++;
             continue;
           }
@@ -274,8 +274,8 @@ export function createLibrarySearchToolDefinition() {
         searchFilterApplied,
       });
       const fitsFinalBounds = (selection: ReturnType<typeof runSelection>) =>
-        buildText(selection).length <= CONTEXT7_LIBS_MARKDOWN_CAP
-        && JSON.stringify(readyDetails(selection)).length <= CONTEXT7_LIBS_DETAILS_CAP;
+        buildText(selection).length <= CONTEXT7_LIBRARY_SEARCH_MARKDOWN_CAP
+        && JSON.stringify(readyDetails(selection)).length <= CONTEXT7_LIBRARY_SEARCH_DETAILS_CAP;
 
       let selection = runSelection(0);
       if (!fitsFinalBounds(selection)) {
