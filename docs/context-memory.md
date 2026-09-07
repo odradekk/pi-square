@@ -352,10 +352,14 @@ a session operation.
   no improvement claim is made without that evidence for the exact release
   commit. The credentialed command runs three model lanes concurrently —
   `claude-sonnet-5`, `glm-5.3`, and `gpt-5.6-luna` — while preserving the
-  prime-before-probe order within each lane. Anthropic usage supplies explicit
-  cache-read/write buckets; both OpenAI-compatible lanes read
-  `usage.prompt_tokens_details.cached_tokens`, and an absent cache-write or
-  price field stays unreported rather than becoming a measured zero.
+  prime-before-probe order within each lane and one stable Pi session ID per
+  lane. Every request goes through Pi 0.84.2's public `ModelRuntime.streamSimple`
+  path using Pi's own model configuration, authentication, provider converter,
+  cache policy, retry boundary, stream parser, and normalized usage. The
+  experiment does not construct provider payloads or parse raw SSE itself.
+  Consequently cache reads and writes are exactly the numeric values Pi exposes;
+  Pi does not preserve whether an upstream raw cache field was absent. Cost is
+  unavailable when the selected Pi model has an all-zero price table.
 - **Protocol artifacts are filtered while enabled.** `submit_memory` calls and
   their results are removed from provider-bound requests while the feature is
   enabled, except the current trailing call/result pair, which passes through
@@ -428,7 +432,8 @@ rewrite existing Memory blocks.
   long-session scenarios, and the provider-cache experiment — the
   cross-compaction append measurement comparing the multi-block projection
   with the single-summary-block baseline under a content-divergence control,
-  concurrently across Sonnet 5, GLM 5.3, and GPT-5.6 Luna)
+  concurrently across Sonnet 5, GLM 5.3, and GPT-5.6 Luna through Pi's native
+  model runtime)
   is required before any quality or cache claim;
   reports are development evidence kept out of the npm package, and reruns
   follow the fixed impact-based rules — model-visible or algorithm changes

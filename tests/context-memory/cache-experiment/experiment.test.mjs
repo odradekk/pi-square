@@ -473,8 +473,12 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   assert.match(pins.toolsHash, /^[0-9a-f]{64}$/);
   assert.match(pins.systemPromptHash, /^[0-9a-f]{64}$/);
   assert.match(pins.settingsHash, /^[0-9a-f]{64}$/);
-  assert.deepEqual(pins.settings, { temperature: 0, maxOutputTokens: 512, stream: true, thinking: "off" });
-  assert.deepEqual(pins.routing, { concurrency: 1, retryPolicy: "none", sessionScope: "arm-per-group" });
+  assert.deepEqual(pins.settings, { maxOutputTokens: 512, stream: true, thinking: "off", cacheRetention: "short" });
+  assert.deepEqual(pins.routing, {
+    concurrency: 1,
+    retryPolicy: "none",
+    sessionScope: "one stable Pi session ID per model lane",
+  });
   assert.equal(pins.fixtureDigest, fixtureDigest(), "the fixture digest pins every composed payload of the re-pinned fixture");
   // #297 review finding 5: the report records the exact implementation commit
   // it measured, so stale evidence can never authorize later code.
@@ -748,7 +752,7 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
     assert.equal(group.quality, "missing-report");
     for (const arm of ARMS) {
       for (const role of ["prime", "probe"]) {
-        assert.equal(group[arm][role].cacheReported, false);
+        assert.equal(group[arm][role].cacheAvailable, false);
         assert.equal(group[arm][role].cacheRead, 0, "unreported values are recorded as zero data, but flagged unreported");
       }
     }
@@ -971,8 +975,8 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   };
   const { report } = await runExperiment({ adapter, clock });
   assert.equal(report.integrity.ok, false);
-  assert.match(report.integrity.failures[0], /reported flag is inconsistent/,
-    "an adapter cannot publish a reported direction under an aggregate unreported flag");
+  assert.match(report.integrity.failures[0], /availability is inconsistent/,
+    "an adapter cannot publish an available direction under an aggregate unavailable flag");
 }
 
 {
@@ -1088,7 +1092,7 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
     implementationTree: "fedcba9876543210fedcba9876543210fedcba98",
   });
   assert.equal(peak, 3, "the three model lanes overlap");
-  assert.equal(result.report.schema, "pi-square.context-memory/provider-cache-comparison/1");
+  assert.equal(result.report.schema, "pi-square.context-memory/provider-cache-comparison/2");
   assert.deepEqual(result.report.execution, {
     concurrency: 3,
     schedule: "model lanes run concurrently; requests within each lane run sequentially",
@@ -1116,7 +1120,7 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
     groupCount: 1,
     runNonce: "matrix-failure",
   });
-  assert.deepEqual(failed.report.comparison[0].reporting, { cacheRead: false, cacheWrite: false, cost: false },
+  assert.deepEqual(failed.report.comparison[0].availability, { cacheRead: false, cacheWrite: false, cost: false },
     "a failed lane with no rows never reports metric availability by vacuous truth");
 
   const partialClock = fakeClock();
@@ -1179,7 +1183,7 @@ const CLI_REPORT_DIR = mkdtempSync(join(tmpdir(), "provider-cache-experiment-tes
   );
   const written = JSON.parse(readFileSync(join(CLI_REPORT_DIR, jsonName), "utf8"));
   assert.match(written.pins.implementationTree, /^[0-9a-f]{40}$/, "the CLI records the commit's tree digest");
-  assert.equal(written.schema, "pi-square.context-memory/provider-cache-experiment/2");
+  assert.equal(written.schema, "pi-square.context-memory/provider-cache-experiment/3");
   assert.equal(written.cacheStandard.band.baselineArm, "single");
   assert.match(written.pins.implementationCommit, /^[0-9a-f]{7,40}$/,
     "the CLI resolves and records the exact implementation commit from git");

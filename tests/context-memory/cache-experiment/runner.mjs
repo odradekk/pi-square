@@ -59,7 +59,7 @@ import {
  * — nor coaxed toward a positive label to buy a zero exit code.
  */
 
-const REPORT_SCHEMA = "pi-square.context-memory/provider-cache-experiment/2";
+const REPORT_SCHEMA = "pi-square.context-memory/provider-cache-experiment/3";
 const RUN_NONCE_BYTES = 16;
 const REPORT_STRING_MAX = 240;
 const INTEGRITY_FAILURE_CAP = 16;
@@ -73,6 +73,15 @@ function isCount(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
 }
 
+function cacheAvailability(cache) {
+  const available = cache.available ?? cache.reported;
+  return {
+    available,
+    readAvailable: cache.readAvailable ?? cache.readReported ?? available,
+    writeAvailable: cache.writeAvailable ?? cache.writeReported ?? available,
+  };
+}
+
 /** Boundary validation of one adapter report; a problem string is an integrity failure. */
 function validateProviderReport(report) {
   if (report === null || typeof report !== "object") return "adapter returned no report object";
@@ -80,25 +89,30 @@ function validateProviderReport(report) {
     return "usage token counts are missing or not non-negative integers";
   }
   const cache = report.cache;
-  if (cache === null || typeof cache !== "object" || typeof cache.reported !== "boolean") {
-    return "cache report is missing its reported flag";
+  if (cache === null || typeof cache !== "object") {
+    return "cache usage is missing";
   }
-  if (cache.reported && (!isCount(cache.read) || !isCount(cache.write))) {
-    return "reported cache values are not non-negative integers";
+  const availability = cacheAvailability(cache);
+  if (typeof availability.available !== "boolean") {
+    return "cache usage is missing its availability flag";
   }
-  if (cache.writeReported !== undefined && typeof cache.writeReported !== "boolean") {
-    return "cache write report has a malformed writeReported flag";
+  if (availability.available && (!isCount(cache.read) || !isCount(cache.write))) {
+    return "available cache values are not non-negative integers";
   }
-  if (cache.readReported !== undefined && typeof cache.readReported !== "boolean") {
-    return "cache read report has a malformed readReported flag";
+  if (typeof availability.readAvailable !== "boolean" || typeof availability.writeAvailable !== "boolean") {
+    return "cache usage has malformed direction availability";
   }
-  const readReported = cache.readReported ?? cache.reported;
-  const writeReported = cache.writeReported ?? cache.reported;
-  if (cache.reported !== (readReported || writeReported)) {
-    return "cache reported flag is inconsistent with its read/write reporting flags";
+  if (availability.available !== (availability.readAvailable || availability.writeAvailable)) {
+    return "cache availability is inconsistent with its read/write availability";
   }
-  if ((!readReported && cache.read !== 0) || (!writeReported && cache.write !== 0)) {
-    return "an unreported cache direction carried a non-zero token count";
+  if ((!availability.readAvailable && cache.read !== 0) || (!availability.writeAvailable && cache.write !== 0)) {
+    return "an unavailable cache direction carried a non-zero token count";
+  }
+  if (cache.source !== undefined && cache.source !== "pi-normalized" && cache.source !== "adapter-reported") {
+    return "cache usage has an unknown source";
+  }
+  if (cache.rawFieldPresence !== undefined && cache.rawFieldPresence !== "unknown" && cache.rawFieldPresence !== "observed") {
+    return "cache usage has malformed raw-field presence";
   }
   if (typeof report.cost !== "number" || !Number.isFinite(report.cost) || report.cost < 0) {
     return "cost is not a finite non-negative number";
@@ -151,7 +165,7 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementation
     systemPromptHash: SYSTEM_PROMPT_HASH,
     settingsHash: SETTINGS_HASH,
     settings: SETTINGS,
-    routing: { concurrency: 1, retryPolicy: "none", sessionScope: "arm-per-group" },
+    routing: { concurrency: 1, retryPolicy: "none", sessionScope: "one stable Pi session ID per model lane" },
     fixtureDigest: fixtureDigest(groupCount),
     retention: {
       bucket: "default",
@@ -176,10 +190,10 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementation
     armIsolation: "run+group+arm isolation token at the front of the system segment and in every tool description, before any shared cacheable byte, so every prime/probe pair is an independent cold measurement; the control's token is per request",
     priceNote: declared.priceNote,
   };
-  // A real adapter that cannot apply the pinned settings in full (for example
-  // #248's temperature omission on claude-sonnet-5) records the omission in
-  // its pins; an adapter that applies them records nothing, so the dry-run
-  // report shape is unchanged.
+  if (declared.invocation !== undefined) pins.invocation = declared.invocation;
+  // An adapter that cannot apply a pinned setting records the omission in its
+  // pins; Pi-native adapters apply exactly the ordinary session options and
+  // therefore normally record none.
   if (Array.isArray(declared.settingsOmissions) && declared.settingsOmissions.length > 0) {
     pins.settingsOmissions = declared.settingsOmissions;
   }
@@ -188,6 +202,7 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementation
 
 function rowOf(record, evidence) {
   const report = record.report;
+  const availability = cacheAvailability(report.cache);
   return {
     arm: record.arm,
     role: record.role,
@@ -199,11 +214,13 @@ function rowOf(record, evidence) {
     prefixTokenEstimate: evidence ? evidence.prefixTokenEstimate : null,
     divergenceBoundary: evidence ? evidence.boundary : null,
     divergenceElement: evidence ? evidence.divergence.element : null,
-    cacheReported: report.cache.reported,
-    cacheReadReported: report.cache.readReported ?? report.cache.reported,
-    cacheWriteReported: report.cache.writeReported ?? report.cache.reported,
-    cacheRead: report.cache.reported ? report.cache.read : 0,
-    cacheWrite: report.cache.reported ? report.cache.write : 0,
+    cacheAvailable: availability.available,
+    cacheReadAvailable: availability.readAvailable,
+    cacheWriteAvailable: availability.writeAvailable,
+    cacheRead: availability.available ? report.cache.read : 0,
+    cacheWrite: availability.available ? report.cache.write : 0,
+    cacheSource: report.cache.source ?? "adapter-reported",
+    rawCacheFieldPresence: report.cache.rawFieldPresence ?? "observed",
     inputTokens: report.usage.inputTokens,
     outputTokens: report.usage.outputTokens,
     retentionWriteReported: report.retentionWrite?.reported === true,
@@ -339,6 +356,7 @@ export async function runExperiment({
             group,
             arm,
             role,
+            runNonce,
             payload: composed.payload,
             digest,
             tokenEstimate: digest.tokenEstimate,
@@ -496,7 +514,7 @@ export async function runExperiment({
     totals: {
       groups: reportGroups.length,
       requests: records.size,
-      requestsWithCacheReport: [...records.values()].filter((record) => record.report.cache.reported).length,
+      requestsWithCacheUsage: [...records.values()].filter((record) => cacheAvailability(record.report.cache).available).length,
       requestsWithRetentionReport: [...records.values()].filter((record) => record.report.retentionWrite?.reported === true).length,
     },
   };

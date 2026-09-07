@@ -12,6 +12,12 @@ publisher at `668c938` or later are complete iff their txt file ends with the
 `report complete` sentinel; the superseded pre-sentinel defect evidence below
 is intentionally retained byte-for-byte and does not satisfy that boundary.
 
+All runs listed below predate the Pi-native adapter. They reconstructed HTTP
+payloads and parsed provider SSE inside the experiment, so they are retained
+only as historical defect evidence and must not be used to conclude how the
+pi-square plugin behaves inside Pi. A qualifying run must record
+`Pi 0.84.2 ModelRuntime.streamSimple` in its invocation pin.
+
 - `provider-cache-experiment-credentialed-2026-09-07T14-07-07-836Z.{json,txt}`
   — three-lane comparison at commit `d6de41b72d4e2c933541981d139d2f95124a9f6a`
   (tree `5b4ce2870b162201fdc806c35ee3546e9e0028a7`), 90 requests with all

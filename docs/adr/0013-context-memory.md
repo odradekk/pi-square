@@ -183,9 +183,14 @@ message, and deletion stays the ordinary Pi session boundary.
   multi-block projection with the single-summary-block baseline across a
   real cross-compaction append. Its credentialed command runs independent
   Sonnet 5, GLM 5.3, and GPT-5.6 Luna lanes concurrently while keeping each
-  lane's prime/probe requests sequential; comparison keeps absent cache-write
-  and price fields explicitly unreported. Only the measured outcome on each
-  named provider/model is a permitted statement. Placing a cache breakpoint
+  lane's prime/probe requests sequential and one Pi session ID stable. The
+  fixture enters Pi 0.84.2 through `ModelRuntime.streamSimple`, so Pi owns model
+  lookup, authentication, provider conversion, cache policy, streaming, and
+  usage normalization; the experiment neither reconstructs wire payloads nor
+  parses raw SSE. Cache metrics therefore have Pi's public normalized semantics,
+  which do not retain raw-field absence, and an all-zero configured price table
+  keeps cost unreported. Only the measured outcome on each named provider/model
+  is a permitted statement. Placing a cache breakpoint
   at the carried Memory's end remains deliberately undone here (#269): the
   projection isolates the structural change so the breakpoint decision can
   be made on its own evidence.

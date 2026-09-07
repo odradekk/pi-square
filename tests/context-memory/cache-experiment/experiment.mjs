@@ -17,11 +17,12 @@ import { cacheProgress } from "../progress.mjs";
  * no credential, no network call. Credentialed execution passes
  * `--adapter <module.mjs>` pointing at an adapter implementing the contract
  * validated by `runner.mjs` (see `adapters/cache-provider.mjs`); the command
- * then verifies every exported adapter's declared `requiredEnv` variable
- * *names* are present (never their values) and runs with a real clock. The
- * canonical cache-provider module exports Sonnet 5, GLM 5.3, and GPT-5.6
- * Luna lanes; they run concurrently while every lane's requests remain
- * sequential. `--real` still refuses rather than silently degrading.
+ * then verifies any exported adapter's declared `requiredEnv` variable names
+ * are present (never their values) and runs with a real clock. The canonical
+ * cache-provider module instead resolves models and credentials through Pi's
+ * native `ModelRuntime`, and exports Sonnet 5, GLM 5.3, and GPT-5.6 Luna
+ * lanes; they run concurrently while every lane's requests remain sequential.
+ * `--real` still refuses rather than silently degrading.
  *
  * Auditability (#297 review finding 5): every report records the exact
  * implementation commit it measured (resolved from git at run time, never
@@ -106,11 +107,17 @@ function comparisonRow(report) {
     integrityOk: report.integrity.ok,
     cacheConclusion: report.conclusion.cache,
     finalConclusion: report.conclusion.final,
-    reporting: {
-      cacheRead: rows.length > 0 && rows.every((row) => row.cacheReadReported ?? row.cacheReported),
-      cacheWrite: rows.length > 0 && rows.every((row) => row.cacheWriteReported),
+    availability: {
+      cacheRead: rows.length > 0 && rows.every((row) => row.cacheReadAvailable),
+      cacheWrite: rows.length > 0 && rows.every((row) => row.cacheWriteAvailable),
       cost: rows.length > 0 && rows.every((row) => row.costReported),
     },
+    cacheSource: rows.length > 0 && rows.every((row) => row.cacheSource === "pi-normalized")
+      ? "pi-normalized"
+      : "adapter-reported",
+    rawCacheFieldPresence: rows.length > 0 && rows.every((row) => row.rawCacheFieldPresence === "unknown")
+      ? "unknown"
+      : "observed",
     hitRate: { multiblock: rate("multiblock"), single: rate("single"), nonce: rate("nonce") },
     probeInputTokenMedian: report.baselineSummary.armMedians.probeInputTokens,
     probeTtftMsMedian: report.baselineSummary.armMedians.probeTtftMs,
@@ -132,6 +139,9 @@ function renderMatrix(report, laneTexts) {
     );
   }
   lines.push("comparison note: token counts and TTFT are reported per model; tokenizer, routing, and price differences prevent a provider-neutral cost ranking");
+  if (report.comparison.some((row) => row.cacheSource === "pi-normalized")) {
+    lines.push("cache note: Pi-normalized cache read/write numbers are available; Pi does not expose whether the upstream raw fields were present");
+  }
   for (const [index, text] of laneTexts.entries()) {
     lines.push("", `--- lane ${index + 1} ---`, text);
   }
@@ -156,7 +166,7 @@ export async function runExperimentMatrix({ adapters, generatedAt = () => new Da
   })));
   const runs = results.map((result) => result.report);
   const report = {
-    schema: "pi-square.context-memory/provider-cache-comparison/1",
+    schema: "pi-square.context-memory/provider-cache-comparison/2",
     generatedAt: stamp,
     mode: runs.every((run) => run.mode === "dry-run") ? "dry-run" : "credentialed",
     framing: {

@@ -179,7 +179,8 @@ export function classifyGroup(group) {
     group.single.prime, group.single.probe,
     group.nonce.prime, group.nonce.probe,
   ];
-  const absent = allRequests.filter((row) => !(row.cacheReadReported ?? row.cacheReported)).map((row) => `${row.arm}.${row.role}`);
+  const absent = allRequests.filter((row) => !(row.cacheReadAvailable ?? row.cacheReadReported ?? row.cacheReported))
+    .map((row) => `${row.arm}.${row.role}`);
   if (absent.length > 0) {
     return {
       quality: "missing-report",
@@ -205,7 +206,8 @@ function armWriteTokens(arm) {
 }
 
 function armWriteReported(arm) {
-  return arm.prime.cacheWriteReported !== false && arm.probe.cacheWriteReported !== false;
+  return (arm.prime.cacheWriteAvailable ?? arm.prime.cacheWriteReported ?? arm.prime.cacheReported) !== false
+    && (arm.probe.cacheWriteAvailable ?? arm.probe.cacheWriteReported ?? arm.probe.cacheReported) !== false;
 }
 
 function armCostReported(arm) {
@@ -238,7 +240,7 @@ function directionOf(testValue, baselineValue, direction) {
  */
 export function compareBaseline(group) {
   const rows = [group.multiblock.prime, group.multiblock.probe, group.single.prime, group.single.probe];
-  if (rows.some((row) => !(row.cacheReadReported ?? row.cacheReported))) {
+  if (rows.some((row) => !(row.cacheReadAvailable ?? row.cacheReadReported ?? row.cacheReported))) {
     return {
       evaluated: false,
       missing: ["cache report absent on the multiblock or single arm"],

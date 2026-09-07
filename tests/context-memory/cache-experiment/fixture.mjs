@@ -142,7 +142,7 @@ export const TOOLS = [
   },
 ];
 
-export const SETTINGS = Object.freeze({ temperature: 0, maxOutputTokens: 512, stream: true, thinking: "off" });
+export const SETTINGS = Object.freeze({ maxOutputTokens: 512, stream: true, thinking: "off", cacheRetention: "short" });
 
 export const TOOLS_HASH = sha256Hex(JSON.stringify(TOOLS));
 

@@ -72,6 +72,7 @@ const suites = [
   "context-memory/adapters/continuity-adapter.test.mjs",
   "context-memory/adapters/cache-adapter.test.mjs",
   "context-memory/adapters/cache-openai-provider.test.mjs",
+  "context-memory/adapters/pi-native-cache-provider.test.mjs",
   "core/workspace-path.test.mjs",
   "confirmation.test.mjs",
   "native-prompt.test.mjs",
