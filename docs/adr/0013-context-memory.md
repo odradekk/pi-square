@@ -44,9 +44,14 @@ run at the submission bought nothing (compaction is settle-driven) and cost
 real work whenever the model submitted early; one submission per due run is
 enforced by deactivating the tool at acceptance, because a block covers one
 continuous entry range and a second block in the same run has no defined
-boundary. Post-submission work is bounded by the fixed margin between the
-due point and Pi's native compaction boundary; a run that exhausts it falls
-back to the native path. The current main agent already understands the task,
+boundary. Post-submission work is bounded by the distance that remains to
+Pi's native compaction boundary when the run opens: the due point itself
+always sits at least ten percent of the window below that boundary (farther
+below when the configured threshold is lower), but usage is only re-checked
+at session start, model selection, and agent settle, so the remaining
+distance at open can be smaller than that gap when usage already passed the
+due point — and a run that exhausts it falls back to the native path. The
+current main agent already understands the task,
 so no background summarizer, observer, child session, or extra model call
 authors continuity. Nothing is persisted from the advisory — no counter,
 timer, or queued work — and the feature never wakes the agent on its own.
@@ -150,9 +155,12 @@ message, and deletion stays the ordinary Pi session boundary.
   seam, two narrow dynamically-active parent-only tools, one existing human
   inspection surface (`/context` and `/context memory <block> [page]`), and
   native fallback for every unsupported case.
-- `submit_memory` call parts and paired results are filtered from every
-  provider-bound request while the feature is enabled; disabling it stops the
-  filtering and historical protocol entries become model-visible again.
+- `submit_memory` call parts and paired results are filtered from
+  provider-bound requests while the feature is enabled, except the current
+  trailing call/result pair, accepted or refused, which passes through
+  whole so the run's continuation request never ends on an assistant turn;
+  disabling the feature stops the filtering and historical protocol entries
+  become model-visible again.
 - The mechanical protocol (branch and range derivation, wrapper and directory
   parsing, transcript paging, active-tool synchronization, takeover,
   confirmation, fallback, and prefix stability) is covered by deterministic

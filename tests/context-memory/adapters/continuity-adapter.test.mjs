@@ -494,7 +494,8 @@ async function runScriptedSession({ arm, replies, turns }) {
   assert.equal(toolMessage.tool_call_id, "call_bash1");
   assert.match(toolMessage.content, /attaches no shell/);
   // The post-acknowledgement continuation request (#253): the run continues,
-  // submit_memory has left the offered tools, and its wire pair is filtered.
+  // submit_memory has left the offered tools, and its trailing wire pair is
+  // retained whole so the request does not end on an assistant turn.
   assert.ok(!bodies[3].tools.map((tool) => tool.function.name).includes("submit_memory"),
     "acceptance deactivates submit_memory for the rest of the due run");
   const continuationCalls = bodies[3].messages

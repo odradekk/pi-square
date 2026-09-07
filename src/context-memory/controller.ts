@@ -73,9 +73,16 @@ import {
  * continues the same run after the pending acknowledgement, `submit_memory`
  * deactivates for the rest of the due run so exactly one submission is
  * taken, and post-submission work stays uncompressed because it falls after
- * the kept boundary — bounded by the fixed margin between the due point and
- * Pi's native compaction boundary, with the existing native fallback owning
- * a run that exhausts that margin before settling. The compatibility gate
+ * the kept boundary — bounded by the distance that remains to Pi's native
+ * compaction boundary when the run opens. The due point itself always sits
+ * at least ten percent of the window below that boundary (farther below
+ * when the configured threshold is lower). That remaining distance ranges
+ * from near zero — usage is only re-checked at session start, model
+ * selection, and agent settle, so a run can open with usage already past
+ * the due point — up to the due-point gap itself, which means it can also
+ * exceed ten percent of the window when the run opens near a low
+ * configured due point; the existing native fallback owns a run that
+ * exhausts it before settling. The compatibility gate
  * and owned active-tool synchronization stay.
  */
 
@@ -268,11 +275,19 @@ export function effectiveDuePoint(
   return duePoint;
 }
 
+/**
+ * The fixed continuation sentence every due-run advisory ends with (#253):
+ * the submission is not the run's end — the model answers the user in the
+ * same run after the pending acknowledgement.
+ */
+const ADVISORY_CONTINUATION_SENTENCE =
+  "After the acknowledgement, continue the same run and deliver your answer to the user.";
+
 /** The fixed one-shot first-block advisory body (#215, #218, #253: append instruction, source scope, secret warning). */
 const DUE_RUN_ADVISORY_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
-  "Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the conversation before this run — goals, decisions, and open work. After the acknowledgement, continue the same run and deliver your answer to the user.",
+  `Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the conversation before this run — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
   "That block will replace the older conversation as compressed context; the current request and everything you do for it stay uncompressed.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
@@ -286,7 +301,7 @@ const DUE_RUN_ADVISORY_TEXT = [
 const APPEND_RUN_ADVISORY_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
-  "Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the conversation since the existing Memory blocks — goals, decisions, and open work. After the acknowledgement, continue the same run and deliver your answer to the user.",
+  `Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the conversation since the existing Memory blocks — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
   "That block will be appended after the existing Memory blocks, which stay unchanged; the current request and everything you do for it stay uncompressed.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
@@ -302,7 +317,7 @@ const APPEND_RUN_ADVISORY_TEXT = [
 const MAINTENANCE_RUN_ADVISORY_TEXT = [
   "Context Memory: maintenance compression is due for this conversation.",
   "",
-  "This request shows the original conversation behind the newest Memory blocks in place of their summaries. Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from that original conversation and the work accumulated since — goals, decisions, and open work. After the acknowledgement, continue the same run and deliver your answer to the user.",
+  `This request shows the original conversation behind the newest Memory blocks in place of their summaries. Complete the user's current task first. When it is done, call submit_memory as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from that original conversation and the work accumulated since — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
   "That block will replace the newest Memory blocks; the older Memory blocks stay unchanged; the current request and everything you do for it stay uncompressed.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
@@ -669,8 +684,13 @@ export class ContextMemoryController {
    * supported host:
    *
    * - `submit_memory` tool-call parts and their paired results leave every
-   *   provider-bound request, while ordinary assistant text in the same
-   *   message survives and `read_memory_source` artifacts stay visible.
+   *   provider-bound request, with one exception (#253): the current
+   *   trailing submit call/result pair, accepted or refused, passes through
+   *   whole, because removing it would end the request on an assistant turn
+   *   and a refused result must stay visible for the model to correct
+   *   itself — the accepted continuation is the success path #253 targets.
+   *   Ordinary assistant text in the same message survives and
+   *   `read_memory_source` artifacts stay visible.
    * - On the first provider request of a due run, one fixed custom advisory
    *   is appended after the current user message and never repeated.
    * - On the first provider request of a maintenance run only, the Memory
@@ -754,8 +774,9 @@ export class ContextMemoryController {
    * Execute one `submit_memory` call (#218, #253): validate the due run, the
    * sole tool call, the transaction slot, and the block body, then store the
    * run-scoped candidate. Returns the fixed pending acknowledgement without
-   * ending the run — the model keeps working in the same run, and
-   * `submit_memory` leaves the active tool list for the rest of the due run
+   * ending the run — the model keeps working in the same run, and acceptance
+   * synchronizes `submit_memory` out of the active tool list through the
+   * required tool surface, so it stays gone for the rest of the due run
    * (one submission per run; a block covers one continuous entry range).
    * Compaction itself happens later through Pi's seam at the run's natural
    * settle. Throws one safe short-coded sentence and never echoes Markdown.
@@ -764,7 +785,7 @@ export class ContextMemoryController {
     markdown: string,
     toolCallId: string,
     session: MemorySessionReader,
-    tools?: Pick<ExtensionAPIForTools, "getActiveTools" | "setActiveTools">,
+    tools: Pick<ExtensionAPIForTools, "getActiveTools" | "setActiveTools">,
   ): Promise<AgentToolResult<{ accepted: true }>> {
     if (!this.operational() || this.dueRun === undefined) {
       fail("SUBMIT_NOT_DUE", "no Context Memory compression is due in this run");
@@ -782,7 +803,7 @@ export class ContextMemoryController {
     const candidate = this.bindCandidate(markdown, toolCallId, session);
     this.slot = { phase: "pending", candidate };
     this.dueRun.submitted = true;
-    if (tools) this.synchronizeActiveTools(tools, session);
+    this.synchronizeActiveTools(tools, session);
     return {
       content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }],
       details: { accepted: true },
@@ -1254,9 +1275,11 @@ function sameMemoryDetails(actual: unknown, expected: MemoryCompactionDetails): 
 
 /**
  * Remove `submit_memory` artifacts from a provider-bound message list
- * (#215): paired submit tool results drop entirely, submit tool-call parts
- * drop from their assistant message while ordinary text survives, and an
- * assistant message left without any eligible part drops as a whole.
+ * (#215), with one #253 exception: paired submit tool results drop entirely,
+ * submit tool-call parts drop from their assistant message while ordinary
+ * text survives, and an assistant message left without any eligible part
+ * drops as a whole — but the current trailing submit call/result pair,
+ * accepted or refused, passes through whole; see the rationale below.
  * `read_memory_source` artifacts stay visible; only future source streams
  * exclude them.
  */
@@ -1265,8 +1288,11 @@ function filterSubmitArtifacts(messages: readonly unknown[]): unknown[] {
   // (#253). Filtering it would end the request on an assistant turn, which
   // providers reject as an assistant prefill, and filtering only half of it
   // leaves an unpaired tool result that both wire formats reject outright.
-  // So the trailing pair passes through whole; every older submit artifact
-  // still leaves the request.
+  // The tail pair is kept whatever its outcome — a refused result must stay
+  // visible so the model can correct itself — and Pi's ordering pairs a
+  // result with its call, so an isolated trailing call is the only other
+  // tail shape that can occur. Every older submit artifact still leaves
+  // the request.
   const isSubmitResult = (m: unknown): boolean =>
     (m as { role?: unknown; toolName?: unknown } | null)?.role === "toolResult"
     && (m as { toolName?: unknown }).toolName === SUBMIT_MEMORY_TOOL_NAME;

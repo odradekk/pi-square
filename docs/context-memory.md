@@ -127,9 +127,11 @@ compression happens inside an ordinary real-user run:
    total Memory budget, and returns the fixed acknowledgement
    `Memory candidate accepted; compaction pending.` with `accepted: true` —
    the acknowledgement never claims persistence. The call does not end the
-   run: the model continues in the same turn, and every later request in the
-   run carries neither the submit tool-call parts nor their paired result
-   while the run keeps the current request and all of its work uncompressed.
+   run: the model continues in the same turn. The immediate continuation
+   request keeps the trailing submit call and its paired result — removing
+   them would end that request on an assistant turn, which providers reject —
+   and every request after it carries neither, while the run keeps the
+   current request and all of its work uncompressed.
    Exactly one submission is taken per due run — a block covers one
    continuous range of entries, so a second block in the same run has no
    defined boundary — and `submit_memory` leaves the model's tool list for
@@ -153,16 +155,25 @@ anything and without blocking native compaction.
 
 **The bound on post-submission work.** Because the run continues after a
 submission, its further output competes with the distance left before Pi's
-own compaction boundary. That distance is fixed by construction: the
-effective due point sits at least ten percent of the model window below the
-native boundary (window minus Pi's configured compaction reserve minus ten
-percent of the window), so a due run opens with at least that margin
-remaining. A run whose post-submission work exhausts the margin before it
-settles simply meets Pi's own compaction check — the existing safe fallback.
-With an accepted candidate pending, Pi's compaction seam consumes it and the
-Memory compaction commits as usual; with no candidate submitted, Pi native
-compaction proceeds and its foreign entry closes the due run. Nothing is
-truncated or force-settled to stay inside the margin.
+own compaction boundary. The ten-percent figure is the minimum of that
+gap: the effective due point is at most window minus Pi's configured
+compaction reserve minus ten percent of the window (a lower configured
+threshold widens the gap further), so the due point always sits at least
+ten percent of the window below the boundary. The distance that remains
+when the due run opens is a different quantity, and it is not guaranteed in
+either direction: usage is only re-checked at session start, model
+selection, and agent settle, so the previous run can end with usage already
+past the due point and the due run then opens with less than ten percent
+left below the boundary, while a run that opens near a low configured
+threshold starts with far more than ten percent left. A run whose
+post-submission work exhausts the remaining distance simply meets Pi's own
+compaction check — the existing safe fallback: Pi 0.84.2 checks threshold
+compaction after a completed run and before the next prompt, never
+mid-run. With an accepted candidate pending, Pi's compaction seam consumes
+it and the Memory compaction commits as usual; with no candidate submitted,
+Pi native compaction proceeds and its foreign entry closes the due run.
+Nothing is truncated or force-settled to stay inside the remaining
+distance.
 
 ## The scale endpoint
 
@@ -310,9 +321,12 @@ a session operation.
   codes) — never Memory Markdown or source bodies — so the feature does not
   create another sensitive copy.
 - **Protocol artifacts are filtered while enabled.** `submit_memory` calls and
-  their results are removed from every provider-bound request while the
-  feature is enabled; `read_memory_source` artifacts stay visible in their
-  own run.
+  their results are removed from provider-bound requests while the feature is
+  enabled, except the current trailing call/result pair, which passes through
+  whole whether the call was accepted or refused — the continuation request
+  must not end on an assistant turn, and a refused result has to stay visible
+  so the model can correct itself; `read_memory_source` artifacts stay
+  visible in their own run.
 - **Disabling or uninstalling affects future behavior only.** Existing
   compaction entries remain in Pi history as ordinary compaction summaries
   and stay model-visible; artifact filtering stops too, so historical
