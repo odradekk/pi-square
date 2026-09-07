@@ -12,7 +12,18 @@ publisher at `668c938` or later are complete iff their txt file ends with the
 `report complete` sentinel; the superseded pre-sentinel defect evidence below
 is intentionally retained byte-for-byte and does not satisfy that boundary.
 
-All runs listed below predate the Pi-native adapter. They reconstructed HTTP
+The qualifying Pi-native run is:
+
+- `provider-cache-experiment-credentialed-2026-09-07T15-21-48-430Z.{json,txt}`
+  — three-lane comparison at commit `b60de2bbee504a9e24ca1edd4c5f925e446b428e`,
+  90 requests through `Pi 0.84.2 ModelRuntime.streamSimple`, with all lane
+  integrity checks passing. Sonnet 5 is conclusive NEUTRAL (multiblock 21.8%,
+  single 21.8%, live nonce 0.0%); GLM 5.3 is INCONCLUSIVE because every arm,
+  including the nonce control, reports the same 64-token cache read (about
+  1.7%); GPT-5.6 Luna is INCONCLUSIVE because Pi reports zero cache read and
+  write usage for every request.
+
+The older runs below predate the Pi-native adapter. They reconstructed HTTP
 payloads and parsed provider SSE inside the experiment, so they are retained
 only as historical defect evidence and must not be used to conclude how the
 pi-square plugin behaves inside Pi. A qualifying run must record
