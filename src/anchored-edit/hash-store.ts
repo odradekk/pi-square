@@ -7,6 +7,12 @@ import { initHasher, contentChecksum } from "./hashline/hasher";
 import { HASH_RE } from "./hashline/alphabet";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT } from "./constants";
 import { acquireFileLock } from "./file-lock";
+import { _insertLineHashesPure, _replaceLineHashesPure } from "./hashline/hash";
+import {
+  classifyMutationSurvivors,
+  type MutationSnapshot,
+  type MutationSurvival,
+} from "./served";
 
 export interface OwnerPartition {
   owner: string;
@@ -125,12 +131,29 @@ export interface HashStoreHandle {
    */
   publishSnapshotRepair(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void;
   /**
-   * Publishes one completed mutation's store state — the snapshot for the
-   * installed content and, when the diff rows were model-visible, the served
-   * rows for exactly that content version — as a single repository
-   * transaction under the acting owner.
+   * Publishes one completed mutation's store state as a single repository
+   * transaction under the acting owner (#299): the snapshot for the installed
+   * content, plus the next served set for exactly that content version — the
+   * deduplicated union of newly visible diff rows and the eligible surviving
+   * rows carried from the exact pre-mutation content version. Survivors are
+   * classified from the supplied before/after snapshots and mutation proof,
+   * then re-read from the owner's stored rows inside the transaction and carry
+   * only when they were recorded for the before checksum, so a caller can
+   * never nominate a consumed or changed row or smuggle another version's
+   * authorization forward. Every known path supplied for one physical target
+   * is updated in the same transaction. When nothing is
+   * eligible — no diff rows were model-visible and no served row survived —
+   * the previous version's rows are left in place: they stay bound to the old
+   * checksum and authorize nothing against the installed bytes.
    */
-  publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void;
+  publishMutation(input: {
+    path: string;
+    aliases?: readonly string[];
+    before: MutationSnapshot;
+    after: MutationSnapshot;
+    survival: MutationSurvival;
+    servedHashes?: readonly string[];
+  }): void;
   /**
    * Publishes one completed write as a single repository transaction: the
    * snapshot for the written content and the served rows for exactly that
@@ -491,10 +514,125 @@ class HashStoreHandleImpl implements HashStoreHandle {
     );
   }
 
-  publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void {
-    this.publishSnapshotAndServed(input.path, { content: input.content, hashes: input.hashes }, input.servedHashes);
-  }
+  publishMutation(input: {
+    path: string;
+    aliases?: readonly string[];
+    before: MutationSnapshot;
+    after: MutationSnapshot;
+    survival: MutationSurvival;
+    servedHashes?: readonly string[];
+  }): void {
+    const entry = this.requireOpen();
+    const paths = [input.path, ...(input.aliases ?? [])];
+    if (paths.some((path) => typeof path !== "string" || path.length === 0)
+      || new Set(paths).size !== paths.length) {
+      throw new Error("Mutation publication paths must be non-empty and unique.");
+    }
+    if (!isValidHashList(input.before.hashes) || !isValidHashList(input.after.hashes)) {
+      throw new Error("Mutation publication snapshots require valid unique hashes.");
+    }
+    if (input.servedHashes !== undefined && !isValidHashList(input.servedHashes)) {
+      throw new Error("Mutation publication served hashes must be valid and unique.");
+    }
+    const afterHashSet = new Set(input.after.hashes);
+    if (input.servedHashes?.some((hash) => !afterHashSet.has(hash))) {
+      throw new Error("Mutation publication cannot serve a hash absent from the installed snapshot.");
+    }
 
+    const checksum = contentChecksum(input.after.content);
+    const fromChecksum = contentChecksum(input.before.content);
+    const beforeLineCount = splitLines(input.before.content).length;
+    const lineCount = splitLines(input.after.content).length;
+    const updatedAt = Date.now();
+    let publishedSnapshots: Array<{ path: string; hashes: string[] }> = [];
+    this.withTransaction(() => {
+      // #299 trusted self-transition: the next served set is the deduplicated
+      // union of the newly visible diff rows and the rows that demonstrably
+      // survive this owner's mutation. The store derives eligibility from
+      // structural before/after evidence here, then intersects it with rows
+      // recorded for exactly the pre-mutation version. Callers cannot nominate
+      // survivors. Every known hard-link alias supplied by the operation
+      // boundary advances atomically under the same owner partition.
+      const primarySurvivors = new Set(classifyMutationSurvivors(input));
+      publishedSnapshots = [];
+      for (const [index, path] of paths.entries()) {
+        let afterHashes = [...input.after.hashes];
+        let survivors = primarySurvivors;
+        if (index > 0) {
+          const rawAliasHashes = entry.stmts.getSnapshot(
+            this.owner,
+            path,
+            fromChecksum,
+            beforeLineCount,
+          );
+          const aliasHashes = rawAliasHashes === undefined
+            ? undefined
+            : parseHashList(rawAliasHashes, () => {});
+          if (aliasHashes !== undefined && aliasHashes.length === beforeLineCount) {
+            if (input.survival.kind === "insert" && !input.survival.initializedFromEmpty) {
+              const resultLines = splitLines(input.after.content);
+              const insertedCount = resultLines.length - beforeLineCount;
+              const insertedLines = resultLines.slice(
+                input.survival.insertAt,
+                input.survival.insertAt + insertedCount,
+              );
+              afterHashes = _insertLineHashesPure(
+                aliasHashes,
+                insertedLines,
+                input.survival.insertAt,
+              );
+            } else if (input.survival.kind === "replace") {
+              afterHashes = _replaceLineHashesPure(
+                input.before.content,
+                aliasHashes,
+                input.after.content,
+                input.survival.consumedRange,
+              );
+            }
+            survivors = new Set(classifyMutationSurvivors({
+              before: { content: input.before.content, hashes: aliasHashes },
+              after: { content: input.after.content, hashes: afterHashes },
+              survival: input.survival,
+            }));
+          } else {
+            // Without an exact valid before snapshot there is no structural
+            // mapping for this alias. Advance its snapshot, but carry no old
+            // authorization into the installed version.
+            survivors = new Set();
+          }
+        }
+        entry.stmts.upsertSnapshot(
+          this.owner,
+          path,
+          checksum,
+          lineCount,
+          JSON.stringify(afterHashes),
+          updatedAt,
+        );
+        publishedSnapshots.push({ path, hashes: afterHashes });
+        const carried: string[] = [];
+        if (survivors.size > 0) {
+          for (const row of entry.stmts.servedRows(this.owner, path)) {
+            if (row.content_hash === fromChecksum && survivors.has(row.hash)) carried.push(row.hash);
+          }
+        }
+        const next: string[] = [];
+        const seen = new Set<string>();
+        const visibleHashes = index === 0 ? (input.servedHashes ?? []) : [];
+        for (const hash of [...carried, ...visibleHashes]) {
+          if (seen.has(hash)) continue;
+          seen.add(hash);
+          next.push(hash);
+        }
+        if (next.length > 0) {
+          entry.stmts.mergeServedVersioned(this.owner, path, next, checksum, updatedAt);
+        }
+      }
+    });
+    for (const snapshot of publishedSnapshots) {
+      cacheSnapshot(entry, snapshotCacheKey(this.owner, snapshot.path), checksum, lineCount, snapshot.hashes);
+    }
+  }
   /** Read and mutation publications share one transaction primitive: one
    *  snapshot upsert plus optional rows served against exactly that
    *  content version. */

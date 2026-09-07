@@ -73,6 +73,12 @@ export interface InsertPipelineResult {
   lastChangedLine: number;
   originalHashes: string[];
   resultHashes: string[];
+  /** True when this insert initialized an empty file through its synthetic
+   *  anchor (#286). The synthetic row is not real content, so its
+   *  authorization never carries to the initialized version (#299). */
+  initializedFromEmpty: boolean;
+  /** Zero-based insertion boundary in the real original rows. */
+  insertAt: number;
 }
 
 const ROOT_KS = new Set(["path", "anchor", "direction", "lines"]);
@@ -400,6 +406,8 @@ export async function prepareInsert(
       lastChangedLine: params.lines.length,
       originalHashes,
       resultHashes: _insertLineHashesPure([], params.lines, 0),
+      initializedFromEmpty: true,
+      insertAt: 0,
     };
   }
 
@@ -444,6 +452,8 @@ export async function prepareInsert(
     firstChangedLine,
     lastChangedLine: firstChangedLine + params.lines.length - 1,
     originalHashes,
+    initializedFromEmpty: false,
+    insertAt,
     resultHashes,
   };
 }

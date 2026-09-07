@@ -2,6 +2,7 @@ import { splitLines } from "../utils";
 import {
   type HashStoreHandle,
 } from "../hash-store";
+import type { ConsumedLineRange } from "../served";
 import { xxh32, contentChecksum, initHasher } from "./hasher";
 import { HASH_LEN, ALPH, ALPH_RE, HASH_CLASS } from "./alphabet";
 export { initHasher, HASH_LEN, ALPH_RE, HASH_CLASS };
@@ -318,4 +319,23 @@ function mapStableHashes(
   }
 
   return newHashes;
+}
+
+/**
+ * Replays a replace hash transition for another path view of the same
+ * physical file. Each alias keeps its own surviving hash identities while
+ * replacement rows receive fresh unique hashes.
+ */
+export function _replaceLineHashesPure(
+  oldContent: string,
+  oldHashes: string[],
+  newContent: string,
+  consumedRange: ConsumedLineRange,
+): string[] {
+  return mapStableHashes(
+    oldContent,
+    oldHashes,
+    newContent,
+    new Set(oldHashes.slice(consumedRange.first - 1, consumedRange.last)),
+  );
 }

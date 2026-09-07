@@ -60,7 +60,15 @@ import { errCode, visLines } from "./utils.ts";
  * content version they were recorded for, so a mutation whose post-commit
  * publication failed (or a process that died at that boundary) leaves the
  * previous version unable to authorize any replace or insert until a fresh
- * read republishes current rows.
+ * read republishes current rows. One refinement (#299): the acting owner's
+ * own successful `replace` or `insert` is a trusted self-transition that
+ * atomically carries its proven survivors — rows outside a replacement's
+ * consumed interval, or every original row of an insertion, verified by hash
+ * identity and logical bytes — from the exact pre-mutation version to the
+ * installed one in the same publication transaction, before the boundary
+ * releases and the next queued same-target operation validates. External
+ * changes, other owners' observations, whole-file writes, and failed
+ * publications still fail closed.
  */
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];
@@ -91,6 +99,26 @@ async function operationKeyFor(canonicalPath: string): Promise<string> {
     // the canonical path is the key.
   }
   return canonicalPath;
+}
+
+/**
+ * Every path already known to this owner that currently resolves to the same
+ * multi-link inode. Discovery happens while the target boundary is held and
+ * before the filesystem commit, so one publication can advance every known
+ * alias atomically. Missing or no-longer-matching historical paths are simply
+ * left stale; they cannot gain authorization for the installed version.
+ */
+async function mutationPublicationAliases(
+  store: HashStoreHandle,
+  target: AnchoredTarget,
+): Promise<string[]> {
+  const aliases: string[] = [];
+  if (!target.opKey.startsWith("inode:")) return aliases;
+  for (const path of store.allPaths()) {
+    if (path === target.canonicalPath) continue;
+    if (await operationKeyFor(path) === target.opKey) aliases.push(path);
+  }
+  return aliases;
 }
 
 /** Resolves a requested path with Pi's native authority and derives its
@@ -354,7 +382,12 @@ export const replaceBarrier: {
  *
  * Preparation performs no cache or database mutations. After a successful
  * file commit the candidate snapshot and the diff's served rows are
- * published in one transaction while the lock is still held; if that
+ * published in one transaction while the lock is still held; the same
+ * transaction carries this owner's proven survivors — served rows outside
+ * the consumed interval that keep their hash identity and logical bytes —
+ * from the pre-mutation version to the installed one (#299), so the next
+ * queued same-target operation validates against carried plus fresh
+ * authorization instead of a self-generated stale refusal. If that
  * publication fails, the result still reports the truthful mutation success,
  * suppresses fresh anchors, emits a bounded actionable warning, and — because
  * served authorization is bound to the content version — leaves the previous
@@ -426,6 +459,11 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           );
         }
 
+        if (!prep.consumedRange) {
+          throw new Error("Applied anchored replace is missing its consumed range.");
+        }
+        const publicationAliases = await mutationPublicationAliases(store, target);
+
         await replaceBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
         if (input.signal?.aborted) return lockedRefusal();
         // The filesystem commit is the irreversible point.
@@ -454,8 +492,10 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           try {
             store.publishMutation({
               path: target.canonicalPath,
-              content: prep.result,
-              hashes: prep.resultHashes,
+              ...(publicationAliases.length > 0 ? { aliases: publicationAliases } : {}),
+              before: { content: prep.originalNormalized, hashes: prep.originalHashes },
+              after: { content: prep.result, hashes: prep.resultHashes },
+              survival: { kind: "replace", consumedRange: prep.consumedRange },
               ...(input.autoRead() ? { servedHashes: servedHashesFromDiff(diff) } : {}),
             });
           } catch (error) {
@@ -543,11 +583,15 @@ export const insertBarrier: {
  *
  * Preparation performs no cache or database mutations. After a successful
  * file commit the candidate snapshot and the diff's served rows are published
- * in one transaction while the lock is still held; if that publication fails,
- * the result still reports the truthful mutation success, suppresses fresh
- * anchors, emits a bounded actionable warning, and — because served
- * authorization is bound to the content version — leaves the previous version
- * unable to authorize another anchored mutation until a fresh read republishes
+ * in one transaction while the lock is still held; the same transaction
+ * carries this owner's proven survivors — every served original row, since an
+ * insertion consumes no observed row — from the pre-mutation version to the
+ * installed one (#299), except the synthetic empty-file anchor, which never
+ * carries into an initialized file. If that publication fails, the result
+ * still reports the truthful mutation success, suppresses fresh anchors,
+ * emits a bounded actionable warning, and — because served authorization is
+ * bound to the content version — leaves the previous version unable to
+ * authorize another anchored mutation until a fresh read republishes
  * current rows.
  */
 export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<AnchoredInsertResult> {
@@ -611,6 +655,8 @@ export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<Anc
           );
         }
 
+        const publicationAliases = await mutationPublicationAliases(store, target);
+
         await insertBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
         if (input.signal?.aborted) return lockedRefusal();
         // The filesystem commit is the irreversible point.
@@ -627,8 +673,14 @@ export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<Anc
           try {
             store.publishMutation({
               path: target.canonicalPath,
-              content: prep.result,
-              hashes: prep.resultHashes,
+              ...(publicationAliases.length > 0 ? { aliases: publicationAliases } : {}),
+              before: { content: prep.originalNormalized, hashes: prep.originalHashes },
+              after: { content: prep.result, hashes: prep.resultHashes },
+              survival: {
+                kind: "insert",
+                initializedFromEmpty: prep.initializedFromEmpty,
+                insertAt: prep.insertAt,
+              },
               ...(input.autoRead() ? { servedHashes: servedHashesFromDiff(diff) } : {}),
             });
           } catch (error) {

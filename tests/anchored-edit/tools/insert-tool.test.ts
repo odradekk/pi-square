@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
+import { resolveTarget } from "../../../src/anchored-edit/fs-write";
+import { toCwd } from "../../../src/anchored-edit/paths";
 import { InsertValidationError, insertToolSchema, prepareInsert, resInsertAnchor } from "../../../src/anchored-edit/insert";
 import { createAnchoredInsertToolDefinition } from "../../../src/anchored-edit/workspace-insert";
 import { PARENT_OWNER } from "../../../src/anchored-edit/workspace-support";
 import type { HashStoreHandle } from "../../../src/anchored-edit/hash-store";
-import { makeFakePiRegistry, setupIntegrationTest, withTempDir, withTempFile } from "../support/fixtures";
+import { loadTestStore, makeFakePiRegistry, setupIntegrationTest, withTempDir, withTempFile } from "../support/fixtures";
 
 function rowsOf(content: Array<{ type: string; text?: string }>): Array<{ hash: string; text: string }> {
   return content
@@ -498,7 +500,7 @@ describe("anchored insert tool", () => {
     });
   });
 
-  it("clears the model-visible diff and installs no served rows when auto-read is disabled", async () => {
+  it("clears the model-visible diff and serves no new rows when auto-read is disabled, while the surviving observed anchor stays authorized (#299)", async () => {
     await withTempFile("sample.txt", "aaa\nbbb\n", async ({ cwd, path }) => {
       const { ctx, readTool } = setupIntegrationTest(cwd);
       const { pi, getTool } = makeFakePiRegistry();
@@ -509,12 +511,35 @@ describe("anchored insert tool", () => {
       expect(result.details?.diff).toBe("");
       expect(textOf(result.content)).toContain("inserted");
       expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\nx\n");
-      // The written version has no served rows, so the previous version's
-      // authorization cannot carry into another insert.
-      const refused = await silentInsert.execute("i2", { path: "sample.txt", anchor, direction: "after", lines: ["y"] }, undefined, undefined, ctx);
+      // #299: disabling auto-read discloses and newly serves no diff rows,
+      // but the previously observed anchor demonstrably survived this
+      // owner's own insertion, so it remains usable without a fresh read.
+      const second = await silentInsert.execute("i2", { path: "sample.txt", anchor, direction: "after", lines: ["y"] }, undefined, undefined, ctx);
+      expect(second.details?.metrics?.classification).toBe("applied");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\ny\nx\n");
+      // The rows the mutation introduced are not newly served: the served
+      // set carries the surviving observed row only, and an insert anchored
+      // on the inserted line is refused until a fresh read.
+      const content = await readFile(path, "utf-8");
+      const canonical = await resolveTarget(toCwd("sample.txt", cwd));
+      const store = await loadTestStore(cwd);
+      let insertedHash = "";
+      try {
+        const lookup = store.getServedState(canonical, content);
+        const served = lookup !== undefined && "served" in lookup ? lookup.served : undefined;
+        expect(served, "the surviving observed row keeps the new version authorized").toBeDefined();
+        expect(served!.has(anchor)).toBe(true);
+        const snapshot = store.getSnapshot(canonical, content);
+        expect(snapshot).toBeDefined();
+        insertedHash = snapshot![content.split("\n").indexOf("x")]!;
+        expect(served!.has(insertedHash), "the mutation's new rows are not served").toBe(false);
+      } finally {
+        store.release();
+      }
+      const refused = await silentInsert.execute("i3", { path: "sample.txt", anchor: insertedHash, direction: "after", lines: ["z"] }, undefined, undefined, ctx);
       expect(refused.details?.status).toBe("warning");
       expect(["E_RANGE_STALE", "E_STALE_ANCHOR"]).toContain(refused.details?.errorCode);
-      expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\nx\n");
+      expect(await readFile(path, "utf-8")).toBe("aaa\nbbb\ny\nx\n");
     });
   });
 

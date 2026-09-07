@@ -82,6 +82,8 @@ describe("prompt guidelines", () => {
     expect(content).toContain("`lines` items");
     expect(content).not.toContain("remove_from");
     expect(content).not.toContain("replacement_text");
+    expect(content).toContain("non-conflicting");
+    expect(content).not.toContain("do not issue multiple insert or replace calls");
     expect(content).not.toContain("{{");
   });
 
@@ -95,6 +97,8 @@ describe("prompt guidelines", () => {
     expect(content).toContain("replacement_text");
     expect(content).not.toContain("hash_bounds");
     expect(content).not.toContain("new_content");
+    expect(content).toContain("non-conflicting");
+    expect(content).not.toContain("do not issue multiple replace calls");
     expect(content).not.toContain("{{");
   });
 

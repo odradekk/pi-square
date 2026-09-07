@@ -99,15 +99,54 @@ against rows recorded for the file's current version. Rows recorded for any
 other version authorize nothing — for every owner, parent included — so an
 external modification (or a mutation whose publication failed, or a process
 that died at that boundary) invalidates the previous authorization until a
-fresh read republishes current rows. Validation failures carry the observed
+fresh read republishes current rows. One refinement (#299): the acting
+owner's own successful structured mutation is a *trusted self-transition*.
+Mutation publication receives the pre-mutation content, the resolved
+consumed interval (replace) or insertion boundary and empty-file-initialization flag (insert),
+and the post-mutation content and hashes — all preparation evidence, no
+post-commit filesystem consultation — and in the same repository
+transaction, while the boundary is still held, it rebinds exactly the
+proven survivors from the pre-mutation version to the installed version:
+rows served to that owner for that version, outside a replace's consumed
+interval (an insertion consumes no observed row; the synthetic empty-file
+anchor is never a survivor), whose hash identity and logical bytes are
+unchanged in the installed snapshot. Survival is classified explicitly and
+defensively — never inferred from a hash-set intersection, because identical
+replacement content may reuse a consumed row's identity — and the store
+re-reads the owner's rows for the exact pre-mutation checksum inside the
+transaction, so a caller cannot smuggle another version's authorization
+forward. For a multi-link inode, the boundary supplies every currently
+resolvable path already known to the acting owner; the store advances those
+aliases together in the same transaction while replaying the transition from
+each alias's exact prior snapshot, so its own stable anchors survive even when
+its hash mapping differs from the invoked path. Other owners' aliases remain
+on their observed version. The next served set is the deduplicated union of carried survivors
+and the newly visible diff rows (auto-read on) or the carried survivors
+alone (auto-read off, which discloses and newly serves no diff rows while
+preserving already-observed survivors). When nothing is eligible, the
+previous version's rows remain as the stale barrier. Only the acting
+owner's rows transition; every other owner's rows stay bound to the version
+they observed and go stale. The transition completes before the boundary
+releases, so the next queued same-target operation — including one launched
+concurrently — validates against carried plus fresh authorization instead
+of a self-generated stale refusal; the linearizability claim is exactly
+that: non-conflicting operations all take effect, while a later operation
+whose anchor or range an earlier one consumed or changed is still refused.
+A model may therefore issue independent same-file mutations together from one
+read. Operations that overlap, consume another operation's anchor, or depend
+on newly created text remain ordered dependencies and must use the earlier
+result's anchors.
+A no-op replacement performs no transition. Whole-file writes keep their
+clearing publication: an unstructured rewrite supplies no consumed interval
+from which to prove row survival. Validation failures carry the observed
 content out of preparation (`ReplaceValidationError`) so the coordinator
 publishes the refusal's feedback rows version-bound from inside the
 boundary: the model's immediate retry with the fresh anchors verifies, while
 the older version stays unusable.
 
 The filesystem commit is the irreversible point. After it, the candidate
-snapshot and the diff's served rows are published in one repository
-transaction while the lock is still held. A post-commit publication failure
+snapshot, the diff's served rows, and the #299 survivor transition above are
+published in one repository transaction while the lock is still held. A post-commit publication failure
 never reports that the file was not changed: the result keeps the truthful
 mutation success, suppresses fresh anchors, emits a bounded
 `[E_STATE_UNAVAILABLE]` warning directing a fresh read, and — through the
@@ -288,8 +327,10 @@ already-resolved range without re-resolving.
 without a second coordinator: the same queue-then-lock order, canonical
 target resolution with hard-link identity and frozen symlink targets, the
 same atomic write and abort checks, the same `publishMutation` transaction
-(serving the authoritative diff's visible rows under auto-read, publishing
-the new version's snapshot with no served rows when auto-read is off), and
+(serving the authoritative diff's visible rows under auto-read alongside the
+owner's carried survivors, publishing the new version's snapshot with only
+the carried survivors — or leaving the previous rows as the stale barrier
+when none are eligible — when auto-read is off), and
 the same truthful post-commit contract (`[E_STATE_UNAVAILABLE]` keeps the
 success and suppresses fresh anchors). The staged slice covered the parent,
 existing non-empty files, and non-empty logical lines; #286 completed the
@@ -363,7 +404,12 @@ incompatible layout.
    the replaced range, with unchanged anchor lines — is refused with
    `[E_RANGE_STALE]` until a fresh read. The refusal carries fresh anchors
    whose immediate retry applies, so the cost is one refused call, not a
-   lost edit.
+   lost edit. #299 narrows this strictly to untrusted changes: the owner's
+   own successful structured mutation carries its proven survivors forward
+   (see the replace section), so multi-edit batches and concurrent
+   non-conflicting same-target calls no longer produce false stale
+   refusals, while external writes, other owners, whole-file writes, and
+   failed publications keep the fail-closed behavior unchanged.
 6. The parent write's filesystem seam means an anchored session depends on
    the public `WriteOperations` contract of the pinned Pi version; the plain
    filesystem write performed when anchored editing is disabled or the
