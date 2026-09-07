@@ -241,7 +241,8 @@ export interface MemoryBlocksCandidate {
  * appending a block inserts one new part before the trailing part and leaves
  * every earlier part untouched.
  *
- * Fail-safe by construction: a request carrying no matching summary, an
+ * Fail-safe by construction: a request carrying no compaction summary, more
+ * than one compaction summary, no candidate matching the carried summary, an
  * invalid or ambiguous rendering, or a reconstruction whose concatenation
  * does not equal Pi's own rendering returns `undefined` and the caller keeps
  * the ordinary unmodified compaction summary message — native and opaque
@@ -251,28 +252,41 @@ export function projectMemoryBlocksMessage(
   messages: readonly unknown[],
   candidates: readonly MemoryBlocksCandidate[],
 ): unknown[] | undefined {
-  for (const candidate of candidates) {
-    const index = messages.findIndex((message) => {
-      const record = message as { role?: unknown; summary?: unknown } | null;
-      return record?.role === "compactionSummary" && record.summary === candidate.summary;
-    });
-    if (index === -1) continue;
-    const projected = memoryBlocksParts(messages[index], candidate);
-    if (projected === undefined) return undefined;
-    const next = [...messages];
-    next[index] = projected;
-    return next;
+  // Pi projects at most one compactionSummary message per request. Zero (no
+  // Memory in the request) or more than one (a foreign or duplicated summary
+  // beside ours) is an abnormal request shape, and the projection refuses
+  // instead of guessing which message to replace (#297 review finding 6).
+  const summaryIndex = messages.findIndex((message) => {
+    const record = message as { role?: unknown } | null;
+    return record?.role === "compactionSummary";
+  });
+  if (summaryIndex === -1) return undefined;
+  if (messages.findIndex((message, index) =>
+    index > summaryIndex && (message as { role?: unknown } | null)?.role === "compactionSummary") !== -1) {
+    return undefined;
   }
-  return undefined;
+  const summary = (messages[summaryIndex] as { summary?: unknown }).summary;
+  const candidate = candidates.find((item) => item.summary === summary);
+  if (candidate === undefined) return undefined;
+  const projected = memoryBlocksParts(messages[summaryIndex], candidate);
+  if (projected === undefined) return undefined;
+  const next = [...messages];
+  next[summaryIndex] = projected;
+  return next;
 }
 
 /**
  * Build the replacement blocks message for one carrying summary message.
  * The framing literals are sliced from Pi's own rendering of that exact
  * message, and the parts' concatenation is re-verified against it before the
- * message is used, so no framing assumption is ever trusted blindly.
+ * message is used, so no framing assumption is ever trusted blindly. The
+ * rendering must be exactly one message carrying exactly one text part —
+ * anything else is a drifted or unexpected host shape and refuses rather
+ * than reading a partial rendering (#297 review finding 6). Exported as the
+ * pure seam the ambiguity tests drive; production reaches it only through
+ * {@link projectMemoryBlocksMessage}.
  */
-function memoryBlocksParts(
+export function memoryBlocksParts(
   message: unknown,
   candidate: MemoryBlocksCandidate,
 ): unknown | undefined {
@@ -282,10 +296,10 @@ function memoryBlocksParts(
   } catch {
     return undefined;
   }
+  if (rendered.length !== 1) return undefined;
   const first = rendered[0] as { content?: unknown } | null | undefined;
-  const textPart = first && Array.isArray(first.content)
-    ? first.content[0] as { type?: unknown; text?: unknown } | null | undefined
-    : undefined;
+  if (!first || !Array.isArray(first.content) || first.content.length !== 1) return undefined;
+  const textPart = first.content[0] as { type?: unknown; text?: unknown } | null | undefined;
   if (!textPart || textPart.type !== "text" || typeof textPart.text !== "string") return undefined;
   const wrapperStart = textPart.text.indexOf(MEMORY_SUMMARY_WRAPPER);
   if (wrapperStart < 0) return undefined;
