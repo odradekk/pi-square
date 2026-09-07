@@ -125,12 +125,26 @@ export interface HashStoreHandle {
    */
   publishSnapshotRepair(input: { path: string; content: string; hashes: string[]; servedHashes: string[] }): void;
   /**
-   * Publishes one completed mutation's store state — the snapshot for the
-   * installed content and, when the diff rows were model-visible, the served
-   * rows for exactly that content version — as a single repository
-   * transaction under the acting owner.
+   * Publishes one completed mutation's store state as a single repository
+   * transaction under the acting owner (#299): the snapshot for the installed
+   * content, plus the next served set for exactly that content version — the
+   * deduplicated union of newly visible diff rows and the eligible surviving
+   * rows carried from the exact pre-mutation content version. Survivors are
+   * re-read from the owner's stored rows inside the transaction and carry only
+   * when they were recorded for `fromContent`'s checksum, so a caller can
+   * never smuggle another version's authorization forward. When nothing is
+   * eligible — no diff rows were model-visible and no served row survived —
+   * the previous version's rows are left in place: they stay bound to the old
+   * checksum and authorize nothing against the installed bytes.
    */
-  publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void;
+  publishMutation(input: {
+    path: string;
+    content: string;
+    hashes: string[];
+    servedHashes?: string[];
+    fromContent: string;
+    survivorHashes: string[];
+  }): void;
   /**
    * Publishes one completed write as a single repository transaction: the
    * snapshot for the written content and the served rows for exactly that
@@ -491,10 +505,48 @@ class HashStoreHandleImpl implements HashStoreHandle {
     );
   }
 
-  publishMutation(input: { path: string; content: string; hashes: string[]; servedHashes?: string[] }): void {
-    this.publishSnapshotAndServed(input.path, { content: input.content, hashes: input.hashes }, input.servedHashes);
+  publishMutation(input: {
+    path: string;
+    content: string;
+    hashes: string[];
+    servedHashes?: string[];
+    fromContent: string;
+    survivorHashes: string[];
+  }): void {
+    const entry = this.requireOpen();
+    const checksum = contentChecksum(input.content);
+    const lineCount = splitLines(input.content).length;
+    const updatedAt = Date.now();
+    this.withTransaction(() => {
+      entry.stmts.upsertSnapshot(this.owner, input.path, checksum, lineCount, JSON.stringify(input.hashes), updatedAt);
+      // #299 trusted self-transition: the next served set is the deduplicated
+      // union of the newly visible diff rows and the rows that demonstrably
+      // survive this owner's mutation. Eligibility is decided against the
+      // stored rows for exactly the pre-mutation version — never against the
+      // caller's in-memory view — so only proven survivors rebind to the
+      // installed version, and every other version's rows drop in the same
+      // transaction.
+      const carried: string[] = [];
+      if (input.survivorHashes.length > 0) {
+        const fromChecksum = contentChecksum(input.fromContent);
+        const survivors = new Set(input.survivorHashes);
+        for (const row of entry.stmts.servedRows(this.owner, input.path)) {
+          if (row.content_hash === fromChecksum && survivors.has(row.hash)) carried.push(row.hash);
+        }
+      }
+      const next: string[] = [];
+      const seen = new Set<string>();
+      for (const hash of [...carried, ...(input.servedHashes ?? [])]) {
+        if (seen.has(hash)) continue;
+        seen.add(hash);
+        next.push(hash);
+      }
+      if (next.length > 0) {
+        entry.stmts.mergeServedVersioned(this.owner, input.path, next, checksum, updatedAt);
+      }
+    });
+    cacheSnapshot(entry, snapshotCacheKey(this.owner, input.path), checksum, lineCount, input.hashes);
   }
-
   /** Read and mutation publications share one transaction primitive: one
    *  snapshot upsert plus optional rows served against exactly that
    *  content version. */

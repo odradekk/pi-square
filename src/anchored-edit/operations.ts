@@ -29,7 +29,7 @@ import {
 } from "./insert.ts";
 import { buildChanged, buildNoop, type RMeta } from "./replace-response.ts";
 import { restoreEndings } from "./replace-diff.ts";
-import { servedHashesFromDiff } from "./served.ts";
+import { servedHashesFromDiff, survivorCarryHashes } from "./served.ts";
 import { loadAnchoredHashStore } from "./workspace-support.ts";
 import { stripBOM, toLF } from "./replace-diff.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
@@ -60,7 +60,15 @@ import { errCode, visLines } from "./utils.ts";
  * content version they were recorded for, so a mutation whose post-commit
  * publication failed (or a process that died at that boundary) leaves the
  * previous version unable to authorize any replace or insert until a fresh
- * read republishes current rows.
+ * read republishes current rows. One refinement (#299): the acting owner's
+ * own successful `replace` or `insert` is a trusted self-transition that
+ * atomically carries its proven survivors — rows outside a replacement's
+ * consumed interval, or every original row of an insertion, verified by hash
+ * identity and logical bytes — from the exact pre-mutation version to the
+ * installed one in the same publication transaction, before the boundary
+ * releases and the next queued same-target operation validates. External
+ * changes, other owners' observations, whole-file writes, and failed
+ * publications still fail closed.
  */
 
 export type ReadModelContent = AgentToolResult<unknown>["content"];
@@ -354,7 +362,12 @@ export const replaceBarrier: {
  *
  * Preparation performs no cache or database mutations. After a successful
  * file commit the candidate snapshot and the diff's served rows are
- * published in one transaction while the lock is still held; if that
+ * published in one transaction while the lock is still held; the same
+ * transaction carries this owner's proven survivors — served rows outside
+ * the consumed interval that keep their hash identity and logical bytes —
+ * from the pre-mutation version to the installed one (#299), so the next
+ * queued same-target operation validates against carried plus fresh
+ * authorization instead of a self-generated stale refusal. If that
  * publication fails, the result still reports the truthful mutation success,
  * suppresses fresh anchors, emits a bounded actionable warning, and — because
  * served authorization is bound to the content version — leaves the previous
@@ -426,6 +439,22 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           );
         }
 
+        // #299 survivor classification, computed entirely from preparation
+        // evidence while the boundary is held: rows served to this owner for
+        // the exact pre-mutation version, outside the consumed interval, that
+        // keep their hash identity and logical bytes in the installed
+        // content. Publication re-checks these against the stored rows for
+        // the pre-mutation version inside its transaction.
+        const servedLookup = store.getServedState(target.canonicalPath, prep.originalNormalized);
+        const survivorHashes = survivorCarryHashes({
+          served: servedLookup !== undefined && "served" in servedLookup ? servedLookup.served : undefined,
+          originalContent: prep.originalNormalized,
+          originalHashes: prep.originalHashes,
+          resultContent: prep.result,
+          resultHashes: prep.resultHashes,
+          ...(prep.consumedRange ? { consumedRange: prep.consumedRange } : {}),
+        });
+
         await replaceBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
         if (input.signal?.aborted) return lockedRefusal();
         // The filesystem commit is the irreversible point.
@@ -456,6 +485,8 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
               path: target.canonicalPath,
               content: prep.result,
               hashes: prep.resultHashes,
+              fromContent: prep.originalNormalized,
+              survivorHashes,
               ...(input.autoRead() ? { servedHashes: servedHashesFromDiff(diff) } : {}),
             });
           } catch (error) {
@@ -543,11 +574,15 @@ export const insertBarrier: {
  *
  * Preparation performs no cache or database mutations. After a successful
  * file commit the candidate snapshot and the diff's served rows are published
- * in one transaction while the lock is still held; if that publication fails,
- * the result still reports the truthful mutation success, suppresses fresh
- * anchors, emits a bounded actionable warning, and — because served
- * authorization is bound to the content version — leaves the previous version
- * unable to authorize another anchored mutation until a fresh read republishes
+ * in one transaction while the lock is still held; the same transaction
+ * carries this owner's proven survivors — every served original row, since an
+ * insertion consumes no observed row — from the pre-mutation version to the
+ * installed one (#299), except the synthetic empty-file anchor, which never
+ * carries into an initialized file. If that publication fails, the result
+ * still reports the truthful mutation success, suppresses fresh anchors,
+ * emits a bounded actionable warning, and — because served authorization is
+ * bound to the content version — leaves the previous version unable to
+ * authorize another anchored mutation until a fresh read republishes
  * current rows.
  */
 export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<AnchoredInsertResult> {
@@ -611,6 +646,22 @@ export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<Anc
           );
         }
 
+        // #299 survivor classification from preparation evidence, under the
+        // boundary: an insertion consumes no observed row, so every original
+        // real row this owner was served for survives when it keeps its hash
+        // identity and logical bytes. The synthetic empty-file anchor is not
+        // a real row and never carries into the initialized version.
+        const insertServedLookup = store.getServedState(target.canonicalPath, prep.originalNormalized);
+        const insertSurvivorHashes = prep.initializedFromEmpty
+          ? []
+          : survivorCarryHashes({
+              served: insertServedLookup !== undefined && "served" in insertServedLookup ? insertServedLookup.served : undefined,
+              originalContent: prep.originalNormalized,
+              originalHashes: prep.originalHashes,
+              resultContent: prep.result,
+              resultHashes: prep.resultHashes,
+            });
+
         await insertBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
         if (input.signal?.aborted) return lockedRefusal();
         // The filesystem commit is the irreversible point.
@@ -629,6 +680,8 @@ export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<Anc
               path: target.canonicalPath,
               content: prep.result,
               hashes: prep.resultHashes,
+              fromContent: prep.originalNormalized,
+              survivorHashes: insertSurvivorHashes,
               ...(input.autoRead() ? { servedHashes: servedHashesFromDiff(diff) } : {}),
             });
           } catch (error) {

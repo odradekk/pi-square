@@ -151,6 +151,9 @@ export function applyEdit(
 	content: string;
 	firstChangedLine: number | undefined;
 	lastChangedLine: number | undefined;
+	/** Resolved consumed interval of original rows (1-based, inclusive);
+	 *  present only on an applied (non-noop) replacement. */
+	consumedLines?: { first: number; last: number };
 	warnings?: string[];
 	noopEdit?: NEdit;
 	autoFixes?: AutoFix[];
@@ -232,6 +235,15 @@ export function applyEdit(
 		content: result,
 		firstChangedLine: range?.firstChangedLine,
 		lastChangedLine: range?.lastChangedLine,
+		// The resolved consumed interval (1-based, inclusive) — the original
+		// rows this replacement removes. #299 uses it to classify which served
+		// rows may carry their authorization to the installed version: rows
+		// inside the interval never carry, even when identical replacement
+		// text reuses their hash identity.
+		consumedLines: {
+			first: resolved.hash_bounds[0].line,
+			last: resolved.hash_bounds[1].line,
+		},
 		...(warnings.length ? { warnings } : {}),
 		...(autoFixes ? { autoFixes } : {}),
 	};

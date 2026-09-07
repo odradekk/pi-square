@@ -77,6 +77,10 @@ export interface PipelineResult {
   lastChangedLine?: number;
   originalHashes: string[];
   resultHashes: string[];
+  /** Resolved consumed interval of original rows (1-based, inclusive) for an
+   *  applied replacement; undefined for a noop. #299 uses it to classify
+   *  which served rows survive into the installed version's authorization. */
+  consumedRange?: { first: number; last: number };
   totalAddedLines: number;
   totalRemovedLines: number;
 }
@@ -308,6 +312,9 @@ export async function prepareReplace(
     lastChangedLine: anchorResult.lastChangedLine,
     resultHashes,
     originalHashes,
+    // A noop reports no consumed interval: it performs no version transition
+    // and leaves existing authorization intact (#299).
+    ...(isNoop ? {} : { consumedRange: anchorResult.consumedLines }),
     totalAddedLines,
     totalRemovedLines,
   };
