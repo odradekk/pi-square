@@ -4,7 +4,7 @@ import { convertToLlm } from "@earendil-works/pi-coding-agent";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const registerContextMemory = (await load("../../src/context-memory/index.ts")).default;
-const { projectMemoryBlocksMessage } = await load("../../src/context-memory/controller.ts");
+const { memoryBlocksParts, projectMemoryBlocksMessage } = await load("../../src/context-memory/controller.ts");
 const {
   MEMORY_FORMAT_TAG,
   MEMORY_SUMMARY_WRAPPER,
@@ -22,7 +22,12 @@ const { CONTEXT_MEMORY_BLOCKS_TYPE } = await load("../../src/context-memory/view
  * the ordinary compaction summary; any mismatch or invalid Memory fails
  * safely to the unmodified ordinary message; and Pi's supported provider
  * adapters receive the ordered multi-block text without rejection,
- * reordering, normalization, empty blocks, or accidental merging.
+ * reordering, normalization, empty blocks, or accidental merging. The adapter
+ * sweep covers anthropic-messages, openai-responses, openai-completions,
+ * google-generative-ai, mistral-conversations, bedrock-converse-stream, and
+ * pi-messages, plus the shared-converter reuse: azure-openai-responses and
+ * openai-codex-responses both project through openai-responses-shared's
+ * `convertResponsesMessages`, proven by identical wire mapping.
  */
 
 const TS = "2026-01-01T00:00:00.000Z";
@@ -201,6 +206,49 @@ try {
     { summary: branch.summary, bodies: branch.bodies },
   ]), undefined, "a request without the candidate summary is left untouched");
 
+  // ── Ambiguity refuses instead of guessing (#297 review finding 6) ──
+
+  // Two identical carrying summaries: replacing only the first would be a
+  // guess, so the projection refuses and the request keeps its ordinary
+  // messages.
+  assert.equal(projectMemoryBlocksMessage([
+    ...requestOf(branch.summary),
+    { role: "compactionSummary", summary: branch.summary, tokensBefore: 4321, timestamp: 42 },
+  ], [{ summary: branch.summary, bodies: branch.bodies }]), undefined,
+    "a duplicated carrying summary is ambiguous and never projected");
+
+  // Ours plus a foreign compaction summary in the same request: Pi projects
+  // at most one compaction summary, so two — whatever their summaries — is an
+  // abnormal request shape and the projection refuses.
+  assert.equal(projectMemoryBlocksMessage([
+    ...requestOf(branch.summary),
+    { role: "compactionSummary", summary: "a foreign second summary", tokensBefore: 9, timestamp: 41 },
+  ], [{ summary: branch.summary, bodies: branch.bodies }]), undefined,
+    "a second, foreign compaction summary beside ours refuses the projection");
+
+  // The parts seam demands exactly one rendered message carrying exactly one
+  // text part — a drifted host rendering with extra parts refuses instead of
+  // reading a partial text. Driven directly as the pure edge-case seam;
+  // production reaches it only through a matched compactionSummary message.
+  const candidate = { summary: branch.summary, bodies: branch.bodies };
+  const singlePartMessage = {
+    role: "custom",
+    content: [{ type: "text", text: ownRendering(branch.summary).text }],
+    display: false, timestamp: 42,
+  };
+  const twoPartMessage = {
+    role: "custom",
+    content: [
+      { type: "text", text: ownRendering(branch.summary).text },
+      { type: "text", text: "an extra trailing part a drifted host appended" },
+    ],
+    display: false, timestamp: 42,
+  };
+  assert.notEqual(memoryBlocksParts(singlePartMessage, candidate), undefined,
+    "a one-message one-part rendering still projects");
+  assert.equal(memoryBlocksParts(twoPartMessage, candidate), undefined,
+    "a rendering with extra parts refuses instead of reading a partial text");
+
   // ── Append stability: the carried parts are byte-identical across the append ──
 
   const primeBranch = carryingBranch();
@@ -366,6 +414,153 @@ try {
     texts,
     "google-generative-ai receives the ordered multi-block text one-to-one",
   );
+
+  // ── The remaining supported provider adapters, driven to their wire payloads ──
+
+  // Every capture adapter records its final payload through the `onPayload`
+  // hook and aborts before any transport call; the ordered one-to-one check
+  // is shared by the adapters whose blocks are plain text parts.
+  const assertOrderedBlocks = (label, blocks, extract) => {
+    const texts = blocks.map(extract);
+    assert.equal(texts.length, texts.length, `${label}: block count preserved`);
+    assert.deepEqual(texts, texts, `${label}: ordered one-to-one, no merging`);
+    for (const text of texts) {
+      assert.ok(typeof text === "string" && text.length > 0, `${label}: no empty blocks`);
+    }
+    return texts;
+  };
+
+  // mistral-conversations: driven through its stream (converter not exported).
+  {
+    const mistral = await import("@earendil-works/pi-ai/api/mistral-conversations");
+    const model = {
+      id: "mistral-large-latest", provider: "mistral", api: "mistral-conversations",
+      maxTokens: 8192, contextWindow: 131000, input: ["text"],
+    };
+    let payload = null;
+    const stream = mistral.stream(model, providerContext, {
+      apiKey: "test-key",
+      onPayload: (p) => { payload = p; throw new Error("payload captured"); },
+    });
+    for await (const event of stream) { if (event?.type === "error") break; }
+    assert.ok(payload, "the mistral-conversations adapter built its payload");
+    const blocksMessage = payload.messages.find(
+      (message) => Array.isArray(message.content) && message.content.some((part) => part.text === texts[0]),
+    );
+    assert.ok(blocksMessage, "the blocks message is present in the mistral wire payload");
+    const mistralTexts = assertOrderedBlocks(
+      "mistral-conversations",
+      blocksMessage.content.filter((part) => part.type === "text"),
+      (part) => part.text,
+    );
+    assert.deepEqual(mistralTexts, texts,
+      "mistral-conversations receives the ordered multi-block text byte-exact, without reordering or normalization");
+  }
+
+  // bedrock-converse-stream: driven through its stream (converter internal).
+  {
+    const bedrock = await import("@earendil-works/pi-ai/api/bedrock-converse-stream");
+    const model = {
+      id: "anthropic.claude-sonnet-5-v1:0", provider: "aws-bedrock", api: "bedrock-converse",
+      maxTokens: 8192, contextWindow: 200000, input: ["text"],
+    };
+    let payload = null;
+    const stream = bedrock.stream(model, providerContext, {
+      onPayload: (p) => { payload = p; throw new Error("payload captured"); },
+    });
+    for await (const event of stream) { if (event?.type === "error") break; }
+    assert.ok(payload, "the bedrock-converse-stream adapter built its command input");
+    const blocksMessage = payload.messages.find(
+      (message) => Array.isArray(message.content) && message.content.some((part) => part.text === texts[0]),
+    );
+    assert.ok(blocksMessage, "the blocks message is present in the bedrock command input");
+    const bedrockTexts = assertOrderedBlocks("bedrock-converse", blocksMessage.content, (part) => part.text);
+    assert.deepEqual(bedrockTexts, texts,
+      "bedrock-converse receives the ordered multi-block text byte-exact, without reordering or normalization");
+  }
+
+  // pi-messages: the request posts the Pi context whole — the projected
+  // message rides verbatim, proving the pass-through carries the ordered
+  // blocks to every backend speaking this protocol without transformation.
+  {
+    const pi = await import("@earendil-works/pi-ai/api/pi-messages");
+    const model = {
+      id: "radius-1", provider: "radius", api: "pi-messages",
+      maxTokens: 8192, contextWindow: 200000, input: ["text"], baseUrl: "https://radius.example",
+    };
+    let payload = null;
+    const stream = pi.stream(model, providerContext, {
+      apiKey: "test-key",
+      onPayload: (p) => { payload = p; throw new Error("payload captured"); },
+    });
+    for await (const event of stream) { if (event?.type === "error") break; }
+    assert.ok(payload, "the pi-messages adapter built its payload");
+    assert.deepEqual(payload.context.messages[0], llm[0],
+      "pi-messages posts the projected user message verbatim — same ordered text parts, no transformation");
+    assert.deepEqual(payload.context.messages[0].content.map((part) => part.text), texts,
+      "the pi-messages wire payload carries the ordered multi-block text unchanged");
+  }
+
+  // Shared-converter reuse: azure-openai-responses and openai-codex-responses
+  // both project through openai-responses-shared's convertResponsesMessages —
+  // proven here by driving each adapter's stream and asserting its wire
+  // mapping is byte-identical to the shared converter's direct output.
+  {
+    const shared = await import("@earendil-works/pi-ai/api/openai-responses-shared");
+    const sharedInput = shared.convertResponsesMessages(
+      { id: "gpt-5.2", provider: "openai", api: "openai-responses", maxTokens: 8192, contextWindow: 400000, input: ["text"] },
+      providerContext,
+      new Set(),
+    );
+    const sharedBlocks = sharedInput[1].content.map((part) => part.text);
+    assert.deepEqual(sharedBlocks, texts);
+
+    const azure = await import("@earendil-works/pi-ai/api/azure-openai-responses");
+    const azureModel = {
+      id: "gpt-5.2", provider: "azure", api: "azure-openai-responses",
+      maxTokens: 8192, contextWindow: 400000, input: ["text"], baseUrl: "https://unit.openai.azure.com",
+    };
+    let azurePayload = null;
+    const azureStream = azure.stream(azureModel, providerContext, {
+      apiKey: "test-key", azureDeploymentId: "unit",
+      onPayload: (p) => { azurePayload = p; throw new Error("payload captured"); },
+    });
+    for await (const event of azureStream) { if (event?.type === "error") break; }
+    assert.ok(azurePayload, "the azure-openai-responses adapter built its payload");
+    const azureBlocksMessage = azurePayload.input.find(
+      (item) => Array.isArray(item.content) && item.content.some((part) => part.text === texts[0]),
+    );
+    assert.ok(azureBlocksMessage, "the blocks message is present in the azure wire payload");
+    const azureBlocks = azureBlocksMessage.content.map((part) => part.text);
+    assert.deepEqual(azureBlocks, texts,
+      "azure-openai-responses reuses the shared responses converter: identical ordered input_text blocks");
+
+    const codex = await import("@earendil-works/pi-ai/api/openai-codex-responses");
+    const b64 = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
+    const codexToken = [
+      b64({ alg: "none" }),
+      b64({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-unit-test" } }),
+      "sig",
+    ].join(".");
+    const codexModel = {
+      id: "gpt-5.2-codex", provider: "openai", api: "openai-codex-responses",
+      maxTokens: 8192, contextWindow: 400000, input: ["text"],
+    };
+    let codexPayload = null;
+    const codexStream = codex.stream(codexModel, providerContext, {
+      apiKey: codexToken,
+      onPayload: (p) => { codexPayload = p; throw new Error("payload captured"); },
+    });
+    for await (const event of codexStream) { if (event?.type === "error") break; }
+    assert.ok(codexPayload, "the openai-codex-responses adapter built its payload");
+    const codexBlocksMessage = codexPayload.input.find(
+      (item) => Array.isArray(item.content) && item.content.some((part) => part.text === texts[0]),
+    );
+    assert.ok(codexBlocksMessage, "the blocks message is present in the codex wire payload");
+    const codexBlocks = codexBlocksMessage.content.map((part) => part.text);
+    assert.deepEqual(codexBlocks, texts,
+      "openai-codex-responses reuses the shared responses converter: identical ordered input_text blocks");
+  }
 
   console.log("blocks-projection.test.mjs: all assertions passed");
 } catch (error) {
