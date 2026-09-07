@@ -350,7 +350,12 @@ a session operation.
   experiment compares the multi-block projection with today's
   single-summary-block rendering across a real cross-compaction append, and
   no improvement claim is made without that evidence for the exact release
-  commit on the named provider and model.
+  commit. The credentialed command runs three model lanes concurrently —
+  `claude-sonnet-5`, `glm-5.3`, and `gpt-5.6-luna` — while preserving the
+  prime-before-probe order within each lane. Anthropic usage supplies explicit
+  cache-read/write buckets; both OpenAI-compatible lanes read
+  `usage.prompt_tokens_details.cached_tokens`, and an absent cache-write or
+  price field stays unreported rather than becoming a measured zero.
 - **Protocol artifacts are filtered while enabled.** `submit_memory` calls and
   their results are removed from provider-bound requests while the feature is
   enabled, except the current trailing call/result pair, which passes through
@@ -422,7 +427,8 @@ rewrite existing Memory blocks.
 - Qualification evidence (deterministic protocol replay, real-model
   long-session scenarios, and the provider-cache experiment — the
   cross-compaction append measurement comparing the multi-block projection
-  with the single-summary-block baseline under a content-divergence control)
+  with the single-summary-block baseline under a content-divergence control,
+  concurrently across Sonnet 5, GLM 5.3, and GPT-5.6 Luna)
   is required before any quality or cache claim;
   reports are development evidence kept out of the npm package, and reruns
   follow the fixed impact-based rules — model-visible or algorithm changes

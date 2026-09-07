@@ -86,8 +86,25 @@ function validateProviderReport(report) {
   if (cache.reported && (!isCount(cache.read) || !isCount(cache.write))) {
     return "reported cache values are not non-negative integers";
   }
+  if (cache.writeReported !== undefined && typeof cache.writeReported !== "boolean") {
+    return "cache write report has a malformed writeReported flag";
+  }
+  if (cache.readReported !== undefined && typeof cache.readReported !== "boolean") {
+    return "cache read report has a malformed readReported flag";
+  }
+  const readReported = cache.readReported ?? cache.reported;
+  const writeReported = cache.writeReported ?? cache.reported;
+  if (cache.reported !== (readReported || writeReported)) {
+    return "cache reported flag is inconsistent with its read/write reporting flags";
+  }
+  if ((!readReported && cache.read !== 0) || (!writeReported && cache.write !== 0)) {
+    return "an unreported cache direction carried a non-zero token count";
+  }
   if (typeof report.cost !== "number" || !Number.isFinite(report.cost) || report.cost < 0) {
     return "cost is not a finite non-negative number";
+  }
+  if (report.costReported !== undefined && typeof report.costReported !== "boolean") {
+    return "cost report has a malformed costReported flag";
   }
   const retention = report.retentionWrite;
   if (retention !== undefined) {
@@ -183,6 +200,8 @@ function rowOf(record, evidence) {
     divergenceBoundary: evidence ? evidence.boundary : null,
     divergenceElement: evidence ? evidence.divergence.element : null,
     cacheReported: report.cache.reported,
+    cacheReadReported: report.cache.readReported ?? report.cache.reported,
+    cacheWriteReported: report.cache.writeReported ?? report.cache.reported,
     cacheRead: report.cache.reported ? report.cache.read : 0,
     cacheWrite: report.cache.reported ? report.cache.write : 0,
     inputTokens: report.usage.inputTokens,
@@ -191,6 +210,7 @@ function rowOf(record, evidence) {
     retentionBucket: report.retentionWrite?.reported === true ? report.retentionWrite.bucket : "unreported",
     retentionWriteTokens: report.retentionWrite?.reported === true ? report.retentionWrite.tokens : 0,
     cost: roundCost(report.cost),
+    costReported: report.costReported ?? true,
     ttftMs: record.ttftMs ?? null,
     sentAtMs: record.sentAtMs,
     primeToProbeMs: record.primeToProbeMs ?? null,
@@ -557,12 +577,14 @@ function renderHuman(report) {
       const spread = direction === "ttft" && summary.spreadMs !== null && summary.spreadMs !== undefined
         ? ` (spread ${summary.spreadMs}ms)`
         : "";
-      return `${direction} median-delta ${summary.medianDelta ?? "—"}${spread} (${summary.worse}w/${summary.better}b/${summary.equal}e)`;
+      const median = summary.medianDelta === null && summary.unreported > 0 ? "unreported" : summary.medianDelta ?? "—";
+      const availability = summary.unreported > 0 ? `; ${summary.unreported} unreported` : "";
+      return `${direction} median-delta ${median}${spread} (${summary.worse}w/${summary.better}b/${summary.equal}e${availability})`;
     })
     .join(" · ");
   const derivedCost = report.baselineSummary.derived?.cost;
   const derivedText = derivedCost
-    ? ` · cost (derived) median-delta ${derivedCost.medianDelta ?? "—"} (${derivedCost.worse}w/${derivedCost.better}b/${derivedCost.equal}e)`
+    ? ` · cost (derived) median-delta ${derivedCost.medianDelta === null && derivedCost.unreported > 0 ? "unreported" : derivedCost.medianDelta ?? "—"} (${derivedCost.worse}w/${derivedCost.better}b/${derivedCost.equal}e${derivedCost.unreported > 0 ? `; ${derivedCost.unreported} unreported` : ""})`
     : "";
   lines.push(`baseline comparison: ${report.baselineSummary.groupsEvaluated} groups evaluated · ${perDirection}${derivedText}`);
   lines.push(`  directions (counted, independent): ${report.regression.directions.counted.join(", ")}`);

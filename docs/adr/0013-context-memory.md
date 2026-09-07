@@ -181,8 +181,11 @@ message, and deletion stays the ordinary Pi session boundary.
   improves prompt-cache reuse across a Memory append is a measured question,
   not a design claim: the pinned provider-cache experiment compares the
   multi-block projection with the single-summary-block baseline across a
-  real cross-compaction append, and the measured outcome on the named
-  provider/model is the only permitted statement. Placing a cache breakpoint
+  real cross-compaction append. Its credentialed command runs independent
+  Sonnet 5, GLM 5.3, and GPT-5.6 Luna lanes concurrently while keeping each
+  lane's prime/probe requests sequential; comparison keeps absent cache-write
+  and price fields explicitly unreported. Only the measured outcome on each
+  named provider/model is a permitted statement. Placing a cache breakpoint
   at the carried Memory's end remains deliberately undone here (#269): the
   projection isolates the structural change so the breakpoint decision can
   be made on its own evidence.

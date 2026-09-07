@@ -116,19 +116,20 @@ export function continuityProgress() {
 }
 
 /**
- * Cache experiment renderer: one line per request with the cache numbers as
- * they arrive, so a dead measurement (every arm reading the same constant) is
- * visible while the run is still going rather than only in the verdict.
+ * Cache experiment renderer: one labelled line per request with the cache
+ * numbers as they arrive. Labels keep three concurrently interleaved model
+ * lanes readable, and a dead measurement remains visible before the verdict.
  */
 export function cacheProgress() {
   const startedAt = Date.now();
-  let lastGroup = 0;
+  const lastGroup = new Map();
 
   return (event) => {
     if (event.type !== "request") return;
-    if (event.group !== lastGroup) {
-      lastGroup = event.group;
-      write(`${bold(`group ${event.group}`)}\n`);
+    const lane = event.model ? `${event.provider}/${event.model}` : "cache";
+    if (event.group !== lastGroup.get(lane)) {
+      lastGroup.set(lane, event.group);
+      write(`${bold(`${lane} · group ${event.group}`)}\n`);
     }
     const label = `${event.arm}.${event.role}`.padEnd(14);
     if (event.error) {

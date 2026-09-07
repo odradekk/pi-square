@@ -9,6 +9,7 @@ import { runExperiment } from "../cache-experiment/runner.mjs";
 import {
   CACHE_PROVIDER_PRICES,
   PREFILL_CONTINUATION_USER_TEXT,
+  adapters as cacheProviderAdapters,
   buildClaudeCacheRequest,
   createCacheProviderAdapter,
 } from "./cache-provider.mjs";
@@ -123,6 +124,14 @@ function captureTransport(handler) {
 }
 
 // ─── declaration and pins ───────────────────────────────────────────
+
+{
+  assert.deepEqual(
+    cacheProviderAdapters.map((adapter) => adapter.describePins().model),
+    ["claude-sonnet-5", "glm-5.3", "gpt-5.6-luna"],
+    "the canonical cache adapter module exports the three-model comparison matrix",
+  );
+}
 
 {
   const adapter = createCacheProviderAdapter({ transport: captureTransport(sseResponse(claudeFrames({}))) });
@@ -323,7 +332,7 @@ function captureTransport(handler) {
   assert.equal(firstTokenCalls, 1, "onFirstToken fires exactly once, at the first content delta");
   assert.deepEqual(report.usage, { inputTokens: 612, outputTokens: 64 },
     "inputTokens is the uncached input only");
-  assert.deepEqual(report.cache, { reported: true, read: 0, write: 487 },
+  assert.deepEqual(report.cache, { reported: true, readReported: true, read: 0, write: 487, writeReported: true },
     "present-and-zero fields stay distinguishable from absent fields");
   assert.deepEqual(report.retentionWrite, { reported: true, bucket: "1h", tokens: 487 },
     "the retention bucket reports what the provider used, not what was requested");
@@ -345,7 +354,7 @@ function captureTransport(handler) {
   const adapter = createCacheProviderAdapter({ transport });
   const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
   assert.deepEqual(report.usage, { inputTokens: 612, outputTokens: 64 });
-  assert.deepEqual(report.cache, { reported: true, read: 0, write: 487 });
+  assert.deepEqual(report.cache, { reported: true, readReported: true, read: 0, write: 487, writeReported: true });
 }
 
 {
@@ -369,7 +378,7 @@ function captureTransport(handler) {
   const adapter = createCacheProviderAdapter({ transport });
   const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
   assert.deepEqual(report.usage, { inputTokens: 612, outputTokens: 64 });
-  assert.deepEqual(report.cache, { reported: true, read: 200, write: 487 });
+  assert.deepEqual(report.cache, { reported: true, readReported: true, read: 200, write: 487, writeReported: true });
 }
 
 {
@@ -393,7 +402,7 @@ function captureTransport(handler) {
   const transport = captureTransport(() => sseResponse(claudeFrames({ inputTokens: 50 })));
   const adapter = createCacheProviderAdapter({ transport });
   const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
-  assert.deepEqual(report.cache, { reported: false, read: 0, write: 0 });
+  assert.deepEqual(report.cache, { reported: false, readReported: false, read: 0, write: 0, writeReported: false });
   assert.deepEqual(report.retentionWrite, { reported: false, bucket: "unreported", tokens: 0 });
 }
 
@@ -404,7 +413,7 @@ function captureTransport(handler) {
   })));
   const adapter = createCacheProviderAdapter({ transport });
   const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
-  assert.deepEqual(report.cache, { reported: true, read: 0, write: 0 });
+  assert.deepEqual(report.cache, { reported: true, readReported: true, read: 0, write: 0, writeReported: true });
   assert.deepEqual(report.retentionWrite, { reported: true, bucket: "unspecified", tokens: 0 });
 }
 

@@ -1,14 +1,16 @@
 import { boundedErrorText, realTransport } from "./transport.mjs";
+import { openAiCacheProviderAdapters } from "./cache-openai-provider.mjs";
 
 /**
  * The credentialed provider-cache experiment adapter (#248, executed by #227;
  * breakpoint placement re-modeled by #268).
  *
- * It implements the adapter contract validated by
+ * Its default export implements the adapter contract validated by
  * `tests/context-memory/cache-experiment/runner.mjs` — `{ id, describePins(),
- * send(request, observe) }` — against the `ccr-claude` gateway only, and
- * builds every request as a deterministic reconstruction of the experiment's
- * canonical payload:
+ * send(request, observe) }` — against the `ccr-claude` gateway. The named
+ * `adapters` export adds the two CPA OpenAI-compatible comparison lanes.
+ * This Anthropic lane builds every request as a deterministic reconstruction
+ * of the experiment's canonical payload:
  *
  * - The wire request is reconstructed from `request.payload.table`: the
  *   `system` segment becomes the system block, the `tools` segment becomes
@@ -300,8 +302,14 @@ async function consumeSse(response, observe, credential) {
   const write = usage.cache_creation_input_tokens;
   const cacheReported = isCount(read) || isCount(write);
   const cache = cacheReported
-    ? { reported: true, read: isCount(read) ? read : 0, write: isCount(write) ? write : 0 }
-    : { reported: false, read: 0, write: 0 };
+    ? {
+        reported: true,
+        readReported: isCount(read),
+        read: isCount(read) ? read : 0,
+        write: isCount(write) ? write : 0,
+        writeReported: isCount(write),
+      }
+    : { reported: false, readReported: false, read: 0, write: 0, writeReported: false };
 
   const detail = usage.cache_creation;
   let retentionWrite;
@@ -329,6 +337,7 @@ async function consumeSse(response, observe, credential) {
     cache,
     retentionWrite,
     cost,
+    costReported: true,
   };
 }
 
@@ -380,4 +389,13 @@ export function createCacheProviderAdapter(options = {}) {
   };
 }
 
-export default createCacheProviderAdapter();
+const anthropicCacheProviderAdapter = createCacheProviderAdapter();
+
+/**
+ * The canonical credentialed matrix: model lanes run concurrently in the
+ * CLI, while each adapter keeps its own prime/probe sequence serial.
+ * `default` remains the Anthropic adapter for existing direct imports.
+ */
+export const adapters = Object.freeze([anthropicCacheProviderAdapter, ...openAiCacheProviderAdapters]);
+
+export default anthropicCacheProviderAdapter;

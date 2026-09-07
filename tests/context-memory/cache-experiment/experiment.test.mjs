@@ -4,7 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { REPORT_COMPLETE_SENTINEL, claimArtifactPair, resolveImplementation } from "./experiment.mjs";
+import { REPORT_COMPLETE_SENTINEL, claimArtifactPair, loadAdapters, resolveImplementation, runExperimentMatrix } from "./experiment.mjs";
 import {
   ARMS,
   ARM_ORDER,
@@ -958,6 +958,25 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
 
 {
   const clock = fakeClock();
+  const adapter = {
+    id: "simulated-inconsistent-reporting/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/inconsistent-v1", cacheReporting: "reported" }),
+    async send() {
+      return {
+        usage: { inputTokens: 1, outputTokens: 1 },
+        cache: { reported: false, readReported: true, read: 1, writeReported: false, write: 0 },
+        cost: 0,
+      };
+    },
+  };
+  const { report } = await runExperiment({ adapter, clock });
+  assert.equal(report.integrity.ok, false);
+  assert.match(report.integrity.failures[0], /reported flag is inconsistent/,
+    "an adapter cannot publish a reported direction under an aggregate unreported flag");
+}
+
+{
+  const clock = fakeClock();
   let calls = 0;
   const adapter = {
     id: "simulated-throwing/1",
@@ -1007,6 +1026,126 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
 }
 
 // ─── the command itself ─────────────────────────────────────────────
+
+{
+  const dir = mkdtempSync(join(tmpdir(), "provider-cache-adapter-loader-"));
+  const adapterSource = (id) => `({ id: ${JSON.stringify(id)}, async send() {}, describePins() { return {}; } })`;
+  const legacyPath = join(dir, "legacy.mjs");
+  writeFileSync(legacyPath, `export default ${adapterSource("legacy")};\n`);
+  assert.deepEqual((await loadAdapters(legacyPath)).map((adapter) => adapter.id), ["legacy"],
+    "the loader preserves the legacy default-export contract");
+
+  const namedPath = join(dir, "named.mjs");
+  writeFileSync(namedPath, `export const adapters = [${adapterSource("a")}, ${adapterSource("b")}];\n`);
+  assert.deepEqual((await loadAdapters(namedPath)).map((adapter) => adapter.id), ["a", "b"],
+    "the named array drives a model matrix");
+
+  const duplicatePath = join(dir, "duplicate.mjs");
+  writeFileSync(duplicatePath, `export const adapters = [${adapterSource("same")}, ${adapterSource("same")}];\n`);
+  await assert.rejects(loadAdapters(duplicatePath), /unique non-empty ids/);
+
+  const oversizedPath = join(dir, "oversized.mjs");
+  writeFileSync(oversizedPath, `export const adapters = [${["a", "b", "c", "d"].map(adapterSource).join(",")}];\n`);
+  await assert.rejects(loadAdapters(oversizedPath), /at most 3 adapters/);
+}
+
+{
+  let active = 0;
+  let peak = 0;
+  const laneActive = new Map();
+  const adapterOf = (model) => ({
+    id: `test/${model}`,
+    requiredEnv: [],
+    describePins: () => ({ provider: "test", model, cacheReporting: "reported", breakpointPlacement: "test" }),
+    async send(request, observe) {
+      active += 1;
+      peak = Math.max(peak, active);
+      laneActive.set(model, (laneActive.get(model) ?? 0) + 1);
+      assert.equal(laneActive.get(model), 1, `${model} keeps requests serial within its lane`);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      observe.onFirstToken?.();
+      laneActive.set(model, laneActive.get(model) - 1);
+      active -= 1;
+      return {
+        usage: { inputTokens: 100, outputTokens: 1 },
+        cache: {
+          reported: true,
+          read: request.role === "probe" && request.arm !== "nonce" ? 900 : 0,
+          write: request.role === "prime" ? 900 : 0,
+        },
+        retentionWrite: { reported: false, bucket: "unreported", tokens: 0 },
+        cost: 0,
+      };
+    },
+  });
+  const result = await runExperimentMatrix({
+    adapters: [adapterOf("sonnet"), adapterOf("glm"), adapterOf("luna")],
+    clock: { now: Date.now, mono: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
+    groupCount: 1,
+    runNonce: "matrix-concurrency",
+    generatedAt: () => "2026-01-01T00:00:00.000Z",
+    implementationCommit: "0123456789abcdef0123456789abcdef01234567",
+    implementationTree: "fedcba9876543210fedcba9876543210fedcba98",
+  });
+  assert.equal(peak, 3, "the three model lanes overlap");
+  assert.equal(result.report.schema, "pi-square.context-memory/provider-cache-comparison/1");
+  assert.deepEqual(result.report.execution, {
+    concurrency: 3,
+    schedule: "model lanes run concurrently; requests within each lane run sequentially",
+  });
+  assert.deepEqual(result.report.runs.map((run) => run.adapter.model), ["sonnet", "glm", "luna"]);
+  assert.equal(result.report.comparison.length, 3);
+  assert.equal(result.report.integrity.ok, true);
+  assert.equal(result.exitCode, 0);
+  assert.ok(result.humanText.includes("Concurrent model comparison"));
+  assert.ok(result.humanText.includes("sonnet"));
+  assert.ok(result.humanText.includes("glm"));
+  assert.ok(result.humanText.includes("luna"));
+  await assert.rejects(
+    runExperimentMatrix({ adapters: [adapterOf("a"), adapterOf("b"), adapterOf("c"), adapterOf("d")], clock: {} }),
+    /at most 3 adapters/,
+  );
+
+  const failed = await runExperimentMatrix({
+    adapters: [
+      { ...adapterOf("failed"), async send() { throw new Error("synthetic failure"); } },
+      adapterOf("healthy-a"),
+      adapterOf("healthy-b"),
+    ],
+    clock: { now: Date.now, mono: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
+    groupCount: 1,
+    runNonce: "matrix-failure",
+  });
+  assert.deepEqual(failed.report.comparison[0].reporting, { cacheRead: false, cacheWrite: false, cost: false },
+    "a failed lane with no rows never reports metric availability by vacuous truth");
+
+  const partialClock = fakeClock();
+  const partialAdapter = {
+    id: "test/partial-reporting",
+    describePins: () => ({ provider: "test", model: "partial", cacheReporting: "reported", breakpointPlacement: "test" }),
+    async send(request, observe) {
+      observe.onFirstToken?.();
+      const fullyReported = request.group === 1;
+      return {
+        usage: { inputTokens: 100, outputTokens: 1 },
+        cache: {
+          reported: true,
+          readReported: true,
+          read: request.role === "probe" && request.arm !== "nonce" ? 900 : 0,
+          writeReported: fullyReported,
+          write: fullyReported && request.role === "prime" ? 900 : 0,
+        },
+        cost: fullyReported ? 0.01 : 0,
+        costReported: fullyReported,
+      };
+    },
+  };
+  const partial = await runExperiment({ adapter: partialAdapter, clock: partialClock, groupCount: 2 });
+  assert.match(partial.humanText, /writeSpend median-delta 0 \(0w\/0b\/1e; 1 unreported\)/,
+    "partial cache-write availability remains visible beside the measured median");
+  assert.match(partial.humanText, /cost \(derived\) median-delta 0 \(0w\/0b\/1e; 1 unreported\)/,
+    "partial price availability remains visible beside the measured median");
+}
 
 // #297 review finding 6: the tests run the CLI against a temporary report
 // directory, never the shared persistent one — two concurrent test runs can

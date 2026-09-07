@@ -75,14 +75,14 @@ export const DERIVED_FIGURES = ["cost"];
 
 /** What each counted direction measures and why it is independent; restated verbatim in the report. */
 export const DIRECTION_NOTES = Object.freeze({
-  inputTokens: "uncached input tokens as reported by the provider (anthropic usage input_tokens); a wire measurement, independent of the cache buckets and of local timing",
-  writeSpend: "cache-creation tokens as reported by the provider (anthropic cache_creation_input_tokens); a separate usage bucket, independent of the uncached count and of local timing",
+  inputTokens: "uncached input tokens normalized from the provider's usage payload; a wire measurement, independent of the cache buckets and of local timing",
+  writeSpend: "cache-creation tokens when the provider reports that separate usage bucket; independent of the uncached count and of local timing, otherwise unreported",
   ttft: "milliseconds to the first streamed token, measured locally by the runner; timing evidence, independent of every token-count direction",
 });
 
 /** Why cost is derived rather than counted; restated verbatim in the report. */
 export const COST_DERIVATION_NOTE =
-  "cost is computed from the token counts through the adapter's declared price table, so it cannot move independently of them: it is reported as a derived figure and never counted as a regression direction";
+  "when an adapter declares a price table, cost is a derived figure from token counts and is never counted as a regression direction; without one, cost stays explicitly unreported";
 
 /** The three arms the standard is defined over; pinned by the fixture. */
 const STANDARD_ARMS = ["multiblock", "single", "nonce"];
@@ -179,7 +179,7 @@ export function classifyGroup(group) {
     group.single.prime, group.single.probe,
     group.nonce.prime, group.nonce.probe,
   ];
-  const absent = allRequests.filter((row) => !row.cacheReported).map((row) => `${row.arm}.${row.role}`);
+  const absent = allRequests.filter((row) => !(row.cacheReadReported ?? row.cacheReported)).map((row) => `${row.arm}.${row.role}`);
   if (absent.length > 0) {
     return {
       quality: "missing-report",
@@ -202,6 +202,14 @@ function armCost(arm) {
 
 function armWriteTokens(arm) {
   return arm.prime.cacheWrite + arm.probe.cacheWrite;
+}
+
+function armWriteReported(arm) {
+  return arm.prime.cacheWriteReported !== false && arm.probe.cacheWriteReported !== false;
+}
+
+function armCostReported(arm) {
+  return arm.prime.costReported !== false && arm.probe.costReported !== false;
 }
 
 /** The floor a direction's excess must clear to count; `equal` inside it (#297). */
@@ -230,7 +238,7 @@ function directionOf(testValue, baselineValue, direction) {
  */
 export function compareBaseline(group) {
   const rows = [group.multiblock.prime, group.multiblock.probe, group.single.prime, group.single.probe];
-  if (rows.some((row) => !row.cacheReported)) {
+  if (rows.some((row) => !(row.cacheReadReported ?? row.cacheReported))) {
     return {
       evaluated: false,
       missing: ["cache report absent on the multiblock or single arm"],
@@ -242,7 +250,9 @@ export function compareBaseline(group) {
   }
   const directions = {
     inputTokens: directionOf(group.multiblock.probe.inputTokens, group.single.probe.inputTokens, "inputTokens"),
-    writeSpend: directionOf(armWriteTokens(group.multiblock), armWriteTokens(group.single), "writeSpend"),
+    writeSpend: armWriteReported(group.multiblock) && armWriteReported(group.single)
+      ? directionOf(armWriteTokens(group.multiblock), armWriteTokens(group.single), "writeSpend")
+      : "unreported",
   };
   if (group.multiblock.probe.ttftMs == null || group.single.probe.ttftMs == null) {
     directions.ttft = "unreported";
@@ -254,7 +264,11 @@ export function compareBaseline(group) {
     evaluated: true,
     missing: [],
     directions,
-    derived: { cost: directionOf(armCost(group.multiblock), armCost(group.single)) },
+    derived: {
+      cost: armCostReported(group.multiblock) && armCostReported(group.single)
+        ? directionOf(armCost(group.multiblock), armCost(group.single))
+        : "unreported",
+    },
     worseDirections,
     multiDirectionRegression: worseDirections.length >= REGRESSION_DIRECTION_THRESHOLD,
   };
@@ -281,7 +295,10 @@ export function baselineMedians(classifiedGroups) {
   const deltasOf = (direction) => evaluated
     .map((group) => {
       if (direction === "inputTokens") return group.multiblock.probe.inputTokens - group.single.probe.inputTokens;
-      if (direction === "writeSpend") return armWriteTokens(group.multiblock) - armWriteTokens(group.single);
+      if (direction === "writeSpend") {
+        if (!armWriteReported(group.multiblock) || !armWriteReported(group.single)) return null;
+        return armWriteTokens(group.multiblock) - armWriteTokens(group.single);
+      }
       if (group.multiblock.probe.ttftMs == null || group.single.probe.ttftMs == null) return null;
       return group.multiblock.probe.ttftMs - group.single.probe.ttftMs;
     })
@@ -305,7 +322,9 @@ export function baselineMedians(classifiedGroups) {
     }
   }
   const costDeltas = evaluated
-    .map((group) => armCost(group.multiblock) - armCost(group.single))
+    .map((group) => armCostReported(group.multiblock) && armCostReported(group.single)
+      ? armCost(group.multiblock) - armCost(group.single)
+      : null)
     .filter((delta) => delta !== null);
   return {
     groupsEvaluated: evaluated.length,
@@ -322,12 +341,12 @@ export function baselineMedians(classifiedGroups) {
         single: median(evaluated.map((group) => group.single.probe.inputTokens)),
       },
       writeTokens: {
-        multiblock: median(evaluated.map((group) => armWriteTokens(group.multiblock))),
-        single: median(evaluated.map((group) => armWriteTokens(group.single))),
+        multiblock: median(evaluated.filter((group) => armWriteReported(group.multiblock)).map((group) => armWriteTokens(group.multiblock))),
+        single: median(evaluated.filter((group) => armWriteReported(group.single)).map((group) => armWriteTokens(group.single))),
       },
       cost: {
-        multiblock: median(evaluated.map((group) => armCost(group.multiblock))),
-        single: median(evaluated.map((group) => armCost(group.single))),
+        multiblock: median(evaluated.filter((group) => armCostReported(group.multiblock)).map((group) => armCost(group.multiblock))),
+        single: median(evaluated.filter((group) => armCostReported(group.single)).map((group) => armCost(group.single))),
       },
       probeTtftMs: {
         multiblock: median(evaluated.map((group) => group.multiblock.probe.ttftMs).filter((value) => value !== null)),

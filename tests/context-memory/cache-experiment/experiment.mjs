@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
@@ -16,11 +17,11 @@ import { cacheProgress } from "../progress.mjs";
  * no credential, no network call. Credentialed execution passes
  * `--adapter <module.mjs>` pointing at an adapter implementing the contract
  * validated by `runner.mjs` (see `adapters/cache-provider.mjs`); the command
- * then verifies the adapter's declared `requiredEnv` variable *names* are
- * present (never their values) and runs with a real clock. Executing that
- * adapter against the real gateway — the credentials, the run, and the
- * verdict — belongs to #227 and the maintainer; `--real` still refuses here
- * rather than silently degrading.
+ * then verifies every exported adapter's declared `requiredEnv` variable
+ * *names* are present (never their values) and runs with a real clock. The
+ * canonical cache-provider module exports Sonnet 5, GLM 5.3, and GPT-5.6
+ * Luna lanes; they run concurrently while every lane's requests remain
+ * sequential. `--real` still refuses rather than silently degrading.
  *
  * Auditability (#297 review finding 5): every report records the exact
  * implementation commit it measured (resolved from git at run time, never
@@ -34,6 +35,7 @@ import { cacheProgress } from "../progress.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORT_DIR = join(HERE, "report");
+const MAX_ADAPTERS = 3;
 const USAGE = "usage: npm run experiment:provider-cache [-- --dry-run] [--json] [--quiet] [--report-dir <dir>] [--adapter <adapter-module.mjs>]";
 
 function parseArgs(argv) {
@@ -74,14 +76,113 @@ function parseArgs(argv) {
   return options;
 }
 
-async function loadAdapter(path) {
+export async function loadAdapters(path) {
   const module = await import(pathToFileURL(path).href);
-  const adapter = module.default ?? module.adapter;
-  if (!adapter || typeof adapter.send !== "function" || typeof adapter.describePins !== "function") {
-    console.error(`adapter module ${path} must default-export an adapter (see fake-provider.mjs for the contract)`);
-    process.exit(2);
+  const adapters = Array.isArray(module.adapters) ? module.adapters : [module.default ?? module.adapter];
+  if (adapters.length > MAX_ADAPTERS) {
+    throw new Error(`adapter module ${path} may export at most ${MAX_ADAPTERS} adapters`);
   }
-  return adapter;
+  if (adapters.length === 0 || adapters.some((adapter) => !adapter
+    || typeof adapter.send !== "function" || typeof adapter.describePins !== "function")) {
+    throw new Error(`adapter module ${path} must export an adapter or a non-empty adapters array (see fake-provider.mjs for the contract)`);
+  }
+  const ids = adapters.map((adapter) => adapter.id);
+  if (ids.some((id) => typeof id !== "string" || id.length === 0) || new Set(ids).size !== ids.length) {
+    throw new Error(`adapter module ${path} must export adapters with unique non-empty ids`);
+  }
+  return adapters;
+}
+
+function comparisonRow(report) {
+  const rate = (arm) => report.cacheStandard.rates[arm].rate;
+  const rows = report.groups.flatMap((group) => [
+    group.multiblock.prime, group.multiblock.probe,
+    group.single.prime, group.single.probe,
+    group.nonce.prime, group.nonce.probe,
+  ]);
+  return {
+    provider: report.adapter.provider,
+    model: report.adapter.model,
+    integrityOk: report.integrity.ok,
+    cacheConclusion: report.conclusion.cache,
+    finalConclusion: report.conclusion.final,
+    reporting: {
+      cacheRead: rows.length > 0 && rows.every((row) => row.cacheReadReported ?? row.cacheReported),
+      cacheWrite: rows.length > 0 && rows.every((row) => row.cacheWriteReported),
+      cost: rows.length > 0 && rows.every((row) => row.costReported),
+    },
+    hitRate: { multiblock: rate("multiblock"), single: rate("single"), nonce: rate("nonce") },
+    probeInputTokenMedian: report.baselineSummary.armMedians.probeInputTokens,
+    probeTtftMsMedian: report.baselineSummary.armMedians.probeTtftMs,
+  };
+}
+
+function renderMatrix(report, laneTexts) {
+  const pct = (value) => value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
+  const lines = [
+    `Concurrent model comparison — ${report.mode}`,
+    `execution: ${report.execution.concurrency} model lanes in parallel; prime/probe requests remain sequential inside each lane`,
+    "model                         multiblock  single      nonce       conclusion    integrity",
+  ];
+  for (const row of report.comparison) {
+    const name = `${row.provider}/${row.model}`.slice(0, 29).padEnd(29);
+    lines.push(
+      `${name} ${pct(row.hitRate.multiblock).padEnd(11)} ${pct(row.hitRate.single).padEnd(11)} `
+        + `${pct(row.hitRate.nonce).padEnd(11)} ${row.finalConclusion.padEnd(13)} ${row.integrityOk ? "ok" : "FAILED"}`,
+    );
+  }
+  lines.push("comparison note: token counts and TTFT are reported per model; tokenizer, routing, and price differences prevent a provider-neutral cost ranking");
+  for (const [index, text] of laneTexts.entries()) {
+    lines.push("", `--- lane ${index + 1} ---`, text);
+  }
+  return lines.join("\n");
+}
+
+/** Runs model lanes concurrently while preserving each lane's causal request order. */
+export async function runExperimentMatrix({ adapters, generatedAt = () => new Date().toISOString(), runNonce, onEvent, ...options }) {
+  if (!Array.isArray(adapters) || adapters.length === 0) throw new Error("at least one adapter is required");
+  if (adapters.length > MAX_ADAPTERS) throw new Error(`at most ${MAX_ADAPTERS} adapters may run concurrently`);
+  if (adapters.length === 1) {
+    return runExperiment({ adapter: adapters[0], generatedAt, runNonce, onEvent, ...options });
+  }
+  const stamp = generatedAt();
+  const sharedNonce = runNonce ?? randomBytes(16).toString("hex");
+  const results = await Promise.all(adapters.map((adapter, lane) => runExperiment({
+    adapter,
+    generatedAt: () => stamp,
+    runNonce: sharedNonce,
+    onEvent: onEvent === undefined ? undefined : (event) => onEvent({ ...event, lane, provider: adapter.describePins().provider, model: adapter.describePins().model }),
+    ...options,
+  })));
+  const runs = results.map((result) => result.report);
+  const report = {
+    schema: "pi-square.context-memory/provider-cache-comparison/1",
+    generatedAt: stamp,
+    mode: runs.every((run) => run.mode === "dry-run") ? "dry-run" : "credentialed",
+    framing: {
+      disclaimer: "Measured, best-effort observations for the listed provider/model lanes under one pinned fixture; no statistical significance or provider-neutral superiority is claimed.",
+      scope: "one concurrent run per listed provider/model; comparisons remain model-specific",
+    },
+    execution: {
+      concurrency: adapters.length,
+      schedule: "model lanes run concurrently; requests within each lane run sequentially",
+    },
+    implementationCommit: options.implementationCommit ?? "unavailable",
+    implementationTree: options.implementationTree ?? "unavailable",
+    runs,
+    comparison: runs.map(comparisonRow),
+    integrity: {
+      ok: runs.every((run) => run.integrity.ok),
+      failedModels: runs.filter((run) => !run.integrity.ok).map((run) => run.adapter.model),
+    },
+  };
+  const humanText = renderMatrix(report, results.map((result) => result.humanText));
+  return {
+    report,
+    humanText,
+    json: JSON.stringify(report, null, 2),
+    exitCode: report.integrity.ok ? 0 : 1,
+  };
 }
 
 /**
@@ -191,11 +292,16 @@ export function claimArtifactPair(reportDir, mode, runId) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
-  let adapter;
+  let adapters;
   let clock;
   if (options.adapterPath !== null) {
-    adapter = await loadAdapter(options.adapterPath);
-    const required = adapter.requiredEnv ?? [];
+    try {
+      adapters = await loadAdapters(options.adapterPath);
+    } catch (error) {
+      console.error(error.message);
+      process.exit(2);
+    }
+    const required = [...new Set(adapters.flatMap((adapter) => adapter.requiredEnv ?? []))];
     const missing = required.filter((name) => !process.env[name]);
     if (missing.length > 0) {
       console.error(`the adapter requires environment variables that are not set: ${missing.join(", ")}`);
@@ -212,7 +318,7 @@ async function main() {
     };
   } else {
     clock = fakeClock();
-    adapter = simulatedCacheAdapter({ clock, ttlMs: 300_000 });
+    adapters = [simulatedCacheAdapter({ clock, ttlMs: 300_000 })];
   }
   // Live per-request progress on stderr for the credentialed run; the dry run
   // is instantaneous, and --quiet turns it off entirely.
@@ -232,11 +338,11 @@ async function main() {
   // #297 review round 3: the report self-check receives the present
   // credential values, so a provider error body that echoes one still fails
   // the run's integrity instead of reaching the artifact.
-  const secretValues = (adapter.requiredEnv ?? [])
+  const secretValues = [...new Set(adapters.flatMap((adapter) => adapter.requiredEnv ?? []))]
     .map((name) => process.env[name])
     .filter((value) => typeof value === "string" && value.length >= 3);
-  const { json, humanText, exitCode, report } = await runExperiment({
-    adapter,
+  const { json, humanText, exitCode, report } = await runExperimentMatrix({
+    adapters,
     clock,
     onEvent,
     secretValues,
@@ -255,7 +361,7 @@ async function main() {
   writeFileSync(txtPath, `${humanText}\n${REPORT_COMPLETE_SENTINEL}\n`);
   console.log(humanText);
   console.log(`report: ${jsonPath}`);
-  console.log(`implementation commit: ${report.pins.implementationCommit}`);
+  console.log(`implementation commit: ${report.pins?.implementationCommit ?? report.implementationCommit}`);
   if (options.json) console.log(json);
   process.exitCode = exitCode;
 }
