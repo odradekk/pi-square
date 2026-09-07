@@ -41,6 +41,8 @@ export const SEVERE_CLASSES = [
 ];
 
 export const ADVISORY_TYPE = "pi-square.context-memory/advisory";
+/** Custom-message type of the #297 provider-bound block projection. */
+export const BLOCKS_TYPE = "pi-square.context-memory/blocks";
 export const PENDING_ACK = "Memory candidate accepted; compaction pending.";
 
 export const TS = "2026-01-01T00:00:00.000Z";
