@@ -4,12 +4,21 @@ Committed copies of credentialed experiment runs for durable review access.
 Each pair is the unmodified output of one `npm run experiment:provider-cache
 -- --adapter tests/context-memory/adapters/cache-provider.mjs` execution; the
 JSON records the exact implementation commit, its tree digest, and the run
-nonce under `pins`, and its own `integrity`/`conclusion` fields are the
-evidence. The gitignored `report/` directory holds the working copies;
+nonce (under each lane's `pins` in a comparison report), and its own
+`integrity`/`conclusion` fields are the evidence. The gitignored `report/`
+directory holds the working copies;
 generated runs always write there first. Runs produced by the hardened
 publisher at `668c938` or later are complete iff their txt file ends with the
 `report complete` sentinel; the superseded pre-sentinel defect evidence below
 is intentionally retained byte-for-byte and does not satisfy that boundary.
+
+- `provider-cache-experiment-credentialed-2026-09-07T14-07-07-836Z.{json,txt}`
+  — three-lane comparison at commit `d6de41b72d4e2c933541981d139d2f95124a9f6a`
+  (tree `5b4ce2870b162201fdc806c35ee3546e9e0028a7`), 90 requests with all
+  lane integrity checks passing. Sonnet 5 is conclusive NEUTRAL (multiblock
+  22.2%, single 22.3%, live nonce 0.0%); GLM 5.3 is INCONCLUSIVE because
+  multiblock, single, and nonce all read about 1.7%; GPT-5.6 Luna is
+  INCONCLUSIVE because every cache-read/cache-creation value was zero.
 
 - `provider-cache-experiment-credentialed-2026-09-07T12-26-42-072Z.{json,txt}`
   — final run at commit `fcf11cc6b9769d886c6882de400fa8657724a1e9`
