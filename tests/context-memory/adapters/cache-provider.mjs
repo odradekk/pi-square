@@ -181,9 +181,10 @@ export function buildClaudeCacheRequest(request) {
   if (tools !== null && tools.length > 0) {
     tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
   }
-  // Breakpoint 3 of 3, the last block of the last user message. The
-  // reconstruction always ends with a user turn (the tool row for primes, the
-  // fixed continuation for probes), as every Pi conversation does.
+  // Breakpoint 3 of 3, the last block of the last user message. The #297
+  // fixture's tails end with user turns, so the last tail message carries it;
+  // only a tail that ends with an assistant turn would gain the fixed user
+  // continuation, as every Pi conversation closes with a user turn.
   const lastMessage = messages[messages.length - 1];
   const tailBlock = Array.isArray(lastMessage?.content) ? lastMessage.content[lastMessage.content.length - 1] : undefined;
   if (tailBlock && (tailBlock.type === "text" || tailBlock.type === "image" || tailBlock.type === "tool_result")) {

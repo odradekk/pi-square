@@ -52,7 +52,7 @@ import {
  * integrity holds — the pinned order was honored, every divergence invariant
  * held, every provider report was valid, every probe was within TTL, and the
  * privacy self-check passed. The conclusion label (improved, neutral,
- * regressed, inconclusive, or regression) is a measurement result, not a
+ * regressed, inconclusive) is a measurement result, not a
  * pass/fail signal: an honestly inconclusive run is a successful measurement
  * and must not be made to look like an execution failure by exiting non-zero
  * — nor coaxed toward a positive label to buy a zero exit code.
@@ -119,7 +119,7 @@ export function classifyDivergenceBoundary(arm, layout, sharedBytes) {
   return { ok, boundary: ok ? "memory-block-1" : "outside-earliest-block" };
 }
 
-function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount }) {
+function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementationCommit }) {
   const declared = adapter.describePins();
   const placement = declared.breakpointPlacement ?? BREAKPOINT_PLACEMENT;
   const pins = {
@@ -148,6 +148,10 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount }) {
       ttlMs,
       rule: "every probe must follow its arm prime within ttlMs; a later probe classifies its group ttl-stale",
     },
+    // #297 review finding 5: every report records the exact implementation
+    // commit it measured, so stale evidence can never authorize later code.
+    implementationCommit,
+    armIsolation: "per-arm fixed-width cold namespace in the system segment; no arm can read another arm's cache",
     priceNote: declared.priceNote,
   };
   // A real adapter that cannot apply the pinned settings in full (for example
@@ -221,6 +225,7 @@ export async function runExperiment({
   groupCount = GROUP_COUNT,
   orderFor = groupOrder,
   generatedAt = () => new Date().toISOString(),
+  implementationCommit = "unavailable",
   onEvent,
 }) {
   const integrity = { ok: true, orderMatchesPin: true, divergenceInvariantsOk: true, providerErrors: 0, failures: [] };
@@ -229,7 +234,7 @@ export async function runExperiment({
     if (integrity.failures.length < INTEGRITY_FAILURE_CAP) integrity.failures.push(message);
   };
 
-  const pins = buildPins(adapter, { ttlMs, minRequestGapMs, groupCount });
+  const pins = buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementationCommit });
   for (let group = 1; group <= groupCount; group += 1) {
     if (JSON.stringify(orderFor(group)) !== JSON.stringify(groupOrder(group))) {
       integrity.orderMatchesPin = false;

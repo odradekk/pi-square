@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SYSTEM_PROMPT, TOOLS, composeRequest } from "../cache-experiment/fixture.mjs";
+import { SYSTEM_PROMPT, TOOLS, armNamespace, composeRequest } from "../cache-experiment/fixture.mjs";
 import { estimateTokens, sha256Hex } from "../cache-experiment/evidence.mjs";
 import { runExperiment } from "../cache-experiment/runner.mjs";
 import {
@@ -175,7 +175,10 @@ function captureTransport(handler) {
   assert.ok(!("temperature" in body), "temperature is omitted, not sent as zero");
   assert.ok(Array.isArray(body.system), "the system prompt is one text block list, as Pi sends it");
   assert.equal(body.system[0].type, "text");
-  assert.equal(body.system[0].text, SYSTEM_PROMPT);
+  assert.ok(body.system[0].text.startsWith(SYSTEM_PROMPT),
+    "the system block carries the pinned system prompt");
+  assert.ok(body.system[0].text.includes(armNamespace("multiblock")),
+    "the system block carries the arm's fixed cold namespace (#297 review finding 1)");
   assert.deepEqual(body.system[0].cache_control, { type: "ephemeral" },
     "breakpoint 1: the system block carries cache_control, where Pi places it");
   assert.deepEqual(body.tools, TOOLS.map((tool) => ({

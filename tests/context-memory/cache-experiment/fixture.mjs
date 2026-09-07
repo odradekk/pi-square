@@ -40,9 +40,11 @@ const { convertToLlm } = await import("@earendil-works/pi-coding-agent");
  * same block bodies, the same wrapper and framing text, and the same tail per
  * role, and the summary region's concatenated text is byte-identical across
  * arms for the same group and role — the arms differ only in where the text
- * block boundaries sit (and, for the nonce arm, the nonce digits). Canonical
- * framing overhead differs by at most the per-part framing bound, pinned by
- * the experiment tests.
+ * block boundaries sit (and, for the nonce arm, the nonce digits) plus each
+ * arm's fixed, equal-length cold-namespace line in the system segment, which
+ * is semantically neutral and identical between that arm's prime and probe.
+ * Canonical framing overhead differs by at most the per-part framing bound,
+ * pinned by the experiment tests.
  *
  * Every request declares the same three breakpoints Pi's anthropic-messages
  * converter places (`BREAKPOINT_PLACEMENT` below; no breakpoint sits at the
@@ -152,6 +154,27 @@ const nonceLiteral = (hex) => `[nonce:${hex}]`;
 /** Deterministic per-request nonce for the negative-control arm. */
 export function nonceFor(group, role) {
   return sha256Hex(`provider-cache-experiment|nonce|${group}|${role}`).slice(0, NONCE_WIDTH);
+}
+
+/**
+ * The per-arm cold namespace (#297 review finding 1): a fixed-width,
+ * semantically neutral token derived from the arm name, embedded in the
+ * system segment of every request that arm sends. It is identical between an
+ * arm's prime and probe — the same-arm carried prefix stays byte-stable — and
+ * different for every arm, so no arm's request can ever read cache another
+ * arm wrote, exactly like #269's two arms with independent content. Without
+ * it the arms shared system, tools, blocks, and tail bytes, and the measured
+ * full reads flipped with probe position: cross-arm cache contamination, not
+ * an arm property.
+ */
+const ARM_NAMESPACE_WIDTH = 16;
+export function armNamespace(arm) {
+  return sha256Hex(`provider-cache-experiment|arm-namespace|${arm}`).slice(0, ARM_NAMESPACE_WIDTH);
+}
+
+/** The arm's system prompt: the shared base plus its fixed cold-namespace line. */
+export function systemPromptFor(arm) {
+  return `${SYSTEM_PROMPT}\nExperiment isolation namespace ${armNamespace(arm)} — fixed for this arm, carries no task meaning.`;
 }
 
 /**
@@ -319,7 +342,7 @@ export function composeRequest({ group, arm, role }) {
   const partTexts = summaryPartTexts(arm, bodies);
   const tail = traceTail(group, { probe: role === "probe" });
   const segments = [
-    { element: "system", text: SYSTEM_PROMPT },
+    { element: "system", text: systemPromptFor(arm) },
     { element: "tools", text: JSON.stringify(TOOLS) },
     ...partTexts.map((text, index) => ({ element: `summary-part-${index}`, text })),
     ...tail.map((message, index) => ({

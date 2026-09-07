@@ -384,6 +384,32 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
 }
 
 {
+  // #297 review finding 2: every request of every arm is causal — an absent
+  // report on the single baseline's prime or probe must make the group
+  // missing-report, never a measurable group whose comparison could conclude
+  // from partial data. End to end: a run that would otherwise look improved
+  // with the baseline's probe unreported stays inconclusive.
+  for (const [arm, role] of [["single", "prime"], ["single", "probe"], ["multiblock", "prime"]]) {
+    const group = makeGroup(1, {});
+    group[arm][role].cacheReported = false;
+    assert.equal(classifyGroup(group).quality, "missing-report",
+      `${arm}.${role} without a cache report makes the group missing-report`);
+  }
+  const groups = fiveGroups({
+    rows: {
+      single: { probe: { cacheRead: 300, cacheWrite: 600, inputTokens: 100, cacheReported: false } },
+      multiblock: { probe: { cacheRead: 600, cacheWrite: 300, inputTokens: 100 } },
+    },
+  });
+  const verdict = run(groups);
+  assert.equal(verdict.cacheStandard.groupsAggregated, 0, "no group is measurable with an absent baseline report");
+  assert.equal(verdict.cacheConclusion, "inconclusive",
+    "an apparent improvement over a partially unreported baseline is never recorded");
+  assert.ok(verdict.reasons.every((reason) => !reason.startsWith("improvement observed")),
+    "no improvement reason is emitted from partial data");
+}
+
+{
   // The distinguishing rule itself: identical numbers, absent versus reported.
   const absent = makeGroup(1, { rows: { nonce: { probe: { cacheReported: false } } } });
   const zeroed = makeGroup(1, { rows: { multiblock: { probe: { cacheRead: 0 } }, nonce: { probe: { cacheRead: 0 } } } });
@@ -561,7 +587,7 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   // stay on the neutral branch while the rule overrides the final label.
   const verdict = run(fiveGroups((n) => (n <= 4 ? { rows: { single: { prime: { cacheWrite: 100 }, probe: { ttftMs: 40 } } } } : {})));
   assert.equal(verdict.cacheConclusion, "neutral", "the cache standard still concludes on its own axis");
-  assert.equal(verdict.conclusion, "regression", "the regression rule overrides the final label");
+  assert.equal(verdict.conclusion, "regressed", "the regression rule overrides the final label within the same four-value vocabulary");
   assert.equal(verdict.regression.groupsRegressed, REGRESSION_GROUP_THRESHOLD);
   assert.ok(verdict.reasons.some((reason) => reason.startsWith("baseline regression rule fired")));
 }

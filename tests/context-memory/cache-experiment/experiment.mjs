@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fakeClock, simulatedCacheAdapter } from "./fake-provider.mjs";
@@ -18,9 +19,16 @@ import { cacheProgress } from "../progress.mjs";
  * present (never their values) and runs with a real clock. Executing that
  * adapter against the real gateway — the credentials, the run, and the
  * verdict — belongs to #227 and the maintainer; `--real` still refuses here
- * rather than silently degrading. The report is written under a git-ignored
- * directory beside this file, following the #223 qualification pattern, and
- * everything under `tests/` stays outside the npm package.
+ * rather than silently degrading.
+ *
+ * Auditability (#297 review finding 5): every report records the exact
+ * implementation commit it measured (resolved from git at run time, never
+ * guessed), and every run writes its own uniquely named
+ * `provider-cache-experiment-<mode>-<run-id>` artifact pair under a
+ * git-ignored directory beside this file — a dry run can never overwrite a
+ * credentialed report, and two credentialed runs never overwrite each other.
+ * The report stays bounded and payload-free. Everything under `tests/` stays
+ * outside the npm package.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +75,30 @@ async function loadAdapter(path) {
   return adapter;
 }
 
+/** The exact implementation commit this process is running from, or "unavailable". */
+function resolveImplementationCommit() {
+  try {
+    const commit = execSync("git rev-parse HEAD", { cwd: HERE, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return /^[0-9a-f]{7,40}$/.test(commit) ? commit : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
+/** A unique, filesystem-safe run id for one experiment run's artifact pair. */
+function runIdOf(generatedAt) {
+  return generatedAt.replace(/[:.]/g, "-");
+}
+
+/** The artifact path for this run; never an existing file, so no run is overwritten. */
+function artifactPath(reportDir, mode, runId, extension) {
+  let path = join(reportDir, `provider-cache-experiment-${mode}-${runId}${extension}`);
+  for (let suffix = 2; existsSync(path); suffix += 1) {
+    path = join(reportDir, `provider-cache-experiment-${mode}-${runId}-${suffix}${extension}`);
+  }
+  return path;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -89,14 +121,23 @@ async function main() {
   // Live per-request progress on stderr for the credentialed run; the dry run
   // is instantaneous, and --quiet turns it off entirely.
   const onEvent = options.quiet || options.adapterPath === null ? undefined : cacheProgress();
-  const { json, humanText, exitCode } = await runExperiment({ adapter, clock, onEvent });
+  const implementationCommit = resolveImplementationCommit();
+  const { json, humanText, exitCode, report } = await runExperiment({
+    adapter,
+    clock,
+    onEvent,
+    implementationCommit,
+  });
 
   mkdirSync(REPORT_DIR, { recursive: true });
-  const jsonPath = join(REPORT_DIR, "provider-cache-experiment.json");
+  const runId = runIdOf(report.generatedAt);
+  const jsonPath = artifactPath(REPORT_DIR, report.mode, runId, ".json");
+  const textPath = artifactPath(REPORT_DIR, report.mode, runId, ".txt");
   writeFileSync(jsonPath, json.endsWith("\n") ? json : `${json}\n`);
-  writeFileSync(join(REPORT_DIR, "provider-cache-experiment.txt"), `${humanText}\n`);
+  writeFileSync(textPath, `${humanText}\n`);
   console.log(humanText);
   console.log(`report: ${jsonPath}`);
+  console.log(`implementation commit: ${report.pins.implementationCommit}`);
   if (options.json) console.log(json);
   process.exitCode = exitCode;
 }

@@ -162,15 +162,23 @@ export function classifyGroup(group) {
       qualityReasons: [`a probe followed its prime after more than the pinned ${group.timing.ttlMs}ms TTL`],
     };
   }
-  const causal = [group.multiblock.prime, group.multiblock.probe, group.nonce.prime, group.nonce.probe];
-  const absent = causal.filter((row) => !row.cacheReported).map((row) => `${row.arm}.${row.role}`);
+  // Every request of every arm is causal evidence (#297 review finding 2):
+  // the band reads multiblock and single, the liveness control reads
+  // multiblock and nonce, so an absent report anywhere — including the
+  // baseline's prime or probe — must make the group missing-report, never a
+  // measurable group whose comparison could conclude from partial data.
+  const allRequests = [
+    group.multiblock.prime, group.multiblock.probe,
+    group.single.prime, group.single.probe,
+    group.nonce.prime, group.nonce.probe,
+  ];
+  const absent = allRequests.filter((row) => !row.cacheReported).map((row) => `${row.arm}.${row.role}`);
   if (absent.length > 0) {
     return {
       quality: "missing-report",
       qualityReasons: [`provider reported no cache value for ${absent.join(", ")}`],
     };
   }
-  const allRequests = [...causal, group.single.prime, group.single.probe];
   const cacheEngaged = allRequests.some((row) => row.cacheRead > 0 || row.cacheWrite > 0);
   if (!cacheEngaged) {
     return {
@@ -375,7 +383,9 @@ function pct(rate) {
  * improvement stays `inconclusive` because the gain cannot be attributed to
  * content. The regression rule is evaluated independently over the groups
  * whose baseline comparison was complete, and firing it overrides the final
- * label while the cache conclusion stays visible beside it.
+ * label — with `regressed`, the same four-value vocabulary the issue pins
+ * (#297 review finding 3: no fifth label exists) — while the cache conclusion
+ * stays visible beside it.
  */
 export function evaluateRun({ groups, integrity }) {
   const classified = groups.map((group) => ({
@@ -497,7 +507,7 @@ export function evaluateRun({ groups, integrity }) {
       fired,
     },
     cacheConclusion,
-    conclusion: fired ? "regression" : cacheConclusion,
+    conclusion: fired ? "regressed" : cacheConclusion,
     reasons: reasons.slice(0, 16),
   };
 }

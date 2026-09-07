@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -9,6 +9,7 @@ import {
   ARM_ROTATION,
   BREAKPOINT_PLACEMENT,
   CARRIED_PREFIX_FLOOR_TOKENS,
+  armNamespace,
   COVERED_PREFIX_FLOOR_TOKENS,
   GROUP_COUNT,
   MARKER,
@@ -53,7 +54,18 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 async function dryRun() {
   const clock = fakeClock();
   const adapter = simulatedCacheAdapter({ clock, ttlMs: 300_000 });
-  return runExperiment({ adapter, clock, generatedAt: () => "2026-01-01T00:00:00.000Z" });
+  return runExperiment({
+    adapter,
+    clock,
+    generatedAt: () => "2026-01-01T00:00:00.000Z",
+    implementationCommit: "0123456789abcdef0123456789abcdef01234567",
+  });
+}
+
+/** The report directory's artifacts of one mode, oldest first by name. */
+function reportArtifacts(prefix) {
+  const dir = join(HERE, "report");
+  return existsSync(dir) ? readdirSync(dir).filter((name) => name.startsWith(prefix)).sort() : [];
 }
 
 // ─── the full dry run: honest neutral, integrity clean, exit zero ────
@@ -172,6 +184,52 @@ async function dryRun() {
   }
 }
 
+// ─── per-arm cold namespaces: no arm reads another arm's cache ───────
+
+{
+  // #297 review finding 1: without isolation the arms shared system, tools,
+  // blocks, and tail bytes, so one arm's probe could read another arm's
+  // prime's cache — the measured full reads flipped with probe position, and
+  // the arm comparison measured cross-arm contamination. Every arm now
+  // carries a fixed-width, semantically neutral namespace line in its system
+  // segment: identical between the arm's prime and probe (the same-arm
+  // carried prefix stays byte-stable), different for every arm (cross-arm
+  // requests diverge inside the system segment, before any breakpoint, so no
+  // cross-arm cache read is possible at any breakpoint the placement serves).
+  const namespaces = new Set(ARMS.map((arm) => armNamespace(arm)));
+  assert.equal(namespaces.size, ARMS.length, "every arm has its own cold namespace");
+  for (const arm of ARMS) {
+    const prime = composeRequest({ group: 1, arm, role: "prime" });
+    const probe = composeRequest({ group: 1, arm, role: "probe" });
+    const systemText = (request) => {
+      const segment = request.payload.table.find((entry) => entry.element === "system");
+      return request.payload.bytes.subarray(segment.contentStart, segment.contentEnd).toString("utf8");
+    };
+    assert.ok(systemText(prime).includes(armNamespace(arm)), `${arm}'s prime carries its namespace`);
+    assert.ok(systemText(probe).includes(armNamespace(arm)), `${arm}'s probe carries the same namespace`);
+    assert.equal(systemText(prime).length, systemText(probe).length, `${arm}'s namespace line is fixed-width`);
+  }
+  for (let group = 1; group <= GROUP_COUNT; group += 1) {
+    for (const probeArm of ARMS) {
+      const probe = composeRequest({ group, arm: probeArm, role: "probe" });
+      const [systemEnd] = probe.layout.breakpoints;
+      for (const otherArm of ARMS) {
+        if (otherArm === probeArm) continue;
+        for (const otherRole of ["prime", "probe"]) {
+          const other = composeRequest({ group, arm: otherArm, role: otherRole });
+          const shared = firstDivergence(other.payload, probe.payload).sharedBytes;
+          assert.ok(
+            shared < systemEnd,
+            `group ${group}: ${probeArm}'s probe diverges from ${otherArm}.${otherRole} inside the system segment (byte ${shared} < ${systemEnd})`,
+            "cross-arm requests share nothing a breakpoint could serve");
+        }
+      }
+      // Same-arm stability: the probe shares exactly its pinned append seam
+      // with its own prime — asserted per arm in the section below.
+    }
+  }
+}
+
 // ─── the append case: what a breakpoint cache can and cannot serve ───
 
 {
@@ -223,11 +281,12 @@ async function dryRun() {
     // firing. Its death here is the placement, not the fixture.
     assert.ok(seams.nonce < seams.multiblock, "the control shares strictly fewer prefix bytes than the arm under test");
     assert.ok(seams.nonce < seams.single, "the control also shares fewer prefix bytes than the baseline");
-    // Under the pinned placement every arm's served prefix is the same tools
-    // boundary, so the served-prefix hashes are equal by construction — the
-    // arms are distinguished by where their probes diverge and by their
-    // payloads, never by an artifact of the fallback.
-    assert.deepEqual(prefixHashes.multiblock, prefixHashes.single);
+    // Even at the shared tools-boundary fallback, the per-arm cold
+    // namespaces make every arm's served prefix hash pairwise distinct: no
+    // arm can ever serve another arm's cache, at any breakpoint.
+    assert.notEqual(prefixHashes.multiblock, prefixHashes.single);
+    assert.notEqual(prefixHashes.multiblock, prefixHashes.nonce);
+    assert.notEqual(prefixHashes.single, prefixHashes.nonce);
     assert.ok(seams.single < seams.multiblock,
       "the baseline's seam sits inside its one summary part; the multiblock arm's sits after its last carried part's framing");
     // The carried blocks really are byte-identical between the pair's two
@@ -348,6 +407,11 @@ async function dryRun() {
   assert.deepEqual(pins.settings, { temperature: 0, maxOutputTokens: 512, stream: true, thinking: "off" });
   assert.deepEqual(pins.routing, { concurrency: 1, retryPolicy: "none", sessionScope: "arm-per-group" });
   assert.equal(pins.fixtureDigest, fixtureDigest(), "the fixture digest pins every composed payload of the re-pinned fixture");
+  // #297 review finding 5: the report records the exact implementation commit
+  // it measured, so stale evidence can never authorize later code.
+  assert.equal(pins.implementationCommit, "0123456789abcdef0123456789abcdef01234567");
+  assert.ok(typeof pins.armIsolation === "string" && pins.armIsolation.includes("cold namespace"),
+    "the pins state the per-arm cold-namespace isolation rule");
   assert.deepEqual(pins.groupOrder, Array.from({ length: GROUP_COUNT }, (_, index) => groupOrder(index + 1)));
   assert.equal(pins.armRotation, ARM_ROTATION);
   assert.ok(pins.measuredCase.startsWith("cross-compaction append"), "the pins name the measured case");
@@ -712,6 +776,7 @@ async function dryRun() {
 // ─── the command itself ─────────────────────────────────────────────
 
 {
+  const before = reportArtifacts("provider-cache-experiment-dry-run-").length;
   const result = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run"], { encoding: "utf8" });
   assert.equal(result.status, 0, `dry-run command exits clean:\n${result.stdout}\n${result.stderr}`);
   assert.ok(result.stdout.includes("result: NEUTRAL"), "the honest dry run concludes neutral");
@@ -721,11 +786,36 @@ async function dryRun() {
   assert.ok(result.stdout.includes("breakpoints: mirrors Pi's anthropic-messages placement"),
     "the human report states the modelled breakpoint placement");
   assert.ok(result.stdout.includes("framing:"));
-  const jsonPath = join(HERE, "report", "provider-cache-experiment.json");
-  assert.ok(existsSync(jsonPath), "the report artifact is written beside the harness");
-  const written = JSON.parse(readFileSync(jsonPath, "utf8"));
+  // #297 review finding 5: every run writes its own uniquely named artifact
+  // pair — named by mode, so a dry run can never touch a credentialed
+  // report — records the exact implementation commit, and never overwrites
+  // an earlier artifact.
+  const after = reportArtifacts("provider-cache-experiment-dry-run-");
+  assert.equal(after.length, before + 2, "the run appends exactly one new json+txt artifact pair");
+  const [jsonName, txtName] = after.slice(-2);
+  assert.match(jsonName, /^provider-cache-experiment-dry-run-\S+\.json$/);
+  assert.match(txtName, /^provider-cache-experiment-dry-run-\S+\.txt$/);
+  assert.equal(
+    jsonName.replace(/^provider-cache-experiment-dry-run-/, "").replace(/\.json$/, ""),
+    txtName.replace(/^provider-cache-experiment-dry-run-/, "").replace(/\.txt$/, ""),
+    "the json and text artifacts share one run id",
+  );
+  const written = JSON.parse(readFileSync(join(HERE, "report", jsonName), "utf8"));
   assert.equal(written.schema, "pi-square.context-memory/provider-cache-experiment/2");
   assert.equal(written.cacheStandard.band.baselineArm, "single");
+  assert.match(written.pins.implementationCommit, /^[0-9a-f]{7,40}$/,
+    "the CLI resolves and records the exact implementation commit from git");
+  assert.ok(result.stdout.includes(`implementation commit: ${written.pins.implementationCommit}`),
+    "the human output names the recorded commit");
+  assert.ok(!existsSync(join(HERE, "report", "provider-cache-experiment.json")),
+    "no fixed-name report exists for any run to overwrite");
+  const credentialedBefore = reportArtifacts("provider-cache-experiment-credentialed-").length;
+  const again = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run"], { encoding: "utf8" });
+  assert.equal(again.status, 0);
+  assert.equal(reportArtifacts("provider-cache-experiment-dry-run-").length, after.length + 2,
+    "a second run appends its own artifacts and overwrites nothing");
+  assert.equal(reportArtifacts("provider-cache-experiment-credentialed-").length, credentialedBefore,
+    "a dry run never writes or touches credentialed-named artifacts");
 }
 
 {
