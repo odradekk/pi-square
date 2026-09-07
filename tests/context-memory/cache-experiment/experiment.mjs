@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fakeClock, simulatedCacheAdapter } from "./fake-provider.mjs";
@@ -33,10 +34,10 @@ import { cacheProgress } from "../progress.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORT_DIR = join(HERE, "report");
-const USAGE = "usage: npm run experiment:provider-cache [-- --dry-run] [--json] [--quiet] [--adapter <adapter-module.mjs>]";
+const USAGE = "usage: npm run experiment:provider-cache [-- --dry-run] [--json] [--quiet] [--report-dir <dir>] [--adapter <adapter-module.mjs>]";
 
 function parseArgs(argv) {
-  const options = { json: false, adapterPath: null, quiet: false };
+  const options = { json: false, adapterPath: null, quiet: false, reportDir: null };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === "--dry-run") continue;
@@ -57,6 +58,14 @@ function parseArgs(argv) {
       }
       options.adapterPath = value;
       index += 1;
+    } else if (flag === "--report-dir") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) {
+        console.error(`${USAGE}\n--report-dir requires a directory path`);
+        process.exit(2);
+      }
+      options.reportDir = value;
+      index += 1;
     } else {
       console.error(`${USAGE}\nunknown argument: ${flag}`);
       process.exit(2);
@@ -75,13 +84,26 @@ async function loadAdapter(path) {
   return adapter;
 }
 
-/** The exact implementation commit this process is running from, or "unavailable". */
-function resolveImplementationCommit() {
+/**
+ * The implementation this process is running from (#297 review finding 5):
+ * the exact commit, its tree digest, and whether the repository carries
+ * changes that make the digest unverifiable. A commit that cannot be
+ * resolved, or a dirty index or worktree, leaves the recorded commit unable
+ * to authorize the run's evidence — credentialed runs refuse to start in
+ * that state instead of recording evidence no revision can reproduce.
+ */
+function resolveImplementation() {
+  const git = (args) => execSync(`git ${args}`, { cwd: HERE, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   try {
-    const commit = execSync("git rev-parse HEAD", { cwd: HERE, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return /^[0-9a-f]{7,40}$/.test(commit) ? commit : "unavailable";
+    const commit = git("rev-parse HEAD");
+    const tree = git("rev-parse HEAD^{tree}");
+    const status = git("status --porcelain");
+    if (!/^[0-9a-f]{7,40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(tree)) {
+      return { commit: null, tree: null, dirty: true };
+    }
+    return { commit, tree, dirty: status.length > 0 };
   } catch {
-    return "unavailable";
+    return { commit: null, tree: null, dirty: true };
   }
 }
 
@@ -90,13 +112,32 @@ function runIdOf(generatedAt) {
   return generatedAt.replace(/[:.]/g, "-");
 }
 
-/** The artifact path for this run; never an existing file, so no run is overwritten. */
-function artifactPath(reportDir, mode, runId, extension) {
-  let path = join(reportDir, `provider-cache-experiment-${mode}-${runId}${extension}`);
-  for (let suffix = 2; existsSync(path); suffix += 1) {
-    path = join(reportDir, `provider-cache-experiment-${mode}-${runId}-${suffix}${extension}`);
+/**
+ * Atomically claims one shared basename for this run's artifact pair
+ * (#297 review finding 6): both files are created exclusively under the same
+ * name, so a partial artifact from a crashed run or two concurrent runs can
+ * never mismatch or overwrite each other — the loser retries on the next
+ * suffix instead.
+ */
+export function claimArtifactPair(reportDir, mode, runId) {
+  for (let suffix = 1; ; suffix += 1) {
+    // eslint-disable-next-line no-constant-condition -- the loop exits by return
+    const base = join(reportDir, `provider-cache-experiment-${mode}-${runId}${suffix > 1 ? `-${suffix}` : ""}`);
+    const jsonPath = `${base}.json`;
+    const txtPath = `${base}.txt`;
+    try {
+      closeSync(openSync(jsonPath, "wx"));
+    } catch {
+      continue; // someone holds this basename; try the next suffix
+    }
+    try {
+      closeSync(openSync(txtPath, "wx"));
+    } catch {
+      rmSync(jsonPath, { force: true }); // partial claim: release and retry
+      continue;
+    }
+    return { jsonPath, txtPath };
   }
-  return path;
 }
 
 async function main() {
@@ -121,20 +162,32 @@ async function main() {
   // Live per-request progress on stderr for the credentialed run; the dry run
   // is instantaneous, and --quiet turns it off entirely.
   const onEvent = options.quiet || options.adapterPath === null ? undefined : cacheProgress();
-  const implementationCommit = resolveImplementationCommit();
+  const implementation = resolveImplementation();
+  if (options.adapterPath !== null && (implementation.commit === null || implementation.dirty)) {
+    // #297 review finding 5: a credentialed run must be reproducible from
+    // the recorded commit; an unresolvable commit or a dirty repository
+    // refuses to run rather than record unverifiable evidence.
+    if (implementation.commit === null) {
+      console.error("credentialed runs require a resolvable implementation commit (git rev-parse HEAD failed)");
+    } else {
+      console.error(`credentialed runs require a clean repository (commit ${implementation.commit} has local changes)`);
+    }
+    process.exit(2);
+  }
   const { json, humanText, exitCode, report } = await runExperiment({
     adapter,
     clock,
     onEvent,
-    implementationCommit,
+    implementationCommit: implementation.commit ?? "unavailable",
+    implementationTree: implementation.tree ?? "unavailable",
   });
 
-  mkdirSync(REPORT_DIR, { recursive: true });
+  const reportDir = options.reportDir ?? REPORT_DIR;
+  mkdirSync(reportDir, { recursive: true });
   const runId = runIdOf(report.generatedAt);
-  const jsonPath = artifactPath(REPORT_DIR, report.mode, runId, ".json");
-  const textPath = artifactPath(REPORT_DIR, report.mode, runId, ".txt");
+  const { jsonPath, txtPath } = claimArtifactPair(reportDir, report.mode, runId);
   writeFileSync(jsonPath, json.endsWith("\n") ? json : `${json}\n`);
-  writeFileSync(textPath, `${humanText}\n`);
+  writeFileSync(txtPath, `${humanText}\n`);
   console.log(humanText);
   console.log(`report: ${jsonPath}`);
   console.log(`implementation commit: ${report.pins.implementationCommit}`);
@@ -142,4 +195,7 @@ async function main() {
   process.exitCode = exitCode;
 }
 
-await main();
+// The CLI runs only when executed directly; tests import the helpers instead.
+if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  await main();
+}

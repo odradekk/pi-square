@@ -811,7 +811,10 @@ export class ContextMemoryController {
    *   summary message keeps exactly the unchanged prefix while every
    *   selected block's complete original conversation is inserted once, in
    *   source order, ahead of the retained raw tail — selected summaries and
-   *   their sources never appear together (#220).
+   *   their sources never appear together (#220). Because this step mutates
+   *   the request, the carrying summary is validated unique before any
+   *   mutation: a duplicated or foreign compaction summary fails the whole
+   *   due-run projection and restores the unmodified original context.
    * - On every provider request, the carrying Memory summary message is
    *   re-projected as one ordered text content block per current block
    *   (#297) — a uniform projection with no provider branch and no cache
@@ -835,6 +838,20 @@ export class ContextMemoryController {
       let prefixBodies: readonly string[] | undefined;
       if (this.dueRun !== undefined && !this.dueRun.advisoryDelivered) {
         if (this.dueRun.operation === "rebuild") {
+          // The maintenance projection mutates the request (summary replaced,
+          // sources and advisory inserted), so the carrying summary is
+          // validated unique BEFORE any mutation: a duplicated or foreign
+          // compaction summary beside the carrying one must restore the
+          // unmodified original context through the outer catch rather than
+          // leave a half-projected request that exposes the full old summary
+          // and the rebuild sources together (#297 review).
+          const summaryCount = messages.reduce<number>(
+            (count, message) => count + ((message as { role?: unknown } | null)?.role === "compactionSummary" ? 1 : 0),
+            0,
+          );
+          if (summaryCount !== 1) {
+            throw new Error("the request does not carry exactly one compaction summary");
+          }
           const maintenance = projectMaintenanceContext(messages, this.dueRun.rebuild!);
           if (maintenance === undefined) throw new Error("the carrying Memory summary is not in the request");
           messages = maintenance;

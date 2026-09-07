@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { claimArtifactPair } from "./experiment.mjs";
 import {
   ARMS,
   ARM_ORDER,
@@ -51,20 +53,20 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-async function dryRun() {
+async function dryRun({ runNonce = "d1c0d5e0d3d3d3d3" } = {}) {
   const clock = fakeClock();
   const adapter = simulatedCacheAdapter({ clock, ttlMs: 300_000 });
   return runExperiment({
     adapter,
     clock,
+    runNonce,
     generatedAt: () => "2026-01-01T00:00:00.000Z",
     implementationCommit: "0123456789abcdef0123456789abcdef01234567",
   });
 }
 
 /** The report directory's artifacts of one mode, oldest first by name. */
-function reportArtifacts(prefix) {
-  const dir = join(HERE, "report");
+function reportArtifacts(prefix, dir = join(HERE, "report")) {
   return existsSync(dir) ? readdirSync(dir).filter((name) => name.startsWith(prefix)).sort() : [];
 }
 
@@ -81,8 +83,10 @@ function reportArtifacts(prefix) {
   assert.equal(report.totals.groups, GROUP_COUNT);
   assert.equal(report.totals.requests, GROUP_COUNT * groupOrder(1).length, "five interleaved paired groups over three arms");
   assert.equal(report.regression.fired, false);
-  assert.ok(report.conclusion.reasons.includes(DEAD_CONTROL_NOTE),
-    "the neutral verdict carries the dead-control caveat verbatim");
+  assert.equal(report.conclusion.livenessSatisfied, true,
+    "the per-request control namespace makes the liveness control observable: the nonce probe reads nothing, the arms under test read the tools boundary");
+  assert.ok(!report.conclusion.reasons.includes(DEAD_CONTROL_NOTE),
+    "a live control needs no caveat — the neutral verdict is conclusive");
 }
 
 // ─── the fixture is large enough for the measurement to exist ───────
@@ -184,49 +188,74 @@ function reportArtifacts(prefix) {
   }
 }
 
-// ─── per-arm cold namespaces: no arm reads another arm's cache ───────
+// ─── cold isolation namespaces: run+arm derived, before any shared byte ─
 
 {
-  // #297 review finding 1: without isolation the arms shared system, tools,
-  // blocks, and tail bytes, so one arm's probe could read another arm's
-  // prime's cache — the measured full reads flipped with probe position, and
-  // the arm comparison measured cross-arm contamination. Every arm now
-  // carries a fixed-width, semantically neutral namespace line in its system
-  // segment: identical between the arm's prime and probe (the same-arm
-  // carried prefix stays byte-stable), different for every arm (cross-arm
-  // requests diverge inside the system segment, before any breakpoint, so no
-  // cross-arm cache read is possible at any breakpoint the placement serves).
-  const namespaces = new Set(ARMS.map((arm) => armNamespace(arm)));
-  assert.equal(namespaces.size, ARMS.length, "every arm has its own cold namespace");
+  // #297 review findings 2 and 3: the namespace is derived from the run
+  // nonce AND the arm and placed at the very front of the system segment, so
+  // requests from different arms — or from different executions of the
+  // experiment — diverge inside the first bytes of the payload. A prefix
+  // cache cannot serve any shared content across arms or across runs, at any
+  // prefix length, because there is no shared cacheable prefix at all. The
+  // nonce control arm derives its token per request, which is what makes the
+  // liveness control observable: its probe cannot read even its own prime.
+  const runA = "e75444904e0c1e53";
+  const runB = "0f9d3a51b6c27e88";
+  const namespaces = new Set(ARMS.map((arm) => armNamespace(runA, arm)));
+  assert.equal(namespaces.size, ARMS.length, "every arm has its own namespace within a run");
   for (const arm of ARMS) {
-    const prime = composeRequest({ group: 1, arm, role: "prime" });
-    const probe = composeRequest({ group: 1, arm, role: "probe" });
-    const systemText = (request) => {
-      const segment = request.payload.table.find((entry) => entry.element === "system");
-      return request.payload.bytes.subarray(segment.contentStart, segment.contentEnd).toString("utf8");
-    };
-    assert.ok(systemText(prime).includes(armNamespace(arm)), `${arm}'s prime carries its namespace`);
-    assert.ok(systemText(probe).includes(armNamespace(arm)), `${arm}'s probe carries the same namespace`);
-    assert.equal(systemText(prime).length, systemText(probe).length, `${arm}'s namespace line is fixed-width`);
+    assert.notEqual(armNamespace(runA, arm), armNamespace(runB, arm), `${arm}'s namespace differs across runs`);
   }
+  const probe = composeRequest({ group: 1, arm: "multiblock", role: "probe", runNonce: runA });
+  const namespaceLine = (() => {
+    const segment = probe.payload.table.find((entry) => entry.element === "system");
+    return probe.payload.bytes.subarray(segment.contentStart, segment.contentEnd).toString("utf8").indexOf("\n");
+  })();
+  const isolationBound = namespaceLine + 1; // strictly inside the namespace line
+  const isolationPairs = [];
   for (let group = 1; group <= GROUP_COUNT; group += 1) {
-    for (const probeArm of ARMS) {
-      const probe = composeRequest({ group, arm: probeArm, role: "probe" });
-      const [systemEnd] = probe.layout.breakpoints;
-      for (const otherArm of ARMS) {
-        if (otherArm === probeArm) continue;
-        for (const otherRole of ["prime", "probe"]) {
-          const other = composeRequest({ group, arm: otherArm, role: otherRole });
-          const shared = firstDivergence(other.payload, probe.payload).sharedBytes;
-          assert.ok(
-            shared < systemEnd,
-            `group ${group}: ${probeArm}'s probe diverges from ${otherArm}.${otherRole} inside the system segment (byte ${shared} < ${systemEnd})`,
-            "cross-arm requests share nothing a breakpoint could serve");
-        }
+    for (const armA of ARMS) {
+      for (const armB of ARMS) {
+        if (armA !== armB) isolationPairs.push([armA, armB]);
       }
-      // Same-arm stability: the probe shares exactly its pinned append seam
-      // with its own prime — asserted per arm in the section below.
     }
+  }
+  for (const [armA, armB] of isolationPairs) {
+    const shared = firstDivergence(
+      composeRequest({ group: 1, arm: armA, role: "prime", runNonce: runA }).payload,
+      composeRequest({ group: 1, arm: armB, role: "probe", runNonce: runA }).payload,
+    ).sharedBytes;
+    assert.ok(
+      shared < isolationBound,
+      `cross-arm: ${armA}.prime and ${armB}.probe diverge within the first ${isolationBound} bytes (byte ${shared}), before any shared cacheable content`,
+    );
+  }
+  for (const arm of ARMS) {
+    const shared = firstDivergence(
+      composeRequest({ group: 1, arm, role: "prime", runNonce: runA }).payload,
+      composeRequest({ group: 1, arm, role: "probe", runNonce: runB }).payload,
+    ).sharedBytes;
+    assert.ok(
+      shared < isolationBound,
+      `cross-run: ${arm} requests diverge within the first ${isolationBound} bytes (byte ${shared}), so a rerun can never read the previous run's cache`,
+    );
+  }
+  for (const arm of ["multiblock", "single"]) {
+    const prime = composeRequest({ group: 1, arm, role: "prime", runNonce: runA });
+    const probe = composeRequest({ group: 1, arm, role: "probe", runNonce: runA });
+    assert.equal(
+      firstDivergence(prime.payload, probe.payload).sharedBytes,
+      probe.layout.expectedShared,
+      `${arm}'s same-arm prime/probe prefix is stable to the append seam`,
+    );
+  }
+  {
+    // The observable control: the nonce arm's own namespace token differs
+    // between prime and probe, per request, at the same fixed width.
+    const prime = composeRequest({ group: 1, arm: "nonce", role: "prime", runNonce: runA });
+    const probe = composeRequest({ group: 1, arm: "nonce", role: "probe", runNonce: runA });
+    const shared = firstDivergence(prime.payload, probe.payload).sharedBytes;
+    assert.ok(shared < isolationBound, `the control's probe diverges from its own prime inside the namespace line (byte ${shared})`);
   }
 }
 
@@ -265,23 +294,24 @@ function reportArtifacts(prefix) {
       prefixHashes[arm] = sha256Hex(probe.payload.bytes.subarray(0, shared));
     }
     const [, toolsEnd] = composeRequest({ group, arm: "multiblock", role: "prime" }).layout.breakpoints;
-    for (const arm of ARMS) {
+    for (const arm of ["multiblock", "single"]) {
       assert.equal(
         cacheableBytes[arm],
         toolsEnd,
-        `group ${group} ${arm}: under the pinned placement every arm's append read falls back to the tools boundary`,
+        `group ${group} ${arm}: under the pinned placement the arms under test fall back to the tools boundary across an append`,
       );
       assert.ok(seams[arm] > toolsEnd, `group ${group} ${arm}: the append seam sits beyond the tools boundary, inside the carried region`);
     }
-    // The control's effectiveness is positional, not scale-limited: every
-    // probe's shared prefix through its append seam clears the measured
-    // cacheable floor (asserted above), so on any provider or placement that
-    // can serve the carried region, the nonce arm's strictly smaller shared
-    // prefix (it diverges inside block 1) makes the liveness rule capable of
-    // firing. Its death here is the placement, not the fixture.
+    // The observable control (#297 review finding 3): the nonce arm's probe
+    // diverges inside its own per-request namespace line — before the tools
+    // boundary — so it cannot be served even the shared prefix. A provider
+    // whose cache reports track content at all must show the control reading
+    // less than the arms under test; the liveness rule is observable.
+    assert.equal(cacheableBytes.nonce, 0, "the control cannot be served anything at any breakpoint");
+    assert.ok(seams.nonce < toolsEnd, "the control diverges before the tools boundary, inside its namespace line");
     assert.ok(seams.nonce < seams.multiblock, "the control shares strictly fewer prefix bytes than the arm under test");
     assert.ok(seams.nonce < seams.single, "the control also shares fewer prefix bytes than the baseline");
-    // Even at the shared tools-boundary fallback, the per-arm cold
+    // Even at the shared tools-boundary fallback, the run+arm cold
     // namespaces make every arm's served prefix hash pairwise distinct: no
     // arm can ever serve another arm's cache, at any breakpoint.
     assert.notEqual(prefixHashes.multiblock, prefixHashes.single);
@@ -309,8 +339,8 @@ function reportArtifacts(prefix) {
       "the multiblock probe shares every carried byte and diverges exactly at the appended block's part");
     assert.equal(group.single.probe.divergenceBoundary, "appended-block",
       "the single probe shares every carried byte and diverges exactly at the append seam");
-    assert.equal(group.nonce.probe.divergenceBoundary, "memory-block-1",
-      "the liveness control diverges inside the earliest carried block");
+    assert.equal(group.nonce.probe.divergenceBoundary, "isolation-namespace",
+      "the liveness control diverges inside its own per-request namespace line");
     assert.ok(
       group.nonce.probe.sharedBytes < group.multiblock.probe.sharedBytes,
       "the control shares strictly fewer prefix bytes than the arm under test",
@@ -410,8 +440,10 @@ function reportArtifacts(prefix) {
   // #297 review finding 5: the report records the exact implementation commit
   // it measured, so stale evidence can never authorize later code.
   assert.equal(pins.implementationCommit, "0123456789abcdef0123456789abcdef01234567");
-  assert.ok(typeof pins.armIsolation === "string" && pins.armIsolation.includes("cold namespace"),
-    "the pins state the per-arm cold-namespace isolation rule");
+  assert.equal(pins.implementationTree, "unavailable", "an unresolvable tree digest is recorded as unavailable, never omitted");
+  assert.equal(pins.runNonce, "d1c0d5e0d3d3d3d3", "the pins record the run nonce the isolation namespaces derive from");
+  assert.ok(typeof pins.armIsolation === "string" && pins.armIsolation.includes("before any shared cacheable byte"),
+    "the pins state the front-of-payload run+arm isolation rule");
   assert.deepEqual(pins.groupOrder, Array.from({ length: GROUP_COUNT }, (_, index) => groupOrder(index + 1)));
   assert.equal(pins.armRotation, ARM_ROTATION);
   assert.ok(pins.measuredCase.startsWith("cross-compaction append"), "the pins name the measured case");
@@ -471,17 +503,21 @@ function reportArtifacts(prefix) {
   assert.equal(standard.liveness.belowMarginPercentagePoints, LIVENESS_MARGIN_PP);
   assert.equal(standard.groupsAggregated, GROUP_COUNT);
   assert.equal(standard.cacheActivityObserved, true);
-  for (const arm of ARMS) {
+  for (const arm of ["multiblock", "single"]) {
     const rate = standard.rates[arm];
     assert.ok(rate.denominator > 0);
     assert.ok(rate.rate > 0 && rate.rate <= 1, `${arm} records a measured rate`);
     assert.equal(rate.denominator, rate.cacheRead + rate.cacheCreation + rate.uncachedInput);
   }
-  // The honest simulation: multiblock at the single baseline, the control
-  // indistinguishable — both facts the #297 case makes structural.
+  // The control arm reads nothing by construction — its per-request
+  // namespace makes every breakpoint miss — which is exactly the observable
+  // divergence a live control requires.
+  assert.equal(standard.rates.nonce.rate, 0);
+  // The honest simulation: multiblock at the single baseline, and the control
+  // demonstrably below it — the liveness rule is observable and alive.
   assert.equal(standard.bandSatisfied, true);
   assert.equal(standard.improvementObserved, false);
-  assert.equal(standard.livenessSatisfied, false, "no breakpoint sits at the carried Memory's end, so the control is dead");
+  assert.equal(standard.livenessSatisfied, true, "the control reads nothing while the arms under test read the tools boundary");
   assert.equal(
     standard.minimumAcceptableRate,
     Math.round(Math.max(0, standard.rates.single.rate - NON_REGRESSION_BAND_PP / 100) * 1e4) / 1e4,
@@ -493,7 +529,8 @@ function reportArtifacts(prefix) {
   assert.ok(humanText.includes("must not be reused as a cost metric"));
   assert.ok(humanText.includes("measured case: cross-compaction append"), "the human report names the measured case");
   assert.ok(report.conclusion.reasons.some((reason) => reason.startsWith("non-regression band met")));
-  assert.ok(report.conclusion.reasons.includes(DEAD_CONTROL_NOTE));
+  assert.ok(report.conclusion.reasons.some((reason) => reason.startsWith("liveness control alive")),
+    "a conclusive verdict states the live control");
   assert.ok(humanText.includes("exit: 0"), "the human report states the exit contract");
 }
 
@@ -566,9 +603,17 @@ function reportArtifacts(prefix) {
 // ─── determinism ────────────────────────────────────────────────────
 
 {
+  // Same run nonce: byte-identical evidence. Different run nonces: the
+  // payloads (and their isolation namespaces) differ by design — a rerun can
+  // never read the previous run's cache.
   const first = await dryRun();
   const second = await dryRun();
-  assert.deepEqual(first.report, second.report, "two dry runs produce byte-identical evidence");
+  assert.deepEqual(first.report, second.report, "two runs with the same nonce produce byte-identical evidence");
+  const third = await dryRun({ runNonce: "0e1e2e3e4e5e6e7e" });
+  assert.notEqual(third.report.pins.runNonce, first.report.pins.runNonce);
+  assert.notEqual(third.report.groups[0].multiblock.prime.payloadHash, first.report.groups[0].multiblock.prime.payloadHash,
+    "a different run nonce changes every payload, so runs are content-isolated");
+  assert.equal(third.exitCode, first.exitCode);
 }
 
 // ─── the dead-measurement world: constant reads, alive-looking groups ─
@@ -578,9 +623,9 @@ function reportArtifacts(prefix) {
   // read regardless of content, exactly as the measured gateway did when the
   // fixture sat below the cacheable floor. Every group is measurable and the
   // band holds trivially, so only the liveness control can name the
-  // limitation — and under #297's labels the honest verdict is neutral with
-  // the dead-control caveat, while the run itself stays a valid measurement
-  // (integrity ok, exit zero).
+  // limitation — a dead control means the measurement cannot distinguish
+  // content, so the verdict is inconclusive (#297 review finding 3), while
+  // the run itself stays a valid measurement (integrity ok, exit zero).
   const constantReadAdapter = {
     id: "simulated-dead-measurement/1",
     describePins: () => ({ provider: "simulated", model: "simulated/constant-read-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
@@ -609,8 +654,8 @@ function reportArtifacts(prefix) {
   assert.equal(report.cacheStandard.cacheActivityObserved, true);
   assert.equal(report.cacheStandard.bandSatisfied, true, "equal rates satisfy the band trivially");
   assert.equal(report.cacheStandard.livenessSatisfied, false, "the constant read cannot distinguish content");
-  assert.equal(report.conclusion.cache, "neutral", "a dead control with a met band is an honest neutral");
-  assert.equal(report.conclusion.final, "neutral");
+  assert.equal(report.conclusion.cache, "inconclusive", "a dead control voids the conclusion even with a met band");
+  assert.equal(report.conclusion.final, "inconclusive");
   assert.equal(exitCode, 0, "the exit contract separates integrity from conclusion");
   assert.ok(humanText.includes("liveness"), "the human report names the dead liveness control");
   assert.ok(report.conclusion.reasons.includes(DEAD_CONTROL_NOTE));
@@ -703,6 +748,48 @@ function reportArtifacts(prefix) {
   assert.equal(exitCode, 1, "an integrity failure is the one thing the exit code reports");
 }
 
+// ─── an out-of-TTL probe is an integrity failure, not a soft quality ──
+
+{
+  // #297 review finding 4: a probe that followed its prime after more than
+  // the pinned TTL is stale evidence. The run's integrity fails, the exit
+  // code reports it, and the final label is inconclusive — even if every
+  // token count looks like a met band.
+  const slowClock = { now: () => ({ epochMs: 0 }) };
+  let sent = 0;
+  const slowAdapter = {
+    id: "simulated-slow/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/slow-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
+    async send(request, observe = {}) {
+      observe.onFirstToken?.();
+      sent += 1;
+      // Every other request stalls past the TTL: each probe follows its
+      // prime by more than 300 000 ms.
+      if (sent % 2 === 0) slowClock.now = () => ({ epochMs: 400_000 * (sent / 2) });
+      const probe = request.role === "probe";
+      return {
+        usage: { inputTokens: probe ? 166 : 0, outputTokens: 48 },
+        cache: { reported: true, read: probe ? 1089 : 0, write: probe ? 96 : 1185 },
+        retentionWrite: { reported: true, bucket: "default", tokens: probe ? 96 : 1185 },
+        cost: 0,
+      };
+    },
+  };
+  const { report, exitCode } = await runExperiment({
+    adapter: slowAdapter,
+    clock: slowClock,
+    ttlMs: 300_000,
+    generatedAt: () => "2026-01-01T00:00:00.000Z",
+  });
+  assert.equal(report.integrity.ttlOk, false);
+  assert.equal(report.integrity.ok, false);
+  assert.ok(report.integrity.failures.some((failure) => failure.includes("more than the pinned 300000ms TTL")));
+  assert.ok(report.groups.every((group) => group.quality === "ttl-stale"));
+  assert.equal(report.conclusion.cache, "inconclusive");
+  assert.equal(report.conclusion.final, "inconclusive");
+  assert.equal(exitCode, 1, "an out-of-TTL run exits nonzero");
+}
+
 // ─── adapter failures and malformed reports are integrity failures ──
 
 {
@@ -756,11 +843,11 @@ function reportArtifacts(prefix) {
   assert.deepEqual(classifyDivergenceBoundary("multiblock", { blocks, expectedShared: null }, 560), { ok: false, boundary: "inside-carried-prefix" },
     "a missing seam cannot validate the invariant");
   // The control: divergence inside the earliest block.
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 250), { ok: true, boundary: "memory-block-1" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 200), { ok: true, boundary: "memory-block-1" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 199), { ok: false, boundary: "outside-earliest-block" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 300), { ok: false, boundary: "outside-earliest-block" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks: [], expectedShared: null }, 250), { ok: false, boundary: "outside-earliest-block" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, namespaceEnd: 101, expectedShared: null }, 100), { ok: true, boundary: "isolation-namespace" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, namespaceEnd: 101, expectedShared: null }, 0), { ok: true, boundary: "isolation-namespace" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, namespaceEnd: 101, expectedShared: null }, 101), { ok: false, boundary: "outside-isolation-namespace" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, namespaceEnd: 101, expectedShared: null }, 300), { ok: false, boundary: "outside-isolation-namespace" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks: [], expectedShared: null }, 250), { ok: false, boundary: "outside-isolation-namespace" });
 }
 
 // ─── report leak detection ──────────────────────────────────────────
@@ -775,9 +862,14 @@ function reportArtifacts(prefix) {
 
 // ─── the command itself ─────────────────────────────────────────────
 
+// #297 review finding 6: the tests run the CLI against a temporary report
+// directory, never the shared persistent one — two concurrent test runs can
+// never fight over artifacts.
+const CLI_REPORT_DIR = mkdtempSync(join(tmpdir(), "provider-cache-experiment-test-"));
+
 {
-  const before = reportArtifacts("provider-cache-experiment-dry-run-").length;
-  const result = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run"], { encoding: "utf8" });
+  const before = reportArtifacts("provider-cache-experiment-dry-run-", CLI_REPORT_DIR).length;
+  const result = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run", "--report-dir", CLI_REPORT_DIR], { encoding: "utf8" });
   assert.equal(result.status, 0, `dry-run command exits clean:\n${result.stdout}\n${result.stderr}`);
   assert.ok(result.stdout.includes("result: NEUTRAL"), "the honest dry run concludes neutral");
   assert.ok(result.stdout.includes("hit rate"), "the human report reflects the non-regression standard");
@@ -790,7 +882,7 @@ function reportArtifacts(prefix) {
   // pair — named by mode, so a dry run can never touch a credentialed
   // report — records the exact implementation commit, and never overwrites
   // an earlier artifact.
-  const after = reportArtifacts("provider-cache-experiment-dry-run-");
+  const after = reportArtifacts("provider-cache-experiment-dry-run-", CLI_REPORT_DIR);
   assert.equal(after.length, before + 2, "the run appends exactly one new json+txt artifact pair");
   const [jsonName, txtName] = after.slice(-2);
   assert.match(jsonName, /^provider-cache-experiment-dry-run-\S+\.json$/);
@@ -800,22 +892,75 @@ function reportArtifacts(prefix) {
     txtName.replace(/^provider-cache-experiment-dry-run-/, "").replace(/\.txt$/, ""),
     "the json and text artifacts share one run id",
   );
-  const written = JSON.parse(readFileSync(join(HERE, "report", jsonName), "utf8"));
+  const written = JSON.parse(readFileSync(join(CLI_REPORT_DIR, jsonName), "utf8"));
+  assert.match(written.pins.implementationTree, /^[0-9a-f]{40}$/, "the CLI records the commit's tree digest");
   assert.equal(written.schema, "pi-square.context-memory/provider-cache-experiment/2");
   assert.equal(written.cacheStandard.band.baselineArm, "single");
   assert.match(written.pins.implementationCommit, /^[0-9a-f]{7,40}$/,
     "the CLI resolves and records the exact implementation commit from git");
   assert.ok(result.stdout.includes(`implementation commit: ${written.pins.implementationCommit}`),
     "the human output names the recorded commit");
-  assert.ok(!existsSync(join(HERE, "report", "provider-cache-experiment.json")),
+  assert.ok(!existsSync(join(CLI_REPORT_DIR, "provider-cache-experiment.json")),
     "no fixed-name report exists for any run to overwrite");
-  const credentialedBefore = reportArtifacts("provider-cache-experiment-credentialed-").length;
-  const again = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run"], { encoding: "utf8" });
+  const credentialedBefore = reportArtifacts("provider-cache-experiment-credentialed-", CLI_REPORT_DIR).length;
+  const again = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run", "--report-dir", CLI_REPORT_DIR], { encoding: "utf8" });
   assert.equal(again.status, 0);
-  assert.equal(reportArtifacts("provider-cache-experiment-dry-run-").length, after.length + 2,
+  assert.equal(reportArtifacts("provider-cache-experiment-dry-run-", CLI_REPORT_DIR).length, after.length + 2,
     "a second run appends its own artifacts and overwrites nothing");
-  assert.equal(reportArtifacts("provider-cache-experiment-credentialed-").length, credentialedBefore,
+  assert.equal(reportArtifacts("provider-cache-experiment-credentialed-", CLI_REPORT_DIR).length, credentialedBefore,
     "a dry run never writes or touches credentialed-named artifacts");
+}
+
+{
+  // #297 review finding 6: a crashed run may leave a partial artifact pair
+  // (a json without its txt). A later run that wants the same basename
+  // claims a fresh suffix instead of writing beside the orphan, and two
+  // concurrent claimants never share one basename.
+  const dir = mkdtempSync(join(tmpdir(), "provider-cache-experiment-partial-"));
+  closeSync(openSync(join(dir, "provider-cache-experiment-dry-run-X.json"), "wx")); // the orphan
+  const first = claimArtifactPair(dir, "dry-run", "X");
+  assert.ok(first.jsonPath.endsWith("-2.json") && first.txtPath.endsWith("-2.txt"),
+    "an orphaned json forces the next suffix for BOTH files of the pair");
+  const second = claimArtifactPair(dir, "dry-run", "X");
+  assert.ok(second.jsonPath.endsWith("-3.json") && second.txtPath.endsWith("-3.txt"),
+    "an occupied pair forces the next suffix again");
+  assert.notEqual(first.jsonPath, second.jsonPath);
+  assert.ok(existsSync(first.jsonPath) && existsSync(first.txtPath));
+  assert.ok(existsSync(second.jsonPath) && existsSync(second.txtPath));
+}
+
+{
+  // #297 review finding 5: a credentialed run refuses to start when the
+  // implementation commit cannot be resolved or the repository is dirty —
+  // unverifiable evidence is not recorded at all.
+  const adapterPath = join(HERE, "..", "adapters", "cache-provider.mjs");
+  const runCredentialed = (env) => spawnSync(
+    process.execPath,
+    [join(HERE, "experiment.mjs"), "--adapter", adapterPath, "--report-dir", mkdtempSync(join(tmpdir(), "provider-cache-experiment-refuse-"))],
+    { encoding: "utf8", env: { ...process.env, CCR_CLAUDE_API_KEY: "dummy-not-sent", ...env } },
+  );
+  {
+    // No repository at all: git cannot resolve HEAD here.
+    const empty = mkdtempSync(join(tmpdir(), "provider-cache-experiment-nogit-"));
+    const result = runCredentialed({ GIT_DIR: empty, GIT_WORK_TREE: empty });
+    assert.equal(result.status, 2, `unresolvable commit refuses to run:\n${result.stdout}\n${result.stderr}`);
+    assert.ok(result.stderr.includes("resolvable implementation commit"), result.stderr);
+  }
+  {
+    // A dirty repository: HEAD resolves but the worktree carries changes.
+    const repo = mkdtempSync(join(tmpdir(), "provider-cache-experiment-dirty-"));
+    for (const command of [
+      ["git", "init", "-q"],
+      ["git", "-c", "user.email=t@example.org", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"],
+    ]) {
+      const step = spawnSync(command[0], command.slice(1), { cwd: repo, encoding: "utf8" });
+      assert.equal(step.status, 0, `${command.join(" ")}: ${step.stderr}`);
+    }
+    writeFileSync(join(repo, "untracked.txt"), "local change\n");
+    const result = runCredentialed({ GIT_DIR: join(repo, ".git"), GIT_WORK_TREE: repo });
+    assert.equal(result.status, 2, `a dirty repository refuses to run:\n${result.stdout}\n${result.stderr}`);
+    assert.ok(result.stderr.includes("clean repository"), result.stderr);
+  }
 }
 
 {

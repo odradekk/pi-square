@@ -12,7 +12,7 @@
  * appended block 3. The `multiblock` arm renders the carried blocks through
  * the uniform projection — one ordered text content block per block — and the
  * `single` arm renders today's single-summary-block baseline; the `nonce`
- * control diverges inside the earliest carried block so that any reuse the
+ * control diverges inside its per-request isolation namespace so that any reuse the
  * placement could serve in the carried region is removed by construction.
  *
  * Evidence quality, unchanged from #225:
@@ -40,15 +40,15 @@
  *   an improvement only when the liveness control is alive; with a dead
  *   control an apparent gain cannot be attributed to content, so it stays
  *   inconclusive.
- * - Liveness: the `nonce` control must sit measurably below the
- *   `multiblock` arm. Under Pi's pinned breakpoint placement no breakpoint
- *   sits at the carried Memory's end (#269), so a dead control is the
- *   structurally expected outcome on a breakpoint-cache provider: neither arm
- *   can be served the carried region at all. A dead control therefore does
- *   not invalidate the arm-vs-baseline comparison — the band compares the two
- *   arms directly and a neutral band with a dead control is an honest
- *   `neutral` (the projection changed nothing measurable) — but it does cap
- *   the claim, and the reasons state both facts verbatim.
+ * - Liveness: the `nonce` control arm carries a per-request isolation
+ *   namespace, so its probe cannot read even its own prime's system
+ *   breakpoint — a divergence in a region the placement demonstrably serves.
+ *   The control must sit measurably below the `multiblock` arm; if it does
+ *   not, the measurement cannot distinguish content in any region it can
+ *   serve and the final conclusion is `inconclusive`, whatever the band says
+ *   (#297 review finding 3). The carried Memory region itself is structurally
+ *   unservable under the pinned placement (#269) — the control validates the
+ *   measurement, not that region, and the report states this.
  * - A run in which no arm records any cache activity at all is inconclusive:
  *   a rate computed from nothing is not a rate.
  *
@@ -116,7 +116,7 @@ export const LIVENESS_MARGIN_PP = 5;
 
 /** The dead-control caveat, appended verbatim whenever the liveness control is dead. */
 export const DEAD_CONTROL_NOTE =
-  "liveness control dead: no breakpoint sits at the carried Memory's end under the pinned placement (#269), so carried-region reuse is not observable; the label describes the arm-vs-baseline comparison only";
+  "liveness control dead: the measurement cannot distinguish content in any region it can serve, so no arm-vs-baseline conclusion is supportable";
 
 /** The pinned hit-rate definition, restated in the report verbatim. */
 export const HIT_RATE_DEFINITION =
@@ -372,20 +372,17 @@ function pct(rate) {
 
 /**
  * The run verdict. Integrity failure, any non-measurable group, a run with no
- * cache activity anywhere, or a zero denominator makes the conclusion
- * inconclusive. With a live liveness control, a met band concludes `neutral`,
- * an exceeded improvement margin concludes `improved`, and a failed band
- * concludes `regressed`. With a dead control — the structurally expected
- * outcome under Pi's pinned breakpoint placement (#269) — a met band still
- * concludes `neutral` (the projection changed nothing measurable; the caveat
- * is stated verbatim), a failed band still concludes `regressed` (a loss is
- * directional evidence about the arms themselves), but an apparent
- * improvement stays `inconclusive` because the gain cannot be attributed to
- * content. The regression rule is evaluated independently over the groups
- * whose baseline comparison was complete, and firing it overrides the final
- * label — with `regressed`, the same four-value vocabulary the issue pins
- * (#297 review finding 3: no fifth label exists) — while the cache conclusion
- * stays visible beside it.
+ * cache activity anywhere, a zero denominator, or a dead liveness control
+ * makes the conclusion inconclusive — a dead control means the measurement
+ * cannot distinguish content, so no arm-vs-baseline label is supportable,
+ * however well the band holds (#297 review finding 3). With a live control, a
+ * met band concludes `neutral`, an exceeded improvement margin concludes
+ * `improved`, and a failed band concludes `regressed`. The regression rule is
+ * evaluated independently over the groups whose baseline comparison was
+ * complete AND measurable — stale, unreported, or ambiguous groups never
+ * count toward it — and it never fires on a failed integrity run; firing it
+ * overrides the final label with `regressed`, the same four-value vocabulary
+ * the issue pins, while the cache conclusion stays visible beside it.
  */
 export function evaluateRun({ groups, integrity }) {
   const classified = groups.map((group) => ({
@@ -430,25 +427,11 @@ export function evaluateRun({ groups, integrity }) {
     cacheConclusion = "inconclusive";
     reasons.push("an arm's hit-rate denominator is zero, so its rate does not exist");
   } else if (!livenessSatisfied) {
-    if (improvementObserved) {
-      cacheConclusion = "inconclusive";
-      reasons.push(
-        `liveness control dead: nonce ${pct(rates.nonce.rate)} does not sit below multiblock ${pct(rates.multiblock.rate)}, so the apparent gain over single ${pct(rates.single.rate)} cannot be attributed to content`,
-        DEAD_CONTROL_NOTE,
-      );
-    } else if (bandSatisfied) {
-      cacheConclusion = "neutral";
-      reasons.push(
-        `non-regression band met: multiblock ${pct(rates.multiblock.rate)} is at least the single baseline ${pct(rates.single.rate)} minus ${NON_REGRESSION_BAND_PP}pp (minimum ${pct(minimumAcceptableRate)})`,
-        DEAD_CONTROL_NOTE,
-      );
-    } else {
-      cacheConclusion = "regressed";
-      reasons.push(
-        `non-regression band failed: multiblock ${pct(rates.multiblock.rate)} sits more than ${NON_REGRESSION_BAND_PP}pp below the single baseline ${pct(rates.single.rate)}`,
-        DEAD_CONTROL_NOTE,
-      );
-    }
+    cacheConclusion = "inconclusive";
+    reasons.push(
+      `liveness control dead: nonce ${pct(rates.nonce.rate)} does not sit at least ${LIVENESS_MARGIN_PP}pp below multiblock ${pct(rates.multiblock.rate)}`,
+      DEAD_CONTROL_NOTE,
+    );
   } else if (improvementObserved) {
     cacheConclusion = "improved";
     reasons.push(
@@ -468,9 +451,11 @@ export function evaluateRun({ groups, integrity }) {
     );
   }
 
-  const evaluatedBaseline = classified.filter((group) => group.baselineComparison.evaluated);
+  const evaluatedBaseline = classified.filter(
+    (group) => group.quality === "measurable" && group.baselineComparison.evaluated,
+  );
   const groupsRegressed = evaluatedBaseline.filter((group) => group.baselineComparison.multiDirectionRegression).length;
-  const fired = groupsRegressed >= REGRESSION_GROUP_THRESHOLD;
+  const fired = integrity.ok && groupsRegressed >= REGRESSION_GROUP_THRESHOLD;
   if (fired) {
     reasons.push(
       `baseline regression rule fired: ${groupsRegressed} of ${classified.length} groups regressed in at least ${REGRESSION_DIRECTION_THRESHOLD} independent directions versus the single-summary baseline`,

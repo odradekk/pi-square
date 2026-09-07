@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   ARMS,
   ARM_ROTATION,
@@ -59,6 +60,7 @@ import {
  */
 
 const REPORT_SCHEMA = "pi-square.context-memory/provider-cache-experiment/2";
+const RUN_NONCE_BYTES = 16;
 const REPORT_STRING_MAX = 240;
 const INTEGRITY_FAILURE_CAP = 16;
 const DEFAULT_TTL_MS = 300_000;
@@ -105,8 +107,9 @@ function validateProviderReport(report) {
  * invariant (#297): the measured case is the cross-compaction append, so the
  * multiblock and single arms' probes must share every carried byte and
  * diverge exactly at the pinned append seam (`layout.expectedShared`), while
- * the nonce arm's probe must diverge inside the earliest carried block. A
- * violation means the fixture or composer stopped producing the cache
+ * the nonce control's probe must diverge inside its isolation-namespace line
+ * — within the first bytes of the payload, before any shared cacheable
+ * content. A violation means the fixture or composer stopped producing the
  * property under test, so the run's evidence is meaningless.
  */
 export function classifyDivergenceBoundary(arm, layout, sharedBytes) {
@@ -114,12 +117,11 @@ export function classifyDivergenceBoundary(arm, layout, sharedBytes) {
     const ok = layout.expectedShared !== null && sharedBytes === layout.expectedShared;
     return { ok, boundary: ok ? "appended-block" : "inside-carried-prefix" };
   }
-  const earliest = layout.blocks[0];
-  const ok = earliest !== undefined && sharedBytes >= earliest.start && sharedBytes < earliest.end;
-  return { ok, boundary: ok ? "memory-block-1" : "outside-earliest-block" };
+  const ok = layout.namespaceEnd !== undefined && sharedBytes >= 0 && sharedBytes < layout.namespaceEnd;
+  return { ok, boundary: ok ? "isolation-namespace" : "outside-isolation-namespace" };
 }
 
-function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementationCommit }) {
+function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementationCommit, implementationTree, runNonce }) {
   const declared = adapter.describePins();
   const placement = declared.breakpointPlacement ?? BREAKPOINT_PLACEMENT;
   const pins = {
@@ -148,10 +150,13 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementation
       ttlMs,
       rule: "every probe must follow its arm prime within ttlMs; a later probe classifies its group ttl-stale",
     },
-    // #297 review finding 5: every report records the exact implementation
-    // commit it measured, so stale evidence can never authorize later code.
+    // #297 review findings 2 and 5: every report records the exact
+    // implementation commit it measured, the run nonce its isolation
+    // namespaces derive from, and the isolation rule.
     implementationCommit,
-    armIsolation: "per-arm fixed-width cold namespace in the system segment; no arm can read another arm's cache",
+    implementationTree,
+    runNonce,
+    armIsolation: "run+arm-derived fixed-width isolation namespace at the front of the system segment, before any shared cacheable byte; the nonce control's token is per request",
     priceNote: declared.priceNote,
   };
   // A real adapter that cannot apply the pinned settings in full (for example
@@ -226,15 +231,17 @@ export async function runExperiment({
   orderFor = groupOrder,
   generatedAt = () => new Date().toISOString(),
   implementationCommit = "unavailable",
+  implementationTree = "unavailable",
+  runNonce = randomBytes(RUN_NONCE_BYTES).toString("hex"),
   onEvent,
 }) {
-  const integrity = { ok: true, orderMatchesPin: true, divergenceInvariantsOk: true, providerErrors: 0, failures: [] };
+  const integrity = { ok: true, orderMatchesPin: true, divergenceInvariantsOk: true, ttlOk: true, providerErrors: 0, failures: [] };
   const fail = (message) => {
     integrity.ok = false;
     if (integrity.failures.length < INTEGRITY_FAILURE_CAP) integrity.failures.push(message);
   };
 
-  const pins = buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementationCommit });
+  const pins = buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementationCommit, implementationTree, runNonce });
   for (let group = 1; group <= groupCount; group += 1) {
     if (JSON.stringify(orderFor(group)) !== JSON.stringify(groupOrder(group))) {
       integrity.orderMatchesPin = false;
@@ -251,7 +258,7 @@ export async function runExperiment({
       const [arm, role] = step.split(".");
       requestIndex += 1;
       if (minRequestGapMs > 0) await clock.sleep(minRequestGapMs);
-      const composed = composeRequest({ group, arm, role });
+      const composed = composeRequest({ group, arm, role, runNonce });
       const digest = payloadDigest(composed.payload);
       const sentAtMs = clock.now();
       let firstTokenAt;
@@ -336,6 +343,14 @@ export async function runExperiment({
       }
       if (Object.keys(arms).length !== 3) continue;
       const timing = { ttlMs, primeToProbeMs, withinTtl: withinTtl(primeToProbeMs, ttlMs) };
+      if (!timing.withinTtl) {
+        // #297 review finding 4: an out-of-TTL probe is stale evidence, not a
+        // soft group quality — the run's integrity fails and the exit code
+        // reports it, whatever the token counts look like.
+        integrity.ttlOk = false;
+        integrity.ok = false;
+        fail(`group ${group}: a probe followed its prime after more than the pinned ${ttlMs}ms TTL`);
+      }
       const groupInput = { group, timing, ...arms };
       verdictInputs.push(groupInput);
       reportGroups.push({
@@ -368,6 +383,7 @@ export async function runExperiment({
       ok: integrity.ok,
       orderMatchesPin: integrity.orderMatchesPin,
       divergenceInvariantsOk: integrity.divergenceInvariantsOk,
+      ttlOk: integrity.ttlOk,
       providerErrors: integrity.providerErrors,
       failures: integrity.failures,
     },
@@ -383,7 +399,12 @@ export async function runExperiment({
     cacheStandard: verdict.cacheStandard,
     baselineSummary: baselineMedians(verdict.groups),
     regression: verdict.regression,
-    conclusion: { cache: verdict.cacheConclusion, final: verdict.conclusion, reasons: verdict.reasons },
+    conclusion: {
+      cache: verdict.cacheConclusion,
+      final: verdict.conclusion,
+      livenessSatisfied: verdict.cacheStandard.livenessSatisfied,
+      reasons: verdict.reasons,
+    },
     totals: {
       groups: reportGroups.length,
       requests: records.size,

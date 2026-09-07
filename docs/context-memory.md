@@ -84,9 +84,13 @@ block inserts exactly one new part before the trailing part and leaves every
 carried part byte-identical, which is the structural property the provider
 cache experiment measures. The step is fail-safe: when the request does not
 carry exactly the current composed rendering — no Memory, an opaque or native
-branch, a mismatched summary — the ordinary unmodified compaction summary
-message is left in place. Nothing about this changes what is persisted: the
-projection exists only inside the transformed request.
+branch, a mismatched summary, or more than one compaction summary message —
+the ordinary unmodified compaction summary messages are left in place. The
+maintenance projection mutates the request, so it validates a unique carrying
+summary before changing anything; on any ambiguity the whole due-run
+projection is dropped and the original request is restored unchanged.
+Nothing about this changes what is persisted: the projection exists only
+inside the transformed request.
 
 A Memory block is at most 16 KiB of canonical UTF-8, non-empty, and free of
 NUL and C0 control characters except tab, newline, and carriage return.

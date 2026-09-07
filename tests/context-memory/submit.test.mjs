@@ -1204,6 +1204,52 @@ try {
       "later requests never repeat the advisory or re-insert the sources",
     );
 
+    // ── #297 review: a second compaction summary fails the maintenance
+    // projection BEFORE any mutation, restoring the unmodified original
+    // context and closing the due run — never a half-projected request that
+    // exposes the full old summary and the rebuild sources together.
+    {
+      const carrying = { role: "compactionSummary", summary: composeMemorySummary([ALPHA, BETA, GAMMA]), tokensBefore: 4321, timestamp: 1 };
+      for (const [label, extra] of [
+        ["a duplicated carrying summary", { ...carrying, timestamp: 3 }],
+        ["a foreign second summary", { role: "compactionSummary", summary: "a foreign summary", tokensBefore: 9, timestamp: 3 }],
+      ]) {
+        // A fresh harness per case: the first refusal closes its due run, so
+        // each trace opens its own rebuild run against the same branch shape.
+        const duplicateHarness = createHarness({
+          config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 1 },
+        });
+        const dupSession = mutableSession([
+          userEntry("d1", null, "alpha task"),
+          assistantEntry("d2", "d1", [{ type: "text", text: "alpha answer" }]),
+          userEntry("d3", "d2", "beta task"),
+          assistantEntry("d4", "d3", [{ type: "text", text: "beta answer" }]),
+          userEntry("d5", "d4", "gamma task"),
+          assistantEntry("d6", "d5", [{ type: "text", text: "gamma answer" }]),
+          userEntry("d7", "d6", "ship it"),
+          compactionOf("dc", "d7", "d7", [ALPHA, BETA, GAMMA], ["d2", "d4", "d6"]),
+          userEntry("d8", "dc", "tail work"),
+        ]);
+        const dupCtx = { ...duplicateHarness.baseContext(dupSession), getContextUsage: () => ({ tokens: 12000, contextWindow: 200000 }) };
+        await duplicateHarness.emit("session_start", { type: "session_start", reason: "resume" }, dupCtx);
+        await duplicateHarness.emit("input", { type: "input", text: "maintain the memory", source: "interactive" }, dupCtx);
+        assert.ok(duplicateHarness.activeTools().includes("submit_memory"),
+          `${label}: the rebuild run opens before the ambiguous request`);
+        const request = [carrying, extra, { role: "user", content: "maintain the memory", timestamp: 2 }];
+        const transformed = await duplicateHarness.emit("context", { type: "context", messages: request }, dupCtx);
+        assert.equal(transformed, undefined,
+          `${label}: the transform returns no projection and the original context stands`);
+        assert.ok(request.every((message) => message.role !== "custom"),
+          `${label}: no advisory or blocks message leaked into a refused request`);
+        assert.equal(request.filter((message) => message.role === "compactionSummary").length, 2,
+          `${label}: both ordinary summaries stay untouched`);
+        assert.ok(!duplicateHarness.activeTools().includes("submit_memory"),
+          `${label}: the failed due-run projection closes the submission window`);
+        assert.ok(!JSON.stringify(request).includes("beta task"),
+          `${label}: no rebuild sources were inserted beside the full old summary`);
+      }
+    }
+
     // The replacement block: complete suffix sources plus the raw tail.
     const REBUILT = "# Rebuilt\n\n- beta, gamma, and the tail in one block";
     session.__entries.push(assistantEntry("m11", "m10", [

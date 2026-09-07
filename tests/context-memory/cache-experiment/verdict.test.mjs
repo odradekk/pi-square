@@ -81,7 +81,7 @@ function makeGroup(group, overrides = {}) {
   };
 }
 
-const OK_INTEGRITY = { ok: true, orderMatchesPin: true, divergenceInvariantsOk: true, providerErrors: 0, failures: [] };
+const OK_INTEGRITY = { ok: true, orderMatchesPin: true, divergenceInvariantsOk: true, ttlOk: true, providerErrors: 0, failures: [] };
 
 function run(groups, integrity = OK_INTEGRITY) {
   return evaluateRun({ groups, integrity });
@@ -132,7 +132,7 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   }
   assert.ok(HIT_RATE_DEFINITION.includes("Σ cache_read"));
   assert.ok(DENOMINATOR_NOTE.includes("must not be reused as a cost metric"));
-  assert.ok(DEAD_CONTROL_NOTE.includes("#269"), "the dead-control caveat names the open optimization");
+  assert.ok(DEAD_CONTROL_NOTE.includes("cannot distinguish content"), "the dead-control caveat states what a dead control means");
 }
 
 // ─── hit rate: sums first, then one division ────────────────────────
@@ -251,23 +251,23 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
 }
 
 {
-  // A hair above the margin with a met band: the structurally expected dead
-  // control under Pi's placement (#269). The band is met, no improvement is
-  // apparent, so the honest label is neutral with the caveat stated verbatim.
+  // A hair above the margin with a met band: a dead control means the
+  // measurement cannot distinguish content, so the conclusion is
+  // inconclusive even when the band holds (#297 review finding 3).
   const groups = fiveGroups({
     rows: { nonce: { probe: { cacheRead: 561, cacheWrite: 139, inputTokens: 100 } } },
   });
   const verdict = run(groups);
   assert.equal(verdict.cacheStandard.livenessSatisfied, false);
-  assert.equal(verdict.cacheConclusion, "neutral", "a dead control with a met band is an honest neutral, not a failure");
-  assert.equal(verdict.conclusion, "neutral");
-  assert.ok(verdict.reasons.some((reason) => reason.startsWith("non-regression band met")));
-  assert.ok(verdict.reasons.includes(DEAD_CONTROL_NOTE), "the dead-control caveat is stated verbatim");
+  assert.equal(verdict.cacheConclusion, "inconclusive", "a dead control voids the conclusion even with a met band");
+  assert.equal(verdict.conclusion, "inconclusive");
+  assert.ok(verdict.reasons.some((reason) => reason.startsWith("liveness control dead")));
+  assert.ok(verdict.reasons.includes(DEAD_CONTROL_NOTE));
 }
 
 {
-  // A dead control with a failed band still records the loss: the band
-  // compares the two arms directly, and a loss is directional evidence.
+  // A dead control with a failed band: still inconclusive — the measurement
+  // cannot distinguish content, so not even a loss is attributable.
   const groups = fiveGroups({
     rows: {
       single: { probe: { cacheRead: 600, cacheWrite: 300, inputTokens: 100 } },
@@ -278,8 +278,7 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   const verdict = run(groups);
   assert.equal(verdict.cacheStandard.bandSatisfied, false);
   assert.equal(verdict.cacheStandard.livenessSatisfied, false);
-  assert.equal(verdict.cacheConclusion, "regressed");
-  assert.ok(verdict.reasons.some((reason) => reason.startsWith("non-regression band failed")));
+  assert.equal(verdict.cacheConclusion, "inconclusive");
   assert.ok(verdict.reasons.includes(DEAD_CONTROL_NOTE));
 }
 
@@ -297,15 +296,15 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   assert.equal(verdict.cacheStandard.improvementObserved, true);
   assert.equal(verdict.cacheStandard.livenessSatisfied, false);
   assert.equal(verdict.cacheConclusion, "inconclusive", "an improvement claim requires the control alive");
-  assert.ok(verdict.reasons.some((reason) => reason.includes("cannot be attributed to content")));
+  assert.ok(verdict.reasons.some((reason) => reason.startsWith("liveness control dead")));
   assert.ok(verdict.reasons.includes(DEAD_CONTROL_NOTE));
 }
 
 {
   // The #251 signature: every arm reports the same constant read. The band
   // is trivially met and every group is measurable, so only the liveness
-  // control can expose the run as dead — and with no apparent improvement
-  // the label is neutral-with-caveat, not a pass.
+  // control can expose the run as dead — and a dead run is inconclusive,
+  // never a pass.
   const groups = fiveGroups({
     rows: {
       multiblock: { probe: { cacheRead: 1089, cacheWrite: 96, inputTokens: 166 } },
@@ -316,7 +315,8 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   const verdict = run(groups);
   assert.equal(verdict.cacheStandard.bandSatisfied, true);
   assert.equal(verdict.cacheStandard.livenessSatisfied, false);
-  assert.equal(verdict.cacheConclusion, "neutral");
+  assert.equal(verdict.cacheConclusion, "inconclusive");
+  assert.equal(verdict.conclusion, "inconclusive");
   assert.ok(verdict.reasons.includes(DEAD_CONTROL_NOTE));
 }
 
@@ -356,7 +356,7 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   const verdict = run(groups);
   assert.equal(verdict.cacheStandard.groupsAggregated, 5);
   assert.equal(verdict.cacheStandard.cacheActivityObserved, true);
-  assert.equal(verdict.cacheConclusion, "neutral");
+  assert.equal(verdict.cacheConclusion, "inconclusive", "all-zero probe rates with a dead control are dead evidence");
   assert.ok(verdict.reasons.includes(DEAD_CONTROL_NOTE));
 }
 
@@ -597,6 +597,43 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   const verdict = run(fiveGroups((n) => (n <= 3 ? { rows: { single: { prime: { cacheWrite: 100 }, probe: { ttftMs: 40 } } } } : {})));
   assert.equal(verdict.regression.fired, false);
   assert.equal(verdict.conclusion, "neutral");
+}
+
+{
+  // #297 review finding 4: four regressed groups that are ALL out of TTL
+  // never fire the rule — stale groups are not evidence of anything.
+  const verdict = run(fiveGroups((n) => (n <= 4 ? { withinTtl: false, rows: { single: { prime: { cacheWrite: 100 }, probe: { ttftMs: 40 } } } } : {})));
+  assert.equal(verdict.regression.groupsRegressed, 0, "stale groups are excluded from the regression count");
+  assert.equal(verdict.regression.fired, false);
+  assert.equal(verdict.conclusion, "inconclusive", "an out-of-TTL group voids the cache conclusion too");
+}
+
+{
+  // #297 review finding 4: regressed groups whose evidence quality is not
+  // measurable (a provider reporting no cache values) never fire the rule.
+  const missingRows = { multiblock: {}, nonce: {}, single: {} };
+  for (const arm of Object.keys(missingRows)) {
+    missingRows[arm] = {
+      prime: { cacheWrite: 100, cacheReported: false },
+      probe: { ttftMs: 40, cacheReported: false },
+    };
+  }
+  const verdict = run(fiveGroups(() => ({ rows: missingRows })));
+  assert.ok(verdict.groups.every((group) => group.quality === "missing-report"));
+  assert.equal(verdict.regression.groupsRegressed, 0, "non-measurable groups are excluded from the regression count");
+  assert.equal(verdict.regression.fired, false);
+  assert.equal(verdict.conclusion, "inconclusive");
+}
+
+{
+  // #297 review finding 4: the regression rule never fires on a failed
+  // integrity run — an integrity failure forces the final label
+  // inconclusive, whatever the measured directions look like.
+  const integrity = { ok: false, orderMatchesPin: true, divergenceInvariantsOk: true, ttlOk: false, providerErrors: 0, failures: ["group 3: a probe followed its prime after more than the pinned 300000ms TTL"] };
+  const verdict = run(fiveGroups((n) => (n <= 4 ? { rows: { single: { prime: { cacheWrite: 100 }, probe: { ttftMs: 40 } } } } : {})), integrity);
+  assert.equal(verdict.regression.groupsRegressed, REGRESSION_GROUP_THRESHOLD, "the measured count is still visible");
+  assert.equal(verdict.regression.fired, false, "the rule does not fire on failed integrity");
+  assert.equal(verdict.conclusion, "inconclusive", "integrity failure forces the final label inconclusive");
 }
 
 {

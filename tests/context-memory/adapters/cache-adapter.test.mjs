@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SYSTEM_PROMPT, TOOLS, armNamespace, composeRequest } from "../cache-experiment/fixture.mjs";
+import { DIGEST_NONCE, SYSTEM_PROMPT, TOOLS, armNamespace, composeRequest } from "../cache-experiment/fixture.mjs";
 import { estimateTokens, sha256Hex } from "../cache-experiment/evidence.mjs";
 import { runExperiment } from "../cache-experiment/runner.mjs";
 import {
@@ -175,10 +175,14 @@ function captureTransport(handler) {
   assert.ok(!("temperature" in body), "temperature is omitted, not sent as zero");
   assert.ok(Array.isArray(body.system), "the system prompt is one text block list, as Pi sends it");
   assert.equal(body.system[0].type, "text");
-  assert.ok(body.system[0].text.startsWith(SYSTEM_PROMPT),
+  assert.ok(body.system[0].text.includes(SYSTEM_PROMPT),
     "the system block carries the pinned system prompt");
-  assert.ok(body.system[0].text.includes(armNamespace("multiblock")),
-    "the system block carries the arm's fixed cold namespace (#297 review finding 1)");
+  assert.ok(body.system[0].text.includes(armNamespace(DIGEST_NONCE, "multiblock")),
+    "the system block carries the run+arm cold namespace (#297 review findings 2 and 3)");
+  assert.ok(
+    body.system[0].text.indexOf("Experiment isolation namespace ") < body.system[0].text.indexOf(SYSTEM_PROMPT),
+    "the namespace line precedes every shared cacheable byte of the system prompt",
+  );
   assert.deepEqual(body.system[0].cache_control, { type: "ephemeral" },
     "breakpoint 1: the system block carries cache_control, where Pi places it");
   assert.deepEqual(body.tools, TOOLS.map((tool) => ({
@@ -254,11 +258,18 @@ function captureTransport(handler) {
   await adapter.send(experimentRequest(2, "nonce", "probe"), {});
   const noncePrime = summaryOf(transport.requests.at(-2).init.body);
   const nonceProbe = summaryOf(transport.requests.at(-1).init.body);
-  assert.equal(noncePrime[0] === undefined ? noncePrime.role : noncePrime.role, "user");
-  assert.notEqual(strip(noncePrime.content[1]), strip(nonceProbe.content[1]),
-    "the control's earliest carried block differs from its prime (the nonce)");
-  assert.equal(noncePrime.content[0].text, nonceProbe.content[0].text,
-    "the control's leading frame is unchanged; only the earliest block varies");
+  const noncePrimeSystem = JSON.parse(transport.requests.at(-2).init.body).system[0].text;
+  const nonceProbeSystem = JSON.parse(transport.requests.at(-1).init.body).system[0].text;
+  assert.equal(noncePrime.role, "user");
+  assert.equal(noncePrime.content[1].text, nonceProbe.content[1].text,
+    "the control's carried blocks are byte-identical to its prime: the divergence is not in the carried region");
+  assert.notEqual(noncePrimeSystem, nonceProbeSystem,
+    "the control's isolation namespace token differs per request (#297 review finding 3)");
+  assert.ok(
+    noncePrimeSystem.startsWith("Experiment isolation namespace ")
+      && nonceProbeSystem.startsWith("Experiment isolation namespace "),
+    "both namespace lines share their fixed-width framing at the front of the system block",
+  );
 }
 // ─── no request ends with an assistant turn (no prefill rejection) ───
 
@@ -516,9 +527,24 @@ function captureTransport(handler) {
     assert.equal(group.multiblock.probe.retentionBucket, "1h");
     assert.ok(group.multiblock.probe.ttftMs !== null, "TTFT is locally measured through the real clock");
   }
-  assert.equal(report.conclusion.cache, "neutral",
-    "the stubbed gateway writes every breakpoint on every request, so the band holds and the dead control carries the caveat");
-  assert.equal(report.conclusion.final, "neutral");
+  // The wire body orders system, messages, tools — so the stub's second and
+  // third breakpoints sit after the appended block and can never serve the
+  // probe; only the system breakpoint survives the append. The arms under
+  // test therefore read only the system boundary while the control reads
+  // nothing — a gap this stub's scale keeps inside the pinned liveness
+  // margin, so the control is dead here and the verdict is inconclusive
+  // (#297 review finding 3): exactly what a measurement that cannot
+  // distinguish the carried region must produce.
+  for (const group of report.groups) {
+    assert.ok(group.multiblock.probe.cacheRead > 0, "the arm under test still reads the system boundary across the append");
+    assert.equal(group.nonce.probe.cacheRead, 0, "the per-request control namespace can never be served");
+    assert.ok(group.multiblock.probe.cacheRead < group.multiblock.prime.cacheWrite,
+      "the append falls back from the full-carried read the prime wrote");
+  }
+  assert.equal(report.conclusion.cache, "inconclusive");
+  assert.equal(report.conclusion.final, "inconclusive");
+  assert.equal(report.conclusion.livenessSatisfied, false,
+    "the gap the stub can show sits inside the pinned liveness margin, so the control is honestly dead");
   assert.ok(report.conclusion.reasons.some((reason) => reason.includes("liveness control dead")));
   assert.equal(exitCode, 0, "integrity, not the conclusion label, decides the exit code");
 }

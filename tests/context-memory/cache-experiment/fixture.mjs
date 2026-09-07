@@ -157,24 +157,47 @@ export function nonceFor(group, role) {
 }
 
 /**
- * The per-arm cold namespace (#297 review finding 1): a fixed-width,
- * semantically neutral token derived from the arm name, embedded in the
- * system segment of every request that arm sends. It is identical between an
- * arm's prime and probe — the same-arm carried prefix stays byte-stable — and
- * different for every arm, so no arm's request can ever read cache another
- * arm wrote, exactly like #269's two arms with independent content. Without
- * it the arms shared system, tools, blocks, and tail bytes, and the measured
- * full reads flipped with probe position: cross-arm cache contamination, not
- * an arm property.
+ * The cold isolation namespaces (#297 review findings 2 and 3): fixed-width,
+ * semantically neutral tokens derived from the run nonce and the arm name,
+ * placed at the very front of the system segment — before any shared
+ * cacheable byte — so requests from different arms, or from different
+ * executions of the experiment, diverge inside the first bytes of the
+ * payload and can never read each other's cache at any prefix length the
+ * provider could serve. The nonce is generated per execution and recorded in
+ * the report pins; the arm-derived namespace is identical between an arm's
+ * prime and probe, so the same-arm carried prefix stays byte-stable.
+ *
+ * The `nonce` control arm is the observable liveness control: its namespace
+ * token is derived per request, so its probe cannot read even its own
+ * prime's system breakpoint. If the provider's cache reports track content
+ * at all, the nonce arm's probe reads measurably less than the arms under
+ * test and the liveness rule is alive; a dead control means the measurement
+ * cannot distinguish content in any region it can serve, and the verdict
+ * stays inconclusive. The carried Memory region itself is structurally
+ * unservable under the pinned breakpoint placement (#269), which the report
+ * states — the control validates the measurement, not that region.
  */
-const ARM_NAMESPACE_WIDTH = 16;
-export function armNamespace(arm) {
-  return sha256Hex(`provider-cache-experiment|arm-namespace|${arm}`).slice(0, ARM_NAMESPACE_WIDTH);
+const NAMESPACE_WIDTH = 16;
+export const NAMESPACE_LINE_PREFIX = "Experiment isolation namespace ";
+/** The nonce used for the pinned fixture digest; every live run passes its own. */
+export const DIGEST_NONCE = "fixture-digest";
+
+export function armNamespace(runNonce, arm) {
+  return sha256Hex(`provider-cache-experiment|namespace|${runNonce}|${arm}`).slice(0, NAMESPACE_WIDTH);
 }
 
-/** The arm's system prompt: the shared base plus its fixed cold-namespace line. */
-export function systemPromptFor(arm) {
-  return `${SYSTEM_PROMPT}\nExperiment isolation namespace ${armNamespace(arm)} — fixed for this arm, carries no task meaning.`;
+/** The request's isolation namespace token: fixed per run+arm; per request for the control arm. */
+export function requestNamespace(runNonce, { group, arm, role }) {
+  if (arm === "nonce") {
+    return sha256Hex(`provider-cache-experiment|namespace|${runNonce}|${arm}|${group}|${role}`).slice(0, NAMESPACE_WIDTH);
+  }
+  return armNamespace(runNonce, arm);
+}
+
+/** The request's system prompt: its isolation namespace line first, then the shared base. */
+export function systemPromptFor(runNonce, request) {
+  const token = requestNamespace(runNonce, request);
+  return `${NAMESPACE_LINE_PREFIX}${token} — fixed for this run, carries no task meaning.\n${SYSTEM_PROMPT}`;
 }
 
 /**
@@ -220,7 +243,7 @@ function detailLines(kind, group) {
 
 function setupBlock(group) {
   return [
-    `${nonceLiteral(ZERO_NONCE)} # ${MARKER} task ${group} setup`,
+    `# ${MARKER} task ${group} setup`,
     "",
     `- scope agreed and fixtures frozen for task ${group}`,
     `- the harness wires ${group} scenario rows before any run`,
@@ -254,16 +277,14 @@ export function baseBlocks(group) {
 
 /**
  * The carried blocks of one request (#297): the prime carries blocks 1–2; the
- * probe carries those plus the appended block 3. The nonce arm substitutes a
- * per-request nonce into the earliest carried block — same width, different
- * bytes, so the control changes stability, not size.
+ * probe carries those plus the appended block 3. Identical across arms — the
+ * arms differ only in their isolation namespace and their summary block
+ * boundaries; the nonce control arm diverges through its per-request
+ * namespace token, not through its block bodies.
  */
-export function carriedBodies({ group, arm, role }) {
+export function carriedBodies({ group, role }) {
   const blocks = [baseBlocks(group)[0], baseBlocks(group)[1]];
   if (role === "probe") blocks.push(baseBlocks(group)[2]);
-  if (arm === "nonce") {
-    blocks[0] = blocks[0].replace(nonceLiteral(ZERO_NONCE), nonceLiteral(nonceFor(group, role)));
-  }
   return blocks;
 }
 
@@ -337,12 +358,12 @@ export function traceTail(group, { probe }) {
  * reconstructs one user message with one text block per summary-part segment
  * from the contiguous run.
  */
-export function composeRequest({ group, arm, role }) {
-  const bodies = carriedBodies({ group, arm, role });
+export function composeRequest({ group, arm, role, runNonce = DIGEST_NONCE }) {
+  const bodies = carriedBodies({ group, role });
   const partTexts = summaryPartTexts(arm, bodies);
   const tail = traceTail(group, { probe: role === "probe" });
   const segments = [
-    { element: "system", text: systemPromptFor(arm) },
+    { element: "system", text: systemPromptFor(runNonce, { group, arm, role }) },
     { element: "tools", text: JSON.stringify(TOOLS) },
     ...partTexts.map((text, index) => ({ element: `summary-part-${index}`, text })),
     ...tail.map((message, index) => ({
@@ -357,10 +378,15 @@ export function composeRequest({ group, arm, role }) {
     segmentOf("tools").contentEnd,
     segmentOf(`message-${tail.length - 1}`).contentEnd,
   ];
+  const systemSegment = segmentOf("system");
+  const systemText = payload.bytes.subarray(systemSegment.contentStart, systemSegment.contentEnd).toString("utf8");
   const layout = {
     summaryParts: partTexts.map((text) => locateUnique(payload.bytes, text)),
     blocks: bodies.map((body) => locateUnique(payload.bytes, body)),
     breakpoints,
+    // The isolation-namespace line's global end: the control arm's probe must
+    // diverge strictly inside it, before any shared cacheable content.
+    namespaceEnd: systemSegment.contentStart + systemText.indexOf("\n"),
     expectedShared: null,
   };
   if (role === "probe") {
