@@ -71,6 +71,23 @@ latest compaction entry on the current branch:
   reported `opaque`, its native summary is retained unchanged, and structured
   operations stay off for that branch.
 
+While the feature is enabled, every provider-bound request re-projects that
+summary message: each current Memory block becomes exactly one ordered text
+content block, sent identically to every model and provider. The leading part
+carries Pi's own compaction framing plus the fixed wrapper, each block's part
+carries the fixed separator plus that block's body, and the trailing part
+carries Pi's own trailing framing — the parts concatenate byte-for-byte to
+the text Pi would have sent as one block. There is one projection with no
+model or provider branch, and it adds no cache field or breakpoint of any
+kind; Pi's own prompt-cache breakpoint placement is untouched. Appending a
+block inserts exactly one new part before the trailing part and leaves every
+carried part byte-identical, which is the structural property the provider
+cache experiment measures. The step is fail-safe: when the request does not
+carry exactly the current composed rendering — no Memory, an opaque or native
+branch, a mismatched summary — the ordinary unmodified compaction summary
+message is left in place. Nothing about this changes what is persisted: the
+projection exists only inside the transformed request.
+
 A Memory block is at most 16 KiB of canonical UTF-8, non-empty, and free of
 NUL and C0 control characters except tab, newline, and carriage return.
 Accepted Markdown is preserved byte-for-byte; nothing is trimmed, rewritten,
@@ -320,6 +337,15 @@ a session operation.
   only bounded mechanical metadata (states, counts, token estimates, safe
   codes) — never Memory Markdown or source bodies — so the feature does not
   create another sensitive copy.
+- **Every provider sees the same block structure.** The provider-bound
+  projection renders each current Memory block as its own ordered text
+  content block for every model and provider — no provider-specific branch,
+  no cache marker, and no breakpoint moved. Cache behavior across a Memory
+  append is a measured property, not a promise: the pinned provider-cache
+  experiment compares the multi-block projection with today's
+  single-summary-block rendering across a real cross-compaction append, and
+  no improvement claim is made without that evidence for the exact release
+  commit on the named provider and model.
 - **Protocol artifacts are filtered while enabled.** `submit_memory` calls and
   their results are removed from provider-bound requests while the feature is
   enabled, except the current trailing call/result pair, which passes through
@@ -389,8 +415,10 @@ rewrite existing Memory blocks.
   guarantees mechanical bounds and source recoverability, not summarization
   quality.
 - Qualification evidence (deterministic protocol replay, real-model
-  long-session scenarios, and the paired provider-cache experiment with
-  positive and negative controls) is required before any quality claim;
+  long-session scenarios, and the provider-cache experiment — the
+  cross-compaction append measurement comparing the multi-block projection
+  with the single-summary-block baseline under a content-divergence control)
+  is required before any quality or cache claim;
   reports are development evidence kept out of the npm package, and reruns
   follow the fixed impact-based rules — model-visible or algorithm changes
   rerun the full suites, pure UI or documentation changes rerun nothing,
