@@ -1083,8 +1083,13 @@ try {
       { role: "user", content: "ship it", timestamp: 3 },
     ] }, overCtx);
     assert.ok(projected?.messages, "the rebuild run transforms its first provider request");
-    assert.equal(projected.messages[0].summary, MEMORY_SUMMARY_WRAPPER,
-      "a full rebuild leaves the wrapper-only summary with no selected block");
+    // #297: the wrapper-only prefix rendering is itself projected as the
+    // blocks message — the two framing parts with no block part between.
+    assert.equal(projected.messages[0].customType, "pi-square.context-memory/blocks");
+    const overParts = projected.messages[0].content.map((part) => part.text);
+    assert.equal(overParts.length, 2, "a full rebuild leaves no selected block part");
+    assert.ok(overParts[0].endsWith(MEMORY_SUMMARY_WRAPPER), "the leading frame part ends with the wrapper");
+    assert.equal(overParts[1], "\n</summary>", "the trailing frame part is Pi's own framing");
     assert.equal(projected.messages[1].content, "long task",
       "the selected block's original sources are inserted in source order");
     const advisory = projected.messages.at(-1);
@@ -1150,11 +1155,15 @@ try {
     const transformed = await maintenanceHarness.emit("context", { type: "context", messages: request }, maintenanceCtx);
     assert.ok(transformed?.messages, "the maintenance run transforms its first provider request");
     const projected = transformed.messages;
-    assert.equal(projected[0].role, "compactionSummary");
-    assert.equal(projected[0].summary, composeMemorySummary([ALPHA]),
-      "the summary message keeps exactly the unchanged prefix rendering");
-    assert.ok(projected[0].summary.includes(ALPHA), "the unselected block body survives");
-    assert.ok(!projected[0].summary.includes(BETA) && !projected[0].summary.includes(GAMMA),
+    // #297: the unchanged prefix rendering is projected as the blocks message.
+    assert.equal(projected[0].customType, "pi-square.context-memory/blocks");
+    const prefixParts = projected[0].content.map((part) => part.text);
+    assert.equal(prefixParts.length, 3,
+      "the prefix rendering is one part per kept block plus the frames");
+    assert.equal(prefixParts[1], `\n---\n\n${ALPHA}`,
+      "the summary message keeps exactly the unchanged prefix rendering, one block per part");
+    assert.ok(prefixParts.join("").includes(ALPHA), "the unselected block body survives");
+    assert.ok(!prefixParts.join("").includes(BETA) && !prefixParts.join("").includes(GAMMA),
       "the selected summaries leave the request");
     const serialized = JSON.stringify(projected);
     assert.equal((serialized.match(/beta task/g) ?? []).length, 1, "every selected source entry is inserted exactly once");
@@ -1181,13 +1190,65 @@ try {
     const secondRequest = buildSessionContext(session.getBranch(), session.getLeafId()).messages;
     const secondTransformed = await maintenanceHarness.emit("context", { type: "context", messages: secondRequest }, maintenanceCtx);
     assert.ok(secondTransformed?.messages);
-    assert.equal(secondTransformed.messages[0].summary, composeMemorySummary([ALPHA, BETA, GAMMA]),
-      "later requests carry the unmodified Memory rendering");
+    // #297: later requests carry the complete Memory rendering, one ordered
+    // part per block, with no maintenance re-projection.
+    assert.equal(secondTransformed.messages[0].customType, "pi-square.context-memory/blocks");
+    assert.deepEqual(
+      secondTransformed.messages[0].content.filter((_, index) => index > 0 && index < 4).map((part) => part.text),
+      [`\n---\n\n${ALPHA}`, `\n---\n\n${BETA}`, `\n---\n\n${GAMMA}`],
+      "later requests carry the unmodified Memory rendering as one part per block",
+    );
     assert.equal(
       secondTransformed.messages.filter((message) => message?.customType === CONTEXT_MEMORY_ADVISORY_TYPE).length,
       0,
       "later requests never repeat the advisory or re-insert the sources",
     );
+
+    // ── #297 review: a second compaction summary fails the maintenance
+    // projection BEFORE any mutation, restoring the unmodified original
+    // context and closing the due run — never a half-projected request that
+    // exposes the full old summary and the rebuild sources together.
+    {
+      const carrying = { role: "compactionSummary", summary: composeMemorySummary([ALPHA, BETA, GAMMA]), tokensBefore: 4321, timestamp: 1 };
+      for (const [label, extra] of [
+        ["a duplicated carrying summary", { ...carrying, timestamp: 3 }],
+        ["a foreign second summary", { role: "compactionSummary", summary: "a foreign summary", tokensBefore: 9, timestamp: 3 }],
+      ]) {
+        // A fresh harness per case: the first refusal closes its due run, so
+        // each trace opens its own rebuild run against the same branch shape.
+        const duplicateHarness = createHarness({
+          config: { enabled: true, compressionThreshold: { tokens: 5000 }, memoryBudgetPercent: 1 },
+        });
+        const dupSession = mutableSession([
+          userEntry("d1", null, "alpha task"),
+          assistantEntry("d2", "d1", [{ type: "text", text: "alpha answer" }]),
+          userEntry("d3", "d2", "beta task"),
+          assistantEntry("d4", "d3", [{ type: "text", text: "beta answer" }]),
+          userEntry("d5", "d4", "gamma task"),
+          assistantEntry("d6", "d5", [{ type: "text", text: "gamma answer" }]),
+          userEntry("d7", "d6", "ship it"),
+          compactionOf("dc", "d7", "d7", [ALPHA, BETA, GAMMA], ["d2", "d4", "d6"]),
+          userEntry("d8", "dc", "tail work"),
+        ]);
+        const dupCtx = { ...duplicateHarness.baseContext(dupSession), getContextUsage: () => ({ tokens: 12000, contextWindow: 200000 }) };
+        await duplicateHarness.emit("session_start", { type: "session_start", reason: "resume" }, dupCtx);
+        await duplicateHarness.emit("input", { type: "input", text: "maintain the memory", source: "interactive" }, dupCtx);
+        assert.ok(duplicateHarness.activeTools().includes("submit_memory"),
+          `${label}: the rebuild run opens before the ambiguous request`);
+        const request = [carrying, extra, { role: "user", content: "maintain the memory", timestamp: 2 }];
+        const transformed = await duplicateHarness.emit("context", { type: "context", messages: request }, dupCtx);
+        assert.equal(transformed, undefined,
+          `${label}: the transform returns no projection and the original context stands`);
+        assert.ok(request.every((message) => message.role !== "custom"),
+          `${label}: no advisory or blocks message leaked into a refused request`);
+        assert.equal(request.filter((message) => message.role === "compactionSummary").length, 2,
+          `${label}: both ordinary summaries stay untouched`);
+        assert.ok(!duplicateHarness.activeTools().includes("submit_memory"),
+          `${label}: the failed due-run projection closes the submission window`);
+        assert.ok(!JSON.stringify(request).includes("beta task"),
+          `${label}: no rebuild sources were inserted beside the full old summary`);
+      }
+    }
 
     // The replacement block: complete suffix sources plus the raw tail.
     const REBUILT = "# Rebuilt\n\n- beta, gamma, and the tail in one block";

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   ADVISORY_TYPE,
+  BLOCKS_TYPE,
   DUE_CONFIG,
   DISABLED_CONFIG,
   MARKER,
@@ -504,9 +505,15 @@ export async function areaSuffixRebuild(recorder, artifacts) {
     const transformed = await harness.emit("context", { type: "context", messages: request }, ctx);
     assert.ok(transformed?.messages, "the maintenance run transforms its first provider request");
     const projected = transformed.messages;
-    assert.equal(projected[0].summary, format.composeMemorySummary([ALPHA]),
-      "the summary message keeps exactly the unchanged prefix rendering");
-    assert.ok(!projected[0].summary.includes("b".repeat(64)) && !projected[0].summary.includes(GAMMA),
+    // #297: the unchanged prefix rendering is the blocks message — one
+    // ordered text part per kept block plus the framing parts, concatenating
+    // to exactly the prefix rendering Pi would send as one block.
+    assert.equal(projected[0].customType, BLOCKS_TYPE);
+    const prefixParts = projected[0].content.map((part) => part.text);
+    assert.equal(prefixParts.length, 3);
+    assert.equal(prefixParts[1], format.MEMORY_BLOCK_SEPARATOR + ALPHA,
+      "the summary message keeps exactly the unchanged prefix rendering, one block per part");
+    assert.ok(!prefixParts.join("").includes("b".repeat(64)) && !prefixParts.join("").includes(GAMMA),
       "the selected summaries leave the request");
     const serialized = JSON.stringify(projected);
     assert.equal((serialized.match(/beta task/g) ?? []).length, 1, "every selected source entry is inserted exactly once");
@@ -529,8 +536,14 @@ export async function areaSuffixRebuild(recorder, artifacts) {
   await recorder.check(A, "projection-is-one-shot", "uncertainty-promotion", async () => {
     const second = await harness.emit("context", { type: "context", messages: projectedMessages(session) }, ctx);
     assert.ok(second?.messages);
-    assert.equal(second.messages[0].summary, format.composeMemorySummary([ALPHA, BETA, GAMMA]),
-      "later requests carry the unmodified Memory rendering");
+    // #297: later requests carry the complete rendering, one ordered part
+    // per block, with no maintenance re-projection.
+    assert.equal(second.messages[0].customType, BLOCKS_TYPE);
+    assert.deepEqual(
+      second.messages[0].content.filter((_, index) => index > 0 && index < 4).map((part) => part.text),
+      [format.MEMORY_BLOCK_SEPARATOR + ALPHA, format.MEMORY_BLOCK_SEPARATOR + BETA, format.MEMORY_BLOCK_SEPARATOR + GAMMA],
+      "later requests carry the unmodified Memory rendering as one part per block",
+    );
     assert.equal(
       second.messages.filter((message) => message?.customType === ADVISORY_TYPE).length,
       0,

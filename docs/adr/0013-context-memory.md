@@ -131,7 +131,8 @@ message, and deletion stays the ordinary Pi session boundary.
 - Same-file multi-process writing stays unsupported, exactly as for plain Pi;
   parallel work must use forked or cloned session files.
 - Activation is capability-detected, not version-pinned (#255): any host
-  exposing the required interfaces activates the feature. The residual risk —
+  exposing the required session, compaction, context, tool, active-tool, and
+  message-projection interfaces activates the feature. The residual risk —
   a future Pi keeping an interface while changing its semantics — is absorbed
   by the runtime validation and native-fallback paths (candidate
   revalidation, compaction confirmation, strict format parsing), never by
@@ -168,6 +169,23 @@ message, and deletion stays the ordinary Pi session boundary.
   additionally require the real-model and provider-cache qualification
   evidence, tied to the exact release commit under fixed impact-based rerun
   rules.
+- The provider-bound projection is uniform (#297): while the feature is
+  enabled, every request's carrying Memory summary message is re-projected
+  as one ordered text content block per current block — leading framing and
+  wrapper part, one separator-plus-body part per block, trailing framing
+  part — for every model and provider through one code path that adds no
+  cache field or breakpoint and moves none of Pi's own. The concatenated
+  model-visible text stays byte-identical to Pi's rendering of the ordinary
+  summary, the persisted entry is unchanged, and any mismatch leaves the
+  ordinary message in place. Whether that structure alone preserves or
+  improves prompt-cache reuse across a Memory append is a measured question,
+  not a design claim: the pinned provider-cache experiment compares the
+  multi-block projection with the single-summary-block baseline across a
+  real cross-compaction append, and the measured outcome on the named
+  provider/model is the only permitted statement. Placing a cache breakpoint
+  at the carried Memory's end remains deliberately undone here (#269): the
+  projection isolates the structural change so the breakpoint decision can
+  be made on its own evidence.
 - User documentation (`docs/context-memory.md`, `README.md`) must stay
   synchronized with every behavior change and must not claim improvements
   without qualification evidence; the feature stays disabled by default

@@ -39,6 +39,7 @@ function createHarness(options = {}) {
     config = SUPPORTED_CONFIG,
     // Deterministic fixture version; activation must not depend on it (#255).
     hostVersion = () => "0.84.2",
+    messageProjectionInterface = () => true,
     activeTools = ["read", "bash", "submit_memory", "read_memory_source"],
     displayRuntime = defaultDisplayRuntime,
   } = options;
@@ -65,6 +66,7 @@ function createHarness(options = {}) {
     configProvider: () => ({ contextMemory: config }),
     displayRuntimeProvider: () => displayRuntime,
     hostVersion,
+    messageProjectionInterface,
     reserveTokens: () => 16384,
   });
   async function emit(name, event = {}, ctx = fullSessionContext()) {
@@ -260,6 +262,19 @@ try {
   );
   assert.deepEqual(missingInterfaces.activeToolsRef(), ["read", "bash"],
     "an unsupported host keeps both tools inactive while preserving Pi's active tools");
+
+  const missingProjection = createHarness({ config: ENABLED_CONFIG, messageProjectionInterface: () => false });
+  await missingProjection.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    { ...fullSessionContext(), sessionManager: validMemoryBranch() },
+  );
+  assert.deepEqual(
+    missingProjection.registration.snapshot(),
+    { state: "unsupported", reason: "host-interfaces", hostVersion: "0.84.2" },
+    "a host without Pi's message projection helper fails closed before Context Memory activates",
+  );
+  assert.deepEqual(missingProjection.activeToolsRef(), ["read", "bash"]);
 
   // A disabled configuration stays disabled regardless of host support.
   const disabledUnsupported = createHarness({ config: SUPPORTED_CONFIG });

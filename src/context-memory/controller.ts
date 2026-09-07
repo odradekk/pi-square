@@ -1,4 +1,5 @@
 import type { AgentToolResult, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
+import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_COMPACTION_SETTINGS,
   buildSessionContext,
@@ -29,6 +30,7 @@ import {
 } from "./tools";
 import {
   CONTEXT_MEMORY_ADVISORY_TYPE,
+  CONTEXT_MEMORY_BLOCKS_TYPE,
   CONTEXT_MEMORY_MAX_VIEW_ROWS,
   type ContextMemoryBlockRow,
   type ContextMemorySnapshot,
@@ -83,7 +85,13 @@ import {
  * exceed ten percent of the window when the run opens near a low
  * configured due point; the existing native fallback owns a run that
  * exhausts it before settling. The compatibility gate
- * and owned active-tool synchronization stay.
+ * and owned active-tool synchronization stay. #297 adds the uniform
+ * provider-bound block projection: every provider request's carrying Memory
+ * summary message is re-projected as one ordered text content block per
+ * current block — one projection, no model or provider branch, no cache field
+ * or breakpoint — with the persisted summary, byte directory, takeover, and
+ * fallback contracts untouched, and any mismatch leaving the ordinary
+ * compaction summary message in place.
  */
 
 /** The only tool names this feature may add to or remove from the active list. */
@@ -204,6 +212,114 @@ function maintenanceExceedsWindow(
     estimate += estimateMessageTokens(message as Parameters<typeof estimateMessageTokens>[0]);
   }
   return estimate > contextWindow - Math.round(contextWindow / 10);
+}
+
+/**
+ * One candidate rendering the request's Memory summary message may carry:
+ * the exact composed summary plus the ordered block bodies it unpacks into.
+ */
+export interface MemoryBlocksCandidate {
+  readonly summary: string;
+  readonly bodies: readonly string[];
+}
+
+/**
+ * The uniform provider-bound Memory projection (#297): one ordered text
+ * content block per current Memory block, for every model and provider, with
+ * no provider branch and no cache field or breakpoint of any kind.
+ *
+ * The request's carrying `compactionSummary` message — the one whose summary
+ * byte-matches a candidate exactly — is replaced in place by one ephemeral
+ * custom message (`pi-square.context-memory/blocks`, non-display) whose text
+ * parts are, in order: the exact leading text Pi renders before the wrapper
+ * followed by the fixed wrapper, then one part per block carrying the fixed
+ * separator plus that block's body, then the exact trailing text Pi renders
+ * after the summary. The concatenated model-visible text is therefore
+ * byte-identical to Pi's own rendering of the original message — the framing
+ * literals are recovered through Pi's own `convertToLlm` rather than
+ * duplicated — and the per-block parts are byte-stable across an append:
+ * appending a block inserts one new part before the trailing part and leaves
+ * every earlier part untouched.
+ *
+ * Fail-safe by construction: a request carrying no compaction summary, more
+ * than one compaction summary, no candidate matching the carried summary, an
+ * invalid or ambiguous rendering, or a reconstruction whose concatenation
+ * does not equal Pi's own rendering returns `undefined` and the caller keeps
+ * the ordinary unmodified compaction summary message — native and opaque
+ * summaries are never touched.
+ */
+export function projectMemoryBlocksMessage(
+  messages: readonly unknown[],
+  candidates: readonly MemoryBlocksCandidate[],
+): unknown[] | undefined {
+  // Pi projects at most one compactionSummary message per request. Zero (no
+  // Memory in the request) or more than one (a foreign or duplicated summary
+  // beside ours) is an abnormal request shape, and the projection refuses
+  // instead of guessing which message to replace (#297 review finding 6).
+  const summaryIndex = messages.findIndex((message) => {
+    const record = message as { role?: unknown } | null;
+    return record?.role === "compactionSummary";
+  });
+  if (summaryIndex === -1) return undefined;
+  if (messages.findIndex((message, index) =>
+    index > summaryIndex && (message as { role?: unknown } | null)?.role === "compactionSummary") !== -1) {
+    return undefined;
+  }
+  const summary = (messages[summaryIndex] as { summary?: unknown }).summary;
+  const candidate = candidates.find((item) => item.summary === summary);
+  if (candidate === undefined) return undefined;
+  const projected = memoryBlocksParts(messages[summaryIndex], candidate);
+  if (projected === undefined) return undefined;
+  const next = [...messages];
+  next[summaryIndex] = projected;
+  return next;
+}
+
+/**
+ * Build the replacement blocks message for one carrying summary message.
+ * The framing literals are sliced from Pi's own rendering of that exact
+ * message, and the parts' concatenation is re-verified against it before the
+ * message is used, so no framing assumption is ever trusted blindly. The
+ * rendering must be exactly one message carrying exactly one text part —
+ * anything else is a drifted or unexpected host shape and refuses rather
+ * than reading a partial rendering (#297 review finding 6). Exported as the
+ * pure seam the ambiguity tests drive; production reaches it only through
+ * {@link projectMemoryBlocksMessage}.
+ */
+export function memoryBlocksParts(
+  message: unknown,
+  candidate: MemoryBlocksCandidate,
+): unknown | undefined {
+  const convertToLlm = PiCodingAgent.convertToLlm;
+  if (typeof convertToLlm !== "function") return undefined;
+  let rendered: readonly unknown[];
+  try {
+    rendered = convertToLlm([message as Parameters<typeof convertToLlm>[0][number]]);
+  } catch {
+    return undefined;
+  }
+  if (rendered.length !== 1) return undefined;
+  const first = rendered[0] as { content?: unknown } | null | undefined;
+  if (!first || !Array.isArray(first.content) || first.content.length !== 1) return undefined;
+  const textPart = first.content[0] as { type?: unknown; text?: unknown } | null | undefined;
+  if (!textPart || textPart.type !== "text" || typeof textPart.text !== "string") return undefined;
+  const wrapperStart = textPart.text.indexOf(MEMORY_SUMMARY_WRAPPER);
+  if (wrapperStart < 0) return undefined;
+  const summaryEnd = wrapperStart + candidate.summary.length;
+  if (textPart.text.slice(wrapperStart, summaryEnd) !== candidate.summary) return undefined;
+  const partTexts = [
+    textPart.text.slice(0, wrapperStart) + MEMORY_SUMMARY_WRAPPER,
+    ...candidate.bodies.map((body) => MEMORY_BLOCK_SEPARATOR + body),
+    textPart.text.slice(summaryEnd),
+  ];
+  if (partTexts.join("") !== textPart.text) return undefined;
+  return {
+    role: "custom",
+    customType: CONTEXT_MEMORY_BLOCKS_TYPE,
+    content: partTexts.map((part) => ({ type: "text", text: part })),
+    display: false,
+    timestamp: (message as { timestamp?: unknown }).timestamp,
+  };
 }
 
 /**
@@ -679,8 +795,8 @@ export class ContextMemoryController {
   }
 
   /**
-   * The ephemeral `context` transform (#215, #218, #220). It never throws.
-   * Three deterministic rules apply while the feature is enabled on a
+   * The ephemeral `context` transform (#215, #218, #220, #297). It never
+   * throws. Four deterministic rules apply while the feature is enabled on a
    * supported host:
    *
    * - `submit_memory` tool-call parts and their paired results leave every
@@ -697,10 +813,20 @@ export class ContextMemoryController {
    *   summary message keeps exactly the unchanged prefix while every
    *   selected block's complete original conversation is inserted once, in
    *   source order, ahead of the retained raw tail — selected summaries and
-   *   their sources never appear together (#220).
+   *   their sources never appear together (#220). Because this step mutates
+   *   the request, the carrying summary is validated unique before any
+   *   mutation: a duplicated or foreign compaction summary fails the whole
+   *   due-run projection and restores the unmodified original context.
+   * - On every provider request, the carrying Memory summary message is
+   *   re-projected as one ordered text content block per current block
+   *   (#297) — a uniform projection with no provider branch and no cache
+   *   field, applied to the full rendering and to the maintenance prefix
+   *   rendering alike. The step is fail-soft: any mismatch or invalid
+   *   current Memory leaves the ordinary unmodified compaction summary
+   *   message in place, and only the other rules above are affected.
    *
-   * On projection failure it returns the unmodified safe context, deactivates
-   * submission for the run, and clears due-run transient state.
+   * On due-run projection failure it returns the unmodified safe context,
+   * deactivates submission for the run, and clears due-run transient state.
    */
   transformContext(
     event: { readonly messages: readonly unknown[] },
@@ -711,11 +837,27 @@ export class ContextMemoryController {
     const original = event.messages;
     try {
       let messages = filterSubmitArtifacts(original);
+      let prefixBodies: readonly string[] | undefined;
       if (this.dueRun !== undefined && !this.dueRun.advisoryDelivered) {
         if (this.dueRun.operation === "rebuild") {
+          // The maintenance projection mutates the request (summary replaced,
+          // sources and advisory inserted), so the carrying summary is
+          // validated unique BEFORE any mutation: a duplicated or foreign
+          // compaction summary beside the carrying one must restore the
+          // unmodified original context through the outer catch rather than
+          // leave a half-projected request that exposes the full old summary
+          // and the rebuild sources together (#297 review).
+          const summaryCount = messages.reduce<number>(
+            (count, message) => count + ((message as { role?: unknown } | null)?.role === "compactionSummary" ? 1 : 0),
+            0,
+          );
+          if (summaryCount !== 1) {
+            throw new Error("the request does not carry exactly one compaction summary");
+          }
           const maintenance = projectMaintenanceContext(messages, this.dueRun.rebuild!);
           if (maintenance === undefined) throw new Error("the carrying Memory summary is not in the request");
           messages = maintenance;
+          prefixBodies = this.dueRun.rebuild!.prefix.map((block) => block.markdown);
         }
         let insertAfter = -1;
         for (let i = messages.length - 1; i >= 0; i--) {
@@ -734,6 +876,7 @@ export class ContextMemoryController {
         });
         this.dueRun.advisoryDelivered = true;
       }
+      messages = this.projectCurrentBlocks(messages, session, prefixBodies);
       return { messages };
     } catch {
       // Projection failure: deactivate submission for the run and leave the
@@ -748,6 +891,36 @@ export class ContextMemoryController {
   private advisoryText(): string {
     if (this.dueRun!.operation === "rebuild") return MAINTENANCE_RUN_ADVISORY_TEXT;
     return this.dueRun!.existingBlocks > 0 ? APPEND_RUN_ADVISORY_TEXT : DUE_RUN_ADVISORY_TEXT;
+  }
+
+  /**
+   * The uniform multi-block projection step of the transform (#297):
+   * derive current Memory live, and when the request carries exactly the
+   * composed rendering of its blocks — or, on a maintenance run's first
+   * request, of the frozen unchanged prefix — replace that summary message
+   * with one ordered text content block per block. Any other request shape
+   * (no Memory, opaque or native Memory, a foreign or mismatched summary)
+   * keeps the ordinary unmodified compaction summary message.
+   */
+  private projectCurrentBlocks(
+    messages: readonly unknown[],
+    session: MemorySessionReader,
+    prefixBodies: readonly string[] | undefined,
+  ): unknown[] {
+    let current: CurrentMemory;
+    try {
+      current = deriveCurrentMemory(session);
+    } catch {
+      return [...messages];
+    }
+    if (current.kind !== "valid") return [...messages];
+    const markdowns = current.blocks.map((block) => block.markdown);
+    const candidates: MemoryBlocksCandidate[] = [{ summary: composeMemorySummary(markdowns), bodies: markdowns }];
+    if (prefixBodies !== undefined) {
+      candidates.push({ summary: composeMemorySummary(prefixBodies), bodies: prefixBodies });
+    }
+    const projected = projectMemoryBlocksMessage(messages, candidates);
+    return projected ?? [...messages];
   }
 
   /**

@@ -1,11 +1,19 @@
 /**
  * Verdict rules for the provider-cache experiment (#225, standard re-pinned by
- * #260, directions and liveness re-modeled by #268; authority #215; measured
- * evidence #251).
+ * #260, directions and liveness re-modeled by #268, append case and labels
+ * re-pinned by #297; authority #215; measured evidence #251).
  *
- * The experiment measures non-regression, not superiority: the release verdict
- * is forbidden from making any provider-cache claim (#227), so the standard's
- * job is only to rule out a loss.
+ * The experiment measures non-regression, not superiority: no release verdict
+ * may make any provider-cache claim (#227), and the standard's job is only to
+ * bound what the run supports.
+ *
+ * The measured case (#297) is the cross-compaction append: the prime carries
+ * Memory blocks 1–2, the probe carries those blocks byte-identical plus one
+ * appended block 3. The `multiblock` arm renders the carried blocks through
+ * the uniform projection — one ordered text content block per block — and the
+ * `single` arm renders today's single-summary-block baseline; the `nonce`
+ * control diverges inside its per-request isolation namespace so that any reuse the
+ * placement could serve in the carried region is removed by construction.
  *
  * Evidence quality, unchanged from #225:
  *
@@ -18,33 +26,29 @@
  *   inconclusive and release-blocking").
  * - A run is conclusive only when all five groups are measurable.
  *
- * The standard (#260, from the maintainer decision recorded on #251):
+ * The standard (#297):
  *
  * - `hitRate(arm)` is pinned as the share of total input served from cache,
  *   aggregated per arm across the groups' probe requests:
  *   `Σ cache_read / Σ (cache_read + cache_creation + uncached_input)`.
- *   Sum first, then divide — never a mean of per-group ratios. The arms'
- *   denominators differ because Context Memory compresses; the ratio answers
- *   "what share of what was sent came from cache" and must not be reused as a
- *   cost metric.
- * - Non-regression band: `hitRate(stable)` must be at least
- *   `hitRate(native) − 5 percentage points`. Pi native is the baseline, and
- *   the band claims no benefit — it only rules out a loss.
- * - Liveness: the `nonce` control must sit measurably below the arm under
- *   test. The measured case is the between-compaction request (#268): the
- *   stable arm's carried summary is unchanged between its pair's requests
- *   while its tail grows, so its probe reads through the previous request's
- *   tail breakpoint; the nonce arm's summary diverges inside the earliest
- *   block, so its probe falls back to the tools boundary. A run where the
- *   nonce rate does not sit at least the margin below the stable rate is a
- *   run whose cache reads do not track content — the #251 signature, where
- *   every probe read the same constant regardless of arm. Such a run is
- *   inconclusive: the measurement is dead, which is neither a pass (nothing
- *   regressed) nor a miss. The control is measured against `stable`, not
- *   against the native baseline: in the between-compaction case the native
- *   arm's summary is unchanged too, so its read structure matches the stable
- *   arm's and a nonce-versus-native rule could not separate in any honest
- *   measurement either.
+ *   Sum first, then divide — never a mean of per-group ratios.
+ * - Non-regression band: `hitRate(multiblock)` must be at least
+ *   `hitRate(single) − 5 percentage points`. The single-summary-block
+ *   rendering is the baseline, and the band claims no benefit — it only rules
+ *   out a loss.
+ * - Improvement: `hitRate(multiblock)` at least `hitRate(single) + 5pp` is
+ *   an improvement only when the liveness control is alive; with a dead
+ *   control an apparent gain cannot be attributed to content, so it stays
+ *   inconclusive.
+ * - Liveness: the `nonce` control arm carries a per-request isolation
+ *   namespace, so its probe cannot read even its own prime's system
+ *   breakpoint — a divergence in a region the placement demonstrably serves.
+ *   The control must sit measurably below the `multiblock` arm; if it does
+ *   not, the measurement cannot distinguish content in any region it can
+ *   serve and the final conclusion is `inconclusive`, whatever the band says
+ *   (#297 review finding 3). The carried Memory region itself is structurally
+ *   unservable under the pinned placement (#269) — the control validates the
+ *   measurement, not that region, and the report states this.
  * - A run in which no arm records any cache activity at all is inconclusive:
  *   a rate computed from nothing is not a rate.
  *
@@ -54,22 +58,18 @@
  * (locally measured time to first token). `cost` is computed from those token
  * counts through the adapter's declared price table, so it moves in lockstep
  * with them and is reported as a derived figure, never counted as a
- * direction; counting it beside `writeSpend` made the two-direction threshold
- * a one-direction threshold. `DIRECTION_NOTES` states, for each counted
- * direction, what it measures and why it is independent of the others; the
- * report restates them verbatim.
- *
- * The Pi-native comparison and the repeated multi-direction regression rule
- * are otherwise unchanged from #225 and evaluated independently; firing the
- * regression rule still overrides the final label while the cache conclusion
- * stays visible beside it. No statistical significance and no
- * provider-neutral superiority is claimed anywhere.
+ * direction. `DIRECTION_NOTES` states, for each counted direction, what it
+ * measures and why it is independent of the others; the report restates them
+ * verbatim. The rule is evaluated against the single-summary baseline and
+ * evaluated independently; firing it overrides the final label while the
+ * cache conclusion stays visible beside it. No statistical significance and
+ * no provider-neutral superiority is claimed anywhere.
  */
 
 export const REGRESSION_GROUP_THRESHOLD = 4;
 export const REGRESSION_DIRECTION_THRESHOLD = 2;
 /** The counted regression directions: only directions that can move independently. */
-export const NATIVE_DIRECTIONS = ["inputTokens", "writeSpend", "ttft"];
+export const BASELINE_DIRECTIONS = ["inputTokens", "writeSpend", "ttft"];
 /** Figures computed from the token counts through the price table; never counted as directions. */
 export const DERIVED_FIGURES = ["cost"];
 
@@ -84,15 +84,39 @@ export const DIRECTION_NOTES = Object.freeze({
 export const COST_DERIVATION_NOTE =
   "cost is computed from the token counts through the adapter's declared price table, so it cannot move independently of them: it is reported as a derived figure and never counted as a regression direction";
 
-
 /** The three arms the standard is defined over; pinned by the fixture. */
-const STANDARD_ARMS = ["stable", "nonce", "native"];
+const STANDARD_ARMS = ["multiblock", "single", "nonce"];
 
-/** Non-regression band: stable may sit at most this far below native. */
+/** Non-regression band: multiblock may sit at most this far below single. */
 export const NON_REGRESSION_BAND_PP = 5;
 
-/** Liveness margin: the nonce control must sit at least this far below stable. */
+/** Improvement margin: multiblock must exceed single by at least this much. */
+export const IMPROVEMENT_MARGIN_PP = 5;
+
+
+/**
+ * The pinned per-direction noise floors (#297): a direction counts as `worse`
+ * or `better` only when the excess clears its floor, and as `equal` otherwise.
+ * The multiblock projection structurally carries more framing than the single
+ * block — per-part framing on the wire, per-segment framing in the canonical
+ * accounting — a delta the fixture tests measure and bound below the token
+ * floor, and provider token counts carry their own granularity; timing noise
+ * dwarfs small token deltas. Any real regression moves a counted direction by
+ * orders of magnitude more than these floors (a lost cache read rewrites
+ * thousands of tokens), so the floors absorb structural overhead and noise
+ * without absorbing regressions. Restated verbatim in the report.
+ */
+export const DIRECTION_NOISE_FLOORS = Object.freeze({
+  inputTokens: { absoluteTokens: 128, relativePercent: 1 },
+  writeSpend: { absoluteTokens: 128, relativePercent: 1 },
+  ttft: { absoluteMs: 100, relativePercent: 10 },
+});
+/** Liveness margin: the nonce control must sit at least this far below multiblock. */
 export const LIVENESS_MARGIN_PP = 5;
+
+/** The dead-control caveat, appended verbatim whenever the liveness control is dead. */
+export const DEAD_CONTROL_NOTE =
+  "liveness control dead: the measurement cannot distinguish content in any region it can serve, so no arm-vs-baseline conclusion is supportable";
 
 /** The pinned hit-rate definition, restated in the report verbatim. */
 export const HIT_RATE_DEFINITION =
@@ -102,7 +126,7 @@ export const HIT_RATE_DEFINITION =
 export const HIT_RATE_AGGREGATION =
   "per arm over the measurable groups' probe requests (all five in a conclusive run); sums first, then one division — never a mean of per-group ratios";
 
-/** Why the ratio must not be reused as a cost metric; restated verbatim. */
+/** Why the ratio must not be reused as a cost metric; restated verbatim in the report. */
 export const DENOMINATOR_NOTE =
   "the arms' denominators differ because Context Memory compresses; the ratio answers what share of what was sent came from cache and must not be reused as a cost metric";
 
@@ -120,10 +144,11 @@ export const FORBIDDEN_CLAIM_PHRASES = [
 
 /**
  * TTL rule: every arm's probe must follow its prime within the pinned TTL.
- * Equality counts as within — the entry is still live at send time.
+ * Equality counts as within — the entry is still live at send time. A
+ * negative interval is broken timing, never fresh evidence.
  */
 export function withinTtl(primeToProbeMs, ttlMs) {
-  return Object.values(primeToProbeMs).every((elapsed) => elapsed <= ttlMs);
+  return Object.values(primeToProbeMs).every((elapsed) => elapsed >= 0 && elapsed <= ttlMs);
 }
 
 /**
@@ -132,21 +157,35 @@ export function withinTtl(primeToProbeMs, ttlMs) {
  * values either way), then report presence, then attribution.
  */
 export function classifyGroup(group) {
+  if (Object.values(group.timing.primeToProbeMs).some((elapsed) => elapsed < 0)) {
+    return {
+      quality: "timing-invalid",
+      qualityReasons: ["a probe preceded its prime on the monotonic clock"],
+    };
+  }
   if (!group.timing.withinTtl) {
     return {
       quality: "ttl-stale",
       qualityReasons: [`a probe followed its prime after more than the pinned ${group.timing.ttlMs}ms TTL`],
     };
   }
-  const causal = [group.stable.prime, group.stable.probe, group.nonce.prime, group.nonce.probe];
-  const absent = causal.filter((row) => !row.cacheReported).map((row) => `${row.arm}.${row.role}`);
+  // Every request of every arm is causal evidence (#297 review finding 2):
+  // the band reads multiblock and single, the liveness control reads
+  // multiblock and nonce, so an absent report anywhere — including the
+  // baseline's prime or probe — must make the group missing-report, never a
+  // measurable group whose comparison could conclude from partial data.
+  const allRequests = [
+    group.multiblock.prime, group.multiblock.probe,
+    group.single.prime, group.single.probe,
+    group.nonce.prime, group.nonce.probe,
+  ];
+  const absent = allRequests.filter((row) => !row.cacheReported).map((row) => `${row.arm}.${row.role}`);
   if (absent.length > 0) {
     return {
       quality: "missing-report",
       qualityReasons: [`provider reported no cache value for ${absent.join(", ")}`],
     };
   }
-  const allRequests = [...causal, group.native.prime, group.native.probe];
   const cacheEngaged = allRequests.some((row) => row.cacheRead > 0 || row.cacheWrite > 0);
   if (!cacheEngaged) {
     return {
@@ -165,25 +204,36 @@ function armWriteTokens(arm) {
   return arm.prime.cacheWrite + arm.probe.cacheWrite;
 }
 
-function directionOf(stableValue, nativeValue) {
-  if (stableValue > nativeValue) return "worse";
-  if (stableValue < nativeValue) return "better";
+/** The floor a direction's excess must clear to count; `equal` inside it (#297). */
+function noiseFloor(direction, baselineValue) {
+  const floor = DIRECTION_NOISE_FLOORS[direction];
+  if (!floor) return 0;
+  const absolute = floor.absoluteTokens ?? floor.absoluteMs ?? 0;
+  const relative = baselineValue > 0 ? (baselineValue * floor.relativePercent) / 100 : 0;
+  return Math.max(absolute, relative);
+}
+
+function directionOf(testValue, baselineValue, direction) {
+  const excess = testValue - baselineValue;
+  const floor = noiseFloor(direction, baselineValue);
+  if (excess > floor) return "worse";
+  if (excess < -floor) return "better";
   return "equal";
 }
 
 /**
- * The Pi-native comparison for one group: which of the counted independent
- * directions the stable arm lost, plus the derived cost figure reported
- * beside them. Evaluated only when both arms' requests reported cache
- * values; an unmeasured TTFT stays `unreported` rather than counting as any
- * direction.
+ * The baseline comparison for one group: which of the counted independent
+ * directions the multiblock arm lost against the single-summary baseline,
+ * plus the derived cost figure reported beside them. Evaluated only when both
+ * arms' requests reported cache values; an unmeasured TTFT stays `unreported`
+ * rather than counting as any direction.
  */
-export function compareNative(group) {
-  const rows = [group.stable.prime, group.stable.probe, group.native.prime, group.native.probe];
+export function compareBaseline(group) {
+  const rows = [group.multiblock.prime, group.multiblock.probe, group.single.prime, group.single.probe];
   if (rows.some((row) => !row.cacheReported)) {
     return {
       evaluated: false,
-      missing: ["cache report absent on the stable or native arm"],
+      missing: ["cache report absent on the multiblock or single arm"],
       directions: {},
       derived: {},
       worseDirections: [],
@@ -191,20 +241,20 @@ export function compareNative(group) {
     };
   }
   const directions = {
-    inputTokens: directionOf(group.stable.probe.inputTokens, group.native.probe.inputTokens),
-    writeSpend: directionOf(armWriteTokens(group.stable), armWriteTokens(group.native)),
+    inputTokens: directionOf(group.multiblock.probe.inputTokens, group.single.probe.inputTokens, "inputTokens"),
+    writeSpend: directionOf(armWriteTokens(group.multiblock), armWriteTokens(group.single), "writeSpend"),
   };
-  if (group.stable.probe.ttftMs == null || group.native.probe.ttftMs == null) {
+  if (group.multiblock.probe.ttftMs == null || group.single.probe.ttftMs == null) {
     directions.ttft = "unreported";
   } else {
-    directions.ttft = directionOf(group.stable.probe.ttftMs, group.native.probe.ttftMs);
+    directions.ttft = directionOf(group.multiblock.probe.ttftMs, group.single.probe.ttftMs, "ttft");
   }
-  const worseDirections = NATIVE_DIRECTIONS.filter((direction) => directions[direction] === "worse");
+  const worseDirections = BASELINE_DIRECTIONS.filter((direction) => directions[direction] === "worse");
   return {
     evaluated: true,
     missing: [],
     directions,
-    derived: { cost: directionOf(armCost(group.stable), armCost(group.native)) },
+    derived: { cost: directionOf(armCost(group.multiblock), armCost(group.single)) },
     worseDirections,
     multiDirectionRegression: worseDirections.length >= REGRESSION_DIRECTION_THRESHOLD,
   };
@@ -219,21 +269,21 @@ export function median(values) {
 }
 
 /**
- * Native comparison summary across the run: per-direction median deltas
- * (stable minus native) over the counted directions, the derived cost figure,
- * and per-arm medians over the evaluated groups. TTFT additionally carries
- * its dispersion — the span of the per-group deltas (#268 defect 3): a
+ * Baseline comparison summary across the run: per-direction median deltas
+ * (multiblock minus single) over the counted directions, the derived cost
+ * figure, and per-arm medians over the evaluated groups. TTFT additionally
+ * carries its dispersion — the span of the per-group deltas (#268 defect 3): a
  * median delta smaller than the spread cannot read as a finding, and the
  * report states both so no reader has to infer it.
  */
-export function nativeMedians(classifiedGroups) {
-  const evaluated = classifiedGroups.filter((group) => group.nativeComparison.evaluated);
+export function baselineMedians(classifiedGroups) {
+  const evaluated = classifiedGroups.filter((group) => group.baselineComparison.evaluated);
   const deltasOf = (direction) => evaluated
     .map((group) => {
-      if (direction === "inputTokens") return group.stable.probe.inputTokens - group.native.probe.inputTokens;
-      if (direction === "writeSpend") return armWriteTokens(group.stable) - armWriteTokens(group.native);
-      if (group.stable.probe.ttftMs == null || group.native.probe.ttftMs == null) return null;
-      return group.stable.probe.ttftMs - group.native.probe.ttftMs;
+      if (direction === "inputTokens") return group.multiblock.probe.inputTokens - group.single.probe.inputTokens;
+      if (direction === "writeSpend") return armWriteTokens(group.multiblock) - armWriteTokens(group.single);
+      if (group.multiblock.probe.ttftMs == null || group.single.probe.ttftMs == null) return null;
+      return group.multiblock.probe.ttftMs - group.single.probe.ttftMs;
     })
     .filter((delta) => delta !== null);
   const summaryOf = (deltas, directionAt) => ({
@@ -244,9 +294,9 @@ export function nativeMedians(classifiedGroups) {
     unreported: classifiedGroups.length - deltas.length,
   });
   const perDirection = {};
-  for (const direction of NATIVE_DIRECTIONS) {
+  for (const direction of BASELINE_DIRECTIONS) {
     const deltas = deltasOf(direction);
-    perDirection[direction] = summaryOf(deltas, (group) => group.nativeComparison.directions[direction]);
+    perDirection[direction] = summaryOf(deltas, (group) => group.baselineComparison.directions[direction]);
     if (direction === "ttft") {
       // Dispersion alongside the median (#268): the span the observed deltas cover.
       perDirection[direction].spreadMs = deltas.length >= 2
@@ -255,33 +305,33 @@ export function nativeMedians(classifiedGroups) {
     }
   }
   const costDeltas = evaluated
-    .map((group) => armCost(group.stable) - armCost(group.native))
+    .map((group) => armCost(group.multiblock) - armCost(group.single))
     .filter((delta) => delta !== null);
   return {
     groupsEvaluated: evaluated.length,
     perDirection,
     derived: {
       cost: {
-        ...summaryOf(costDeltas, (group) => group.nativeComparison.derived?.cost ?? "unreported"),
+        ...summaryOf(costDeltas, (group) => group.baselineComparison.derived?.cost ?? "unreported"),
         note: COST_DERIVATION_NOTE,
       },
     },
     armMedians: {
       probeInputTokens: {
-        stable: median(evaluated.map((group) => group.stable.probe.inputTokens)),
-        native: median(evaluated.map((group) => group.native.probe.inputTokens)),
+        multiblock: median(evaluated.map((group) => group.multiblock.probe.inputTokens)),
+        single: median(evaluated.map((group) => group.single.probe.inputTokens)),
       },
       writeTokens: {
-        stable: median(evaluated.map((group) => armWriteTokens(group.stable))),
-        native: median(evaluated.map((group) => armWriteTokens(group.native))),
+        multiblock: median(evaluated.map((group) => armWriteTokens(group.multiblock))),
+        single: median(evaluated.map((group) => armWriteTokens(group.single))),
       },
       cost: {
-        stable: median(evaluated.map((group) => armCost(group.stable))),
-        native: median(evaluated.map((group) => armCost(group.native))),
+        multiblock: median(evaluated.map((group) => armCost(group.multiblock))),
+        single: median(evaluated.map((group) => armCost(group.single))),
       },
       probeTtftMs: {
-        stable: median(evaluated.map((group) => group.stable.probe.ttftMs).filter((value) => value !== null)),
-        native: median(evaluated.map((group) => group.native.probe.ttftMs).filter((value) => value !== null)),
+        multiblock: median(evaluated.map((group) => group.multiblock.probe.ttftMs).filter((value) => value !== null)),
+        single: median(evaluated.map((group) => group.single.probe.ttftMs).filter((value) => value !== null)),
       },
     },
   };
@@ -314,8 +364,8 @@ export function armHitRate(groups, arm) {
 
 /**
  * Exact `rate(a) − rate(b) ≥ percentagePoints / 100` over the integer sums:
- * cross-multiplied so the band and liveness edges never depend on floating
- * point. `percentagePoints` may be negative.
+ * cross-multiplied so the band, improvement, and liveness edges never depend
+ * on floating point. `percentagePoints` may be negative.
  */
 export function rateDifferenceAtLeast(a, b, percentagePoints) {
   const left = 100 * (a.cacheRead * b.denominator - b.cacheRead * a.denominator);
@@ -329,18 +379,23 @@ function pct(rate) {
 
 /**
  * The run verdict. Integrity failure, any non-measurable group, a run with no
- * cache activity anywhere, or a dead liveness control makes the conclusion
- * inconclusive; only a fully observed, alive run can conclude positive
- * (non-regression band met) or negative (stable sits more than the band below
- * the native baseline). The regression rule is evaluated independently over
- * the groups whose native comparison was complete, and firing it overrides
- * the final label while the cache conclusion stays visible beside it.
+ * cache activity anywhere, a zero denominator, or a dead liveness control
+ * makes the conclusion inconclusive — a dead control means the measurement
+ * cannot distinguish content, so no arm-vs-baseline label is supportable,
+ * however well the band holds (#297 review finding 3). With a live control, a
+ * met band concludes `neutral`, an exceeded improvement margin concludes
+ * `improved`, and a failed band concludes `regressed`. The regression rule is
+ * evaluated independently over the groups whose baseline comparison was
+ * complete AND measurable — stale, unreported, or ambiguous groups never
+ * count toward it — and it never fires on a failed integrity run; firing it
+ * overrides the final label with `regressed`, the same four-value vocabulary
+ * the issue pins, while the cache conclusion stays visible beside it.
  */
 export function evaluateRun({ groups, integrity }) {
   const classified = groups.map((group) => ({
     ...group,
     ...classifyGroup(group),
-    nativeComparison: compareNative(group),
+    baselineComparison: compareBaseline(group),
   }));
   const measurable = classified.filter((group) => group.quality === "measurable");
 
@@ -362,10 +417,11 @@ export function evaluateRun({ groups, integrity }) {
     STANDARD_ARMS.some((arm) =>
       group[arm].prime.cacheRead > 0 || group[arm].prime.cacheWrite > 0
       || group[arm].probe.cacheRead > 0 || group[arm].probe.cacheWrite > 0));
-  const bandSatisfied = rateExists ? rateDifferenceAtLeast(rates.stable, rates.native, -NON_REGRESSION_BAND_PP) : null;
-  const livenessSatisfied = rateExists ? rateDifferenceAtLeast(rates.stable, rates.nonce, LIVENESS_MARGIN_PP) : null;
-  const minimumAcceptableStableRate = rateExists
-    ? Math.round(Math.max(0, rates.native.rate - NON_REGRESSION_BAND_PP / 100) * 1e4) / 1e4
+  const bandSatisfied = rateExists ? rateDifferenceAtLeast(rates.multiblock, rates.single, -NON_REGRESSION_BAND_PP) : null;
+  const improvementObserved = rateExists ? rateDifferenceAtLeast(rates.multiblock, rates.single, IMPROVEMENT_MARGIN_PP) : null;
+  const livenessSatisfied = rateExists ? rateDifferenceAtLeast(rates.multiblock, rates.nonce, LIVENESS_MARGIN_PP) : null;
+  const minimumAcceptableRate = rateExists
+    ? Math.round(Math.max(0, rates.single.rate - NON_REGRESSION_BAND_PP / 100) * 1e4) / 1e4
     : null;
 
   let cacheConclusion;
@@ -380,27 +436,45 @@ export function evaluateRun({ groups, integrity }) {
   } else if (!livenessSatisfied) {
     cacheConclusion = "inconclusive";
     reasons.push(
-      `liveness control dead: nonce ${pct(rates.nonce.rate)} does not sit at least ${LIVENESS_MARGIN_PP}pp below stable ${pct(rates.stable.rate)}; the measurement cannot distinguish content`,
+      `liveness control dead: nonce ${pct(rates.nonce.rate)} does not sit at least ${LIVENESS_MARGIN_PP}pp below multiblock ${pct(rates.multiblock.rate)}`,
+      DEAD_CONTROL_NOTE,
     );
-  } else if (!bandSatisfied) {
-    cacheConclusion = "negative";
+  } else if (improvementObserved) {
+    cacheConclusion = "improved";
     reasons.push(
-      `non-regression band failed: stable ${pct(rates.stable.rate)} sits more than ${NON_REGRESSION_BAND_PP}pp below the native baseline ${pct(rates.native.rate)}`,
+      `improvement observed: multiblock ${pct(rates.multiblock.rate)} exceeds the single baseline ${pct(rates.single.rate)} by at least ${IMPROVEMENT_MARGIN_PP}pp`,
+      `liveness control alive: nonce ${pct(rates.nonce.rate)} sits at least ${LIVENESS_MARGIN_PP}pp below multiblock ${pct(rates.multiblock.rate)}`,
+    );
+  } else if (bandSatisfied) {
+    cacheConclusion = "neutral";
+    reasons.push(
+      `non-regression band met: multiblock ${pct(rates.multiblock.rate)} is at least the single baseline ${pct(rates.single.rate)} minus ${NON_REGRESSION_BAND_PP}pp (minimum ${pct(minimumAcceptableRate)})`,
+      `liveness control alive: nonce ${pct(rates.nonce.rate)} sits at least ${LIVENESS_MARGIN_PP}pp below multiblock ${pct(rates.multiblock.rate)}`,
     );
   } else {
-    cacheConclusion = "positive";
+    cacheConclusion = "regressed";
     reasons.push(
-      `non-regression band met: stable ${pct(rates.stable.rate)} is at least the native baseline ${pct(rates.native.rate)} minus ${NON_REGRESSION_BAND_PP}pp (minimum ${pct(minimumAcceptableStableRate)})`,
-      `liveness control alive: nonce ${pct(rates.nonce.rate)} sits at least ${LIVENESS_MARGIN_PP}pp below stable ${pct(rates.stable.rate)}`,
+      `non-regression band failed: multiblock ${pct(rates.multiblock.rate)} sits more than ${NON_REGRESSION_BAND_PP}pp below the single baseline ${pct(rates.single.rate)}`,
     );
   }
 
-  const evaluatedNative = classified.filter((group) => group.nativeComparison.evaluated);
-  const groupsRegressed = evaluatedNative.filter((group) => group.nativeComparison.multiDirectionRegression).length;
-  const fired = groupsRegressed >= REGRESSION_GROUP_THRESHOLD;
+  const evaluatedBaseline = classified.filter(
+    (group) => group.quality === "measurable" && group.baselineComparison.evaluated,
+  );
+  const groupsRegressed = evaluatedBaseline.filter((group) => group.baselineComparison.multiDirectionRegression).length;
+  // #297 review round 3: the override needs a working measurement. A dead
+  // liveness control voids every directional claim about the arms — the
+  // observed regressions stay visible, but they cannot label the run
+  // `regressed` while the measurement cannot even distinguish content.
+  const fired = Boolean(integrity.ok && livenessSatisfied && groupsRegressed >= REGRESSION_GROUP_THRESHOLD);
+  if (groupsRegressed >= REGRESSION_GROUP_THRESHOLD && integrity.ok && !livenessSatisfied) {
+    reasons.push(
+      `baseline regression observed in ${groupsRegressed} groups, but the dead liveness control voids any directional conclusion`,
+    );
+  }
   if (fired) {
     reasons.push(
-      `native regression rule fired: ${groupsRegressed} of ${classified.length} groups regressed in at least ${REGRESSION_DIRECTION_THRESHOLD} independent directions versus Pi native`,
+      `baseline regression rule fired: ${groupsRegressed} of ${classified.length} groups regressed in at least ${REGRESSION_DIRECTION_THRESHOLD} independent directions versus the single-summary baseline`,
     );
   }
 
@@ -410,29 +484,31 @@ export function evaluateRun({ groups, integrity }) {
       hitRateDefinition: HIT_RATE_DEFINITION,
       aggregation: HIT_RATE_AGGREGATION,
       denominatorNote: DENOMINATOR_NOTE,
-      band: { baselineArm: "native", armUnderTest: "stable", belowBaselinePercentagePoints: NON_REGRESSION_BAND_PP },
-      liveness: { controlArm: "nonce", measuredAgainst: "stable", belowMarginPercentagePoints: LIVENESS_MARGIN_PP },
+      band: { baselineArm: "single", armUnderTest: "multiblock", belowBaselinePercentagePoints: NON_REGRESSION_BAND_PP },
+      improvement: { aboveBaselinePercentagePoints: IMPROVEMENT_MARGIN_PP },
+      liveness: { controlArm: "nonce", measuredAgainst: "multiblock", belowMarginPercentagePoints: LIVENESS_MARGIN_PP },
       groupsAggregated: measurable.length,
       cacheActivityObserved,
       rates,
-      minimumAcceptableStableRate,
+      minimumAcceptableRate,
       bandSatisfied,
+      improvementObserved,
       livenessSatisfied,
     },
     regression: {
-      rule: `>=${REGRESSION_GROUP_THRESHOLD} of ${classified.length || 5} groups with >=${REGRESSION_DIRECTION_THRESHOLD} worse independent directions versus Pi native`,
+      rule: `>=${REGRESSION_GROUP_THRESHOLD} of ${classified.length || 5} groups with >=${REGRESSION_DIRECTION_THRESHOLD} worse independent directions versus the single-summary baseline`,
       directions: {
-        counted: NATIVE_DIRECTIONS,
+        counted: BASELINE_DIRECTIONS,
         notes: DIRECTION_NOTES,
         derivedFigures: DERIVED_FIGURES,
         derivedNote: COST_DERIVATION_NOTE,
       },
-      groupsEvaluated: evaluatedNative.length,
+      groupsEvaluated: evaluatedBaseline.length,
       groupsRegressed,
       fired,
     },
     cacheConclusion,
-    conclusion: fired ? "regression" : cacheConclusion,
+    conclusion: fired ? "regressed" : cacheConclusion,
     reasons: reasons.slice(0, 16),
   };
 }

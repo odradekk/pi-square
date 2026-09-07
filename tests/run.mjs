@@ -59,6 +59,7 @@ const suites = [
   "display/subagent-transcript.test.mjs",
   "display/subagent-manager-display.test.mjs",
   "config.test.mjs",
+  "context-memory/blocks-projection.test.mjs",
   "context-memory/config-guide.test.mjs",
   "context-memory/controller.test.mjs",
   "context-memory/format.test.mjs",

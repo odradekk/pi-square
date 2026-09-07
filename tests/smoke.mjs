@@ -14,7 +14,7 @@ import {
 import jiti from "jiti";
 
 const smokeLoad = jiti(import.meta.url, { moduleCache: false });
-const { MEMORY_FORMAT_TAG, composeMemorySummary } = await smokeLoad("../src/context-memory/format.ts");
+const { MEMORY_FORMAT_TAG, MEMORY_SUMMARY_WRAPPER, composeMemorySummary } = await smokeLoad("../src/context-memory/format.ts");
 
 // The /context command handler reads ctx.ui.theme; initialize the theme
 // registry the way an interactive session would.
@@ -528,6 +528,23 @@ try {
   assert.equal(secondTransformed.at(-2)?.content, "smoke: ship the second Memory block",
     "the advisory sits directly after the current user message");
 
+
+  // #297: with valid Memory on the branch, the request's compaction summary
+  // message is re-projected as one ordered text block per current block.
+  const secondBlocksMessage = secondTransformed.find(
+    (message) => message?.customType === "pi-square.context-memory/blocks",
+  );
+  assert.ok(secondBlocksMessage, "the carrying Memory summary is re-projected as the blocks message");
+  assert.equal(secondBlocksMessage.display, false);
+  const secondBlockParts = secondBlocksMessage.content.map((part) => part.text);
+  assert.equal(secondBlockParts.length, 3,
+    "one committed block means one block part plus the two framing parts");
+  assert.equal(secondBlockParts[1], `\n---\n\n${smokeBlock}`,
+    "the committed block is exactly one distinct text block, byte-exact");
+  assert.equal(secondBlockParts[0].slice(-MEMORY_SUMMARY_WRAPPER.length), MEMORY_SUMMARY_WRAPPER,
+    "the leading part carries the fixed wrapper");
+  assert.ok(!JSON.stringify(secondBlocksMessage).includes("cache_control"),
+    "the projection adds no provider cache field or breakpoint");
   const smokeSecondBlock = "# Smoke second block\n\n- the second-round exchange covered later filler work";
   smokeSession.appendMessage({
     role: "assistant",
@@ -670,11 +687,14 @@ try {
   assert.equal(thirdProjected[0].summary, composeMemorySummary([smokeBlock, smokeSecondBlock]));
   const thirdTransformed = await runner.emitContext(thirdProjected);
   assert.ok(Array.isArray(thirdTransformed), "the maintenance run transforms Pi's real projected request");
-  assert.equal(
-    thirdTransformed[0].summary,
-    composeMemorySummary([smokeBlock]),
-    "the summary message keeps exactly the unchanged first block",
-  );
+  // #297: the unchanged prefix rendering is the blocks message — one part
+  // per kept block plus the framing parts.
+  assert.equal(thirdTransformed[0].customType, "pi-square.context-memory/blocks");
+  const thirdBlockParts = thirdTransformed[0].content.map((part) => part.text);
+  assert.equal(thirdBlockParts.length, 3,
+    "the maintenance projection carries the single kept block plus the frames");
+  assert.equal(thirdBlockParts[1], `\n---\n\n${smokeBlock}`,
+    "the summary message keeps exactly the unchanged first block, one block per part");
   assert.equal(thirdTransformed[1].content, "smoke: ship the first Memory block",
     "the inserted sources begin at the selected block's first original entry (the prior run's retained request)");
   const thirdSerialized = JSON.stringify(thirdTransformed);

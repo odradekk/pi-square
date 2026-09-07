@@ -1,17 +1,19 @@
 import { DEFAULT_COMPACTION_SETTINGS, SettingsManager, VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
+import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 
 /**
  * Capability-detection host gate for Context Memory (odradekk/pi-square#215, #216, #255).
  *
  * Activation is decided by interface presence alone: a Pi host that exposes
- * the required public session, compaction, context, tool, and active-tool
- * interfaces activates the feature on any version, because every check
- * consumes an interface the host itself provides. A host missing any
- * interface is unsupported and leaves Pi native compaction and the active
- * tool set unchanged. There is deliberately no minimum version floor and no
- * pinned equality test: hosts older than the interfaces fail the interface
- * check on their own, and interface semantics are absorbed by the runtime
- * validation and native-fallback paths rather than by a version string.
+ * the required public session, compaction, context, tool, active-tool, and
+ * message-projection interfaces activates the feature on any version,
+ * because every check consumes an interface the host itself provides. A host
+ * missing any interface is unsupported and leaves Pi native compaction and
+ * the active tool set unchanged. There is deliberately no minimum version
+ * floor and no pinned equality test: hosts older than the interfaces fail the
+ * interface check on their own, and interface semantics are absorbed by the
+ * runtime validation and native-fallback paths rather than by a version
+ * string.
  */
 
 export type HostSupport =
@@ -64,12 +66,20 @@ export function contextInterfacesPresent(ctx: {
     && typeof ctx.hasPendingMessages === "function";
 }
 
+/** The public message projection helper required by the Memory block projection. */
+export function messageProjectionInterfacePresent(): boolean {
+  return typeof PiCodingAgent.convertToLlm === "function";
+}
+
 /** Interface presence alone decides activation; the host version never does. */
 export function evaluateHostSupport(
   apiPresent: boolean,
   contextPresent: boolean,
+  messageProjectionPresent: boolean,
 ): HostSupport {
-  if (!apiPresent || !contextPresent) return { supported: false, reason: "host-interfaces" };
+  if (!apiPresent || !contextPresent || !messageProjectionPresent) {
+    return { supported: false, reason: "host-interfaces" };
+  }
   return { supported: true };
 }
 

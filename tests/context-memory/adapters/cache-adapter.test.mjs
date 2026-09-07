@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SYSTEM_PROMPT, TOOLS, composeRequest } from "../cache-experiment/fixture.mjs";
+import { DIGEST_NONCE, SYSTEM_PROMPT, armNamespace, composeRequest, toolsFor } from "../cache-experiment/fixture.mjs";
 import { estimateTokens, sha256Hex } from "../cache-experiment/evidence.mjs";
+import { fakeClock } from "../cache-experiment/fake-provider.mjs";
 import { runExperiment } from "../cache-experiment/runner.mjs";
 import {
   CACHE_PROVIDER_PRICES,
@@ -158,7 +159,7 @@ function captureTransport(handler) {
 {
   const transport = captureTransport(() => sseResponse(claudeFrames({ inputTokens: 1 })));
   const adapter = createCacheProviderAdapter({ transport });
-  const request = experimentRequest(1, "stable", "prime");
+  const request = experimentRequest(1, "multiblock", "prime");
   await adapter.send(request, {});
 
   assert.equal(transport.requests.length, 1);
@@ -175,21 +176,38 @@ function captureTransport(handler) {
   assert.ok(!("temperature" in body), "temperature is omitted, not sent as zero");
   assert.ok(Array.isArray(body.system), "the system prompt is one text block list, as Pi sends it");
   assert.equal(body.system[0].type, "text");
-  assert.equal(body.system[0].text, SYSTEM_PROMPT);
+  assert.ok(body.system[0].text.includes(SYSTEM_PROMPT),
+    "the system block carries the pinned system prompt");
+  assert.ok(body.system[0].text.includes(armNamespace(DIGEST_NONCE, 1, "multiblock")),
+    "the system block carries the run+group+arm cold namespace (#297 review findings 2 and 3)");
+  assert.ok(
+    body.system[0].text.indexOf("Experiment isolation namespace ") < body.system[0].text.indexOf(SYSTEM_PROMPT),
+    "the namespace line precedes every shared cacheable byte of the system prompt",
+  );
   assert.deepEqual(body.system[0].cache_control, { type: "ephemeral" },
     "breakpoint 1: the system block carries cache_control, where Pi places it");
-  assert.deepEqual(body.tools, TOOLS.map((tool) => ({
+  const saltedTools = toolsFor(DIGEST_NONCE, { group: 1, arm: "multiblock", role: "prime" });
+  assert.deepEqual(body.tools, saltedTools.map((tool) => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema,
-  })).map((tool, index) => (index === TOOLS.length - 1 ? { ...tool, cache_control: { type: "ephemeral" } } : tool)),
+  })).map((tool, index) => (index === saltedTools.length - 1 ? { ...tool, cache_control: { type: "ephemeral" } } : tool)),
     "breakpoint 2: the last immediate tool carries cache_control, and only it");
+  assert.ok(body.tools.every((tool, index) => tool.description.endsWith(`[isolation:${armNamespace(DIGEST_NONCE, 1, "multiblock")}]`)
+    || tool.description === saltedTools[index].description),
+    "every tool description carries the request's isolation token (#297 review finding 2)");
   assert.equal(body.messages[0].role, "user");
-  assert.equal(body.messages[0].content[0].type, "text");
-  assert.equal(body.messages[0].content[0].text, segmentContent(request, "summary"),
-    "the summary segment is carried verbatim as the leading context message, one text block as Pi renders it");
-  assert.equal(body.messages[0].content[0].cache_control, undefined,
-    "no breakpoint sits at the carried summary's end — Pi places none there");
+  // #297: the contiguous summary-part run is one user message with one text
+  // block per part — the multiblock arm's per-block parts arrive as separate
+  // ordered blocks, exactly as the uniform projection sends them.
+  assert.equal(body.messages[0].content.length, 4, "the multiblock prime carries frame, block 1, block 2, frame");
+  for (const [index, element] of ["summary-part-0", "summary-part-1", "summary-part-2", "summary-part-3"].entries()) {
+    assert.equal(body.messages[0].content[index].type, "text");
+    assert.equal(body.messages[0].content[index].text, segmentContent(request, element),
+      `${element} is carried verbatim as its own ordered text block`);
+  }
+  assert.ok(body.messages[0].content.every((block) => block.cache_control === undefined),
+    "no breakpoint sits at any carried Memory block — Pi places none there");
   const marked = body.messages.filter((message) => message.content.some((block) => block.cache_control));
   assert.equal(marked.length, 1);
   assert.equal(marked[0], body.messages[body.messages.length - 1],
@@ -197,86 +215,98 @@ function captureTransport(handler) {
   assert.equal((transport.requests[0].init.body.match(/"cache_control"/g) ?? []).length, 3,
     "exactly three cache breakpoints per request: system, last tool, last user-message block");
   const tail = body.messages.slice(1);
-  assert.equal(tail.length, 6, "the trace tail rides after the summary");
-  assert.deepEqual(tail.map((message) => message.role), ["user", "assistant", "user", "assistant", "user", "user"],
+  assert.equal(tail.length, 7, "the trace tail rides after the summary");
+  assert.deepEqual(tail.map((message) => message.role), ["user", "assistant", "user", "assistant", "user", "user", "user"],
     "user/assistant rows pass through and the tool row surfaces as user text");
 }
-// ─── determinism and the prefix property at the wire level ──────────
+// ─── determinism and the append property at the wire level ──────────
 {
   const transport = captureTransport(() => sseResponse(claudeFrames({ inputTokens: 1 })));
   const adapter = createCacheProviderAdapter({ transport });
-  await adapter.send(experimentRequest(2, "stable", "prime"), {});
+  await adapter.send(experimentRequest(2, "multiblock", "prime"), {});
   const firstBody = transport.requests[0].init.body;
-  await adapter.send(experimentRequest(2, "stable", "prime"), {});
+  await adapter.send(experimentRequest(2, "multiblock", "prime"), {});
   assert.equal(transport.requests[1].init.body, firstBody, "identical inputs produce byte-identical requests");
 
-  // The between-compaction property on the wire (#268): with the carried
-  // summary unchanged, the stable and native probes' messages extend their
-  // primes' exactly (modulo the tail-breakpoint marker, which legitimately
-  // moves to the new last user block), while the nonce probe's summary — the
-  // leading context message — differs from its prime's inside the earliest
-  // block.
+  // The cross-compaction append property on the wire (#297): the multiblock
+  // arm's probe keeps every carried block's text block byte-identical and
+  // inserts exactly one new block before the trailing frame, while the single
+  // arm's one summary text block grows at its end with the appended block.
+  // The nonce control's carried blocks stay byte-identical to its prime's —
+  // its divergence lives in the per-request isolation namespace, asserted
+  // below.
   const strip = (messages) => JSON.stringify(messages, (key, value) => (key === "cache_control" ? undefined : value));
-  const messagesOf = (index) => JSON.parse(transport.requests[index].init.body).messages;
-  for (const arm of ["stable", "native"]) {
-    await adapter.send(experimentRequest(2, arm, "prime"), {});
-    await adapter.send(experimentRequest(2, arm, "probe"), {});
-    const prime = messagesOf(transport.requests.length - 2);
-    const probe = messagesOf(transport.requests.length - 1);
-    assert.equal(
-      strip(prime),
-      strip(probe.slice(0, prime.length)),
-      `${arm}: the probe's wire messages extend the prime's; only the tail grew`,
-    );
-  }
+  const summaryOf = (wire) => JSON.parse(wire).messages[0];
+
+  await adapter.send(experimentRequest(2, "multiblock", "prime"), {});
+  await adapter.send(experimentRequest(2, "multiblock", "probe"), {});
+  const multiblockPrime = summaryOf(transport.requests.at(-2).init.body);
+  const multiblockProbe = summaryOf(transport.requests.at(-1).init.body);
+  assert.equal(multiblockPrime.content.length, 4);
+  assert.equal(multiblockProbe.content.length, 5, "the appended block adds exactly one text block");
+  assert.deepEqual(multiblockProbe.content.slice(0, 2), multiblockPrime.content.slice(0, 2),
+    "the leading frame and block 1 stay byte-identical across the append");
+  assert.equal(multiblockProbe.content[2].text, multiblockPrime.content[2].text,
+    "block 2 stays byte-identical across the append");
+  assert.equal(multiblockProbe.content[4].text, multiblockPrime.content[3].text,
+    "the trailing frame part is unchanged; only the appended block's part is new");
+
+  await adapter.send(experimentRequest(2, "single", "prime"), {});
+  await adapter.send(experimentRequest(2, "single", "probe"), {});
+  const singlePrime = summaryOf(transport.requests.at(-2).init.body);
+  const singleProbe = summaryOf(transport.requests.at(-1).init.body);
+  assert.equal(singlePrime.content.length, 1, "the baseline carries the whole summary as one text block");
+  assert.equal(singleProbe.content.length, 1);
+  assert.ok(singleProbe.content[0].text.startsWith(singlePrime.content[0].text.slice(0, singlePrime.content[0].text.length - 12)),
+    "the single baseline's summary grows at its end with the appended block");
+
   await adapter.send(experimentRequest(2, "nonce", "prime"), {});
   await adapter.send(experimentRequest(2, "nonce", "probe"), {});
-  const noncePrime = messagesOf(transport.requests.length - 2);
-  const nonceProbe = messagesOf(transport.requests.length - 1);
-  assert.equal(noncePrime[0].role, "user");
-  assert.notEqual(
-    strip([noncePrime[0]]),
-    strip([nonceProbe[0]]),
-    "the negative control's summary message diverges from its prime (the nonce)",
-  );
-  assert.equal(
-    strip(noncePrime.slice(1)),
-    strip(nonceProbe.slice(1, noncePrime.length)),
-    "the control's tail itself is unchanged; only the carried summary varies",
+  const noncePrime = summaryOf(transport.requests.at(-2).init.body);
+  const nonceProbe = summaryOf(transport.requests.at(-1).init.body);
+  const noncePrimeSystem = JSON.parse(transport.requests.at(-2).init.body).system[0].text;
+  const nonceProbeSystem = JSON.parse(transport.requests.at(-1).init.body).system[0].text;
+  assert.equal(noncePrime.role, "user");
+  assert.equal(noncePrime.content[1].text, nonceProbe.content[1].text,
+    "the control's carried blocks are byte-identical to its prime: the divergence is not in the carried region");
+  assert.notEqual(noncePrimeSystem, nonceProbeSystem,
+    "the control's isolation namespace token differs per request (#297 review finding 3)");
+  assert.ok(
+    noncePrimeSystem.startsWith("Experiment isolation namespace ")
+      && nonceProbeSystem.startsWith("Experiment isolation namespace "),
+    "both namespace lines share their fixed-width framing at the front of the system block",
   );
 }
 // ─── no request ends with an assistant turn (no prefill rejection) ───
 
 {
-  // claude-sonnet-5 rejects assistant message prefill; every probe tail ends
-  // with the release-notes assistant turn, so the reconstruction closes the
-  // conversation with one fixed user continuation. Cover every arm and both
-  // roles through the pure builder.
+  // claude-sonnet-5 rejects assistant message prefill; the #297 fixture's
+  // tails end with user turns, so no arm or role needs the fixed continuation
+  // and the guard stays a defensive no-op. Cover every arm and both roles
+  // through the pure builder.
   const continuationCount = (wire) => wire.body.messages.filter(
     (message) => message.content?.[0]?.text === PREFILL_CONTINUATION_USER_TEXT,
   ).length;
-  for (const arm of ["stable", "nonce", "native"]) {
+  for (const arm of ["multiblock", "single", "nonce"]) {
     for (const role of ["prime", "probe"]) {
       const wire = buildClaudeCacheRequest(experimentRequest(3, arm, role));
       assert.notEqual(wire.body.messages.at(-1).role, "assistant",
         `${arm}.${role} must end with a user turn (the gateway rejects assistant prefill)`);
-      assert.equal(continuationCount(wire), role === "probe" ? 1 : 0,
-        role === "probe"
-          ? `${arm}.${role} gains exactly one fixed continuation turn`
-          : `${arm}.${role} already ends with a user turn and gains nothing`);
+      assert.equal(continuationCount(wire), 0, `${arm}.${role} already ends with a user turn and gains nothing`);
     }
   }
-  // The full probe shape, pinned: the prime's seven messages, the probe's
-  // extra user+assistant tail pair, then the fixed continuation.
-  const stableProbe = buildClaudeCacheRequest(experimentRequest(3, "stable", "probe"));
-  assert.deepEqual(stableProbe.body.messages.map((message) => message.role), [
-    "user", "user", "assistant", "user", "assistant", "user", "user",
-    "user", "assistant", "user",
+  // The full shapes, pinned: the summary user message followed by the seven
+  // tail rows, both roles.
+  const multiblockPrime = buildClaudeCacheRequest(experimentRequest(3, "multiblock", "prime"));
+  assert.deepEqual(multiblockPrime.body.messages.map((message) => message.role), [
+    "user", "user", "assistant", "user", "assistant", "user", "user", "user",
   ]);
-  assert.equal(stableProbe.body.messages.at(-1).content[0].text, PREFILL_CONTINUATION_USER_TEXT);
-  // The continuation is one constant, never per-request variability.
-  const nonceProbe = buildClaudeCacheRequest(experimentRequest(4, "nonce", "probe"));
-  assert.equal(nonceProbe.body.messages.at(-1).content[0].text, PREFILL_CONTINUATION_USER_TEXT);
+  const singleProbe = buildClaudeCacheRequest(experimentRequest(3, "single", "probe"));
+  assert.deepEqual(singleProbe.body.messages.map((message) => message.role), [
+    "user", "user", "assistant", "user", "assistant", "user", "assistant", "user",
+  ]);
+  assert.notEqual(singleProbe.body.messages.at(-1).content[0].text, PREFILL_CONTINUATION_USER_TEXT,
+    "the closing user turn is the fixture's own, never the continuation");
 }
 
 // ─── SSE parsing: usage, cache, retention, and first-token timing ────
@@ -287,7 +317,7 @@ function captureTransport(handler) {
   })));
   const adapter = createCacheProviderAdapter({ transport });
   let firstTokenCalls = 0;
-  const report = await adapter.send(experimentRequest(1, "stable", "prime"), {
+  const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {
     onFirstToken: () => { firstTokenCalls += 1; },
   });
   assert.equal(firstTokenCalls, 1, "onFirstToken fires exactly once, at the first content delta");
@@ -313,7 +343,7 @@ function captureTransport(handler) {
     { chunkSize: 7 },
   ));
   const adapter = createCacheProviderAdapter({ transport });
-  const report = await adapter.send(experimentRequest(1, "stable", "prime"), {});
+  const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
   assert.deepEqual(report.usage, { inputTokens: 612, outputTokens: 64 });
   assert.deepEqual(report.cache, { reported: true, read: 0, write: 487 });
 }
@@ -323,7 +353,7 @@ function captureTransport(handler) {
     inputTokens: 900, cacheRead: 0, cacheWrite: 10, retention: "5m",
   })));
   const adapter = createCacheProviderAdapter({ transport });
-  const report = await adapter.send(experimentRequest(1, "stable", "prime"), {});
+  const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
   assert.deepEqual(report.retentionWrite, { reported: true, bucket: "5m", tokens: 10 });
 }
 
@@ -337,7 +367,7 @@ function captureTransport(handler) {
   };
   const transport = captureTransport(() => sseResponse(frames));
   const adapter = createCacheProviderAdapter({ transport });
-  const report = await adapter.send(experimentRequest(1, "stable", "prime"), {});
+  const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
   assert.deepEqual(report.usage, { inputTokens: 612, outputTokens: 64 });
   assert.deepEqual(report.cache, { reported: true, read: 200, write: 487 });
 }
@@ -351,7 +381,7 @@ function captureTransport(handler) {
   const transport = captureTransport(() => sseResponse(frames));
   const adapter = createCacheProviderAdapter({ transport });
   let firstTokenCalls = 0;
-  const report = await adapter.send(experimentRequest(1, "stable", "prime"), {
+  const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {
     onFirstToken: () => { firstTokenCalls += 1; },
   });
   assert.equal(firstTokenCalls, 0);
@@ -362,7 +392,7 @@ function captureTransport(handler) {
   // Cache fields absent entirely: unreported, never zero.
   const transport = captureTransport(() => sseResponse(claudeFrames({ inputTokens: 50 })));
   const adapter = createCacheProviderAdapter({ transport });
-  const report = await adapter.send(experimentRequest(1, "stable", "prime"), {});
+  const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
   assert.deepEqual(report.cache, { reported: false, read: 0, write: 0 });
   assert.deepEqual(report.retentionWrite, { reported: false, bucket: "unreported", tokens: 0 });
 }
@@ -373,7 +403,7 @@ function captureTransport(handler) {
     inputTokens: 50, cacheRead: 0, cacheWrite: 0, retention: "zero",
   })));
   const adapter = createCacheProviderAdapter({ transport });
-  const report = await adapter.send(experimentRequest(1, "stable", "prime"), {});
+  const report = await adapter.send(experimentRequest(1, "multiblock", "prime"), {});
   assert.deepEqual(report.cache, { reported: true, read: 0, write: 0 });
   assert.deepEqual(report.retentionWrite, { reported: true, bucket: "unspecified", tokens: 0 });
 }
@@ -388,7 +418,7 @@ function captureTransport(handler) {
   }));
   const adapter = createCacheProviderAdapter({ transport });
   await assert.rejects(
-    () => adapter.send(experimentRequest(1, "stable", "prime"), {}),
+    () => adapter.send(experimentRequest(1, "multiblock", "prime"), {}),
     (error) => {
       assert.match(error.message, /provider HTTP 503/);
       assert.ok(error.message.length <= 240, "the error text is bounded");
@@ -406,14 +436,14 @@ function captureTransport(handler) {
   ]);
   const transport = captureTransport(() => sseResponse(errorFrame));
   const adapter = createCacheProviderAdapter({ transport });
-  await assert.rejects(() => adapter.send(experimentRequest(1, "stable", "prime"), {}), /provider stream error/);
+  await assert.rejects(() => adapter.send(experimentRequest(1, "multiblock", "prime"), {}), /provider stream error/);
 }
 
 {
   const transport = captureTransport(() => sseResponse("not sse at all"));
   const adapter = createCacheProviderAdapter({ transport });
   await assert.rejects(
-    () => adapter.send(experimentRequest(1, "stable", "prime"), {}),
+    () => adapter.send(experimentRequest(1, "multiblock", "prime"), {}),
     /without complete usage/,
     "a stream with no usage frames fails closed",
   );
@@ -423,7 +453,7 @@ function captureTransport(handler) {
   delete process.env.CCR_CLAUDE_API_KEY;
   const adapter = createCacheProviderAdapter({ transport: captureTransport(sseResponse(claudeFrames({}))) });
   await assert.rejects(
-    () => adapter.send(experimentRequest(1, "stable", "prime"), {}),
+    () => adapter.send(experimentRequest(1, "multiblock", "prime"), {}),
     (error) => {
       assert.match(error.message, /CCR_CLAUDE_API_KEY is not set/);
       assert.ok(!error.message.includes(KEY));
@@ -483,7 +513,7 @@ function captureTransport(handler) {
   });
 
   const adapter = createCacheProviderAdapter({ transport });
-  const clock = { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+  const clock = { now: Date.now, mono: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
   const { report, exitCode } = await runExperiment({
     adapter,
     clock,
@@ -500,12 +530,137 @@ function captureTransport(handler) {
   assert.equal(typeof report.pins.priceNote, "string");
   for (const group of report.groups) {
     assert.equal(group.quality, "measurable");
-    assert.equal(group.stable.probe.retentionBucket, "1h");
-    assert.ok(group.stable.probe.ttftMs !== null, "TTFT is locally measured through the real clock");
+    assert.equal(group.multiblock.probe.retentionBucket, "1h");
+    assert.ok(group.multiblock.probe.ttftMs !== null, "TTFT is locally measured through the real clock");
   }
-  assert.equal(report.conclusion.cache, "positive");
-  assert.equal(report.conclusion.final, "positive");
-  assert.equal(exitCode, 0);
+  // The wire body orders system, messages, tools — so the stub's second and
+  // third breakpoints sit after the appended block and can never serve the
+  // probe; only the system breakpoint survives the append. The arms under
+  // test therefore read only the system boundary while the control reads
+  // nothing — a gap this stub's scale keeps inside the pinned liveness
+  // margin, so the control is dead here and the verdict is inconclusive
+  // (#297 review finding 3): exactly what a measurement that cannot
+  // distinguish the carried region must produce.
+  for (const group of report.groups) {
+    assert.ok(group.multiblock.probe.cacheRead > 0, "the arm under test still reads the system boundary across the append");
+    assert.equal(group.nonce.probe.cacheRead, 0, "the per-request control namespace can never be served");
+    assert.ok(group.multiblock.probe.cacheRead < group.multiblock.prime.cacheWrite,
+      "the append falls back from the full-carried read the prime wrote");
+  }
+  assert.equal(report.conclusion.cache, "inconclusive");
+  assert.equal(report.conclusion.final, "inconclusive");
+  assert.equal(report.conclusion.livenessSatisfied, false,
+    "the gap the stub can show sits inside the pinned liveness margin, so the control is honestly dead");
+  assert.ok(report.conclusion.reasons.some((reason) => reason.includes("liveness control dead")));
+  assert.equal(exitCode, 0, "integrity, not the conclusion label, decides the exit code");
+}
+
+// ─── a gateway echoing the credential never reaches the report ──────
+
+{
+  // #297 review round 3: an error body (or stream error frame) that echoes
+  // the API key must be scrubbed exactly — the actual value replaced, the
+  // surrounding text preserved — before the error enters the report, and
+  // the runner's self-check must catch any survivor.
+  const SYNTHETIC_KEY = "sk-echo-test-0123456789abcdef-XYZ";
+  const echoBody = JSON.stringify({ error: `invalid api key ${SYNTHETIC_KEY} for this account` });
+  const transport = captureTransport(() => ({
+    ok: false,
+    status: 401,
+    text: async () => echoBody,
+  }));
+  const adapter = createCacheProviderAdapter({ transport });
+  process.env.CCR_CLAUDE_API_KEY = SYNTHETIC_KEY;
+  try {
+    await assert.rejects(
+      () => adapter.send(experimentRequest(1, "multiblock", "prime"), {}),
+      (error) => {
+        assert.ok(!error.message.includes(SYNTHETIC_KEY), "the echoed HTTP error text no longer contains the credential");
+        assert.ok(error.message.includes("‹credential›"), "the credential is replaced exactly once per occurrence");
+        assert.ok(error.message.includes("provider HTTP 401"), "the bounded error context is preserved");
+        return true;
+      },
+    );
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
+  // Redaction happens before the report cap: otherwise a long credential
+  // crossing that boundary would leak its leading fragment even though the
+  // complete value was no longer present to match.
+  const LONG_KEY = `sk-${"q".repeat(230)}-tail`;
+  const longEchoTransport = captureTransport(() => ({
+    ok: false,
+    status: 401,
+    text: async () => `invalid api key ${LONG_KEY}`,
+  }));
+  process.env.CCR_CLAUDE_API_KEY = LONG_KEY;
+  try {
+    const longEchoAdapter = createCacheProviderAdapter({ transport: longEchoTransport });
+    await assert.rejects(
+      () => longEchoAdapter.send(experimentRequest(1, "multiblock", "prime"), {}),
+      (error) => {
+        assert.ok(!error.message.includes(LONG_KEY.slice(0, 32)), "a cap-crossing credential leaks no prefix");
+        assert.ok(error.message.includes("‹credential›"));
+        return true;
+      },
+    );
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
+  // The stream-error path scrubs too: a mid-stream error frame echoes the key.
+  const echoFrame = [
+    'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n\n',
+    `event: error\ndata: ${JSON.stringify({ type: "error", error: { message: `upstream rejected key ${SYNTHETIC_KEY}` } })}\n\n`,
+  ].join("");
+  const streamTransport = {
+    fetch: async () => sseResponse(echoFrame),
+  };
+  process.env.CCR_CLAUDE_API_KEY = SYNTHETIC_KEY;
+  try {
+    const streamAdapter = createCacheProviderAdapter({ transport: streamTransport });
+    await assert.rejects(
+      () => streamAdapter.send(experimentRequest(1, "multiblock", "prime"), {}),
+      (error) => {
+        assert.ok(!error.message.includes(SYNTHETIC_KEY), "the echoed stream error text no longer contains the credential");
+        assert.ok(error.message.includes("‹credential›"));
+        return true;
+      },
+    );
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
+  // The runner-level boundary: an adapter whose error bypasses its own scrub
+  // still fails integrity and is redacted before progress, reports, or text.
+  const leakingAdapter = {
+    id: "simulated-leak/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/leak-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
+    requiredEnv: ["CCR_CLAUDE_API_KEY"],
+    async send() {
+      throw new Error(`upstream said: bad key ${SYNTHETIC_KEY}`);
+    },
+  };
+  process.env.CCR_CLAUDE_API_KEY = SYNTHETIC_KEY;
+  try {
+    const events = [];
+    const { report, exitCode, json, humanText } = await runExperiment({
+      adapter: leakingAdapter,
+      clock: fakeClock(),
+      secretValues: [SYNTHETIC_KEY],
+      generatedAt: () => "2026-01-01T00:00:00.000Z",
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(report.integrity.ok, false);
+    assert.ok(report.integrity.failures.some((failure) => failure.includes("credential value")),
+      "the runner names the credential leak without retaining its value");
+    assert.ok(!json.includes(SYNTHETIC_KEY), "the emitted artifact redacts the credential");
+    assert.ok(!JSON.stringify(report).includes(SYNTHETIC_KEY), "the returned report redacts the credential");
+    assert.ok(!humanText.includes(SYNTHETIC_KEY), "the text artifact redacts the credential");
+    assert.ok(!JSON.stringify(events).includes(SYNTHETIC_KEY), "live progress redacts the credential");
+    assert.equal(report.conclusion.final, "inconclusive");
+    assert.equal(exitCode, 1);
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
 }
 
 // ─── the command's --adapter surface refuses offline, by name only ──

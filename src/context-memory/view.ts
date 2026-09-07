@@ -24,6 +24,13 @@
 /** Custom-message type of the one ephemeral due-run advisory (#218). */
 export const CONTEXT_MEMORY_ADVISORY_TYPE = "pi-square.context-memory/advisory";
 
+/**
+ * Custom-message type of the ephemeral provider-bound Memory projection
+ * (#297): one ordered text content block per current Memory block. It exists
+ * only inside the transformed request, never persists, and is never rendered.
+ */
+export const CONTEXT_MEMORY_BLOCKS_TYPE = "pi-square.context-memory/blocks";
+
 /** One chronological block row in the active view: bounded, no identifiers. */
 export interface ContextMemoryBlockRow {
   /** Bounded single-line Markdown preview (sanitized at render). */
