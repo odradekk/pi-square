@@ -14,6 +14,7 @@ import {
   apiInterfacesPresent,
   contextInterfacesPresent,
   evaluateHostSupport,
+  messageProjectionInterfacePresent,
   resolveHostVersion,
   resolvePiReserveTokens,
 } from "./host";
@@ -74,6 +75,8 @@ export interface ContextMemoryDependencies {
   readonly hostVersion?: () => string;
   /** Injectable registration-time interface probe for deterministic tests. */
   readonly apiInterfaces?: (pi: ExtensionAPI) => boolean;
+  /** Injectable message-projection capability probe for deterministic tests. */
+  readonly messageProjectionInterface?: () => boolean;
   /** Injectable Pi compaction-reserve source for deterministic tests. */
   readonly reserveTokens?: (cwd: string, projectTrusted: boolean) => number;
 }
@@ -104,6 +107,7 @@ export default function registerContextMemory(
 ): ContextMemoryRegistration {
   const hostVersion = dependencies.hostVersion ?? resolveHostVersion;
   const apiInterfaces = dependencies.apiInterfaces ?? apiInterfacesPresent;
+  const messageProjectionInterface = dependencies.messageProjectionInterface ?? messageProjectionInterfacePresent;
   const reserveTokensOf = dependencies.reserveTokens ?? resolvePiReserveTokens;
   let controller: ContextMemoryController | undefined;
   // Pi's compaction reserve for the current session, captured where the
@@ -139,7 +143,7 @@ export default function registerContextMemory(
   pi.on("session_start", async (_event, ctx) => {
     controller = new ContextMemoryController({
       config: dependencies.configProvider().contextMemory,
-      support: evaluateHostSupport(apiInterfaces(pi), contextInterfacesPresent(ctx)),
+      support: evaluateHostSupport(apiInterfaces(pi), contextInterfacesPresent(ctx), messageProjectionInterface()),
     });
     sessionReserveTokens = reserveTokensOf(ctx.cwd, ctx.isProjectTrusted());
     controller.adoptRuntime(sessionReserveTokens);

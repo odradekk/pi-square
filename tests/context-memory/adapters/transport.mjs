@@ -30,17 +30,23 @@ export function realTransport(timeoutMs = REQUEST_TIMEOUT_MS) {
 }
 
 /**
- * Bounded, sanitized error body for a non-2xx response: truncated to `cap`,
- * long single-character runs collapsed, control characters escaped. Never
- * throws, never echoes headers, and keeps provider error text from tripping
- * the report privacy self-checks on padding-like content.
+ * Bounded, sanitized error body for a non-2xx response: exact caller-supplied
+ * redactions are applied before truncation, then long single-character runs
+ * are collapsed and control characters escaped. Never throws, never echoes
+ * headers, and keeps provider error text from tripping the report privacy
+ * self-checks on padding-like content.
  */
-export async function boundedErrorText(response, cap = 200) {
+export async function boundedErrorText(response, cap = 200, redactions = []) {
   let text;
   try {
     text = String(await response.text());
   } catch {
     return "";
+  }
+  for (const redaction of redactions) {
+    if (typeof redaction === "string" && redaction.length >= 3) {
+      text = text.split(redaction).join("‹credential›");
+    }
   }
   text = text.slice(0, cap);
   text = text.replace(/(.)\1{15,}/g, (match, char) => `${char}<×${match.length}>`);

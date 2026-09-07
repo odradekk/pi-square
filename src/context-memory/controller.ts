@@ -1,8 +1,8 @@
 import type { AgentToolResult, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
+import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_COMPACTION_SETTINGS,
   buildSessionContext,
-  convertToLlm,
   estimateTokens as estimateMessageTokens,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
@@ -290,6 +290,8 @@ export function memoryBlocksParts(
   message: unknown,
   candidate: MemoryBlocksCandidate,
 ): unknown | undefined {
+  const convertToLlm = PiCodingAgent.convertToLlm;
+  if (typeof convertToLlm !== "function") return undefined;
   let rendered: readonly unknown[];
   try {
     rendered = convertToLlm([message as Parameters<typeof convertToLlm>[0][number]]);

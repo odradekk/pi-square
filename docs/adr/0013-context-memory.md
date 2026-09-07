@@ -131,7 +131,8 @@ message, and deletion stays the ordinary Pi session boundary.
 - Same-file multi-process writing stays unsupported, exactly as for plain Pi;
   parallel work must use forked or cloned session files.
 - Activation is capability-detected, not version-pinned (#255): any host
-  exposing the required interfaces activates the feature. The residual risk —
+  exposing the required session, compaction, context, tool, active-tool, and
+  message-projection interfaces activates the feature. The residual risk —
   a future Pi keeping an interface while changing its semantics — is absorbed
   by the runtime validation and native-fallback paths (candidate
   revalidation, compaction confirmation, strict format parsing), never by

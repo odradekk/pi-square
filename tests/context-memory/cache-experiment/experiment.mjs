@@ -94,6 +94,7 @@ async function loadAdapter(path) {
 const GIT_REDIRECT_VARS = [
   "GIT_DIR",
   "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
   "GIT_INDEX_FILE",
   "GIT_OBJECT_DIRECTORY",
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -114,13 +115,17 @@ const GIT_REDIRECT_VARS = [
  */
 export function resolveImplementation({ env = process.env, exec = execSync } = {}) {
   const cleanEnv = { ...env };
-  for (const name of GIT_REDIRECT_VARS) delete cleanEnv[name];
+  for (const name of Object.keys(cleanEnv)) {
+    if (GIT_REDIRECT_VARS.includes(name) || name === "GIT_CONFIG_PARAMETERS" || name.startsWith("GIT_CONFIG_")) {
+      delete cleanEnv[name];
+    }
+  }
   const git = (args) => exec(`git ${args}`, { cwd: HERE, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: cleanEnv }).trim();
   try {
     const commit = git("rev-parse HEAD");
     const tree = git("rev-parse HEAD^{tree}");
     const root = git("rev-parse --show-toplevel");
-    const status = git("status --porcelain");
+    const status = git("status --porcelain --untracked-files=all");
     if (!/^[0-9a-f]{7,40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(tree)) {
       return { commit: null, tree: null, dirty: true };
     }

@@ -432,6 +432,11 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
   // Boundary: a probe sent exactly at the TTL is still within it.
   assert.equal(withinTtl({ multiblock: TTL_MS, nonce: 0, single: 0 }, TTL_MS), true);
   assert.equal(withinTtl({ multiblock: TTL_MS + 1, nonce: 0, single: 0 }, TTL_MS), false);
+  assert.equal(withinTtl({ multiblock: -1, nonce: 0, single: 0 }, TTL_MS), false);
+  const invalidTiming = makeGroup(1);
+  invalidTiming.timing.primeToProbeMs.multiblock = -1;
+  invalidTiming.timing.withinTtl = false;
+  assert.equal(classifyGroup(invalidTiming).quality, "timing-invalid");
   // TTL outranks reporting quality: a stale group with absent reports is ttl-stale.
   const staleAndAbsent = makeGroup(1, { withinTtl: false, rows: { nonce: { probe: { cacheReported: false } } } });
   assert.equal(classifyGroup(staleAndAbsent).quality, "ttl-stale");

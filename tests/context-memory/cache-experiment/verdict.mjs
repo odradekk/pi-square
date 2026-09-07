@@ -144,10 +144,11 @@ export const FORBIDDEN_CLAIM_PHRASES = [
 
 /**
  * TTL rule: every arm's probe must follow its prime within the pinned TTL.
- * Equality counts as within — the entry is still live at send time.
+ * Equality counts as within — the entry is still live at send time. A
+ * negative interval is broken timing, never fresh evidence.
  */
 export function withinTtl(primeToProbeMs, ttlMs) {
-  return Object.values(primeToProbeMs).every((elapsed) => elapsed <= ttlMs);
+  return Object.values(primeToProbeMs).every((elapsed) => elapsed >= 0 && elapsed <= ttlMs);
 }
 
 /**
@@ -156,6 +157,12 @@ export function withinTtl(primeToProbeMs, ttlMs) {
  * values either way), then report presence, then attribution.
  */
 export function classifyGroup(group) {
+  if (Object.values(group.timing.primeToProbeMs).some((elapsed) => elapsed < 0)) {
+    return {
+      quality: "timing-invalid",
+      qualityReasons: ["a probe preceded its prime on the monotonic clock"],
+    };
+  }
   if (!group.timing.withinTtl) {
     return {
       quality: "ttl-stale",

@@ -43,8 +43,9 @@ values are never normalized, clamped, or silently defaulted.
 
 Activation is decided by capability detection, not by a Pi version: Context
 Memory runs on any host that exposes the required public session, compaction,
-context, tool, and active-tool interfaces, whatever version string that host
-reports. A host missing any required interface keeps both tools inactive,
+context, tool, active-tool, and message-projection interfaces, whatever
+version string that host reports. A host missing any required interface keeps
+both tools inactive,
 installs no advisory or compaction takeover, and leaves Pi native compaction
 and the active tool set untouched; `/context` reports `unsupported` there and
 names the running host version. The host version never gates activation:

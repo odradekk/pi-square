@@ -150,14 +150,14 @@ export const TOOLS_HASH = sha256Hex(JSON.stringify(TOOLS));
  * The request's tool catalog (#297 review findings 2 and 3): the shared
  * pinned profile with one neutral isolation token appended to every tool
  * description. The token follows the same derivation as the system
- * namespace — run+arm for the arms under test, per request for the nonce
+ * namespace — run+group+arm for the arms under test, per request for the nonce
  * control — because measured gateways also reuse cache by content hash
  * across positions, not only by prefix: without the token, every arm's
  * byte-identical tool catalog was reusable across arms and roles, which
  * both contaminated the arms and drowned the control's observable
- * divergence. With it, no request can reuse another run's, arm's, or (for
- * the control) request's tool blocks, while the same-arm prime/probe
- * carried prefix stays byte-stable.
+ * divergence. With it, no request can reuse another run's, group's, arm's,
+ * or (for the control) request's tool blocks, while each measured pair's
+ * prime/probe carried prefix stays byte-stable.
  */
 export function toolsFor(runNonce, request) {
   const token = requestNamespace(runNonce, request);

@@ -262,7 +262,7 @@ async function consumeSse(response, observe, credential) {
       }
       if (event.type === "error") {
         const message = event.error?.message ?? event.message ?? "provider stream error";
-        throw new Error(scrubCredential(boundedString(`provider stream error: ${message}`, REPORT_STRING_MAX), credential));
+        throw new Error(boundedString(scrubCredential(`provider stream error: ${message}`, credential), REPORT_STRING_MAX));
       }
       if (event.type === "content_block_delta" && !firstTokenFired) {
         firstTokenFired = true;
@@ -372,8 +372,8 @@ export function createCacheProviderAdapter(options = {}) {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        const bodyText = await boundedErrorText(response);
-        throw new Error(scrubCredential(boundedString(`provider HTTP ${response.status}: ${bodyText}`, REPORT_STRING_MAX), key));
+        const bodyText = await boundedErrorText(response, 200, [key]);
+        throw new Error(boundedString(scrubCredential(`provider HTTP ${response.status}: ${bodyText}`, key), REPORT_STRING_MAX));
       }
       return consumeSse(response, observe, key);
     },

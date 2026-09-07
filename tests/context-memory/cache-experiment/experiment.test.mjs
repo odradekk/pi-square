@@ -47,7 +47,7 @@ import {
  * the simulated breakpoint-cache adapter with a fake clock, proving the
  * pinned experiment shape and fixture scale, the recorded evidence, the
  * append-case divergence invariants, run integrity, the honest neutral
- * verdict with the dead-control caveat, the exit contract (integrity, not
+ * verdict with a live control, the exit contract (integrity, not
  * conclusion), determinism, report privacy, and the command-line surface —
  * without credentials and without any real provider call.
  */
@@ -162,8 +162,8 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
       }
       // The summary region's concatenated text is byte-identical across arms:
       // the arms hold semantic content, scale, and framing constant and
-      // differ only in where the text block boundaries sit (and the nonce
-      // digits inside the control's earliest block).
+      // differ only in where the text block boundaries sit; the control's
+      // divergence lives in its per-request isolation namespace.
       assert.equal(
         composed.multiblock.reduce((a, b) => a + b, 0) - composed.single[0],
         composed.nonce.reduce((a, b) => a + b, 0) - composed.single[0],
@@ -189,17 +189,15 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   }
 }
 
-// ─── cold isolation namespaces: run+arm derived, before any shared byte ─
+// ─── cold isolation namespaces: run+group+arm, before any shared byte ─
 
 {
   // #297 review findings 2 and 3: the namespace is derived from the run
-  // nonce AND the arm and placed at the very front of the system segment, so
-  // requests from different arms — or from different executions of the
-  // experiment — diverge inside the first bytes of the payload. A prefix
-  // cache cannot serve any shared content across arms or across runs, at any
-  // prefix length, because there is no shared cacheable prefix at all. The
-  // nonce control arm derives its token per request, which is what makes the
-  // liveness control observable: its probe cannot read even its own prime.
+  // nonce, group, and arm and placed at the very front of the system segment,
+  // so different pairs or executions diverge inside the first payload bytes.
+  // A prefix cache cannot serve shared content across them at any prefix
+  // length. The nonce control derives its token per request, so its probe
+  // cannot read even its own prime and liveness stays observable.
   const runA = "e75444904e0c1e53";
   const runB = "0f9d3a51b6c27e88";
   // #297 review round 3: the namespace derives from run+group+arm — every
@@ -289,8 +287,8 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
     // The same isolation covers the tool catalog: measured gateways reuse
     // cache by content hash across positions too, so byte-identical tool
     // descriptions were reusable across arms and roles. Every description
-    // now carries the request's isolation token — fixed for an arm under
-    // test, per request for the control.
+    // now carries the request's isolation token — fixed for one measured
+    // group+arm pair, per request for the control.
     const catalog = (arm, role, runNonce = runA, group = 1) => JSON.stringify(toolsFor(runNonce, { group, arm, role }));
     assert.notEqual(catalog("multiblock"), catalog("single"), "tool catalogs differ across arms");
     assert.notEqual(catalog("multiblock"), catalog("multiblock", "prime", runB), "tool catalogs differ across runs");
@@ -352,9 +350,9 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
     assert.ok(seams.nonce < toolsEnd, "the control diverges before the tools boundary, inside its namespace line");
     assert.ok(seams.nonce < seams.multiblock, "the control shares strictly fewer prefix bytes than the arm under test");
     assert.ok(seams.nonce < seams.single, "the control also shares fewer prefix bytes than the baseline");
-    // Even at the shared tools-boundary fallback, the run+arm cold
-    // namespaces make every arm's served prefix hash pairwise distinct: no
-    // arm can ever serve another arm's cache, at any breakpoint.
+    // Even at the shared tools-boundary fallback, the run+group+arm cold
+    // namespaces make every pair's served prefix hash distinct: no group or
+    // arm can serve another pair's cache at any breakpoint.
     assert.notEqual(prefixHashes.multiblock, prefixHashes.single);
     assert.notEqual(prefixHashes.multiblock, prefixHashes.nonce);
     assert.notEqual(prefixHashes.single, prefixHashes.nonce);
@@ -484,7 +482,7 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   assert.equal(pins.implementationTree, "unavailable", "an unresolvable tree digest is recorded as unavailable, never omitted");
   assert.equal(pins.runNonce, "d1c0d5e0d3d3d3d3", "the pins record the run nonce the isolation namespaces derive from");
   assert.ok(typeof pins.armIsolation === "string" && pins.armIsolation.includes("before any shared cacheable byte"),
-    "the pins state the front-of-payload run+arm isolation rule");
+    "the pins state the front-of-payload run+group+arm isolation rule");
   assert.deepEqual(pins.groupOrder, Array.from({ length: GROUP_COUNT }, (_, index) => groupOrder(index + 1)));
   assert.equal(pins.armRotation, ARM_ROTATION);
   assert.ok(pins.measuredCase.startsWith("cross-compaction append"), "the pins name the measured case");
@@ -874,8 +872,68 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   assert.equal(report.integrity.ok, false);
   assert.ok(report.integrity.failures.some((failure) => failure.includes("negative interval")),
     "a backwards monotonic clock fails integrity");
+  assert.ok(report.integrity.failures.every((failure) => !failure.includes("more than the pinned")),
+    "a backwards clock is not mislabeled as an elapsed TTL overrun");
+  assert.ok(report.groups.every((group) => group.quality === "timing-invalid"));
   assert.equal(report.conclusion.final, "inconclusive");
   assert.equal(exitCode, 1);
+}
+
+{
+  // A first-token callback that precedes request dispatch on the monotonic
+  // seam is broken timing too; it cannot be emitted as a plausible negative
+  // TTFT while the run remains valid.
+  let monoMs = 10_000;
+  const events = [];
+  const backwardsFirstTokenClock = {
+    now: () => 1_700_000_000_000,
+    mono: () => monoMs,
+    sleep: async () => {},
+  };
+  const adapter = {
+    id: "simulated-negative-ttft/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/negative-ttft-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
+    async send(request, observe = {}) {
+      monoMs -= 1;
+      observe.onFirstToken?.();
+      const probe = request.role === "probe";
+      return {
+        usage: { inputTokens: probe ? 166 : 0, outputTokens: 48 },
+        cache: { reported: true, read: probe ? 1089 : 0, write: probe ? 96 : 1185 },
+        retentionWrite: { reported: true, bucket: "default", tokens: probe ? 96 : 1185 },
+        cost: 0,
+      };
+    },
+  };
+  const { report, exitCode } = await runExperiment({
+    adapter,
+    clock: backwardsFirstTokenClock,
+    generatedAt: () => "2026-01-01T00:00:00.000Z",
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(report.integrity.ok, false);
+  assert.ok(report.integrity.failures.some((failure) => failure.includes("negative TTFT interval")));
+  assert.ok(events.some((event) => event.type === "request" && event.ttftMs === -1));
+  assert.equal(report.conclusion.final, "inconclusive");
+  assert.equal(exitCode, 1);
+}
+
+{
+  // Live progress uses the same monotonic origin as the report, not a wall
+  // timestamp. A large wall/monotonic offset must not create huge negatives.
+  let monoMs = 1_000;
+  const clock = {
+    now: () => 1_700_000_000_000,
+    mono: () => monoMs,
+    sleep: async (ms) => { monoMs += ms; },
+  };
+  const events = [];
+  const adapter = simulatedCacheAdapter({ clock, ttlMs: 300_000 });
+  const { report } = await runExperiment({ adapter, clock, onEvent: (event) => events.push(event) });
+  const requestEvents = events.filter((event) => event.type === "request");
+  assert.equal(report.integrity.ok, true);
+  assert.equal(requestEvents.length, GROUP_COUNT * groupOrder(1).length);
+  assert.ok(requestEvents.every((event) => event.ttftMs >= 0 && event.ttftMs < 10_000));
 }
 
 // ─── adapter failures and malformed reports are integrity failures ──
@@ -930,7 +988,7 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   assert.deepEqual(classifyDivergenceBoundary("single", { blocks, expectedShared: 560 }, 561), { ok: false, boundary: "inside-carried-prefix" });
   assert.deepEqual(classifyDivergenceBoundary("multiblock", { blocks, expectedShared: null }, 560), { ok: false, boundary: "inside-carried-prefix" },
     "a missing seam cannot validate the invariant");
-  // The control: divergence inside the earliest block.
+  // The control: divergence inside the per-request isolation namespace.
   assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, namespaceEnd: 101, expectedShared: null }, 100), { ok: true, boundary: "isolation-namespace" });
   assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, namespaceEnd: 101, expectedShared: null }, 0), { ok: true, boundary: "isolation-namespace" });
   assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, namespaceEnd: 101, expectedShared: null }, 101), { ok: false, boundary: "outside-isolation-namespace" });
@@ -1059,13 +1117,28 @@ const CLI_REPORT_DIR = mkdtempSync(join(tmpdir(), "provider-cache-experiment-tes
     // subprocesses, so a stray redirect cannot repoint provenance.
     const seen = [];
     const exec = stubExec([commit, tree, STUB_REPO, ""], seen);
-    const resolved = resolveImplementation({ env: { ...process.env, GIT_DIR: "/tmp/elsewhere", GIT_WORK_TREE: "/tmp/elsewhere" }, exec });
+    const resolved = resolveImplementation({
+      env: {
+        ...process.env,
+        GIT_DIR: "/tmp/elsewhere",
+        GIT_WORK_TREE: "/tmp/elsewhere",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "status.showUntrackedFiles",
+        GIT_CONFIG_VALUE_0: "no",
+        GIT_CONFIG_PARAMETERS: "'status.showUntrackedFiles=no'",
+      },
+      exec,
+    });
     assert.equal(resolved.commit, commit);
     assert.equal(resolved.tree, tree);
     assert.equal(resolved.dirty, false);
     for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]) {
       assert.ok(seen.every((call) => !(name in call.env)), `${name} is stripped from every git call`);
     }
+    assert.ok(seen.every((call) => Object.keys(call.env).every((name) => !name.startsWith("GIT_CONFIG_"))),
+      "GIT_CONFIG_* injection is stripped from every git call");
+    assert.ok(seen.some((call) => call.command.includes("status --porcelain --untracked-files=all")),
+      "the cleanliness query explicitly includes untracked files regardless of repository config");
   }
   {
     // An unresolvable commit (git fails) leaves provenance unavailable.

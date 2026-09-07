@@ -207,6 +207,34 @@ function longestStringValue(value, current = 0) {
   return current;
 }
 
+function stringValueIncludes(value, needle) {
+  if (typeof value === "string") return value.includes(needle);
+  if (Array.isArray(value)) return value.some((item) => stringValueIncludes(item, needle));
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).some((item) => stringValueIncludes(item, needle));
+  }
+  return false;
+}
+
+function redactSensitiveText(value, secretValues) {
+  let redacted = String(value).split(MARKER).join("‹redacted›");
+  for (const secret of secretValues) {
+    if (typeof secret === "string" && secret.length >= 3) {
+      redacted = redacted.split(secret).join("‹redacted›");
+    }
+  }
+  return redacted;
+}
+
+function redactReportStrings(value, secretValues) {
+  if (typeof value === "string") return redactSensitiveText(value, secretValues);
+  if (Array.isArray(value)) return value.map((item) => redactReportStrings(item, secretValues));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactReportStrings(item, secretValues)]));
+  }
+  return value;
+}
+
 /**
  * The report must never contain fixture bodies, unbounded strings, or a
  * caller-declared secret value (#297 review round 3): the CLI passes the
@@ -221,8 +249,15 @@ export function findReportLeaks(json, secretValues = []) {
   for (const phrase of FORBIDDEN_CLAIM_PHRASES) {
     if (json.includes(phrase)) leaks.push(`the claim phrase "${phrase}"`);
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    parsed = undefined;
+  }
   for (const secret of secretValues) {
-    if (typeof secret === "string" && secret.length >= 3 && json.includes(secret)) {
+    if (typeof secret === "string" && secret.length >= 3
+      && (parsed === undefined ? json.includes(secret) : stringValueIncludes(parsed, secret))) {
       leaks.push("a credential value");
     }
   }
@@ -300,7 +335,11 @@ export async function runExperiment({
         );
       } catch (error) {
         integrity.providerErrors += 1;
-        const message = `the adapter threw (${String(error?.message ?? error).slice(0, 120)})`;
+        const rawError = String(error?.message ?? error);
+        if (secretValues.some((secret) => typeof secret === "string" && secret.length >= 3 && rawError.includes(secret))) {
+          fail(`group ${group} ${arm}.${role}: the adapter error contained a credential value`);
+        }
+        const message = `the adapter threw (${redactSensitiveText(rawError, secretValues).slice(0, 120)})`;
         fail(`group ${group} ${arm}.${role}: ${message}`);
         onEvent?.({ type: "request", group, arm, role, index: requestIndex, total: groupCount * groupOrder(1).length, error: message });
         aborted = true;
@@ -318,8 +357,12 @@ export async function runExperiment({
         type: "request", group, arm, role, index: requestIndex, total: groupCount * groupOrder(1).length,
         cacheRead: report.cache?.read ?? 0, cacheWrite: report.cache?.write ?? 0,
         uncached: report.usage?.inputTokens ?? 0,
-        ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMs,
+        ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMonoMs,
       });
+      const ttftMs = firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMonoMs;
+      if (ttftMs !== undefined && ttftMs < 0) {
+        fail(`group ${group} ${arm}.${role}: first token preceded request dispatch on the monotonic clock (negative TTFT interval)`);
+      }
       records.set(`${group}|${step}`, {
         group,
         arm,
@@ -329,7 +372,7 @@ export async function runExperiment({
         report,
         sentAtMs,
         sentAtMonoMs,
-        ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMonoMs,
+        ttftMs,
       });
     }
   }
@@ -368,8 +411,7 @@ export async function runExperiment({
         integrity.ttlOk = false;
         integrity.ok = false;
         fail(`group ${group}: a probe was sent before its prime on the monotonic clock (negative interval)`);
-      }
-      if (!timing.withinTtl) {
+      } else if (!timing.withinTtl) {
         // #297 review finding 4: an out-of-TTL probe is stale evidence, not a
         // soft group quality — the run's integrity fails and the exit code
         // reports it, whatever the token counts look like.
@@ -390,7 +432,7 @@ export async function runExperiment({
   }
 
   const verdict = evaluateRun({ groups: verdictInputs, integrity });
-  const report = {
+  let report = {
     schema: REPORT_SCHEMA,
     generatedAt: generatedAt(),
     mode: adapter.id.startsWith("simulated") ? "dry-run" : "credentialed",
@@ -441,7 +483,7 @@ export async function runExperiment({
 
   // Privacy self-check: the emitted artifact itself must stay payload-free and bounded.
   let json = JSON.stringify(report, null, 2);
-  let leaks = [...findReportLeaks(json, secretValues)];
+  const leaks = [...findReportLeaks(json, secretValues)];
   if (longestStringValue(report) > REPORT_STRING_MAX) leaks.push(`a string field longer than ${REPORT_STRING_MAX} characters`);
   if (leaks.length > 0) {
     report.integrity.ok = false;
@@ -449,16 +491,13 @@ export async function runExperiment({
     report.conclusion.cache = "inconclusive";
     report.conclusion.final = "inconclusive";
     report.conclusion.reasons.push(`report privacy self-check failed: ${leaks.join("; ")}`);
-    json = JSON.stringify(report, null, 2);
     // The failure text is appended after the scan, and the offending values
     // can sit anywhere in the report (including the failure entries the
-    // adapter errors produced), so the emitted artifact redacts every
-    // declared secret and the fixture marker from the FINAL serialization.
-    for (const secret of secretValues) {
-      if (typeof secret === "string" && secret.length >= 3) json = json.split(secret).join("‹redacted›");
-    }
-    json = json.split(MARKER).join("‹redacted›");
-    leaks = findReportLeaks(json, secretValues).filter((leak) => leak !== "a credential value");
+    // adapter errors produced). Redact the report object itself before both
+    // serializations so JSON, human text, and the returned value agree and
+    // none can retain a credential or fixture body.
+    report = redactReportStrings(report, secretValues);
+    json = JSON.stringify(report, null, 2);
   }
 
   const exitCode = report.integrity.ok ? 0 : 1;

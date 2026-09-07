@@ -584,6 +584,29 @@ function captureTransport(handler) {
   } finally {
     delete process.env.CCR_CLAUDE_API_KEY;
   }
+  // Redaction happens before the report cap: otherwise a long credential
+  // crossing that boundary would leak its leading fragment even though the
+  // complete value was no longer present to match.
+  const LONG_KEY = `sk-${"q".repeat(230)}-tail`;
+  const longEchoTransport = captureTransport(() => ({
+    ok: false,
+    status: 401,
+    text: async () => `invalid api key ${LONG_KEY}`,
+  }));
+  process.env.CCR_CLAUDE_API_KEY = LONG_KEY;
+  try {
+    const longEchoAdapter = createCacheProviderAdapter({ transport: longEchoTransport });
+    await assert.rejects(
+      () => longEchoAdapter.send(experimentRequest(1, "multiblock", "prime"), {}),
+      (error) => {
+        assert.ok(!error.message.includes(LONG_KEY.slice(0, 32)), "a cap-crossing credential leaks no prefix");
+        assert.ok(error.message.includes("‹credential›"));
+        return true;
+      },
+    );
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
   // The stream-error path scrubs too: a mid-stream error frame echoes the key.
   const echoFrame = [
     'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n\n',
@@ -606,8 +629,8 @@ function captureTransport(handler) {
   } finally {
     delete process.env.CCR_CLAUDE_API_KEY;
   }
-  // The runner-level self-check: an adapter whose error bypasses every scrub
-  // still fails the run's integrity through the secret-value scan.
+  // The runner-level boundary: an adapter whose error bypasses its own scrub
+  // still fails integrity and is redacted before progress, reports, or text.
   const leakingAdapter = {
     id: "simulated-leak/1",
     describePins: () => ({ provider: "simulated", model: "simulated/leak-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
@@ -618,16 +641,21 @@ function captureTransport(handler) {
   };
   process.env.CCR_CLAUDE_API_KEY = SYNTHETIC_KEY;
   try {
-    const { report, exitCode, json } = await runExperiment({
+    const events = [];
+    const { report, exitCode, json, humanText } = await runExperiment({
       adapter: leakingAdapter,
       clock: fakeClock(),
       secretValues: [SYNTHETIC_KEY],
       generatedAt: () => "2026-01-01T00:00:00.000Z",
+      onEvent: (event) => events.push(event),
     });
     assert.equal(report.integrity.ok, false);
     assert.ok(report.integrity.failures.some((failure) => failure.includes("credential value")),
-      "the privacy self-check names the credential leak");
+      "the runner names the credential leak without retaining its value");
     assert.ok(!json.includes(SYNTHETIC_KEY), "the emitted artifact redacts the credential");
+    assert.ok(!JSON.stringify(report).includes(SYNTHETIC_KEY), "the returned report redacts the credential");
+    assert.ok(!humanText.includes(SYNTHETIC_KEY), "the text artifact redacts the credential");
+    assert.ok(!JSON.stringify(events).includes(SYNTHETIC_KEY), "live progress redacts the credential");
     assert.equal(report.conclusion.final, "inconclusive");
     assert.equal(exitCode, 1);
   } finally {
