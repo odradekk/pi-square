@@ -1083,8 +1083,13 @@ try {
       { role: "user", content: "ship it", timestamp: 3 },
     ] }, overCtx);
     assert.ok(projected?.messages, "the rebuild run transforms its first provider request");
-    assert.equal(projected.messages[0].summary, MEMORY_SUMMARY_WRAPPER,
-      "a full rebuild leaves the wrapper-only summary with no selected block");
+    // #297: the wrapper-only prefix rendering is itself projected as the
+    // blocks message — the two framing parts with no block part between.
+    assert.equal(projected.messages[0].customType, "pi-square.context-memory/blocks");
+    const overParts = projected.messages[0].content.map((part) => part.text);
+    assert.equal(overParts.length, 2, "a full rebuild leaves no selected block part");
+    assert.ok(overParts[0].endsWith(MEMORY_SUMMARY_WRAPPER), "the leading frame part ends with the wrapper");
+    assert.equal(overParts[1], "\n</summary>", "the trailing frame part is Pi's own framing");
     assert.equal(projected.messages[1].content, "long task",
       "the selected block's original sources are inserted in source order");
     const advisory = projected.messages.at(-1);
@@ -1150,11 +1155,15 @@ try {
     const transformed = await maintenanceHarness.emit("context", { type: "context", messages: request }, maintenanceCtx);
     assert.ok(transformed?.messages, "the maintenance run transforms its first provider request");
     const projected = transformed.messages;
-    assert.equal(projected[0].role, "compactionSummary");
-    assert.equal(projected[0].summary, composeMemorySummary([ALPHA]),
-      "the summary message keeps exactly the unchanged prefix rendering");
-    assert.ok(projected[0].summary.includes(ALPHA), "the unselected block body survives");
-    assert.ok(!projected[0].summary.includes(BETA) && !projected[0].summary.includes(GAMMA),
+    // #297: the unchanged prefix rendering is projected as the blocks message.
+    assert.equal(projected[0].customType, "pi-square.context-memory/blocks");
+    const prefixParts = projected[0].content.map((part) => part.text);
+    assert.equal(prefixParts.length, 3,
+      "the prefix rendering is one part per kept block plus the frames");
+    assert.equal(prefixParts[1], `\n---\n\n${ALPHA}`,
+      "the summary message keeps exactly the unchanged prefix rendering, one block per part");
+    assert.ok(prefixParts.join("").includes(ALPHA), "the unselected block body survives");
+    assert.ok(!prefixParts.join("").includes(BETA) && !prefixParts.join("").includes(GAMMA),
       "the selected summaries leave the request");
     const serialized = JSON.stringify(projected);
     assert.equal((serialized.match(/beta task/g) ?? []).length, 1, "every selected source entry is inserted exactly once");
@@ -1181,8 +1190,14 @@ try {
     const secondRequest = buildSessionContext(session.getBranch(), session.getLeafId()).messages;
     const secondTransformed = await maintenanceHarness.emit("context", { type: "context", messages: secondRequest }, maintenanceCtx);
     assert.ok(secondTransformed?.messages);
-    assert.equal(secondTransformed.messages[0].summary, composeMemorySummary([ALPHA, BETA, GAMMA]),
-      "later requests carry the unmodified Memory rendering");
+    // #297: later requests carry the complete Memory rendering, one ordered
+    // part per block, with no maintenance re-projection.
+    assert.equal(secondTransformed.messages[0].customType, "pi-square.context-memory/blocks");
+    assert.deepEqual(
+      secondTransformed.messages[0].content.filter((_, index) => index > 0 && index < 4).map((part) => part.text),
+      [`\n---\n\n${ALPHA}`, `\n---\n\n${BETA}`, `\n---\n\n${GAMMA}`],
+      "later requests carry the unmodified Memory rendering as one part per block",
+    );
     assert.equal(
       secondTransformed.messages.filter((message) => message?.customType === CONTEXT_MEMORY_ADVISORY_TYPE).length,
       0,

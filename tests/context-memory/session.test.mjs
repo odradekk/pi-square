@@ -3,11 +3,11 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import jiti from "jiti";
-import { SessionManager, buildContextEntries } from "@earendil-works/pi-coding-agent";
+import { SessionManager, buildContextEntries, convertToLlm } from "@earendil-works/pi-coding-agent";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const registerContextMemory = (await load("../../src/context-memory/index.ts")).default;
-const { MEMORY_FORMAT_TAG, composeMemorySummary } = await load("../../src/context-memory/format.ts");
+const { MEMORY_FORMAT_TAG, MEMORY_SUMMARY_WRAPPER, composeMemorySummary } = await load("../../src/context-memory/format.ts");
 const { MEMORY_TRANSCRIPT_HEADER } = await load("../../src/context-memory/transcript.ts");
 
 const ENABLED_CONFIG = { enabled: true, compressionThreshold: { percent: 30 }, memoryBudgetPercent: 10 };
@@ -785,8 +785,21 @@ try {
     assert.equal(projectedRequest[0].summary, composeMemorySummary([blockAlpha, blockBeta]));
     const transformed = await rebuildHarness.emit("context", { type: "context", messages: projectedRequest }, rebuildCtx);
     assert.ok(transformed?.messages, "the maintenance run transforms Pi's real projected request");
-    assert.equal(transformed.messages[0].summary, composeMemorySummary([blockAlpha]),
-      "the real summary message keeps exactly the unchanged prefix rendering");
+    // #297: the request's Memory summary message is further re-projected as
+    // one ordered text block per block — here the unchanged prefix rendering.
+    assert.equal(transformed.messages[0].role, "custom");
+    assert.equal(transformed.messages[0].customType, "pi-square.context-memory/blocks");
+    const prefixParts = transformed.messages[0].content.map((part) => part.text);
+    assert.equal(prefixParts.length, 3,
+      "the maintenance projection carries the unchanged prefix as exactly one part per block plus the frames");
+    assert.ok(prefixParts[0].endsWith(MEMORY_SUMMARY_WRAPPER), "the leading frame part ends with the wrapper");
+    assert.equal(prefixParts[1], `\n---\n\n${blockAlpha}`,
+      "the unchanged prefix block is its own byte-exact text block");
+    assert.equal(
+      prefixParts.join(""),
+      convertToLlm([{ role: "compactionSummary", summary: composeMemorySummary([blockAlpha]), tokensBefore: 4321, timestamp: 0 }])[0].content[0].text,
+      "the projected parts concatenate to Pi's own rendering of the unchanged prefix summary",
+    );
     assert.equal(transformed.messages[1].content, "verify the second exchange",
       "the selected block's original sources are inserted in source order");
     assert.deepEqual(
