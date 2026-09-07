@@ -53,6 +53,8 @@ Dispatching a `ready-for-agent` ticket to a worktree agent, accepting the pull r
 
 ## Rules and Constraints
 
+- Keep anchored survivor authorization inside the store-owned publication boundary. `publishMutation` accepts structural before/after snapshots plus the replace consumed interval or insert boundary/empty-initialization evidence, derives survivors itself, intersects them with rows served for the exact prior checksum, and advances every currently resolvable hard-link alias already known to the acting owner in one transaction while preserving each alias's own stable hash mapping. Callers must never nominate survivor hashes; other owners, whole-file writes, external changes, and failed publications remain stale until a fresh read.
+
 - Preserve the Node.js 24 and Pi 0.84.2 runtime contract unless the change explicitly updates compatibility and documentation.
 - Keep the project ESM-only and compatible with the strict settings in `tsconfig.json`, including unused-symbol checks and no emitted JavaScript.
 - Register extension behavior through `src/index.ts`. The package exports only `.`, the intentional declarative `./display` integration API, and `./package.json`; do not add other package entry points or deep-import contracts without an explicit architecture change.

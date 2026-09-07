@@ -29,7 +29,7 @@ import {
 } from "./insert.ts";
 import { buildChanged, buildNoop, type RMeta } from "./replace-response.ts";
 import { restoreEndings } from "./replace-diff.ts";
-import { servedHashesFromDiff, survivorCarryHashes } from "./served.ts";
+import { servedHashesFromDiff } from "./served.ts";
 import { loadAnchoredHashStore } from "./workspace-support.ts";
 import { stripBOM, toLF } from "./replace-diff.ts";
 import { AUTO_READ_MAX } from "./constants.ts";
@@ -99,6 +99,26 @@ async function operationKeyFor(canonicalPath: string): Promise<string> {
     // the canonical path is the key.
   }
   return canonicalPath;
+}
+
+/**
+ * Every path already known to this owner that currently resolves to the same
+ * multi-link inode. Discovery happens while the target boundary is held and
+ * before the filesystem commit, so one publication can advance every known
+ * alias atomically. Missing or no-longer-matching historical paths are simply
+ * left stale; they cannot gain authorization for the installed version.
+ */
+async function mutationPublicationAliases(
+  store: HashStoreHandle,
+  target: AnchoredTarget,
+): Promise<string[]> {
+  const aliases: string[] = [];
+  if (!target.opKey.startsWith("inode:")) return aliases;
+  for (const path of store.allPaths()) {
+    if (path === target.canonicalPath) continue;
+    if (await operationKeyFor(path) === target.opKey) aliases.push(path);
+  }
+  return aliases;
 }
 
 /** Resolves a requested path with Pi's native authority and derives its
@@ -439,21 +459,10 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           );
         }
 
-        // #299 survivor classification, computed entirely from preparation
-        // evidence while the boundary is held: rows served to this owner for
-        // the exact pre-mutation version, outside the consumed interval, that
-        // keep their hash identity and logical bytes in the installed
-        // content. Publication re-checks these against the stored rows for
-        // the pre-mutation version inside its transaction.
-        const servedLookup = store.getServedState(target.canonicalPath, prep.originalNormalized);
-        const survivorHashes = survivorCarryHashes({
-          served: servedLookup !== undefined && "served" in servedLookup ? servedLookup.served : undefined,
-          originalContent: prep.originalNormalized,
-          originalHashes: prep.originalHashes,
-          resultContent: prep.result,
-          resultHashes: prep.resultHashes,
-          ...(prep.consumedRange ? { consumedRange: prep.consumedRange } : {}),
-        });
+        if (!prep.consumedRange) {
+          throw new Error("Applied anchored replace is missing its consumed range.");
+        }
+        const publicationAliases = await mutationPublicationAliases(store, target);
 
         await replaceBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
         if (input.signal?.aborted) return lockedRefusal();
@@ -483,10 +492,10 @@ export async function runAnchoredReplace(input: AnchoredReplaceInput): Promise<A
           try {
             store.publishMutation({
               path: target.canonicalPath,
-              content: prep.result,
-              hashes: prep.resultHashes,
-              fromContent: prep.originalNormalized,
-              survivorHashes,
+              ...(publicationAliases.length > 0 ? { aliases: publicationAliases } : {}),
+              before: { content: prep.originalNormalized, hashes: prep.originalHashes },
+              after: { content: prep.result, hashes: prep.resultHashes },
+              survival: { kind: "replace", consumedRange: prep.consumedRange },
               ...(input.autoRead() ? { servedHashes: servedHashesFromDiff(diff) } : {}),
             });
           } catch (error) {
@@ -646,21 +655,7 @@ export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<Anc
           );
         }
 
-        // #299 survivor classification from preparation evidence, under the
-        // boundary: an insertion consumes no observed row, so every original
-        // real row this owner was served for survives when it keeps its hash
-        // identity and logical bytes. The synthetic empty-file anchor is not
-        // a real row and never carries into the initialized version.
-        const insertServedLookup = store.getServedState(target.canonicalPath, prep.originalNormalized);
-        const insertSurvivorHashes = prep.initializedFromEmpty
-          ? []
-          : survivorCarryHashes({
-              served: insertServedLookup !== undefined && "served" in insertServedLookup ? insertServedLookup.served : undefined,
-              originalContent: prep.originalNormalized,
-              originalHashes: prep.originalHashes,
-              resultContent: prep.result,
-              resultHashes: prep.resultHashes,
-            });
+        const publicationAliases = await mutationPublicationAliases(store, target);
 
         await insertBarrier.beforeCommit?.({ canonicalPath: target.canonicalPath });
         if (input.signal?.aborted) return lockedRefusal();
@@ -678,10 +673,14 @@ export async function runAnchoredInsert(input: AnchoredInsertInput): Promise<Anc
           try {
             store.publishMutation({
               path: target.canonicalPath,
-              content: prep.result,
-              hashes: prep.resultHashes,
-              fromContent: prep.originalNormalized,
-              survivorHashes: insertSurvivorHashes,
+              ...(publicationAliases.length > 0 ? { aliases: publicationAliases } : {}),
+              before: { content: prep.originalNormalized, hashes: prep.originalHashes },
+              after: { content: prep.result, hashes: prep.resultHashes },
+              survival: {
+                kind: "insert",
+                initializedFromEmpty: prep.initializedFromEmpty,
+                insertAt: prep.insertAt,
+              },
               ...(input.autoRead() ? { servedHashes: servedHashesFromDiff(diff) } : {}),
             });
           } catch (error) {

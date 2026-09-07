@@ -1,6 +1,6 @@
 import { afterEach } from "vitest";
 import { describe, expect, it, vi } from "vitest";
-import { readFile, writeFile } from "fs/promises";
+import { link, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createAnchoredReplaceToolDefinition } from "../../../src/anchored-edit/workspace-replace";
@@ -101,6 +101,19 @@ function parkReplaceAtCommit(): { entered: Promise<void>; release: () => void } 
   const entered = new Promise<void>((resolveEntered) => {
     replaceBarrier.beforeCommit = () => {
       replaceBarrier.beforeCommit = undefined;
+      resolveEntered();
+      return new Promise<void>((resolveRelease) => { releaseFn = resolveRelease; });
+    };
+  });
+  return { entered, release: () => releaseFn() };
+}
+
+/** Parks the next insert at the same irreversible boundary. */
+function parkInsertAtCommit(): { entered: Promise<void>; release: () => void } {
+  let releaseFn!: () => void;
+  const entered = new Promise<void>((resolveEntered) => {
+    insertBarrier.beforeCommit = () => {
+      insertBarrier.beforeCommit = undefined;
       resolveEntered();
       return new Promise<void>((resolveRelease) => { releaseFn = resolveRelease; });
     };
@@ -234,12 +247,12 @@ describe("anchored authorization carry — concurrent same-target calls (#299)",
       const { readTool, editTool, insertTool } = setupIntegrationTest(cwd);
       const anchors = await readAnchors(readTool, ctx, "sample.txt");
 
-      const park = parkReplaceAtCommit();
-      const first = editTool.execute("c1", { path: "sample.txt", remove_from: anchors.get("l2")!, remove_to: anchors.get("l2")!, replacement_text: "L2" }, undefined, undefined, ctx);
+      const park = parkInsertAtCommit();
+      const first = insertTool.execute("c1", { path: "sample.txt", anchor: anchors.get("l2")!, direction: "after", lines: ["inserted"] }, undefined, undefined, ctx);
       await park.entered;
 
-      const second = insertTool.execute("c2", { path: "sample.txt", anchor: anchors.get("l4")!, direction: "before", lines: ["inserted"] }, undefined, undefined, ctx);
-      const third = editTool.execute("c3", { path: "sample.txt", remove_from: anchors.get("l5")!, remove_to: anchors.get("l5")!, replacement_text: "L5" }, undefined, undefined, ctx);
+      const second = editTool.execute("c2", { path: "sample.txt", remove_from: anchors.get("l4")!, remove_to: anchors.get("l4")!, replacement_text: "L4" }, undefined, undefined, ctx);
+      const third = insertTool.execute("c3", { path: "sample.txt", anchor: anchors.get("l5")!, direction: "before", lines: ["tail"] }, undefined, undefined, ctx);
       await new Promise((resolveTick) => setImmediate(resolveTick));
       expect(await readFile(path, "utf-8")).toBe("l1\nl2\nl3\nl4\nl5\n");
 
@@ -247,7 +260,59 @@ describe("anchored authorization carry — concurrent same-target calls (#299)",
       await expectApplied((await first) as AnyResult);
       await expectApplied((await second) as AnyResult);
       await expectApplied((await third) as AnyResult);
-      expect(await readFile(path, "utf-8")).toBe("l1\nL2\nl3\ninserted\nl4\nL5\n");
+      expect(await readFile(path, "utf-8")).toBe("l1\nl2\ninserted\nl3\nL4\ntail\nl5\n");
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("advances both known hard-link aliases before a queued disjoint mutation validates", async () => {
+    await withTempDir("carry-hardlink-", async (cwd) => {
+      const path = join(cwd, "sample.txt");
+      const alias = join(cwd, "alias.txt");
+      await writeFile(path, "a\nb\nc\nd\n", "utf-8");
+      await link(path, alias);
+      const ctx = makeTestCtx(cwd);
+      const { readTool, editTool, insertTool } = setupIntegrationTest(cwd);
+      const originalAnchors = await readAnchors(readTool, ctx, "sample.txt");
+      const aliasAnchors = await readAnchors(readTool, ctx, "alias.txt");
+      expect(aliasAnchors).toEqual(originalAnchors);
+
+      // A path can legitimately retain a different stable hash mapping after
+      // earlier path-specific history. Seed that state explicitly so this
+      // regression proves alias migration preserves alias anchors rather than
+      // merely copying the invoked path's snapshot.
+      const aliasHashes = ["A01", "B02", "C03", "D04"];
+      const aliasStore = await loadTestStore(cwd);
+      aliasStore.publishRead({
+        path: await resolveTarget(toCwd("alias.txt", cwd)),
+        content: "a\nb\nc\nd\n",
+        hashes: aliasHashes,
+        servedHashes: aliasHashes,
+      });
+      aliasStore.release();
+
+      const park = parkReplaceAtCommit();
+      const first = editTool.execute("h1", {
+        path: "sample.txt",
+        remove_from: originalAnchors.get("b")!,
+        remove_to: originalAnchors.get("b")!,
+        replacement_text: "B",
+      }, undefined, undefined, ctx);
+      await park.entered;
+      const second = insertTool.execute("h2", {
+        path: "alias.txt",
+        anchor: aliasHashes[3]!,
+        direction: "before",
+        lines: ["inserted"],
+      }, undefined, undefined, ctx);
+
+      await new Promise((resolveTick) => setImmediate(resolveTick));
+      expect(await readFile(alias, "utf-8")).toBe("a\nb\nc\nd\n");
+      park.release();
+
+      await expectApplied((await first) as AnyResult);
+      await expectApplied((await second) as AnyResult);
+      expect(await readFile(path, "utf-8")).toBe("a\nB\nc\ninserted\nd\n");
+      expect(await readFile(alias, "utf-8")).toBe("a\nB\nc\ninserted\nd\n");
     });
   });
 
@@ -451,12 +516,14 @@ describe("anchored authorization carry — post-commit publication failure (#299
       const path = join(cwd, "sample.txt");
       await writeFile(path, "l1\nl2\nl3\nl4\nl5\n", "utf-8");
       const ctx = makeTestCtx(cwd);
-      const { readTool, editTool } = setupIntegrationTest(cwd);
+      const { readTool, editTool, insertTool } = setupIntegrationTest(cwd);
       const anchors = await readAnchors(readTool, ctx, "sample.txt");
 
       const hashStoreModule = await import("../../../src/anchored-edit/hash-store");
+      let freshChangedHash: string | undefined;
       const spy = vi.spyOn(hashStoreModule.__testables.HashStoreHandleImpl.prototype, "publishMutation")
-        .mockImplementation(() => {
+        .mockImplementation((input) => {
+          freshChangedHash = input.after.hashes[1];
           throw new Error("store down");
         });
       const applied = await editTool.execute("e1", { path: "sample.txt", remove_from: anchors.get("l2")!, remove_to: anchors.get("l2")!, replacement_text: "L2" }, undefined, undefined, ctx) as AnyResult;
@@ -467,14 +534,30 @@ describe("anchored authorization carry — post-commit publication failure (#299
       expect(applied.details?.diff).toBe("");
       expect(await readFile(path, "utf-8")).toBe("l1\nL2\nl3\nl4\nl5\n");
 
-      // A row that would have survived carries nothing after the rollback…
-      const survivorRefused = await editTool.execute("e2", { path: "sample.txt", remove_from: anchors.get("l4")!, remove_to: anchors.get("l4")!, replacement_text: "L4" }, undefined, undefined, ctx) as AnyResult;
+      const failedStore = await loadTestStore(cwd);
+      try {
+        expect(failedStore.getSnapshot(path, "l1\nL2\nl3\nl4\nl5\n"), "the candidate snapshot was not cached").toBeUndefined();
+        expect(failedStore.getServedState(path, "l1\nL2\nl3\nl4\nl5\n")).toEqual({ stale: true });
+      } finally {
+        failedStore.release();
+      }
+
+      // The fresh changed-row hash that the suppressed diff would have shown
+      // is not authorized after failed publication.
+      expect(freshChangedHash).toBeDefined();
+      const freshRefused = await insertTool.execute("i2", { path: "sample.txt", anchor: freshChangedHash!, direction: "after", lines: ["not-applied"] }, undefined, undefined, ctx) as AnyResult;
+      expect(freshRefused.details?.errorCode).toBe("E_RANGE_STALE");
+      expect(await readFile(path, "utf-8")).toBe("l1\nL2\nl3\nl4\nl5\n");
+
+      // A distant row that would have survived also carries nothing. The
+      // preceding refusal only served bounded context around line 2.
+      const survivorRefused = await editTool.execute("e2", { path: "sample.txt", remove_from: anchors.get("l5")!, remove_to: anchors.get("l5")!, replacement_text: "L5" }, undefined, undefined, ctx) as AnyResult;
       expect(survivorRefused.details?.errorCode).toBe("E_RANGE_STALE");
       expect(textOf(survivorRefused.content)).toContain("Nothing was modified");
       // …and a fresh read repairs the state.
       const freshAnchors = await readAnchors(readTool, ctx, "sample.txt");
-      await expectApplied(await editTool.execute("e3", { path: "sample.txt", remove_from: freshAnchors.get("l4")!, remove_to: freshAnchors.get("l4")!, replacement_text: "L4" }, undefined, undefined, ctx) as AnyResult);
-      expect(await readFile(path, "utf-8")).toBe("l1\nL2\nl3\nL4\nl5\n");
+      await expectApplied(await editTool.execute("e3", { path: "sample.txt", remove_from: freshAnchors.get("l5")!, remove_to: freshAnchors.get("l5")!, replacement_text: "L5" }, undefined, undefined, ctx) as AnyResult);
+      expect(await readFile(path, "utf-8")).toBe("l1\nL2\nl3\nl4\nL5\n");
     });
   });
 });

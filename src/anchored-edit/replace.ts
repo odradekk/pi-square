@@ -19,6 +19,7 @@ import {
 	type RMetrics,
 } from "./replace-response";
 import { type HashStoreHandle } from "./hash-store";
+import type { ConsumedLineRange } from "./served";
 
 const replacementTextSchema = Type.String({
   description:
@@ -80,7 +81,7 @@ export interface PipelineResult {
   /** Resolved consumed interval of original rows (1-based, inclusive) for an
    *  applied replacement; undefined for a noop. #299 uses it to classify
    *  which served rows survive into the installed version's authorization. */
-  consumedRange?: { first: number; last: number };
+  consumedRange?: ConsumedLineRange;
   totalAddedLines: number;
   totalRemovedLines: number;
 }

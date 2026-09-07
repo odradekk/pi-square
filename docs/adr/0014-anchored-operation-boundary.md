@@ -102,7 +102,7 @@ that died at that boundary) invalidates the previous authorization until a
 fresh read republishes current rows. One refinement (#299): the acting
 owner's own successful structured mutation is a *trusted self-transition*.
 Mutation publication receives the pre-mutation content, the resolved
-consumed interval (replace) or the empty-file-initialization flag (insert),
+consumed interval (replace) or insertion boundary and empty-file-initialization flag (insert),
 and the post-mutation content and hashes — all preparation evidence, no
 post-commit filesystem consultation — and in the same repository
 transaction, while the boundary is still held, it rebinds exactly the
@@ -115,7 +115,12 @@ defensively — never inferred from a hash-set intersection, because identical
 replacement content may reuse a consumed row's identity — and the store
 re-reads the owner's rows for the exact pre-mutation checksum inside the
 transaction, so a caller cannot smuggle another version's authorization
-forward. The next served set is the deduplicated union of carried survivors
+forward. For a multi-link inode, the boundary supplies every currently
+resolvable path already known to the acting owner; the store advances those
+aliases together in the same transaction while replaying the transition from
+each alias's exact prior snapshot, so its own stable anchors survive even when
+its hash mapping differs from the invoked path. Other owners' aliases remain
+on their observed version. The next served set is the deduplicated union of carried survivors
 and the newly visible diff rows (auto-read on) or the carried survivors
 alone (auto-read off, which discloses and newly serves no diff rows while
 preserving already-observed survivors). When nothing is eligible, the
@@ -127,6 +132,10 @@ concurrently — validates against carried plus fresh authorization instead
 of a self-generated stale refusal; the linearizability claim is exactly
 that: non-conflicting operations all take effect, while a later operation
 whose anchor or range an earlier one consumed or changed is still refused.
+A model may therefore issue independent same-file mutations together from one
+read. Operations that overlap, consume another operation's anchor, or depend
+on newly created text remain ordered dependencies and must use the earlier
+result's anchors.
 A no-op replacement performs no transition. Whole-file writes keep their
 clearing publication: an unstructured rewrite supplies no consumed interval
 from which to prove row survival. Validation failures carry the observed

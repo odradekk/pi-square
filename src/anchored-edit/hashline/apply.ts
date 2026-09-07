@@ -1,4 +1,5 @@
 import { abortIf, splitLines } from "../utils";
+import type { ConsumedLineRange } from "../served";
 import { _lineHashesPure, HASH_SEP } from "./hash";
 import {
 	resolveRange,
@@ -153,7 +154,7 @@ export function applyEdit(
 	lastChangedLine: number | undefined;
 	/** Resolved consumed interval of original rows (1-based, inclusive);
 	 *  present only on an applied (non-noop) replacement. */
-	consumedLines?: { first: number; last: number };
+	consumedLines?: ConsumedLineRange;
 	warnings?: string[];
 	noopEdit?: NEdit;
 	autoFixes?: AutoFix[];
