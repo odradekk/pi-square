@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DIGEST_NONCE, SYSTEM_PROMPT, armNamespace, composeRequest, toolsFor } from "../cache-experiment/fixture.mjs";
 import { estimateTokens, sha256Hex } from "../cache-experiment/evidence.mjs";
+import { fakeClock } from "../cache-experiment/fake-provider.mjs";
 import { runExperiment } from "../cache-experiment/runner.mjs";
 import {
   CACHE_PROVIDER_PRICES,
@@ -177,8 +178,8 @@ function captureTransport(handler) {
   assert.equal(body.system[0].type, "text");
   assert.ok(body.system[0].text.includes(SYSTEM_PROMPT),
     "the system block carries the pinned system prompt");
-  assert.ok(body.system[0].text.includes(armNamespace(DIGEST_NONCE, "multiblock")),
-    "the system block carries the run+arm cold namespace (#297 review findings 2 and 3)");
+  assert.ok(body.system[0].text.includes(armNamespace(DIGEST_NONCE, 1, "multiblock")),
+    "the system block carries the run+group+arm cold namespace (#297 review findings 2 and 3)");
   assert.ok(
     body.system[0].text.indexOf("Experiment isolation namespace ") < body.system[0].text.indexOf(SYSTEM_PROMPT),
     "the namespace line precedes every shared cacheable byte of the system prompt",
@@ -192,7 +193,7 @@ function captureTransport(handler) {
     input_schema: tool.inputSchema,
   })).map((tool, index) => (index === saltedTools.length - 1 ? { ...tool, cache_control: { type: "ephemeral" } } : tool)),
     "breakpoint 2: the last immediate tool carries cache_control, and only it");
-  assert.ok(body.tools.every((tool, index) => tool.description.endsWith(`[isolation:${armNamespace(DIGEST_NONCE, "multiblock")}]`)
+  assert.ok(body.tools.every((tool, index) => tool.description.endsWith(`[isolation:${armNamespace(DIGEST_NONCE, 1, "multiblock")}]`)
     || tool.description === saltedTools[index].description),
     "every tool description carries the request's isolation token (#297 review finding 2)");
   assert.equal(body.messages[0].role, "user");
@@ -231,8 +232,9 @@ function captureTransport(handler) {
   // arm's probe keeps every carried block's text block byte-identical and
   // inserts exactly one new block before the trailing frame, while the single
   // arm's one summary text block grows at its end with the appended block.
-  // The nonce control's earliest carried block differs from its prime's
-  // inside the block.
+  // The nonce control's carried blocks stay byte-identical to its prime's —
+  // its divergence lives in the per-request isolation namespace, asserted
+  // below.
   const strip = (messages) => JSON.stringify(messages, (key, value) => (key === "cache_control" ? undefined : value));
   const summaryOf = (wire) => JSON.parse(wire).messages[0];
 
@@ -511,7 +513,7 @@ function captureTransport(handler) {
   });
 
   const adapter = createCacheProviderAdapter({ transport });
-  const clock = { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+  const clock = { now: Date.now, mono: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
   const { report, exitCode } = await runExperiment({
     adapter,
     clock,
@@ -551,6 +553,86 @@ function captureTransport(handler) {
     "the gap the stub can show sits inside the pinned liveness margin, so the control is honestly dead");
   assert.ok(report.conclusion.reasons.some((reason) => reason.includes("liveness control dead")));
   assert.equal(exitCode, 0, "integrity, not the conclusion label, decides the exit code");
+}
+
+// ─── a gateway echoing the credential never reaches the report ──────
+
+{
+  // #297 review round 3: an error body (or stream error frame) that echoes
+  // the API key must be scrubbed exactly — the actual value replaced, the
+  // surrounding text preserved — before the error enters the report, and
+  // the runner's self-check must catch any survivor.
+  const SYNTHETIC_KEY = "sk-echo-test-0123456789abcdef-XYZ";
+  const echoBody = JSON.stringify({ error: `invalid api key ${SYNTHETIC_KEY} for this account` });
+  const transport = captureTransport(() => ({
+    ok: false,
+    status: 401,
+    text: async () => echoBody,
+  }));
+  const adapter = createCacheProviderAdapter({ transport });
+  process.env.CCR_CLAUDE_API_KEY = SYNTHETIC_KEY;
+  try {
+    await assert.rejects(
+      () => adapter.send(experimentRequest(1, "multiblock", "prime"), {}),
+      (error) => {
+        assert.ok(!error.message.includes(SYNTHETIC_KEY), "the echoed HTTP error text no longer contains the credential");
+        assert.ok(error.message.includes("‹credential›"), "the credential is replaced exactly once per occurrence");
+        assert.ok(error.message.includes("provider HTTP 401"), "the bounded error context is preserved");
+        return true;
+      },
+    );
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
+  // The stream-error path scrubs too: a mid-stream error frame echoes the key.
+  const echoFrame = [
+    'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n\n',
+    `event: error\ndata: ${JSON.stringify({ type: "error", error: { message: `upstream rejected key ${SYNTHETIC_KEY}` } })}\n\n`,
+  ].join("");
+  const streamTransport = {
+    fetch: async () => sseResponse(echoFrame),
+  };
+  process.env.CCR_CLAUDE_API_KEY = SYNTHETIC_KEY;
+  try {
+    const streamAdapter = createCacheProviderAdapter({ transport: streamTransport });
+    await assert.rejects(
+      () => streamAdapter.send(experimentRequest(1, "multiblock", "prime"), {}),
+      (error) => {
+        assert.ok(!error.message.includes(SYNTHETIC_KEY), "the echoed stream error text no longer contains the credential");
+        assert.ok(error.message.includes("‹credential›"));
+        return true;
+      },
+    );
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
+  // The runner-level self-check: an adapter whose error bypasses every scrub
+  // still fails the run's integrity through the secret-value scan.
+  const leakingAdapter = {
+    id: "simulated-leak/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/leak-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
+    requiredEnv: ["CCR_CLAUDE_API_KEY"],
+    async send() {
+      throw new Error(`upstream said: bad key ${SYNTHETIC_KEY}`);
+    },
+  };
+  process.env.CCR_CLAUDE_API_KEY = SYNTHETIC_KEY;
+  try {
+    const { report, exitCode, json } = await runExperiment({
+      adapter: leakingAdapter,
+      clock: fakeClock(),
+      secretValues: [SYNTHETIC_KEY],
+      generatedAt: () => "2026-01-01T00:00:00.000Z",
+    });
+    assert.equal(report.integrity.ok, false);
+    assert.ok(report.integrity.failures.some((failure) => failure.includes("credential value")),
+      "the privacy self-check names the credential leak");
+    assert.ok(!json.includes(SYNTHETIC_KEY), "the emitted artifact redacts the credential");
+    assert.equal(report.conclusion.final, "inconclusive");
+    assert.equal(exitCode, 1);
+  } finally {
+    delete process.env.CCR_CLAUDE_API_KEY;
+  }
 }
 
 // ─── the command's --adapter surface refuses offline, by name only ──

@@ -112,6 +112,21 @@ function boundedString(value, cap = REPORT_STRING_MAX) {
   return String(value).slice(0, cap);
 }
 
+/**
+ * Exact-credential scrub for every string that can reach the report
+ * (#297 review round 3): a gateway can echo the Authorization/x-api-key
+ * value inside an error body or stream error frame, and a bounded echo of
+ * that text would carry the credential verbatim into `providerErrors` and
+ * the artifact. The actual value is replaced everywhere it occurs; short or
+ * empty values are left untouched because replacing a 1–2 character secret
+ * would shred ordinary error text while protecting nothing.
+ */
+function scrubCredential(text, credential) {
+  const value = String(text);
+  if (!credential || credential.length < 3 || !value.includes(credential)) return value;
+  return value.split(credential).join("‹credential›");
+}
+
 // ─── Wire reconstruction from the canonical payload table ───────────
 
 function tailMessageOf(text) {
@@ -216,7 +231,7 @@ function isCount(value) {
  * `content_block_delta` is the first-token signal. Any `error` event fails
  * the request. Nothing is buffered beyond the usage fields the report needs.
  */
-async function consumeSse(response, observe) {
+async function consumeSse(response, observe, credential) {
   const usage = {};
   let firstTokenFired = false;
   // Anthropic reports input-side usage in `message_start` and the final
@@ -247,7 +262,7 @@ async function consumeSse(response, observe) {
       }
       if (event.type === "error") {
         const message = event.error?.message ?? event.message ?? "provider stream error";
-        throw new Error(boundedString(`provider stream error: ${message}`, REPORT_STRING_MAX));
+        throw new Error(scrubCredential(boundedString(`provider stream error: ${message}`, REPORT_STRING_MAX), credential));
       }
       if (event.type === "content_block_delta" && !firstTokenFired) {
         firstTokenFired = true;
@@ -357,9 +372,10 @@ export function createCacheProviderAdapter(options = {}) {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        throw new Error(boundedString(`provider HTTP ${response.status}: ${await boundedErrorText(response)}`, REPORT_STRING_MAX));
+        const bodyText = await boundedErrorText(response);
+        throw new Error(scrubCredential(boundedString(`provider HTTP ${response.status}: ${bodyText}`, REPORT_STRING_MAX), key));
       }
-      return consumeSse(response, observe);
+      return consumeSse(response, observe, key);
     },
   };
 }

@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fakeClock, simulatedCacheAdapter } from "./fake-provider.mjs";
 import { runExperiment } from "./runner.mjs";
@@ -85,20 +85,50 @@ async function loadAdapter(path) {
 }
 
 /**
- * The implementation this process is running from (#297 review finding 5):
- * the exact commit, its tree digest, and whether the repository carries
- * changes that make the digest unverifiable. A commit that cannot be
- * resolved, or a dirty index or worktree, leaves the recorded commit unable
- * to authorize the run's evidence — credentialed runs refuse to start in
- * that state instead of recording evidence no revision can reproduce.
+ * Git environment variables that redirect every git subprocess away from
+ * the repository this file lives in (#297 review round 3). They are stripped
+ * from every provenance query: a stray `GIT_DIR`/`GIT_WORK_TREE` in the
+ * environment must not be able to point the recorded commit, tree, or
+ * cleanliness at some other repository.
  */
-function resolveImplementation() {
-  const git = (args) => execSync(`git ${args}`, { cwd: HERE, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+const GIT_REDIRECT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CONFIG",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CEILING_DIRECTORIES",
+];
+
+/**
+ * The implementation this process is running from (#297 review finding 5,
+ * round 3): the exact commit, its tree digest, and whether the repository
+ * carries changes that make the digest unverifiable. A commit that cannot
+ * be resolved, a repository root that is not this checkout, or a dirty
+ * index or worktree leaves the recorded commit unable to authorize the
+ * run's evidence — credentialed runs refuse to start in that state instead
+ * of recording evidence no revision can reproduce.
+ */
+export function resolveImplementation({ env = process.env, exec = execSync } = {}) {
+  const cleanEnv = { ...env };
+  for (const name of GIT_REDIRECT_VARS) delete cleanEnv[name];
+  const git = (args) => exec(`git ${args}`, { cwd: HERE, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: cleanEnv }).trim();
   try {
     const commit = git("rev-parse HEAD");
     const tree = git("rev-parse HEAD^{tree}");
+    const root = git("rev-parse --show-toplevel");
     const status = git("status --porcelain");
     if (!/^[0-9a-f]{7,40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(tree)) {
+      return { commit: null, tree: null, dirty: true };
+    }
+    // The resolved repository root must actually contain this checkout; a
+    // redirect that survived the scrub, or an unexpected worktree layout,
+    // makes the provenance untrustworthy.
+    const relative = relativePath(resolvePath(root), HERE);
+    if (relative.startsWith("..") || isAbsolute(relative)) {
       return { commit: null, tree: null, dirty: true };
     }
     return { commit, tree, dirty: status.length > 0 };
@@ -113,28 +143,41 @@ function runIdOf(generatedAt) {
 }
 
 /**
+ * The final line of every published text artifact: a run is complete iff its
+ * txt file ends with this sentinel (#297 review round 3). A crashed or
+ * killed process can leave the claimed pair half-written; readers and
+ * archival tooling recognize the boundary without trusting file presence.
+ */
+export const REPORT_COMPLETE_SENTINEL = "report complete";
+
+/**
  * Atomically claims one shared basename for this run's artifact pair
- * (#297 review finding 6): both files are created exclusively under the same
- * name, so a partial artifact from a crashed run or two concurrent runs can
- * never mismatch or overwrite each other — the loser retries on the next
- * suffix instead.
+ * (#297 review finding 6, round 3): both files are created exclusively
+ * under the same name, so a partial artifact from a crashed run or two
+ * concurrent runs can never mismatch or overwrite each other — the loser
+ * retries on the next suffix instead. Only `EEXIST` (the name is taken)
+ * moves to the next suffix; every other failure — permissions, no space, a
+ * removed directory — releases any partial claim and propagates, because
+ * retrying a different suffix cannot fix the filesystem and an unbounded
+ * retry would hang the run.
  */
 export function claimArtifactPair(reportDir, mode, runId) {
   for (let suffix = 1; ; suffix += 1) {
-    // eslint-disable-next-line no-constant-condition -- the loop exits by return
     const base = join(reportDir, `provider-cache-experiment-${mode}-${runId}${suffix > 1 ? `-${suffix}` : ""}`);
     const jsonPath = `${base}.json`;
     const txtPath = `${base}.txt`;
     try {
       closeSync(openSync(jsonPath, "wx"));
-    } catch {
-      continue; // someone holds this basename; try the next suffix
+    } catch (error) {
+      if (error?.code === "EEXIST") continue; // someone holds this basename; next suffix
+      throw error;
     }
     try {
       closeSync(openSync(txtPath, "wx"));
-    } catch {
-      rmSync(jsonPath, { force: true }); // partial claim: release and retry
-      continue;
+    } catch (error) {
+      rmSync(jsonPath, { force: true }); // release the partial claim
+      if (error?.code === "EEXIST") continue;
+      throw error;
     }
     return { jsonPath, txtPath };
   }
@@ -154,7 +197,14 @@ async function main() {
       console.error("the command never prints credential values; set them and re-run");
       process.exit(2);
     }
-    clock = { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+    // `mono()` drives every interval measurement (TTL, TTFT); the wall
+    // clock only timestamps. A host clock adjustment can never affect the
+    // TTL evidence (#297 review round 3).
+    clock = {
+      now: Date.now,
+      mono: () => performance.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    };
   } else {
     clock = fakeClock();
     adapter = simulatedCacheAdapter({ clock, ttlMs: 300_000 });
@@ -174,10 +224,17 @@ async function main() {
     }
     process.exit(2);
   }
+  // #297 review round 3: the report self-check receives the present
+  // credential values, so a provider error body that echoes one still fails
+  // the run's integrity instead of reaching the artifact.
+  const secretValues = (adapter.requiredEnv ?? [])
+    .map((name) => process.env[name])
+    .filter((value) => typeof value === "string" && value.length >= 3);
   const { json, humanText, exitCode, report } = await runExperiment({
     adapter,
     clock,
     onEvent,
+    secretValues,
     implementationCommit: implementation.commit ?? "unavailable",
     implementationTree: implementation.tree ?? "unavailable",
   });
@@ -186,8 +243,11 @@ async function main() {
   mkdirSync(reportDir, { recursive: true });
   const runId = runIdOf(report.generatedAt);
   const { jsonPath, txtPath } = claimArtifactPair(reportDir, report.mode, runId);
+  // The json publishes first; the txt closes with the completion sentinel so
+  // a half-written pair is recognizable as crashed, never mistaken for a
+  // finished run.
   writeFileSync(jsonPath, json.endsWith("\n") ? json : `${json}\n`);
-  writeFileSync(txtPath, `${humanText}\n`);
+  writeFileSync(txtPath, `${humanText}\n${REPORT_COMPLETE_SENTINEL}\n`);
   console.log(humanText);
   console.log(`report: ${jsonPath}`);
   console.log(`implementation commit: ${report.pins.implementationCommit}`);

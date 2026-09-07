@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { claimArtifactPair } from "./experiment.mjs";
+import { REPORT_COMPLETE_SENTINEL, claimArtifactPair, resolveImplementation } from "./experiment.mjs";
 import {
   ARMS,
   ARM_ORDER,
@@ -122,8 +122,8 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
         assert.ok(!/(.)\1{63}/.test(payload.bytes.toString("utf8")));
         if (role === "probe") {
           // The carried prefix ends exactly at the pinned append seam; the
-          // nonce arm's seam sits inside block 1 by construction, so its
-          // carried measurement uses the end of block 2 instead.
+          // control arm diverges in its namespace long before the carried
+          // region, so its carried measurement uses the end of block 2.
           const carriedEnd = arm === "nonce"
             ? layout.blocks[1].end
             : layout.expectedShared;
@@ -202,10 +202,24 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   // liveness control observable: its probe cannot read even its own prime.
   const runA = "e75444904e0c1e53";
   const runB = "0f9d3a51b6c27e88";
-  const namespaces = new Set(ARMS.map((arm) => armNamespace(runA, arm)));
-  assert.equal(namespaces.size, ARMS.length, "every arm has its own namespace within a run");
-  for (const arm of ARMS) {
-    assert.notEqual(armNamespace(runA, arm), armNamespace(runB, arm), `${arm}'s namespace differs across runs`);
+  // #297 review round 3: the namespace derives from run+group+arm — every
+  // prime/probe pair is an independent cold measurement, while the pair's
+  // two requests share their token so the carried prefix stays byte-stable.
+  const namespaces = new Set();
+  for (let group = 1; group <= GROUP_COUNT; group += 1) {
+    for (const arm of ARMS) namespaces.add(armNamespace(runA, group, arm));
+  }
+  assert.equal(namespaces.size, GROUP_COUNT * ARMS.length, "every group+arm pair has its own namespace within a run");
+  for (let group = 1; group <= GROUP_COUNT; group += 1) {
+    for (const arm of ["multiblock", "single"]) {
+      assert.notEqual(armNamespace(runA, group, arm), armNamespace(runB, group, arm), `${arm} group ${group} differs across runs`);
+      for (let other = 1; other <= GROUP_COUNT; other += 1) {
+        if (other !== group) {
+          assert.notEqual(armNamespace(runA, group, arm), armNamespace(runA, other, arm),
+            `${arm} group ${group} differs from group ${other} within the run`);
+        }
+      }
+    }
   }
   const probe = composeRequest({ group: 1, arm: "multiblock", role: "probe", runNonce: runA });
   const namespaceLine = (() => {
@@ -240,6 +254,19 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
       shared < isolationBound,
       `cross-run: ${arm} requests diverge within the first ${isolationBound} bytes (byte ${shared}), so a rerun can never read the previous run's cache`,
     );
+    // Cross-group within one run: a later group's prime must share nothing a
+    // breakpoint could serve with an earlier group's same-arm requests, or
+    // the five groups would not be independent cold pairs.
+    for (const [roleA, roleB] of [["prime", "prime"], ["probe", "prime"], ["prime", "probe"]]) {
+      const cross = firstDivergence(
+        composeRequest({ group: 1, arm, role: roleA, runNonce: runA }).payload,
+        composeRequest({ group: 2, arm, role: roleB, runNonce: runA }).payload,
+      ).sharedBytes;
+      assert.ok(
+        cross < isolationBound,
+        `cross-group: ${arm} group 1.${roleA} and group 2.${roleB} diverge within the first ${isolationBound} bytes (byte ${cross})`,
+      );
+    }
   }
   for (const arm of ["multiblock", "single"]) {
     const prime = composeRequest({ group: 1, arm, role: "prime", runNonce: runA });
@@ -264,9 +291,10 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
     // descriptions were reusable across arms and roles. Every description
     // now carries the request's isolation token — fixed for an arm under
     // test, per request for the control.
-    const catalog = (arm, role, runNonce = runA) => JSON.stringify(toolsFor(runNonce, { group: 1, arm, role }));
+    const catalog = (arm, role, runNonce = runA, group = 1) => JSON.stringify(toolsFor(runNonce, { group, arm, role }));
     assert.notEqual(catalog("multiblock"), catalog("single"), "tool catalogs differ across arms");
     assert.notEqual(catalog("multiblock"), catalog("multiblock", "prime", runB), "tool catalogs differ across runs");
+    assert.notEqual(catalog("multiblock"), catalog("multiblock", "prime", runA, 2), "tool catalogs differ across groups");
     assert.equal(catalog("multiblock"), catalog("multiblock", "probe"), "the arm under test keeps its catalog stable between prime and probe");
     assert.notEqual(catalog("nonce"), catalog("nonce", "probe"), "the control's catalog differs per request");
   }
@@ -291,8 +319,8 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
       const prime = composeRequest({ group, arm, role: "prime" });
       const probe = composeRequest({ group, arm, role: "probe" });
       // The first byte where the probe diverges from its prime: the pinned
-      // append seam for the multiblock and single arms, inside block 1 for
-      // the nonce control.
+      // append seam for the multiblock and single arms; the nonce control
+      // diverges inside its per-request isolation namespace.
       seams[arm] = firstDivergence(prime.payload, probe.payload).sharedBytes;
       // The longest boundary cached by the prime (its own three breakpoints)
       // whose bytes the probe still shares — the way a provider serves it.
@@ -768,7 +796,13 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   // the pinned TTL is stale evidence. The run's integrity fails, the exit
   // code reports it, and the final label is inconclusive — even if every
   // token count looks like a met band.
-  const slowClock = { now: () => ({ epochMs: 0 }) };
+  let nowMs = 1_000_000;
+  let monoMs = 0;
+  const slowClock = {
+    now: () => nowMs,
+    mono: () => monoMs,
+    sleep: async () => {},
+  };
   let sent = 0;
   const slowAdapter = {
     id: "simulated-slow/1",
@@ -777,8 +811,9 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
       observe.onFirstToken?.();
       sent += 1;
       // Every other request stalls past the TTL: each probe follows its
-      // prime by more than 300 000 ms.
-      if (sent % 2 === 0) slowClock.now = () => ({ epochMs: 400_000 * (sent / 2) });
+      // prime by more than 300 000 ms on the monotonic counter.
+      if (sent % 2 === 0) monoMs += 400_000;
+      nowMs += 1000;
       const probe = request.role === "probe";
       return {
         usage: { inputTokens: probe ? 166 : 0, outputTokens: 48 },
@@ -801,6 +836,46 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
   assert.equal(report.conclusion.cache, "inconclusive");
   assert.equal(report.conclusion.final, "inconclusive");
   assert.equal(exitCode, 1, "an out-of-TTL run exits nonzero");
+}
+
+// ─── a negative monotonic interval is broken timing, not stale evidence ─
+
+{
+  // #297 review round 3: a wall-clock step backwards must not forge fresh
+  // TTL evidence. Intervals come from the monotonic counter; a negative
+  // interval — the counter itself moved backwards — fails the run's
+  // integrity outright.
+  let monoMs = 0;
+  const backwardsClock = {
+    now: () => 1_000_000,
+    mono: () => monoMs,
+    sleep: async () => {},
+  };
+  const backwardsAdapter = {
+    id: "simulated-clockstep/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/clockstep-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
+    async send(request, observe = {}) {
+      observe.onFirstToken?.();
+      if (request.role === "probe") monoMs -= 60_000;
+      const probe = request.role === "probe";
+      return {
+        usage: { inputTokens: probe ? 166 : 0, outputTokens: 48 },
+        cache: { reported: true, read: probe ? 1089 : 0, write: probe ? 96 : 1185 },
+        retentionWrite: { reported: true, bucket: "default", tokens: probe ? 96 : 1185 },
+        cost: 0,
+      };
+    },
+  };
+  const { report, exitCode } = await runExperiment({
+    adapter: backwardsAdapter,
+    clock: backwardsClock,
+    generatedAt: () => "2026-01-01T00:00:00.000Z",
+  });
+  assert.equal(report.integrity.ok, false);
+  assert.ok(report.integrity.failures.some((failure) => failure.includes("negative interval")),
+    "a backwards monotonic clock fails integrity");
+  assert.equal(report.conclusion.final, "inconclusive");
+  assert.equal(exitCode, 1);
 }
 
 // ─── adapter failures and malformed reports are integrity failures ──
@@ -940,39 +1015,76 @@ const CLI_REPORT_DIR = mkdtempSync(join(tmpdir(), "provider-cache-experiment-tes
   assert.notEqual(first.jsonPath, second.jsonPath);
   assert.ok(existsSync(first.jsonPath) && existsSync(first.txtPath));
   assert.ok(existsSync(second.jsonPath) && existsSync(second.txtPath));
+  // Only EEXIST retries: a directory that cannot be written propagates
+  // instead of spinning forever, and a partial claim is released.
+  assert.throws(() => claimArtifactPair(join(dir, "missing-dir"), "dry-run", "X"), /ENOENT/);
+  mkdirSync(join(dir, "blocked"), { recursive: true });
+  chmodSync(join(dir, "blocked"), 0o500);
+  try {
+    assert.throws(() => claimArtifactPair(join(dir, "blocked"), "dry-run", "X"), /EACCES/);
+    assert.deepEqual(readdirSync(join(dir, "blocked")), [], "a failed claim leaves no partial pair behind");
+  } finally {
+    chmodSync(join(dir, "blocked"), 0o700);
+  }
 }
 
 {
-  // #297 review finding 5: a credentialed run refuses to start when the
-  // implementation commit cannot be resolved or the repository is dirty —
-  // unverifiable evidence is not recorded at all.
-  const adapterPath = join(HERE, "..", "adapters", "cache-provider.mjs");
-  const runCredentialed = (env) => spawnSync(
-    process.execPath,
-    [join(HERE, "experiment.mjs"), "--adapter", adapterPath, "--report-dir", mkdtempSync(join(tmpdir(), "provider-cache-experiment-refuse-"))],
-    { encoding: "utf8", env: { ...process.env, CCR_CLAUDE_API_KEY: "dummy-not-sent", ...env } },
-  );
+  // The crash-complete boundary: a published text artifact ends with the
+  // sentinel line, so a killed run's half-written pair is recognizable.
+  const dir = mkdtempSync(join(tmpdir(), "provider-cache-experiment-sentinel-"));
+  const result = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run", "--report-dir", dir], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const txt = readFileSync(join(dir, readdirSync(dir).find((name) => name.endsWith(".txt"))), "utf8");
+  assert.ok(txt.endsWith(`${REPORT_COMPLETE_SENTINEL}\n`), "the published txt ends with the completion sentinel");
+  assert.equal(txt.split(REPORT_COMPLETE_SENTINEL).length, 2, "the sentinel appears exactly once, as the final line");
+}
+
+{
+  // #297 review finding 5, round 3: provenance resolution is a unit seam —
+  // a stubbed git executor — because the CLI-level env redirect the old
+  // tests used is now stripped by the implementation itself.
+  const STUB_REPO = HERE;
+  const stubExec =
+    (outputs, seen = []) =>
+    (command, options) => {
+      seen.push({ command, env: options.env });
+      const next = outputs.shift();
+      if (next instanceof Error) throw next;
+      return next ?? "";
+    };
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const tree = "fedcba9876543210fedcba9876543210fedcba98";
   {
-    // No repository at all: git cannot resolve HEAD here.
-    const empty = mkdtempSync(join(tmpdir(), "provider-cache-experiment-nogit-"));
-    const result = runCredentialed({ GIT_DIR: empty, GIT_WORK_TREE: empty });
-    assert.equal(result.status, 2, `unresolvable commit refuses to run:\n${result.stdout}\n${result.stderr}`);
-    assert.ok(result.stderr.includes("resolvable implementation commit"), result.stderr);
+    // GIT_DIR/GIT_WORK_TREE in the environment never reach the git
+    // subprocesses, so a stray redirect cannot repoint provenance.
+    const seen = [];
+    const exec = stubExec([commit, tree, STUB_REPO, ""], seen);
+    const resolved = resolveImplementation({ env: { ...process.env, GIT_DIR: "/tmp/elsewhere", GIT_WORK_TREE: "/tmp/elsewhere" }, exec });
+    assert.equal(resolved.commit, commit);
+    assert.equal(resolved.tree, tree);
+    assert.equal(resolved.dirty, false);
+    for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]) {
+      assert.ok(seen.every((call) => !(name in call.env)), `${name} is stripped from every git call`);
+    }
   }
   {
-    // A dirty repository: HEAD resolves but the worktree carries changes.
-    const repo = mkdtempSync(join(tmpdir(), "provider-cache-experiment-dirty-"));
-    for (const command of [
-      ["git", "init", "-q"],
-      ["git", "-c", "user.email=t@example.org", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"],
-    ]) {
-      const step = spawnSync(command[0], command.slice(1), { cwd: repo, encoding: "utf8" });
-      assert.equal(step.status, 0, `${command.join(" ")}: ${step.stderr}`);
-    }
-    writeFileSync(join(repo, "untracked.txt"), "local change\n");
-    const result = runCredentialed({ GIT_DIR: join(repo, ".git"), GIT_WORK_TREE: repo });
-    assert.equal(result.status, 2, `a dirty repository refuses to run:\n${result.stdout}\n${result.stderr}`);
-    assert.ok(result.stderr.includes("clean repository"), result.stderr);
+    // An unresolvable commit (git fails) leaves provenance unavailable.
+    const resolved = resolveImplementation({ exec: stubExec([new Error("fatal: not a git repository")]) });
+    assert.equal(resolved.commit, null);
+    assert.equal(resolved.dirty, true);
+  }
+  {
+    // A repository root that does not contain this checkout is refused —
+    // provenance must describe the code being measured.
+    const resolved = resolveImplementation({ exec: stubExec([commit, tree, "/tmp/somewhere-else", ""]) });
+    assert.equal(resolved.commit, null, "a foreign repository root is not trusted");
+  }
+  {
+    // A dirty status marks the run dirty: the tree digest cannot authorize
+    // the working-tree bytes actually executed.
+    const resolved = resolveImplementation({ exec: stubExec([commit, tree, STUB_REPO, " M src/x.ts"]) });
+    assert.equal(resolved.commit, commit);
+    assert.equal(resolved.dirty, true);
   }
 }
 

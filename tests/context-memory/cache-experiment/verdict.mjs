@@ -455,7 +455,16 @@ export function evaluateRun({ groups, integrity }) {
     (group) => group.quality === "measurable" && group.baselineComparison.evaluated,
   );
   const groupsRegressed = evaluatedBaseline.filter((group) => group.baselineComparison.multiDirectionRegression).length;
-  const fired = integrity.ok && groupsRegressed >= REGRESSION_GROUP_THRESHOLD;
+  // #297 review round 3: the override needs a working measurement. A dead
+  // liveness control voids every directional claim about the arms — the
+  // observed regressions stay visible, but they cannot label the run
+  // `regressed` while the measurement cannot even distinguish content.
+  const fired = Boolean(integrity.ok && livenessSatisfied && groupsRegressed >= REGRESSION_GROUP_THRESHOLD);
+  if (groupsRegressed >= REGRESSION_GROUP_THRESHOLD && integrity.ok && !livenessSatisfied) {
+    reasons.push(
+      `baseline regression observed in ${groupsRegressed} groups, but the dead liveness control voids any directional conclusion`,
+    );
+  }
   if (fired) {
     reasons.push(
       `baseline regression rule fired: ${groupsRegressed} of ${classified.length} groups regressed in at least ${REGRESSION_DIRECTION_THRESHOLD} independent directions versus the single-summary baseline`,

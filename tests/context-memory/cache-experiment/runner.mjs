@@ -37,8 +37,8 @@ import {
  * confounded with a request position), per-arm divergence invariants must
  * hold (the measured case is the cross-compaction append: the multiblock and
  * single arms' probes must diverge from their primes exactly at the appended
- * block's seam — every carried byte stays shared — while the nonce arm's
- * probe must diverge inside the earliest carried block), and provider reports
+ * block's seam — every carried byte stays shared — while the nonce control's
+ * probe must diverge inside its per-request isolation namespace), and provider reports
  * are validated at the boundary. Every request declares the three
  * breakpoints Pi's anthropic-messages converter places, as canonical byte
  * positions; neither arm adds a breakpoint of its own. The verdict itself —
@@ -148,7 +148,7 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementation
     timing: {
       minRequestGapMs,
       ttlMs,
-      rule: "every probe must follow its arm prime within ttlMs; a later probe classifies its group ttl-stale",
+      rule: "every probe must follow its arm prime within ttlMs on the monotonic clock (clock.mono, never the wall clock); a later probe classifies its group ttl-stale, and a negative interval fails the run's integrity",
     },
     // #297 review findings 2 and 5: every report records the exact
     // implementation commit it measured, the run nonce its isolation
@@ -156,7 +156,7 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementation
     implementationCommit,
     implementationTree,
     runNonce,
-    armIsolation: "run+arm isolation token at the front of the system segment and in every tool description, before any shared cacheable byte; the control's token is per request",
+    armIsolation: "run+group+arm isolation token at the front of the system segment and in every tool description, before any shared cacheable byte, so every prime/probe pair is an independent cold measurement; the control's token is per request",
     priceNote: declared.priceNote,
   };
   // A real adapter that cannot apply the pinned settings in full (for example
@@ -207,13 +207,24 @@ function longestStringValue(value, current = 0) {
   return current;
 }
 
-/** The report must never contain fixture bodies or unbounded strings. */
-export function findReportLeaks(json) {
+/**
+ * The report must never contain fixture bodies, unbounded strings, or a
+ * caller-declared secret value (#297 review round 3): the CLI passes the
+ * present adapter-credential values so an echoed provider error body that
+ * slipped every upstream scrub still fails the run's integrity instead of
+ * reaching the artifact.
+ */
+export function findReportLeaks(json, secretValues = []) {
   const leaks = [];
   if (json.includes(MARKER)) leaks.push("the fixture content marker");
   if (/(.)\1{63}/.test(json)) leaks.push("a 64+ character repeated run");
   for (const phrase of FORBIDDEN_CLAIM_PHRASES) {
     if (json.includes(phrase)) leaks.push(`the claim phrase "${phrase}"`);
+  }
+  for (const secret of secretValues) {
+    if (typeof secret === "string" && secret.length >= 3 && json.includes(secret)) {
+      leaks.push("a credential value");
+    }
   }
   return leaks;
 }
@@ -225,6 +236,7 @@ export function findReportLeaks(json) {
 export async function runExperiment({
   adapter,
   clock,
+  secretValues = [],
   ttlMs = DEFAULT_TTL_MS,
   minRequestGapMs = 0,
   groupCount = GROUP_COUNT,
@@ -261,6 +273,9 @@ export async function runExperiment({
       const composed = composeRequest({ group, arm, role, runNonce });
       const digest = payloadDigest(composed.payload);
       const sentAtMs = clock.now();
+      // #297 review round 3: intervals come from the monotonic counter, not
+      // the wall clock — TTL and TTFT evidence must survive NTP steps.
+      const sentAtMonoMs = clock.mono?.() ?? clock.now();
       let firstTokenAt;
       let report;
       try {
@@ -281,7 +296,7 @@ export async function runExperiment({
               breakpoints: composed.layout.breakpoints,
             },
           },
-          { onFirstToken: () => { firstTokenAt = clock.now(); } },
+          { onFirstToken: () => { firstTokenAt = clock.mono?.() ?? clock.now(); } },
         );
       } catch (error) {
         integrity.providerErrors += 1;
@@ -313,7 +328,8 @@ export async function runExperiment({
         digest,
         report,
         sentAtMs,
-        ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMs,
+        sentAtMonoMs,
+        ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - sentAtMonoMs,
       });
     }
   }
@@ -324,6 +340,7 @@ export async function runExperiment({
     for (let group = 1; group <= groupCount; group += 1) {
       const arms = {};
       const primeToProbeMs = {};
+      let negativeInterval = false;
       for (const arm of ARMS) {
         const prime = records.get(`${group}|${arm}.prime`);
         const probe = records.get(`${group}|${arm}.probe`);
@@ -337,12 +354,21 @@ export async function runExperiment({
           );
         }
         evidence.boundary = classification.boundary;
-        probe.primeToProbeMs = probe.sentAtMs - prime.sentAtMs;
+        probe.primeToProbeMs = probe.sentAtMonoMs - prime.sentAtMonoMs;
         primeToProbeMs[arm] = probe.primeToProbeMs;
+        if (probe.primeToProbeMs < 0) negativeInterval = true;
         arms[arm] = { prime: rowOf(prime, null), probe: rowOf(probe, evidence) };
       }
       if (Object.keys(arms).length !== 3) continue;
       const timing = { ttlMs, primeToProbeMs, withinTtl: withinTtl(primeToProbeMs, ttlMs) };
+      if (negativeInterval) {
+        // #297 review round 3: a negative interval means the clock moved
+        // backwards between a prime and its probe — the timing evidence is
+        // broken, not merely stale, and the run fails its integrity.
+        integrity.ttlOk = false;
+        integrity.ok = false;
+        fail(`group ${group}: a probe was sent before its prime on the monotonic clock (negative interval)`);
+      }
       if (!timing.withinTtl) {
         // #297 review finding 4: an out-of-TTL probe is stale evidence, not a
         // soft group quality — the run's integrity fails and the exit code
@@ -415,16 +441,24 @@ export async function runExperiment({
 
   // Privacy self-check: the emitted artifact itself must stay payload-free and bounded.
   let json = JSON.stringify(report, null, 2);
-  const leaks = [...findReportLeaks(json)];
+  let leaks = [...findReportLeaks(json, secretValues)];
   if (longestStringValue(report) > REPORT_STRING_MAX) leaks.push(`a string field longer than ${REPORT_STRING_MAX} characters`);
   if (leaks.length > 0) {
-    json = json.split(MARKER).join("‹redacted›");
     report.integrity.ok = false;
     report.integrity.failures.push(`the report contained ${leaks.join("; ")}`);
     report.conclusion.cache = "inconclusive";
     report.conclusion.final = "inconclusive";
     report.conclusion.reasons.push(`report privacy self-check failed: ${leaks.join("; ")}`);
     json = JSON.stringify(report, null, 2);
+    // The failure text is appended after the scan, and the offending values
+    // can sit anywhere in the report (including the failure entries the
+    // adapter errors produced), so the emitted artifact redacts every
+    // declared secret and the fixture marker from the FINAL serialization.
+    for (const secret of secretValues) {
+      if (typeof secret === "string" && secret.length >= 3) json = json.split(secret).join("‹redacted›");
+    }
+    json = json.split(MARKER).join("‹redacted›");
+    leaks = findReportLeaks(json, secretValues).filter((leak) => leak !== "a credential value");
   }
 
   const exitCode = report.integrity.ok ? 0 : 1;

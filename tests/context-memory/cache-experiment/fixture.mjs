@@ -31,18 +31,19 @@ const { convertToLlm } = await import("@earendil-works/pi-coding-agent");
  *   the same framing). The probe's summary byte-extends the prime's summary
  *   at the append seam, exactly as an append grows the persisted summary.
  * - `nonce` — the liveness control: the multiblock projection with a
- *   fixed-width per-request nonce embedded in the earliest carried block, so
- *   the probe's carried prefix diverges from its prime inside block 1 and
- *   whatever reuse the placement could serve in the carried region is
- *   removed by construction. Identical size and semantics to `multiblock`.
+ *   per-request isolation-namespace token, so its probe shares no cacheable
+ *   prefix with its prime at any boundary the placement serves and whatever
+ *   reuse a working cache could demonstrate is observable as a rate gap.
+ *   Identical size and semantics to `multiblock`.
  *
  * The three arms are content-matched by construction: every arm carries the
  * same block bodies, the same wrapper and framing text, and the same tail per
  * role, and the summary region's concatenated text is byte-identical across
  * arms for the same group and role — the arms differ only in where the text
- * block boundaries sit (and, for the nonce arm, the nonce digits) plus each
- * arm's fixed, equal-length cold-namespace line in the system segment, which
- * is semantically neutral and identical between that arm's prime and probe.
+ * block boundaries sit plus each pair's fixed, equal-length isolation
+ * namespace line at the front of the system segment and in every tool
+ * description, which is semantically neutral and identical between a pair's
+ * prime and probe (the control's token is per request).
  * Canonical framing overhead differs by at most the per-part framing bound,
  * pinned by the experiment tests.
  *
@@ -162,19 +163,25 @@ export function toolsFor(runNonce, request) {
   const token = requestNamespace(runNonce, request);
   return TOOLS.map((tool) => ({ ...tool, description: `${tool.description} [isolation:${token}]` }));
 }
+
 export const SYSTEM_PROMPT_HASH = sha256Hex(SYSTEM_PROMPT);
 export const SETTINGS_HASH = sha256Hex(JSON.stringify(SETTINGS));
 
 /**
- * The cold isolation namespaces (#297 review findings 2 and 3): fixed-width,
- * semantically neutral tokens derived from the run nonce and the arm name,
- * placed at the very front of the system segment — before any shared
- * cacheable byte — so requests from different arms, or from different
- * executions of the experiment, diverge inside the first bytes of the
- * payload and can never read each other's cache at any prefix length the
- * provider could serve. The nonce is generated per execution and recorded in
- * the report pins; the arm-derived namespace is identical between an arm's
- * prime and probe, so the same-arm carried prefix stays byte-stable.
+ * The cold isolation namespaces (#297 review findings 2 and 3, round 3):
+ * fixed-width, semantically neutral tokens derived from the run nonce, the
+ * group, and the arm name, placed at the very front of the system segment —
+ * before any shared cacheable byte — so requests from different groups,
+ * arms, or executions of the experiment diverge inside the first bytes of
+ * the payload and can never read each other's cache at any prefix length the
+ * provider could serve. The group is part of the derivation because each
+ * group is an independent cold prime/probe pair: without it, a later
+ * group's prime read the same-arm boundary an earlier group's requests had
+ * already cached, and the five groups were not independent measurements.
+ * The nonce is generated per execution and recorded in the report pins; a
+ * measured arm's token is identical between its prime and probe (the
+ * same-pair carried prefix stays byte-stable) and different for every other
+ * pair.
  *
  * The `nonce` control arm is the observable liveness control: its namespace
  * token is derived per request, so its probe cannot read even its own
@@ -191,16 +198,16 @@ export const NAMESPACE_LINE_PREFIX = "Experiment isolation namespace ";
 /** The nonce used for the pinned fixture digest; every live run passes its own. */
 export const DIGEST_NONCE = "fixture-digest";
 
-export function armNamespace(runNonce, arm) {
-  return sha256Hex(`provider-cache-experiment|namespace|${runNonce}|${arm}`).slice(0, NAMESPACE_WIDTH);
+export function armNamespace(runNonce, group, arm) {
+  return sha256Hex(`provider-cache-experiment|namespace|${runNonce}|${group}|${arm}`).slice(0, NAMESPACE_WIDTH);
 }
 
-/** The request's isolation namespace token: fixed per run+arm; per request for the control arm. */
+/** The request's isolation namespace token: fixed per run+group+arm pair; per request for the control arm. */
 export function requestNamespace(runNonce, { group, arm, role }) {
   if (arm === "nonce") {
     return sha256Hex(`provider-cache-experiment|namespace|${runNonce}|${arm}|${group}|${role}`).slice(0, NAMESPACE_WIDTH);
   }
-  return armNamespace(runNonce, arm);
+  return armNamespace(runNonce, group, arm);
 }
 
 /** The request's system prompt: its isolation namespace line first, then the shared base. */

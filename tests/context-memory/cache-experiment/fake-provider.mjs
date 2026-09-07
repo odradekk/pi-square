@@ -29,11 +29,18 @@ import { estimateTokens, sha256Hex } from "./evidence.mjs";
  * performs network I/O, and no test requires credentials.
  */
 
-/** A deterministic clock seam: `now()` for timestamps, `sleep()` for gaps. */
+/**
+ * A deterministic clock seam: `now()` for wall-clock timestamps, `mono()`
+ * for the monotonic interval measurement (#297 review round 3), and
+ * `sleep()` for gaps. Both counters advance together; interval checks use
+ * `mono()` only, so a wall-clock adjustment can never forge or hide TTL
+ * staleness.
+ */
 export function fakeClock(startMs = 1_000_000) {
   let nowMs = startMs;
   return {
     now: () => nowMs,
+    mono: () => nowMs,
     sleep: async (ms) => {
       nowMs += ms;
     },

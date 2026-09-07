@@ -637,6 +637,20 @@ const fiveGroups = (overrides) => [1, 2, 3, 4, 5].map((n) => makeGroup(n, typeof
 }
 
 {
+  // #297 review round 3: a dead liveness control takes precedence over the
+  // regression rule — four regressed groups with a dead control stay
+  // inconclusive, never regressed, while the observation stays visible.
+  const rows = { nonce: { probe: { cacheRead: 561, cacheWrite: 139, inputTokens: 100 } } };
+  const verdict = run(fiveGroups((n) => (n <= 4 ? { rows: { ...rows, single: { prime: { cacheWrite: 100 }, probe: { ttftMs: 40 } } } } : { rows })));
+  assert.equal(verdict.cacheStandard.livenessSatisfied, false);
+  assert.equal(verdict.cacheConclusion, "inconclusive");
+  assert.equal(verdict.regression.groupsRegressed, REGRESSION_GROUP_THRESHOLD, "the measured regressions stay visible");
+  assert.equal(verdict.regression.fired, false, "a dead control disarms the regression override");
+  assert.equal(verdict.conclusion, "inconclusive", "the dead control dominates the final conclusion");
+  assert.ok(verdict.reasons.some((reason) => reason.includes("dead liveness control voids any directional conclusion")));
+}
+
+{
   // Regression requires multiple directions: the default shape has none.
   const verdict = run(fiveGroups());
   assert.equal(verdict.regression.groupsRegressed, 0);
