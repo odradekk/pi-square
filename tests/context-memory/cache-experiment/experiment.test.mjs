@@ -8,6 +8,7 @@ import {
   ARM_ORDER,
   ARM_ROTATION,
   BREAKPOINT_PLACEMENT,
+  CARRIED_PREFIX_FLOOR_TOKENS,
   COVERED_PREFIX_FLOOR_TOKENS,
   GROUP_COUNT,
   MARKER,
@@ -15,23 +16,36 @@ import {
   SYSTEM_PROMPT,
   armOrderFor,
   baseBlocks,
+  carriedBodies,
   composeRequest,
   fixtureDigest,
   groupOrder,
+  summaryPartTexts,
 } from "./fixture.mjs";
-import { estimateTokens, sha256Hex } from "./evidence.mjs";
+import { estimateTokens, firstDivergence, sha256Hex } from "./evidence.mjs";
 import { fakeClock, simulatedCacheAdapter } from "./fake-provider.mjs";
 import { classifyDivergenceBoundary, findReportLeaks, runExperiment } from "./runner.mjs";
-import { DENOMINATOR_NOTE, FORBIDDEN_CLAIM_PHRASES, FRAMING_DISCLAIMER, HIT_RATE_DEFINITION, LIVENESS_MARGIN_PP, NON_REGRESSION_BAND_PP } from "./verdict.mjs";
+import {
+  DEAD_CONTROL_NOTE,
+  DENOMINATOR_NOTE,
+  DIRECTION_NOISE_FLOORS,
+  FORBIDDEN_CLAIM_PHRASES,
+  FRAMING_DISCLAIMER,
+  HIT_RATE_DEFINITION,
+  LIVENESS_MARGIN_PP,
+  NON_REGRESSION_BAND_PP,
+} from "./verdict.mjs";
 
 /**
  * End-to-end dry-run coverage for the provider-cache experiment (#225,
- * standard re-pinned by #260, arms and order re-modeled by #268): the full
- * harness runs against the simulated breakpoint-cache adapter with a fake
- * clock, proving the pinned experiment shape and fixture scale, the recorded
- * evidence, the between-compaction control that can move, run integrity, the
- * non-regression verdict, determinism, report privacy, and the command-line
- * surface — without credentials and without any real provider call.
+ * standard re-pinned by #260, arms and order re-modeled by #268, cross-
+ * compaction append case re-pinned by #297): the full harness runs against
+ * the simulated breakpoint-cache adapter with a fake clock, proving the
+ * pinned experiment shape and fixture scale, the recorded evidence, the
+ * append-case divergence invariants, run integrity, the honest neutral
+ * verdict with the dead-control caveat, the exit contract (integrity, not
+ * conclusion), determinism, report privacy, and the command-line surface —
+ * without credentials and without any real provider call.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -42,38 +56,45 @@ async function dryRun() {
   return runExperiment({ adapter, clock, generatedAt: () => "2026-01-01T00:00:00.000Z" });
 }
 
-// ─── the full dry run: conclusive positive, integrity clean ─────────
+// ─── the full dry run: honest neutral, integrity clean, exit zero ────
 
 {
   const { report, exitCode } = await dryRun();
   assert.equal(report.mode, "dry-run");
   assert.equal(report.integrity.ok, true);
-  assert.equal(report.conclusion.cache, "positive", "the honest simulation must land the positive branch");
-  assert.equal(report.conclusion.final, "positive");
-  assert.equal(exitCode, 0);
+  assert.equal(report.conclusion.cache, "neutral",
+    "the honest simulation lands the neutral branch: no arm reads past the tools boundary across an append under the pinned placement");
+  assert.equal(report.conclusion.final, "neutral");
+  assert.equal(exitCode, 0, "integrity, not the conclusion label, decides the exit code");
   assert.equal(report.totals.groups, GROUP_COUNT);
   assert.equal(report.totals.requests, GROUP_COUNT * groupOrder(1).length, "five interleaved paired groups over three arms");
   assert.equal(report.regression.fired, false);
+  assert.ok(report.conclusion.reasons.includes(DEAD_CONTROL_NOTE),
+    "the neutral verdict carries the dead-control caveat verbatim");
 }
 
 // ─── the fixture is large enough for the measurement to exist ───────
 
 {
   // #260/#251: the measured gateway caches nothing below a minimum
-  // cacheable prefix near 1024 tokens, and the pre-enlargement fixture's
-  // covered prefix sat near 487 tokens — too small to cache, so no rate could
-  // be computed. Every composed request's covered prefix (bytes zero through
-  // the tail breakpoint — system, tools, carried summary, and the whole tail)
-  // must now clear the pinned floor, which is twice the measured floor:
-  // margin above it, never to it.
-  assert.equal(COVERED_PREFIX_FLOOR_TOKENS, 2 * MEASURED_CACHEABLE_PREFIX_TOKENS, "the floor target is twice the measured floor");
-  let smallest = Infinity;
+  // cacheable prefix near 1024 tokens. Every composed request's covered
+  // prefix (bytes zero through the tail breakpoint — system, tools, carried
+  // summary, and the whole tail) must clear the pinned floor, which is twice
+  // the measured floor: margin above it, never to it. And because the
+  // property under test is reuse of the carried region, every probe's
+  // carried prefix (system, tools, framing, and blocks 1–2 — exactly the
+  // bytes the append shares) must additionally clear the measured floor
+  // itself, so a zero read can never be blamed on scale (#297).
+  assert.equal(COVERED_PREFIX_FLOOR_TOKENS, 2 * MEASURED_CACHEABLE_PREFIX_TOKENS, "the covered floor is twice the measured floor");
+  assert.equal(CARRIED_PREFIX_FLOOR_TOKENS, MEASURED_CACHEABLE_PREFIX_TOKENS, "the carried floor is the measured floor");
+  let smallestCovered = Infinity;
+  let smallestCarried = Infinity;
   for (let group = 1; group <= GROUP_COUNT; group += 1) {
     for (const arm of ARMS) {
       for (const role of ["prime", "probe"]) {
         const { payload, layout } = composeRequest({ group, arm, role });
         const coveredTokens = estimateTokens(layout.breakpoints.at(-1));
-        smallest = Math.min(smallest, coveredTokens);
+        smallestCovered = Math.min(smallestCovered, coveredTokens);
         assert.ok(
           coveredTokens >= COVERED_PREFIX_FLOOR_TOKENS,
           `${arm}.${role} covers ${coveredTokens} tokens, below the ${COVERED_PREFIX_FLOOR_TOKENS}-token floor`,
@@ -82,10 +103,25 @@ async function dryRun() {
         // The padding stays disciplined: no 64+ repeated character run ever
         // enters a payload, so a leaked body stays detectable.
         assert.ok(!/(.)\1{63}/.test(payload.bytes.toString("utf8")));
+        if (role === "probe") {
+          // The carried prefix ends exactly at the pinned append seam; the
+          // nonce arm's seam sits inside block 1 by construction, so its
+          // carried measurement uses the end of block 2 instead.
+          const carriedEnd = arm === "nonce"
+            ? layout.blocks[1].end
+            : layout.expectedShared;
+          const carriedTokens = estimateTokens(carriedEnd);
+          smallestCarried = Math.min(smallestCarried, carriedTokens);
+          assert.ok(
+            carriedTokens >= CARRIED_PREFIX_FLOOR_TOKENS,
+            `${arm} probe carries ${carriedTokens} shared tokens, below the ${CARRIED_PREFIX_FLOOR_TOKENS}-token carried floor`,
+          );
+        }
       }
     }
   }
-  assert.ok(smallest > COVERED_PREFIX_FLOOR_TOKENS, "the smallest covered prefix clears the floor with headroom, not exactly at it");
+  assert.ok(smallestCovered > COVERED_PREFIX_FLOOR_TOKENS, "the smallest covered prefix clears the floor with headroom, not exactly at it");
+  assert.ok(smallestCarried > CARRIED_PREFIX_FLOOR_TOKENS, "the smallest carried prefix clears the measured floor with headroom");
   // Block bodies stay well inside the production 16-KiB Memory block bound.
   for (let group = 1; group <= GROUP_COUNT; group += 1) {
     for (const body of baseBlocks(group)) {
@@ -95,29 +131,71 @@ async function dryRun() {
   }
 }
 
-// ─── the negative control can move (#268's central fixture proof) ───
+// ─── content parity and bounded structural overhead across arms ─────
 
 {
-  // The measured case is the between-compaction request: the carried summary
-  // is unchanged between the pair's requests while the tail grows. Under the
-  // pinned breakpoint placement — system, last tool, last user-message block,
-  // exactly where Pi's anthropic-messages converter puts them, and nowhere at
-  // the carried summary's end — compute each arm's probe cacheable prefix
-  // against its prime the way a provider does: the longest boundary cached by
-  // the prime (its own three breakpoints) whose bytes the probe still shares.
-  // The three arms must differ by construction, or the liveness rule is dead.
+  for (let group = 1; group <= GROUP_COUNT; group += 1) {
+    for (const role of ["prime", "probe"]) {
+      const composed = {};
+      const lengths = {};
+      for (const arm of ARMS) {
+        const request = composeRequest({ group, arm, role });
+        composed[arm] = request.layout.summaryParts.map((part) => part.end - part.start);
+        lengths[arm] = request.payload.bytes.length;
+      }
+      // The summary region's concatenated text is byte-identical across arms:
+      // the arms hold semantic content, scale, and framing constant and
+      // differ only in where the text block boundaries sit (and the nonce
+      // digits inside the control's earliest block).
+      assert.equal(
+        composed.multiblock.reduce((a, b) => a + b, 0) - composed.single[0],
+        composed.nonce.reduce((a, b) => a + b, 0) - composed.single[0],
+        `group ${group} ${role}: the nonce substitution is fixed-width`,
+      );
+      // The structural framing overhead — the canonical per-segment framing
+      // the multi-part arms carry and the single part does not — stays far
+      // below the pinned per-direction noise floors, so it can never fire a
+      // regression direction on its own.
+      const overheadBytes = Math.max(
+        lengths.multiblock - lengths.single,
+        lengths.nonce - lengths.single,
+      );
+      assert.ok(
+        overheadBytes >= 0 && overheadBytes <= 256,
+        `group ${group} ${role}: the arms' payloads stay within ${256} bytes (${overheadBytes})`,
+      );
+      assert.ok(
+        estimateTokens(overheadBytes) < DIRECTION_NOISE_FLOORS.inputTokens.absoluteTokens,
+        `group ${group} ${role}: the structural overhead (${estimateTokens(overheadBytes)} tokens) sits below the token noise floor`,
+      );
+    }
+  }
+}
+
+// ─── the append case: what a breakpoint cache can and cannot serve ───
+
+{
+  // The measured case is the cross-compaction append: the prime carries
+  // blocks 1–2, the probe carries them byte-identical plus block 3. Under
+  // the pinned breakpoint placement — system, last tool, last user-message
+  // block, exactly where Pi's anthropic-messages converter puts them, and
+  // nowhere at the carried Memory's end — every arm's probe falls back to
+  // exactly the tools boundary, because the appended block shifts every byte
+  // after it. That is #269's finding, reproduced constructionally: the
+  // multi-block structure alone changes nothing a breakpoint cache can see.
   for (let group = 1; group <= GROUP_COUNT; group += 1) {
     const cacheableBytes = {};
-    const coverageEnd = {};
     const prefixHashes = {};
-    const summaries = {};
-    const payloadLengths = {};
+    const seams = {};
     for (const arm of ARMS) {
       const prime = composeRequest({ group, arm, role: "prime" });
       const probe = composeRequest({ group, arm, role: "probe" });
-      payloadLengths[arm] = { prime: prime.payload.bytes.length, probe: probe.payload.bytes.length };
-      coverageEnd[arm] = prime.layout.breakpoints.at(-1);
-      summaries[arm] = prime.layout.summary.end - prime.layout.summary.start;
+      // The first byte where the probe diverges from its prime: the pinned
+      // append seam for the multiblock and single arms, inside block 1 for
+      // the nonce control.
+      seams[arm] = firstDivergence(prime.payload, probe.payload).sharedBytes;
+      // The longest boundary cached by the prime (its own three breakpoints)
+      // whose bytes the probe still shares — the way a provider serves it.
       let shared = 0;
       for (const boundary of prime.layout.breakpoints) {
         if (boundary <= probe.payload.bytes.length
@@ -128,65 +206,37 @@ async function dryRun() {
       cacheableBytes[arm] = shared;
       prefixHashes[arm] = sha256Hex(probe.payload.bytes.subarray(0, shared));
     }
-
-    // Size parity: the arms differ only in prefix stability, never in scale,
-    // so the direction comparisons measure cache behavior, not fixture
-    // authoring. The native summary's head is authored at exactly the
-    // Context Memory wrapper's byte length.
-    assert.deepEqual(
-      Object.values(payloadLengths).map((lengths) => lengths.prime),
-      Array(ARMS.length).fill(payloadLengths.stable.prime),
-      `group ${group}: every arm's prime payload is byte-length identical`,
-    );
-    assert.deepEqual(
-      Object.values(payloadLengths).map((lengths) => lengths.probe),
-      Array(ARMS.length).fill(payloadLengths.stable.probe),
-      `group ${group}: every arm's probe payload is byte-length identical`,
-    );
-    assert.deepEqual(
-      Object.values(summaries),
-      Array(ARMS.length).fill(summaries.stable),
-      `group ${group}: every arm's carried summary is byte-length identical`,
-    );
-
-    const [systemEnd, toolsEnd] = composeRequest({ group, arm: "stable", role: "prime" }).layout.breakpoints;
-    for (const arm of ["stable", "native"]) {
-      // The unchanged-summary arms: the probe shares its prime's whole
-      // payload, so its read extends through the summary AND the old tail —
-      // the between-compaction case the tail breakpoint serves.
+    const [, toolsEnd] = composeRequest({ group, arm: "multiblock", role: "prime" }).layout.breakpoints;
+    for (const arm of ARMS) {
       assert.equal(
         cacheableBytes[arm],
-        coverageEnd[arm],
-        `group ${group} ${arm}: the probe's cacheable prefix covers the prime through its tail breakpoint`,
+        toolsEnd,
+        `group ${group} ${arm}: under the pinned placement every arm's append read falls back to the tools boundary`,
       );
-      assert.ok(cacheableBytes[arm] > toolsEnd, "the read extends beyond the tools boundary");
+      assert.ok(seams[arm] > toolsEnd, `group ${group} ${arm}: the append seam sits beyond the tools boundary, inside the carried region`);
     }
-    // The control: the nonce diverges inside the earliest block — after the
-    // tools boundary, before the tail — so its read falls back to exactly the
-    // tools boundary. This is the arm that must be able to move.
-    assert.equal(
-      cacheableBytes.nonce,
-      toolsEnd,
-      `group ${group} nonce: the control's read falls back to the tools boundary`,
-    );
-    assert.ok(cacheableBytes.nonce < composeRequest({ group, arm: "nonce", role: "probe" }).layout.summary.start,
-      "the control never reaches its own carried summary");
-
-    // The three arms' cacheable prefixes genuinely differ: pairwise-distinct
-    // prefix hashes, and the stable-versus-nonce constructional gap in tokens
-    // over the probe's total exceeds the liveness margin many times over, so
-    // the rule (nonce at least 5pp below stable) is capable of firing.
-    assert.notEqual(prefixHashes.stable, prefixHashes.nonce);
-    assert.notEqual(prefixHashes.nonce, prefixHashes.native);
-    assert.notEqual(prefixHashes.stable, prefixHashes.native);
-    const stableProbe = composeRequest({ group, arm: "stable", role: "probe" });
-    const constructionalGapPp
-      = (estimateTokens(cacheableBytes.stable) - estimateTokens(cacheableBytes.nonce)) / estimateTokens(stableProbe.payload.bytes.length);
-    assert.ok(
-      constructionalGapPp > LIVENESS_MARGIN_PP / 100,
-      `group ${group}: the constructional read gap ${(constructionalGapPp * 100).toFixed(1)}pp exceeds the ${LIVENESS_MARGIN_PP}pp liveness margin`,
-    );
-    assert.ok(systemEnd < toolsEnd, "the pinned breakpoints are ordered system, tools, tail");
+    // The control's effectiveness is positional, not scale-limited: every
+    // probe's shared prefix through its append seam clears the measured
+    // cacheable floor (asserted above), so on any provider or placement that
+    // can serve the carried region, the nonce arm's strictly smaller shared
+    // prefix (it diverges inside block 1) makes the liveness rule capable of
+    // firing. Its death here is the placement, not the fixture.
+    assert.ok(seams.nonce < seams.multiblock, "the control shares strictly fewer prefix bytes than the arm under test");
+    assert.ok(seams.nonce < seams.single, "the control also shares fewer prefix bytes than the baseline");
+    // Under the pinned placement every arm's served prefix is the same tools
+    // boundary, so the served-prefix hashes are equal by construction — the
+    // arms are distinguished by where their probes diverge and by their
+    // payloads, never by an artifact of the fallback.
+    assert.deepEqual(prefixHashes.multiblock, prefixHashes.single);
+    assert.ok(seams.single < seams.multiblock,
+      "the baseline's seam sits inside its one summary part; the multiblock arm's sits after its last carried part's framing");
+    // The carried blocks really are byte-identical between the pair's two
+    // requests — the append-property under test, checked directly on bodies.
+    for (const arm of ["multiblock", "single"]) {
+      const primeBodies = carriedBodies({ group, arm, role: "prime" });
+      const probeBodies = carriedBodies({ group, arm, role: "probe" });
+      assert.deepEqual(probeBodies.slice(0, 2), primeBodies, `group ${group} ${arm}: blocks 1–2 are byte-identical across the append`);
+    }
   }
 }
 
@@ -196,25 +246,19 @@ async function dryRun() {
   const { report } = await dryRun();
   for (const group of report.groups) {
     assert.equal(group.quality, "measurable");
-    assert.equal(group.stable.probe.divergenceBoundary, "growing-tail",
-      "the stable probe byte-extends its prime; the divergence lands in the grown tail");
+    assert.equal(group.multiblock.probe.divergenceBoundary, "appended-block",
+      "the multiblock probe shares every carried byte and diverges exactly at the appended block's part");
+    assert.equal(group.single.probe.divergenceBoundary, "appended-block",
+      "the single probe shares every carried byte and diverges exactly at the append seam");
     assert.equal(group.nonce.probe.divergenceBoundary, "memory-block-1",
-      "the liveness control diverges inside the earliest block");
-    assert.equal(group.native.probe.divergenceBoundary, "growing-tail",
-      "the native baseline's unchanged summary also grows only at the tail");
+      "the liveness control diverges inside the earliest carried block");
     assert.ok(
-      group.nonce.probe.sharedBytes < group.stable.probe.sharedBytes,
-      "the control shares strictly fewer prefix bytes than the stable arm",
+      group.nonce.probe.sharedBytes < group.multiblock.probe.sharedBytes,
+      "the control shares strictly fewer prefix bytes than the arm under test",
     );
-    assert.equal(
-      group.stable.probe.sharedBytes,
-      group.stable.prime.payloadBytes,
-      "the stable probe shares every byte of its prime",
-    );
-    assert.equal(
-      group.native.probe.sharedBytes,
-      group.native.prime.payloadBytes,
-      "the native probe shares every byte of its prime",
+    assert.ok(
+      group.multiblock.probe.sharedBytes < group.multiblock.prime.payloadBytes,
+      "the append probe shares its prime's carried prefix but never its whole payload",
     );
     for (const arm of ARMS) {
       const probe = group[arm].probe;
@@ -228,9 +272,36 @@ async function dryRun() {
       assert.ok(prime.cost >= 0 && probe.cost >= 0);
       assert.equal(probe.primeToProbeMs !== null, true);
     }
-    // The causal structure the arms exist for: stable reuse exceeds the control.
-    assert.ok(group.stable.probe.cacheRead > group.nonce.probe.cacheRead);
-    assert.ok(group.stable.probe.cacheRead > 0, "the stable arm's reuse is explicit non-zero evidence");
+  }
+}
+
+// ─── the production projection arms are what they claim ─────────────
+
+{
+  // The multiblock arm's parts come from the extension's own projection and
+  // the single arm's part from Pi's own rendering, so the fixture cannot
+  // drift from production behavior: the parts concatenate to identical text.
+  const jiti = (await import("jiti")).default;
+  const load = jiti(import.meta.url, { moduleCache: false });
+  const { composeMemorySummary } = await load("../../../src/context-memory/format.ts");
+  const { projectMemoryBlocksMessage } = await load("../../../src/context-memory/controller.ts");
+  for (const role of ["prime", "probe"]) {
+    const bodies = carriedBodies({ group: 1, arm: "multiblock", role });
+    const summary = composeMemorySummary(bodies);
+    const projected = projectMemoryBlocksMessage(
+      [{ role: "compactionSummary", summary, tokensBefore: 0, timestamp: 0 }],
+      [{ summary, bodies }],
+    );
+    assert.notEqual(projected, undefined, "the production projection accepts the fixture bodies");
+    assert.deepEqual(projected[0].content.map((part) => part.text), summaryPartTexts("multiblock", bodies),
+      `the multiblock arm's parts are exactly the production projection's parts (${role})`);
+    assert.equal(
+      summaryPartTexts("multiblock", bodies).join(""),
+      summaryPartTexts("single", bodies).join(""),
+      `the arms' summary regions concatenate to identical model-visible text (${role})`,
+    );
+    assert.equal(summaryPartTexts("multiblock", bodies).length, bodies.length + 2,
+      "one part per block plus the two framing parts");
   }
 }
 
@@ -276,11 +347,12 @@ async function dryRun() {
   assert.match(pins.settingsHash, /^[0-9a-f]{64}$/);
   assert.deepEqual(pins.settings, { temperature: 0, maxOutputTokens: 512, stream: true, thinking: "off" });
   assert.deepEqual(pins.routing, { concurrency: 1, retryPolicy: "none", sessionScope: "arm-per-group" });
-  assert.equal(pins.fixtureDigest, fixtureDigest(), "the fixture digest pins every composed payload of the enlarged fixture");
+  assert.equal(pins.fixtureDigest, fixtureDigest(), "the fixture digest pins every composed payload of the re-pinned fixture");
   assert.deepEqual(pins.groupOrder, Array.from({ length: GROUP_COUNT }, (_, index) => groupOrder(index + 1)));
   assert.equal(pins.armRotation, ARM_ROTATION);
-  assert.ok(pins.measuredCase.startsWith("between-compaction"), "the pins name the measured case");
-  assert.ok(pins.measuredCase.includes("is not measured"), "the pins state that the compaction boundary is not measured");
+  assert.ok(pins.measuredCase.startsWith("cross-compaction append"), "the pins name the measured case");
+  assert.ok(pins.measuredCase.includes("multiblock"), "the pins name the arm under test");
+  assert.ok(pins.measuredCase.includes("single"), "the pins name the baseline");
   assert.equal(pins.retention.bucket, "default");
   assert.equal(pins.retention.ttlMs, 300_000);
   assert.equal(pins.retention.breakpoint, BREAKPOINT_PLACEMENT, "the pins record the modelled breakpoint placement");
@@ -301,14 +373,14 @@ async function dryRun() {
   }
   // Retention-specific writes are recorded where the adapter reports them.
   for (const group of report.groups) {
-    assert.equal(group.stable.prime.retentionWriteReported, true);
-    assert.equal(group.stable.prime.retentionBucket, "default");
-    assert.ok(group.stable.prime.retentionWriteTokens > 0, "the prime's breakpoint write is retention evidence");
-    assert.ok(group.stable.probe.retentionWriteTokens >= 0);
+    assert.equal(group.multiblock.prime.retentionWriteReported, true);
+    assert.equal(group.multiblock.prime.retentionBucket, "default");
+    assert.ok(group.multiblock.prime.retentionWriteTokens > 0, "the prime's breakpoint write is retention evidence");
+    assert.ok(group.multiblock.probe.retentionWriteTokens >= 0);
   }
   assert.equal(report.totals.requestsWithRetentionReport, report.totals.requests);
   // Payload hashes differ across groups (per-group trace) but are recorded exactly.
-  const primeHashes = new Set(report.groups.map((group) => group.stable.prime.payloadHash));
+  const primeHashes = new Set(report.groups.map((group) => group.multiblock.prime.payloadHash));
   assert.equal(primeHashes.size, GROUP_COUNT, "each group runs its own salted trace instance");
 }
 
@@ -316,7 +388,7 @@ async function dryRun() {
 
 {
   const first = fixtureDigest();
-  assert.equal(first, fixtureDigest(), "the digest is deterministic for the enlarged fixture");
+  assert.equal(first, fixtureDigest(), "the digest is deterministic for the re-pinned fixture");
   assert.match(first, /^[0-9a-f]{64}$/);
   assert.notEqual(first, fixtureDigest(GROUP_COUNT - 1), "the digest covers every group's payloads");
 }
@@ -327,10 +399,11 @@ async function dryRun() {
   const { report, humanText } = await dryRun();
   const { cacheStandard: standard } = report;
   assert.equal(standard.hitRateDefinition, HIT_RATE_DEFINITION);
-  assert.equal(standard.band.baselineArm, "native", "Pi native is the baseline");
+  assert.equal(standard.band.baselineArm, "single", "the single-summary rendering is the baseline");
+  assert.equal(standard.band.armUnderTest, "multiblock");
   assert.equal(standard.band.belowBaselinePercentagePoints, NON_REGRESSION_BAND_PP);
   assert.equal(standard.liveness.controlArm, "nonce");
-  assert.equal(standard.liveness.measuredAgainst, "stable");
+  assert.equal(standard.liveness.measuredAgainst, "multiblock");
   assert.equal(standard.liveness.belowMarginPercentagePoints, LIVENESS_MARGIN_PP);
   assert.equal(standard.groupsAggregated, GROUP_COUNT);
   assert.equal(standard.cacheActivityObserved, true);
@@ -340,52 +413,52 @@ async function dryRun() {
     assert.ok(rate.rate > 0 && rate.rate <= 1, `${arm} records a measured rate`);
     assert.equal(rate.denominator, rate.cacheRead + rate.cacheCreation + rate.uncachedInput);
   }
-  // The honest simulation: stable at the native baseline, nonce far below stable.
+  // The honest simulation: multiblock at the single baseline, the control
+  // indistinguishable — both facts the #297 case makes structural.
   assert.equal(standard.bandSatisfied, true);
-  assert.equal(standard.livenessSatisfied, true);
-  assert.ok(standard.rates.stable.rate >= standard.rates.native.rate, "the stable arm never sits below the native baseline here");
-  assert.ok(standard.rates.nonce.rate <= standard.rates.stable.rate - LIVENESS_MARGIN_PP / 100);
+  assert.equal(standard.improvementObserved, false);
+  assert.equal(standard.livenessSatisfied, false, "no breakpoint sits at the carried Memory's end, so the control is dead");
   assert.equal(
-    standard.minimumAcceptableStableRate,
-    Math.round(Math.max(0, standard.rates.native.rate - NON_REGRESSION_BAND_PP / 100) * 1e4) / 1e4,
+    standard.minimumAcceptableRate,
+    Math.round(Math.max(0, standard.rates.single.rate - NON_REGRESSION_BAND_PP / 100) * 1e4) / 1e4,
   );
-  // The report states the pinned definition, the band, the baseline, each
-  // arm's rate, the liveness outcome, and the denominator caveat (#260).
   assert.ok(humanText.includes("hit rate"));
   assert.ok(humanText.includes("baseline"));
   assert.ok(humanText.includes("liveness"));
   assert.ok(humanText.includes(DENOMINATOR_NOTE), "the report states the differing-denominator caveat verbatim");
   assert.ok(humanText.includes("must not be reused as a cost metric"));
+  assert.ok(humanText.includes("measured case: cross-compaction append"), "the human report names the measured case");
   assert.ok(report.conclusion.reasons.some((reason) => reason.startsWith("non-regression band met")));
-  assert.ok(report.conclusion.reasons.some((reason) => reason.startsWith("liveness control alive")));
+  assert.ok(report.conclusion.reasons.includes(DEAD_CONTROL_NOTE));
+  assert.ok(humanText.includes("exit: 0"), "the human report states the exit contract");
 }
 
-// ─── native comparison is reported per group and by median ──────────
+// ─── baseline comparison is reported per group and by median ────────
 
 {
   const { report, humanText } = await dryRun();
   for (const group of report.groups) {
-    assert.equal(group.nativeComparison.evaluated, true);
+    assert.equal(group.baselineComparison.evaluated, true);
     for (const direction of ["inputTokens", "writeSpend", "ttft"]) {
-      assert.ok(["worse", "better", "equal", "unreported"].includes(group.nativeComparison.directions[direction]));
+      assert.ok(["worse", "better", "equal", "unreported"].includes(group.baselineComparison.directions[direction]));
     }
-    assert.ok(["worse", "better", "equal"].includes(group.nativeComparison.derived.cost),
+    assert.ok(["worse", "better", "equal"].includes(group.baselineComparison.derived.cost),
       "cost is reported as a derived figure per group");
   }
-  const { nativeSummary } = report;
-  assert.equal(nativeSummary.groupsEvaluated, GROUP_COUNT);
+  const { baselineSummary } = report;
+  assert.equal(baselineSummary.groupsEvaluated, GROUP_COUNT);
   for (const direction of ["inputTokens", "writeSpend", "ttft"]) {
-    const summary = nativeSummary.perDirection[direction];
+    const summary = baselineSummary.perDirection[direction];
     assert.ok(Number.isFinite(summary.medianDelta) && summary.medianDelta !== null);
     assert.equal(summary.worse + summary.better + summary.equal + summary.unreported, GROUP_COUNT);
   }
-  assert.ok(!("cost" in nativeSummary.perDirection), "cost is not a counted direction");
-  assert.ok(Number.isFinite(nativeSummary.derived.cost.medianDelta));
-  assert.ok(nativeSummary.derived.cost.note.includes("derived figure"));
+  assert.ok(!("cost" in baselineSummary.perDirection), "cost is not a counted direction");
+  assert.ok(Number.isFinite(baselineSummary.derived.cost.medianDelta));
+  assert.ok(baselineSummary.derived.cost.note.includes("derived figure"));
   // TTFT dispersion alongside the median delta (#268 defect 3): a delta
   // smaller than the spread cannot read as a finding, and the report states
   // both so no reader has to infer it.
-  assert.ok(nativeSummary.perDirection.ttft.spreadMs !== null && nativeSummary.perDirection.ttft.spreadMs >= 0);
+  assert.ok(baselineSummary.perDirection.ttft.spreadMs !== null && baselineSummary.perDirection.ttft.spreadMs >= 0);
   assert.ok(humanText.includes("spread"), "the human report states the TTFT dispersion");
   assert.ok(humanText.includes("cost (derived)"), "the human report marks cost as derived");
   // Each counted direction states what it measures and why it is independent.
@@ -395,9 +468,10 @@ async function dryRun() {
     assert.ok(humanText.includes(note), "the human report restates each direction note");
   }
   assert.ok(report.regression.directions.derivedNote.includes("never counted as a regression direction"));
-  assert.ok(nativeSummary.armMedians.probeTtftMs.stable !== null);
-  assert.ok(nativeSummary.armMedians.cost.native !== null);
-  // The dry run never claims the regression rule.
+  assert.ok(baselineSummary.armMedians.probeTtftMs.multiblock !== null);
+  assert.ok(baselineSummary.armMedians.cost.single !== null);
+  // The dry run never claims the regression rule: the structural framing
+  // overhead sits below the per-direction noise floors.
   assert.equal(report.regression.groupsRegressed < 4, true);
 }
 
@@ -439,8 +513,10 @@ async function dryRun() {
   // The #251 signature as an adapter: every probe reports the same constant
   // read regardless of content, exactly as the measured gateway did when the
   // fixture sat below the cacheable floor. Every group is measurable and the
-  // band holds trivially, so only the liveness control can expose the run as
-  // dead — and it must, because a dead measurement is never a pass.
+  // band holds trivially, so only the liveness control can name the
+  // limitation — and under #297's labels the honest verdict is neutral with
+  // the dead-control caveat, while the run itself stays a valid measurement
+  // (integrity ok, exit zero).
   const constantReadAdapter = {
     id: "simulated-dead-measurement/1",
     describePins: () => ({ provider: "simulated", model: "simulated/constant-read-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
@@ -469,11 +545,48 @@ async function dryRun() {
   assert.equal(report.cacheStandard.cacheActivityObserved, true);
   assert.equal(report.cacheStandard.bandSatisfied, true, "equal rates satisfy the band trivially");
   assert.equal(report.cacheStandard.livenessSatisfied, false, "the constant read cannot distinguish content");
-  assert.equal(report.conclusion.cache, "inconclusive");
-  assert.equal(report.conclusion.final, "inconclusive");
-  assert.equal(exitCode, 1);
+  assert.equal(report.conclusion.cache, "neutral", "a dead control with a met band is an honest neutral");
+  assert.equal(report.conclusion.final, "neutral");
+  assert.equal(exitCode, 0, "the exit contract separates integrity from conclusion");
   assert.ok(humanText.includes("liveness"), "the human report names the dead liveness control");
-  assert.ok(report.conclusion.reasons.some((reason) => reason.includes("liveness control dead")));
+  assert.ok(report.conclusion.reasons.includes(DEAD_CONTROL_NOTE));
+}
+
+// ─── an apparent improvement on a dead control stays inconclusive ────
+
+{
+  // A fabricated adapter that reports the multiblock arm reading far more
+  // than the single baseline on every probe while the nonce control reads
+  // the same as multiblock: the gain cannot be attributed to content, so the
+  // verdict must refuse the improvement — and the run remains valid.
+  const biasedAdapter = {
+    id: "simulated-biased/1",
+    describePins: () => ({ provider: "simulated", model: "simulated/biased-v1", cacheReporting: "reported", retentionBuckets: ["default"] }),
+    async send(request, observe = {}) {
+      observe.onFirstToken?.();
+      const probe = request.role === "probe";
+      const arm = request.arm;
+      const read = probe && arm !== "single" ? 900 : 0;
+      const write = probe ? (arm === "single" ? 1000 : 100) : 1185;
+      return {
+        usage: { inputTokens: probe ? 0 : 0, outputTokens: probe ? 64 : 48 },
+        cache: { reported: true, read, write },
+        retentionWrite: { reported: true, bucket: "default", tokens: write },
+        cost: 0,
+      };
+    },
+  };
+  const clock = fakeClock();
+  const { report, exitCode } = await runExperiment({
+    adapter: biasedAdapter,
+    clock,
+    generatedAt: () => "2026-01-01T00:00:00.000Z",
+  });
+  assert.equal(report.integrity.ok, true);
+  assert.equal(report.cacheStandard.improvementObserved, true);
+  assert.equal(report.cacheStandard.livenessSatisfied, false);
+  assert.equal(report.conclusion.cache, "inconclusive", "an improvement claim requires the control alive");
+  assert.equal(exitCode, 0, "an inconclusive measurement is still a valid run");
 }
 
 // ─── unsupported cache reporting: absent, not zero ──────────────────
@@ -494,7 +607,7 @@ async function dryRun() {
   }
   assert.equal(report.conclusion.cache, "inconclusive");
   assert.equal(report.conclusion.final, "inconclusive");
-  assert.equal(exitCode, 1);
+  assert.equal(exitCode, 0, "missing reports are absent evidence, not an execution failure");
 }
 
 // ─── ordering integrity: only the pinned per-group order is valid ───
@@ -503,12 +616,12 @@ async function dryRun() {
   // A fixed, never-rotated order — the pre-#268 shape — deviates from the
   // pinned rotation and must fail integrity, whatever its other merits.
   const fixedOrder = () => [
-    "stable.prime",
+    "multiblock.prime",
+    "single.prime",
     "nonce.prime",
-    "native.prime",
-    "stable.probe",
+    "multiblock.probe",
+    "single.probe",
     "nonce.probe",
-    "native.probe",
   ];
   const clock = fakeClock();
   const adapter = simulatedCacheAdapter({ clock, ttlMs: 300_000 });
@@ -523,7 +636,7 @@ async function dryRun() {
   assert.ok(report.integrity.failures.some((failure) => failure.includes("deviated from the pinned rotated per-group order")));
   assert.equal(report.conclusion.cache, "inconclusive");
   assert.equal(report.conclusion.final, "inconclusive");
-  assert.equal(exitCode, 1);
+  assert.equal(exitCode, 1, "an integrity failure is the one thing the exit code reports");
 }
 
 // ─── adapter failures and malformed reports are integrity failures ──
@@ -540,7 +653,7 @@ async function dryRun() {
   const { report, exitCode } = await runExperiment({ adapter, clock, generatedAt: () => "2026-01-01T00:00:00.000Z" });
   assert.equal(report.integrity.ok, false);
   assert.equal(report.integrity.providerErrors, 1);
-  assert.ok(report.integrity.failures[0].includes("stable.prime"));
+  assert.ok(report.integrity.failures[0].includes("multiblock.prime"));
   assert.equal(report.totals.groups, 0, "a failed run classifies no groups");
   assert.equal(report.conclusion.final, "inconclusive");
   assert.equal(exitCode, 1);
@@ -567,23 +680,23 @@ async function dryRun() {
 // ─── divergence invariant classification ────────────────────────────
 
 {
-  const summary = { start: 100, end: 900 };
   const blocks = [
     { start: 200, end: 300 },
+    { start: 400, end: 500 },
   ];
-  // The between-compaction arms: sharing every prime byte is the invariant.
-  assert.deepEqual(classifyDivergenceBoundary("stable", { summary, blocks }, 1000, 1000), { ok: true, boundary: "growing-tail" });
-  assert.deepEqual(classifyDivergenceBoundary("native", { summary, blocks: [] }, 1000, 1000), { ok: true, boundary: "growing-tail" });
-  assert.deepEqual(classifyDivergenceBoundary("stable", { summary, blocks }, 999, 1000), { ok: false, boundary: "inside-carried-prefix" });
-  assert.deepEqual(classifyDivergenceBoundary("native", { summary, blocks: [] }, 1001, 1000), { ok: false, boundary: "inside-carried-prefix" });
-  assert.deepEqual(classifyDivergenceBoundary("stable", { summary, blocks }, 900, undefined), { ok: false, boundary: "inside-carried-prefix" },
-    "a missing prime length cannot validate the invariant");
+  // The append arms: the shared prefix must end exactly at the pinned seam.
+  assert.deepEqual(classifyDivergenceBoundary("multiblock", { blocks, expectedShared: 560 }, 560), { ok: true, boundary: "appended-block" });
+  assert.deepEqual(classifyDivergenceBoundary("single", { blocks, expectedShared: 560 }, 560), { ok: true, boundary: "appended-block" });
+  assert.deepEqual(classifyDivergenceBoundary("multiblock", { blocks, expectedShared: 560 }, 559), { ok: false, boundary: "inside-carried-prefix" });
+  assert.deepEqual(classifyDivergenceBoundary("single", { blocks, expectedShared: 560 }, 561), { ok: false, boundary: "inside-carried-prefix" });
+  assert.deepEqual(classifyDivergenceBoundary("multiblock", { blocks, expectedShared: null }, 560), { ok: false, boundary: "inside-carried-prefix" },
+    "a missing seam cannot validate the invariant");
   // The control: divergence inside the earliest block.
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { summary, blocks }, 250), { ok: true, boundary: "memory-block-1" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { summary, blocks }, 200), { ok: true, boundary: "memory-block-1" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { summary, blocks }, 199), { ok: false, boundary: "outside-earliest-block" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { summary, blocks }, 300), { ok: false, boundary: "outside-earliest-block" });
-  assert.deepEqual(classifyDivergenceBoundary("nonce", { summary, blocks: [] }, 250), { ok: false, boundary: "outside-earliest-block" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 250), { ok: true, boundary: "memory-block-1" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 200), { ok: true, boundary: "memory-block-1" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 199), { ok: false, boundary: "outside-earliest-block" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks, expectedShared: null }, 300), { ok: false, boundary: "outside-earliest-block" });
+  assert.deepEqual(classifyDivergenceBoundary("nonce", { blocks: [], expectedShared: null }, 250), { ok: false, boundary: "outside-earliest-block" });
 }
 
 // ─── report leak detection ──────────────────────────────────────────
@@ -601,17 +714,18 @@ async function dryRun() {
 {
   const result = spawnSync(process.execPath, [join(HERE, "experiment.mjs"), "--dry-run"], { encoding: "utf8" });
   assert.equal(result.status, 0, `dry-run command exits clean:\n${result.stdout}\n${result.stderr}`);
-  assert.ok(result.stdout.includes("result: POSITIVE"));
+  assert.ok(result.stdout.includes("result: NEUTRAL"), "the honest dry run concludes neutral");
   assert.ok(result.stdout.includes("hit rate"), "the human report reflects the non-regression standard");
   assert.ok(result.stdout.includes("liveness"));
+  assert.ok(result.stdout.includes("measured case: cross-compaction append"), "the human report names the measured case");
   assert.ok(result.stdout.includes("breakpoints: mirrors Pi's anthropic-messages placement"),
     "the human report states the modelled breakpoint placement");
   assert.ok(result.stdout.includes("framing:"));
   const jsonPath = join(HERE, "report", "provider-cache-experiment.json");
   assert.ok(existsSync(jsonPath), "the report artifact is written beside the harness");
   const written = JSON.parse(readFileSync(jsonPath, "utf8"));
-  assert.equal(written.schema, "pi-square.context-memory/provider-cache-experiment/1");
-  assert.equal(written.cacheStandard.band.baselineArm, "native");
+  assert.equal(written.schema, "pi-square.context-memory/provider-cache-experiment/2");
+  assert.equal(written.cacheStandard.band.baselineArm, "single");
 }
 
 {

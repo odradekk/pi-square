@@ -18,34 +18,47 @@ import {
   FORBIDDEN_CLAIM_PHRASES,
   FRAMING_DISCLAIMER,
   evaluateRun,
-  nativeMedians,
+  baselineMedians,
   withinTtl,
 } from "./verdict.mjs";
 
 /**
  * The experiment runner (#225, standard re-pinned by #260, arms and order
- * re-modeled by #268): executes the five interleaved paired groups over the
- * three pinned arms through an injected provider adapter, records the exact
- * payload/prefix hashes, first divergence boundaries, usage, cache and
- * retention reports, cost, and locally measured TTFT for every request, and
- * produces the bounded verdict report.
+ * re-modeled by #268, measured case re-pinned by #297): executes the five
+ * interleaved paired groups over the three pinned arms through an injected
+ * provider adapter, records the exact payload/prefix hashes, first
+ * divergence boundaries, usage, cache and retention reports, cost, and
+ * locally measured TTFT for every request, and produces the bounded verdict
+ * report.
  *
  * The runner owns run integrity: only the pinned per-group request order is
  * valid (primes then probes, the arm order rotating per group so no arm is
  * confounded with a request position), per-arm divergence invariants must
- * hold (the stable and native arms' probes must byte-extend their primes —
- * the between-compaction case — while the nonce arm's probe must diverge
- * inside the earliest carried block), and provider reports are validated at
- * the boundary. Every request declares the three breakpoints Pi's
- * anthropic-messages converter places, as canonical byte positions; the
- * verdict itself — the pinned hit-rate standard, the non-regression band
- * against the Pi-native baseline, and the nonce liveness control — lives in
- * `verdict.mjs`. The report carries hashes, offsets, and bounded numbers —
- * never payloads, transcripts, Memory or source bodies, or credentials — and
- * a self-check re-verifies that before anything is written.
+ * hold (the measured case is the cross-compaction append: the multiblock and
+ * single arms' probes must diverge from their primes exactly at the appended
+ * block's seam — every carried byte stays shared — while the nonce arm's
+ * probe must diverge inside the earliest carried block), and provider reports
+ * are validated at the boundary. Every request declares the three
+ * breakpoints Pi's anthropic-messages converter places, as canonical byte
+ * positions; neither arm adds a breakpoint of its own. The verdict itself —
+ * the improved/neutral/regressed/inconclusive standard over the multiblock
+ * versus single comparison, the liveness control, and the repeated
+ * multi-direction regression rule — lives in `verdict.mjs`. The report
+ * carries hashes, offsets, and bounded numbers — never payloads,
+ * transcripts, Memory or source bodies, or credentials — and a self-check
+ * re-verifies that before anything is written.
+ *
+ * Exit contract (#297): the command exits zero exactly when the run's
+ * integrity holds — the pinned order was honored, every divergence invariant
+ * held, every provider report was valid, every probe was within TTL, and the
+ * privacy self-check passed. The conclusion label (improved, neutral,
+ * regressed, inconclusive, or regression) is a measurement result, not a
+ * pass/fail signal: an honestly inconclusive run is a successful measurement
+ * and must not be made to look like an execution failure by exiting non-zero
+ * — nor coaxed toward a positive label to buy a zero exit code.
  */
 
-const REPORT_SCHEMA = "pi-square.context-memory/provider-cache-experiment/1";
+const REPORT_SCHEMA = "pi-square.context-memory/provider-cache-experiment/2";
 const REPORT_STRING_MAX = 240;
 const INTEGRITY_FAILURE_CAP = 16;
 const DEFAULT_TTL_MS = 300_000;
@@ -89,17 +102,17 @@ function validateProviderReport(report) {
 
 /**
  * Names the boundary the arm's probe diverges at and checks the arm's prefix
- * invariant (#268): the measured case is the between-compaction request, so
- * the stable and native arms' probes must byte-extend their primes — every
- * byte of the prime is shared and the divergence lands in the grown tail —
- * while the nonce arm's probe must diverge inside the earliest carried block.
- * A violation means the fixture or composer stopped producing the cache
+ * invariant (#297): the measured case is the cross-compaction append, so the
+ * multiblock and single arms' probes must share every carried byte and
+ * diverge exactly at the pinned append seam (`layout.expectedShared`), while
+ * the nonce arm's probe must diverge inside the earliest carried block. A
+ * violation means the fixture or composer stopped producing the cache
  * property under test, so the run's evidence is meaningless.
  */
-export function classifyDivergenceBoundary(arm, layout, sharedBytes, primeByteLength) {
-  if (arm === "stable" || arm === "native") {
-    const ok = primeByteLength !== undefined && sharedBytes === primeByteLength;
-    return { ok, boundary: ok ? "growing-tail" : "inside-carried-prefix" };
+export function classifyDivergenceBoundary(arm, layout, sharedBytes) {
+  if (arm === "multiblock" || arm === "single") {
+    const ok = layout.expectedShared !== null && sharedBytes === layout.expectedShared;
+    return { ok, boundary: ok ? "appended-block" : "inside-carried-prefix" };
   }
   const earliest = layout.blocks[0];
   const ok = earliest !== undefined && sharedBytes >= earliest.start && sharedBytes < earliest.end;
@@ -129,7 +142,7 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount }) {
     },
     groupOrder: Array.from({ length: groupCount }, (_, index) => groupOrder(index + 1)),
     armRotation: ARM_ROTATION,
-    measuredCase: "between-compaction: the carried summary is unchanged from the previous request while the tail grows; the compaction boundary, where every arm necessarily falls back to the tools breakpoint, is not measured",
+    measuredCase: "cross-compaction append (#297): prime carries Memory blocks 1–2; probe carries them byte-identical plus appended block 3; multiblock renders the production uniform projection, single renders today's single-summary baseline",
     timing: {
       minRequestGapMs,
       ttlMs,
@@ -304,16 +317,11 @@ export async function runExperiment({
         const probe = records.get(`${group}|${arm}.probe`);
         if (!prime || !probe) continue; // unreachable with the pinned order; guards a partial run
         const evidence = prefixEvidence(prime.composed.payload, probe.composed.payload);
-        const classification = classifyDivergenceBoundary(
-          arm,
-          probe.composed.layout,
-          evidence.sharedBytes,
-          prime.composed.payload.bytes.length,
-        );
+        const classification = classifyDivergenceBoundary(arm, probe.composed.layout, evidence.sharedBytes);
         if (!classification.ok) {
           integrity.divergenceInvariantsOk = false;
           fail(
-            `group ${group} ${arm}: the probe's first divergence at byte ${evidence.sharedBytes} violates the ${arm} prefix invariant (${classification.boundary})`,
+            `group ${group} ${arm}: the probe's first divergence at byte ${evidence.sharedBytes} violates the ${arm} append invariant (${classification.boundary})`,
           );
         }
         evidence.boundary = classification.boundary;
@@ -328,9 +336,9 @@ export async function runExperiment({
       reportGroups.push({
         group,
         timing,
-        stable: arms.stable,
+        multiblock: arms.multiblock,
+        single: arms.single,
         nonce: arms.nonce,
-        native: arms.native,
       });
     }
   }
@@ -364,11 +372,11 @@ export async function runExperiment({
         ...group,
         quality: classified?.quality ?? null,
         qualityReasons: classified?.qualityReasons ?? [],
-        nativeComparison: classified?.nativeComparison ?? null,
+        baselineComparison: classified?.baselineComparison ?? null,
       };
     }),
     cacheStandard: verdict.cacheStandard,
-    nativeSummary: nativeMedians(verdict.groups),
+    baselineSummary: baselineMedians(verdict.groups),
     regression: verdict.regression,
     conclusion: { cache: verdict.cacheConclusion, final: verdict.conclusion, reasons: verdict.reasons },
     totals: {
@@ -393,14 +401,14 @@ export async function runExperiment({
     json = JSON.stringify(report, null, 2);
   }
 
-  const exitCode = report.integrity.ok && report.conclusion.final === "positive" ? 0 : 1;
+  const exitCode = report.integrity.ok ? 0 : 1;
   return { report, json, humanText: renderHuman(report), exitCode };
 }
 
 function renderHuman(report) {
   const short = (hash) => (typeof hash === "string" && hash.length >= 12 ? hash.slice(0, 12) : String(hash));
   const lines = [];
-  lines.push(`Provider-cache experiment (#225, standard #260, arms #268) — ${report.mode}`);
+  lines.push(`Provider-cache experiment (#225, scale #260, arms #268, append case #297) — ${report.mode}`);
   lines.push(
     `result: ${report.conclusion.final.toUpperCase()} — ${report.totals.groups} groups, ${report.totals.requests} requests, integrity ${report.integrity.ok ? "ok" : "FAILED"}`,
   );
@@ -418,30 +426,34 @@ function renderHuman(report) {
   lines.push(`timing: ttl ${report.pins.timing.ttlMs}ms · min gap ${report.pins.timing.minRequestGapMs}ms · order per group (primes then probes): ${orderText}`);
   lines.push("groups:");
   for (const group of report.groups) {
-    const native = group.nativeComparison?.evaluated
-      ? `${group.nativeComparison.worseDirections.length} worse directions`
-      : "native comparison unevaluated";
-    lines.push(`  ${String(group.group).padStart(2)}  ${String(group.quality).padEnd(14)} · native: ${native}`);
+    const baseline = group.baselineComparison?.evaluated
+      ? `${group.baselineComparison.worseDirections.length} worse directions`
+      : "baseline comparison unevaluated";
+    lines.push(`  ${String(group.group).padStart(2)}  ${String(group.quality).padEnd(14)} · baseline: ${baseline}`);
   }
   const { cacheStandard: standard } = report;
   const rateText = (arm) => (standard.rates[arm].rate === null ? "n/a" : `${(standard.rates[arm].rate * 100).toFixed(1)}%`);
   lines.push(`hit rate (${standard.aggregation}):`);
   lines.push(
-    `  stable ${rateText("stable")} · nonce ${rateText("nonce")} (liveness control) · native ${rateText("native")} (baseline)`
-      + ` — ${standard.groupsAggregated} groups aggregated`,
+    `  multiblock ${rateText("multiblock")} (under test) · single ${rateText("single")} (baseline)`
+      + ` · nonce ${rateText("nonce")} (liveness control) — ${standard.groupsAggregated} groups aggregated`,
   );
   lines.push(`  definition: ${standard.hitRateDefinition}`);
   lines.push(
-    `  band: stable must stay within ${standard.band.belowBaselinePercentagePoints}pp of native`
-      + ` (minimum ${standard.minimumAcceptableStableRate === null ? "n/a" : `${(standard.minimumAcceptableStableRate * 100).toFixed(1)}%`})`
+    `  band: multiblock must stay within ${standard.band.belowBaselinePercentagePoints}pp of single`
+      + ` (minimum ${standard.minimumAcceptableRate === null ? "n/a" : `${(standard.minimumAcceptableRate * 100).toFixed(1)}%`})`
       + ` — ${standard.bandSatisfied === null ? "unevaluated" : standard.bandSatisfied ? "met" : "failed"}`,
   );
   lines.push(
-    `  liveness: nonce must sit at least ${standard.liveness.belowMarginPercentagePoints}pp below stable`
+    `  improvement: multiblock must exceed single by at least ${standard.improvement.aboveBaselinePercentagePoints}pp`
+      + ` — ${standard.improvementObserved === null ? "unevaluated" : standard.improvementObserved ? "observed" : "not observed"}`,
+  );
+  lines.push(
+    `  liveness: nonce must sit at least ${standard.liveness.belowMarginPercentagePoints}pp below multiblock`
       + ` — ${standard.livenessSatisfied === null ? "unevaluated" : standard.livenessSatisfied ? "alive" : "dead (measurement cannot distinguish content)"}`,
   );
   lines.push(`  note: ${standard.denominatorNote}`);
-  const perDirection = Object.entries(report.nativeSummary.perDirection)
+  const perDirection = Object.entries(report.baselineSummary.perDirection)
     .map(([direction, summary]) => {
       const spread = direction === "ttft" && summary.spreadMs !== null && summary.spreadMs !== undefined
         ? ` (spread ${summary.spreadMs}ms)`
@@ -449,11 +461,11 @@ function renderHuman(report) {
       return `${direction} median-delta ${summary.medianDelta ?? "—"}${spread} (${summary.worse}w/${summary.better}b/${summary.equal}e)`;
     })
     .join(" · ");
-  const derivedCost = report.nativeSummary.derived?.cost;
+  const derivedCost = report.baselineSummary.derived?.cost;
   const derivedText = derivedCost
     ? ` · cost (derived) median-delta ${derivedCost.medianDelta ?? "—"} (${derivedCost.worse}w/${derivedCost.better}b/${derivedCost.equal}e)`
     : "";
-  lines.push(`native comparison: ${report.nativeSummary.groupsEvaluated} groups evaluated · ${perDirection}${derivedText}`);
+  lines.push(`baseline comparison: ${report.baselineSummary.groupsEvaluated} groups evaluated · ${perDirection}${derivedText}`);
   lines.push(`  directions (counted, independent): ${report.regression.directions.counted.join(", ")}`);
   for (const [direction, note] of Object.entries(report.regression.directions.notes)) {
     lines.push(`    ${direction}: ${note}`);
@@ -462,6 +474,7 @@ function renderHuman(report) {
   lines.push(`regression rule (${report.regression.rule}): ${report.regression.fired ? "FIRED" : "not fired"} — ${report.regression.groupsRegressed} regressed`);
   lines.push(`conclusion: cache ${report.conclusion.cache.toUpperCase()} · final ${report.conclusion.final.toUpperCase()}`);
   for (const reason of report.conclusion.reasons.slice(0, 8)) lines.push(`  · ${reason}`);
+  lines.push(`exit: ${report.integrity.ok ? "0 (integrity ok; the conclusion label is the measurement, not a pass/fail signal)" : "1 (integrity failed)"}`);
   lines.push(`framing: ${report.framing.disclaimer}`);
   return lines.join("\n");
 }

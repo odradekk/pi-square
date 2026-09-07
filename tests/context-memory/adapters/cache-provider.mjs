@@ -12,22 +12,26 @@ import { boundedErrorText, realTransport } from "./transport.mjs";
  *
  * - The wire request is reconstructed from `request.payload.table`: the
  *   `system` segment becomes the system block, the `tools` segment becomes
- *   the tool list, the `summary` segment becomes the leading context user
- *   message, and each `message-N` segment becomes one tail message. No
- *   timestamps, ids, or nonce-shaped fields are injected anywhere, so equal
- *   canonical payload prefixes produce equal wire prefixes and the provider's
- *   cache can only ever see the variability the fixture intends.
+ *   the tool list, the contiguous `summary-part-N` run becomes the leading
+ *   context user message — one text content block per summary-part segment,
+ *   so the `multiblock` arm's per-block parts arrive as separate ordered
+ *   blocks exactly as the #297 uniform projection sends them and the
+ *   `single` arm's one part arrives as today's single text block — and each
+ *   `message-N` segment becomes one tail message. No timestamps, ids, or
+ *   nonce-shaped fields are injected anywhere, so equal canonical payload
+ *   prefixes produce equal wire prefixes and the provider's cache can only
+ *   ever see the variability the fixture intends.
  * - The cache breakpoints are placed exactly where Pi's anthropic-messages
  *   converter places them (Pi 0.84.2,
  *   `@earendil-works/pi-ai/dist/api/anthropic-messages.js`): one on the
  *   system block, one on the last immediate tool, and one on the last block
- *   of the last user message. The carried summary is one text block, as Pi
- *   renders a compactionSummary (`@earendil-works/pi-coding-agent/dist/core/messages.js`),
- *   and it carries no breakpoint of its own — so a request whose summary
- *   changed can only fall back to the tools boundary, which is the property
- *   the fixture's negative control exists to expose. `describePins()`
- *   records the placement as "mirrors Pi's anthropic-messages placement" with
- *   the three positions named.
+ *   of the last user message. The carried Memory — one block or many —
+ *   carries no breakpoint of its own, so a request whose summary changed can
+ *   only fall back to the tools boundary, which is the property the
+ *   fixture's negative control exists to expose; adding a marker at the
+ *   carried Memory's end is #269's decision, deliberately not this
+ *   experiment's. `describePins()` records the placement as "mirrors Pi's
+ *   anthropic-messages placement" with the three positions named.
  * - `temperature` is omitted although the pinned settings carry 0:
  *   `claude-sonnet-5` rejects `temperature` (issue #248's probed facts), so
  *   the pinned settings cannot be fully applied on any model that caches.
@@ -62,13 +66,11 @@ const BASE_URL_DEFAULT = "https://ccr.bearfamily.us";
 /** `SETTINGS.maxOutputTokens` from the pinned fixture; the only settings applied verbatim. */
 const MAX_OUTPUT_TOKENS = 512;
 /**
- * The fixed user continuation appended when the reconstructed conversation
+ * The fixed user continuation appended if the reconstructed conversation ever
  * ends with an assistant turn: claude-sonnet-5 rejects assistant message
- * prefill ("The conversation must end with a user message"), and every probe
- * tail ends with the release-notes assistant turn. The text is a constant by
- * construction and never varies per request; as the closing user turn it is
- * the block that carries the tail breakpoint, exactly as a closing user turn
- * does in a real Pi conversation.
+ * prefill ("The conversation must end with a user message"). The #297
+ * fixture's tails end with user turns, so the continuation is a defensive
+ * no-op today; the text stays a constant that never varies per request.
  */
 export const PREFILL_CONTINUATION_USER_TEXT = "Continue.";
 const REPORT_STRING_MAX = 240;
@@ -138,6 +140,9 @@ export function buildClaudeCacheRequest(request) {
   let system = null;
   let tools = null;
   const messages = [];
+  // The contiguous summary-part run is one user message: one text content
+  // block per segment, in order, mirroring both arms' wire shape (#297).
+  let summaryBlocks = null;
   for (const segment of payload.table) {
     if (segment.element === "system") {
       system = contentOf(segment);
@@ -147,8 +152,12 @@ export function buildClaudeCacheRequest(request) {
         description: tool.description,
         input_schema: tool.inputSchema,
       }));
-    } else if (segment.element === "summary") {
-      messages.push({ role: "user", content: [{ type: "text", text: contentOf(segment) }] });
+    } else if (segment.element.startsWith("summary-part-")) {
+      if (summaryBlocks === null) {
+        summaryBlocks = [];
+        messages.push({ role: "user", content: summaryBlocks });
+      }
+      summaryBlocks.push({ type: "text", text: contentOf(segment) });
     } else if (segment.element.startsWith("message-")) {
       const message = tailMessageOf(contentOf(segment));
       // One text block per tail message keeps caching matched at the same
@@ -157,9 +166,10 @@ export function buildClaudeCacheRequest(request) {
     }
   }
 
-  // The gateway's model rejects assistant message prefill, and every probe's
-  // tail ends with an assistant turn; one fixed user continuation closes the
-  // conversation. Primes already end with a user turn and gain nothing.
+  // The gateway's model rejects assistant message prefill; the #297 fixture's
+  // tails end with user turns, so the guard below stays as a defensive no-op —
+  // only a tail that ends with an assistant turn gains the fixed continuation,
+  // exactly as a closing user turn does in a real Pi conversation.
   if (messages.at(-1)?.role === "assistant") {
     messages.push({ role: "user", content: [{ type: "text", text: PREFILL_CONTINUATION_USER_TEXT }] });
   }
