@@ -24,6 +24,7 @@ import {
   fixtureDigest,
   groupOrder,
   summaryPartTexts,
+  toolsFor,
 } from "./fixture.mjs";
 import { estimateTokens, firstDivergence, sha256Hex } from "./evidence.mjs";
 import { fakeClock, simulatedCacheAdapter } from "./fake-provider.mjs";
@@ -256,6 +257,18 @@ function reportArtifacts(prefix, dir = join(HERE, "report")) {
     const probe = composeRequest({ group: 1, arm: "nonce", role: "probe", runNonce: runA });
     const shared = firstDivergence(prime.payload, probe.payload).sharedBytes;
     assert.ok(shared < isolationBound, `the control's probe diverges from its own prime inside the namespace line (byte ${shared})`);
+  }
+  {
+    // The same isolation covers the tool catalog: measured gateways reuse
+    // cache by content hash across positions too, so byte-identical tool
+    // descriptions were reusable across arms and roles. Every description
+    // now carries the request's isolation token — fixed for an arm under
+    // test, per request for the control.
+    const catalog = (arm, role, runNonce = runA) => JSON.stringify(toolsFor(runNonce, { group: 1, arm, role }));
+    assert.notEqual(catalog("multiblock"), catalog("single"), "tool catalogs differ across arms");
+    assert.notEqual(catalog("multiblock"), catalog("multiblock", "prime", runB), "tool catalogs differ across runs");
+    assert.equal(catalog("multiblock"), catalog("multiblock", "probe"), "the arm under test keeps its catalog stable between prime and probe");
+    assert.notEqual(catalog("nonce"), catalog("nonce", "probe"), "the control's catalog differs per request");
   }
 }
 

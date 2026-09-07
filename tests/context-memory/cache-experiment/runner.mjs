@@ -156,7 +156,7 @@ function buildPins(adapter, { ttlMs, minRequestGapMs, groupCount, implementation
     implementationCommit,
     implementationTree,
     runNonce,
-    armIsolation: "run+arm-derived fixed-width isolation namespace at the front of the system segment, before any shared cacheable byte; the nonce control's token is per request",
+    armIsolation: "run+arm isolation token at the front of the system segment and in every tool description, before any shared cacheable byte; the control's token is per request",
     priceNote: declared.priceNote,
   };
   // A real adapter that cannot apply the pinned settings in full (for example

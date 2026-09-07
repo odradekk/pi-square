@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DIGEST_NONCE, SYSTEM_PROMPT, TOOLS, armNamespace, composeRequest } from "../cache-experiment/fixture.mjs";
+import { DIGEST_NONCE, SYSTEM_PROMPT, armNamespace, composeRequest, toolsFor } from "../cache-experiment/fixture.mjs";
 import { estimateTokens, sha256Hex } from "../cache-experiment/evidence.mjs";
 import { runExperiment } from "../cache-experiment/runner.mjs";
 import {
@@ -185,12 +185,16 @@ function captureTransport(handler) {
   );
   assert.deepEqual(body.system[0].cache_control, { type: "ephemeral" },
     "breakpoint 1: the system block carries cache_control, where Pi places it");
-  assert.deepEqual(body.tools, TOOLS.map((tool) => ({
+  const saltedTools = toolsFor(DIGEST_NONCE, { group: 1, arm: "multiblock", role: "prime" });
+  assert.deepEqual(body.tools, saltedTools.map((tool) => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema,
-  })).map((tool, index) => (index === TOOLS.length - 1 ? { ...tool, cache_control: { type: "ephemeral" } } : tool)),
+  })).map((tool, index) => (index === saltedTools.length - 1 ? { ...tool, cache_control: { type: "ephemeral" } } : tool)),
     "breakpoint 2: the last immediate tool carries cache_control, and only it");
+  assert.ok(body.tools.every((tool, index) => tool.description.endsWith(`[isolation:${armNamespace(DIGEST_NONCE, "multiblock")}]`)
+    || tool.description === saltedTools[index].description),
+    "every tool description carries the request's isolation token (#297 review finding 2)");
   assert.equal(body.messages[0].role, "user");
   // #297: the contiguous summary-part run is one user message with one text
   // block per part — the multiblock arm's per-block parts arrive as separate
