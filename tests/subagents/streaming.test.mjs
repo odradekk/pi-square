@@ -118,8 +118,8 @@ function createSession(script) {
   assert.equal(returned.details.phase, "completed");
   const toolStarts = returned.details.timeline.filter((item) => item.kind === "tool" && item.phase === "start").map((item) => item.text);
   assert.deepEqual(toolStarts, [
-    "grep /needle/ in .",
-    "web_search 1 query: installation guide",
+    "grep called",
+    "web_search 1 query",
   ]);
   assert.doesNotMatch(toolStarts.join("\n"), /password|token|private|SECRET/);
   assert.equal(returned.details.finalText, "# Final\n\nComplete answer.");

@@ -154,7 +154,7 @@ test("manager is an adaptive non-card workbench and never exposes prompt or tool
   const wide = render(manager, 120);
   assert.match(narrow, /^● Subagents/m);
   assert.match(narrow, /RUNNING.*SESSION.*DEFINITIONS/);
-  assert.match(narrow, /ls src\/components/);
+  assert.match(narrow, /ls called/);
   assert.match(wide, /│/);
   assert.equal(managerPanelWidth(40), 40);
   assert.equal(managerPanelWidth(120), 100);

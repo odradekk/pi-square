@@ -82,28 +82,27 @@ function details(overrides = {}) {
 
 // ─── 1. The shared allowlisted formatter names the anchored target ──
 
-test("replace summaries name the target file", () => {
+test("anchored mutation summaries render identity only, never free-form arguments", () => {
   assert.equal(
     formatToolCall("replace", { path: "src/a.txt", remove_from: "abc", remove_to: "def", replacement_text: "X", secret: "private" }),
-    "replace src/a.txt",
+    "replace called",
   );
-  assert.doesNotMatch(formatToolCall("replace", { path: "src/a.txt", secret: "private" }), /private/);
-});
-
-test("insert summaries name the target file", () => {
   assert.equal(
     formatToolCall("insert", { path: "src/a.txt", anchor: "abc", direction: "after", lines: ["x"], secret: "private" }),
-    "insert src/a.txt",
+    "insert called",
   );
-  assert.doesNotMatch(formatToolCall("insert", { path: "src/a.txt", lines: ["secret-text"] }), /secret-text/);
+  // A path is a model-authored string and can itself carry a credential, so
+  // it is a free-form value like any other argument.
+  assert.doesNotMatch(formatToolCall("replace", { path: "src/ghp_secret", secret: "private" }), /ghp_secret|private/);
+  assert.doesNotMatch(formatToolCall("insert", { path: "src/a.txt", lines: ["secret-text"] }), /secret-text|src\/a\.txt/);
 });
 
-test("anchored summaries shorten long paths and never leak arguments", () => {
+test("anchored summaries stay bounded and never leak arguments", () => {
   const long = `nested/${"segment/".repeat(20)}tail.txt`;
   const summary = formatToolCall("replace", { path: long, replacement_text: "secret-text" });
   assert.match(summary, /^replace /);
   assert.ok(Array.from(summary).length <= 120, "the summary stays within the formatter bound");
-  assert.doesNotMatch(summary, /secret-text/);
+  assert.doesNotMatch(summary, /secret-text|tail\.txt/);
 });
 
 test("legacy JSON timeline entries use the same anchored formatter", () => {
@@ -112,7 +111,7 @@ test("legacy JSON timeline entries use the same anchored formatter", () => {
     phase: "start",
     text: 'replace {"path":"src/a.txt","remove_from":"abc","replacement_text":"X"}',
   });
-  assert.deepEqual(replace, { tool: "replace", summary: "src/a.txt" });
+  assert.deepEqual(replace, { tool: "replace", summary: "called" });
 });
 
 // ─── 2. Refusal detection at the tool boundary ─────────────────────
@@ -270,7 +269,8 @@ test("expanded notification shows the anchored activity and the refusal, without
     { expanded: true },
     plainTheme,
   ), 80).join("\n");
-  assert.match(rendered, /replace\s+src\/a\.txt/, "the activity summary names the target file");
+  assert.match(rendered, /replace\s+called/, "the activity summary renders tool identity only");
+  assert.doesNotMatch(rendered, /(read|replace)\s+src\//, "no free-form path value renders in activity");
   assert.match(rendered, /!\s+replace/, "the refused activity item renders the warning marker, not a failure marker");
   assert.doesNotMatch(rendered, /×\s+replace/, "an anchor refusal never renders as a failed call");
   assert.match(rendered, /Refusals/, "expanded reveals the refusals section");

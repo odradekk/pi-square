@@ -14,48 +14,26 @@ function clipInline(value: unknown, max: number): string {
     : `${codePoints.slice(0, Math.max(0, max - 3)).join("")}...`;
 }
 
-function shortenPath(value: unknown): string {
-  return clipInline(value || ".", 48);
-}
-
 export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDisplay {
-  let summary: string;
+  // Activity renders tool identity plus structurally safe metadata only.
+  // Every free-form argument value — a path, pattern, query, command, or
+  // identifier — is omitted: any model-authored string can carry a
+  // credential, so no bounded projection of it can be safe to display.
+  let summary = "called";
   switch (toolName) {
     case "read": {
-      const path = shortenPath(args?.path ?? args?.file_path ?? "...");
       const offset = args?.offset;
       const limit = args?.limit;
-      if (typeof offset === "number" || typeof limit === "number") {
-        const start = typeof offset === "number" ? offset : 1;
-        const end = typeof limit === "number" ? start + limit - 1 : undefined;
-        summary = `${path}:${start}${end ? `-${end}` : ""}`;
-      } else summary = path;
+      if (Number.isFinite(offset) || Number.isFinite(limit)) {
+        const start = Number.isFinite(offset) ? offset : 1;
+        const end = Number.isFinite(limit) ? start + limit - 1 : undefined;
+        summary = `lines ${start}${end !== undefined && end >= start ? `-${end}` : ""}`;
+      }
       break;
     }
-    case "grep":
-      summary = `/${clipInline(args?.pattern || "...", 40)}/ in ${shortenPath(args?.path || ".")}`;
-      break;
-    case "find":
-      summary = `${clipInline(args?.pattern || ".", 40)} in ${shortenPath(args?.path || ".")}`;
-      break;
-    case "ls":
-      summary = shortenPath(args?.path || ".");
-      break;
-    case "bash":
-    case "pwsh":
-      // Shell commands are arbitrary text: no bounded argument projection can
-      // make them safe to display, so shell activity stays a generic summary.
-      summary = "called";
-      break;
-    case "edit":
-    case "write":
-    case "replace":
-    case "insert":
-      summary = shortenPath(args?.path || "...");
-      break;
     case "web_search": {
       const queries = Array.isArray(args?.queries) ? args.queries : [];
-      summary = `${queries.length} quer${queries.length === 1 ? "y" : "ies"}: ${clipInline(queries[0] || "...", 50)}`;
+      summary = `${queries.length} quer${queries.length === 1 ? "y" : "ies"}`;
       break;
     }
     case "web_fetch": {
@@ -63,14 +41,7 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
       summary = `${urls.length} URL${urls.length === 1 ? "" : "s"}`;
       break;
     }
-    case "library_search":
-      summary = clipInline(args?.libraryName || "...", 60);
-      break;
-    case "library_docs":
-      summary = clipInline(args?.libraryId || "...", 60);
-      break;
     default:
-      summary = "called";
       break;
   }
   return {
@@ -98,17 +69,16 @@ export function toolEventDisplay(item: SubagentTimelineItem): ToolEventDisplay {
     }
   }
 
-  const colon = /^([A-Za-z0-9_.-]+):\s*(.*)$/s.exec(original);
-  if (colon) return { tool: clipInline(colon[1], 64) || "tool", summary: clipInline(colon[2], 120) };
-  const spaced = /^([A-Za-z0-9_.-]+)\s+(.*)$/s.exec(original);
-  if (spaced) {
-    const rawSummary = spaced[2] ?? "";
-    return {
-      tool: clipInline(spaced[1], 64) || "tool",
-      summary: rawSummary.trimStart().startsWith("{") ? "called" : clipInline(rawSummary, 120),
-    };
+  // Legacy and free-form entries carry arbitrary text: only a bounded
+  // tool-name-shaped head renders, never the remainder.
+  const colon = /^([A-Za-z0-9_.-]+):/.exec(original);
+  if (colon) return { tool: clipInline(colon[1], 64) || "tool", summary: "called" };
+  const spaced = /^([A-Za-z0-9_.-]+)\s/.exec(original);
+  if (spaced) return { tool: clipInline(spaced[1], 64) || "tool", summary: "called" };
+  if (/^[A-Za-z0-9_.-]+$/.test(original)) {
+    return { tool: clipInline(original, 64) || "tool", summary: "called" };
   }
-  return { tool: clipInline(original, 64) || "tool", summary: "" };
+  return { tool: "tool", summary: "called" };
 }
 
 export function latestToolCallSummary(
