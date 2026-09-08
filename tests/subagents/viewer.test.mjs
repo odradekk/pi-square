@@ -1,0 +1,931 @@
+import assert from "node:assert/strict";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import jiti from "jiti";
+import { visibleWidth } from "@earendil-works/pi-tui";
+
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// One caching jiti instance: the roster controller and these tests must
+// observe the same input-surface module state, which a fresh per-load
+// evaluation would split into separate counters.
+const load = jiti(import.meta.url);
+const viewerModule = await load(join(packageRoot, "src", "subagents", "viewer.ts"));
+const rosterModule = await load(join(packageRoot, "src", "subagents", "roster.ts"));
+const backgroundModule = await load(join(packageRoot, "src", "subagents", "background.ts"));
+const artifactsModule = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
+const inputSurfaceModule = await load(join(packageRoot, "src", "core", "input-surface.ts"));
+const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
+
+const {
+  ChildTranscriptOverlay,
+  childOverlayPlan,
+  classifyViewerInput,
+  projectSessionEntries,
+  readChildTranscript,
+} = viewerModule;
+const {
+  createSubagentRosterController,
+  renderSubagentRoster,
+  rosterRowBudget,
+  SUBAGENT_ROSTER_KEY,
+} = rosterModule;
+const { createBackgroundState } = backgroundModule;
+const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
+const { isOwnedInputSurfaceActive, withOwnedInputSurface } = inputSurfaceModule;
+
+const { initTheme } = await import("@earendil-works/pi-coding-agent");
+initTheme();
+const themeModulePath = pathToFileURL(join(
+  packageRoot,
+  "node_modules",
+  "@earendil-works",
+  "pi-coding-agent",
+  "dist",
+  "modes",
+  "interactive",
+  "theme",
+  "theme.js",
+)).href;
+const { loadThemeFromPath } = await import(themeModulePath);
+
+const tests = [];
+function test(name, fn) { tests.push({ name, fn }); }
+
+function plainTheme() {
+  return {
+    fg(_color, text) { return String(text); },
+    bg(_color, text) { return String(text); },
+    bold(text) { return String(text); },
+  };
+}
+
+const UP = "\x1b[A";
+const DOWN = "\x1b[B";
+const ENTER = "\r";
+const ESCAPE = "\x1b";
+const BACKSPACE = "\x7f";
+const DELETE = "\x1b[3~";
+
+// ---------------------------------------------------------------------------
+// Input classification
+
+test("escape closes, editing no-ops stay open, and shortcuts are suppressed", () => {
+  assert.deepEqual(classifyViewerInput(ESCAPE), { kind: "close" });
+  assert.deepEqual(classifyViewerInput(BACKSPACE), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput(DELETE), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput("\x08"), { kind: "ignore" }, "ctrl+h backspace stays open");
+  assert.deepEqual(classifyViewerInput(UP), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput(DOWN), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput("\x1b[C"), { kind: "ignore" }, "right arrow suppressed");
+  assert.deepEqual(classifyViewerInput(ENTER), { kind: "ignore" }, "enter never submits through the overlay");
+  assert.deepEqual(classifyViewerInput("\t"), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput("\x03"), { kind: "ignore" }, "ctrl+c suppressed with the other shortcuts");
+  assert.deepEqual(classifyViewerInput("\x1ba"), { kind: "ignore" }, "alt-modified keys are not replayed");
+  assert.deepEqual(classifyViewerInput(""), { kind: "ignore" });
+});
+
+test("printable, multibyte, kitty, and paste input replay complete content", () => {
+  assert.deepEqual(classifyViewerInput("a"), { kind: "replay", text: "a" });
+  assert.deepEqual(classifyViewerInput("abc"), { kind: "replay", text: "abc" }, "fast multi-key chunks replay whole");
+  assert.deepEqual(classifyViewerInput("你好"), { kind: "replay", text: "你好" });
+  assert.deepEqual(classifyViewerInput(" "), { kind: "replay", text: " " }, "space is printable");
+  assert.deepEqual(classifyViewerInput("\x1b[97u"), { kind: "replay", text: "a" }, "kitty printable decodes");
+  const paste = classifyViewerInput("\x1b[200~line one\nline two\x1b[201~");
+  assert.equal(paste.kind, "replay");
+  assert.equal(paste.text, "line one\nline two");
+  const unterminated = classifyViewerInput("\x1b[200~partial");
+  assert.equal(unterminated.kind, "replay");
+  assert.equal(unterminated.text, "partial");
+});
+
+// ---------------------------------------------------------------------------
+// Overlay geometry
+
+test("normal terminals target 80% width and 75% height centered", () => {
+  const plan = childOverlayPlan(80, 24);
+  assert.equal(plan.small, false);
+  assert.deepEqual(plan.overlay, { width: "80%", maxHeight: "75%", anchor: "center" });
+  assert.equal(plan.bodyRows, Math.floor(24 * 0.75) - 4);
+  assert.equal(childOverlayPlan(100, 40).bodyRows, 26);
+});
+
+test("small terminals degrade to a one-cell-margin near-fullscreen panel", () => {
+  const plan = childOverlayPlan(40, 12);
+  assert.equal(plan.small, true);
+  assert.deepEqual(plan.overlay, { width: "100%", maxHeight: "100%", margin: 1, anchor: "center" });
+  assert.equal(plan.bodyRows, 12 - 2 - 4);
+  assert.equal(childOverlayPlan(59, 24).small, true);
+  assert.equal(childOverlayPlan(60, 24).small, false, "60 columns is normal");
+  assert.equal(childOverlayPlan(80, 15).small, true);
+  assert.equal(childOverlayPlan(80, 16).small, false, "16 rows is normal");
+});
+
+// ---------------------------------------------------------------------------
+// Transcript projection
+
+function messageEntry(id, message) {
+  return { type: "message", id, parentId: null, timestamp: "2025-01-01T00:00:00Z", message };
+}
+
+function sessionHeader(id = "session-1") {
+  return { type: "session", version: 3, id, timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp" };
+}
+
+test("projection keeps ordered user, thinking, text, tool call, and tool result content", () => {
+  const entries = [
+    sessionHeader(),
+    messageEntry("e1", { role: "user", content: "find the bug", timestamp: 1 }),
+    messageEntry("e2", {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "consider the cache" },
+        { type: "text", text: "Reading the file." },
+        { type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/a.ts" } },
+      ],
+      api: "anthropic", provider: "anthropic", model: "m", usage: { totalTokens: 1 }, stopReason: "toolUse", timestamp: 2,
+    }),
+    messageEntry("e3", {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "read",
+      content: [{ type: "text", text: "10 lines" }],
+      isError: false,
+      timestamp: 3,
+    }),
+    messageEntry("e4", { role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 4 }),
+  ];
+
+  const projection = projectSessionEntries(entries);
+  assert.equal(projection.omitted, 0);
+  assert.deepEqual(
+    projection.items.map((item) => item.kind),
+    ["user", "assistant", "toolCall", "assistant"],
+  );
+  const call = projection.items[2];
+  assert.equal(call.callId, "call-1");
+  assert.equal(call.result.text, "10 lines");
+  assert.equal(call.result.isError, false);
+});
+
+test("projection hides system-shaped entries and sanitizes generic fallback lines", () => {
+  const entries = [
+    sessionHeader(),
+    { type: "custom", id: "c1", parentId: null, timestamp: "t", customType: "artifact", data: { secret: "x" } },
+    { type: "label", id: "l1", parentId: null, timestamp: "t", targetId: "e1", label: "bookmark" },
+    { type: "model_change", id: "m1", parentId: null, timestamp: "t", provider: "p", modelId: "m" },
+    { type: "session_info", id: "s1", parentId: null, timestamp: "t", name: "rename" },
+    { type: "compaction", id: "k1", parentId: null, timestamp: "t", summary: "summary text", firstKeptEntryId: "e1", tokensBefore: 1 },
+    { type: "branch_summary", id: "b1", parentId: null, timestamp: "t", fromId: "e1", summary: "branch" },
+    { type: "custom_message", id: "cm1", parentId: null, timestamp: "t", customType: "guide", content: "password: swordfish\x1b[31m and control chars", display: false },
+    { type: "custom_message", id: "cm2", parentId: null, timestamp: "t", customType: "guide", content: "password: swordfish visible", display: true },
+    messageEntry("e9", { role: "toolResult", toolCallId: "orphan", toolName: "web_fetch", content: [], isError: false, timestamp: 9 }),
+  ];
+
+  const projection = projectSessionEntries(entries);
+  const texts = projection.items.map((item) => item.text ?? "");
+  assert.deepEqual(
+    projection.items.map((item) => item.kind),
+    ["generic", "generic", "generic", "generic"],
+    "compaction, branch summary, visible custom message, and the orphan result all render once",
+  );
+  assert.match(texts[0], /context compacted/);
+  assert.match(texts[1], /branch summary recorded/);
+  assert.match(texts[2], /visible/);
+  assert.ok(!texts[2].includes("swordfish"), "credential forms are redacted in fallback lines");
+  assert.ok(!texts[2].includes("\x1b"), "control sequences never render in fallback lines");
+  assert.match(texts[3], /tool result: web_fetch/);
+  for (const text of texts) assert.ok(text.length <= 200, "generic lines stay bounded");
+});
+
+test("projection clips unbounded text and keeps only the bounded recent window", () => {
+  const long = "x".repeat(10_000);
+  const entries = [sessionHeader(), messageEntry("e1", { role: "user", content: long, timestamp: 1 })];
+  const clipped = projectSessionEntries(entries).items[0];
+  assert.ok(clipped.text.length < 2_200, "entry text passes the shared head/tail budget");
+  assert.match(clipped.text, /\[omitted \d+ characters\]/);
+
+  const many = [sessionHeader()];
+  for (let index = 0; index < 30; index += 1) {
+    many.push(messageEntry(`e${index}`, { role: "user", content: `message ${index}`, timestamp: index }));
+  }
+  const window = projectSessionEntries(many, 24);
+  assert.equal(window.items.length, 24);
+  assert.equal(window.omitted, 6);
+  assert.match(window.items.at(-1).text, /message 29/);
+  assert.match(window.items[0].text, /message 6/, "the recent tail is the visible window");
+});
+
+// ---------------------------------------------------------------------------
+// Transcript reads
+
+const ID = "subagent_00000000-0000-4000-8000-000000000001";
+const SESSION_ID = "019f0000-0000-7000-8000-000000000001";
+
+function transcriptRoot() {
+  return join(tmpdir(), `pi-square-viewer-test-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+}
+
+function writeSessionFile(root, lines, overrides = {}) {
+  process.env.PI_AGENT_DIR = root;
+  const artifactsDir = ensureArtifactsDir(ID);
+  const sessionFile = join(artifactsDir, "session.jsonl");
+  const header = { type: "session", version: 3, id: SESSION_ID, timestamp: new Date(0).toISOString(), cwd: "/tmp/project" };
+  initializeSessionFile({ id: ID, artifactsDir, sessionFile, header });
+  writeFileSync(sessionFile, [header, ...lines].map((line) => JSON.stringify(line)).join("\n") + "\n");
+  writeRunState(artifactsDir, {
+    version: 4,
+    id: ID,
+    operation: "delegate",
+    artifactsDir,
+    sessionFile,
+    sessionId: SESSION_ID,
+    originParentSessionId: "parent-1",
+    lastParentSessionId: "parent-1",
+    promptSnapshot: createPromptSnapshot(),
+    phase: "running",
+    task: "task",
+    cwd: "/tmp/project",
+    startedAt: 1,
+    finalText: "",
+    retries: 0,
+    toolErrors: [],
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    timeline: [],
+    ...overrides,
+  });
+  return { artifactsDir, sessionFile };
+}
+
+test("readChildTranscript returns the bounded recent window from valid artifacts", () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  try {
+    writeSessionFile(root, [
+      messageEntry("e1", { role: "user", content: "first question", timestamp: 1 }),
+      messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "answer" }], timestamp: 2 }),
+    ]);
+    const transcript = readChildTranscript(ID);
+    assert.equal(transcript.ok, true);
+    assert.deepEqual(transcript.items.map((item) => item.kind), ["user", "assistant"]);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readChildTranscript tolerates the running child's torn final append", () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  try {
+    process.env.PI_AGENT_DIR = root;
+    const { sessionFile } = writeSessionFile(root, [
+      messageEntry("e1", { role: "user", content: "question", timestamp: 1 }),
+    ]);
+    // Simulate a mid-append write: the final JSON line is cut in half and the
+    // file still ends without a newline.
+    appendFileSync(sessionFile, `${JSON.stringify(messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "str" }], timestamp: 2 })).slice(0, 40)}`);
+    const transcript = readChildTranscript(ID);
+    assert.equal(transcript.ok, true);
+    assert.deepEqual(transcript.items.map((item) => item.kind), ["user"]);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readChildTranscript reports identity failures as bounded read errors", () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  try {
+    // Header session id does not match run.json.
+    writeSessionFile(root, [], {});
+    const { sessionFile } = { sessionFile: join(ensureArtifactsDir(ID), "session.jsonl") };
+    writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "other-session", timestamp: "t", cwd: "/tmp" })}\n`);
+    const mismatch = readChildTranscript(ID);
+    assert.equal(mismatch.ok, false);
+    assert.ok(mismatch.reason.length > 0 && mismatch.reason.length <= 200, "reason is a bounded line");
+
+    // Missing run.json entirely.
+    const missing = readChildTranscript("subagent_00000000-0000-4000-8000-0000000000ff");
+    assert.equal(missing.ok, false);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readChildTranscript bounds the read on oversized session files", () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  try {
+    process.env.PI_AGENT_DIR = root;
+    const filler = "f".repeat(2_000);
+    const entries = [
+      messageEntry("e0", { role: "user", content: filler, timestamp: 0 }),
+      messageEntry("e1", { role: "user", content: filler, timestamp: 1 }),
+    ];
+    const { sessionFile } = writeSessionFile(root, entries);
+    // Grow the file far past the read budget with valid entries.
+    const extra = [];
+    for (let index = 0; index < 300; index += 1) {
+      extra.push(messageEntry(`x${index}`, { role: "user", content: `${filler} ${index}`, timestamp: index }));
+    }
+    const header = { type: "session", version: 3, id: SESSION_ID, timestamp: new Date(0).toISOString(), cwd: "/tmp/project" };
+    writeFileSync(sessionFile, [header, ...entries, ...extra].map((line) => JSON.stringify(line)).join("\n") + "\n");
+    const transcript = readChildTranscript(ID);
+    assert.equal(transcript.ok, true);
+    assert.equal(transcript.items.length, 24, "the bounded window survives a multi-hundred-KiB session");
+    const last = transcript.items.at(-1);
+    assert.match(last.text, /299/, "the window keeps the recent tail");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Overlay component
+
+function fakeTui(columns = 80, rows = 30) {
+  return { terminal: { columns, rows }, requestRender() {} };
+}
+
+function overlayHarness(model, columns = 80, rows = 30) {
+  const events = { closed: 0, replayed: [] };
+  const overlay = new ChildTranscriptOverlay({
+    tui: fakeTui(columns, rows),
+    theme: plainTheme(),
+    model,
+    onClose: () => { events.closed += 1; },
+    onReplay: (text) => { events.replayed.push(text); },
+  });
+  return { overlay, events };
+}
+
+function baseModel(overrides = {}) {
+  return {
+    role: "explorer",
+    idLabel: "aaaaaaaa",
+    lifecycleLabel: "● running",
+    lifecycleTone: "accent",
+    status: "running",
+    durationText: "1m 05s",
+    transcript: { ok: true, items: [], omitted: 0 },
+    cwd: "/tmp/project",
+    ...overrides,
+  };
+}
+
+function plain(lines) {
+  return lines.map((line) => stripVTControlCharacters(line));
+}
+
+test("overlay renders title, rules, transcript body, and help within the width", () => {
+  const model = baseModel({
+    transcript: {
+      ok: true,
+      omitted: 0,
+      items: [
+        { kind: "user", text: "find the bug in the parser" },
+        {
+          kind: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "look at the lexer" }, { type: "text", text: "Found it." }],
+            stopReason: "stop",
+          },
+        },
+        { kind: "toolCall", callId: "c1", name: "read", args: { path: "src/a.ts" }, result: { text: "contents", isError: false } },
+      ],
+    },
+  });
+  const { overlay, events } = overlayHarness(model);
+  const lines = overlay.render(64);
+  const text = plain(lines);
+  assert.equal(text[0], "explorer aaaaaaaa ● running 1m 05s", "title carries role, ID, lifecycle, duration");
+  assert.match(text[1], /^─+$/, "a quiet rule separates the title");
+  assert.ok(text.some((line) => line.includes("find the bug in the parser")), "user entry renders");
+  assert.ok(text.some((line) => line.includes("Found it.")), "assistant text renders");
+  assert.ok(text.some((line) => line.includes("read")), "tool call renders through the native component");
+  assert.match(text.at(-1), /esc close/, "help row names the escape path");
+  for (const line of lines) assert.ok(visibleWidth(line) <= 64, "every line fits the overlay width");
+  overlay.handleInput(BACKSPACE);
+  assert.equal(events.closed, 0, "backspace keeps the overlay open");
+});
+
+test("empty queued, starting, failed, aborted, completed, and read-error states are explicit", () => {
+  const cases = [
+    [{ status: "queued" }, /Waiting to start/],
+    [{ status: "running" }, /Starting…/],
+    [{ status: "cancelling" }, /Starting…/],
+    [{ status: "failed", failureReason: "model refused" }, /Failed: model refused/],
+    [{ status: "aborted", failureReason: "user interrupt" }, /Aborted: user interrupt/],
+    [{ status: "completed" }, /No transcript recorded\./],
+    [{ transcript: { ok: false, reason: "artifacts missing" } }, /Transcript unavailable: artifacts missing/],
+  ];
+  for (const [overrides, pattern] of cases) {
+    const { overlay } = overlayHarness(baseModel(overrides));
+    const text = plain(overlay.render(64));
+    assert.match(text[2], pattern, `state ${overrides.status ?? "read-error"} renders one explicit line`);
+  }
+});
+
+test("overlay input closes on escape, replays complete content, and suppresses the rest", () => {
+  const { overlay, events } = overlayHarness(baseModel());
+  overlay.handleInput(ESCAPE);
+  assert.equal(events.closed, 1);
+  assert.deepEqual(events.replayed, []);
+
+  overlay.handleInput("h");
+  overlay.handleInput("i");
+  assert.deepEqual(events.replayed, ["h", "i"], "printable input is the replay path");
+  assert.equal(events.closed, 1, "replay is not a second close event");
+
+  overlay.handleInput("\x1b[200~first\nsecond\x1b[201~");
+  assert.deepEqual(events.replayed.at(-1), "first\nsecond", "paste replay keeps newlines without submitting");
+
+  overlay.handleInput(DOWN);
+  overlay.handleInput(ENTER);
+  overlay.handleInput(DELETE);
+  assert.equal(events.closed, 1, "non-editing keys neither close nor replay");
+  assert.equal(events.replayed.length, 3, "only h, i, and the paste ever replayed");
+});
+
+test("overlay body keeps the bounded recent tail and states the cut once", () => {
+  const items = Array.from({ length: 40 }, (_, index) => ({
+    kind: "user",
+    text: `entry ${String(index).padStart(2, "0")}`,
+  }));
+  const { overlay } = overlayHarness(baseModel({ transcript: { ok: true, items, omitted: 0 } }), 80, 20);
+  const text = plain(overlay.render(80));
+  const plan = childOverlayPlan(80, 20);
+  assert.ok(text.length <= plan.bodyRows + 4, "total rows stay within the overlay plan");
+  assert.match(text[2], /\+\d+ earlier lines/, "the single cut marker leads the body");
+  assert.ok(text.some((line) => line.includes("entry 39")), "the most recent entry stays visible");
+  assert.ok(!text.some((line) => line.includes("entry 0\n") || line.trim() === "entry 00"), "dropped entries do not render");
+
+  const omittedModel = baseModel({ transcript: { ok: true, items: items.slice(-5), omitted: 35 } });
+  const { overlay: omittedOverlay } = overlayHarness(omittedModel, 80, 30);
+  assert.match(plain(omittedOverlay.render(80))[2], /\+35 earlier entries/);
+});
+
+test("overlay lines cache by width and terminal size and invalidate cleanly", () => {
+  const model = baseModel({
+    transcript: { ok: true, omitted: 0, items: [{ kind: "user", text: "cached question" }] },
+  });
+  const { overlay } = overlayHarness(model);
+  const first = overlay.render(64);
+  assert.equal(overlay.render(64), first, "unchanged width and rows reuse the cached lines");
+  const wider = overlay.render(80);
+  assert.notEqual(wider, first);
+  overlay.invalidate();
+  assert.notEqual(overlay.render(64), first, "invalidate drops the cache");
+});
+
+test("overlay adapts to a small terminal with the one-cell-margin plan", () => {
+  const model = baseModel({
+    status: "queued",
+    lifecycleLabel: "– queued",
+    lifecycleTone: "muted",
+    transcript: { ok: true, omitted: 0, items: [{ kind: "user", text: "queued work" }] },
+  });
+  const { overlay } = overlayHarness(model, 40, 12);
+  const plan = childOverlayPlan(40, 12);
+  assert.equal(plan.small, true);
+  const lines = overlay.render(36);
+  assert.ok(lines.length <= plan.bodyRows + 4, "the body budget shrinks on small terminals");
+  for (const line of lines) assert.ok(visibleWidth(line) <= 36);
+});
+
+test("the overlay renders responsively under both shipped themes", () => {
+  const model = baseModel({
+    transcript: {
+      ok: true,
+      omitted: 2,
+      items: [
+        { kind: "user", text: "trace the failing path through the scheduler" },
+        { kind: "toolCall", callId: "c1", name: "grep", args: { pattern: "scheduler" }, result: { text: "3 matches", isError: false } },
+      ],
+    },
+  });
+  for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
+    const theme = loadThemeFromPath(join(packageRoot, "themes", themeFile));
+    for (const [columns, rows, width] of [[120, 45, 96], [80, 30, 64], [60, 20, 48], [40, 12, 36], [24, 8, 22]]) {
+      const overlay = new ChildTranscriptOverlay({
+        tui: fakeTui(columns, rows),
+        theme,
+        model,
+        onClose: () => {},
+        onReplay: () => {},
+      });
+      const lines = overlay.render(width);
+      const plan = childOverlayPlan(columns, rows);
+      assert.ok(lines.length <= plan.bodyRows + 4, `${themeFile} ${columns}x${rows} stays within the plan`);
+      for (const line of lines) {
+        assert.ok(visibleWidth(line) <= width, `${themeFile} ${columns}x${rows} line fits ${width} cells`);
+      }
+      const text = plain(lines);
+      assert.match(text[0], /explorer aaaaaaaa/, `${themeFile} ${columns}x${rows} keeps the title identity`);
+      assert.match(text.at(-1), /esc close/, `${themeFile} ${columns}x${rows} keeps the help row`);
+      // Small plans may trade the entries marker for the line-cut marker; both
+      // state the cut exactly once.
+      assert.match(text[2], /\+\d+ earlier (?:entries|lines)/, `${themeFile} ${columns}x${rows} states the omitted window`);
+      // The tiny plans keep only the most recent lines; the readable sizes
+      // keep the user entry too.
+      if (columns >= 60) {
+        assert.ok(text.some((line) => line.includes("trace the failing path")), `${themeFile} ${columns}x${rows} renders the user entry`);
+      } else {
+        assert.ok(text.some((line) => /grep|matches|earlier/.test(line)), `${themeFile} ${columns}x${rows} keeps recent evidence`);
+      }
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Controller traces
+
+function job(id, status, createdAt, name, overrides = {}) {
+  return {
+    id,
+    status,
+    createdAt,
+    updatedAt: createdAt + 1,
+    abortController: new AbortController(),
+    details: {
+      version: 4,
+      id,
+      operation: "delegate",
+      artifactsDir: "",
+      sessionFile: "",
+      sessionId: "",
+      originParentSessionId: "parent-1",
+      lastParentSessionId: "parent-1",
+      promptSnapshot: createPromptSnapshot(),
+      phase: status,
+      agent: { name },
+      task: "task text",
+      cwd: "/tmp/project",
+      startedAt: createdAt,
+      endedAt: ["completed", "failed", "aborted"].includes(status) ? createdAt + 90_000 : undefined,
+      finalText: "",
+      retries: 0,
+      toolErrors: [],
+      timeline: [],
+      ...overrides,
+    },
+  };
+}
+
+function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
+  const editor = { text: "" };
+  const calls = { widgets: [], customs: [], pastes: [], inputUnsubscribed: 0 };
+  let inputHandler;
+  const tui = { terminal: { columns, rows }, requestRender() {} };
+  const keybindings = { matches: () => false };
+  const ui = {
+    theme: plainTheme(),
+    onTerminalInput(handler) {
+      inputHandler = handler;
+      return () => { calls.inputUnsubscribed += 1; inputHandler = undefined; };
+    },
+    setWidget(key, content, options) {
+      calls.widgets.push({ key, content, options });
+      if (typeof content === "function") {
+        const component = content(tui, plainTheme());
+        calls.widgets.at(-1).component = component;
+      }
+    },
+    getEditorText: () => editor.text,
+    setEditorText(value) { editor.text = value; },
+    pasteToEditor(text) { calls.pastes.push(text); editor.text = text; },
+    custom(factory, options) {
+      const entry = { factory, options, resolved: false, component: undefined };
+      calls.customs.push(entry);
+      entry.component = factory(tui, plainTheme(), keybindings, (value) => { entry.resolved = true; entry.result = value; });
+      return new Promise(() => {});
+    },
+  };
+  const ctx = {
+    mode: "tui",
+    hasUI: true,
+    ui,
+    sessionManager: { getSessionId: () => "parent-1" },
+  };
+  return {
+    ctx, calls, editor, tui,
+    input: (data) => inputHandler?.(data),
+    widgetLines: (width = 80) => {
+      const last = [...calls.widgets].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY && call.component);
+      return last ? last.component.render(width).map(stripVTControlCharacters) : [];
+    },
+  };
+}
+
+function controllerHarness({ columns = 80, rows = 30 } = {}) {
+  const harness = fakeUiHarness({ columns, rows });
+  const state = createBackgroundState();
+  const controller = createSubagentRosterController(state, { now: () => 500_000 });
+  controller.start(harness.ctx);
+  const addJob = (fixture) => { state.jobs.set(fixture.id, fixture); for (const listener of state.listeners) listener(); };
+  return { ...harness, state, controller, addJob };
+}
+
+test("first Down selects the first child, first Up the last, and movement never wraps", () => {
+  const { ctx, input, widgetLines, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+  addJob(job("subagent_22222222-2222-4222-8222-222222222222", "queued", 2, "crawler"));
+  addJob(job("subagent_33333333-3333-4333-8333-333333333333", "completed", 3, "generalist"));
+
+  assert.equal(input(DOWN).consume, true, "Down over the empty editor is consumed");
+  assert.match(widgetLines()[0], /^● explorer/, "the first child carries the solid marker");
+  assert.ok(widgetLines().every((line) => !line.startsWith("● crawler") && !line.startsWith("● generalist")), "all other rows stay hollow");
+
+  assert.equal(input(DOWN).consume, true);
+  assert.match(widgetLines()[1], /^● crawler/);
+
+  input(DOWN);
+  assert.equal(input(DOWN).consume, true, "clamped movement still consumes");
+  assert.match(widgetLines()[2], /^● generalist/, "clamped at the last child");
+
+  // Escape-like non-navigation input clears the candidate; Up then enters at the last row.
+  assert.equal(input("j"), undefined, "ordinary input passes through unchanged");
+  assert.ok(widgetLines().every((line) => line.startsWith("○")), "editing clears the candidate");
+
+  assert.equal(input(UP).consume, true);
+  assert.match(widgetLines()[2], /^● generalist/, "first Up selects the last child");
+  assert.equal(input(UP).consume, true);
+  assert.equal(input(UP).consume, true);
+  assert.match(widgetLines()[0], /^● explorer/, "clamped at the first child without wrapping");
+  controller.stop();
+  assert.ok(ctx);
+});
+
+test("navigation activates only from an exactly empty editor", () => {
+  const { input, editor, widgetLines, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+
+  for (const draft of ["x", " ", "\n", "  draft  ", "\t"]) {
+    editor.text = draft;
+    assert.equal(input(DOWN), undefined, `draft ${JSON.stringify(draft)} keeps native Up/Down`);
+    assert.equal(input(UP), undefined, `draft ${JSON.stringify(draft)} keeps native Up arrow`);
+  }
+  assert.ok(widgetLines().every((line) => line.startsWith("○")), "no candidate was created");
+
+  editor.text = "";
+  assert.equal(input(DOWN).consume, true);
+  editor.text = " ";
+  assert.equal(input(DOWN), undefined);
+  assert.ok(widgetLines().every((line) => line.startsWith("○")), "a non-empty editor clears an existing candidate");
+  controller.stop();
+});
+
+test("Enter opens only an explicit candidate in a centered capturing overlay", () => {
+  const { input, calls, widgetLines, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+
+  assert.equal(input(ENTER), undefined, "Enter without a candidate preserves Pi behavior");
+  assert.equal(calls.customs.length, 0);
+
+  input(DOWN);
+  assert.equal(input(ENTER).consume, true);
+  assert.equal(calls.customs.length, 1);
+  const opened = calls.customs[0];
+  assert.equal(opened.options.overlay, true, "the child opens as an overlay");
+  const plan = childOverlayPlan(80, 30);
+  assert.deepEqual(opened.options.overlayOptions(), plan.overlay);
+  assert.match(widgetLines()[0], /^● explorer/, "the open child keeps the solid marker");
+
+  // While the overlay owns input the global listener passes everything through.
+  assert.equal(input(DOWN), undefined);
+  assert.equal(input("a"), undefined);
+  controller.stop();
+});
+
+test("escape closes the overlay and clears the candidate", () => {
+  const { input, calls, widgetLines, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+  input(DOWN);
+  input(ENTER);
+  const opened = calls.customs[0];
+
+  opened.component.handleInput(ESCAPE);
+  assert.equal(opened.resolved, true, "closing resolves the overlay's custom promise");
+  assert.ok(widgetLines().every((line) => line.startsWith("○")), "selection is cleared after close");
+  assert.equal(calls.pastes.length, 0);
+
+  // The roster seam is live again after the close.
+  assert.equal(input(DOWN).consume, true);
+  controller.stop();
+});
+
+test("printable input and paste close the overlay and replay without submitting", () => {
+  const { input, editor, calls, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+  input(DOWN);
+  input(ENTER);
+  const opened = calls.customs[0];
+
+  opened.component.handleInput("\x1b[200~first\nsecond\x1b[201~");
+  assert.equal(opened.resolved, true);
+  assert.deepEqual(calls.pastes, ["first\nsecond"], "the complete paste replays into the editor");
+
+  // The replayed draft is ordinary editor content now; navigation needs an
+  // exactly empty editor again before a second child can open.
+  editor.text = "";
+  input(DOWN);
+  input(ENTER);
+  calls.customs[1].component.handleInput("z");
+  assert.deepEqual(calls.pastes.at(-1), "z");
+  controller.stop();
+});
+
+test("backspace and delete against the empty editor never close the overlay", () => {
+  const { input, calls, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+  input(DOWN);
+  input(ENTER);
+  const opened = calls.customs[0];
+  opened.component.handleInput(BACKSPACE);
+  opened.component.handleInput(DELETE);
+  opened.component.handleInput("\x08");
+  assert.equal(opened.resolved, false, "no-op editing keys keep the overlay open");
+  assert.equal(calls.pastes.length, 0);
+  controller.stop();
+});
+
+test("the owned-input-surface guard keeps pi-square modals in control", async () => {
+  const { input, widgetLines, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+
+  assert.equal(isOwnedInputSurfaceActive(), false);
+  const modal = withOwnedInputSurface(async () => {
+    assert.equal(isOwnedInputSurfaceActive(), true);
+    assert.equal(input(DOWN), undefined, "Up/Down stay with the owned modal");
+    assert.equal(input(ENTER), undefined, "Enter stays with the owned modal");
+    assert.ok(widgetLines().every((line) => line.startsWith("○")));
+  });
+  await modal;
+  assert.equal(isOwnedInputSurfaceActive(), false);
+  assert.equal(input(DOWN).consume, true, "navigation returns once the modal settles");
+  controller.stop();
+});
+
+test("opening and viewing a child changes nothing in the background store", () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  try {
+    writeSessionFile(root, [messageEntry("e1", { role: "user", content: "question", timestamp: 1 })]);
+    const { input, calls, state, addJob, controller } = controllerHarness();
+    const fixture = job(ID, "running", 1, "explorer");
+    addJob(fixture);
+    const storeBefore = JSON.stringify({
+      keys: [...state.jobs.keys()],
+      jobs: [...state.jobs.values()].map((entry) => ({
+        status: entry.status,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+        details: {
+          phase: entry.details.phase,
+          endedAt: entry.details.endedAt,
+          finalText: entry.details.finalText,
+          timeline: entry.details.timeline.length,
+        },
+      })),
+    });
+
+    input(DOWN);
+    input(ENTER);
+    assert.equal(calls.customs.length, 1);
+    const opened = calls.customs[0];
+    const text = opened.component.render(64).map(stripVTControlCharacters);
+    assert.ok(text.some((line) => line.includes("question")), "the recent transcript renders in the overlay");
+    assert.ok(text.every((line) => !line.includes(root)), "session paths never render");
+    opened.component.handleInput(ESCAPE);
+    input(DOWN);
+    input(ENTER);
+    calls.customs[1].component.handleInput("note");
+    assert.deepEqual(calls.pastes, ["note"], "replay is the only editor effect");
+
+    const storeAfter = JSON.stringify({
+      keys: [...state.jobs.keys()],
+      jobs: [...state.jobs.values()].map((entry) => ({
+        status: entry.status,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+        details: {
+          phase: entry.details.phase,
+          endedAt: entry.details.endedAt,
+          finalText: entry.details.finalText,
+          timeline: entry.details.timeline.length,
+        },
+      })),
+    });
+    assert.equal(storeAfter, storeBefore, "viewing never mutates lifecycle, timing, or result state");
+    controller.stop();
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the roster viewport follows the candidate beyond the visible rows", () => {
+  const columns = 80;
+  const rows = 30;
+  const budget = rosterRowBudget(rows);
+  const { input, calls, widgetLines, addJob, controller } = controllerHarness({ columns, rows });
+  for (let index = 0; index < 12; index += 1) {
+    const suffix = String(index).padStart(4, "0");
+    addJob(job(`subagent_${suffix}${suffix}-${suffix}-4${suffix}-8${suffix}-${suffix}${suffix}${suffix}`, "running", index, `role${index}`));
+  }
+  const total = 12;
+  assert.ok(total > budget, "fixture exceeds the visible budget");
+
+  assert.equal(input(UP).consume, true, "first Up selects the last child");
+  const lines = widgetLines();
+  assert.match(lines.find((line) => line.startsWith("●")), /role11/, "the candidate row is visible");
+  assert.match(lines[0], new RegExp(`\\+${total - budget} earlier`), "the leading indicator counts the rows above the window");
+  assert.ok(!lines.at(-1).includes("more"), "no trailing accounting when the window reaches the end");
+  const last = [...calls.widgets].reverse().find((call) => call.component);
+  assert.ok(last.component.render(80).length <= budget + 1);
+
+  assert.equal(input(UP).consume, true);
+  assert.match(widgetLines().find((line) => line.startsWith("●")), /role10/, "movement inside the window keeps the row visible");
+  controller.stop();
+});
+
+test("non-interactive contexts register no listener and teardown is clean", () => {
+  const state = createBackgroundState();
+  const controller = createSubagentRosterController(state);
+  const calls = { widgets: [], input: 0 };
+  const ctx = {
+    mode: "print",
+    hasUI: true,
+    ui: {
+      theme: plainTheme(),
+      onTerminalInput() { calls.input += 1; return () => {}; },
+      setWidget(key, content) { calls.widgets.push({ key, content }); },
+      getEditorText: () => "",
+    },
+    sessionManager: { getSessionId: () => "parent-1" },
+  };
+  controller.start(ctx);
+  assert.equal(calls.input, 0, "print mode registers no terminal listener");
+  assert.equal(calls.widgets.length, 0);
+  controller.stop();
+
+  const { input, calls: tuiCalls, addJob, controller: tuiController } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+  input(DOWN);
+  input(ENTER);
+  tuiController.stop();
+  assert.equal(tuiCalls.inputUnsubscribed, 1, "stop unsubscribes the terminal listener");
+  assert.equal(tuiCalls.customs[0].resolved, true, "stop closes an open overlay");
+  const last = tuiCalls.widgets.at(-1);
+  assert.equal(last.key, SUBAGENT_ROSTER_KEY);
+  assert.equal(last.content, undefined, "stop clears the roster widget");
+});
+
+test("the render layer marks the focus row solid and windows by start", () => {
+  const rows = Array.from({ length: 4 }, (_, index) => ({
+    id: `subagent_${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    role: "explorer",
+    status: "running",
+    createdAt: index,
+    startedAt: 0,
+    endedAt: undefined,
+    activity: "",
+  }));
+  const lines = renderSubagentRoster(plainTheme(), rows, {
+    width: 80,
+    rowBudget: 2,
+    now: 0,
+    focusId: rows[3].id,
+    start: 2,
+  }).map(stripVTControlCharacters);
+  assert.equal(lines.length, 3, "the window shows the start slice plus its leading indicator");
+  assert.match(lines[0], /\+2 earlier/, "the leading indicator counts the rows above the window");
+  assert.match(lines[2], /^● /, "the focused row renders solid");
+  assert.ok(lines.slice(1, 2).every((line) => line.startsWith("○ ")), "unfocused rows stay hollow");
+});
+
+let failed = 0;
+for (const { name, fn } of tests) {
+  try {
+    await fn();
+    console.log(`PASS: ${name}`);
+  } catch (error) {
+    failed += 1;
+    console.error(`FAIL: ${name} — ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+  }
+}
+console.log(`\n${tests.length} tests, ${failed} failed`);
+if (failed > 0) process.exit(1);

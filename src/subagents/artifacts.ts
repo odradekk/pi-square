@@ -365,8 +365,21 @@ export interface ValidatedRunArtifacts {
   sessionEntries: any[];
 }
 
-export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
-  assertValidSubagentId(id, "resume");
+/**
+ * Identity checks shared by every child-artifact reader: the artifacts
+ * directory stays inside the subagent state root, its run.json describes the
+ * same directory, and the referenced native session file stays inside it.
+ * Readers that tolerate a running child's mid-append file reuse this and then
+ * apply their own parsing rules.
+ */
+export interface ResolvedChildSessionFile {
+  artifactsDir: string;
+  details: SubagentRunDetails;
+  sessionFile: string;
+}
+
+export function resolveChildSessionFile(id: string, operation = "resume"): ResolvedChildSessionFile {
+  assertValidSubagentId(id, operation);
   const artifactsDir = artifactsDirFor(id);
   try {
     const root = subagentsStateRoot();
@@ -383,14 +396,33 @@ export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
     if (dirname(realSessionFile) !== realArtifactsDir) {
       throw new Error("native session file escapes the subagent artifacts directory");
     }
-    const rawSession = withTransientFsRetries(() => readFileSync(realSessionFile, "utf8"));
+
+    return { artifactsDir: realArtifactsDir, details, sessionFile: realSessionFile };
+  } catch (error) {
+    if (error instanceof SubagentError) throw error;
+    throw createSubagentError({
+      code: "SESSION_HISTORY_UNAVAILABLE",
+      message: `Subagent history for '${id}' is missing or invalid.`,
+      operation,
+      id,
+      retryable: false,
+      cause: error,
+      suggestedAction: "Verify that run.json and the native JSONL session file still exist and are unmodified.",
+    });
+  }
+}
+
+export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
+  const { artifactsDir, details, sessionFile } = resolveChildSessionFile(id);
+  try {
+    const rawSession = withTransientFsRetries(() => readFileSync(sessionFile, "utf8"));
     const sessionEntries = parseSessionFileStrict(rawSession);
     if (sessionEntries[0].id !== details.sessionId) {
       throw new Error("native session ID does not match run.json");
     }
-
-    return { artifactsDir: realArtifactsDir, details, sessionEntries };
+    return { artifactsDir, details, sessionEntries };
   } catch (error) {
+    if (error instanceof SubagentError) throw error;
     throw createSubagentError({
       code: "SESSION_HISTORY_UNAVAILABLE",
       message: `Subagent history for '${id}' is missing or invalid.`,

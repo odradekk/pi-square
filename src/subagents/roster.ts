@@ -1,9 +1,16 @@
 import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { isOwnedInputSurfaceActive } from "../core/input-surface";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
 import { sanitizeSubagentDisplay } from "./display";
 import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./types";
+import {
+  childOverlayPlan,
+  type ChildOverlayModel,
+  ChildTranscriptOverlay,
+  readChildTranscript,
+} from "./viewer";
 
 export const SUBAGENT_ROSTER_KEY = "pi-square.subagents.roster";
 
@@ -181,7 +188,14 @@ function lifecycleText(theme: Theme, status: BackgroundJobSnapshot["status"]): s
  * to the row's own budget before composition, so the lifecycle can never be
  * squeezed off the line.
  */
-function renderRosterRow(theme: Theme, row: RosterRow, idPrefix: string, width: number, now: number): string {
+function renderRosterRow(
+  theme: Theme,
+  row: RosterRow,
+  idPrefix: string,
+  width: number,
+  now: number,
+  focused: boolean,
+): string {
   const safeWidth = Math.max(1, width);
   const marker = theme.fg("muted", "○");
   const lifecycle = LIFECYCLE_LABELS[row.status];
@@ -209,7 +223,7 @@ function renderRosterRow(theme: Theme, row: RosterRow, idPrefix: string, width: 
     role = roleBudget >= 1 ? truncateToWidth(row.role, roleBudget, "…") : "";
   }
 
-  const parts = [marker];
+  const parts = [focused ? theme.fg("accent", "●") : marker];
   if (role) parts.push(theme.fg("accent", role));
   parts.push(theme.fg("dim", idPrefix), lifecycleText(theme, row.status));
   let line = parts.join(" ");
@@ -222,6 +236,10 @@ export interface RosterRenderOptions {
   width: number;
   rowBudget: number;
   now: number;
+  /** Complete public ID of the keyboard candidate or open child, if any. */
+  focusId?: string;
+  /** First visible row index; the controller keeps the focus row on screen. */
+  start?: number;
 }
 
 /** Renders the vertical child roster: one line per visible row plus accounting. */
@@ -234,7 +252,9 @@ export function renderSubagentRoster(
   const safeWidth = Math.max(1, options.width);
   const budget = Math.max(1, options.rowBudget);
   const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
-  const visibleRows = rows.slice(0, budget);
+  const maxStart = Math.max(0, rows.length - budget);
+  const start = Math.min(Math.max(0, options.start ?? 0), maxStart);
+  const visibleRows = rows.slice(start, start + budget);
   const fullPrefixes = visibleRows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
   const idBudgets = visibleRows.map((row) => {
     const lifecycleWidth = visibleWidth(LIFECYCLE_LABELS[row.status]);
@@ -248,9 +268,12 @@ export function renderSubagentRoster(
       // so the core of the row always fits and the lifecycle survives. The
       // floor composition is marker + space + ID + space + lifecycle; a role
       // truncates away before the ID label does.
-      return renderRosterRow(theme, row, labels[index]!, safeWidth, options.now);
+      return renderRosterRow(theme, row, labels[index]!, safeWidth, options.now, row.id === options.focusId);
     });
-  const hidden = rows.length - Math.min(rows.length, budget);
+  // A scrolled window states what lies above it; the trailing line keeps the
+  // established `… +N more` accounting for what lies below.
+  if (start > 0) lines.unshift(truncateToWidth(theme.fg("dim", `… +${start} earlier`), safeWidth, "…"));
+  const hidden = rows.length - Math.min(rows.length, start + budget);
   if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `… +${hidden} more`), safeWidth, "…"));
   return lines;
 }
@@ -265,6 +288,8 @@ export function createSubagentRosterWidget(
   theme: Theme,
   rows: readonly RosterRow[],
   now: number,
+  focusId?: string,
+  start?: number,
 ): Component {
   let cache: { width: number; rows: number; lines: string[] } | undefined;
   return {
@@ -275,6 +300,8 @@ export function createSubagentRosterWidget(
         width,
         rowBudget: rosterRowBudget(terminalRows),
         now,
+        ...(focusId !== undefined ? { focusId } : {}),
+        ...(start !== undefined ? { start } : {}),
       });
       cache = { width, rows: terminalRows, lines };
       return lines;
@@ -315,8 +342,12 @@ export interface SubagentRosterOptions {
 
 /**
  * Session-scoped projection of the background job store into the roster
- * widget. The store stays the lifecycle source of truth: the controller adds
- * no durable state, no retention exemption, and no delivery interaction.
+ * widget, plus the keyboard seam over it: exact-empty-editor Up/Down select a
+ * read-only child candidate, Enter opens the child transcript overlay, and
+ * ordinary input returns to the native editor untouched (#304). The store
+ * stays the lifecycle source of truth: the controller adds no durable state,
+ * no retention exemption, and no delivery interaction, and opening or viewing
+ * a child is observational only.
  */
 export function createSubagentRosterController(
   state: BackgroundState,
@@ -327,8 +358,17 @@ export function createSubagentRosterController(
   let context: ExtensionContext | undefined;
   let parentSessionId = "";
   let unsubscribe: (() => void) | undefined;
+  let unsubscribeInput: (() => void) | undefined;
   let motionUnsubscribe: (() => void) | undefined;
   let lastPublishAt = -Infinity;
+  /** Unconfirmed keyboard candidate over the roster; keyed by complete public ID. */
+  let candidateId: string | undefined;
+  /** Child whose transcript overlay currently owns input; keyed by public ID. */
+  let openId: string | undefined;
+  /** Resolves the pending `ui.custom` promise and removes the overlay. */
+  let closeOverlay: (() => void) | undefined;
+  let viewportStart = 0;
+  let tuiRef: WidgetTui | undefined;
   const stopMotion = () => {
     motionUnsubscribe?.();
     motionUnsubscribe = undefined;
@@ -348,41 +388,70 @@ export function createSubagentRosterController(
     });
   };
 
+  // Only children of the current parent session: jobs an earlier parent
+  // session left in-process are as foreign as persisted history on disk.
+  const rosterJobs = () => listBackgroundJobs(state)
+    .filter((job) => parentSessionId !== "" && job.details.lastParentSessionId === parentSessionId);
+
+  // The background store owns immutable creation time for every retained
+  // public ID; the full ID only breaks an exact tie.
+  const rosterRows = (jobs: readonly BackgroundJobSnapshot[]): RosterRow[] => jobs
+    .map((job): RosterRow => ({
+      id: job.id,
+      role: rosterRole(job),
+      status: job.status,
+      createdAt: job.createdAt,
+      startedAt: job.details.startedAt,
+      endedAt: job.details.endedAt,
+      activity: rosterActivity(job),
+    }))
+    .sort((left, right) => (
+      left.createdAt - right.createdAt
+      || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+    ));
+
+  const focusId = () => openId ?? candidateId;
+
+  /** Shifts the visible window the minimum needed to keep the focus row on screen. */
+  const followViewport = (rows: readonly RosterRow[]) => {
+    const terminalRows = tuiRef ? Math.max(1, tuiRef.terminal.rows) : 0;
+    if (terminalRows < 1) {
+      viewportStart = 0;
+      return;
+    }
+    const budget = rosterRowBudget(terminalRows);
+    const maxStart = Math.max(0, rows.length - budget);
+    const focus = focusId();
+    const focusIndex = focus === undefined ? undefined : rows.findIndex((row) => row.id === focus);
+    if (focusIndex !== undefined) {
+      if (focusIndex < viewportStart) viewportStart = focusIndex;
+      else if (focusIndex >= viewportStart + budget) viewportStart = focusIndex - budget + 1;
+    }
+    viewportStart = Math.min(Math.max(0, viewportStart), maxStart);
+  };
+
   const refresh = () => {
     if (!context?.hasUI || context.mode !== "tui") return;
-    // Only children of the current parent session: jobs an earlier parent
-    // session left in-process are as foreign as persisted history on disk.
-    const jobs = listBackgroundJobs(state)
-      .filter((job) => parentSessionId !== "" && job.details.lastParentSessionId === parentSessionId);
-
-    // The background store owns immutable creation time for every retained
-    // public ID; the full ID only breaks an exact tie.
-    const rows = jobs
-      .map((job): RosterRow => ({
-        id: job.id,
-        role: rosterRole(job),
-        status: job.status,
-        createdAt: job.createdAt,
-        startedAt: job.details.startedAt,
-        endedAt: job.details.endedAt,
-        activity: rosterActivity(job),
-      }))
-      .sort((left, right) => (
-        left.createdAt - right.createdAt
-        || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
-      ));
+    const jobs = rosterJobs();
+    const rows = rosterRows(jobs);
 
     if (rows.length === 0) {
       stopMotion();
+      candidateId = undefined;
       context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
       return;
     }
 
+    followViewport(rows);
+    const focus = focusId();
     const snapshotAt = now();
     lastPublishAt = snapshotAt;
     context.ui.setWidget(
       SUBAGENT_ROSTER_KEY,
-      (tui, theme) => createSubagentRosterWidget(tui, theme, rows, snapshotAt),
+      (tui, theme) => {
+        tuiRef = tui;
+        return createSubagentRosterWidget(tui, theme, rows, snapshotAt, focus, viewportStart);
+      },
       { placement: "aboveEditor" },
     );
     // Only still-active children have a moving duration; a settled roster
@@ -391,12 +460,184 @@ export function createSubagentRosterController(
     else stopMotion();
   };
 
+  const editorText = (): string => {
+    if (!context || typeof context.ui.getEditorText !== "function") return "\u0000";
+    return context.ui.getEditorText();
+  };
+
+  const clearCandidate = () => {
+    if (candidateId === undefined) return;
+    candidateId = undefined;
+    refresh();
+  };
+
+  const moveCandidate = (delta: number, rows: readonly RosterRow[]) => {
+    if (rows.length === 0) return;
+    const index = candidateId === undefined ? undefined : rows.findIndex((row) => row.id === candidateId);
+    // First Down enters at the first child, first Up at the last; movement
+    // clamps at both ends and never wraps.
+    const next = index === undefined
+      ? (delta > 0 ? 0 : rows.length - 1)
+      : Math.min(rows.length - 1, Math.max(0, index + delta));
+    candidateId = rows[next]?.id ?? candidateId;
+    refresh();
+  };
+
+  const openChildOverlay = (id: string) => {
+    if (!context?.hasUI || context.mode !== "tui") return;
+    if (openId !== undefined || closeOverlay !== undefined) return;
+    const jobs = rosterJobs();
+    const job = jobs.find((candidate) => candidate.id === id);
+    if (!job) return;
+
+    const rows = rosterRows(jobs);
+    const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
+    const idLabel = prefixes.get(job.id) ?? rosterId(job.id);
+    const durationText = formatRosterDuration(
+      ACTIVE_STATUSES.has(job.status)
+        ? now() - job.details.startedAt
+        : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
+    );
+    const failureReason = job.status === "failed" || job.status === "aborted"
+      ? sanitizeSubagentDisplay(job.details.error ?? job.details.errorInfo?.message ?? "").trim().slice(0, 200)
+      : "";
+
+    // The model is frozen at open: role, identity, lifecycle, duration, and a
+    // bounded recent transcript. Live updates are a later slice of #302.
+    const model: ChildOverlayModel = {
+      role: rosterRole(job),
+      idLabel,
+      lifecycleLabel: LIFECYCLE_LABELS[job.status],
+      lifecycleTone: LIFECYCLE_TONES[job.status],
+      status: job.status,
+      durationText,
+      ...(failureReason ? { failureReason } : {}),
+      transcript: readChildTranscript(job.id),
+      cwd: job.details.cwd,
+    };
+
+    candidateId = undefined;
+    openId = job.id;
+
+    const settle = () => {
+      if (closeOverlay !== undefined) {
+        const close = closeOverlay;
+        closeOverlay = undefined;
+        try {
+          close();
+        } catch {
+          // Closing an already-closed overlay is harmless.
+        }
+      }
+      openId = undefined;
+      candidateId = undefined;
+      refresh();
+    };
+
+    let plan: ReturnType<typeof childOverlayPlan> | undefined;
+    try {
+      void context.ui.custom<void>((tui, theme, _keybindings, done) => {
+        plan = childOverlayPlan(tui.terminal.columns, tui.terminal.rows);
+        closeOverlay = () => done(undefined);
+        return new ChildTranscriptOverlay({
+          tui,
+          theme,
+          model,
+          onClose: settle,
+          onReplay: (text) => {
+            settle();
+            try {
+              context?.ui.pasteToEditor(text);
+            } catch {
+              // Replay stays best-effort; the overlay still closed and the
+              // user keeps the native editor.
+            }
+          },
+        });
+      }, {
+        overlay: true,
+        overlayOptions: () => plan?.overlay ?? { width: "80%", maxHeight: "75%", anchor: "center" },
+      }).catch(() => {
+        if (openId === job.id) {
+          closeOverlay = undefined;
+          openId = undefined;
+          refresh();
+        }
+      });
+    } catch {
+      closeOverlay = undefined;
+      openId = undefined;
+      refresh();
+      return;
+    }
+    refresh();
+  };
+
+  /**
+   * The accepted global terminal-input listener. Roster navigation runs only
+   * while the native editor holds exactly zero content and no pi-square-owned
+   * modal has focus; everything else reaches Pi unchanged. Pi 0.84.2 exposes
+   * no focus query, so a third-party capturing overlay cannot be detected —
+   * a documented limitation of this seam, not a replaced editor.
+   */
+  const handleTerminalInput = (data: string): { consume?: boolean; data?: string } | undefined => {
+    if (context === undefined || openId !== undefined || closeOverlay !== undefined || data === "") return undefined;
+    if (isOwnedInputSurfaceActive()) {
+      clearCandidate();
+      return undefined;
+    }
+    const up = matchesKey(data, "up");
+    const down = matchesKey(data, "down");
+    if (up || down) {
+      const rows = rosterRows(rosterJobs());
+      if (editorText() !== "" || rows.length === 0) {
+        clearCandidate();
+        return undefined;
+      }
+      moveCandidate(up ? -1 : 1, rows);
+      return { consume: true };
+    }
+    if (matchesKey(data, "enter")) {
+      const rows = rosterRows(rosterJobs());
+      const editorEmpty = editorText() === "";
+      const candidate = candidateId !== undefined && editorEmpty && rows.some((row) => row.id === candidateId)
+        ? candidateId
+        : undefined;
+      if (candidate === undefined) {
+        // Enter without an explicit candidate keeps Pi's native behavior.
+        clearCandidate();
+        return undefined;
+      }
+      openChildOverlay(candidate);
+      return { consume: true };
+    }
+    // Beginning to edit (text, whitespace, paste, IME composition) clears an
+    // unopened candidate and passes the input through unchanged.
+    clearCandidate();
+    return undefined;
+  };
+
   const stop = () => {
     unsubscribe?.();
     unsubscribe = undefined;
+    unsubscribeInput?.();
+    unsubscribeInput = undefined;
     stopMotion();
     motion = undefined;
     lastPublishAt = -Infinity;
+    if (closeOverlay !== undefined) {
+      const close = closeOverlay;
+      closeOverlay = undefined;
+      try {
+        close();
+      } catch {
+        // Closing an already-closed overlay is harmless.
+      }
+    }
+    openId = undefined;
+    candidateId = undefined;
+    viewportStart = 0;
+    tuiRef = undefined;
     if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
     context = undefined;
     parentSessionId = "";
@@ -412,6 +653,9 @@ export function createSubagentRosterController(
       motion = options.motion?.() ?? undefined;
       parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
       unsubscribe = subscribeBackgroundState(state, refresh);
+      if (typeof ctx.ui.onTerminalInput === "function") {
+        unsubscribeInput = ctx.ui.onTerminalInput(handleTerminalInput);
+      }
       refresh();
     },
     stop,
