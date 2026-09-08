@@ -177,14 +177,6 @@ export interface ResumableSubagentRun {
   isStale?: boolean;
 }
 
-export interface SubagentStatusDetails {
-  queued: number;
-  running: number;
-  finished: number;
-  jobs: BackgroundJobSnapshot[];
-  resumable?: ResumableSubagentRun[];
-}
-
 export interface SubagentCancelDetails {
   canceled: BackgroundJobSnapshot[];
   alreadyFinished: BackgroundJobSnapshot[];

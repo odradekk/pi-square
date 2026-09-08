@@ -17,7 +17,6 @@ const {
   createBackgroundState,
   createQueuedJob,
   createQueuedResumeJob,
-  formatBackgroundIndicator,
   startBackgroundJob,
   startBackgroundResumeJob,
 } = await loadBackgroundModule();
@@ -112,18 +111,6 @@ test("queue insertion stores the unified public id and emits", () => {
   assert.equal(job.details.id, ID);
   assert.equal(job.details.operation, "delegate");
   assert.equal(observed.state.jobs.get(ID), job);
-});
-
-test("background indicator uses compact text without emoji presentation glyphs", () => {
-  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
-  const observed = observedState();
-  const job = queuedJob(observed);
-  assert.equal(formatBackgroundIndicator(observed.state), "queued 1");
-  job.status = "running";
-  assert.equal(formatBackgroundIndicator(observed.state), "running 1");
-  job.status = "aborted";
-  assert.equal(formatBackgroundIndicator(observed.state), "× 1");
-  assert.doesNotMatch(formatBackgroundIndicator(observed.state), /[⌛⏳◐◌\uFE0F]/u);
 });
 
 test("cancelBackgroundJobs accepts the public id", () => {
@@ -222,6 +209,21 @@ test("manager resumes use the cancellable background lifecycle and frozen snapsh
   assertCompletion(pi, "completed");
 });
 
+test("a retained public ID keeps its background-owned roster creation key on resume", () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const original = queuedJob(observed);
+  original.status = "completed";
+  const resumed = createQueuedResumeJob({
+    state: observed.state,
+    details: details("completed", { finalText: "first" }),
+    task: "continue",
+    parentSessionId: "parent-session",
+  });
+  assert.equal(resumed.createdAt, original.createdAt);
+  assert.ok(resumed.details.startedAt >= resumed.createdAt);
+});
+
 test("thrown background failures become structured run failures", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
@@ -237,7 +239,7 @@ test("thrown background failures become structured run failures", async () => {
   assertCompletion(pi, "failed");
 });
 
-test("undelivered results survive job compaction and stay visible in the indicator", async () => {
+test("undelivered results survive job compaction and stay pending", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
   const pi = createPiStub();
@@ -266,7 +268,7 @@ test("undelivered results survive job compaction and stay visible in the indicat
   );
   assert.equal(pi.sent.length, 0, "a busy parent receives nothing before a turn boundary");
   assert.equal(observed.state.jobs.size, total, "compaction never drops an undelivered result");
-  assert.match(formatBackgroundIndicator(observed.state), /undelivered 22/);
+  assert.equal(observed.state.delivery.pendingCount(), total, "every undelivered result stays pending");
 
   observed.state.delivery.handleTurnEnd();
   assert.equal(pi.sent.length, 1, "the burst costs one parent turn, not 22");

@@ -32,6 +32,23 @@ assert.doesNotMatch(redacted, /abc\.def|super-secret|plain-token|hunter2|github_
 assert.ok((redacted.match(/\[REDACTED\]/g) ?? []).length >= 8);
 assert.equal(redactDisplaySecrets("token one one", ["one"]), "token [REDACTED] [REDACTED]");
 
+// Space-separated secret flags and credential-shaped userinfo redact too.
+const flagged = [
+  "tool --token secret-value run",
+  "deploy --api-key raw-key",
+  "curl -u alice:swordfish https://api.test",
+  "fetch --user bob:hunter2 --password pw data",
+  "echo ghp_deadbeefdead",
+].join("\n");
+const flaggedRedacted = redactDisplaySecrets(flagged);
+assert.doesNotMatch(flaggedRedacted, /secret-value|raw-key|swordfish|hunter2|:pw\b|ghp_deadbeefdead/i);
+assert.match(flaggedRedacted, /--token \[REDACTED\]/);
+assert.match(flaggedRedacted, /-u \[REDACTED\]/);
+assert.match(flaggedRedacted, /--user \[REDACTED\]/);
+assert.match(flaggedRedacted, /--password \[REDACTED\]/);
+// Non-credential uses of the same flags keep their values.
+assert.equal(redactDisplaySecrets("sort -u names.txt"), "sort -u names.txt");
+
 const markdown = sanitizeMarkdownForDisplay("[bad](https://evil.test) www.evil.test a@b.test\n```js\n[code](x)\n```");
 assert.match(markdown, /\\\[bad\]/);
 assert.match(markdown, /www\\\.evil/);

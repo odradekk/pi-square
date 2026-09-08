@@ -4,6 +4,14 @@ status: accepted
 
 # Background-only subagent lifecycle, V4 run artifacts, and V5 notifications
 
+> Status note: since #303 the compact subagent status row this ADR referenced
+> is retired. Subagent observability now publishes through the session-scoped
+> vertical child roster (`src/subagents/roster.ts`) above the editor — a
+> read-only projection of the background job store with no durable state, no
+> retention exemption, and no delivery interaction — and `undelivered`
+> visibility lives solely in the `/subagent` manager. Where this ADR says the
+> status row, read the roster.
+
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,
 every surface speaks one lifecycle, and the persisted and delivered protocols
@@ -40,7 +48,8 @@ the background completion notification contract. It supersedes:
 
 Active background states are `queued`, `running`, and `cancelling`. Terminal
 states are `completed`, `failed`, and `aborted`. The background job store,
-persisted run records, the `/subagent` manager, the status row, inspection,
+persisted run records, the `/subagent` manager, the roster (the former status
+row, retired by #303), inspection,
 retention, resume eligibility, and the calm operational display all interpret
 this one vocabulary. The immediate `delegate_subagent`/`resume_subagent`
 result is a detached snapshot of the queued record; the display renders it as
@@ -222,7 +231,8 @@ defensive spellings for values that can no longer occur.
    session's unconfirmed results are affected at the moment of upgrade.
 3. **The immediate tool result is a snapshot, not a live view.** The caller
    observes the queued record as it was at return time; execution progress
-   flows through the status row, the manager, and the completion delivery.
+   flows through the roster (the former status row, retired by #303), the
+   manager, and the completion delivery.
 
 ## Precedents
 

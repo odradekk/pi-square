@@ -54,7 +54,7 @@ function setup() {
     getExtensionStatuses() {
       return new Map([
         ["other", "ready"],
-        ["pi-square.subagents", "subagents 1 │ explorer 12345678 running · rg footer"],
+        ["pi-square.example", "example 1 │ explorer 12345678 running · rg footer"],
       ]);
     },
     getAvailableProviderCount() { return 1; },
@@ -68,8 +68,8 @@ function setup() {
   assert.equal(lines.length, 3);
   assert.match(lines[0], /GPT Test/);
   assert.match(lines[1], /Context/);
-  assert.match(lines[2], /●/);
-  assert.match(lines[2], /subagents 1/);
+  assert.match(lines[2], /·/);
+  assert.match(lines[2], /example 1/);
   assert.match(lines[2], /ready/);
 
   ctx.model = { id: "gpt-next", name: "GPT Next", provider: "test", reasoning: true, contextWindow: 100_000 };

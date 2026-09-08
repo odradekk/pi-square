@@ -14,7 +14,11 @@ status: accepted
 > results are excluded from automatic delivery and eviction under a
 > 50-reservation bound with a single-consumer guarantee, while every adapter
 > that never claims — Shadow Minds included — keeps exactly the automatic
-> semantics recorded here.
+> semantics recorded here. Since #303 the compact
+> native subagent status this ADR referenced is retired: subagent
+> observability publishes through the session-scoped vertical child roster
+> (`src/subagents/roster.ts`), whose row vocabulary carries no undelivered
+> marker, so `undelivered` visibility lives solely in the `/subagent` manager.
 
 Background subagent results were sent with one fire-and-forget
 `pi.sendMessage` for each finished run, clipped to 1600 characters. Two defects
@@ -79,8 +83,10 @@ it identifies the run and is not the result.
 The pending set holds at most 50 results and drops the oldest beyond that. A
 finished job whose result is still pending is exempt from the 20-job
 compaction, because compaction would otherwise destroy the only copy. The
-native subagent status shows `undelivered N`, and the `/subagent` manager marks
-the individual runs. Deleting a run's history removes it from the pending set.
+native subagent status this ADR named for `undelivered N` was removed by #303
+in favor of the session-scoped child roster, whose row vocabulary carries no
+undelivered marker; the `/subagent` manager marks the individual undelivered
+runs. Deleting a run's history removes it from the pending set.
 
 ### Session scope
 

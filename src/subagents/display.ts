@@ -1,15 +1,17 @@
 import { stripVTControlCharacters } from "node:util";
+import { redactDisplaySecrets } from "../display/sanitize";
 
-const AUTH_HEADER_PATTERN = /(authorization\s*:\s*)[^,;\r\n]+/gi;
-const SECRET_ASSIGNMENT_PATTERN = /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[=:]\s*)([^\s,;]+)/gi;
-const BEARER_PATTERN = /(bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
-
+/**
+ * Display copy for subagent surfaces: control-free text redacted through the
+ * shared display credential neutralizer's common credential forms. The
+ * redaction is defense in depth for arbitrary timeline text, not a guarantee
+ * that every credential spelling is recognized.
+ */
 export function sanitizeSubagentDisplay(value: unknown): string {
-  return stripVTControlCharacters(typeof value === "string" ? value : String(value ?? ""))
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "   ")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-    .replace(AUTH_HEADER_PATTERN, "$1[REDACTED]")
-    .replace(SECRET_ASSIGNMENT_PATTERN, "$1[REDACTED]")
-    .replace(BEARER_PATTERN, "$1[REDACTED]");
+  return redactDisplaySecrets(
+    stripVTControlCharacters(typeof value === "string" ? value : String(value ?? ""))
+      .replace(/\r\n?/g, "\n")
+      .replace(/\t/g, "   ")
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, ""),
+  );
 }
