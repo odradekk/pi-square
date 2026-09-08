@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Editor, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
 import { DEFAULT_SHADOW_MINDS, type ShadowMindsDefaults } from "../core/config";
+import { withOwnedInputSurface } from "../core/input-surface";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../display/sanitize";
 import { shadowDefinitionContextFingerprint } from "./definitions";
 import type { EffectiveShadowDefinition, ShadowDefinitionRegistry } from "./definitions";
@@ -1219,7 +1220,7 @@ export async function openShadowManager(
   data: ShadowManagerSnapshot,
   services?: ShadowManagerServices,
 ): Promise<void> {
-  await ctx.ui.custom<void>((tui, theme, keybindings, done) => (
+  await withOwnedInputSurface(() => ctx.ui.custom<void>((tui, theme, keybindings, done) => (
     new ShadowManager(data, tui, theme, keybindings, done, services)
-  ), { overlay: false });
+  ), { overlay: false }));
 }

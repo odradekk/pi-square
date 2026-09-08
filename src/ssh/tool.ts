@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ConfirmationCoordinator } from "../core/confirmation";
+import { withOwnedInputSurface } from "../core/input-surface";
 import {
   SSH_COMMAND_MAX_CHARS,
   SSH_INPUT_MAX_CHARS,
@@ -229,7 +230,7 @@ export function createSshToolController(
             if (!confirmationAvailable(ctx)) throw new SshError("CONFIRMATION_UNAVAILABLE", "Non-default SSH targets require interactive confirmation");
             const confirmed = await confirmations.run(signal, async (confirmationSignal) => {
               if (approvedTargets.has(approvalKey)) return true;
-              const approved = await ctx.ui.confirm(
+              const approved = await withOwnedInputSurface(() => ctx.ui.confirm(
                 "Connect to alternate SSH target",
                 [
                   `Profile: ${cleanDisplay(profile.name)}`,
@@ -240,7 +241,7 @@ export function createSshToolController(
                   "This authorizes this exact configured endpoint for the current Pi session.",
                 ].join("\n"),
                 { signal: confirmationSignal },
-              );
+              ));
               if (approved) approvedTargets.add(approvalKey);
               return approved;
             });
