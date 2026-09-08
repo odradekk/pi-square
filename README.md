@@ -113,7 +113,7 @@ The `delegate_subagent`, `resume_subagent`, `wait_subagent`, and `abort_subagent
 
 The subagent roster and the `/subagent` manager summarize a background child through the latest allowlisted tool-call summary, and completion messages show a bounded conclusion and usage metadata. Expanded completion results show the bounded full result, up to eight recent allowlisted activity rows, and up to four tool issues. Status uses monochrome text glyphs such as `✓`, `!`, `×`, and `–`, never emoji presentation characters.
 
-The shared allowlisted activity formatter summarizes known tools with bounded target and argument summaries; unknown tools expose only `called`, and no surface renders tool result payloads. Every surface uses shortened run IDs; the full ID is never rendered. Normal results omit system prompts, raw session JSON, and artifact paths. Rendering removes terminal controls and redacts common credential forms without changing model-facing content or background delivery.
+The shared allowlisted activity formatter summarizes known tools with bounded target and argument summaries; shell tools (`bash`, `pwsh`) and unknown tools expose only `called`, because arbitrary command text has no safe bounded projection, and no surface renders tool result payloads. Every surface labels runs by shortened IDs: the roster's collision-safe prefixes start at eight characters, extend only while two retained children would collide, and middle-elide under narrow width instead of dropping the lifecycle. Normal results omit system prompts, raw session JSON, and artifact paths. Rendering removes terminal controls and redacts common credential forms without changing model-facing content or background delivery.
 
 ## Subagent V2 prompts and manager
 
