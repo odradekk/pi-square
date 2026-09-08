@@ -3,8 +3,9 @@ import { redactDisplaySecrets } from "../display/sanitize";
 
 /**
  * Display copy for subagent surfaces: control-free text redacted through the
- * shared display credential neutralizer, so bash/pwsh summaries and any other
- * timeline text can never carry credential values.
+ * shared display credential neutralizer's common credential forms. The
+ * redaction is defense in depth for arbitrary timeline text, not a guarantee
+ * that every credential spelling is recognized.
  */
 export function sanitizeSubagentDisplay(value: unknown): string {
   return redactDisplaySecrets(

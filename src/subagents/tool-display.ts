@@ -43,7 +43,9 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
       break;
     case "bash":
     case "pwsh":
-      summary = clipInline(args?.command, 80) || "called";
+      // Shell commands are arbitrary text: no bounded argument projection can
+      // make them safe to display, so shell activity stays a generic summary.
+      summary = "called";
       break;
     case "edit":
     case "write":

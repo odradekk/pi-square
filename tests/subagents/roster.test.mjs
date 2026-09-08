@@ -198,38 +198,49 @@ test("prefixes start at eight characters and extend only as far as needed", () =
   assert.match(lines[2], /99999999 /);
 });
 
-test("rows keep roster-creation order across lifecycle changes and tie-break by full ID", () => {
+test("rows keep roster-creation order across lifecycle changes; createdAt orders, full ID ties", () => {
   const state = createBackgroundState();
   const { ctx, calls } = uiContext();
   const controller = createSubagentRosterController(state);
   controller.start(ctx);
 
-  const first = job("subagent_dddddddd-dddd-4ddd-8ddd-dddddddddddd", "queued", 1, "crawler");
-  const second = job("subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "queued", 2, "explorer");
-  state.jobs.set(first.id, first);
-  state.jobs.set(second.id, second);
+  const earlier = job("subagent_dddddddd-dddd-4ddd-8ddd-dddddddddddd", "queued", 1, "crawler");
+  const later = job("subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "queued", 2, "explorer");
+  state.jobs.set(earlier.id, earlier);
+  state.jobs.set(later.id, later);
   for (const listener of state.listeners) listener();
 
-  // Both entered in one observation batch: full public ID decides the order.
+  // One observation batch with different creation times: createdAt decides,
+  // even though the later-created job has the smaller public ID.
   let lines = renderLast(calls);
-  assert.ok(lines[0].includes("aaaaaaaa"), "same-batch tie breaks by full ID");
-  assert.ok(lines[1].includes("dddddddd"));
+  assert.ok(lines[0].includes("dddddddd"), "earlier createdAt wins over full-ID order");
+  assert.ok(lines[1].includes("aaaaaaaa"));
 
-  const third = job("subagent_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "running", 3, "oracle");
-  state.jobs.set(third.id, third);
+  // A same-createdAt pair appended later: the full public ID breaks the tie.
+  const tieA = job("subagent_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "running", 5, "oracle");
+  const tieB = job("subagent_cccccccc-cccc-4ccc-8ccc-cccccccccccc", "running", 5, "generalist");
+  state.jobs.set(tieA.id, tieA);
+  state.jobs.set(tieB.id, tieB);
   for (const listener of state.listeners) listener();
   lines = renderLast(calls);
-  assert.equal(lines.length, 3);
-  assert.ok(lines[2].includes("bbbbbbbb"), "a later-created row appends after earlier ones");
+  assert.equal(lines.length, 4);
+  assert.ok(lines[2].includes("bbbbbbbb"), "exact createdAt tie breaks by full public ID");
+  assert.ok(lines[3].includes("cccccccc"));
+  assert.ok(lines[3].indexOf("cccccccc") > lines[2].indexOf("bbbbbbbb"));
 
   // Lifecycle and activity updates must never reorder rows.
-  first.status = "completed";
-  first.updatedAt = 99;
-  second.status = "cancelling";
-  second.updatedAt = 98;
+  earlier.status = "completed";
+  earlier.updatedAt = 99;
+  later.status = "cancelling";
+  later.updatedAt = 98;
+  tieA.updatedAt = 97;
   for (const listener of state.listeners) listener();
   lines = renderLast(calls);
-  assert.ok(lines[0].includes("aaaaaaaa") && lines[1].includes("dddddddd") && lines[2].includes("bbbbbbbb"));
+  assert.ok(
+    lines[0].includes("dddddddd") && lines[1].includes("aaaaaaaa")
+    && lines[2].includes("bbbbbbbb") && lines[3].includes("cccccccc"),
+    "status and recency changes never reorder roster rows",
+  );
 
   controller.stop();
 });
@@ -348,23 +359,27 @@ test("height-only resize immediately recomputes the row budget", () => {
   assert.equal(widget.render(80).length, 11, "growing back recomputes too");
 });
 
-test("roster activity redacts credential forms in shell commands", () => {
+test("roster activity shows shell tools as called and never exposes command text", () => {
   const state = createBackgroundState();
   const { ctx, calls } = uiContext();
   const controller = createSubagentRosterController(state);
   controller.start(ctx);
 
+  const command = [
+    "curl -ualice:swordfish https://api.test",
+    "curl --user=alice:swordfish https://api.test",
+    "curl https://alice:swordfish@example.test",
+    "AWS_SECRET_ACCESS_KEY=swordfish aws s3 ls",
+    "aws configure set aws_secret_access_key swordfish",
+    'deploy --token "my secret value"',
+  ].join(" && ");
   const secret = job(
     "subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     "running",
     1,
     "explorer",
     [
-      {
-        kind: "tool",
-        phase: "start",
-        text: 'bash {"command":"curl -u alice:swordfish https://api.test && tool --token secret-value && echo ghp_deadbeefdead"}',
-      },
+      { kind: "tool", phase: "start", text: `bash ${JSON.stringify({ command })}` },
       { kind: "tool", phase: "end", text: "SECRET TOOL RESULT" },
     ],
   );
@@ -372,9 +387,12 @@ test("roster activity redacts credential forms in shell commands", () => {
   for (const listener of state.listeners) listener();
 
   const line = renderLast(calls, 200)[0];
-  assert.doesNotMatch(line, /swordfish|secret-value|ghp_deadbeefdead|SECRET TOOL RESULT/);
-  assert.match(line, /\[REDACTED\]/);
-  assert.match(line, /^○ explorer aaaaaaaa ● running/, "identity and lifecycle survive the redaction");
+  assert.match(line, /bash called/, "shell activity is the generic allowlisted summary");
+  assert.doesNotMatch(
+    line,
+    /swordfish|alice|my secret|AWS_SECRET|aws_secret|example\.test|api\.test|SECRET TOOL RESULT/,
+  );
+  assert.match(line, /^○ explorer aaaaaaaa ● running/, "identity and lifecycle survive the summary");
   controller.stop();
 });
 

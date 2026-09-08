@@ -49,4 +49,33 @@ test("latest summaries ignore result payloads and redact credentials", () => {
   assert.doesNotMatch(summary, /SECRET RESULT|ghp_secret/);
 });
 
+test("shell tools expose only a generic summary; command text never displays", () => {
+  const hostile = [
+    "curl -ualice:swordfish https://api.test",
+    "curl --user=alice:swordfish https://api.test",
+    "curl https://alice:swordfish@example.test",
+    "AWS_SECRET_ACCESS_KEY=swordfish aws s3 ls",
+    "aws configure set aws_secret_access_key swordfish",
+    'deploy --token "my secret value"',
+  ];
+  for (const command of hostile) {
+    assert.deepEqual(toolDisplayFromArgs("bash", { command }), { tool: "bash", summary: "called" });
+    assert.deepEqual(toolDisplayFromArgs("pwsh", { command }), { tool: "pwsh", summary: "called" });
+    assert.equal(formatToolCall("bash", { command }), "bash called");
+    const call = formatToolCall("pwsh", { command });
+    assert.doesNotMatch(call, /swordfish|alice|my secret|AWS_SECRET|example\.test/);
+  }
+  // The JSON-envelope timeline form a child run actually produces.
+  const timeline = toolEventDisplay({
+    kind: "tool",
+    phase: "start",
+    text: `bash ${JSON.stringify({ command: hostile[0] })}`,
+  });
+  assert.deepEqual(timeline, { tool: "bash", summary: "called" });
+  assert.equal(latestToolCallSummary([
+    { kind: "tool", phase: "start", text: `bash ${JSON.stringify({ command: hostile[3] })}` },
+    { kind: "tool", phase: "end", text: "SECRET RESULT" },
+  ]), "bash called");
+});
+
 await run();

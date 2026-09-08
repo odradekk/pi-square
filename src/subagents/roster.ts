@@ -315,11 +315,16 @@ export function createSubagentRosterController(
     const jobs = listBackgroundJobs(state)
       .filter((job) => parentSessionId !== "" && job.details.lastParentSessionId === parentSessionId);
 
+    // New rows take their roster slot by immutable creation time; the full
+    // public ID only breaks an exact createdAt tie. Later observations keep
+    // the slot a row already owns.
     const fresh = jobs
-      .map((job) => job.id)
-      .filter((id) => !order.has(id))
-      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-    for (const id of fresh) order.set(id, nextOrder++);
+      .filter((job) => !order.has(job.id))
+      .sort((left, right) => (
+        left.createdAt - right.createdAt
+        || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+      ));
+    for (const job of fresh) order.set(job.id, nextOrder++);
 
     const rows = jobs
       .map((job): RosterRow => ({
