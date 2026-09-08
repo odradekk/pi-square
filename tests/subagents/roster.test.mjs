@@ -47,6 +47,7 @@ function row(overrides = {}) {
     id: "subagent_11111111-1111-4111-8111-111111111111",
     role: "explorer",
     status: "running",
+    createdAt: 0,
     startedAt: 0,
     endedAt: undefined,
     activity: "rg data in src",
@@ -303,6 +304,7 @@ test("a resumed public ID keeps one row and its roster slot", () => {
 
   // Same public ID resumed: one identity, still one row, still first.
   const resumed = job(id, "queued", 30, "explorer");
+  resumed.createdAt = original.createdAt;
   resumed.details.lastParentSessionId = "parent-1";
   state.jobs.set(id, resumed);
   for (const listener of state.listeners) listener();
@@ -410,16 +412,29 @@ test("narrow collisions stay distinguishable down to the smallest feasible width
     assert.ok(visibleWidth(line) <= 15, "one physical line at width 15");
   }
 
-  // One ID cell cannot hold any distinguishing label: the explicitly defined
-  // degradation keeps the one-line row, marker, and lifecycle.
-  const floor = renderSubagentRoster(plainTheme(), pair, { width: 13, rowBudget: 10, now: 0 })
-    .map(stripVTControlCharacters);
-  assert.equal(floor.length, 2, "width 13: both children still render");
-  for (const line of floor) {
-    assert.ok(line.startsWith("○ "), "width 13: selection marker preserved");
-    assert.match(line, /● running/, "width 13: lifecycle preserved");
-    assert.ok(visibleWidth(line) <= 13, "width 13: one physical line");
+  // All three prefixes share their first and last characters. At the smallest
+  // mathematically feasible width for each lifecycle, one ID cell can still
+  // distinguish them by another character in the public prefix.
+  const sameEndIds = [
+    "subagent_1aaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "subagent_1baaaaa1-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "subagent_1caaaaa1-cccc-4ccc-8ccc-cccccccccccc",
+  ];
+  for (const [status, lifecycle, width] of LIFECYCLES.map(([status, lifecycle]) => [
+    status,
+    lifecycle,
+    visibleWidth(`○ 0 ${lifecycle}`),
+  ])) {
+    const sameEnds = sameEndIds.map((id) => row({ id, status, activity: "" }));
+    const sameEndLines = renderSubagentRoster(plainTheme(), sameEnds, { width, rowBudget: 10, now: 0 })
+      .map(stripVTControlCharacters);
+    assert.equal(new Set(sameEndLines).size, 3, `${status}: one-cell labels stay unique across the peer set`);
+    for (const line of sameEndLines) {
+      assert.ok(line.endsWith(lifecycle), `${status}: complete lifecycle survives at its feasible floor`);
+      assert.equal(visibleWidth(line), width, `${status}: floor row uses exactly one physical line`);
+    }
   }
+
 });
 
 test("height-only resize immediately recomputes the row budget", () => {

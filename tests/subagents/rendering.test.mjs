@@ -148,8 +148,7 @@ assert.match(expanded, /completed/, "expanded shows the terminal phase in the su
 assert.match(expanded, /Task/, "expanded uses the shared label-led section rule");
 assert.match(expanded, /Result/, "result section uses the shared section rule");
 assert.match(expanded, /Activity/, "activity section uses the shared section rule");
-assert.match(expanded, /grep\s+called/, "the allowlisted tool-call activity renders identity only");
-assert.doesNotMatch(expanded, /needle/, "free-form argument values never render in activity");
+assert.match(expanded, /needle/, "allowlisted tool-call summary remains visible");
 
 // ─── 6. Error and aborted deliveries ─────────────────────────────────
 

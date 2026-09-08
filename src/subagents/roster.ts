@@ -2,7 +2,7 @@ import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-cod
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
 import { sanitizeSubagentDisplay } from "./display";
-import { latestToolCallSummary } from "./tool-display";
+import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./types";
 
 export const SUBAGENT_ROSTER_KEY = "pi-square.subagents.roster";
@@ -37,6 +37,7 @@ export interface RosterRow {
   id: string;
   role: string;
   status: BackgroundJobSnapshot["status"];
+  createdAt: number;
   startedAt: number;
   endedAt?: number;
   activity: string;
@@ -81,39 +82,74 @@ export function uniqueRosterIdPrefixes(ids: readonly string[]): Map<string, stri
 }
 
 /**
- * Candidate labels for one over-budget prefix, most descriptive first:
- * head-anchored with a shrinking head (so the conventional eight-character
- * head wins when it fits), then tail-only forms for identities whose head
- * cannot carry the difference.
+ * Candidate labels for one over-budget prefix, most descriptive first. The
+ * conventional head/tail forms win when they distinguish the row; raw slices
+ * are a narrow-width fallback for peers whose visible heads and tails match.
  */
 function candidateLabels(points: readonly string[], budget: number): string[] {
   const labels: string[] = [];
+  const seen = new Set<string>();
+  const add = (label: string) => {
+    if (label !== "" && visibleWidth(label) <= budget && !seen.has(label)) {
+      seen.add(label);
+      labels.push(label);
+    }
+  };
   const maxHead = Math.min(MIN_ID_PREFIX, budget - 1);
   for (let head = maxHead; head >= 1; head -= 1) {
     const tail = budget - head - 1;
-    labels.push(`${points.slice(0, head).join("")}…${points.slice(Math.max(0, points.length - tail)).join("")}`);
+    add(`${points.slice(0, head).join("")}…${points.slice(Math.max(0, points.length - tail)).join("")}`);
   }
   for (let tail = budget - 1; tail >= 1; tail -= 1) {
-    labels.push(`…${points.slice(points.length - tail).join("")}`);
+    add(`…${points.slice(points.length - tail).join("")}`);
+  }
+  for (let start = 0; start < points.length; start += 1) {
+    add(points.slice(start, start + budget).join(""));
   }
   return labels;
 }
 
 /**
- * Fits one unique prefix into the row's ID budget as a label no other row
- * already holds: labels are assigned greedily in roster order across the
- * whole peer set, so two colliding identities never render the same label
- * while any candidate form can tell them apart. Only when no head or tail
- * form in the budget is unique does the label degrade to a plain truncation,
- * while the row keeps its marker and lifecycle.
+ * Fits all visible prefixes together. A small augmenting-path assignment
+ * avoids a greedy early choice taking the only distinguishing label available
+ * to a later peer. Full prefixes that already fit are kept verbatim.
  */
-function fitRosterIdLabel(prefix: string, budget: number, assigned: ReadonlySet<string>): string {
-  const points = Array.from(prefix);
-  if (points.length <= budget) return prefix;
-  for (const candidate of candidateLabels(points, budget)) {
-    if (!assigned.has(candidate)) return candidate;
+function fitRosterIdLabels(prefixes: readonly string[], budgets: readonly number[]): string[] {
+  const labels = new Array<string>(prefixes.length);
+  const owners = new Map<string, number>();
+  const locked = new Set<number>();
+
+  for (const [index, prefix] of prefixes.entries()) {
+    if (visibleWidth(prefix) <= budgets[index]!) {
+      labels[index] = prefix;
+      owners.set(prefix, index);
+      locked.add(index);
+    }
   }
-  return truncateToWidth(prefix, budget, "…");
+
+  const candidates = prefixes.map((prefix, index) => (
+    candidateLabels(Array.from(prefix), budgets[index]!)
+      .filter((candidate) => !owners.has(candidate))
+  ));
+  const claim = (index: number, visited: Set<string>): boolean => {
+    for (const candidate of candidates[index]!) {
+      if (visited.has(candidate)) continue;
+      visited.add(candidate);
+      const owner = owners.get(candidate);
+      if (owner === undefined || (!locked.has(owner) && claim(owner, visited))) {
+        owners.set(candidate, index);
+        labels[index] = candidate;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (const [index, prefix] of prefixes.entries()) {
+    if (locked.has(index)) continue;
+    if (!claim(index, new Set())) labels[index] = truncateToWidth(prefix, budgets[index]!, "…");
+  }
+  return labels;
 }
 
 const LIFECYCLE_TONES: Record<BackgroundJobSnapshot["status"], ThemeColor> = {
@@ -198,21 +234,21 @@ export function renderSubagentRoster(
   const safeWidth = Math.max(1, options.width);
   const budget = Math.max(1, options.rowBudget);
   const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
-  const fullPrefixes = rows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
+  const visibleRows = rows.slice(0, budget);
+  const fullPrefixes = visibleRows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
+  const idBudgets = visibleRows.map((row) => {
+    const lifecycleWidth = visibleWidth(LIFECYCLE_LABELS[row.status]);
+    return Math.max(1, safeWidth - lifecycleWidth - visibleWidth("○ ") - visibleWidth(" "));
+  });
+  const labels = fitRosterIdLabels(fullPrefixes, idBudgets);
 
-  const assignedLabels = new Set<string>();
-  const lines = rows
-    .slice(0, budget)
+  const lines = visibleRows
     .map((row, index) => {
       // The ID label never widens past the space left beside the lifecycle,
       // so the core of the row always fits and the lifecycle survives. The
       // floor composition is marker + space + ID + space + lifecycle; a role
       // truncates away before the ID label does.
-      const lifecycleWidth = visibleWidth(LIFECYCLE_LABELS[row.status]);
-      const idBudget = Math.max(1, safeWidth - lifecycleWidth - visibleWidth("○ ") - visibleWidth(" "));
-      const label = fitRosterIdLabel(fullPrefixes[index]!, idBudget, assignedLabels);
-      assignedLabels.add(label);
-      return renderRosterRow(theme, row, label, safeWidth, options.now);
+      return renderRosterRow(theme, row, labels[index]!, safeWidth, options.now);
     });
   const hidden = rows.length - Math.min(rows.length, budget);
   if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `… +${hidden} more`), safeWidth, "…"));
@@ -258,7 +294,7 @@ function rosterActivity(job: BackgroundJobSnapshot): string {
   // labels only, never tool-result bodies. A terminal child that never called
   // a tool has no activity to show — its lifecycle already tells the story.
   const terminal = !ACTIVE_STATUSES.has(job.status);
-  return latestToolCallSummary(job.details.timeline, terminal ? "" : "working");
+  return latestRosterToolCallSummary(job.details.timeline, terminal ? "" : "working");
 }
 
 export interface SubagentRosterController {
@@ -293,18 +329,6 @@ export function createSubagentRosterController(
   let unsubscribe: (() => void) | undefined;
   let motionUnsubscribe: (() => void) | undefined;
   let lastPublishAt = -Infinity;
-  /**
-   * Original creation timestamp per public ID, captured at first observation
-   * and never overwritten: rows sort by this key with the full public ID as
-   * the tie-break, so arrival order across separate notifications never
-   * matters and a resumed ID keeps its original slot. Entries deliberately
-   * survive finished-job compaction for the session's lifetime — pruning a
-   * compacted ID would hand a later resume a fresh slot and break that
-   * continuity — and the map is bounded in practice by the session's count
-   * of distinct public IDs.
-   */
-  const creationKeys = new Map<string, number>();
-
   const stopMotion = () => {
     motionUnsubscribe?.();
     motionUnsubscribe = undefined;
@@ -331,23 +355,20 @@ export function createSubagentRosterController(
     const jobs = listBackgroundJobs(state)
       .filter((job) => parentSessionId !== "" && job.details.lastParentSessionId === parentSessionId);
 
-    for (const job of jobs) {
-      if (!creationKeys.has(job.id)) creationKeys.set(job.id, job.createdAt);
-    }
-
-    // Immutable creation time orders the roster; the full public ID only
-    // breaks an exact tie, independent of how the jobs arrived.
+    // The background store owns immutable creation time for every retained
+    // public ID; the full ID only breaks an exact tie.
     const rows = jobs
       .map((job): RosterRow => ({
         id: job.id,
         role: rosterRole(job),
         status: job.status,
+        createdAt: job.createdAt,
         startedAt: job.details.startedAt,
         endedAt: job.details.endedAt,
         activity: rosterActivity(job),
       }))
       .sort((left, right) => (
-        (creationKeys.get(left.id) ?? 0) - (creationKeys.get(right.id) ?? 0)
+        left.createdAt - right.createdAt
         || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
       ));
 
@@ -379,7 +400,6 @@ export function createSubagentRosterController(
     if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
     context = undefined;
     parentSessionId = "";
-    creationKeys.clear();
   };
 
   return {

@@ -254,12 +254,15 @@ export function createQueuedResumeJob(input: {
   task: string;
   parentSessionId: string;
 }): BackgroundJob {
-  const createdAt = now();
+  const queuedAt = now();
+  // A retained public ID keeps its original roster position. Once compaction
+  // removes the old record there is no visible slot left to preserve.
+  const createdAt = input.state.jobs.get(input.details.id)?.createdAt ?? queuedAt;
   const job: BackgroundJob = {
     id: input.details.id,
     status: "queued",
     createdAt,
-    updatedAt: createdAt,
+    updatedAt: queuedAt,
     abortController: new AbortController(),
     details: {
       ...input.details,
@@ -267,7 +270,7 @@ export function createQueuedResumeJob(input: {
       task: input.task,
       lastParentSessionId: input.parentSessionId,
       phase: "queued",
-      startedAt: createdAt,
+      startedAt: queuedAt,
       endedAt: undefined,
       durationMs: undefined,
       finalText: "",

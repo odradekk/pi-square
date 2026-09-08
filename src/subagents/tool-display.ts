@@ -1,3 +1,4 @@
+import { catalogToolNames } from "../display/catalog";
 import { sanitizeSubagentDisplay } from "./display";
 import type { SubagentTimelineItem } from "./types";
 
@@ -14,26 +15,46 @@ function clipInline(value: unknown, max: number): string {
     : `${codePoints.slice(0, Math.max(0, max - 3)).join("")}...`;
 }
 
+function shortenPath(value: unknown): string {
+  return clipInline(value || ".", 48);
+}
+
 export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDisplay {
-  // Activity renders tool identity plus structurally safe metadata only.
-  // Every free-form argument value — a path, pattern, query, command, or
-  // identifier — is omitted: any model-authored string can carry a
-  // credential, so no bounded projection of it can be safe to display.
-  let summary = "called";
+  let summary: string;
   switch (toolName) {
     case "read": {
+      const path = shortenPath(args?.path ?? args?.file_path ?? "...");
       const offset = args?.offset;
       const limit = args?.limit;
-      if (Number.isFinite(offset) || Number.isFinite(limit)) {
-        const start = Number.isFinite(offset) ? offset : 1;
-        const end = Number.isFinite(limit) ? start + limit - 1 : undefined;
-        summary = `lines ${start}${end !== undefined && end >= start ? `-${end}` : ""}`;
-      }
+      if (typeof offset === "number" || typeof limit === "number") {
+        const start = typeof offset === "number" ? offset : 1;
+        const end = typeof limit === "number" ? start + limit - 1 : undefined;
+        summary = `${path}:${start}${end ? `-${end}` : ""}`;
+      } else summary = path;
       break;
     }
+    case "grep":
+      summary = `/${clipInline(args?.pattern || "...", 40)}/ in ${shortenPath(args?.path || ".")}`;
+      break;
+    case "find":
+      summary = `${clipInline(args?.pattern || ".", 40)} in ${shortenPath(args?.path || ".")}`;
+      break;
+    case "ls":
+      summary = shortenPath(args?.path || ".");
+      break;
+    case "bash":
+    case "pwsh":
+      summary = clipInline(args?.command, 80) || "called";
+      break;
+    case "edit":
+    case "write":
+    case "replace":
+    case "insert":
+      summary = shortenPath(args?.path || "...");
+      break;
     case "web_search": {
       const queries = Array.isArray(args?.queries) ? args.queries : [];
-      summary = `${queries.length} quer${queries.length === 1 ? "y" : "ies"}`;
+      summary = `${queries.length} quer${queries.length === 1 ? "y" : "ies"}: ${clipInline(queries[0] || "...", 50)}`;
       break;
     }
     case "web_fetch": {
@@ -41,7 +62,14 @@ export function toolDisplayFromArgs(toolName: string, args: any): ToolEventDispl
       summary = `${urls.length} URL${urls.length === 1 ? "" : "s"}`;
       break;
     }
+    case "library_search":
+      summary = clipInline(args?.libraryName || "...", 60);
+      break;
+    case "library_docs":
+      summary = clipInline(args?.libraryId || "...", 60);
+      break;
     default:
+      summary = "called";
       break;
   }
   return {
@@ -61,26 +89,7 @@ export function formatToolCall(toolName: string, args: any): string {
  * registries rather than model-authored text. A tool-name-shaped head in
  * arbitrary timeline text proves nothing and never displays as an identity.
  */
-const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
-  // Pi built-ins (both shell names so a cross-platform timeline reparses).
-  "read", "grep", "find", "ls", "edit", "write", "bash", "pwsh",
-  // Anchored mutations.
-  "replace", "insert",
-  // Cataloged extension tools.
-  "web_search", "web_fetch", "library_search", "library_docs",
-  // Parent-only subagent tools and other pi-square model-callable tools.
-  "delegate_subagent", "resume_subagent", "wait_subagent", "abort_subagent",
-  "ask", "todo",
-  // Shadow Minds' fixed child tool.
-  "submit_shadow_result",
-]);
-
-/**
- * The closed summary grammar that survives a timeline reparse: only the
- * forms the producer emits from structured arguments (numeric line ranges
- * and counts). No free-form text passes.
- */
-const SAFE_SUMMARY_PATTERN = /^(?:called|lines \d+(?:-\d+)?|\d+ quer(?:y|ies)|\d+ URLs?)$/;
+const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([...catalogToolNames(), "submit_shadow_result"]);
 
 function isKnownTool(name: string): boolean {
   return KNOWN_TOOL_NAMES.has(name);
@@ -91,36 +100,87 @@ export function toolEventDisplay(item: SubagentTimelineItem): ToolEventDisplay {
   if (item.phase === "start") {
     const jsonCall = /^([A-Za-z0-9_.-]+)\s+(\{.*\})$/s.exec(original);
     if (jsonCall) {
-      const toolName = jsonCall[1] ?? "";
-      if (isKnownTool(toolName)) {
-        try {
-          return toolDisplayFromArgs(toolName, JSON.parse(jsonCall[2] ?? "{}"));
-        } catch {
-          // A malformed envelope falls through to the generic identity.
-        }
+      const toolName = jsonCall[1] ?? "tool";
+      try {
+        return toolDisplayFromArgs(toolName, JSON.parse(jsonCall[2] ?? "{}"));
+      } catch {
+        return { tool: clipInline(toolName, 64) || "tool", summary: "called" };
       }
-      return { tool: "tool", summary: "called" };
     }
   }
 
-  // Free-form text: only a cataloged identity displays, and only the closed
-  // numeric/count grammar survives as its summary. Everything else is the
-  // fixed generic label, so arbitrary timeline text can never surface a
-  // credential-shaped token as a tool identity or summary.
-  const head = /^([A-Za-z0-9_.-]+)(?=[\s:]|$)/.exec(original)?.[1];
-  if (head !== undefined && isKnownTool(head)) {
-    const rest = original.slice(head.length).replace(/^[\s:]+/, "");
-    return { tool: head, summary: SAFE_SUMMARY_PATTERN.test(rest) ? rest : "called" };
+  const colon = /^([A-Za-z0-9_.-]+):\s*(.*)$/s.exec(original);
+  if (colon) return { tool: clipInline(colon[1], 64) || "tool", summary: clipInline(colon[2], 120) };
+  const spaced = /^([A-Za-z0-9_.-]+)\s+(.*)$/s.exec(original);
+  if (spaced) {
+    const rawSummary = spaced[2] ?? "";
+    return {
+      tool: clipInline(spaced[1], 64) || "tool",
+      summary: rawSummary.trimStart().startsWith("{") ? "called" : clipInline(rawSummary, 120),
+    };
   }
-  return { tool: "tool", summary: "called" };
+  return { tool: clipInline(original, 64) || "tool", summary: "" };
 }
 
-export function latestToolCallSummary(
+export function latestToolCallSummary(timeline: SubagentTimelineItem[] | undefined): string {
+  const item = [...(timeline ?? [])].reverse().find((entry) => entry?.kind === "tool" && entry.phase === "start");
+  if (!item) return "working";
+  const display = toolEventDisplay(item);
+  return `${display.tool}${display.summary ? ` ${display.summary}` : ""}`;
+}
+
+function rosterToolEventDisplay(item: SubagentTimelineItem): ToolEventDisplay {
+  const original = sanitizeSubagentDisplay(item.text).trim();
+  const jsonCall = item.phase === "start"
+    ? /^([A-Za-z0-9_.-]+)\s+(\{.*\})$/s.exec(original)
+    : null;
+  if (jsonCall) {
+    const toolName = jsonCall[1] ?? "";
+    if (!isKnownTool(toolName)) return { tool: "tool", summary: "called" };
+    try {
+      const args = JSON.parse(jsonCall[2] ?? "{}");
+      if (toolName === "read") {
+        const offset = args?.offset;
+        const limit = args?.limit;
+        if (Number.isFinite(offset) || Number.isFinite(limit)) {
+          const start = Number.isFinite(offset) ? offset : 1;
+          const end = Number.isFinite(limit) ? start + limit - 1 : undefined;
+          return { tool: toolName, summary: `lines ${start}${end !== undefined && end >= start ? `-${end}` : ""}` };
+        }
+      }
+      if (toolName === "web_search") {
+        const count = Array.isArray(args?.queries) ? args.queries.length : 0;
+        return { tool: toolName, summary: `${count} quer${count === 1 ? "y" : "ies"}` };
+      }
+      if (toolName === "web_fetch") {
+        const count = Array.isArray(args?.urls) ? args.urls.length : 0;
+        return { tool: toolName, summary: `${count} URL${count === 1 ? "" : "s"}` };
+      }
+      return { tool: toolName, summary: "called" };
+    } catch {
+      return { tool: toolName, summary: "called" };
+    }
+  }
+
+  const head = /^([A-Za-z0-9_.-]+)(?=[\s:]|$)/.exec(original)?.[1];
+  if (head === undefined || !isKnownTool(head)) return { tool: "tool", summary: "called" };
+  const rest = original.slice(head.length).replace(/^[\s:]+/, "");
+  if (head === "read") {
+    const range = /:(\d+)(?:-(\d+))?$/.exec(rest);
+    if (range) return { tool: head, summary: `lines ${range[1]}${range[2] ? `-${range[2]}` : ""}` };
+  }
+  const safeSummary = /^(?:\d+ quer(?:y|ies)|\d+ URLs?)/.exec(rest)?.[0];
+  return { tool: head, summary: safeSummary ?? "called" };
+}
+
+/** Roster-only projection: trusted tool identity and structural counts/ranges. */
+export function latestRosterToolCallSummary(
   timeline: SubagentTimelineItem[] | undefined,
   fallback = "working",
 ): string {
   const item = [...(timeline ?? [])].reverse().find((entry) => entry?.kind === "tool" && entry.phase === "start");
   if (!item) return fallback;
-  const display = toolEventDisplay(item);
-  return `${display.tool}${display.summary ? ` ${display.summary}` : ""}`;
+  const display = rosterToolEventDisplay(item);
+  const summary = clipInline(display.summary, 120);
+  return `${display.tool}${summary ? ` ${summary}` : ""}`;
 }

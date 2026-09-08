@@ -209,6 +209,21 @@ test("manager resumes use the cancellable background lifecycle and frozen snapsh
   assertCompletion(pi, "completed");
 });
 
+test("a retained public ID keeps its background-owned roster creation key on resume", () => {
+  process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
+  const observed = observedState();
+  const original = queuedJob(observed);
+  original.status = "completed";
+  const resumed = createQueuedResumeJob({
+    state: observed.state,
+    details: details("completed", { finalText: "first" }),
+    task: "continue",
+    parentSessionId: "parent-session",
+  });
+  assert.equal(resumed.createdAt, original.createdAt);
+  assert.ok(resumed.details.startedAt >= resumed.createdAt);
+});
+
 test("thrown background failures become structured run failures", async () => {
   process.env.PI_AGENT_DIR = "/tmp/subagents-test-agent";
   const observed = observedState();
