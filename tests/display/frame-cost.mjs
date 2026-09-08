@@ -203,7 +203,7 @@ function buildFooterCtx(entries) {
 
 const footerData = {
   getGitBranch() { return "main"; },
-  getExtensionStatuses() { return new Map([["pi-square.subagents", "explorer running"]]); },
+  getExtensionStatuses() { return new Map([["pi-square.example", "extension running"]]); },
   getAvailableProviderCount() { return 2; },
   onBranchChange() { return () => {}; },
 };

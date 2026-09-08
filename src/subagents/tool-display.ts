@@ -109,9 +109,12 @@ export function toolEventDisplay(item: SubagentTimelineItem): ToolEventDisplay {
   return { tool: clipInline(original, 64) || "tool", summary: "" };
 }
 
-export function latestToolCallSummary(timeline: SubagentTimelineItem[] | undefined): string {
+export function latestToolCallSummary(
+  timeline: SubagentTimelineItem[] | undefined,
+  fallback = "working",
+): string {
   const item = [...(timeline ?? [])].reverse().find((entry) => entry?.kind === "tool" && entry.phase === "start");
-  if (!item) return "working";
+  if (!item) return fallback;
   const display = toolEventDisplay(item);
   return `${display.tool}${display.summary ? ` ${display.summary}` : ""}`;
 }

@@ -12,7 +12,7 @@ import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
 import { registerSubagentManager } from "./manager";
-import { createNativeSubagentStatusController } from "./status";
+import { createSubagentRosterController } from "./roster";
 import { anchoredEditingEnabled, registerSubagentTool, type SubagentRuntimeState } from "./tool";
 import { decorateSubagentTool } from "./display-adapter";
 import { createSubagentBlockingCallRegistry } from "./wait";
@@ -73,7 +73,7 @@ export default function registerSubagents(
   // clears any memory-only wait claims.
   const blockingCallRegistry = createSubagentBlockingCallRegistry();
   state.background.delivery = delivery;
-  const nativeStatus = createNativeSubagentStatusController(state.background);
+  const roster = createSubagentRosterController(state.background);
 
   registerSubagentTool(
     pi,
@@ -100,7 +100,7 @@ export default function registerSubagents(
         console.error("Failed to reconcile child anchor-store partitions:", error);
       }
     }
-    nativeStatus.start(ctx);
+    roster.start(ctx);
     if (ctx.hasUI && state.registry.errors.length > 0) {
       const suffix = state.registry.errors.length > 1 ? ` (+${state.registry.errors.length - 1} more)` : "";
       ctx.ui.notify(`subagents: ${state.registry.errors[0]}${suffix}`, "warning");
@@ -133,7 +133,7 @@ export default function registerSubagents(
   });
 
   pi.on("session_shutdown", async () => {
-    nativeStatus.stop();
+    roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");
     abortAllBackgroundJobs(pi, state.background);
     delivery.reset();

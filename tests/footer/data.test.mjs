@@ -37,7 +37,7 @@ const entries = [
 ];
 const statuses = new Map([
   ["other", "ready"],
-  ["pi-square.subagents", "subagents 1"],
+  ["pi-square.example", "example 1"],
 ]);
 const ctx = {
   model: {
@@ -89,7 +89,7 @@ assert.equal(snapshot.contextPercent, 72.5);
 assert.equal(snapshot.contextWindow, 180_000);
 assert.deepEqual(snapshot.statuses, [
   { key: "other", text: "ready" },
-  { key: "pi-square.subagents", text: "subagents 1" },
+  { key: "pi-square.example", text: "example 1" },
 ]);
 
 const empty = collectEnhancedFooterSnapshot({
