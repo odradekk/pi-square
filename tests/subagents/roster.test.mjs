@@ -19,6 +19,7 @@ const {
   uniqueRosterIdPrefixes,
 } = rosterModule;
 const { createBackgroundState } = backgroundModule;
+const { MotionScheduler } = await load(join(packageRoot, "src", "display", "motion.ts"));
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -90,6 +91,17 @@ function uiContext({ sessionId = "parent-1", mode = "tui" } = {}) {
     sessionManager: { getSessionId: () => sessionId },
   };
   return { ctx, calls };
+}
+
+function motionHarness(mode) {
+  const harness = fakeClock();
+  const scheduler = new MotionScheduler(mode, harness.clock);
+  return {
+    ...harness,
+    scheduler,
+    motion: { subscribe: (listener) => scheduler.subscribe(listener) },
+    subscribers: () => scheduler.subscriberCount,
+  };
 }
 
 function fakeClock() {
@@ -286,6 +298,86 @@ test("width pressure drops activity, then duration, then truncates the role", ()
   assert.ok(visibleWidth(truncatedRole) <= 27, "row stays one physical line");
 });
 
+test("long-colliding IDs stay distinguishable with lifecycle intact at narrow widths", () => {
+  // Legal public IDs that share every character until position 35 of the ID.
+  const idA = "subagent_11111111-1111-4111-8111-111111111111";
+  const idB = "subagent_11111111-1111-4111-8111-111111111112";
+  const rows = [
+    row({ id: idA, status: "running", activity: "" }),
+    row({ id: idB, status: "running", activity: "" }),
+  ];
+
+  for (const width of [30, 35]) {
+    const lines = renderSubagentRoster(plainTheme(), rows, { width, rowBudget: 10, now: 0 })
+      .map(stripVTControlCharacters);
+    assert.equal(lines.length, 2, `width ${width}: both children render`);
+    assert.notEqual(lines[0], lines[1], `width ${width}: colliding rows stay distinguishable`);
+    for (const line of lines) {
+      assert.ok(line.startsWith("○ "), `width ${width}: selection marker preserved`);
+      assert.match(line, /● running/, `width ${width}: lifecycle preserved`);
+      assert.ok(line.includes("…"), `width ${width}: over-long prefix elides instead of overwriting the lifecycle`);
+      assert.ok(visibleWidth(line) <= width, `width ${width}: one physical line`);
+    }
+    assert.ok(lines.every((line) => line.includes("11111111…")), `width ${width}: elision keeps the eight-character head`);
+  }
+
+  // Wide terminals still show the fully extended unique prefixes.
+  const wide = renderSubagentRoster(plainTheme(), rows, { width: 80, rowBudget: 10, now: 0 })
+    .map(stripVTControlCharacters);
+  assert.notEqual(wide[0], wide[1]);
+  assert.match(wide[0], /11111111-1111-4111-8111-111111111111 ● running/);
+  assert.match(wide[1], /11111111-1111-4111-8111-111111111112 ● running/);
+});
+
+test("height-only resize immediately recomputes the row budget", () => {
+  const rows = Array.from({ length: 13 }, (_, index) => row({
+    id: `subagent_${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+  }));
+  const tui = { terminal: { rows: 40 } };
+  const widget = createSubagentRosterWidget(tui, plainTheme(), rows, 0);
+
+  const tall = widget.render(80);
+  assert.equal(tall.length, 11, "40-row terminal shows ten rows plus accounting");
+
+  tui.terminal.rows = 12;
+  const short = widget.render(80);
+  assert.equal(short.length, rosterRowBudget(12) + 1, "height-only resize shrinks the budget at once");
+  assert.match(stripVTControlCharacters(short.at(-1)), /\+\d+ more/);
+
+  tui.terminal.rows = 40;
+  assert.equal(widget.render(80).length, 11, "growing back recomputes too");
+});
+
+test("roster activity redacts credential forms in shell commands", () => {
+  const state = createBackgroundState();
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state);
+  controller.start(ctx);
+
+  const secret = job(
+    "subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "running",
+    1,
+    "explorer",
+    [
+      {
+        kind: "tool",
+        phase: "start",
+        text: 'bash {"command":"curl -u alice:swordfish https://api.test && tool --token secret-value && echo ghp_deadbeefdead"}',
+      },
+      { kind: "tool", phase: "end", text: "SECRET TOOL RESULT" },
+    ],
+  );
+  state.jobs.set(secret.id, secret);
+  for (const listener of state.listeners) listener();
+
+  const line = renderLast(calls, 200)[0];
+  assert.doesNotMatch(line, /swordfish|secret-value|ghp_deadbeefdead|SECRET TOOL RESULT/);
+  assert.match(line, /\[REDACTED\]/);
+  assert.match(line, /^○ explorer aaaaaaaa ● running/, "identity and lifecycle survive the redaction");
+  controller.stop();
+});
+
 test("unicode content renders within the width budget on every row", () => {
   const rows = [
     row({ role: "探索".repeat(6), activity: "界".repeat(60), id: "subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
@@ -431,25 +523,33 @@ test("foreign parent-session jobs never render", () => {
   controller.stop();
 });
 
-test("duration ticker runs only while a child is active", () => {
-  const state = createBackgroundState();
-  const { clock, count, fire, intervalMs } = fakeClock();
-  let current = 1_000;
-  const { ctx, calls } = uiContext();
-  const controller = createSubagentRosterController(state, { now: () => current, clock });
-  controller.start(ctx);
-
+function activeJob() {
   const running = job("subagent_11111111-1111-4111-8111-111111111111", "running", 1_000, "explorer");
   running.details.startedAt = 1_000;
+  return running;
+}
+
+test("duration ticking follows the session motion scheduler while a child is active", () => {
+  const state = createBackgroundState();
+  const harness = motionHarness("reduced");
+  let current = 1_000;
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state, {
+    now: () => current,
+    motion: () => harness.motion,
+  });
+  controller.start(ctx);
+
+  const running = activeJob();
   state.jobs.set(running.id, running);
   for (const listener of state.listeners) listener();
-  assert.equal(count(), 1, "active child schedules the duration tick");
-  assert.equal(intervalMs(), 1_000);
+  assert.equal(harness.subscribers(), 1, "active child subscribes to the motion scheduler");
+  assert.equal(harness.intervalMs(), 1_000, "reduced motion drives the duration cadence directly");
   assert.match(renderLast(calls, 80, 30)[0], /0s/);
 
   current = 125_000;
   const publishesBefore = calls.length;
-  fire();
+  harness.fire();
   assert.ok(calls.length > publishesBefore, "tick republishes the widget with a fresh duration");
   assert.match(renderLast(calls, 80, 30)[0], /2m 04s/);
 
@@ -457,11 +557,88 @@ test("duration ticker runs only while a child is active", () => {
   running.updatedAt = current;
   running.details.endedAt = current;
   for (const listener of state.listeners) listener();
-  assert.equal(count(), 0, "settled roster stops the ticker");
+  assert.equal(harness.subscribers(), 0, "settled roster unsubscribes from the motion scheduler");
   assert.match(renderLast(calls, 80, 30)[0], /2m 04s/, "terminal duration frozen at endedAt");
 
   controller.stop();
-  assert.equal(count(), 0);
+  assert.equal(harness.subscribers(), 0);
+});
+
+test("motion off never schedules a timer; durations advance only through state changes", () => {
+  const state = createBackgroundState();
+  const harness = motionHarness("off");
+  let current = 1_000;
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state, {
+    now: () => current,
+    motion: () => harness.motion,
+  });
+  controller.start(ctx);
+
+  const running = activeJob();
+  state.jobs.set(running.id, running);
+  for (const listener of state.listeners) listener();
+  assert.equal(harness.subscribers(), 1, "subscription exists but the off scheduler owns no timer");
+  assert.equal(harness.count(), 0, "motion off creates no interval at all");
+
+  current = 65_000;
+  const publishesBefore = calls.length;
+  harness.fire();
+  assert.equal(calls.length, publishesBefore, "no timer means no tick to fire");
+  assert.match(renderLast(calls, 80, 30)[0], /0s/, "duration stays at the last state-change publish");
+
+  // A background state change still republishes with the advanced duration.
+  running.details.timeline.push({ kind: "tool", phase: "start", text: "read src" });
+  for (const listener of state.listeners) listener();
+  assert.match(renderLast(calls, 80, 30)[0], /1m 04s/);
+
+  controller.stop();
+  assert.equal(harness.subscribers(), 0, "teardown unsubscribes even without a timer");
+});
+
+test("full-motion ticks are throttled to the duration cadence", () => {
+  const state = createBackgroundState();
+  const harness = motionHarness("full");
+  let current = 1_000;
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state, {
+    now: () => current,
+    motion: () => harness.motion,
+  });
+  controller.start(ctx);
+
+  const running = activeJob();
+  state.jobs.set(running.id, running);
+  for (const listener of state.listeners) listener();
+  assert.equal(harness.intervalMs(), 120, "full motion fires at the display cadence");
+
+  const initialPublishes = calls.length;
+  for (let tick = 1; tick <= 8; tick += 1) {
+    current += 120;
+    harness.fire();
+  }
+  assert.equal(calls.length, initialPublishes, "sub-second motion ticks publish nothing");
+
+  current += 120; // ≈1.08s since the last publish
+  harness.fire();
+  assert.equal(calls.length, initialPublishes + 1, "one publish per duration cadence");
+  assert.match(renderLast(calls, 80, 30)[0], /1s/, "republished duration advanced");
+
+  controller.stop();
+  assert.equal(harness.subscribers(), 0);
+});
+
+test("a roster without a motion source still presents but owns no ticking path", () => {
+  const state = createBackgroundState();
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state);
+  controller.start(ctx);
+  const running = activeJob();
+  state.jobs.set(running.id, running);
+  for (const listener of state.listeners) listener();
+  assert.equal(typeof calls.at(-1).content, "function", "state changes still publish");
+  controller.stop();
+  assert.equal(calls.at(-1).content, undefined, "teardown clears the widget");
 });
 
 test("teardown unsubscribes, clears the widget, and survives session replacement", () => {

@@ -73,7 +73,22 @@ export default function registerSubagents(
   // clears any memory-only wait claims.
   const blockingCallRegistry = createSubagentBlockingCallRegistry();
   state.background.delivery = delivery;
-  const roster = createSubagentRosterController(state.background);
+  // The roster ticks through the display runtime's session motion scheduler,
+  // resolved at each session start because a replacement session rebuilds the
+  // runtime; motion `off` and downgraded environments never schedule a timer.
+  const roster = createSubagentRosterController(
+    state.background,
+    runtime === undefined
+      ? {}
+      : {
+        motion: () => {
+          const displayRuntime = typeof runtime === "function" ? runtime() : runtime;
+          return displayRuntime
+            ? { subscribe: (listener) => displayRuntime.subscribeMotion(listener) }
+            : undefined;
+        },
+      },
+  );
 
   registerSubagentTool(
     pi,
@@ -88,6 +103,12 @@ export default function registerSubagents(
     state.inheritedSystemCore = undefined;
     blockingCallRegistry.terminateAll("session replaced");
     delivery.reset();
+    // The old session's roster tears down and the new session's roster starts
+    // synchronously, before the first await below: a slow child-partition
+    // reconcile must never leave the previous session's widget, subscription,
+    // or motion tick alive.
+    roster.stop();
+    roster.start(ctx);
     refresh(ctx.cwd);
     // Child anchor-store partitions follow subagent artifacts: reconcile the
     // workspace store against the retained children and prune records for
@@ -100,7 +121,6 @@ export default function registerSubagents(
         console.error("Failed to reconcile child anchor-store partitions:", error);
       }
     }
-    roster.start(ctx);
     if (ctx.hasUI && state.registry.errors.length > 0) {
       const suffix = state.registry.errors.length > 1 ? ` (+${state.registry.errors.length - 1} more)` : "";
       ctx.ui.notify(`subagents: ${state.registry.errors[0]}${suffix}`, "warning");

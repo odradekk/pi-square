@@ -13,23 +13,20 @@ const MIN_ID_PREFIX = 8;
 const MAX_ROSTER_ROWS = 10;
 /** Floor for the row budget so even very short terminals keep the roster legible. */
 const MIN_ROSTER_ROWS = 2;
-/** Duration refresh cadence while any current-parent child is still active. */
+/**
+ * Duration refresh cadence while any current-parent child is still active.
+ * Ticks come from the display runtime's session motion scheduler, so `off`
+ * motion and downgraded environments never tick at all; a `full`-motion
+ * scheduler fires faster and the roster throttles its publishes to this rate.
+ */
 const ROSTER_TICK_MS = 1_000;
 
 const ACTIVE_STATUSES = new Set<BackgroundJobSnapshot["status"]>(["queued", "running", "cancelling"]);
 
-/** Injectable clock for duration ticking; mirrors the display motion clock shape. */
-export interface RosterClock {
-  readonly setInterval: (callback: () => void, milliseconds: number) => unknown;
-  readonly clearInterval: (handle: unknown) => void;
-  readonly unref?: (handle: unknown) => void;
+/** Motion source the roster subscribes to; satisfied by the display runtime. */
+export interface RosterMotion {
+  readonly subscribe: (listener: () => void) => () => void;
 }
-
-const SYSTEM_ROSTER_CLOCK: RosterClock = {
-  setInterval: (callback, milliseconds) => setInterval(callback, milliseconds),
-  clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout),
-  unref: (handle) => (handle as NodeJS.Timeout).unref?.(),
-};
 
 interface WidgetTui {
   terminal: { rows: number };
@@ -83,6 +80,33 @@ export function uniqueRosterIdPrefixes(ids: readonly string[]): Map<string, stri
   return prefixes;
 }
 
+function elidedPrefix(points: readonly string[], head: number, budget: number): string {
+  const tail = Math.max(1, budget - head - 1);
+  return `${points.slice(0, head).join("")}…${points.slice(Math.max(0, points.length - tail)).join("")}`;
+}
+
+/**
+ * Fits one unique prefix into the row's ID budget. A prefix that is longer
+ * than the budget keeps a distinguishable identity through middle elision —
+ * head plus tail — choosing the split so no two roster rows render the same
+ * label, mirroring the display grammar's path elision.
+ */
+export function fitRosterIdPrefix(prefix: string, budget: number, peers: readonly string[]): string {
+  const points = Array.from(prefix);
+  if (points.length <= budget || budget < 4) {
+    return truncateToWidth(prefix, Math.max(1, budget), "…");
+  }
+  const peerPoints = peers
+    .filter((peer) => peer !== prefix)
+    .map((peer) => Array.from(peer));
+  const firstHead = Math.max(1, Math.min(MIN_ID_PREFIX, budget - 2));
+  for (let head = firstHead; head <= budget - 2; head += 1) {
+    const candidate = elidedPrefix(points, head, budget);
+    if (!peerPoints.some((peer) => elidedPrefix(peer, head, budget) === candidate)) return candidate;
+  }
+  return elidedPrefix(points, budget - 2, budget);
+}
+
 const LIFECYCLE_TONES: Record<BackgroundJobSnapshot["status"], ThemeColor> = {
   queued: "muted",
   running: "accent",
@@ -108,7 +132,9 @@ function lifecycleText(theme: Theme, status: BackgroundJobSnapshot["status"]): s
 /**
  * One physical roster row. Width pressure removes the latest activity, then
  * the duration, then truncates the role, while the selection marker, the
- * unique ID prefix, and the lifecycle always survive.
+ * unique ID label, and the lifecycle always survive — the ID label is fitted
+ * to the row's own budget before composition, so the lifecycle can never be
+ * squeezed off the line.
  */
 function renderRosterRow(theme: Theme, row: RosterRow, idPrefix: string, width: number, now: number): string {
   const safeWidth = Math.max(1, width);
@@ -163,10 +189,23 @@ export function renderSubagentRoster(
   const safeWidth = Math.max(1, options.width);
   const budget = Math.max(1, options.rowBudget);
   const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
+  const fullPrefixes = rows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
 
   const lines = rows
     .slice(0, budget)
-    .map((row) => renderRosterRow(theme, row, prefixes.get(row.id) ?? rosterId(row.id), safeWidth, options.now));
+    .map((row, index) => {
+      // The ID label never widens past the space left beside the lifecycle,
+      // so the core of the row always fits and the lifecycle survives.
+      const lifecycleWidth = visibleWidth(LIFECYCLE_LABELS[row.status]);
+      const idBudget = Math.max(1, safeWidth - lifecycleWidth - visibleWidth("○ ") - visibleWidth(" ") - visibleWidth(" "));
+      return renderRosterRow(
+        theme,
+        row,
+        fitRosterIdPrefix(fullPrefixes[index]!, idBudget, fullPrefixes),
+        safeWidth,
+        options.now,
+      );
+    });
   const hidden = rows.length - Math.min(rows.length, budget);
   if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `… +${hidden} more`), safeWidth, "…"));
   return lines;
@@ -174,7 +213,8 @@ export function renderSubagentRoster(
 
 /**
  * The roster widget component. The projection is immutable per publication, so
- * rendered lines cache by width like the other pi-square frame components.
+ * rendered lines cache by width and terminal height like the other pi-square
+ * frame components; the row budget shrinks on a height-only resize.
  */
 export function createSubagentRosterWidget(
   tui: WidgetTui,
@@ -182,16 +222,17 @@ export function createSubagentRosterWidget(
   rows: readonly RosterRow[],
   now: number,
 ): Component {
-  let cache: { width: number; lines: string[] } | undefined;
+  let cache: { width: number; rows: number; lines: string[] } | undefined;
   return {
     render(width: number): string[] {
-      if (cache && cache.width === width) return cache.lines;
+      const terminalRows = Math.max(1, tui.terminal.rows);
+      if (cache && cache.width === width && cache.rows === terminalRows) return cache.lines;
       const lines = renderSubagentRoster(theme, rows, {
         width,
-        rowBudget: rosterRowBudget(tui.terminal.rows),
+        rowBudget: rosterRowBudget(terminalRows),
         now,
       });
-      cache = { width, lines };
+      cache = { width, rows: terminalRows, lines };
       return lines;
     },
     invalidate(): void {
@@ -218,6 +259,16 @@ export interface SubagentRosterController {
   refresh(): void;
 }
 
+export interface SubagentRosterOptions {
+  readonly now?: () => number;
+  /**
+   * Session motion source, resolved at each start so a session replacement
+   * that rebuilds the display runtime is followed; when absent or undefined
+   * the roster never ticks on its own.
+   */
+  readonly motion?: () => RosterMotion | undefined;
+}
+
 /**
  * Session-scoped projection of the background job store into the roster
  * widget. The store stays the lifecycle source of truth: the controller adds
@@ -225,34 +276,36 @@ export interface SubagentRosterController {
  */
 export function createSubagentRosterController(
   state: BackgroundState,
-  options: { now?: () => number; clock?: RosterClock } = {},
+  options: SubagentRosterOptions = {},
 ): SubagentRosterController {
   const now = options.now ?? Date.now;
-  const clock = options.clock ?? SYSTEM_ROSTER_CLOCK;
+  let motion: RosterMotion | undefined;
   let context: ExtensionContext | undefined;
   let parentSessionId = "";
   let unsubscribe: (() => void) | undefined;
-  let tick: unknown;
+  let motionUnsubscribe: (() => void) | undefined;
+  let lastPublishAt = -Infinity;
   /** First-seen sequence per public ID; a resumed ID keeps its original slot. */
   const order = new Map<string, number>();
   let nextOrder = 0;
 
-  const stopTick = () => {
-    if (tick === undefined) return;
-    clock.clearInterval(tick);
-    tick = undefined;
+  const stopMotion = () => {
+    motionUnsubscribe?.();
+    motionUnsubscribe = undefined;
   };
 
-  const ensureTick = () => {
-    if (tick !== undefined) return;
-    tick = clock.setInterval(() => {
+  const ensureMotion = () => {
+    if (motionUnsubscribe !== undefined || !motion) return;
+    motionUnsubscribe = motion.subscribe(() => {
       try {
+        // A full-motion scheduler fires at 120 ms; the roster republishes at
+        // most once per duration cadence. An off-motion scheduler never fires.
+        if (now() - lastPublishAt < ROSTER_TICK_MS) return;
         refresh();
       } catch {
-        // A presentation refresh defect must never escape the timer.
+        // A presentation refresh defect must never escape the scheduler.
       }
-    }, ROSTER_TICK_MS);
-    clock.unref?.(tick);
+    });
   };
 
   const refresh = () => {
@@ -283,27 +336,30 @@ export function createSubagentRosterController(
       ));
 
     if (rows.length === 0) {
-      stopTick();
+      stopMotion();
       context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
       return;
     }
 
     const snapshotAt = now();
+    lastPublishAt = snapshotAt;
     context.ui.setWidget(
       SUBAGENT_ROSTER_KEY,
       (tui, theme) => createSubagentRosterWidget(tui, theme, rows, snapshotAt),
       { placement: "aboveEditor" },
     );
     // Only still-active children have a moving duration; a settled roster
-    // keeps its final timestamps without a timer.
-    if (jobs.some((job) => ACTIVE_STATUSES.has(job.status))) ensureTick();
-    else stopTick();
+    // keeps its final timestamps without ticking.
+    if (jobs.some((job) => ACTIVE_STATUSES.has(job.status))) ensureMotion();
+    else stopMotion();
   };
 
   const stop = () => {
     unsubscribe?.();
     unsubscribe = undefined;
-    stopTick();
+    stopMotion();
+    motion = undefined;
+    lastPublishAt = -Infinity;
     if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
     context = undefined;
     parentSessionId = "";
@@ -317,6 +373,7 @@ export function createSubagentRosterController(
       // no roster, no subscription, and hold no context.
       if (!ctx.hasUI || ctx.mode !== "tui") return;
       context = ctx;
+      motion = options.motion?.() ?? undefined;
       parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
       unsubscribe = subscribeBackgroundState(state, refresh);
       refresh();
