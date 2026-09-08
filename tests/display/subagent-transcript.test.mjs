@@ -53,8 +53,8 @@ const RUN_DETAILS = {
   retries: 0,
   usage: { input: 1200, output: 800, cacheRead: 400, cacheWrite: 100, cost: 0.02, turns: 6 },
   timeline: [
-    { kind: "tool", phase: "start", text: 'rg {"pattern":"adapter","path":"src/display"}' },
-    { kind: "tool", phase: "end", text: "rg found 5 matches" },
+    { kind: "tool", phase: "start", text: 'grep {"pattern":"adapter","path":"src/display"}' },
+    { kind: "tool", phase: "end", text: "grep found 5 matches" },
     { kind: "tool", phase: "start", text: 'read {"path":"src/display/adapter.ts"}' },
     { kind: "tool", phase: "end", text: "read returned content" },
   ],
@@ -250,7 +250,7 @@ function renderResult(decorated, args, details, opts = {}) {
   // Two paired tool calls (rg, read) produce exactly two activity rows.
   const glyphRows = text.split("\n").filter((line) => /[✓●×]\s+\S+\s+\S/.test(line) && !line.includes("explorer"));
   assert.equal(glyphRows.length, 2, "one activity row per completed tool call");
-  assert.match(text, /rg/, "rg tool summary visible");
+  assert.match(text, /grep/, "grep tool summary visible");
   assert.match(text, /read/, "read tool summary visible");
   assert.doesNotMatch(text, /→/, "no running arrow in the activity rows");
 
@@ -305,7 +305,7 @@ function renderResult(decorated, args, details, opts = {}) {
   runtime.dispose();
 }
 
-// ─── 13. Unknown tool shows only "called" ──────────────────────────
+// ─── 13. An unproven tool identity shows only the generic label ────
 
 {
   const runtime = newRuntime();
@@ -316,7 +316,8 @@ function renderResult(decorated, args, details, opts = {}) {
   };
   const result = renderResult(decorated, ARGS_DELEGATE, details, { expanded: true });
   const text = stripVTControlCharacters(result.render(100).join("\n"));
-  assert.match(text, /unknown_tool\s+called/, "unknown tool shows only 'called'");
+  assert.match(text, /tool\s+called/, "an unproven identity shows only the generic label");
+  assert.doesNotMatch(text, /unknown_tool/, "a claimed but unproven head never displays");
   assert.doesNotMatch(text, /"args":"data"/, "no raw argument objects rendered");
 
   runtime.dispose();

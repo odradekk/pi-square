@@ -90,7 +90,7 @@ function render(manager, width) {
         retries: 0,
         task: "Find all adapters",
         usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 2 },
-        timeline: [{ kind: "tool", phase: "start", text: 'rg {"pattern":"adapter","path":"src"}' }],
+        timeline: [{ kind: "tool", phase: "start", text: 'grep {"pattern":"adapter","path":"src"}' }],
         liveText: "Searching...",
         finalText: "",
         startedAt: Date.now() - 3000,
@@ -108,7 +108,7 @@ function render(manager, width) {
   assert.doesNotMatch(text, /ACTIVITY  /, "no old ACTIVITY label prefix");
   assert.doesNotMatch(text, /USAGE  /, "no old USAGE label prefix");
   // Activity shows tool summary
-  assert.match(text, /rg/, "activity shows rg tool");
+  assert.match(text, /grep/, "activity shows grep tool");
   // Task visible
   assert.match(text, /Find all adapters/, "task visible in detail");
   manager.dispose();

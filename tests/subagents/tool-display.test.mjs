@@ -36,8 +36,58 @@ test("unknown tools and legacy malformed JSON never expose arbitrary arguments",
     phase: "start",
     text: "mystery {\"password\":\"private",
   });
-  assert.deepEqual(malformed, { tool: "mystery", summary: "called" });
-  assert.doesNotMatch(`${malformed.tool} ${malformed.summary}`, /private|password/);
+  assert.deepEqual(malformed, { tool: "tool", summary: "called" });
+  assert.doesNotMatch(`${malformed.tool} ${malformed.summary}`, /mystery|private|password/);
+});
+
+test("untrusted timeline heads never display as tool identities", () => {
+  for (const text of [
+    "swordfish payload",
+    "123456 called",
+    "sk-proj-THIS_IS_A_CREDENTIAL --token x",
+    "ghp_deadbeef: ran",
+  ]) {
+    const display = toolEventDisplay({ kind: "tool", phase: "start", text });
+    assert.deepEqual(display, { tool: "tool", summary: "called" }, `${text} renders no claimed identity`);
+  }
+  // Cataloged identities from trusted sources keep their name and closed
+  // grammar; a hostile remainder still never renders.
+  assert.deepEqual(
+    toolEventDisplay({ kind: "tool", phase: "start", text: "grep called" }),
+    { tool: "grep", summary: "called" },
+  );
+  assert.deepEqual(
+    toolEventDisplay({ kind: "tool", phase: "start", text: "read swordfish-secret" }),
+    { tool: "read", summary: "called" },
+  );
+  assert.deepEqual(
+    toolEventDisplay({ kind: "tool", phase: "start", text: "read lines 10-49" }),
+    { tool: "read", summary: "lines 10-49" },
+  );
+});
+
+test("producer summaries round-trip through the timeline reparse", () => {
+  const produced = [
+    formatToolCall("read", { path: "/tmp/evidence.txt", offset: 10, limit: 40 }),
+    formatToolCall("web_search", { queries: ["alpha", "beta"] }),
+    formatToolCall("web_fetch", { urls: ["https://a.test", "https://b.test", "https://c.test"] }),
+    formatToolCall("grep", { pattern: "credential-shaped", path: "." }),
+    formatToolCall("bash", { command: "curl -u alice:swordfish" }),
+  ];
+  assert.deepEqual(produced, [
+    "read lines 10-49",
+    "web_search 2 queries",
+    "web_fetch 3 URLs",
+    "grep called",
+    "bash called",
+  ]);
+  for (const text of produced) {
+    assert.equal(
+      latestToolCallSummary([{ kind: "tool", phase: "start", text }]),
+      text,
+      `${text} survives the producer-to-timeline-to-summary round trip`,
+    );
+  }
 });
 
 test("legacy JSON calls use the same specialized formatter", () => {
@@ -60,8 +110,8 @@ test("latest summaries render identity only for free-form timeline text", () => 
     { kind: "tool", phase: "start", text: "docs search: bearer ghp_secret" },
     { kind: "tool", phase: "end", text: "docs: SECRET RESULT" },
   ]);
-  assert.equal(summary, "docs called");
-  assert.doesNotMatch(summary, /SECRET RESULT|ghp_secret|bearer/);
+  assert.equal(summary, "tool called");
+  assert.doesNotMatch(summary, /SECRET RESULT|ghp_secret|bearer|docs|search/);
 });
 
 test("shell tools expose only a generic summary; command text never displays", () => {

@@ -375,37 +375,50 @@ test("long-colliding IDs stay distinguishable with lifecycle intact at narrow wi
 });
 
 test("narrow collisions stay distinguishable down to the smallest feasible widths", () => {
-  // Legal IDs differing only in the final character of the ID.
-  const idA = "subagent_11111111-1111-4111-8111-111111111111";
-  const idB = "subagent_11111111-1111-4111-8111-111111111112";
-  const rows = [
-    row({ id: idA, status: "running", activity: "" }),
-    row({ id: idB, status: "running", activity: "" }),
+  // Two legal IDs differing only in the final character.
+  const pair = [
+    row({ id: "subagent_11111111-1111-4111-8111-111111111111", status: "running", activity: "" }),
+    row({ id: "subagent_11111111-1111-4111-8111-111111111112", status: "running", activity: "" }),
   ];
-
-  for (const width of [16, 15]) {
-    const lines = renderSubagentRoster(plainTheme(), rows, { width, rowBudget: 10, now: 0 })
+  for (const width of [16, 15, 14]) {
+    const lines = renderSubagentRoster(plainTheme(), pair, { width, rowBudget: 10, now: 0 })
       .map(stripVTControlCharacters);
     assert.equal(lines.length, 2, `width ${width}: both children render`);
-    assert.notEqual(lines[0], lines[1], `width ${width}: tail-aware label keeps the rows apart`);
+    assert.notEqual(lines[0], lines[1], `width ${width}: a unique label fits and must be used`);
     for (const line of lines) {
       assert.ok(line.startsWith("○ "), `width ${width}: selection marker preserved`);
       assert.match(line, /● running/, `width ${width}: lifecycle preserved`);
-      assert.ok(line.includes("…"), `width ${width}: label elides`);
       assert.ok(visibleWidth(line) <= width, `width ${width}: one physical line`);
     }
   }
 
-  // Width 14 leaves two ID cells: no head-ellipsis-tail label fits, so the
-  // defined degradation keeps marker, one-line rendering, and the lifecycle
-  // while the label itself may coincide.
-  const floor = renderSubagentRoster(plainTheme(), rows, { width: 14, rowBudget: 10, now: 0 })
+  // The reviewer's three-way set: two IDs sharing the head and differing at
+  // position 9, plus one differing at position 1 — rows one and three must
+  // never collapse onto the same label.
+  const trio = [
+    "subagent_aaaaaaaa-1aaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "subagent_aaaaaaaa-2aaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "subagent_abaaaaa1-3aaa-4aaa-8aaa-aaaaaaaaaaaa",
+  ].map((id) => row({ id, status: "running", activity: "" }));
+  const trioLines = renderSubagentRoster(plainTheme(), trio, { width: 15, rowBudget: 10, now: 0 })
     .map(stripVTControlCharacters);
-  assert.equal(floor.length, 2, "width 14: both children still render");
+  assert.equal(trioLines.length, 3);
+  assert.notEqual(trioLines[0], trioLines[2], "three-way collision keeps rows one and three apart");
+  assert.equal(new Set(trioLines).size, 3, "every label in the peer set is unique");
+  for (const line of trioLines) {
+    assert.match(line, /● running/, "lifecycle preserved at width 15");
+    assert.ok(visibleWidth(line) <= 15, "one physical line at width 15");
+  }
+
+  // One ID cell cannot hold any distinguishing label: the explicitly defined
+  // degradation keeps the one-line row, marker, and lifecycle.
+  const floor = renderSubagentRoster(plainTheme(), pair, { width: 13, rowBudget: 10, now: 0 })
+    .map(stripVTControlCharacters);
+  assert.equal(floor.length, 2, "width 13: both children still render");
   for (const line of floor) {
-    assert.ok(line.startsWith("○ "), "width 14: selection marker preserved");
-    assert.match(line, /● running/, "width 14: lifecycle preserved");
-    assert.ok(visibleWidth(line) <= 14, "width 14: one physical line");
+    assert.ok(line.startsWith("○ "), "width 13: selection marker preserved");
+    assert.match(line, /● running/, "width 13: lifecycle preserved");
+    assert.ok(visibleWidth(line) <= 13, "width 13: one physical line");
   }
 });
 
@@ -517,6 +530,50 @@ test("terminal children without tool calls show no activity; active children sho
   state.jobs.set(active.id, active);
   for (const listener of state.listeners) listener();
   assert.match(renderLast(calls)[0], /working/);
+  controller.stop();
+});
+
+test("roster activity never adopts an untrusted timeline head, including legacy resume text", () => {
+  const state = createBackgroundState();
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state);
+  controller.start(ctx);
+
+  const hostile = job(
+    "subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "running",
+    1,
+    "explorer",
+    [
+      { kind: "tool", phase: "start", text: "swordfish payload" },
+      { kind: "tool", phase: "start", text: "sk-proj-THIS_IS_A_CREDENTIAL --token x" },
+      { kind: "tool", phase: "end", text: "SECRET TOOL RESULT" },
+    ],
+  );
+  state.jobs.set(hostile.id, hostile);
+  for (const listener of state.listeners) listener();
+  let lines = renderLast(calls, 120);
+  assert.match(lines[0], /tool called/);
+  assert.doesNotMatch(lines[0], /swordfish|sk-proj|THIS_IS_A_CREDENTIAL|SECRET TOOL RESULT/);
+
+  // The same public ID resumed with legacy timeline text keeps one row and
+  // the same untrusted-head discipline.
+  hostile.status = "completed";
+  hostile.updatedAt = 10;
+  for (const listener of state.listeners) listener();
+  const resumed = job(
+    "subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "queued",
+    30,
+    "explorer",
+    [{ kind: "tool", phase: "start", text: "ghp_deadbeef: ran" }],
+  );
+  state.jobs.set(resumed.id, resumed);
+  for (const listener of state.listeners) listener();
+  lines = renderLast(calls, 120);
+  assert.equal(lines.filter((line) => line.includes("aaaaaaaa")).length, 1, "resumed ID keeps one row");
+  assert.match(lines[0], /tool called/);
+  assert.doesNotMatch(lines[0], /ghp_deadbeef|ran/);
   controller.stop();
 });
 

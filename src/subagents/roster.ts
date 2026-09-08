@@ -80,36 +80,39 @@ export function uniqueRosterIdPrefixes(ids: readonly string[]): Map<string, stri
   return prefixes;
 }
 
-function elidedPrefix(points: readonly string[], head: number, budget: number): string {
-  const tail = Math.max(1, budget - head - 1);
-  return `${points.slice(0, head).join("")}…${points.slice(Math.max(0, points.length - tail)).join("")}`;
+/**
+ * Candidate labels for one over-budget prefix, most descriptive first:
+ * head-anchored with a shrinking head (so the conventional eight-character
+ * head wins when it fits), then tail-only forms for identities whose head
+ * cannot carry the difference.
+ */
+function candidateLabels(points: readonly string[], budget: number): string[] {
+  const labels: string[] = [];
+  const maxHead = Math.min(MIN_ID_PREFIX, budget - 1);
+  for (let head = maxHead; head >= 1; head -= 1) {
+    const tail = budget - head - 1;
+    labels.push(`${points.slice(0, head).join("")}…${points.slice(Math.max(0, points.length - tail)).join("")}`);
+  }
+  for (let tail = budget - 1; tail >= 1; tail -= 1) {
+    labels.push(`…${points.slice(points.length - tail).join("")}`);
+  }
+  return labels;
 }
 
 /**
- * Fits one unique prefix into the row's ID budget. A prefix that is longer
- * than the budget keeps a distinguishable identity through middle elision —
- * head plus tail — choosing the split so no two roster rows render the same
- * label, mirroring the display grammar's path elision.
+ * Fits one unique prefix into the row's ID budget as a label no other row
+ * already holds: labels are assigned greedily in roster order across the
+ * whole peer set, so two colliding identities never render the same label
+ * while any candidate form can tell them apart. Only when no head or tail
+ * form in the budget is unique does the label degrade to a plain truncation,
+ * while the row keeps its marker and lifecycle.
  */
-export function fitRosterIdPrefix(prefix: string, budget: number, peers: readonly string[]): string {
+function fitRosterIdLabel(prefix: string, budget: number, assigned: ReadonlySet<string>): string {
   const points = Array.from(prefix);
   if (points.length <= budget) return prefix;
-  if (budget >= 3) {
-    // Prefer the conventional eight-character head, then walk the split
-    // toward a longer tail so a distinguishing character anywhere in the ID
-    // can keep two colliding labels apart, down to three cells.
-    const peerPoints = peers
-      .filter((peer) => peer !== prefix)
-      .map((peer) => Array.from(peer));
-    const firstHead = Math.min(MIN_ID_PREFIX, budget - 2);
-    for (let head = firstHead; head >= 1; head -= 1) {
-      const candidate = elidedPrefix(points, head, budget);
-      if (!peerPoints.some((peer) => elidedPrefix(peer, head, budget) === candidate)) return candidate;
-    }
-    return elidedPrefix(points, budget - 2, budget);
+  for (const candidate of candidateLabels(points, budget)) {
+    if (!assigned.has(candidate)) return candidate;
   }
-  // Below three cells no head-ellipsis-tail label fits: identity degrades to
-  // a truncated label by definition, while the row keeps marker and lifecycle.
   return truncateToWidth(prefix, budget, "…");
 }
 
@@ -197,6 +200,7 @@ export function renderSubagentRoster(
   const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
   const fullPrefixes = rows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
 
+  const assignedLabels = new Set<string>();
   const lines = rows
     .slice(0, budget)
     .map((row, index) => {
@@ -206,13 +210,9 @@ export function renderSubagentRoster(
       // truncates away before the ID label does.
       const lifecycleWidth = visibleWidth(LIFECYCLE_LABELS[row.status]);
       const idBudget = Math.max(1, safeWidth - lifecycleWidth - visibleWidth("○ ") - visibleWidth(" "));
-      return renderRosterRow(
-        theme,
-        row,
-        fitRosterIdPrefix(fullPrefixes[index]!, idBudget, fullPrefixes),
-        safeWidth,
-        options.now,
-      );
+      const label = fitRosterIdLabel(fullPrefixes[index]!, idBudget, assignedLabels);
+      assignedLabels.add(label);
+      return renderRosterRow(theme, row, label, safeWidth, options.now);
     });
   const hidden = rows.length - Math.min(rows.length, budget);
   if (hidden > 0) lines.push(truncateToWidth(theme.fg("dim", `… +${hidden} more`), safeWidth, "…"));
@@ -297,7 +297,11 @@ export function createSubagentRosterController(
    * Original creation timestamp per public ID, captured at first observation
    * and never overwritten: rows sort by this key with the full public ID as
    * the tie-break, so arrival order across separate notifications never
-   * matters and a resumed ID keeps its original slot.
+   * matters and a resumed ID keeps its original slot. Entries deliberately
+   * survive finished-job compaction for the session's lifetime — pruning a
+   * compacted ID would hand a later resume a fresh slot and break that
+   * continuity — and the map is bounded in practice by the session's count
+   * of distinct public IDs.
    */
   const creationKeys = new Map<string, number>();
 

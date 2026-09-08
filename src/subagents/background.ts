@@ -13,7 +13,6 @@ import type {
   SubagentPhase,
   SubagentPromptSnapshot,
   SubagentRunDetails,
-  SubagentStatusDetails,
 } from "./types";
 
 /** Mutable runtime record for one session-owned background subagent job. */
@@ -286,47 +285,11 @@ export function createQueuedResumeJob(input: {
   return job;
 }
 
-/** Builds a serializable snapshot of queued, running, and finished jobs. */
-export function getBackgroundStatusDetails(state: BackgroundState): SubagentStatusDetails {
-  const jobs = Array.from(state.jobs.values())
+/** Lists background jobs, most recently updated first. */
+export function listBackgroundJobs(state: BackgroundState): BackgroundJobSnapshot[] {
+  return Array.from(state.jobs.values())
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((job) => snapshot(job));
-
-  return {
-    queued: jobs.filter((job) => job.status === "queued").length,
-    running: jobs.filter((job) => job.status === "running" || job.status === "cancelling").length,
-    finished: jobs.filter((job) => job.status === "completed" || job.status === "failed" || job.status === "aborted").length,
-    jobs,
-  };
-}
-
-/** Formats the compact status-line indicator for the current job counts. */
-export function formatBackgroundIndicator(state: BackgroundState): string | null {
-  const details = getBackgroundStatusDetails(state);
-  const undelivered = state.delivery?.pendingCount() ?? 0;
-  if (details.jobs.length === 0 && undelivered === 0) return null;
-
-  const parts: string[] = [];
-  if (details.queued > 0) parts.push(`queued ${details.queued}`);
-  if (details.running > 0) parts.push(`running ${details.running}`);
-  const cancelling = details.jobs.filter((job) => job.status === "cancelling").length;
-  if (cancelling > 0) parts.push(`cancelling ${cancelling}`);
-
-  const completed = details.jobs.filter((job) => job.status === "completed").length;
-  const failed = details.jobs.filter((job) => job.status === "failed").length;
-  const aborted = details.jobs.filter((job) => job.status === "aborted").length;
-
-  if (completed > 0) parts.push(`✓ ${completed}`);
-  if (failed > 0) parts.push(`✗ ${failed}`);
-  if (aborted > 0) parts.push(`× ${aborted}`);
-  if (undelivered > 0) parts.push(`undelivered ${undelivered}`);
-
-  return parts.length > 0 ? parts.join(" ") : null;
-}
-
-/** Lists background jobs in the same ordering used by status reporting. */
-export function listBackgroundJobs(state: BackgroundState): BackgroundJobSnapshot[] {
-  return getBackgroundStatusDetails(state).jobs;
 }
 
 /** Requests cancellation for one job or all active background jobs. */

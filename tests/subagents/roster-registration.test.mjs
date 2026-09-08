@@ -42,6 +42,9 @@ function uiContext({ sessionId, sessionDir }) {
     ui: {
       theme: plainTheme(),
       setWidget(key, content, options) { calls.push({ key, content, options }); },
+      // Host-global Pi discovery can surface agent-level definition errors;
+      // notifications are unrelated to the roster ordering under test.
+      notify() {},
     },
     sessionManager: {
       getSessionId: () => sessionId,
