@@ -93,18 +93,24 @@ function elidedPrefix(points: readonly string[], head: number, budget: number): 
  */
 export function fitRosterIdPrefix(prefix: string, budget: number, peers: readonly string[]): string {
   const points = Array.from(prefix);
-  if (points.length <= budget || budget < 4) {
-    return truncateToWidth(prefix, Math.max(1, budget), "…");
+  if (points.length <= budget) return prefix;
+  if (budget >= 3) {
+    // Prefer the conventional eight-character head, then walk the split
+    // toward a longer tail so a distinguishing character anywhere in the ID
+    // can keep two colliding labels apart, down to three cells.
+    const peerPoints = peers
+      .filter((peer) => peer !== prefix)
+      .map((peer) => Array.from(peer));
+    const firstHead = Math.min(MIN_ID_PREFIX, budget - 2);
+    for (let head = firstHead; head >= 1; head -= 1) {
+      const candidate = elidedPrefix(points, head, budget);
+      if (!peerPoints.some((peer) => elidedPrefix(peer, head, budget) === candidate)) return candidate;
+    }
+    return elidedPrefix(points, budget - 2, budget);
   }
-  const peerPoints = peers
-    .filter((peer) => peer !== prefix)
-    .map((peer) => Array.from(peer));
-  const firstHead = Math.max(1, Math.min(MIN_ID_PREFIX, budget - 2));
-  for (let head = firstHead; head <= budget - 2; head += 1) {
-    const candidate = elidedPrefix(points, head, budget);
-    if (!peerPoints.some((peer) => elidedPrefix(peer, head, budget) === candidate)) return candidate;
-  }
-  return elidedPrefix(points, budget - 2, budget);
+  // Below three cells no head-ellipsis-tail label fits: identity degrades to
+  // a truncated label by definition, while the row keeps marker and lifecycle.
+  return truncateToWidth(prefix, budget, "…");
 }
 
 const LIFECYCLE_TONES: Record<BackgroundJobSnapshot["status"], ThemeColor> = {
@@ -195,9 +201,11 @@ export function renderSubagentRoster(
     .slice(0, budget)
     .map((row, index) => {
       // The ID label never widens past the space left beside the lifecycle,
-      // so the core of the row always fits and the lifecycle survives.
+      // so the core of the row always fits and the lifecycle survives. The
+      // floor composition is marker + space + ID + space + lifecycle; a role
+      // truncates away before the ID label does.
       const lifecycleWidth = visibleWidth(LIFECYCLE_LABELS[row.status]);
-      const idBudget = Math.max(1, safeWidth - lifecycleWidth - visibleWidth("○ ") - visibleWidth(" ") - visibleWidth(" "));
+      const idBudget = Math.max(1, safeWidth - lifecycleWidth - visibleWidth("○ ") - visibleWidth(" "));
       return renderRosterRow(
         theme,
         row,
@@ -285,9 +293,13 @@ export function createSubagentRosterController(
   let unsubscribe: (() => void) | undefined;
   let motionUnsubscribe: (() => void) | undefined;
   let lastPublishAt = -Infinity;
-  /** First-seen sequence per public ID; a resumed ID keeps its original slot. */
-  const order = new Map<string, number>();
-  let nextOrder = 0;
+  /**
+   * Original creation timestamp per public ID, captured at first observation
+   * and never overwritten: rows sort by this key with the full public ID as
+   * the tie-break, so arrival order across separate notifications never
+   * matters and a resumed ID keeps its original slot.
+   */
+  const creationKeys = new Map<string, number>();
 
   const stopMotion = () => {
     motionUnsubscribe?.();
@@ -315,17 +327,12 @@ export function createSubagentRosterController(
     const jobs = listBackgroundJobs(state)
       .filter((job) => parentSessionId !== "" && job.details.lastParentSessionId === parentSessionId);
 
-    // New rows take their roster slot by immutable creation time; the full
-    // public ID only breaks an exact createdAt tie. Later observations keep
-    // the slot a row already owns.
-    const fresh = jobs
-      .filter((job) => !order.has(job.id))
-      .sort((left, right) => (
-        left.createdAt - right.createdAt
-        || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
-      ));
-    for (const job of fresh) order.set(job.id, nextOrder++);
+    for (const job of jobs) {
+      if (!creationKeys.has(job.id)) creationKeys.set(job.id, job.createdAt);
+    }
 
+    // Immutable creation time orders the roster; the full public ID only
+    // breaks an exact tie, independent of how the jobs arrived.
     const rows = jobs
       .map((job): RosterRow => ({
         id: job.id,
@@ -336,7 +343,7 @@ export function createSubagentRosterController(
         activity: rosterActivity(job),
       }))
       .sort((left, right) => (
-        (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0)
+        (creationKeys.get(left.id) ?? 0) - (creationKeys.get(right.id) ?? 0)
         || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
       ));
 
@@ -368,7 +375,7 @@ export function createSubagentRosterController(
     if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
     context = undefined;
     parentSessionId = "";
-    order.clear();
+    creationKeys.clear();
   };
 
   return {

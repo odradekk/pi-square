@@ -245,6 +245,40 @@ test("rows keep roster-creation order across lifecycle changes; createdAt orders
   controller.stop();
 });
 
+test("equal-createdAt jobs arriving in separate notifications tie-break by full ID", () => {
+  const state = createBackgroundState();
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state);
+  controller.start(ctx);
+
+  // Each insertion is its own notification, like createQueuedJob emits.
+  const laterId = job("subagent_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "queued", 7, "crawler");
+  state.jobs.set(laterId.id, laterId);
+  for (const listener of state.listeners) listener();
+  let lines = renderLast(calls);
+  assert.equal(lines.length, 1);
+
+  const earlierId = job("subagent_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "queued", 7, "explorer");
+  state.jobs.set(earlierId.id, earlierId);
+  for (const listener of state.listeners) listener();
+
+  // Same createdAt, so the full public ID must order the rows no matter
+  // which job was observed first.
+  lines = renderLast(calls);
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0].includes("aaaaaaaa"), "full public ID breaks the equal-createdAt tie");
+  assert.ok(lines[1].includes("bbbbbbbb"));
+
+  // Activity updates on the earlier-arriving row never reorder it.
+  laterId.status = "running";
+  laterId.updatedAt = 99;
+  for (const listener of state.listeners) listener();
+  lines = renderLast(calls);
+  assert.ok(lines[0].includes("aaaaaaaa") && lines[1].includes("bbbbbbbb"));
+
+  controller.stop();
+});
+
 test("a resumed public ID keeps one row and its roster slot", () => {
   const state = createBackgroundState();
   const { ctx, calls } = uiContext();
@@ -338,6 +372,41 @@ test("long-colliding IDs stay distinguishable with lifecycle intact at narrow wi
   assert.notEqual(wide[0], wide[1]);
   assert.match(wide[0], /11111111-1111-4111-8111-111111111111 ● running/);
   assert.match(wide[1], /11111111-1111-4111-8111-111111111112 ● running/);
+});
+
+test("narrow collisions stay distinguishable down to the smallest feasible widths", () => {
+  // Legal IDs differing only in the final character of the ID.
+  const idA = "subagent_11111111-1111-4111-8111-111111111111";
+  const idB = "subagent_11111111-1111-4111-8111-111111111112";
+  const rows = [
+    row({ id: idA, status: "running", activity: "" }),
+    row({ id: idB, status: "running", activity: "" }),
+  ];
+
+  for (const width of [16, 15]) {
+    const lines = renderSubagentRoster(plainTheme(), rows, { width, rowBudget: 10, now: 0 })
+      .map(stripVTControlCharacters);
+    assert.equal(lines.length, 2, `width ${width}: both children render`);
+    assert.notEqual(lines[0], lines[1], `width ${width}: tail-aware label keeps the rows apart`);
+    for (const line of lines) {
+      assert.ok(line.startsWith("○ "), `width ${width}: selection marker preserved`);
+      assert.match(line, /● running/, `width ${width}: lifecycle preserved`);
+      assert.ok(line.includes("…"), `width ${width}: label elides`);
+      assert.ok(visibleWidth(line) <= width, `width ${width}: one physical line`);
+    }
+  }
+
+  // Width 14 leaves two ID cells: no head-ellipsis-tail label fits, so the
+  // defined degradation keeps marker, one-line rendering, and the lifecycle
+  // while the label itself may coincide.
+  const floor = renderSubagentRoster(plainTheme(), rows, { width: 14, rowBudget: 10, now: 0 })
+    .map(stripVTControlCharacters);
+  assert.equal(floor.length, 2, "width 14: both children still render");
+  for (const line of floor) {
+    assert.ok(line.startsWith("○ "), "width 14: selection marker preserved");
+    assert.match(line, /● running/, "width 14: lifecycle preserved");
+    assert.ok(visibleWidth(line) <= 14, "width 14: one physical line");
+  }
 });
 
 test("height-only resize immediately recomputes the row budget", () => {
@@ -496,10 +565,50 @@ test("sanitizes controls and credentials and never exposes tool results", () => 
   for (const listener of state.listeners) listener();
 
   const line = renderLast(calls, 120)[0];
-  assert.match(line, /Authorization: \[REDACTED\]/);
-  assert.doesNotMatch(line, /exposed-token|hunter2|SECRET TOOL RESULT/);
+  assert.match(line, /read called/, "free-form timeline text renders identity only");
+  assert.doesNotMatch(line, /Authorization|exposed-token|hunter2|SECRET TOOL RESULT/);
   assert.doesNotMatch(line, /\r|\n|\t|\u001b/);
   assert.match(line, /^○ explorer aaaaaaaa ● running/);
+  controller.stop();
+});
+
+test("roster activity renders no free-form argument values from known tools", () => {
+  const state = createBackgroundState();
+  const { ctx, calls } = uiContext();
+  const controller = createSubagentRosterController(state);
+  controller.start(ctx);
+
+  const hostile = [
+    "grep",
+    "web_search",
+    "library_search",
+    "read",
+  ];
+  const args = {
+    grep: { pattern: "sk-proj-THIS_IS_A_CREDENTIAL", path: "." },
+    web_search: { queries: ["sk-proj-THIS_IS_A_CREDENTIAL"] },
+    library_search: { libraryName: "sk-proj-THIS_IS_A_CREDENTIAL" },
+    read: { path: "/tmp/ghp_deadbeef" },
+  };
+  const jobs = hostile.map((tool, index) => job(
+    `subagent_${String(index + 1).repeat(8)}-${String(index + 1).repeat(4)}-4${String(index + 1).repeat(3)}-8${String(index + 1).repeat(3)}-${String(index + 1).repeat(12)}`,
+    "running",
+    index + 1,
+    "explorer",
+    [{ kind: "tool", phase: "start", text: `${tool} ${JSON.stringify(args[tool])}` }],
+  ));
+  for (const entry of jobs) state.jobs.set(entry.id, entry);
+  for (const listener of state.listeners) listener();
+
+  const lines = renderLast(calls, 200);
+  assert.equal(lines.length, hostile.length);
+  assert.match(lines[0], /grep called/);
+  assert.match(lines[1], /web_search 1 query/);
+  assert.match(lines[2], /library_search called/);
+  assert.match(lines[3], /read called/);
+  for (const line of lines) {
+    assert.doesNotMatch(line, /sk-proj|ghp_deadbeef|THIS_IS_A_CREDENTIAL|SECRET TOOL RESULT/);
+  }
   controller.stop();
 });
 
