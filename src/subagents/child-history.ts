@@ -1,4 +1,4 @@
-import { openSync, readSync, closeSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolveChildSessionFile } from "./artifacts";
 import { clipWithHeadTail } from "./confirmed-delivery";
 import { sanitizeSubagentDisplay } from "./display";
@@ -12,37 +12,49 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * transcript overlay. It reads the validated native session file through the
  * same child-artifact identity boundary resume uses — `resolveChildSessionFile`
  * keeps the artifacts directory inside the subagent state root, the run record
- * describing that directory, and the session file inside it — and pages that
- * file tail-first in bounded byte ranges. It creates no second transcript
- * store: no cache file, index, sidecar, writer, lock, journal, migration, or
- * artifact version exists beside the native session file, and every read is
- * stateless against it.
+ * describing that directory, and the session file inside it, and rejects a
+ * session file presented through a symlink — and pages that file tail-first in
+ * bounded byte ranges. It creates no second transcript store: no cache file,
+ * index, sidecar, writer, lock, journal, migration, or artifact version
+ * exists beside the native session file, and every read is stateless against
+ * it.
  *
  * Page boundaries are byte offsets, but entries are only ever parsed from
- * newline-terminated byte ranges, stitched at the byte level so a multibyte
- * UTF-8 sequence split across two pages is decoded exactly once. A terminated
- * line that is not a JSON object — malformed, truncated by tampering, or past
- * the per-entry cap — fails that page load with one bounded reason while
- * every previously validated page stays visible and the same request can be
- * retried. An unterminated final line is the running child's mid-append input
- * and is never parsed as history. Reads re-verify the file's dev/ino identity
- * and refuse a file that shrank below the loaded window, so a replaced or
- * truncated session file cannot be misread at stale offsets.
+ * newline-terminated byte ranges, stitched at the byte level in both paging
+ * directions, so a multibyte UTF-8 sequence or a JSON line split across two
+ * pages is decoded exactly once — never split, duplicated, or silently
+ * omitted. Every parsed line must carry the minimal native envelope (a
+ * non-empty string `type` and a non-empty string `id`), and entry ids must be
+ * unique within a load and across the loaded window; a line that is not a
+ * valid native record — malformed JSON, a scalar, an invalid or duplicate
+ * identity, or past the per-entry cap — fails that one page load with one
+ * bounded reason while every previously validated page stays visible and the
+ * same request can be retried. An unterminated final line is the running
+ * child's mid-append input and is never parsed as history.
  *
- * Memory stays explicitly bounded: at most {@link MAX_LOADED_ITEMS} projected
- * items are retained (each already text-budgeted by the projection), paging
- * older evicts the newest loaded pages and paging newer reloads them on
- * demand, and one stitched entry may never exceed {@link MAX_ENTRY_LINE_BYTES}.
- * A failure here is a viewer error only: paging never touches the child
- * lifecycle, abort signal, persistence, delivery, wait ownership, or resume
- * eligibility.
+ * Every read opens the file once, verifies the opened descriptor's dev/ino
+ * identity through `fstat`, and reads the bytes from that same descriptor —
+ * there is no stat-then-open window — so a path replaced between checks can
+ * never be read at stale offsets. Reads in each direction carry their own
+ * bounded retryable error, so an older failure never masks or mislabels a
+ * newer one.
+ *
+ * Memory stays explicitly bounded: the snapshot never exposes more than
+ * {@link MAX_LOADED_ITEMS} projected items (each already text-budgeted by the
+ * projection). A page whose parse exceeds the bound keeps a window into its
+ * own projection, and trimming drops windows from the end opposite the paging
+ * direction, so trimmed history remains reachable on demand in both
+ * directions — nothing is silently discarded. One stitched entry may never
+ * exceed {@link DEFAULT_MAX_ENTRY_BYTES}. A failure here is a viewer error
+ * only: paging never touches the child lifecycle, abort signal, persistence,
+ * delivery, wait ownership, or resume eligibility.
  */
 
 /** Bytes read per bounded page, tail-first. */
 const DEFAULT_PAGE_BYTES = 131_072;
 /** Hard cap on one stitched JSONL entry; a larger line fails the page load. */
 const DEFAULT_MAX_ENTRY_BYTES = 1_048_576;
-/** Explicit bound on retained projected items — the in-memory window. */
+/** Hard cap on retained projected items — the in-memory window. */
 export const MAX_LOADED_ITEMS = 480;
 /** Bytes read from the head just to validate the session header line. */
 const MAX_HEADER_READ_BYTES = 4_096;
@@ -65,6 +77,16 @@ export type TranscriptItem =
   }
   | { kind: "generic"; text: string; entryId?: string };
 
+export interface ChildTranscriptProjection {
+  items: TranscriptItem[];
+  /** Items older than the bounded window that exist in the projected input. */
+  omitted: number;
+  /** Calls these entries opened but no entry in them resolved. */
+  openToolCalls: Map<string, OpenToolCallRef>;
+  /** Tool results whose calls live before these entries, in entry order. */
+  orphanResults: OrphanToolResultRef[];
+}
+
 /** One unresolved call opened by the projected entries, for page stitching. */
 export interface OpenToolCallRef {
   item: TranscriptItem & { kind: "toolCall" };
@@ -78,16 +100,6 @@ export interface OrphanToolResultRef {
   endedAt?: number;
   /** Index into the projected items of the orphan's generic row. */
   index: number;
-}
-
-export interface ChildTranscriptProjection {
-  items: TranscriptItem[];
-  /** Items older than the bounded window that exist in the projected input. */
-  omitted: number;
-  /** Calls these entries opened but no entry in them resolved. */
-  openToolCalls: Map<string, OpenToolCallRef>;
-  /** Tool results whose calls live before these entries, in entry order. */
-  orphanResults: OrphanToolResultRef[];
 }
 
 /** Per-item text budget through the shared head/tail clipper. */
@@ -343,15 +355,17 @@ export function projectSessionEntries(
   };
 }
 
-/** Read-only view of one page-load attempt; page errors are observable only. */
+/** Read-only view of one paging state; page errors are observable only. */
 export interface ChildHistorySnapshot {
   items: TranscriptItem[];
-  /** Older unread bytes remain before the loaded window. */
+  /** Older unread history remains before the loaded window. */
   moreBefore: boolean;
-  /** Newer unread bytes remain after the loaded window (eviction or appends). */
+  /** Newer unread history remains after the loaded window (trim or appends). */
   moreAfter: boolean;
-  /** Bounded retryable error for the last older/newer page attempt. */
-  pageError?: string;
+  /** Bounded retryable error for the last older page attempt. */
+  olderError?: string;
+  /** Bounded retryable error for the last newer page attempt. */
+  newerError?: string;
   /** Bounded reason the initial tail page could not be read at all. */
   initialError?: string;
 }
@@ -367,29 +381,52 @@ export interface ChildHistoryView {
   retryInitial(): boolean;
 }
 
-/** Injectable filesystem seam; production uses direct sync reads. */
+/**
+ * Injectable filesystem seam. One call opens the file once, reads the bytes
+ * from that same descriptor, and reports the descriptor's own `fstat`
+ * identity — production never stats a path and then opens it separately, so a
+ * replacement between the two can never be read. The final path component is
+ * never followed through a symlink.
+ */
 export interface ChildHistoryIo {
-  stat(file: string): { size: number; dev: number; ino: number };
-  readRange(file: string, start: number, end: number): Buffer;
+  readRange(
+    file: string,
+    start: number,
+    end: number,
+  ): { stat: { size: number; dev: number; ino: number }; data: Buffer };
 }
 
+const HAVE_O_NOFOLLOW = (constants.O_NOFOLLOW ?? 0) !== 0;
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+
 const defaultIo: ChildHistoryIo = {
-  stat(file) {
-    const stats = statSync(file);
-    return { size: stats.size, dev: stats.dev, ino: stats.ino };
-  },
   readRange(file, start, end) {
-    if (end <= start) return EMPTY_BUFFER;
-    const buffer = Buffer.alloc(end - start);
-    const descriptor = openSync(file, "r");
+    // O_NOFOLLOW (POSIX) fails the open when the final component is a
+    // symlink; where the platform lacks it, lstat rejects it before opening.
+    if (!HAVE_O_NOFOLLOW && lstatSync(file).isSymbolicLink()) {
+      throw new Error("session file is a symlink");
+    }
+    const descriptor = openSync(file, OPEN_FLAGS);
     try {
+      const stats = fstatSync(descriptor);
+      if (end <= start) {
+        return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: EMPTY_BUFFER };
+      }
+      const length = Math.min(end, stats.size) - start;
+      if (length <= 0) {
+        return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: EMPTY_BUFFER };
+      }
+      const buffer = Buffer.alloc(length);
       let read = 0;
       while (read < buffer.length) {
         const bytes = readSync(descriptor, buffer, read, buffer.length - read, start + read);
         if (bytes <= 0) break;
         read += bytes;
       }
-      return read === buffer.length ? buffer : buffer.subarray(0, read);
+      return {
+        stat: { size: stats.size, dev: stats.dev, ino: stats.ino },
+        data: read === buffer.length ? buffer : buffer.subarray(0, read),
+      };
     } finally {
       closeSync(descriptor);
     }
@@ -407,40 +444,568 @@ export interface ChildHistoryOptions {
   io?: ChildHistoryIo;
 }
 
+/** Pairing state for one page's window, re-playable across window moves. */
+interface PagePairing {
+  openCalls: Map<string, OpenToolCallRef>;
+  /**
+   * Unpaired results by call ID. `index` is the orphan's generic row while it
+   * still renders, or null once a stitch or trim removed the row — the
+   * pairing stays re-playable if far-end trimming ever discards and reloads
+   * the page that consumed it.
+   */
+  results: Map<string, { isError: boolean; endedAt?: number; index: number | null }>;
+}
+
 interface HistoryPage {
   /** Byte offset where this page's read slice began (its unparsed head lives here). */
   readStart: number;
-  /** Byte offset of this page's first parsed line (= readStart + head length). */
+  /** Byte offset of the page group's first parsed line; window re-reads start here. */
   parsedStart: number;
-  /** Byte offset just past this page's newest terminated line. */
+  /** Byte offset just past the page group's newest terminated line. */
   lineEnd: number;
   /**
    * The slice's leading bytes, whose line began in older unread bytes. This is
-   * the live stitch for the next older load and is restored from the new
-   * oldest page whenever older eviction removes the page above it.
+   * the live stitch for the next older byte load and is restored from the new
+   * oldest page whenever trimming removes the page above it.
    */
   head: Buffer;
+  /** The page's retained window into its group projection. */
   items: TranscriptItem[];
-  /** Calls this page left unresolved and results it could not pair. */
-  pairing: {
-    openCalls: Map<string, OpenToolCallRef>;
-    /**
-     * Unpaired results by call ID. `index` is the orphan's generic row while
-     * it still renders, or null once a seam stitch removed the row — the
-     * pairing stays re-playable if far-end eviction ever discards and reloads
-     * the page that consumed it.
-     */
-    results: Map<string, { isError: boolean; endedAt?: number; index: number | null }>;
-  };
+  /** Window start within the group projection; `0` when nothing was trimmed. */
+  itemFrom: number;
+  /** Total items the group projection produced. */
+  groupCount: number;
+  /** Entry ids this page parsed, for duplicate-identity detection. */
+  entryIds: Set<string>;
+  pairing: PagePairing;
+}
+
+/**
+ * Byte-anchored pager over the native session file, oldest page first in
+ * `pages`. Every parsed entry's terminating newline has been read; the oldest
+ * page's `head` holds bytes awaiting that terminator from the next older
+ * slice, the forward fragment holds bytes past the newest page's `lineEnd`
+ * whose terminator lies in unread newer bytes, and while `floorUnterminated`
+ * is set the bytes at the oldest read position belong to the file's
+ * unterminated final append and are never parsed as history.
+ */
+export class ChildHistoryPager implements ChildHistoryView {
+  private readonly id: string;
+  private readonly pageBytes: number;
+  private readonly maxEntryBytes: number;
+  private readonly io: ChildHistoryIo;
+  private readonly observedAt: number;
+
+  private sessionFile = "";
+  private identity: { dev: number; ino: number } | undefined;
+  private pages: HistoryPage[] = [];
+  /** Oldest byte ever read while no parsed page exists yet (starts at the tail read start). */
+  private walkFloor = 0;
+  /** The bytes at the loaded floor continue into the file's unterminated final line. */
+  private floorUnterminated = false;
+  private lastSize = 0;
+  /** Forward stitch: bytes past the newest page's lineEnd, not yet terminated. */
+  private forwardFragment: Buffer = EMPTY_BUFFER;
+  private theInitialError: string | undefined;
+  private theOlderError: string | undefined;
+  private theNewerError: string | undefined;
+
+  constructor(id: string, options: ChildHistoryOptions = {}) {
+    this.id = id;
+    this.pageBytes = Math.max(16, Math.floor(options.pageBytes ?? DEFAULT_PAGE_BYTES));
+    this.maxEntryBytes = Math.max(32, Math.floor(options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES));
+    this.io = options.io ?? defaultIo;
+    this.observedAt = options.observedAt ?? Date.now();
+    this.loadInitial();
+  }
+
+  snapshot(): ChildHistorySnapshot {
+    const oldest = this.pages[0];
+    const newest = this.pages[this.pages.length - 1];
+    return {
+      items: this.pages.flatMap((page) => page.items),
+      moreBefore: this.pages.length > 0
+        ? oldest!.itemFrom > 0 || oldest!.readStart > 0
+        : this.walkFloor > 0,
+      moreAfter: this.pages.length > 0
+        && (newest!.itemFrom + newest!.items.length < newest!.groupCount || newest!.lineEnd < this.lastSize),
+      ...(this.theOlderError !== undefined ? { olderError: this.theOlderError } : {}),
+      ...(this.theNewerError !== undefined ? { newerError: this.theNewerError } : {}),
+      ...(this.theInitialError !== undefined ? { initialError: this.theInitialError } : {}),
+    };
+  }
+
+  loadOlder(): boolean {
+    if (this.theInitialError !== undefined) return false;
+    if (this.pages.length > 0 && this.pages[0]!.itemFrom > 0) {
+      return this.shiftWindowOlder();
+    }
+    if (this.oldestReadStart() === 0) return false;
+    try {
+      const loaded = this.floorUnterminated ? this.loadOlderUnterminated() : this.loadOlderStitched();
+      if (loaded) {
+        this.theOlderError = undefined;
+        this.trimToBound("newest");
+      }
+      return loaded;
+    } catch {
+      // A malformed, invalid, or oversized record fails this page only; every
+      // previously validated page stays visible and the request is retryable.
+      this.theOlderError = CHILD_HISTORY_READ_ERROR;
+      return false;
+    }
+  }
+
+  loadNewer(): boolean {
+    if (this.theInitialError !== undefined) return false;
+    if (this.pages.length === 0) return false;
+    const newest = this.pages[this.pages.length - 1]!;
+    if (newest.itemFrom + newest.items.length < newest.groupCount) {
+      return this.shiftWindowNewer();
+    }
+    try {
+      const loaded = this.readForward();
+      if (loaded) {
+        this.theNewerError = undefined;
+        this.trimToBound("oldest");
+      }
+      return loaded;
+    } catch {
+      this.forwardFragment = EMPTY_BUFFER;
+      this.theNewerError = CHILD_HISTORY_READ_ERROR;
+      return false;
+    }
+  }
+
+  retryInitial(): boolean {
+    if (this.theInitialError === undefined) return false;
+    this.loadInitial();
+    return this.theInitialError === undefined;
+  }
+
+  private loadInitial(): void {
+    this.pages = [];
+    this.walkFloor = 0;
+    this.floorUnterminated = false;
+    this.forwardFragment = EMPTY_BUFFER;
+    this.theInitialError = undefined;
+    this.theOlderError = undefined;
+    this.theNewerError = undefined;
+    this.identity = undefined;
+    try {
+      const { details, sessionFile } = resolveChildSessionFile(this.id, "view");
+      this.sessionFile = sessionFile;
+      const headerRead = this.io.readRange(sessionFile, 0, MAX_HEADER_READ_BYTES);
+      if (headerRead.stat.size <= 0) throw new Error("empty session file");
+      this.identity = { dev: headerRead.stat.dev, ino: headerRead.stat.ino };
+      this.lastSize = headerRead.stat.size;
+
+      const headerText = headerRead.data.toString("utf8");
+      const cut = headerText.indexOf("\n");
+      const headerLine = JSON.parse(cut === -1 ? headerText : headerText.slice(0, cut)) as { type?: unknown; id?: unknown };
+      if (headerLine?.type !== "session" || headerLine.id !== details.sessionId) {
+        throw new Error("native session header does not match run.json");
+      }
+
+      const size = headerRead.stat.size;
+      const tailStart = Math.max(0, size - this.pageBytes);
+      const tailRead = this.io.readRange(sessionFile, tailStart, size);
+      this.verifyDescriptor(tailRead.stat, tailStart);
+      const tail = tailRead.data;
+      this.walkFloor = tailStart;
+      const firstNewline = tail.indexOf(NEWLINE);
+      if (firstNewline === -1) {
+        // No terminated line exists in the read tail: every byte belongs to
+        // the file's unterminated final line (a very large mid-append entry,
+        // or a file that is only its header without a trailing newline).
+        this.floorUnterminated = true;
+        return;
+      }
+      const lastNewline = tail.lastIndexOf(NEWLINE);
+      const startAt = tailStart === 0 ? 0 : firstNewline + 1;
+      const group = this.parseGroup(tail, collectCompleteLines(tail, startAt), this.pages);
+      this.pages.push({
+        readStart: tailStart,
+        parsedStart: tailStart + startAt,
+        lineEnd: tailStart + lastNewline + 1,
+        head: tailStart > 0 ? tail.subarray(0, firstNewline) : EMPTY_BUFFER,
+        items: group.items,
+        itemFrom: group.itemFrom,
+        groupCount: group.groupCount,
+        entryIds: group.entryIds,
+        pairing: group.pairing,
+      });
+    } catch {
+      // Filesystem, identity, and parser failures may quote session paths,
+      // malformed fragments, or provider identifiers; the viewer exposes only
+      // the bounded read state and nothing else.
+      this.pages = [];
+      this.walkFloor = 0;
+      this.floorUnterminated = false;
+      this.identity = undefined;
+      this.forwardFragment = EMPTY_BUFFER;
+      this.theInitialError = CHILD_HISTORY_READ_ERROR;
+    }
+  }
+
+  private oldestReadStart(): number {
+    return this.pages.length > 0 ? this.pages[0]!.readStart : this.walkFloor;
+  }
+
+  /** Verifies a completed read's descriptor identity against the opened one. */
+  private verifyDescriptor(stat: { size: number; dev: number; ino: number }, minLoadedByte: number): void {
+    if (this.identity !== undefined && (stat.dev !== this.identity.dev || stat.ino !== this.identity.ino)) {
+      throw new Error("session file identity changed");
+    }
+    if (stat.size < minLoadedByte) throw new Error("session file shrank below the loaded window");
+    this.lastSize = stat.size;
+  }
+
+  /**
+   * Forward byte-stitched read from the newest loaded line boundary. The
+   * retained fragment carries bytes whose terminating newline lies ahead, so
+   * a complete entry larger than one page — up to the per-entry cap — stitches
+   * across as many forward reads as it needs instead of stalling.
+   */
+  private readForward(): boolean {
+    const start = this.pages[this.pages.length - 1]!.lineEnd;
+    let fragment = this.forwardFragment;
+    let cursor = start + fragment.length;
+    for (;;) {
+      const read = this.io.readRange(this.sessionFile, cursor, cursor + this.pageBytes);
+      this.verifyDescriptor(read.stat, start);
+      if (read.data.length === 0) {
+        // At or past EOF: any fragment is the running child's incomplete
+        // final append — retained, never parsed, never an error.
+        this.forwardFragment = fragment;
+        return false;
+      }
+      const data = read.data;
+      const end = cursor + data.length;
+      const firstNewline = data.indexOf(NEWLINE);
+      if (firstNewline === -1) {
+        fragment = Buffer.concat([fragment, data]);
+        if (fragment.length > this.maxEntryBytes) {
+          this.forwardFragment = EMPTY_BUFFER;
+          throw new Error("forward fragment exceeds the entry cap");
+        }
+        cursor = end;
+        continue;
+      }
+      const lastNewline = data.lastIndexOf(NEWLINE);
+      const firstLine = Buffer.concat([fragment, data.subarray(0, firstNewline)]);
+      // The slice's first complete line belongs to the stitched fragment; the
+      // interior lines after it parse in place, newest last.
+      const interior = collectCompleteLines(data, firstNewline + 1);
+      const group = this.parseGroup(
+        data,
+        [...(firstLine.length > 0 ? [{ start: -1, end: firstLine.length }] : []), ...interior],
+        this.pages,
+        firstLine,
+      );
+      const trailing = data.subarray(lastNewline + 1);
+      this.forwardFragment = end < read.stat.size ? trailing : EMPTY_BUFFER;
+      this.pages.push({
+        readStart: start,
+        parsedStart: start,
+        lineEnd: cursor + lastNewline + 1,
+        head: EMPTY_BUFFER,
+        items: group.items,
+        itemFrom: group.itemFrom,
+        groupCount: group.groupCount,
+        entryIds: group.entryIds,
+        pairing: group.pairing,
+      });
+      stitchSeam(this.pages[this.pages.length - 2]!, this.pages[this.pages.length - 1]!);
+      return true;
+    }
+  }
+
+  /** Slide the oldest page's window back through its own parsed group. */
+  private shiftWindowOlder(): boolean {
+    const page = this.pages[0]!;
+    const windowEnd = page.itemFrom;
+    try {
+      const group = this.rereadGroup(page, this.pages.slice(1));
+      const from = Math.max(0, windowEnd - MAX_LOADED_ITEMS);
+      const items = group.allItems.slice(from, windowEnd);
+      this.pages[0] = {
+        ...page,
+        items,
+        itemFrom: from,
+        entryIds: group.entryIds,
+        pairing: windowPairing(group.full, from, items),
+      };
+      this.theOlderError = undefined;
+      this.trimToBound("newest");
+      return items.length > 0;
+    } catch {
+      this.theOlderError = CHILD_HISTORY_READ_ERROR;
+      return false;
+    }
+  }
+
+  /** Slide the newest page's window forward through its own parsed group. */
+  private shiftWindowNewer(): boolean {
+    const page = this.pages[this.pages.length - 1]!;
+    const windowEnd = page.itemFrom + page.items.length;
+    try {
+      const group = this.rereadGroup(page, this.pages.slice(0, -1));
+      // Extend the window forward, keeping what it already holds.
+      const to = Math.min(page.groupCount, windowEnd + MAX_LOADED_ITEMS);
+      const items = group.allItems.slice(page.itemFrom, to);
+      this.pages[this.pages.length - 1] = {
+        ...page,
+        items,
+        entryIds: group.entryIds,
+        pairing: windowPairing(group.full, page.itemFrom, items),
+      };
+      this.theNewerError = undefined;
+      const added = items.length > page.items.length;
+      this.trimToBound("oldest");
+      return added;
+    } catch {
+      this.theNewerError = CHILD_HISTORY_READ_ERROR;
+      return false;
+    }
+  }
+
+  /** Re-reads one page's own parsed byte range and re-projects its group. */
+  private rereadGroup(
+    page: HistoryPage,
+    others: readonly HistoryPage[],
+  ): { allItems: TranscriptItem[]; entryIds: Set<string>; full: ChildTranscriptProjection } {
+    const read = this.io.readRange(this.sessionFile, page.parsedStart, page.lineEnd);
+    this.verifyDescriptor(read.stat, page.parsedStart);
+    const group = this.parseGroup(read.data, collectCompleteLines(read.data, 0), others);
+    return { allItems: group.allItems, entryIds: group.entryIds, full: group.full };
+  }
+
+  private loadOlderStitched(): boolean {
+    const floor = this.pages[0]!.readStart;
+    const stitch = this.pages[0]!.head;
+    const target = Math.max(0, floor - this.pageBytes);
+    const read = this.io.readRange(this.sessionFile, target, floor);
+    this.verifyDescriptor(read.stat, floor);
+    const slice = read.data;
+
+    const firstNewline = slice.indexOf(NEWLINE);
+    if (firstNewline === -1) {
+      // The whole slice continues the stitched line, whose terminator lies in
+      // already-loaded newer bytes. Extend the live stitch and stop; the line
+      // parses when a slice containing its beginning arrives.
+      if (slice.length + stitch.length > this.maxEntryBytes) {
+        throw new Error("stitch exceeds the entry cap");
+      }
+      this.pages[0] = {
+        ...this.pages[0]!,
+        readStart: target,
+        head: Buffer.concat([slice, stitch]),
+      };
+      return true;
+    }
+    const lastNewline = slice.lastIndexOf(NEWLINE);
+    const startAt = target === 0 ? 0 : firstNewline + 1;
+    const lines = collectCompleteLines(slice, startAt);
+    const straddle = Buffer.concat([slice.subarray(lastNewline + 1), stitch]);
+    const ordered = [...lines, ...(straddle.length > 0 ? [{ start: -1, end: straddle.length }] : [])];
+    const group = this.parseGroup(slice, ordered, this.pages, straddle);
+    this.pages.unshift({
+      readStart: target,
+      parsedStart: target + startAt,
+      // The straddle's terminating newline sits at `floor + stitch.length`;
+      // lineEnd passes it so window re-reads cover the whole group.
+      lineEnd: floor + stitch.length + 1,
+      head: target > 0 ? slice.subarray(0, firstNewline) : EMPTY_BUFFER,
+      items: group.items,
+      itemFrom: group.itemFrom,
+      groupCount: group.groupCount,
+      entryIds: group.entryIds,
+      pairing: group.pairing,
+    });
+    if (this.pages.length > 1) stitchSeam(this.pages[0]!, this.pages[1]!);
+    return true;
+  }
+
+  private loadOlderUnterminated(): boolean {
+    let floor = this.walkFloor;
+    let walked = Math.max(0, this.lastSize - floor);
+    for (;;) {
+      const target = Math.max(0, floor - this.pageBytes);
+      const read = this.io.readRange(this.sessionFile, target, floor);
+      this.verifyDescriptor(read.stat, floor);
+      const slice = read.data;
+      const firstNewline = slice.indexOf(NEWLINE);
+      if (firstNewline === -1) {
+        walked += slice.length;
+        if (walked > this.maxEntryBytes) throw new Error("unterminated line exceeds the entry cap");
+        this.walkFloor = target;
+        if (target === 0) return false;
+        floor = target;
+        continue;
+      }
+      // The final line stays unterminated above the last terminator in this
+      // slice; its leading bytes here are dropped, never parsed as history.
+      const lastNewline = slice.lastIndexOf(NEWLINE);
+      const startAt = target === 0 ? 0 : firstNewline + 1;
+      const group = this.parseGroup(slice, collectCompleteLines(slice, startAt), this.pages);
+      this.pages.unshift({
+        readStart: target,
+        parsedStart: target + startAt,
+        lineEnd: target + lastNewline + 1,
+        head: target > 0 ? slice.subarray(0, firstNewline) : EMPTY_BUFFER,
+        items: group.items,
+        itemFrom: group.itemFrom,
+        groupCount: group.groupCount,
+        entryIds: group.entryIds,
+        pairing: group.pairing,
+      });
+      if (this.pages.length > 1) stitchSeam(this.pages[0]!, this.pages[1]!);
+      this.floorUnterminated = false;
+      return true;
+    }
+  }
+
+  /**
+   * Parses, envelope-validates, and projects one page's complete lines. A
+   * line must be valid JSON, a non-null object carrying the minimal native
+   * envelope (non-empty string `type` and `id`), and its identity must be
+   * unique within the load and across the loaded window. The returned window
+   * keeps at most {@link MAX_LOADED_ITEMS} items of the group's projection —
+   * the newest ones — so a single oversized group still yields a bounded page
+   * whose trimmed head stays reachable through window shifts.
+   */
+  private parseGroup(
+    slice: Buffer,
+    lines: ReadonlyArray<{ start: number; end: number }>,
+    others: readonly HistoryPage[],
+    stitchedFirstLine?: Buffer,
+  ): {
+    items: TranscriptItem[];
+    itemFrom: number;
+    groupCount: number;
+    entryIds: Set<string>;
+    pairing: PagePairing;
+    allItems: TranscriptItem[];
+    full: ChildTranscriptProjection;
+  } {
+    const entries: unknown[] = [];
+    const entryIds = new Set<string>();
+    for (const line of lines) {
+      let entry: unknown;
+      if (line.start === -1) {
+        if (stitchedFirstLine === undefined || stitchedFirstLine.length === 0) continue;
+        entry = this.parseEntry(stitchedFirstLine);
+      } else {
+        if (line.end <= line.start) continue;
+        entry = this.parseEntry(slice.subarray(line.start, line.end));
+      }
+      const id = (entry as { id: string }).id;
+      if (entryIds.has(id)) throw new Error("duplicate entry id in page");
+      for (const page of others) {
+        if (page.entryIds.has(id)) throw new Error("duplicate entry id across pages");
+      }
+      entryIds.add(id);
+      entries.push(entry);
+    }
+    const full = projectSessionEntries(entries, Number.POSITIVE_INFINITY, this.observedAt);
+    const groupCount = full.items.length;
+    if (groupCount <= MAX_LOADED_ITEMS) {
+      return {
+        items: full.items,
+        itemFrom: 0,
+        groupCount,
+        entryIds,
+        pairing: pagePairing(full, 0),
+        allItems: full.items,
+        full,
+      };
+    }
+    const from = groupCount - MAX_LOADED_ITEMS;
+    const items = full.items.slice(from);
+    return {
+      items,
+      itemFrom: from,
+      groupCount,
+      entryIds,
+      pairing: pagePairing(full, from),
+      allItems: full.items,
+      full,
+    };
+  }
+
+  /** Minimal native envelope every historical record must carry. */
+  private parseEntry(line: Buffer): unknown {
+    if (line.length > this.maxEntryBytes) throw new Error("session entry exceeds the size cap");
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line.toString("utf8"));
+    } catch {
+      throw new Error("session entry is not valid JSON");
+    }
+    if (!entry || typeof entry !== "object") throw new Error("session entry is not an object");
+    const record = entry as { type?: unknown; id?: unknown };
+    if (typeof record.type !== "string" || record.type === "") {
+      throw new Error("session entry has no valid type");
+    }
+    if (typeof record.id !== "string" || record.id === "") {
+      throw new Error("session entry has no valid id");
+    }
+    return entry;
+  }
+
+  /**
+   * Enforces the in-memory window from the end opposite the paging direction:
+   * older loads trim from the newest end, newer loads from the oldest end.
+   * Trimming shrinks page windows — the trimmed items stay inside their
+   * group's projection and are reloaded on demand by shifting the window back
+   * — so the bound never silently discards history.
+   */
+  private trimToBound(end: "newest" | "oldest"): void {
+    while (this.totalItems() > MAX_LOADED_ITEMS) {
+      const overflow = this.totalItems() - MAX_LOADED_ITEMS;
+      if (end === "newest") {
+        const last = this.pages[this.pages.length - 1]!;
+        const drop = Math.min(overflow, last.items.length);
+        if (drop > 0) {
+          last.items = last.items.slice(0, last.items.length - drop);
+          trimPairingFromEnd(last.pairing, last.items);
+        } else if (this.pages.length > 1) {
+          this.pages.pop();
+          this.forwardFragment = EMPTY_BUFFER;
+        } else {
+          return;
+        }
+      } else {
+        const first = this.pages[0]!;
+        const drop = Math.min(overflow, first.items.length);
+        if (drop > 0) {
+          first.items = first.items.slice(drop);
+          first.itemFrom += drop;
+          trimPairingFromStart(first.pairing, drop);
+        } else if (this.pages.length > 1) {
+          this.pages.shift();
+        } else {
+          return;
+        }
+      }
+    }
+  }
+
+  private totalItems(): number {
+    let total = 0;
+    for (const page of this.pages) total += page.items.length;
+    return total;
+  }
 }
 
 /**
  * Pairs a page boundary back together: the newer page's leading orphan
  * results resolve the older page's still-open calls, updating each call in
  * place and dropping the orphan's generic row. The consumed result keeps its
- * call-id key with a null index, so a far-end eviction that later discards
- * and reloads the call's page can pair it again without duplicating a row. A
- * gap wider than one page keeps its bounded orphan rows.
+ * call-id key with a null index, so a far-end trim that later discards and
+ * reloads the call's page can pair it again without duplicating a row. A gap
+ * wider than one page keeps its bounded orphan rows.
  */
 function stitchSeam(older: HistoryPage, newer: HistoryPage): void {
   if (older.pairing.openCalls.size === 0 || newer.pairing.results.size === 0) return;
@@ -463,367 +1028,52 @@ function stitchSeam(older: HistoryPage, newer: HistoryPage): void {
   }
 }
 
-/** Shared projection wrapper recording the pairing state alongside items. */
-function projectPage(
-  entries: readonly unknown[],
-  observedAt: number,
-): { items: TranscriptItem[]; pairing: HistoryPage["pairing"] } {
-  const projection = projectSessionEntries(entries, Number.POSITIVE_INFINITY, observedAt);
-  const results = new Map<string, { isError: boolean; endedAt?: number; index: number | null }>();
-  for (const orphan of projection.orphanResults) {
-    results.set(orphan.callId, {
-      isError: orphan.isError,
-      ...(orphan.endedAt !== undefined ? { endedAt: orphan.endedAt } : {}),
-      index: orphan.index,
-    });
+/** Pairing state for one window `[from, from + items.length)` of a projection. */
+function pagePairing(full: ChildTranscriptProjection, from: number): PagePairing {
+  const openCalls = new Map<string, OpenToolCallRef>();
+  for (const [callId, ref] of full.openToolCalls) {
+    if (full.items.indexOf(ref.item) >= from) openCalls.set(callId, ref);
   }
-  return {
-    items: projection.items,
-    pairing: { openCalls: projection.openToolCalls, results },
-  };
+  const results = new Map<string, { isError: boolean; endedAt?: number; index: number | null }>();
+  for (const orphan of full.orphanResults) {
+    if (orphan.index >= from) {
+      results.set(orphan.callId, {
+        isError: orphan.isError,
+        ...(orphan.endedAt !== undefined ? { endedAt: orphan.endedAt } : {}),
+        index: orphan.index - from,
+      });
+    }
+  }
+  return { openCalls, results };
 }
 
-/**
- * Byte-anchored pager over the native session file, oldest page first in
- * `pages`. Every parsed entry's terminating newline has been read; the oldest
- * page's `head` holds bytes awaiting that terminator from the next older
- * slice, and while `floorUnterminated` is set the bytes at the oldest read
- * position belong to the file's unterminated final append and are never
- * parsed as history.
- */
-export class ChildHistoryPager implements ChildHistoryView {
-  private readonly id: string;
-  private readonly pageBytes: number;
-  private readonly maxEntryBytes: number;
-  private readonly io: ChildHistoryIo;
-  private readonly observedAt: number;
-
-  private sessionFile = "";
-  private identity: { dev: number; ino: number } | undefined;
-  private pages: HistoryPage[] = [];
-  /** Oldest byte ever read while no parsed page exists yet (starts at the tail read start). */
-  private walkFloor = 0;
-  /** The bytes at the loaded floor continue into the file's unterminated final line. */
-  private floorUnterminated = false;
-  private lastSize = 0;
-  private theInitialError: string | undefined;
-  private thePageError: string | undefined;
-
-  constructor(id: string, options: ChildHistoryOptions = {}) {
-    this.id = id;
-    this.pageBytes = Math.max(16, Math.floor(options.pageBytes ?? DEFAULT_PAGE_BYTES));
-    this.maxEntryBytes = Math.max(32, Math.floor(options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES));
-    this.io = options.io ?? defaultIo;
-    this.observedAt = options.observedAt ?? Date.now();
-    this.loadInitial();
+/** Pairing for an explicitly re-sliced window of a full projection. */
+function windowPairing(full: ChildTranscriptProjection, from: number, items: TranscriptItem[]): PagePairing {
+  const pairing = pagePairing(full, from);
+  const keep = new Set(items);
+  for (const [callId, ref] of [...pairing.openCalls]) {
+    if (!keep.has(ref.item)) pairing.openCalls.delete(callId);
   }
+  return pairing;
+}
 
-  snapshot(): ChildHistorySnapshot {
-    return {
-      items: this.pages.flatMap((page) => page.items),
-      moreBefore: this.oldestReadStart() > 0,
-      moreAfter: this.pages.length > 0 && this.pages[this.pages.length - 1]!.lineEnd < this.lastSize,
-      ...(this.thePageError !== undefined ? { pageError: this.thePageError } : {}),
-      ...(this.theInitialError !== undefined ? { initialError: this.theInitialError } : {}),
-    };
+/** Drops pairing rows whose items fell off a window's newest end. */
+function trimPairingFromEnd(pairing: PagePairing, keptItems: readonly TranscriptItem[]): void {
+  const keep = new Set(keptItems);
+  for (const [callId, ref] of [...pairing.openCalls]) {
+    if (!keep.has(ref.item)) pairing.openCalls.delete(callId);
   }
-
-  loadOlder(): boolean {
-    if (this.theInitialError !== undefined) return false;
-    if (this.oldestReadStart() === 0) return false;
-    try {
-      const loaded = this.floorUnterminated ? this.loadOlderUnterminated() : this.loadOlderStitched();
-      if (loaded) {
-        this.thePageError = undefined;
-        this.evictOverBound("newest");
-      }
-      return loaded;
-    } catch {
-      // A malformed or oversized line fails this page only; every previously
-      // validated page stays visible and the request can be retried.
-      this.thePageError = CHILD_HISTORY_READ_ERROR;
-      return false;
-    }
+  for (const result of pairing.results.values()) {
+    if (result.index !== null && result.index >= keptItems.length) result.index = null;
   }
+}
 
-  loadNewer(): boolean {
-    if (this.theInitialError !== undefined) return false;
-    if (this.pages.length === 0) return false;
-    const start = this.pages[this.pages.length - 1]!.lineEnd;
-    const guard = this.guardFile(start);
-    if (!guard) return false;
-    if (start >= guard.size) return false;
-    const end = Math.min(guard.size, start + this.pageBytes);
-    let slice: Buffer;
-    try {
-      slice = this.io.readRange(this.sessionFile, start, end);
-    } catch {
-      this.thePageError = CHILD_HISTORY_READ_ERROR;
-      return false;
-    }
-    const lines = collectCompleteLines(slice, 0);
-    if (lines.length === 0) return false;
-    const lastNewline = slice.lastIndexOf(NEWLINE);
-    let entries: unknown[];
-    try {
-      entries = this.parseLineBuffers(slice, lines);
-    } catch {
-      this.thePageError = CHILD_HISTORY_READ_ERROR;
-      return false;
-    }
-    const page = projectPage(entries, this.observedAt);
-    this.pages.push({
-      readStart: start,
-      parsedStart: start,
-      lineEnd: start + lastNewline + 1,
-      head: EMPTY_BUFFER,
-      items: page.items,
-      pairing: page.pairing,
-    });
-    stitchSeam(this.pages[this.pages.length - 2]!, this.pages[this.pages.length - 1]!);
-    this.thePageError = undefined;
-    this.evictOverBound("oldest");
-    return true;
-  }
-
-  retryInitial(): boolean {
-    if (this.theInitialError === undefined) return false;
-    this.loadInitial();
-    return this.theInitialError === undefined;
-  }
-
-  private loadInitial(): void {
-    this.pages = [];
-    this.walkFloor = 0;
-    this.floorUnterminated = false;
-    this.theInitialError = undefined;
-    this.thePageError = undefined;
-    this.identity = undefined;
-    try {
-      const { details, sessionFile } = resolveChildSessionFile(this.id, "view");
-      this.sessionFile = sessionFile;
-      const { size, dev, ino } = this.io.stat(sessionFile);
-      if (size <= 0) throw new Error("empty session file");
-      this.identity = { dev, ino };
-      this.lastSize = size;
-
-      const header = this.io.readRange(sessionFile, 0, Math.min(size, MAX_HEADER_READ_BYTES));
-      const headerText = header.toString("utf8");
-      const cut = headerText.indexOf("\n");
-      const headerLine = JSON.parse(cut === -1 ? headerText : headerText.slice(0, cut)) as { type?: unknown; id?: unknown };
-      if (headerLine?.type !== "session" || headerLine.id !== details.sessionId) {
-        throw new Error("native session header does not match run.json");
-      }
-
-      const tailStart = Math.max(0, size - this.pageBytes);
-      const tail = this.io.readRange(sessionFile, tailStart, size);
-      this.walkFloor = tailStart;
-      const firstNewline = tail.indexOf(NEWLINE);
-      if (firstNewline === -1) {
-        // No terminated line exists in the read tail: every byte belongs to
-        // the file's unterminated final line (a very large mid-append entry,
-        // or a file that is only its header without a trailing newline).
-        this.floorUnterminated = true;
-        return;
-      }
-      const lastNewline = tail.lastIndexOf(NEWLINE);
-      const startAt = tailStart === 0 ? 0 : firstNewline + 1;
-      const entries = this.parseLineBuffers(tail, collectCompleteLines(tail, startAt));
-      const page = projectPage(entries, this.observedAt);
-      this.pages.push({
-        readStart: tailStart,
-        parsedStart: tailStart + startAt,
-        lineEnd: tailStart + lastNewline + 1,
-        head: tailStart > 0 ? tail.subarray(0, firstNewline) : EMPTY_BUFFER,
-        items: page.items,
-        pairing: page.pairing,
-      });
-    } catch {
-      // Filesystem, identity, and parser failures may quote session paths,
-      // malformed fragments, or provider identifiers; the viewer exposes only
-      // the bounded read state and nothing else.
-      this.pages = [];
-      this.walkFloor = 0;
-      this.floorUnterminated = false;
-      this.identity = undefined;
-      this.theInitialError = CHILD_HISTORY_READ_ERROR;
-    }
-  }
-
-  private oldestReadStart(): number {
-    return this.pages.length > 0 ? this.pages[0]!.readStart : this.walkFloor;
-  }
-
-  /** Re-verifies file identity and that the loaded window still fits the file. */
-  private guardFile(minLoadedByte: number): { size: number } | undefined {
-    try {
-      const { size, dev, ino } = this.io.stat(this.sessionFile);
-      if (this.identity !== undefined && (dev !== this.identity.dev || ino !== this.identity.ino)) {
-        throw new Error("session file identity changed");
-      }
-      if (size < minLoadedByte) throw new Error("session file shrank below the loaded window");
-      this.lastSize = size;
-      return { size };
-    } catch {
-      this.thePageError = CHILD_HISTORY_READ_ERROR;
-      return undefined;
-    }
-  }
-
-  private loadOlderStitched(): boolean {
-    const floor = this.pages[0]!.readStart;
-    const stitch = this.pages[0]!.head;
-    const target = Math.max(0, floor - this.pageBytes);
-    if (!this.guardFile(floor)) return false;
-    let slice: Buffer;
-    try {
-      slice = this.io.readRange(this.sessionFile, target, floor);
-    } catch {
-      this.thePageError = CHILD_HISTORY_READ_ERROR;
-      return false;
-    }
-
-    const firstNewline = slice.indexOf(NEWLINE);
-    if (firstNewline === -1) {
-      // The whole slice continues the stitched line, whose terminator lies in
-      // already-loaded newer bytes. Extend the live stitch and stop; the line
-      // parses when a slice containing its beginning arrives.
-      if (slice.length + stitch.length > this.maxEntryBytes) {
-        this.thePageError = CHILD_HISTORY_READ_ERROR;
-        return false;
-      }
-      this.pages[0] = {
-        ...this.pages[0]!,
-        readStart: target,
-        parsedStart: target + slice.length + stitch.length,
-        head: Buffer.concat([slice, stitch]),
-      };
-      return true;
-    }
-    const lastNewline = slice.lastIndexOf(NEWLINE);
-    const startAt = target === 0 ? 0 : firstNewline + 1;
-    const lines = collectCompleteLines(slice, startAt);
-    const straddle = Buffer.concat([slice.subarray(lastNewline + 1), stitch]);
-    const ordered = [...lines, ...(straddle.length > 0 ? [{ start: -1, end: straddle.length }] : [])];
-    const entries = this.parseStitched(slice, ordered, straddle);
-    const page = projectPage(entries, this.observedAt);
-    this.pages.unshift({
-      readStart: target,
-      parsedStart: target + startAt,
-      lineEnd: floor + stitch.length,
-      head: target > 0 ? slice.subarray(0, firstNewline) : EMPTY_BUFFER,
-      items: page.items,
-      pairing: page.pairing,
-    });
-    if (this.pages.length > 1) stitchSeam(this.pages[0]!, this.pages[1]!);
-    return true;
-  }
-
-  private loadOlderUnterminated(): boolean {
-    let floor = this.walkFloor;
-    let walked = Math.max(0, this.lastSize - floor);
-    for (;;) {
-      const target = Math.max(0, floor - this.pageBytes);
-      if (!this.guardFile(floor)) return false;
-      let slice: Buffer;
-      try {
-        slice = this.io.readRange(this.sessionFile, target, floor);
-      } catch {
-        this.thePageError = CHILD_HISTORY_READ_ERROR;
-        return false;
-      }
-      const firstNewline = slice.indexOf(NEWLINE);
-      if (firstNewline === -1) {
-        walked += slice.length;
-        if (walked > this.maxEntryBytes) {
-          this.thePageError = CHILD_HISTORY_READ_ERROR;
-          return false;
-        }
-        this.walkFloor = target;
-        if (target === 0) return false;
-        floor = target;
-        continue;
-      }
-      // The final line stays unterminated above the last terminator in this
-      // slice; its leading bytes here are dropped, never parsed as history.
-      const lastNewline = slice.lastIndexOf(NEWLINE);
-      const startAt = target === 0 ? 0 : firstNewline + 1;
-      const entries = this.parseLineBuffers(slice, collectCompleteLines(slice, startAt));
-      const page = projectPage(entries, this.observedAt);
-      this.pages.unshift({
-        readStart: target,
-        parsedStart: target + startAt,
-        lineEnd: target + lastNewline + 1,
-        head: target > 0 ? slice.subarray(0, firstNewline) : EMPTY_BUFFER,
-        items: page.items,
-        pairing: page.pairing,
-      });
-      if (this.pages.length > 1) stitchSeam(this.pages[0]!, this.pages[1]!);
-      this.floorUnterminated = false;
-      return true;
-    }
-  }
-
-  /** Parses complete in-slice lines; a malformed or oversized line fails the page. */
-  private parseLineBuffers(
-    slice: Buffer,
-    lines: ReadonlyArray<{ start: number; end: number }>,
-  ): unknown[] {
-    const entries: unknown[] = [];
-    for (const line of lines) {
-      if (line.end <= line.start) continue;
-      entries.push(this.parseEntry(slice.subarray(line.start, line.end)));
-    }
-    return entries;
-  }
-
-  /** Parses in-slice lines plus the byte-stitched straddle line (`start: -1`). */
-  private parseStitched(
-    slice: Buffer,
-    ordered: ReadonlyArray<{ start: number; end: number }>,
-    straddle: Buffer,
-  ): unknown[] {
-    const entries: unknown[] = [];
-    for (const line of ordered) {
-      if (line.start === -1) {
-        entries.push(this.parseEntry(straddle));
-        continue;
-      }
-      if (line.end <= line.start) continue;
-      entries.push(this.parseEntry(slice.subarray(line.start, line.end)));
-    }
-    return entries;
-  }
-
-  private parseEntry(line: Buffer): unknown {
-    if (line.length > this.maxEntryBytes) throw new Error("session entry exceeds the size cap");
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line.toString("utf8"));
-    } catch {
-      throw new Error("session entry is not valid JSON");
-    }
-    if (!entry || typeof entry !== "object") throw new Error("session entry is not an object");
-    return entry;
-  }
-
-  /**
-   * Enforces the in-memory window. Older loads evict from the newest end and
-   * newer loads from the oldest end, always keeping at least one page so the
-   * loaded window never empties itself; evicted bytes stay reachable through
-   * the opposite load direction.
-   */
-  private evictOverBound(end: "newest" | "oldest"): void {
-    while (this.totalItems() > MAX_LOADED_ITEMS && this.pages.length > 1) {
-      if (end === "newest") this.pages.pop();
-      else this.pages.shift();
-    }
-  }
-
-  private totalItems(): number {
-    let total = 0;
-    for (const page of this.pages) total += page.items.length;
-    return total;
+/** Re-indexes pairing rows after items fell off a window's oldest end. */
+function trimPairingFromStart(pairing: PagePairing, dropped: number): void {
+  for (const result of pairing.results.values()) {
+    if (result.index === null) continue;
+    if (result.index < dropped) result.index = null;
+    else result.index -= dropped;
   }
 }
 
@@ -846,12 +1096,21 @@ function collectCompleteLines(
 /** Fixed history for tests and static fallbacks; loads never add anything. */
 export function staticChildHistory(
   items: readonly TranscriptItem[],
-  options: { moreBefore?: boolean; moreAfter?: boolean } = {},
+  options: {
+    moreBefore?: boolean;
+    moreAfter?: boolean;
+    olderError?: string;
+    newerError?: string;
+    initialError?: string;
+  } = {},
 ): ChildHistoryView {
   const snapshot: ChildHistorySnapshot = {
     items: [...items],
     moreBefore: options.moreBefore === true,
     moreAfter: options.moreAfter === true,
+    ...(options.olderError !== undefined ? { olderError: options.olderError } : {}),
+    ...(options.newerError !== undefined ? { newerError: options.newerError } : {}),
+    ...(options.initialError !== undefined ? { initialError: options.initialError } : {}),
   };
   return {
     snapshot: () => snapshot,

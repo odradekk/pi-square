@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -390,6 +391,13 @@ export function resolveChildSessionFile(id: string, operation = "resume"): Resol
     const details = readRunState(realArtifactsDir);
     if (resolvePath(details.artifactsDir) !== resolvePath(realArtifactsDir)) {
       throw new Error("run.json artifactsDir does not match its directory");
+    }
+
+    // The native session file must be a regular file at the recorded path: a
+    // symlink — even one pointing inside the artifacts directory — is a
+    // rewritten artifact and is rejected before realpath can resolve it away.
+    if (lstatSync(details.sessionFile).isSymbolicLink()) {
+      throw new Error("native session file is a symlink");
     }
 
     const realSessionFile = realpathSync(details.sessionFile);

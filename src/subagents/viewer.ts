@@ -210,8 +210,6 @@ interface LineModel {
   lines: string[];
   /** Scroll-space line index where each item's rendered block starts. */
   starts: number[];
-  /** Rendered line count per item. */
-  counts: number[];
   /** Stable per-item keys, parallel to the snapshot items. */
   keys: string[];
 }
@@ -323,11 +321,10 @@ export class ChildTranscriptOverlay implements Component {
     const contentWidth = Math.max(1, width - visibleWidth(indent));
     const lines: string[] = [];
     const starts: number[] = [];
-    const counts: number[] = [];
     const keys: string[] = [];
 
-    if (snapshot.pageError !== undefined || snapshot.moreBefore) {
-      lines.push(snapshot.pageError !== undefined
+    if (snapshot.olderError !== undefined || snapshot.moreBefore) {
+      lines.push(snapshot.olderError !== undefined
         ? this.theme.fg("error", `${indent}older ${CHILD_HISTORY_READ_ERROR} — page up retries`)
         : this.theme.fg("dim", `${indent}… earlier history (page up)`));
     }
@@ -344,15 +341,16 @@ export class ChildTranscriptOverlay implements Component {
           .render(contentWidth);
       }
       starts.push(lines.length);
-      counts.push(rendered.length);
       keys.push(itemKey(item, index, occurrences));
       lines.push(...rendered.map((line) => indent + line));
     }
 
-    if (snapshot.moreAfter) {
-      lines.push(this.theme.fg("dim", `${indent}… newer history (page down)`));
+    if (snapshot.newerError !== undefined || snapshot.moreAfter) {
+      lines.push(snapshot.newerError !== undefined
+        ? this.theme.fg("error", `${indent}newer ${CHILD_HISTORY_READ_ERROR} — page down retries`)
+        : this.theme.fg("dim", `${indent}… newer history (page down)`));
     }
-    return { lines, starts, counts, keys };
+    return { lines, starts, keys };
   }
 
   private lineModelFor(width: number): LineModel {

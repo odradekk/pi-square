@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -20,6 +20,7 @@ const {
   listRunDirs,
   readRunState,
   recordParentSessionRun,
+  resolveChildSessionFile,
   tryReadRunState,
   validateRunArtifacts,
   writeRunState,
@@ -189,6 +190,33 @@ test("filesystem retry accounting reports actual additional attempts", () => {
     permanent = error;
   }
   assert.equal(fsRetryCount(permanent), 0);
+});
+
+test("resolveChildSessionFile rejects a symlinked session file, even inside the artifacts directory", () => {
+  const root = makeTempRoot();
+  process.env.PI_AGENT_DIR = root;
+  try {
+    // A regular file resolves normally.
+    const { dir } = createValidArtifacts(root);
+    assert.equal(resolveChildSessionFile(ID).sessionFile, join(dir, "session.jsonl"));
+
+    // A symlink pointing to a file inside the same artifacts directory is a
+    // rewritten artifact: the boundary rejects it rather than resolving it.
+    const inner = join(dir, "inner-target.jsonl");
+    writeFileSync(inner, readFileSync(join(dir, "session.jsonl")));
+    rmSync(join(dir, "session.jsonl"));
+    symlinkSync(inner, join(dir, "session.jsonl"));
+    assert.throws(() => resolveChildSessionFile(ID), /missing or invalid/);
+
+    // A symlink pointing outside the directory is rejected the same way.
+    const outside = join(root, "outside.jsonl");
+    writeFileSync(outside, readFileSync(inner));
+    rmSync(join(dir, "session.jsonl"));
+    symlinkSync(outside, join(dir, "session.jsonl"));
+    assert.throws(() => resolveChildSessionFile(ID), /missing or invalid/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("listRunDirs ignores old-ID directories and sorts valid directories by mtime", () => {
