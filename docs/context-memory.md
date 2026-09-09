@@ -82,8 +82,8 @@ the text Pi would have sent as one block. There is one projection with no
 model or provider branch, and it adds no cache field or breakpoint of any
 kind; Pi's own prompt-cache breakpoint placement is untouched. Appending a
 block inserts exactly one new part before the trailing part and leaves every
-carried part byte-identical, which is the structural property the provider
-cache experiment measures. The step is fail-safe: when the request does not
+carried part byte-identical. The provider-cache experiment observes the cache
+behavior of this production projection inside real Pi sessions. The step is fail-safe: when the request does not
 carry exactly the current composed rendering — no Memory, an opaque or native
 branch, a mismatched summary, or more than one compaction summary message —
 the ordinary unmodified compaction summary messages are left in place. The
@@ -347,19 +347,26 @@ a session operation.
   content block for every model and provider — no provider-specific branch,
   no cache marker, and no breakpoint moved. Cache behavior across a Memory
   append is a measured property, not a promise: the pinned provider-cache
-  experiment compares the multi-block projection with today's
-  single-summary-block rendering across a real cross-compaction append, and
-  no improvement claim is made without that evidence for the exact release
-  commit. The credentialed command runs three model lanes concurrently —
-  `claude-sonnet-5`, `glm-5.3`, and `gpt-5.6-luna` — while preserving the
-  prime-before-probe order within each lane and one stable Pi session ID per
-  lane. Every request goes through Pi 0.84.2's public `ModelRuntime.streamSimple`
-  path using Pi's own model configuration, authentication, provider converter,
-  cache policy, retry boundary, stream parser, and normalized usage. The
-  experiment does not construct provider payloads or parse raw SSE itself.
-  Consequently cache reads and writes are exactly the numeric values Pi exposes;
-  Pi does not preserve whether an upstream raw cache field was absent. Cost is
-  unavailable when the selected Pi model has an all-zero price table.
+  experiment drives seven real `AgentSession.prompt()` calls through the
+  installed pi-square extension. Pi itself grows the transcript, builds every
+  request, executes `submit_memory`, saves the extension compactions, and sends
+  the projected multi-block Memory. The command runs independent
+  `claude-sonnet-5`, `glm-5.3`, and `gpt-5.6-luna` sessions concurrently while
+  preserving prompt order inside each session. It constructs no synthetic
+  Context or provider payload, injects no cache-isolation nonce, and appends no
+  messages by hand. Reports contain every assistant response's Pi-normalized
+  usage and compute the same hit rate as Pi's footer:
+  `cacheRead / (input + cacheRead + cacheWrite)`; the warm aggregate excludes
+  only the first cold request. The bounded experiment declares a 100k context
+  window and disables native auto-compaction so two Context Memory compactions
+  occur without an oversized paid run. Integrity requires the real tool loop,
+  at least two extension compactions, and a final Memory carrying multiple
+  blocks. This measures production behavior; it no longer claims an isolated
+  multi-block-versus-single-block causal comparison.
+  The offline regression test substitutes Pi's public faux provider only to
+  verify this session path deterministically; its simulated cache counts are
+  never performance evidence. Only the credentialed command's provider usage
+  is used for a cache conclusion.
 - **Protocol artifacts are filtered while enabled.** `submit_memory` calls and
   their results are removed from provider-bound requests while the feature is
   enabled, except the current trailing call/result pair, which passes through
@@ -429,11 +436,9 @@ rewrite existing Memory blocks.
   guarantees mechanical bounds and source recoverability, not summarization
   quality.
 - Qualification evidence (deterministic protocol replay, real-model
-  long-session scenarios, and the provider-cache experiment — the
-  cross-compaction append measurement comparing the multi-block projection
-  with the single-summary-block baseline under a content-divergence control,
-  concurrently across Sonnet 5, GLM 5.3, and GPT-5.6 Luna through Pi's native
-  model runtime)
+  long-session scenarios, and the provider-cache experiment — concurrent real
+  Pi session sequences across Sonnet 5, GLM 5.3, and GPT-5.6 Luna, including
+  the actual `submit_memory` loop and multiple extension compactions)
   is required before any quality or cache claim;
   reports are development evidence kept out of the npm package, and reruns
   follow the fixed impact-based rules — model-visible or algorithm changes

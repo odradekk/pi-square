@@ -114,33 +114,3 @@ export function continuityProgress() {
     }
   };
 }
-
-/**
- * Cache experiment renderer: one labelled line per request with the cache
- * numbers as they arrive. Labels keep three concurrently interleaved model
- * lanes readable, and a dead measurement remains visible before the verdict.
- */
-export function cacheProgress() {
-  const startedAt = Date.now();
-  const lastGroup = new Map();
-
-  return (event) => {
-    if (event.type !== "request") return;
-    const lane = event.model ? `${event.provider}/${event.model}` : "cache";
-    if (event.group !== lastGroup.get(lane)) {
-      lastGroup.set(lane, event.group);
-      write(`${bold(`${lane} · group ${event.group}`)}\n`);
-    }
-    const label = `${event.arm}.${event.role}`.padEnd(14);
-    if (event.error) {
-      write(`  ${red("✗")} ${label} ${red(event.error)}\n`);
-      return;
-    }
-    const ttft = event.ttftMs === undefined ? dim("ttft --") : dim(`ttft ${String(event.ttftMs).padStart(5)}ms`);
-    write(
-      `  ${green("✓")} ${label} read ${String(event.cacheRead).padStart(6)} `
-      + `write ${String(event.cacheWrite).padStart(6)} uncached ${String(event.uncached).padStart(5)} ${ttft} `
-      + `${dim(`[${event.index}/${event.total}] ${clock(Date.now() - startedAt)}`)}\n`,
-    );
-  };
-}

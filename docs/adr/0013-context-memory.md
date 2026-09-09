@@ -177,23 +177,22 @@ message, and deletion stays the ordinary Pi session boundary.
   cache field or breakpoint and moves none of Pi's own. The concatenated
   model-visible text stays byte-identical to Pi's rendering of the ordinary
   summary, the persisted entry is unchanged, and any mismatch leaves the
-  ordinary message in place. Whether that structure alone preserves or
-  improves prompt-cache reuse across a Memory append is a measured question,
-  not a design claim: the pinned provider-cache experiment compares the
-  multi-block projection with the single-summary-block baseline across a
-  real cross-compaction append. Its credentialed command runs independent
-  Sonnet 5, GLM 5.3, and GPT-5.6 Luna lanes concurrently while keeping each
-  lane's prime/probe requests sequential and one Pi session ID stable. The
-  fixture enters Pi 0.84.2 through `ModelRuntime.streamSimple`, so Pi owns model
-  lookup, authentication, provider conversion, cache policy, streaming, and
-  usage normalization; the experiment neither reconstructs wire payloads nor
-  parses raw SSE. Cache metrics therefore have Pi's public normalized semantics,
-  which do not retain raw-field absence, and an all-zero configured price table
-  keeps cost unreported. Only the measured outcome on each named provider/model
-  is a permitted statement. Placing a cache breakpoint
-  at the carried Memory's end remains deliberately undone here (#269): the
-  projection isolates the structural change so the breakpoint decision can
-  be made on its own evidence.
+  ordinary message in place. Cache performance is measured from the production
+  behavior, not inferred from that structure. The provider-cache experiment
+  creates independent Pi `AgentSession`s for Sonnet 5, GLM 5.3, and GPT-5.6
+  Luna, loads pi-square normally, and drives seven public `prompt()` calls per
+  lane. Pi owns transcript growth, request construction, the `submit_memory`
+  tool continuation, extension compaction, provider conversion, and normalized
+  usage. The experiment supplies no synthetic Context, reconstructed wire
+  payload, isolation nonce, or manually appended session message. It uses a
+  declared 100k experiment window with native auto-compaction disabled so a
+  bounded run reaches two Context Memory compactions, and it reports Pi's own
+  cache-hit formula over every real assistant response plus a warm aggregate
+  that excludes only the first cold request. This evidence measures the current
+  multi-block implementation end to end; it deliberately makes no isolated
+  single-block counterfactual claim. Placing a cache breakpoint at the carried
+  Memory's end remains deliberately undone here (#269); any need for it must be
+  established by the real-session measurements.
 - User documentation (`docs/context-memory.md`, `README.md`) must stay
   synchronized with every behavior change and must not claim improvements
   without qualification evidence; the feature stays disabled by default
