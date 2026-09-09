@@ -26,14 +26,20 @@ status: accepted
 > persistence contracts this ADR records. Since #305 the overlay pages the
 > child's complete persisted history on demand (`src/subagents/child-history.ts`):
 > bounded byte pages read tail-first from the validated native session file
-> through the same artifact identity boundary as resume, byte-level stitching
-> of only newline-terminated records (an unterminated final line stays the
-> running child's incomplete append), per-read dev/ino identity re-verification,
-> one bounded retryable page error that keeps validated pages visible, an
-> explicit in-memory item window with far-end eviction and on-demand reload,
-> and stable native-entry-identity positioning — with no second transcript
-> store, cache, index, sidecar, lock, journal, or artifact version beside the
-> native session file, and no claim on Pi's private transcript pipeline. Live
+> through the same artifact identity boundary as resume — which rejects a
+> session file presented through a symlink, even inside the artifacts
+> directory — byte-level stitching of only newline-terminated records in both
+> paging directions (an unterminated final line stays the running child's
+> incomplete append, and a record larger than one page stitches forward too),
+> per-read verification of the opened descriptor's dev/ino identity with no
+> stat-then-open window, minimal native-envelope validation (non-empty `type`
+> and `id`, unique within the loaded window), independent older/newer bounded
+> retryable page errors that keep validated pages visible, a hard 480-item
+> in-memory window whose oversized pages keep a window into their own parse
+> with far-end trimming that stays reachable in both directions, and stable
+> native-entry-identity positioning — with no second transcript store, cache,
+> index, sidecar, lock, journal, or artifact version beside the native
+> session file, and no claim on Pi's private transcript pipeline. Live
 > streaming, cross-child navigation with per-child reading state, and the
 > remaining lifecycle/delivery qualification of the parent viewer
 > specification (#302) stay later slices.
