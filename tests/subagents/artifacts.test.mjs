@@ -25,7 +25,12 @@ const {
   validateRunArtifacts,
   writeRunState,
 } = artifacts;
-const { withTransientFsRetries, fsRetryCount } = artifacts.__testables;
+const {
+  withTransientFsRetries,
+  fsRetryCount,
+  resolveDirectRegularSessionFile,
+  validateRunArtifactsWithReadIo,
+} = artifacts.__testables;
 
 const ID = "subagent_00000000-0000-4000-8000-000000000001";
 const SESSION_ID = "019f0000-0000-7000-8000-000000000001";
@@ -214,6 +219,94 @@ test("resolveChildSessionFile rejects a symlinked session file, even inside the 
     rmSync(join(dir, "session.jsonl"));
     symlinkSync(outside, join(dir, "session.jsonl"));
     assert.throws(() => resolveChildSessionFile(ID), /missing or invalid/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveChildSessionFile rejects non-regular session paths", () => {
+  const root = makeTempRoot();
+  process.env.PI_AGENT_DIR = root;
+  try {
+    const { dir } = createValidArtifacts(root);
+    const sessionFile = join(dir, "session.jsonl");
+    rmSync(sessionFile);
+    mkdirSync(sessionFile);
+    assert.throws(() => resolveChildSessionFile(ID), /missing or invalid/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("session path resolution rejects a file replaced during canonicalization", () => {
+  const path = "/artifacts/session.jsonl";
+  let observations = 0;
+  const regular = { dev: 1, ino: 2, isFile: () => true };
+  const replacement = { dev: 1, ino: 3, isFile: () => false };
+  assert.throws(
+    () => resolveDirectRegularSessionFile(path, "/artifacts", {
+      lstat(candidate) {
+        assert.equal(candidate, path);
+        observations += 1;
+        return observations === 1 ? regular : replacement;
+      },
+      realpath(candidate) {
+        assert.equal(candidate, path);
+        return "/artifacts/target.jsonl";
+      },
+    }),
+    /changed while resolving/,
+  );
+  assert.equal(observations, 2);
+});
+
+test("session path resolution rejects mutable intermediate path components", () => {
+  assert.throws(
+    () => resolveDirectRegularSessionFile("/artifacts/link/session.jsonl", "/artifacts", {
+      lstat: () => ({ dev: 1, ino: 2, isFile: () => true }),
+      realpath: () => "/artifacts/target/session.jsonl",
+    }),
+    /not directly inside/,
+  );
+});
+
+test("resume validation never reads a session path replaced after open", () => {
+  const root = makeTempRoot();
+  try {
+    const { value } = createValidArtifacts(root);
+    const stable = { dev: 1, ino: 2, isFile: () => true };
+    const replacement = { dev: 1, ino: 3, isFile: () => true };
+    let observations = 0;
+    let read = false;
+    let closed = false;
+    assert.throws(
+      () => validateRunArtifactsWithReadIo(ID, {
+        lstat(candidate) {
+          assert.equal(candidate, value.sessionFile);
+          observations += 1;
+          return observations === 1 ? stable : replacement;
+        },
+        open(candidate) {
+          assert.equal(candidate, value.sessionFile);
+          return 7;
+        },
+        fstat(descriptor) {
+          assert.equal(descriptor, 7);
+          return stable;
+        },
+        readFile() {
+          read = true;
+          return "replacement content";
+        },
+        close(descriptor) {
+          assert.equal(descriptor, 7);
+          closed = true;
+        },
+      }),
+      /SESSION_HISTORY_UNAVAILABLE/,
+    );
+    assert.equal(read, false, "the replacement target is never read");
+    assert.equal(closed, true, "the opened descriptor is still closed on rejection");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -29,7 +29,7 @@ const {
   projectSessionEntries,
 } = viewerModule;
 const childHistoryModule = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
-const { createChildHistory, staticChildHistory } = childHistoryModule;
+const { staticChildHistory } = childHistoryModule;
 const {
   createSubagentRosterController,
   renderSubagentRoster,
@@ -503,15 +503,6 @@ function scriptedHistory(initial, handlers = {}) {
   };
 }
 
-function failingHistory(reason) {
-  return {
-    snapshot: () => ({ items: [], moreBefore: false, moreAfter: false, initialError: reason }),
-    loadOlder: () => false,
-    loadNewer: () => false,
-    retryInitial: () => false,
-  };
-}
-
 function baseModel(overrides = {}) {
   return {
     role: "explorer",
@@ -587,7 +578,7 @@ test("empty queued, starting, failed, aborted, completed, and read-error states 
     [{ status: "failed", failureReason: "model refused" }, /Failed: model refused/],
     [{ status: "aborted", failureReason: "user interrupt" }, /Aborted: user interrupt/],
     [{ status: "completed" }, /No transcript recorded\./],
-    [{ history: failingHistory("artifacts missing") }, /Transcript unavailable: artifacts missing/],
+    [{ history: staticChildHistory([], { initialError: "artifacts missing" }) }, /Transcript unavailable: artifacts missing/],
   ];
   for (const [overrides, pattern] of cases) {
     const { overlay } = overlayHarness(baseModel(overrides));
@@ -735,6 +726,43 @@ test("older and newer page errors render on their own edge with the matching ret
   assert.ok(history.calls.newer >= 1, "end at the loaded bottom retries the newer page");
   assert.ok(moved.some((line) => line.includes("newer recovered")), "the recovered newer page renders");
   assert.ok(!moved.some((line) => /could not be read/.test(line)), "both error lines are cleared");
+});
+
+test("page errors remain visible when the loaded history has no projected entries", () => {
+  const history = staticChildHistory([], {
+    moreBefore: true,
+    moreAfter: true,
+    olderError: "child history could not be read",
+    newerError: "child history could not be read",
+  });
+  const text = plain(renderOverlayLines(baseModel({ history })));
+  assert.ok(text.some((line) => /older child history could not be read — page up retries/.test(line)));
+  assert.ok(text.some((line) => /newer child history could not be read — page down retries/.test(line)));
+  assert.ok(!text.some((line) => line.includes("Starting…")), "the lifecycle placeholder never masks retryable errors");
+});
+
+test("stable entry ordinals preserve the seam when one native entry spans retained windows", () => {
+  const rows = (from, to) => Array.from({ length: to - from }, (_, offset) => ({
+    kind: "generic",
+    text: `logical row ${from + offset}`,
+    entryId: "one-native-entry",
+    entryItemIndex: from + offset,
+  }));
+  const history = scriptedHistory({ items: rows(20, 32), moreBefore: true }, {
+    loadOlder(view) {
+      view.set({ items: rows(0, 32), moreBefore: false, moreAfter: true });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  overlay.render(80);
+  overlay.handleInput(PAGE_UP);
+  overlay.render(80);
+  overlay.handleInput(PAGE_UP);
+  const text = plain(overlay.render(80));
+  assert.equal(history.calls.older, 1);
+  assert.ok(text.some((line) => line.includes("logical row 20")), "the previous top row remains the loaded-page seam");
+  assert.ok(!text.some((line) => line.includes("logical row 0")), "the seam key never aliases the first row of the new slice");
 });
 
 test("scroll keys retry a failed initial read and reveal the recovered tail", () => {

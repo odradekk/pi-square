@@ -11,6 +11,7 @@ const load = jiti(import.meta.url);
 const {
   CHILD_HISTORY_READ_ERROR,
   MAX_LOADED_ITEMS,
+  MAX_LOADED_PAGES,
   createChildHistory,
   projectSessionEntries,
 } = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
@@ -154,7 +155,8 @@ test("repeated older pages reach the earliest entry in native order", () => {
     const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600 });
     const snapshot = loadAll(pager);
     assert.equal(snapshot.moreBefore, false, "byte 0 was reached");
-    assert.equal(snapshot.pageError, undefined);
+    assert.equal(snapshot.olderError, undefined);
+    assert.equal(snapshot.newerError, undefined);
     const users = snapshot.items.filter((item) => item.kind === "user").map((item) => item.text);
     assert.equal(users.length, 30);
     assert.match(users[0], /message 0\b/, "the original delegation entry is reachable");
@@ -320,12 +322,8 @@ test("historical reads reject symlinked session files and mid-paging identity ch
 
     // A symlink pointing INSIDE the artifacts directory is rejected too: the
     // boundary requires a regular file at the recorded path.
-    const inside = join(otherRoot, "inside.jsonl");
     rmSync(sessionFile);
-    writeFileSync(inside, readFileSync(outside));
     mkdirSync(dirname(sessionFile), { recursive: true });
-    symlinkSync(inside, join(dirname(sessionFile), "inner.jsonl"));
-    rmSync(join(dirname(sessionFile), "inner.jsonl"));
     const { artifactsDir: again } = writeArtifacts(testRoot, conversation(10));
     const innerTarget = join(again, "inner-target.jsonl");
     writeFileSync(innerTarget, readFileSync(outside));
@@ -411,6 +409,28 @@ test("a transient read failure retries successfully and clears the bounded error
   }
 });
 
+test("a successful newer retry clears its error when it confirms EOF", () => {
+  const testRoot = root();
+  try {
+    writeArtifacts(testRoot, conversation(1));
+    let reads = 0;
+    const io = {
+      readRange: (file, start, end) => {
+        reads += 1;
+        if (reads === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+        return realReadRange(file, start, end);
+      },
+    };
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096, io });
+    assert.equal(pager.loadNewer(), false, "the failed EOF probe is retryable");
+    assert.equal(pager.snapshot().newerError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(pager.loadNewer(), false, "the successful retry confirms there is no newer page");
+    assert.equal(pager.snapshot().newerError, undefined, "a successful EOF probe clears the stale error");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 
 test("the loaded window stays bounded and reloads evicted pages on demand", () => {
   const testRoot = root();
@@ -475,7 +495,8 @@ test("identity failures at open surface the bounded initial error", () => {
     pager = createChildHistory("subagent_00000000-0000-4000-8000-0000000000ff", { observedAt: OBSERVED_AT });
     snapshot = pager.snapshot();
     assert.equal(snapshot.initialError, CHILD_HISTORY_READ_ERROR);
-    assert.equal(snapshot.pageError, undefined);
+    assert.equal(snapshot.olderError, undefined);
+    assert.equal(snapshot.newerError, undefined);
     void testRoot;
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
@@ -564,6 +585,103 @@ test("the hard item bound holds for one oversized page and trimmed history stays
     assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS);
     assert.equal(ids.at(-1), "e899", "the newest entry is reachable again");
     assert.equal(new Set(ids).size, ids.length, "no duplicated entries across the whole walk");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("metadata-only paging keeps retained page state bounded in both directions", () => {
+  const testRoot = root();
+  try {
+    const lines = [messageEntry("first-visible", { role: "user", content: "first", timestamp: 0 })];
+    for (let index = 0; index < 5_000; index += 1) {
+      lines.push({ type: "model_change", id: `meta-${index}`, timestamp: "2025-01-01T00:00:00Z", provider: "p", modelId: "m" });
+    }
+    lines.push(messageEntry("last-visible", { role: "user", content: "last", timestamp: 1 }));
+    writeArtifacts(testRoot, lines);
+
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 256 });
+    let loads = 0;
+    while (pager.loadOlder() && loads < 10_000) {
+      loads += 1;
+      assert.ok(pager.pages.length <= MAX_LOADED_PAGES, "older paging retains only the bounded page window");
+      assert.ok(
+        pager.snapshot().items.some((item) => item.entryId === "last-visible"),
+        "metadata-only pages do not evict the current visible anchor",
+      );
+    }
+    assert.equal(pager.snapshot().items[0]?.entryId, "first-visible", "the earliest visible entry stays reachable");
+    assert.equal(pager.snapshot().moreBefore, false);
+
+    loads = 0;
+    while (pager.loadNewer() && loads < 10_000) {
+      loads += 1;
+      assert.ok(pager.pages.length <= MAX_LOADED_PAGES, "newer paging retains only the bounded page window");
+      assert.ok(
+        pager.snapshot().items.some((item) => item.entryId === "first-visible"),
+        "metadata-only pages do not evict the current visible anchor on the return walk",
+      );
+    }
+    assert.equal(pager.snapshot().items.at(-1)?.entryId, "last-visible", "the newest visible entry stays reachable again");
+    assert.equal(pager.snapshot().moreAfter, false);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a stitched tool result stays consumed after probing the newer edge", () => {
+  const testRoot = root();
+  try {
+    const lines = [];
+    for (let index = 0; index < 100; index += 1) {
+      lines.push(messageEntry(`stitch-visible-${index}`, { role: "user", content: `older ${index}`, timestamp: index }));
+    }
+    lines.push(
+      messageEntry("padding", { role: "user", content: "P".repeat(400), timestamp: 1 }),
+      messageEntry("call-entry", {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "/private", offset: 1, limit: 2 } }],
+        stopReason: "toolUse",
+        timestamp: 2,
+      }),
+      messageEntry("result-entry", {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "payload" }],
+        isError: false,
+        timestamp: 3,
+      }),
+    );
+    writeArtifacts(testRoot, lines);
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 242 });
+    let loads = 0;
+    while (!pager.snapshot().items.some((item) => item.kind === "toolCall" && item.result?.isError === false) && loads < 20) {
+      assert.equal(pager.loadOlder(), true);
+      loads += 1;
+    }
+    let snapshot = pager.snapshot();
+    assert.deepEqual(snapshot.items.map((item) => item.kind), ["toolCall"]);
+    assert.equal(snapshot.moreAfter, false, "consuming the orphan updates the logical page size");
+    assert.equal(pager.loadNewer(), false, "the fully loaded newer edge has nothing to restore");
+    snapshot = pager.snapshot();
+    assert.deepEqual(snapshot.items.map((item) => item.kind), ["toolCall"], "the orphan result never reappears");
+
+    // Continue through visible older pages until the page cap evicts the
+    // result page but keeps its call page. Reloading that result must consume
+    // it again.
+    loads = 0;
+    while (!(snapshot.moreAfter && pager.pages.length === MAX_LOADED_PAGES) && loads < 1_000) {
+      assert.equal(pager.loadOlder(), true);
+      snapshot = pager.snapshot();
+      loads += 1;
+    }
+    assert.equal(snapshot.moreAfter, true, "the result page was evicted from the newer edge");
+    assert.ok(snapshot.items.some((item) => item.kind === "toolCall" && item.result?.isError === false));
+    assert.equal(pager.loadNewer(), true);
+    snapshot = pager.snapshot();
+    assert.ok(snapshot.items.some((item) => item.kind === "toolCall" && item.result?.isError === false));
+    assert.ok(!snapshot.items.some((item) => item.kind === "generic" && /tool result/.test(item.text)));
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
@@ -792,6 +910,17 @@ test("projection still exposes its bounded window contract", () => {
   assert.equal(window.items.length, 24);
   assert.equal(window.omitted, 6);
   assert.equal(window.items[0].entryId, "e6");
+
+  const oneLargeEntry = projectSessionEntries([
+    sessionHeader(),
+    messageEntry("large-entry", {
+      role: "assistant",
+      content: Array.from({ length: 600 }, () => ({ type: "unsupported" })),
+      timestamp: 1,
+    }),
+  ], MAX_LOADED_ITEMS);
+  assert.equal(oneLargeEntry.items[0].entryItemIndex, 120, "the retained slice keeps its entry-local ordinal");
+  assert.equal(oneLargeEntry.items.at(-1).entryItemIndex, 599);
 });
 
 // ---------------------------------------------------------------------------

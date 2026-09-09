@@ -182,7 +182,9 @@ function emptyStateLine(model: ChildOverlayModel, snapshot: ChildHistorySnapshot
   if (snapshot.initialError !== undefined) {
     return { text: `Transcript unavailable: ${snapshot.initialError}`, tone: "error" };
   }
-  if (snapshot.items.length > 0) return { text: "", tone: "muted" };
+  if (snapshot.items.length > 0 || snapshot.olderError !== undefined || snapshot.newerError !== undefined) {
+    return { text: "", tone: "muted" };
+  }
   switch (model.status) {
     case "queued":
       return { text: "Waiting to start", tone: "muted" };
@@ -201,8 +203,9 @@ function emptyStateLine(model: ChildOverlayModel, snapshot: ChildHistorySnapshot
 /** One item's stable identity: native entry id plus ordinal within the entry. */
 function itemKey(item: TranscriptItem, index: number, occurrences: Map<string, number>): string {
   const base = item.entryId !== undefined && item.entryId !== "" ? item.entryId : `@${index}`;
-  const occurrence = occurrences.get(base) ?? 0;
-  occurrences.set(base, occurrence + 1);
+  const fallback = occurrences.get(base) ?? 0;
+  const occurrence = item.entryItemIndex ?? fallback;
+  occurrences.set(base, Math.max(fallback, occurrence + 1));
   return `${base}#${occurrence}`;
 }
 

@@ -1,7 +1,11 @@
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -10,6 +14,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { dropChildPartition } from "../anchored-edit/partitions";
@@ -379,6 +384,86 @@ export interface ResolvedChildSessionFile {
   sessionFile: string;
 }
 
+type SessionPathStat = Pick<Stats, "dev" | "ino" | "isFile">;
+
+interface SessionPathIo {
+  lstat(path: string): SessionPathStat;
+  realpath(path: string): string;
+}
+
+const SESSION_PATH_IO: SessionPathIo = {
+  lstat: lstatSync,
+  realpath: realpathSync,
+};
+
+function sameFileIdentity(left: SessionPathStat, right: SessionPathStat): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function resolveDirectRegularSessionFile(
+  recordedPath: string,
+  artifactsDir: string,
+  io: SessionPathIo = SESSION_PATH_IO,
+): string {
+  const sessionFile = resolvePath(recordedPath);
+  if (dirname(sessionFile) !== artifactsDir) {
+    throw new Error("native session path is not directly inside the subagent artifacts directory");
+  }
+  const before = io.lstat(sessionFile);
+  if (!before.isFile()) throw new Error("native session path is not a regular file");
+
+  const realSessionFile = io.realpath(sessionFile);
+  if (dirname(realSessionFile) !== artifactsDir) {
+    throw new Error("native session file escapes the subagent artifacts directory");
+  }
+
+  // Re-observe the recorded path after canonicalization. A replacement with
+  // a symlink must not be hidden by realpath and handed to a later reader as
+  // the canonical target.
+  const after = io.lstat(sessionFile);
+  if (!after.isFile() || !sameFileIdentity(before, after)) {
+    throw new Error("native session path changed while resolving");
+  }
+  return sessionFile;
+}
+
+const SESSION_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+
+interface SessionReadIo {
+  lstat(path: string): SessionPathStat;
+  open(path: string, flags: number): number;
+  fstat(descriptor: number): SessionPathStat;
+  readFile(descriptor: number): string;
+  close(descriptor: number): void;
+}
+
+const SESSION_READ_IO: SessionReadIo = {
+  lstat: lstatSync,
+  open: openSync,
+  fstat: fstatSync,
+  readFile: (descriptor) => readFileSync(descriptor, "utf8"),
+  close: closeSync,
+};
+
+function readDirectRegularSessionFile(sessionFile: string, io: SessionReadIo = SESSION_READ_IO): string {
+  const before = io.lstat(sessionFile);
+  if (!before.isFile()) throw new Error("native session path is not a regular file");
+  const descriptor = io.open(sessionFile, SESSION_READ_FLAGS);
+  try {
+    const opened = io.fstat(descriptor);
+    const after = io.lstat(sessionFile);
+    if (
+      !opened.isFile() || !after.isFile()
+      || !sameFileIdentity(before, opened) || !sameFileIdentity(opened, after)
+    ) {
+      throw new Error("native session path changed while opening");
+    }
+    return io.readFile(descriptor);
+  } finally {
+    io.close(descriptor);
+  }
+}
+
 export function resolveChildSessionFile(id: string, operation = "resume"): ResolvedChildSessionFile {
   assertValidSubagentId(id, operation);
   const artifactsDir = artifactsDirFor(id);
@@ -393,19 +478,9 @@ export function resolveChildSessionFile(id: string, operation = "resume"): Resol
       throw new Error("run.json artifactsDir does not match its directory");
     }
 
-    // The native session file must be a regular file at the recorded path: a
-    // symlink — even one pointing inside the artifacts directory — is a
-    // rewritten artifact and is rejected before realpath can resolve it away.
-    if (lstatSync(details.sessionFile).isSymbolicLink()) {
-      throw new Error("native session file is a symlink");
-    }
+    const sessionFile = resolveDirectRegularSessionFile(details.sessionFile, realArtifactsDir);
 
-    const realSessionFile = realpathSync(details.sessionFile);
-    if (dirname(realSessionFile) !== realArtifactsDir) {
-      throw new Error("native session file escapes the subagent artifacts directory");
-    }
-
-    return { artifactsDir: realArtifactsDir, details, sessionFile: realSessionFile };
+    return { artifactsDir: realArtifactsDir, details, sessionFile };
   } catch (error) {
     if (error instanceof SubagentError) throw error;
     throw createSubagentError({
@@ -420,10 +495,10 @@ export function resolveChildSessionFile(id: string, operation = "resume"): Resol
   }
 }
 
-export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
+function validateRunArtifactsWithReadIo(id: string, io: SessionReadIo): ValidatedRunArtifacts {
   const { artifactsDir, details, sessionFile } = resolveChildSessionFile(id);
   try {
-    const rawSession = withTransientFsRetries(() => readFileSync(sessionFile, "utf8"));
+    const rawSession = withTransientFsRetries(() => readDirectRegularSessionFile(sessionFile, io));
     const sessionEntries = parseSessionFileStrict(rawSession);
     if (sessionEntries[0].id !== details.sessionId) {
       throw new Error("native session ID does not match run.json");
@@ -441,6 +516,10 @@ export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
       suggestedAction: "Verify that run.json and the native JSONL session file still exist and are unmodified.",
     });
   }
+}
+
+export function validateRunArtifacts(id: string): ValidatedRunArtifacts {
+  return validateRunArtifactsWithReadIo(id, SESSION_READ_IO);
 }
 
 export function listRunDirs(): string[] {
@@ -482,4 +561,6 @@ export const __testables = {
   validateRunStateShape,
   withTransientFsRetries,
   fsRetryCount,
+  resolveDirectRegularSessionFile,
+  validateRunArtifactsWithReadIo,
 };

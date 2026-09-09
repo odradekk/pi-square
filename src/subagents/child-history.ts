@@ -12,9 +12,9 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * transcript overlay. It reads the validated native session file through the
  * same child-artifact identity boundary resume uses — `resolveChildSessionFile`
  * keeps the artifacts directory inside the subagent state root, the run record
- * describing that directory, and the session file inside it, and rejects a
- * session file presented through a symlink — and pages that file tail-first in
- * bounded byte ranges. It creates no second transcript store: no cache file,
+ * describing that directory, and the session file inside it, and requires the
+ * recorded path to name a regular file directly — and pages that file
+ * tail-first in bounded byte ranges. It creates no second transcript store: no cache file,
  * index, sidecar, writer, lock, journal, migration, or artifact version
  * exists beside the native session file, and every read is stateless against
  * it.
@@ -33,20 +33,21 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * child's mid-append input and is never parsed as history.
  *
  * Every read opens the file once, verifies the opened descriptor's dev/ino
- * identity through `fstat`, and reads the bytes from that same descriptor —
- * there is no stat-then-open window — so a path replaced between checks can
- * never be read at stale offsets. Reads in each direction carry their own
- * bounded retryable error, so an older failure never masks or mislabels a
- * newer one.
+ * identity through `fstat`, checks that the path before and after opening names
+ * that same regular node, and reads bytes from the descriptor. Reads in each
+ * direction carry their own bounded retryable error, so an older failure never
+ * masks or mislabels a newer one.
  *
  * Memory stays explicitly bounded: the snapshot never exposes more than
  * {@link MAX_LOADED_ITEMS} projected items (each already text-budgeted by the
- * projection). A page whose parse exceeds the bound keeps a window into its
- * own projection, and trimming drops windows from the end opposite the paging
- * direction, so trimmed history remains reachable on demand in both
- * directions — nothing is silently discarded. One stitched entry may never
- * exceed {@link DEFAULT_MAX_ENTRY_BYTES}. A failure here is a viewer error
- * only: paging never touches the child lifecycle, abort signal, persistence,
+ * projection), and the pager retains at most {@link MAX_LOADED_PAGES} parsed
+ * pages even when internal metadata produces no visible item. A page whose
+ * parse exceeds the item bound keeps a window into its own projection, and
+ * trimming drops windows from the end opposite the paging direction, so
+ * trimmed history remains reachable on demand in both directions — nothing
+ * is silently discarded. One stitched entry may never exceed
+ * {@link DEFAULT_MAX_ENTRY_BYTES}. A failure here is a viewer error only:
+ * paging never touches the child lifecycle, abort signal, persistence,
  * delivery, wait ownership, or resume eligibility.
  */
 
@@ -56,6 +57,8 @@ const DEFAULT_PAGE_BYTES = 131_072;
 const DEFAULT_MAX_ENTRY_BYTES = 1_048_576;
 /** Hard cap on retained projected items — the in-memory window. */
 export const MAX_LOADED_ITEMS = 480;
+/** Hard cap on retained parsed pages, including pages with no projected item. */
+export const MAX_LOADED_PAGES = 64;
 /** Bytes read from the head just to validate the session header line. */
 const MAX_HEADER_READ_BYTES = 4_096;
 /** The one bounded reason every read, parse, and identity failure surfaces. */
@@ -64,24 +67,30 @@ export const CHILD_HISTORY_READ_ERROR = "child history could not be read";
 const NEWLINE = 0x0a;
 const EMPTY_BUFFER = Buffer.alloc(0);
 
-export type TranscriptItem =
-  | { kind: "user"; text: string; entryId?: string }
-  | { kind: "assistant"; message: Record<string, unknown>; entryId?: string }
+interface TranscriptIdentity {
+  entryId?: string;
+  /** Stable ordinal of this projected item inside its native session entry. */
+  entryItemIndex?: number;
+}
+
+export type TranscriptItem = (
+  | { kind: "user"; text: string }
+  | { kind: "assistant"; message: Record<string, unknown> }
   | {
     kind: "toolCall";
     name: string;
     summary: string;
     durationMs?: number;
     result?: { isError: boolean };
-    entryId?: string;
   }
-  | { kind: "generic"; text: string; entryId?: string };
+  | { kind: "generic"; text: string }
+) & TranscriptIdentity;
 
 export interface ChildTranscriptProjection {
   items: TranscriptItem[];
   /** Items older than the bounded window that exist in the projected input. */
   omitted: number;
-  /** Calls these entries opened but no entry in them resolved. */
+  /** Calls these entries opened, retained so page seams can be replayed. */
   openToolCalls: Map<string, OpenToolCallRef>;
   /** Tool results whose calls live before these entries, in entry order. */
   orphanResults: OrphanToolResultRef[];
@@ -340,6 +349,16 @@ export function projectSessionEntries(
     projected.push(genericLine("unsupported message entry", entryId));
   }
 
+  // Assign ordinals before slicing so a retained part of one native entry
+  // keeps the same identity when its page window moves.
+  const entryOccurrences = new Map<string, number>();
+  for (const item of projected) {
+    if (item.entryId === undefined) continue;
+    const occurrence = entryOccurrences.get(item.entryId) ?? 0;
+    item.entryItemIndex = occurrence;
+    entryOccurrences.set(item.entryId, occurrence + 1);
+  }
+
   if (projected.length <= windowSize) {
     return { items: projected, omitted: 0, openToolCalls: openCalls, orphanResults };
   }
@@ -384,8 +403,8 @@ export interface ChildHistoryView {
 /**
  * Injectable filesystem seam. One call opens the file once, reads the bytes
  * from that same descriptor, and reports the descriptor's own `fstat`
- * identity — production never stats a path and then opens it separately, so a
- * replacement between the two can never be read. The final path component is
+ * identity. Production binds the pre-open path, opened descriptor, and
+ * post-open path to one regular-file identity. The final path component is
  * never followed through a symlink.
  */
 export interface ChildHistoryIo {
@@ -396,19 +415,26 @@ export interface ChildHistoryIo {
   ): { stat: { size: number; dev: number; ino: number }; data: Buffer };
 }
 
-const HAVE_O_NOFOLLOW = (constants.O_NOFOLLOW ?? 0) !== 0;
-const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 const defaultIo: ChildHistoryIo = {
   readRange(file, start, end) {
-    // O_NOFOLLOW (POSIX) fails the open when the final component is a
-    // symlink; where the platform lacks it, lstat rejects it before opening.
-    if (!HAVE_O_NOFOLLOW && lstatSync(file).isSymbolicLink()) {
-      throw new Error("session file is a symlink");
-    }
+    // O_NOFOLLOW rejects a final symlink where available; O_NONBLOCK prevents
+    // a raced FIFO replacement from hanging the UI. The pre/open/post identity
+    // checks bind fallback platforms to one unchanged regular path.
+    const before = lstatSync(file);
+    if (!before.isFile()) throw new Error("session path is not a regular file");
     const descriptor = openSync(file, OPEN_FLAGS);
     try {
       const stats = fstatSync(descriptor);
+      const after = lstatSync(file);
+      if (
+        !stats.isFile() || !after.isFile()
+        || before.dev !== stats.dev || before.ino !== stats.ino
+        || after.dev !== stats.dev || after.ino !== stats.ino
+      ) {
+        throw new Error("session path changed while opening");
+      }
       if (end <= start) {
         return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: EMPTY_BUFFER };
       }
@@ -448,12 +474,11 @@ export interface ChildHistoryOptions {
 interface PagePairing {
   openCalls: Map<string, OpenToolCallRef>;
   /**
-   * Unpaired results by call ID. `index` is the orphan's generic row while it
-   * still renders, or null once a stitch or trim removed the row — the
-   * pairing stays re-playable if far-end trimming ever discards and reloads
-   * the page that consumed it.
+   * Unpaired results by call ID. `itemIndex` is stable within the full page
+   * projection; `index` locates the row inside the retained window or is null
+   * while that row lies outside it.
    */
-  results: Map<string, { isError: boolean; endedAt?: number; index: number | null }>;
+  results: Map<string, { isError: boolean; endedAt?: number; index: number | null; itemIndex: number }>;
 }
 
 interface HistoryPage {
@@ -477,6 +502,8 @@ interface HistoryPage {
   groupCount: number;
   /** Entry ids this page parsed, for duplicate-identity detection. */
   entryIds: Set<string>;
+  /** Cross-page results already folded into their older tool-call row. */
+  consumedResults: Map<string, { isError: boolean; endedAt?: number }>;
   pairing: PagePairing;
 }
 
@@ -543,8 +570,9 @@ export class ChildHistoryPager implements ChildHistoryView {
     if (this.oldestReadStart() === 0) return false;
     try {
       const loaded = this.floorUnterminated ? this.loadOlderUnterminated() : this.loadOlderStitched();
+      this.theOlderError = undefined;
       if (loaded) {
-        this.theOlderError = undefined;
+        this.compactEmptyPages();
         this.trimToBound("newest");
       }
       return loaded;
@@ -565,8 +593,9 @@ export class ChildHistoryPager implements ChildHistoryView {
     }
     try {
       const loaded = this.readForward();
+      this.theNewerError = undefined;
       if (loaded) {
-        this.theNewerError = undefined;
+        this.compactEmptyPages();
         this.trimToBound("oldest");
       }
       return loaded;
@@ -633,6 +662,7 @@ export class ChildHistoryPager implements ChildHistoryView {
         itemFrom: group.itemFrom,
         groupCount: group.groupCount,
         entryIds: group.entryIds,
+        consumedResults: new Map(),
         pairing: group.pairing,
       });
     } catch {
@@ -714,6 +744,7 @@ export class ChildHistoryPager implements ChildHistoryView {
         itemFrom: group.itemFrom,
         groupCount: group.groupCount,
         entryIds: group.entryIds,
+        consumedResults: new Map(),
         pairing: group.pairing,
       });
       stitchSeam(this.pages[this.pages.length - 2]!, this.pages[this.pages.length - 1]!);
@@ -736,6 +767,7 @@ export class ChildHistoryPager implements ChildHistoryView {
         entryIds: group.entryIds,
         pairing: windowPairing(group.full, from, items),
       };
+      this.restitchAround(0);
       this.theOlderError = undefined;
       this.trimToBound("newest");
       return items.length > 0;
@@ -760,6 +792,7 @@ export class ChildHistoryPager implements ChildHistoryView {
         entryIds: group.entryIds,
         pairing: windowPairing(group.full, page.itemFrom, items),
       };
+      this.restitchAround(this.pages.length - 1);
       this.theNewerError = undefined;
       const added = items.length > page.items.length;
       this.trimToBound("oldest");
@@ -777,7 +810,13 @@ export class ChildHistoryPager implements ChildHistoryView {
   ): { allItems: TranscriptItem[]; entryIds: Set<string>; full: ChildTranscriptProjection } {
     const read = this.io.readRange(this.sessionFile, page.parsedStart, page.lineEnd);
     this.verifyDescriptor(read.stat, page.parsedStart);
-    const group = this.parseGroup(read.data, collectCompleteLines(read.data, 0), others);
+    const group = this.parseGroup(
+      read.data,
+      collectCompleteLines(read.data, 0),
+      others,
+      undefined,
+      page.consumedResults,
+    );
     return { allItems: group.allItems, entryIds: group.entryIds, full: group.full };
   }
 
@@ -821,6 +860,7 @@ export class ChildHistoryPager implements ChildHistoryView {
       itemFrom: group.itemFrom,
       groupCount: group.groupCount,
       entryIds: group.entryIds,
+      consumedResults: new Map(),
       pairing: group.pairing,
     });
     if (this.pages.length > 1) stitchSeam(this.pages[0]!, this.pages[1]!);
@@ -858,6 +898,7 @@ export class ChildHistoryPager implements ChildHistoryView {
         itemFrom: group.itemFrom,
         groupCount: group.groupCount,
         entryIds: group.entryIds,
+        consumedResults: new Map(),
         pairing: group.pairing,
       });
       if (this.pages.length > 1) stitchSeam(this.pages[0]!, this.pages[1]!);
@@ -880,6 +921,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     lines: ReadonlyArray<{ start: number; end: number }>,
     others: readonly HistoryPage[],
     stitchedFirstLine?: Buffer,
+    consumedResults: ReadonlyMap<string, { isError: boolean; endedAt?: number }> = new Map(),
   ): {
     items: TranscriptItem[];
     itemFrom: number;
@@ -909,6 +951,7 @@ export class ChildHistoryPager implements ChildHistoryView {
       entries.push(entry);
     }
     const full = projectSessionEntries(entries, Number.POSITIVE_INFINITY, this.observedAt);
+    suppressConsumedResults(full, consumedResults);
     const groupCount = full.items.length;
     if (groupCount <= MAX_LOADED_ITEMS) {
       return {
@@ -962,8 +1005,17 @@ export class ChildHistoryPager implements ChildHistoryView {
    * — so the bound never silently discards history.
    */
   private trimToBound(end: "newest" | "oldest"): void {
-    while (this.totalItems() > MAX_LOADED_ITEMS) {
+    while (this.totalItems() > MAX_LOADED_ITEMS || this.pages.length > MAX_LOADED_PAGES) {
       const overflow = this.totalItems() - MAX_LOADED_ITEMS;
+      if (overflow <= 0 && this.pages.length > MAX_LOADED_PAGES) {
+        if (end === "newest") {
+          this.pages.pop();
+          this.forwardFragment = EMPTY_BUFFER;
+        } else {
+          this.pages.shift();
+        }
+        continue;
+      }
       if (end === "newest") {
         const last = this.pages[this.pages.length - 1]!;
         const drop = Math.min(overflow, last.items.length);
@@ -992,64 +1044,136 @@ export class ChildHistoryPager implements ChildHistoryView {
     }
   }
 
+  /**
+   * Metadata-only pages carry no transcript position. Fold every such page
+   * except a newest forward cursor into the following page's older byte
+   * boundary, so long metadata runs cannot evict the visible row anchoring
+   * the overlay while the parsed-page bound remains hard.
+   */
+  private compactEmptyPages(): void {
+    for (let index = 0; index + 1 < this.pages.length;) {
+      const page = this.pages[index]!;
+      if (
+        page.groupCount !== 0 || page.items.length !== 0
+        || page.pairing.openCalls.size !== 0 || page.pairing.results.size !== 0
+        || page.consumedResults.size !== 0
+      ) {
+        index += 1;
+        continue;
+      }
+      const newer = this.pages[index + 1]!;
+      newer.readStart = page.readStart;
+      newer.head = page.head;
+      this.pages.splice(index, 1);
+      this.restitchAround(index);
+    }
+  }
+
   private totalItems(): number {
     let total = 0;
     for (const page of this.pages) total += page.items.length;
     return total;
+  }
+
+  private restitchAround(index: number): void {
+    if (index > 0) stitchSeam(this.pages[index - 1]!, this.pages[index]!);
+    if (index + 1 < this.pages.length) stitchSeam(this.pages[index]!, this.pages[index + 1]!);
   }
 }
 
 /**
  * Pairs a page boundary back together: the newer page's leading orphan
  * results resolve the older page's still-open calls, updating each call in
- * place and dropping the orphan's generic row. The consumed result keeps its
- * call-id key with a null index, so a far-end trim that later discards and
- * reloads the call's page can pair it again without duplicating a row. A gap
- * wider than one page keeps its bounded orphan rows.
+ * place and dropping the orphan's generic row. The newer page retains bounded
+ * consumed-result metadata so re-windowing either page can replay the pairing
+ * without restoring or duplicating the orphan row. A gap wider than one page
+ * keeps its bounded orphan rows.
  */
 function stitchSeam(older: HistoryPage, newer: HistoryPage): void {
-  if (older.pairing.openCalls.size === 0 || newer.pairing.results.size === 0) return;
+  if (older.pairing.openCalls.size === 0) return;
+  for (const [callId, result] of newer.consumedResults) {
+    const open = older.pairing.openCalls.get(callId);
+    if (open === undefined) continue;
+    resolveOpenCall(open, result);
+  }
   for (const [callId, result] of newer.pairing.results) {
     const open = older.pairing.openCalls.get(callId);
     if (open === undefined) continue;
-    open.item.result = { isError: result.isError };
-    if (open.startedAt !== undefined && result.endedAt !== undefined) {
-      open.item.durationMs = Math.max(0, result.endedAt - open.startedAt);
-    } else {
-      delete open.item.durationMs;
-    }
-    older.pairing.openCalls.delete(callId);
-    if (result.index === null) continue;
-    newer.items.splice(result.index, 1);
+    resolveOpenCall(open, result);
+    newer.consumedResults.set(callId, {
+      isError: result.isError,
+      ...(result.endedAt !== undefined ? { endedAt: result.endedAt } : {}),
+    });
+    newer.groupCount = Math.max(0, newer.groupCount - 1);
+    if (result.itemIndex < newer.itemFrom) newer.itemFrom = Math.max(0, newer.itemFrom - 1);
+    if (result.index !== null) newer.items.splice(result.index, 1);
     for (const other of newer.pairing.results.values()) {
-      if (other !== result && other.index !== null && other.index > result.index) other.index -= 1;
+      if (other === result) continue;
+      if (other.itemIndex > result.itemIndex) other.itemIndex -= 1;
+      if (result.index !== null && other.index !== null && other.index > result.index) other.index -= 1;
     }
-    result.index = null;
+    newer.pairing.results.delete(callId);
   }
 }
 
+function resolveOpenCall(
+  open: OpenToolCallRef,
+  result: { isError: boolean; endedAt?: number },
+): void {
+  open.item.result = { isError: result.isError };
+  if (open.startedAt !== undefined && result.endedAt !== undefined) {
+    open.item.durationMs = Math.max(0, result.endedAt - open.startedAt);
+  } else {
+    delete open.item.durationMs;
+  }
+}
+
+/** Removes result rows already folded into an older call before re-windowing. */
+function suppressConsumedResults(
+  full: ChildTranscriptProjection,
+  consumed: ReadonlyMap<string, { isError: boolean; endedAt?: number }>,
+): void {
+  if (consumed.size === 0) return;
+  const dropped = full.orphanResults
+    .filter((orphan) => consumed.has(orphan.callId))
+    .map((orphan) => orphan.index)
+    .sort((left, right) => left - right);
+  for (let index = dropped.length - 1; index >= 0; index -= 1) {
+    full.items.splice(dropped[index]!, 1);
+  }
+  let droppedBefore = 0;
+  const remaining: OrphanToolResultRef[] = [];
+  for (const orphan of full.orphanResults) {
+    if (consumed.has(orphan.callId)) {
+      droppedBefore += 1;
+      continue;
+    }
+    remaining.push({ ...orphan, index: orphan.index - droppedBefore });
+  }
+  full.orphanResults = remaining;
+}
+
 /** Pairing state for one window `[from, from + items.length)` of a projection. */
-function pagePairing(full: ChildTranscriptProjection, from: number): PagePairing {
+function pagePairing(full: ChildTranscriptProjection, from: number, length = full.items.length - from): PagePairing {
   const openCalls = new Map<string, OpenToolCallRef>();
   for (const [callId, ref] of full.openToolCalls) {
     if (full.items.indexOf(ref.item) >= from) openCalls.set(callId, ref);
   }
-  const results = new Map<string, { isError: boolean; endedAt?: number; index: number | null }>();
+  const results = new Map<string, { isError: boolean; endedAt?: number; index: number | null; itemIndex: number }>();
   for (const orphan of full.orphanResults) {
-    if (orphan.index >= from) {
-      results.set(orphan.callId, {
-        isError: orphan.isError,
-        ...(orphan.endedAt !== undefined ? { endedAt: orphan.endedAt } : {}),
-        index: orphan.index - from,
-      });
-    }
+    results.set(orphan.callId, {
+      isError: orphan.isError,
+      ...(orphan.endedAt !== undefined ? { endedAt: orphan.endedAt } : {}),
+      index: orphan.index >= from && orphan.index < from + length ? orphan.index - from : null,
+      itemIndex: orphan.index,
+    });
   }
   return { openCalls, results };
 }
 
 /** Pairing for an explicitly re-sliced window of a full projection. */
 function windowPairing(full: ChildTranscriptProjection, from: number, items: TranscriptItem[]): PagePairing {
-  const pairing = pagePairing(full, from);
+  const pairing = pagePairing(full, from, items.length);
   const keep = new Set(items);
   for (const [callId, ref] of [...pairing.openCalls]) {
     if (!keep.has(ref.item)) pairing.openCalls.delete(callId);
