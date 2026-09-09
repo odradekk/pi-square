@@ -1,43 +1,40 @@
 import { boundedAssistantTextParts, type AssistantTextPart } from "./child-history";
 import { sanitizeSubagentDisplay } from "./display";
-import { clipWithHeadTail } from "./confirmed-delivery";
 import { rosterToolArgsDisplay } from "./tool-display";
 
 /**
  * Ephemeral live view events for one running child (odradekk/pi-square#306).
  *
  * The one-time child execution boundary derives these ordered events from the
- * native session events it already observes and publishes them through a
- * session-scoped feed. They are presentation state only: the feed keeps no
- * buffer, a child with no subscriber publishes into nothing, and a subscriber
- * that throws is isolated so a viewer defect can never fail, delay, or alter
- * the child run, its artifacts, or its delivery. Every text crossing an event
- * is the shared sanitized, bounded projection the persisted viewer already
- * uses, so a live-rendered message matches its persisted counterpart exactly.
+ * native session events it already observes and hands them to a session-scoped
+ * feed. Delivery is decoupled from the child: `publish` only enqueues into a
+ * bounded FIFO and schedules one flush, so no subscriber — however slow — ever
+ * runs inside the child's native event dispatch. Flushing preserves publish
+ * order, replaces a pending streaming delta in place (deltas are cumulative),
+ * and surfaces overflow through one bounded omission marker instead of silent
+ * loss. Every text crossing an event is the shared sanitized, bounded
+ * projection the persisted viewer already uses, so a live-rendered message
+ * matches its persisted counterpart exactly.
  */
 
 /**
  * Ordinary streaming deltas repaint coalesced at most this often; structural
- * events (message completion, tool start/end, lifecycle) render immediately.
+ * events (message completion, tool start/end, lifecycle) render immediately
+ * once delivered.
  */
 export const LIVE_REPAINT_COALESCE_MS = 110;
-
-/** Head/tail budget for each accumulated streaming field. */
-export const MAX_LIVE_STREAM_TEXT = 4_000;
-/** Completed-but-unconfirmed messages retained in the live tail. */
-export const MAX_LIVE_COMPLETED = 8;
-/** Content parts kept per live completed message. */
-export const MAX_LIVE_CONTENT_PARTS = 128;
+/** Streaming partial keeps at most this many ordered content parts (display bound). */
+export const MAX_LIVE_STREAM_PARTS = 128;
+/** Ordered live tail entries (message completions and tool rows) retained. */
+export const MAX_LIVE_ITEMS = 16;
+/** Pending feed events before the oldest is dropped with a visible marker. */
+export const MAX_PENDING_EVENTS = 256;
 /** Per-child feed subscribers; the roster controller needs one. */
 const MAX_FEED_SUBSCRIBERS = 8;
 
-function clipStreamText(value: unknown): string {
-  const clean = sanitizeSubagentDisplay(value);
-  return clean ? clipWithHeadTail(clean, MAX_LIVE_STREAM_TEXT) : "";
-}
-
 function boundedId(value: unknown): string {
-  return clipWithHeadTail(sanitizeSubagentDisplay(value), 128);
+  const clean = sanitizeSubagentDisplay(value);
+  return clean.length <= 128 ? clean : `${clean.slice(0, 64)}…${clean.slice(-64)}`;
 }
 
 /** Bounded display-safe tool identity for one live tool event. */
@@ -48,17 +45,19 @@ function liveToolDisplay(toolName: unknown, args: unknown): { name: string; summ
 
 export type ChildViewEvent =
   | { kind: "run_started" }
-  | { kind: "message_delta"; text: string; thinking: string }
+  | { kind: "message_delta"; parts: AssistantTextPart[] }
   | { kind: "message_completed"; content: AssistantTextPart[] }
-  | { kind: "tool_started"; toolCallId: string; name: string; summary: string }
+  | { kind: "tool_started"; toolCallId: string; name: string; summary: string; startedAt: number }
   | { kind: "tool_updated"; toolCallId: string; name: string }
   | { kind: "tool_finished"; toolCallId: string; name: string; isError: boolean }
   | { kind: "tool_result_completed" }
-  | { kind: "run_finished" };
+  | { kind: "run_finished" }
+  | { kind: "live_events_dropped" };
 
 /**
- * Structural events render immediately; ordinary streaming deltas
- * (`message_delta`, `tool_updated`) repaint through the coalesced timer.
+ * Structural events render immediately once delivered; ordinary streaming
+ * deltas (`message_delta`, `tool_updated`) repaint through the coalesced
+ * timer. The omission marker is structural: it changes what the tail shows.
  */
 export function isStructuralViewEvent(event: ChildViewEvent): boolean {
   return event.kind !== "message_delta" && event.kind !== "tool_updated";
@@ -79,22 +78,15 @@ export function deriveChildViewEvent(event: any): ChildViewEvent | undefined {
     case "message_update": {
       // Pi's message_update carries the cumulative streaming message; the
       // delta itself is not needed to render the current partial content.
+      // Parts keep their native order (text/thinking interleaving included)
+      // and use the same bounded projection as a persisted message, with the
+      // newest parts retained when the streaming display bound is exceeded.
       const message = event.message;
       if (!message || message.role !== "assistant") return undefined;
-      const textParts: string[] = [];
-      const thinkingParts: string[] = [];
-      const content = message.content;
-      if (Array.isArray(content)) {
-        for (const part of content) {
-          if (!part || typeof part !== "object") continue;
-          if (part.type === "text" && typeof part.text === "string") textParts.push(part.text);
-          else if (part.type === "thinking" && typeof part.thinking === "string") thinkingParts.push(part.thinking);
-        }
-      }
+      const parts = boundedAssistantTextParts(message.content);
       return {
         kind: "message_delta",
-        text: clipStreamText(textParts.join("\n")),
-        thinking: clipStreamText(thinkingParts.join("\n")),
+        parts: parts.length > MAX_LIVE_STREAM_PARTS ? parts.slice(-MAX_LIVE_STREAM_PARTS) : parts,
       };
     }
     case "message_end": {
@@ -102,12 +94,13 @@ export function deriveChildViewEvent(event: any): ChildViewEvent | undefined {
       if (!message || typeof message !== "object") return undefined;
       if (message.role === "toolResult") return { kind: "tool_result_completed" };
       if (message.role !== "assistant") return undefined;
-      const content = boundedAssistantTextParts(message.content).slice(0, MAX_LIVE_CONTENT_PARTS);
-      return { kind: "message_completed", content };
+      // No part-count cap: the persisted projection of the same message is
+      // uncapped too, and reconciliation compares both projections exactly.
+      return { kind: "message_completed", content: boundedAssistantTextParts(message.content) };
     }
     case "tool_execution_start": {
       const display = liveToolDisplay(event.toolName, event.args);
-      return { kind: "tool_started", toolCallId: boundedId(event.toolCallId), ...display };
+      return { kind: "tool_started", toolCallId: boundedId(event.toolCallId), ...display, startedAt: Date.now() };
     }
     case "tool_execution_update":
       return { kind: "tool_updated", toolCallId: boundedId(event.toolCallId), name: liveToolDisplay(event.toolName, undefined).name };
@@ -127,31 +120,119 @@ export function deriveChildViewEvent(event: any): ChildViewEvent | undefined {
 
 export type ChildViewEventListener = (event: ChildViewEvent) => void;
 
-/**
- * Session-scoped ephemeral feed keyed by child public ID. Publishing fans out
- * synchronously to the current subscribers with each call isolated; nothing is
- * buffered, so an unobserved child costs one Map lookup and the feed can never
- * accumulate state. Cleared by the session registrar on teardown.
- */
 export interface ChildViewFeed {
+  /**
+   * Enqueues one event for ordered delivery in a later scheduler tick. Never
+   * runs subscriber work in the calling stack, so a slow or stuck subscriber
+   * cannot delay the child run that publishes.
+   */
   publish(id: string, event: ChildViewEvent): void;
   subscribe(id: string, listener: ChildViewEventListener): () => void;
+  /** Drops every subscriber and every undelivered event (session teardown). */
   clear(): void;
 }
 
-export function createChildViewFeed(): ChildViewFeed {
+export interface ChildViewFeedOptions {
+  /**
+   * Delivery scheduler. The default `setImmediate` keeps all subscriber work
+   * out of the publishing call stack (and out of the microtask chain the
+   * child run itself resolves through); tests inject a manual clock.
+   */
+  schedule?: (callback: () => void) => void;
+}
+
+const defaultSchedule = (callback: () => void) => {
+  const handle = setImmediate(callback);
+  (handle as { unref?: () => void })?.unref?.();
+};
+
+interface PendingEvent {
+  id: string;
+  event: ChildViewEvent;
+}
+
+export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildViewFeed {
   const subscribers = new Map<string, Set<ChildViewEventListener>>();
+  const schedule = options.schedule ?? defaultSchedule;
+  const queue: PendingEvent[] = [];
+  /** Children whose events were dropped at the bound; flushed as one marker. */
+  const omitted = new Map<string, number>();
+  let flushScheduled = false;
+
+  const fanOut = (id: string, event: ChildViewEvent) => {
+    const listeners = subscribers.get(id);
+    if (!listeners || listeners.size === 0) return;
+    for (const listener of [...listeners]) {
+      try {
+        listener(event);
+      } catch {
+        // A broken viewer subscriber must never reach the child run.
+      }
+    }
+  };
+
+  const flush = () => {
+    flushScheduled = false;
+    const batch = queue.splice(0, queue.length);
+    if (omitted.size > 0) {
+      // One omission marker leads each affected child's remaining events: the
+      // dropped entries were older than everything still queued.
+      const markers = new Map<string, PendingEvent[]>();
+      for (const id of [...omitted.keys()]) {
+        omitted.delete(id);
+        markers.set(id, [{ id, event: { kind: "live_events_dropped" } }]);
+      }
+      const ordered: PendingEvent[] = [];
+      const inserted = new Set<string>();
+      for (const entry of batch) {
+        const marker = markers.get(entry.id);
+        if (marker && !inserted.has(entry.id)) {
+          ordered.push(marker[0]!);
+          inserted.add(entry.id);
+        }
+        ordered.push(entry);
+      }
+      for (const [id, marker] of markers) {
+        if (!inserted.has(id)) ordered.push(marker[0]!);
+      }
+      batch.length = 0;
+      batch.push(...ordered);
+    }
+    for (const { id, event } of batch) fanOut(id, event);
+  };
+  const ensureFlush = () => {
+    if (flushScheduled) return;
+    flushScheduled = true;
+    try {
+      schedule(flush);
+    } catch {
+      // A scheduler defect must not wedge the feed; flush inline as a fallback.
+      flushScheduled = false;
+      flush();
+    }
+  };
+
   return {
     publish(id, event) {
-      const listeners = subscribers.get(id);
-      if (!listeners || listeners.size === 0) return;
-      for (const listener of [...listeners]) {
-        try {
-          listener(event);
-        } catch {
-          // A broken viewer subscriber must never reach the child run.
+      if (event.kind === "message_delta") {
+        // Deltas are cumulative: replacing the pending one in place keeps the
+        // queue bounded under heavy streaming without disturbing order.
+        for (let index = queue.length - 1; index >= 0; index -= 1) {
+          const pending = queue[index]!;
+          if (pending.id === id && pending.event.kind === "message_delta") {
+            pending.event = event;
+            return;
+          }
         }
       }
+      while (queue.length >= MAX_PENDING_EVENTS) {
+        const dropped = queue.shift();
+        if (dropped && dropped.event.kind !== "live_events_dropped") {
+          omitted.set(dropped.id, (omitted.get(dropped.id) ?? 0) + 1);
+        }
+      }
+      queue.push({ id, event });
+      ensureFlush();
     },
     subscribe(id, listener) {
       let listeners = subscribers.get(id);
@@ -170,6 +251,8 @@ export function createChildViewFeed(): ChildViewFeed {
     },
     clear() {
       subscribers.clear();
+      queue.length = 0;
+      omitted.clear();
     },
   };
 }

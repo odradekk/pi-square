@@ -43,6 +43,14 @@ export interface SubagentFeature {
   setInheritedSystemCore(systemPrompt: string | undefined): void;
 }
 
+/**
+ * Exposed for focused registration tests; not part of the public extension
+ * API. Holds the most recently registered runtime state so tests can observe
+ * session-scoped teardown like the live view feed.
+ */
+const registrarStates: SubagentRuntimeState[] = [];
+export const __testables = { lastState: () => registrarStates.at(-1) };
+
 export default function registerSubagents(
   pi: ExtensionAPI,
   runtime?: DisplayRuntimeProvider,
@@ -73,6 +81,7 @@ export default function registerSubagents(
   // clears any memory-only wait claims.
   const blockingCallRegistry = createSubagentBlockingCallRegistry();
   state.background.delivery = delivery;
+  registrarStates.push(state);
   // The roster ticks through the display runtime's session motion scheduler,
   // resolved at each session start because a replacement session rebuilds the
   // runtime; motion `off` and downgraded environments never schedule a timer.
@@ -101,7 +110,10 @@ export default function registerSubagents(
     // The old session's roster tears down and the new session's roster starts
     // synchronously, before the first await below: a slow child-partition
     // reconcile must never leave the previous session's widget, subscription,
-    // or motion tick alive.
+    // or motion tick alive. The session-scoped live view feed is part of that
+    // teardown: its subscribers and any undelivered events never survive into
+    // the replacement session.
+    state.background.viewFeed?.clear();
     roster.stop();
     roster.start(ctx);
     refresh(ctx.cwd);
@@ -148,6 +160,7 @@ export default function registerSubagents(
   });
 
   pi.on("session_shutdown", async () => {
+    state.background.viewFeed?.clear();
     roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");
     abortAllBackgroundJobs(pi, state.background);

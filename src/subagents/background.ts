@@ -46,7 +46,9 @@ export interface BackgroundState {
   /**
    * Session-scoped ephemeral live view feed (#306): ordered child view events
    * published by the running jobs and observed only by the roster controller's
-   * open overlay. Presentation state with no buffer and no persistence.
+   * open overlay. Delivery runs in its own scheduler tick through one bounded
+   * queue; there is no persistence, and session replacement and shutdown
+   * clear the feed.
    */
   viewFeed?: ChildViewFeed;
 }
