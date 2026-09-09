@@ -27,8 +27,9 @@ const {
   childOverlayPlan,
   classifyViewerInput,
   projectSessionEntries,
-  readChildTranscript,
 } = viewerModule;
+const childHistoryModule = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
+const { createChildHistory, staticChildHistory } = childHistoryModule;
 const {
   createSubagentRosterController,
   renderSubagentRoster,
@@ -76,6 +77,10 @@ class FakeClock {
 
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
+const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
+const HOME = "\x1b[H";
+const END = "\x1b[F";
 const ENTER = "\r";
 const ESCAPE = "\x1b";
 const BACKSPACE = "\x7f";
@@ -91,6 +96,10 @@ test("escape closes, editing no-ops stay open, and shortcuts are suppressed", ()
   assert.deepEqual(classifyViewerInput("\x08"), { kind: "ignore" }, "ctrl+h backspace stays open");
   assert.deepEqual(classifyViewerInput(UP), { kind: "ignore" });
   assert.deepEqual(classifyViewerInput(DOWN), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput(PAGE_UP), { kind: "scroll", delta: -1 }, "page up scrolls the transcript");
+  assert.deepEqual(classifyViewerInput(PAGE_DOWN), { kind: "scroll", delta: 1 }, "page down scrolls the transcript");
+  assert.deepEqual(classifyViewerInput(HOME), { kind: "jump", to: "start" }, "home jumps toward the earliest entry");
+  assert.deepEqual(classifyViewerInput(END), { kind: "jump", to: "end" }, "end jumps to the newest edge");
   assert.deepEqual(classifyViewerInput("\x1b[C"), { kind: "ignore" }, "right arrow suppressed");
   assert.deepEqual(classifyViewerInput(ENTER), { kind: "ignore" }, "enter never submits through the overlay");
   assert.deepEqual(classifyViewerInput("\t"), { kind: "ignore" });
@@ -318,7 +327,7 @@ test("projection display-sanitizes every text channel before any renderer", () =
   assert.match(call.summary, /called/, "the allowlisted summary replaces raw command arguments");
 
   // The rendered overlay shows none of the hostile channels either.
-  const rendered = renderOverlayLines(baseModel({ transcript: { ok: true, omitted: 0, items } }));
+  const rendered = renderOverlayLines(baseModel({ history: staticChildHistory(items) }));
   const renderedText = plain(rendered).join("\n");
   for (const leak of ["swordfish", "abc123", "eyJhbGc", "bare-secret", "req-internal", "SECRET TOOL RESULT", "call-secret-1", "curl", "\u001b"]) {
     assert.ok(!renderedText.includes(leak), `${leak} never renders`);
@@ -364,11 +373,11 @@ test("read errors never surface raw malformed JSON fragments", () => {
     });
     // The header line is malformed JSON that quotes a secret-bearing fragment.
     writeFileSync(sessionFile, `{"type":"session","id":"${SESSION_ID}","cwd":"password: swordfish\n`);
-    const transcript = readChildTranscript(ID);
-    assert.equal(transcript.ok, false);
-    assert.ok(!transcript.reason.includes("swordfish"), "parse failures do not quote the malformed content");
-    assert.ok(!transcript.reason.includes("{"), "parse failures do not leak JSON fragments");
-    assert.ok(transcript.reason.length > 0 && transcript.reason.length <= 200);
+    const snapshot = createChildHistory(ID).snapshot();
+    assert.equal(snapshot.initialError, "child history could not be read");
+    assert.ok(!snapshot.initialError.includes("swordfish"), "parse failures do not quote the malformed content");
+    assert.ok(!snapshot.initialError.includes("{"), "parse failures do not leak JSON fragments");
+    assert.ok(snapshot.initialError.length > 0 && snapshot.initialError.length <= 200);
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
@@ -395,7 +404,7 @@ test("unsupported but meaningful content becomes a non-empty sanitized fallback"
   assert.match(text, /unsupported message entry/);
 
   // A generic fallback fits whatever narrow width the renderer offers.
-  const { overlay } = overlayHarness(baseModel({ transcript: { ok: true, omitted: 0, items } }), 24, 10);
+  const { overlay } = overlayHarness(baseModel({ history: staticChildHistory(items) }), 24, 10);
   const lines = overlay.render(20);
   for (const line of lines) assert.ok(visibleWidth(line) <= 20, "fallback lines respect narrow overlay widths");
   const plainLines = plain(lines);
@@ -436,7 +445,7 @@ test("unsupported parts remain visible while Pi-native assistant grouping stays 
     ["user", "generic", "user", "assistant", "toolCall", "generic"],
     "Pi's native assistant group stays intact before its tool rows; unsupported content remains visible afterward",
   );
-  const rendered = plain(renderOverlayLines(baseModel({ transcript: { ok: true, omitted: 0, items: projection.items } }))).join("\n");
+  const rendered = plain(renderOverlayLines(baseModel({ history: staticChildHistory(projection.items) }))).join("\n");
   for (const expected of ["user before", "unsupported user message content", "user after", "assistant before", "assistant after", "Read", "unsupported assistant content"]) {
     assert.ok(rendered.includes(expected), `${expected} remains visible`);
   }
@@ -486,7 +495,7 @@ function writeSessionFile(root, lines, overrides = {}) {
   return { artifactsDir, sessionFile };
 }
 
-test("readChildTranscript returns the bounded recent window from valid artifacts", () => {
+test("the pager returns the initial bounded tail page from valid artifacts", () => {
   const root = transcriptRoot();
   const previousAgentDir = process.env.PI_AGENT_DIR;
   try {
@@ -494,9 +503,9 @@ test("readChildTranscript returns the bounded recent window from valid artifacts
       messageEntry("e1", { role: "user", content: "first question", timestamp: 1 }),
       messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "answer" }], timestamp: 2 }),
     ]);
-    const transcript = readChildTranscript(ID);
-    assert.equal(transcript.ok, true);
-    assert.deepEqual(transcript.items.map((item) => item.kind), ["user", "assistant"]);
+    const snapshot = createChildHistory(ID).snapshot();
+    assert.equal(snapshot.initialError, undefined);
+    assert.deepEqual(snapshot.items.map((item) => item.kind), ["user", "assistant"]);
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
@@ -504,7 +513,7 @@ test("readChildTranscript returns the bounded recent window from valid artifacts
   }
 });
 
-test("readChildTranscript tolerates the running child's torn final append", () => {
+test("the pager tolerates the running child's torn final append", () => {
   const root = transcriptRoot();
   const previousAgentDir = process.env.PI_AGENT_DIR;
   try {
@@ -515,9 +524,9 @@ test("readChildTranscript tolerates the running child's torn final append", () =
     // Simulate a mid-append write: the final JSON line is cut in half and the
     // file still ends without a newline.
     appendFileSync(sessionFile, `${JSON.stringify(messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "str" }], timestamp: 2 })).slice(0, 40)}`);
-    const transcript = readChildTranscript(ID);
-    assert.equal(transcript.ok, true);
-    assert.deepEqual(transcript.items.map((item) => item.kind), ["user"]);
+    const snapshot = createChildHistory(ID).snapshot();
+    assert.equal(snapshot.initialError, undefined);
+    assert.deepEqual(snapshot.items.map((item) => item.kind), ["user"]);
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
@@ -525,7 +534,7 @@ test("readChildTranscript tolerates the running child's torn final append", () =
   }
 });
 
-test("readChildTranscript reports identity failures as bounded read errors", () => {
+test("the pager reports identity failures as bounded read errors", () => {
   const root = transcriptRoot();
   const previousAgentDir = process.env.PI_AGENT_DIR;
   try {
@@ -533,14 +542,12 @@ test("readChildTranscript reports identity failures as bounded read errors", () 
     writeSessionFile(root, [], {});
     const { sessionFile } = { sessionFile: join(ensureArtifactsDir(ID), "session.jsonl") };
     writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "other-session", timestamp: "t", cwd: "/tmp" })}\n`);
-    const mismatch = readChildTranscript(ID);
-    assert.equal(mismatch.ok, false);
-    assert.equal(mismatch.reason, "child history could not be read", "artifact diagnostics stay outside the overlay");
+    const mismatch = createChildHistory(ID).snapshot();
+    assert.equal(mismatch.initialError, "child history could not be read", "artifact diagnostics stay outside the overlay");
 
     // Missing run.json entirely.
-    const missing = readChildTranscript("subagent_00000000-0000-4000-8000-0000000000ff");
-    assert.equal(missing.ok, false);
-    assert.equal(missing.reason, "child history could not be read", "filesystem paths and internal errors never render");
+    const missing = createChildHistory("subagent_00000000-0000-4000-8000-0000000000ff").snapshot();
+    assert.equal(missing.initialError, "child history could not be read", "filesystem paths and internal errors never render");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
@@ -548,7 +555,7 @@ test("readChildTranscript reports identity failures as bounded read errors", () 
   }
 });
 
-test("readChildTranscript bounds the read on oversized session files", () => {
+test("the pager bounds the initial read on oversized session files", () => {
   const root = transcriptRoot();
   const previousAgentDir = process.env.PI_AGENT_DIR;
   try {
@@ -566,10 +573,11 @@ test("readChildTranscript bounds the read on oversized session files", () => {
     }
     const header = { type: "session", version: 3, id: SESSION_ID, timestamp: new Date(0).toISOString(), cwd: "/tmp/project" };
     writeFileSync(sessionFile, [header, ...entries, ...extra].map((line) => JSON.stringify(line)).join("\n") + "\n");
-    const transcript = readChildTranscript(ID);
-    assert.equal(transcript.ok, true);
-    assert.equal(transcript.items.length, 24, "the bounded window survives a multi-hundred-KiB session");
-    const last = transcript.items.at(-1);
+    const snapshot = createChildHistory(ID).snapshot();
+    assert.equal(snapshot.initialError, undefined);
+    assert.ok(snapshot.items.length < 302, "only a bounded tail page of a multi-hundred-KiB session loads");
+    assert.equal(snapshot.moreBefore, true, "the remaining history stays reachable on demand");
+    const last = snapshot.items.at(-1);
     assert.match(last.text, /299/, "the window keeps the recent tail");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
@@ -597,6 +605,44 @@ function overlayHarness(model, columns = 80, rows = 30) {
   return { overlay, events };
 }
 
+/** Scriptable history view: records loads and mutates through the handlers. */
+function scriptedHistory(initial, handlers = {}) {
+  const calls = { older: 0, newer: 0, retries: 0 };
+  let snapshot = {
+    items: initial.items ?? [],
+    moreBefore: initial.moreBefore === true,
+    moreAfter: initial.moreAfter === true,
+    ...(initial.pageError !== undefined ? { pageError: initial.pageError } : {}),
+    ...(initial.initialError !== undefined ? { initialError: initial.initialError } : {}),
+  };
+  return {
+    calls,
+    snapshot: () => snapshot,
+    set(next) { snapshot = { ...snapshot, ...next }; },
+    loadOlder() {
+      calls.older += 1;
+      return handlers.loadOlder ? handlers.loadOlder(this) : false;
+    },
+    loadNewer() {
+      calls.newer += 1;
+      return handlers.loadNewer ? handlers.loadNewer(this) : false;
+    },
+    retryInitial() {
+      calls.retries += 1;
+      return handlers.retryInitial ? handlers.retryInitial(this) : false;
+    },
+  };
+}
+
+function failingHistory(reason) {
+  return {
+    snapshot: () => ({ items: [], moreBefore: false, moreAfter: false, initialError: reason }),
+    loadOlder: () => false,
+    loadNewer: () => false,
+    retryInitial: () => false,
+  };
+}
+
 function baseModel(overrides = {}) {
   return {
     role: "explorer",
@@ -605,7 +651,7 @@ function baseModel(overrides = {}) {
     lifecycleTone: "accent",
     status: "running",
     durationText: "1m 05s",
-    transcript: { ok: true, items: [], omitted: 0 },
+    history: staticChildHistory([]),
     cwd: "/tmp/project",
     ...overrides,
   };
@@ -622,10 +668,7 @@ function renderOverlayLines(model, columns = 80, rows = 30, width = 64) {
 
 test("overlay renders title, rules, transcript body, and help within the width", () => {
   const model = baseModel({
-    transcript: {
-      ok: true,
-      omitted: 0,
-      items: [
+    history: staticChildHistory([
         { kind: "user", text: "find the bug in the parser" },
         {
           kind: "assistant",
@@ -636,8 +679,7 @@ test("overlay renders title, rules, transcript body, and help within the width",
           },
         },
         { kind: "toolCall", name: "pwsh", summary: "called", durationMs: 1_250, result: { isError: false } },
-      ],
-    },
+    ]),
   });
   const { overlay, events } = overlayHarness(model, 120, 45);
   const lines = overlay.render(96);
@@ -676,7 +718,7 @@ test("empty queued, starting, failed, aborted, completed, and read-error states 
     [{ status: "failed", failureReason: "model refused" }, /Failed: model refused/],
     [{ status: "aborted", failureReason: "user interrupt" }, /Aborted: user interrupt/],
     [{ status: "completed" }, /No transcript recorded\./],
-    [{ transcript: { ok: false, reason: "artifacts missing" } }, /Transcript unavailable: artifacts missing/],
+    [{ history: failingHistory("artifacts missing") }, /Transcript unavailable: artifacts missing/],
   ];
   for (const [overrides, pattern] of cases) {
     const { overlay } = overlayHarness(baseModel(overrides));
@@ -706,27 +748,191 @@ test("overlay input closes on escape, replays complete content, and suppresses t
   assert.equal(events.replayed.length, 3, "only h, i, and the paste ever replayed");
 });
 
-test("overlay body keeps the bounded recent tail and states the cut once", () => {
+test("overlay body opens on the bounded recent tail and scrolls with bounded indicators", () => {
+  // Generic rows are exactly one line each, so the assertions track the
+  // viewport math rather than Pi's user-message padding.
   const items = Array.from({ length: 40 }, (_, index) => ({
-    kind: "user",
+    kind: "generic",
     text: `entry ${String(index).padStart(2, "0")}`,
+    entryId: `e${index}`,
   }));
-  const { overlay } = overlayHarness(baseModel({ transcript: { ok: true, items, omitted: 0 } }), 80, 20);
+  const { overlay } = overlayHarness(baseModel({ history: staticChildHistory(items) }), 80, 20);
   const text = plain(overlay.render(80));
   const plan = childOverlayPlan(80, 20);
   assert.ok(text.length <= plan.bodyRows + 4, "total rows stay within the overlay plan");
-  assert.match(text[2], /\+\d+ earlier lines/, "the single cut marker leads the body");
+  assert.match(text[2], /\+\d+ earlier lines/, "the leading indicator states the cut once");
   assert.ok(text.some((line) => line.includes("entry 39")), "the most recent entry stays visible");
-  assert.ok(!text.some((line) => line.includes("entry 0\n") || line.trim() === "entry 00"), "dropped entries do not render");
+  assert.ok(!text.some((line) => /entry 0\d/.test(line) && line.trim() !== "entry 09"), "entries above the viewport do not render");
 
-  const omittedModel = baseModel({ transcript: { ok: true, items: items.slice(-5), omitted: 35 } });
-  const { overlay: omittedOverlay } = overlayHarness(omittedModel, 80, 30);
-  assert.match(plain(omittedOverlay.render(80))[2], /\+35 earlier entries/);
+  overlay.handleInput(PAGE_UP);
+  const moved = plain(overlay.render(80));
+  assert.match(moved[2], /\+\d+ earlier lines/, "the indicator still leads after a page up");
+  assert.ok(moved.some((line) => /entry 1\d|entry 2\d/.test(line)), "an earlier page becomes visible");
+  assert.ok(!moved.some((line) => line.includes("entry 39")), "the previous bottom leaves the viewport");
+
+  overlay.handleInput(PAGE_DOWN);
+  const back = plain(overlay.render(80));
+  assert.ok(back.some((line) => line.includes("entry 39")), "page down returns toward the tail");
+  assert.match(back[2], /\+\d+ earlier lines/);
+
+  // A history that still holds unread older bytes names it once at the top.
+  const moreModel = baseModel({ history: staticChildHistory(items.slice(-5), { moreBefore: true }) });
+  const { overlay: moreOverlay } = overlayHarness(moreModel, 80, 30);
+  assert.match(plain(moreOverlay.render(80))[2], /earlier history \(page up\)/);
+});
+
+test("page up at the loaded top demands exactly one bounded older page and keeps the seam stable", () => {
+  // Twenty single-line items; pressing page up at the top of the loaded
+  // window loads one older page whose items prepend in native order.
+  const older = Array.from({ length: 12 }, (_, index) => ({
+    kind: "generic",
+    text: `old ${String(index).padStart(2, "0")}`,
+    entryId: `old-${index}`,
+  }));
+  const recent = Array.from({ length: 20 }, (_, index) => ({
+    kind: "generic",
+    text: `new ${String(index).padStart(2, "0")}`,
+    entryId: `new-${index}`,
+  }));
+  const history = scriptedHistory({ items: recent, moreBefore: true }, {
+    loadOlder(view) {
+      view.set({ items: [...older, ...view.snapshot().items], moreBefore: false });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  let text = plain(overlay.render(80));
+  assert.ok(text.some((line) => line.includes("new 19")), "the tail page opens at the bottom");
+
+  // Scroll once to the loaded top; the edge marker names the unread page.
+  overlay.handleInput(PAGE_UP);
+  text = plain(overlay.render(80));
+  assert.equal(history.calls.older, 0, "scrolling inside the loaded window requests nothing");
+  assert.match(text[2], /earlier history \(page up\)/, "the loaded top names the unread older page");
+
+  overlay.handleInput(PAGE_UP);
+  text = plain(overlay.render(80));
+  assert.equal(history.calls.older, 1, "one page-up at the loaded top loads exactly one older page");
+  assert.ok(text.some((line) => /old \d\d/.test(line)), "the loaded older page becomes visible");
+  assert.ok(text.some((line) => line.includes("new 00")), "the seam entry closes the viewport at its bottom edge");
+  assert.ok(!text.some((line) => /earlier history/.test(line)), "the edge marker disappears once byte history is loaded");
+
+  // Page up again only scrolls: the demand request does not repeat.
+  overlay.handleInput(PAGE_UP);
+  assert.equal(history.calls.older, 1, "scrolling inside the loaded window never re-requests a page");
+  text = plain(overlay.render(80));
+  assert.ok(text.some((line) => /old 0\d/.test(line)), "the scroll reaches older loaded entries");
+});
+
+test("a page error renders one bounded retryable line while validated pages stay visible", () => {
+  const items = Array.from({ length: 6 }, (_, index) => ({
+    kind: "generic",
+    text: `kept ${index}`,
+    entryId: `kept-${index}`,
+  }));
+  const history = scriptedHistory({ items, moreBefore: true, pageError: "child history could not be read" }, {
+    loadOlder(view) {
+      view.set({ pageError: undefined, moreBefore: false, items: [{ kind: "generic", text: "older recovered", entryId: "rec" }, ...view.snapshot().items] });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 30);
+  let text = plain(overlay.render(80));
+  assert.match(text[2], /older child history could not be read — page up retries/, "the bounded page error replaces the edge marker");
+  assert.ok(text.some((line) => line.includes("kept 5")), "validated pages stay visible under the error");
+
+  overlay.handleInput(PAGE_UP);
+  text = plain(overlay.render(80));
+  assert.equal(history.calls.older, 1, "page up retries the failed page");
+  assert.ok(text.some((line) => line.includes("older recovered")), "a successful retry renders the recovered page");
+  assert.ok(!text.some((line) => /could not be read/.test(line)), "the error line clears with the error");
+});
+
+test("scroll keys retry a failed initial read and reveal the recovered tail", () => {
+  const history = scriptedHistory({ initialError: "child history could not be read" }, {
+    retryInitial(view) {
+      view.set({ initialError: undefined, items: [{ kind: "generic", text: "recovered tail", entryId: "r" }] });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 30);
+  let text = plain(overlay.render(80));
+  assert.match(text[2], /Transcript unavailable: child history could not be read/);
+  overlay.handleInput(PAGE_UP);
+  assert.equal(history.calls.retries, 1, "a scroll key retries the failed initial load");
+  text = plain(overlay.render(80));
+  assert.ok(text.some((line) => line.includes("recovered tail")), "the recovered tail page renders");
+});
+
+test("page up reaches history from a state-line body with no parsed items yet", () => {
+  // A running child whose tail page is entirely one incomplete append leaves
+  // zero parsed items; the explicit state line stays, but paging still works.
+  const history = scriptedHistory({ items: [], moreBefore: true }, {
+    loadOlder(view) {
+      view.set({
+        items: [
+          { kind: "generic", text: "earliest recovered", entryId: "first" },
+          { kind: "generic", text: "next recovered", entryId: "second" },
+        ],
+        moreBefore: false,
+      });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 30);
+  let text = plain(overlay.render(80));
+  assert.match(text[2], /Starting…/, "the empty parsed window keeps its explicit state");
+  overlay.handleInput(PAGE_UP);
+  assert.equal(history.calls.older, 1, "page up still demands the older page");
+  text = plain(overlay.render(80));
+  assert.ok(text.some((line) => line.includes("earliest recovered")), "the recovered page replaces the state line");
+});
+
+test("home walks bounded page loads toward the earliest entry and end follows the newest edge", () => {
+  const makeItems = (prefix, count) => Array.from({ length: count }, (_, index) => ({
+    kind: "generic",
+    text: `${prefix}${String(index).padStart(2, "0")}`,
+    entryId: `${prefix}-${index}`,
+  }));
+  let batches = 3;
+  const history = scriptedHistory({ items: makeItems("new", 20), moreBefore: true }, {
+    loadOlder(view) {
+      if (batches <= 0) { view.set({ moreBefore: false }); return false; }
+      batches -= 1;
+      view.set({ items: [...makeItems(`old${batches}`, 10), ...view.snapshot().items], moreBefore: batches > 0 });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  overlay.render(80);
+  overlay.handleInput(HOME);
+  assert.equal(history.calls.older, 3, "home chains the remaining bounded page loads to the earliest entry");
+  let text = plain(overlay.render(80));
+  assert.ok(text.some((line) => line.includes("old000")), "the earliest loaded entry is at the top");
+  assert.ok(!text.some((line) => /earlier history/.test(line)), "no older edge remains");
+
+  // End probes the newest edge even when the snapshot flag is stale, then
+  // stops at the first empty probe.
+  let appendedOnce = false;
+  const appended = scriptedHistory({ items: makeItems("a", 4) }, {
+    loadNewer(view) {
+      if (appendedOnce) return false;
+      appendedOnce = true;
+      view.set({ items: [...view.snapshot().items, { kind: "generic", text: "appended line", entryId: "z" }] });
+      return true;
+    },
+  });
+  const { overlay: endOverlay } = overlayHarness(baseModel({ history: appended }), 80, 20);
+  endOverlay.render(80);
+  endOverlay.handleInput(END);
+  assert.equal(appended.calls.newer, 2, "end probes the newest edge and stops at the first empty page");
+  const endText = plain(endOverlay.render(80));
+  assert.ok(endText.some((line) => line.includes("appended line")), "the appended entry is followed");
 });
 
 test("overlay lines cache by width and terminal size and invalidate cleanly", () => {
   const model = baseModel({
-    transcript: { ok: true, omitted: 0, items: [{ kind: "user", text: "cached question" }] },
+    history: staticChildHistory([{ kind: "user", text: "cached question" }]),
   });
   const { overlay } = overlayHarness(model);
   const first = overlay.render(64);
@@ -742,7 +948,7 @@ test("overlay adapts to a small terminal with the one-cell-margin plan", () => {
     status: "queued",
     lifecycleLabel: "– queued",
     lifecycleTone: "muted",
-    transcript: { ok: true, omitted: 0, items: [{ kind: "user", text: "queued work" }] },
+    history: staticChildHistory([{ kind: "user", text: "queued work" }]),
   });
   const { overlay } = overlayHarness(model, 40, 12);
   const plan = childOverlayPlan(40, 12);
@@ -821,14 +1027,10 @@ test("outer overlay options follow the live terminal dimensions", async () => {
 
 test("the overlay renders responsively under both shipped themes", () => {
   const model = baseModel({
-    transcript: {
-      ok: true,
-      omitted: 2,
-      items: [
-        { kind: "user", text: "trace the failing path through the scheduler" },
-        { kind: "toolCall", name: "grep", summary: "called", result: { isError: false } },
-      ],
-    },
+    history: staticChildHistory([
+      { kind: "user", text: "trace the failing path through the scheduler" },
+      { kind: "toolCall", name: "grep", summary: "called", result: { isError: false } },
+    ], { moreBefore: true }),
   });
   for (const themeFile of ["pi-square-theme-dark.json", "pi-square-theme-light.json"]) {
     const theme = loadThemeFromPath(join(packageRoot, "themes", themeFile));
@@ -849,9 +1051,13 @@ test("the overlay renders responsively under both shipped themes", () => {
       const text = plain(lines);
       assert.match(text[0], /explorer aaaaaaaa/, `${themeFile} ${columns}x${rows} keeps the title identity`);
       assert.match(text.at(-1), /esc close/, `${themeFile} ${columns}x${rows} keeps the help row`);
-      // Small plans may trade the entries marker for the line-cut marker; both
-      // state the cut exactly once.
-      assert.match(text[2], /\+\d+ earlier (?:entries|lines)/, `${themeFile} ${columns}x${rows} states the omitted window`);
+      // One bounded affordance states the unread earlier window: the
+      // history edge at the loaded top, or the scroll indicator above it.
+      assert.match(
+        text[2],
+        /earlier history \(page up\)|\+\d+ earlier lines/,
+        `${themeFile} ${columns}x${rows} states the unread older window`,
+      );
       // The tiny plans keep only the most recent lines; the readable sizes
       // keep the user entry too.
       if (columns >= 60) {
