@@ -5,6 +5,13 @@ import type { DisplayRuntime } from "../display/runtime";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
 import { createChildHistory } from "./child-history";
 import { sanitizeSubagentDisplay } from "./display";
+import {
+  defaultPaintTimers,
+  isStructuralViewEvent,
+  LIVE_REPAINT_COALESCE_MS,
+  type ChildViewEvent,
+  type PaintTimers,
+} from "./live-events";
 import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./types";
 import {
@@ -359,6 +366,11 @@ export interface SubagentRosterOptions {
    * the roster never ticks on its own.
    */
   readonly motion?: () => RosterMotion | undefined;
+  /**
+   * Timer seam for the live overlay repaint (#306): one pending coalesced
+   * repaint at most, injected as a clock in tests.
+   */
+  readonly timers?: PaintTimers;
 }
 
 /**
@@ -369,6 +381,14 @@ export interface SubagentRosterOptions {
  * stays the lifecycle source of truth: the controller adds no durable state,
  * no retention exemption, and no delivery interaction, and opening or viewing
  * a child is observational only.
+ *
+ * Since #306 an open overlay is live: the controller subscribes that child's
+ * ephemeral view feed while the overlay is open, forwards events into the
+ * overlay, repaints structural events immediately and ordinary streaming
+ * deltas through the one coalesced repaint timer it owns, keeps the open
+ * title's lifecycle truthful across transitions, and unsubscribes plus cancels
+ * the timer on overlay close and session teardown. A subscriber defect is
+ * contained as one bounded overlay diagnostic and never reaches the child.
  */
 export function createSubagentRosterController(
   state: BackgroundState,
@@ -391,6 +411,63 @@ export function createSubagentRosterController(
   let closeOverlay: (() => void) | undefined;
   /** Component reference retained independently so a rejected custom promise can dispose it. */
   let activeOverlay: ChildTranscriptOverlay | undefined;
+  /** TUI of the open overlay, used only to request coalesced live repaints. */
+  let openTui: { requestRender(): void } | undefined;
+  /** Live view feed subscription for the open child (#306). */
+  let unsubscribeLive: (() => void) | undefined;
+  /** Lifecycle status last pushed into the open overlay, to detect transitions. */
+  let openModelStatus: BackgroundJobSnapshot["status"] | undefined;
+  const timers = options.timers ?? defaultPaintTimers;
+  /** The one session-owned live repaint timer; at most one is ever pending. */
+  let paintTimer: unknown;
+  let lastPaintAt = -Infinity;
+
+  const cancelLivePaint = () => {
+    if (paintTimer !== undefined) {
+      timers.clearTimeout(paintTimer);
+      paintTimer = undefined;
+    }
+  };
+
+  const paintOpenOverlay = () => {
+    lastPaintAt = now();
+    try {
+      openTui?.requestRender();
+    } catch {
+      // Repaint requests are best-effort; the next frame retries.
+    }
+  };
+
+  /**
+   * Live repaint scheduling (#306): structural events render immediately,
+   * ordinary streaming deltas coalesce to at most one repaint per window and
+   * share the single pending timer with any structural flush.
+   */
+  const scheduleLivePaint = (structural: boolean) => {
+    if (structural) {
+      cancelLivePaint();
+      paintOpenOverlay();
+      return;
+    }
+    if (paintTimer !== undefined) return;
+    const remaining = LIVE_REPAINT_COALESCE_MS - (now() - lastPaintAt);
+    if (remaining <= 0) {
+      paintOpenOverlay();
+      return;
+    }
+    paintTimer = timers.setTimeout(() => {
+      paintTimer = undefined;
+      paintOpenOverlay();
+    }, remaining);
+  };
+
+  const detachLiveView = () => {
+    unsubscribeLive?.();
+    unsubscribeLive = undefined;
+    cancelLivePaint();
+    openTui = undefined;
+    openModelStatus = undefined;
+  };
   let viewportStart = 0;
   let tuiRef: WidgetTui | undefined;
   const stopMotion = () => {
@@ -454,6 +531,40 @@ export function createSubagentRosterController(
     viewportStart = Math.min(Math.max(0, viewportStart), maxStart);
   };
 
+  /**
+   * Keeps the open overlay's lifecycle truthful while it stays open (#306):
+   * every transition of the viewed child — including terminalization — updates
+   * the title and state line, a terminal transition performs one final
+   * bounded history reconciliation, and the change renders immediately. A
+   * presentation defect here is contained like every refresh failure.
+   */
+  const pushOpenOverlayLifecycle = (jobs: readonly BackgroundJobSnapshot[]) => {
+    const overlay = activeOverlay;
+    if (overlay === undefined || openId === undefined) return;
+    const job = jobs.find((candidate) => candidate.id === openId);
+    if (!job || openModelStatus === job.status) return;
+    openModelStatus = job.status;
+    const status = job.status;
+    const failureReason = status === "failed" || status === "aborted" ? rosterFailureReason(job) : undefined;
+    try {
+      overlay.updateLifecycle({
+        status,
+        lifecycleLabel: LIFECYCLE_LABELS[status],
+        lifecycleTone: LIFECYCLE_TONES[status],
+        durationText: formatRosterDuration(
+          ACTIVE_STATUSES.has(status)
+            ? now() - job.details.startedAt
+            : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
+        ),
+        ...(failureReason ? { failureReason } : {}),
+      });
+      if (!ACTIVE_STATUSES.has(status)) overlay.reconcileNow(8);
+    } catch {
+      // The overlay stays observational; a rendering defect stays contained.
+    }
+    scheduleLivePaint(true);
+  };
+
   const refresh = () => {
     if (!context?.hasUI || context.mode !== "tui") return;
     const jobs = rosterJobs();
@@ -467,6 +578,7 @@ export function createSubagentRosterController(
     }
 
     followViewport(rows);
+    pushOpenOverlayLifecycle(jobs);
     const focus = focusId();
     const snapshotAt = now();
     lastPublishAt = snapshotAt;
@@ -545,6 +657,7 @@ export function createSubagentRosterController(
 
     candidateId = undefined;
     openId = job.id;
+    openModelStatus = job.status;
 
     const settle = () => {
       if (closeOverlay !== undefined) {
@@ -556,6 +669,7 @@ export function createSubagentRosterController(
           // Closing an already-closed overlay is harmless.
         }
       }
+      detachLiveView();
       openId = undefined;
       candidateId = undefined;
       refresh();
@@ -568,6 +682,7 @@ export function createSubagentRosterController(
         // outer geometry follows terminal resizes across the small/normal
         // threshold for as long as the overlay stays open.
         overlayOptions = childOverlayOptions(tui);
+        openTui = tui;
         const overlay = new ChildTranscriptOverlay({
           tui,
           theme,
@@ -585,6 +700,23 @@ export function createSubagentRosterController(
           },
         });
         activeOverlay = overlay;
+        // Live view events (#306): the feed's subscriber isolation keeps a
+        // broken listener from the child run; this guard keeps the overlay's
+        // own failures from escaping too, as one bounded diagnostic row.
+        unsubscribeLive = state.viewFeed?.subscribe(job.id, (event: ChildViewEvent) => {
+          const target = activeOverlay;
+          if (target === undefined || openId !== job.id) return;
+          try {
+            target.applyLiveEvent(event);
+          } catch {
+            try {
+              target.setLiveDiagnostic();
+            } catch {
+              // Contained: the persisted view stays usable.
+            }
+          }
+          scheduleLivePaint(isStructuralViewEvent(event));
+        });
         closeOverlay = () => {
           overlay.dispose();
           if (activeOverlay === overlay) activeOverlay = undefined;
@@ -599,6 +731,7 @@ export function createSubagentRosterController(
           activeOverlay?.dispose();
           activeOverlay = undefined;
           closeOverlay = undefined;
+          detachLiveView();
           openId = undefined;
           refresh();
         }
@@ -607,6 +740,7 @@ export function createSubagentRosterController(
       activeOverlay?.dispose();
       activeOverlay = undefined;
       closeOverlay = undefined;
+      detachLiveView();
       openId = undefined;
       refresh();
       return;
@@ -676,6 +810,7 @@ export function createSubagentRosterController(
         // Closing an already-closed overlay is harmless.
       }
     }
+    detachLiveView();
     activeOverlay?.dispose();
     activeOverlay = undefined;
     openId = undefined;

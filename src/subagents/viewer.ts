@@ -21,13 +21,15 @@ import type { DisplayRuntime } from "../display/runtime";
 import { DEFAULT_DISPLAY_POLICY, type DisplayDescriptionV1 } from "../display/types";
 import {
   CHILD_HISTORY_READ_ERROR,
+  type AssistantTextPart,
   type ChildHistorySnapshot,
   type ChildHistoryView,
   type TranscriptItem,
 } from "./child-history";
+import { MAX_LIVE_COMPLETED, type ChildViewEvent } from "./live-events";
 
 /**
- * Read-only child transcript viewer (odradekk/pi-square#304, #305).
+ * Read-only child transcript viewer (odradekk/pi-square#304, #305, #306).
  *
  * The viewer is one presentation-only projection of a background child. It
  * reads the child's validated native session artifacts through the same
@@ -49,10 +51,18 @@ import {
  * rendered line stay explicitly bounded, positions are anchored by stable
  * native entry identity rather than array offsets, and page failures render
  * one bounded retryable error while previously validated pages stay visible.
- * The model is still frozen when the overlay opens; live streaming,
- * cross-child navigation, and per-child reading state are later slices of
- * #302, and the overlay remains a plugin projection — not Pi's private native
- * transcript pipeline.
+ *
+ * Since #306 the overlay is live while the child runs: the roster controller
+ * forwards the child's ephemeral view events (`applyLiveEvent`) so streaming
+ * assistant text and thinking render as a bounded tail below the persisted
+ * window, completed messages reconcile against the session file as Pi appends
+ * them (a live entry drops only when its exact persisted counterpart is
+ * loaded, so nothing is duplicated, reordered, or lost), and lifecycle
+ * transitions update the open view (`updateLifecycle`). The overlay owns no
+ * timer and never repaints on its own for live events — the controller owns
+ * the one coalesced repaint timer. Cross-child navigation and per-child
+ * reading state remain later slices of #302, and the overlay remains a plugin
+ * projection — not Pi's private native transcript pipeline.
  */
 
 /** Overlay rows that are chrome: title, two rules, and the help row. */
@@ -178,16 +188,21 @@ export interface ChildOverlayInput {
   onReplay(text: string): void;
 }
 
-function emptyStateLine(model: ChildOverlayModel, snapshot: ChildHistorySnapshot): { text: string; tone: ThemeColor } {
+function emptyStateLine(
+  model: ChildOverlayModel,
+  snapshot: ChildHistorySnapshot,
+  hasLive = false,
+): { text: string; tone: ThemeColor } {
+  // A queued child has no session file yet — that is the expected waiting
+  // state, not a read failure, so it outranks the initial error.
+  if (model.status === "queued") return { text: "Waiting to start", tone: "muted" };
   if (snapshot.initialError !== undefined) {
     return { text: `Transcript unavailable: ${snapshot.initialError}`, tone: "error" };
   }
-  if (snapshot.items.length > 0 || snapshot.olderError !== undefined || snapshot.newerError !== undefined) {
+  if (hasLive || snapshot.items.length > 0 || snapshot.olderError !== undefined || snapshot.newerError !== undefined) {
     return { text: "", tone: "muted" };
   }
   switch (model.status) {
-    case "queued":
-      return { text: "Waiting to start", tone: "muted" };
     case "running":
     case "cancelling":
       return { text: "Starting…", tone: "muted" };
@@ -199,7 +214,6 @@ function emptyStateLine(model: ChildOverlayModel, snapshot: ChildHistorySnapshot
       return { text: "No transcript recorded.", tone: "muted" };
   }
 }
-
 /** One item's stable identity: native entry id plus ordinal within the entry. */
 function itemKey(item: TranscriptItem, index: number, occurrences: Map<string, number>): string {
   const base = item.entryId !== undefined && item.entryId !== "" ? item.entryId : `@${index}`;
@@ -217,13 +231,36 @@ interface LineModel {
   keys: string[];
 }
 
+/** Live tail state (#306): bounded ephemeral projection below the persisted window. */
+interface LiveTail {
+  /** Cumulative sanitized streaming partial of the in-flight assistant message. */
+  streaming: { text: string; thinking: string } | undefined;
+  /** Completed-but-unconfirmed messages, oldest first, bounded. */
+  completed: AssistantTextPart[][];
+  /** Bounded diagnostic for a contained live-subscriber failure. */
+  diagnostic: string | undefined;
+}
+
+function emptyLiveTail(): LiveTail {
+  return { streaming: undefined, completed: [], diagnostic: undefined };
+}
+
+function contentKey(content: unknown): string {
+  try {
+    return JSON.stringify(content) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * The capturing overlay component: one title row, one bounded scrollable
  * transcript body, and one help row between quiet rules. Item components and
  * the flattened scroll space are cached by width and history version; the
  * final viewport is cached additionally by terminal size and scroll position,
  * so a running tool still refreshes its duration at the motion interval while
- * scrolling re-slices cached lines.
+ * scrolling re-slices cached lines. Live events drop the caches through
+ * `applyLiveEvent`; the roster controller owns when a frame actually repaints.
  */
 export class ChildTranscriptOverlay implements Component {
   private readonly input: ChildOverlayInput;
@@ -235,6 +272,7 @@ export class ChildTranscriptOverlay implements Component {
   private scrollTop = Number.POSITIVE_INFINITY;
   private lastWidth: number | undefined;
   private lineModel: { width: number; version: number; model: LineModel } | undefined;
+  private live = emptyLiveTail();
   private cache: {
     width: number;
     columns: number;
@@ -318,6 +356,27 @@ export class ChildTranscriptOverlay implements Component {
    * lines, and an optional newer-history edge. Markers and items share the
    * same scroll space so the body budget always bounds the viewport exactly.
    */
+  /** One item's rendered lines, falling back to the sanitized generic row. */
+  private renderedItemLines(item: TranscriptItem, contentWidth: number): string[] {
+    try {
+      return this.componentsFor(item).flatMap((component) => component.render(contentWidth));
+    } catch {
+      // A single entry that Pi's components cannot build renders through
+      // the sanitized generic fallback; the view never throws.
+      return this.componentsFor({ kind: "generic", text: this.describeItem(item) })[0]!
+        .render(contentWidth);
+    }
+  }
+
+  /**
+   * Builds the flattened scroll space for one width: an optional older-history
+   * edge (or the bounded retryable page error), every loaded item's rendered
+   * lines, an optional newer-history edge, and the bounded live tail (#306) —
+   * the contained diagnostic, completed-but-unconfirmed messages, and the
+   * streaming partial, in that order, always below the persisted window.
+   * Markers and items share the same scroll space so the body budget always
+   * bounds the viewport exactly.
+   */
   private buildLineModel(width: number): LineModel {
     const snapshot = this.current;
     const indent = "  ";
@@ -334,15 +393,7 @@ export class ChildTranscriptOverlay implements Component {
 
     const occurrences = new Map<string, number>();
     for (const [index, item] of snapshot.items.entries()) {
-      let rendered: string[];
-      try {
-        rendered = this.componentsFor(item).flatMap((component) => component.render(contentWidth));
-      } catch {
-        // A single entry that Pi's components cannot build renders through
-        // the sanitized generic fallback; the view never throws.
-        rendered = this.componentsFor({ kind: "generic", text: this.describeItem(item) })[0]!
-          .render(contentWidth);
-      }
+      const rendered = this.renderedItemLines(item, contentWidth);
       starts.push(lines.length);
       keys.push(itemKey(item, index, occurrences));
       lines.push(...rendered.map((line) => indent + line));
@@ -352,6 +403,26 @@ export class ChildTranscriptOverlay implements Component {
       lines.push(snapshot.newerError !== undefined
         ? this.theme.fg("error", `${indent}newer ${CHILD_HISTORY_READ_ERROR} — page down retries`)
         : this.theme.fg("dim", `${indent}… newer history (page down)`));
+    }
+
+    const liveItems: TranscriptItem[] = [];
+    if (this.live.diagnostic !== undefined) {
+      liveItems.push({ kind: "generic", text: this.live.diagnostic });
+    }
+    for (const content of this.live.completed) {
+      liveItems.push({ kind: "assistant", message: { role: "assistant", content } });
+    }
+    if (this.live.streaming !== undefined) {
+      const parts: AssistantTextPart[] = [];
+      if (this.live.streaming.thinking !== "") parts.push({ type: "thinking", thinking: this.live.streaming.thinking });
+      if (this.live.streaming.text !== "") parts.push({ type: "text", text: this.live.streaming.text });
+      if (parts.length > 0) liveItems.push({ kind: "assistant", message: { role: "assistant", content: parts } });
+    }
+    for (const [index, item] of liveItems.entries()) {
+      const rendered = this.renderedItemLines(item, contentWidth);
+      starts.push(lines.length);
+      keys.push(`live#${index}`);
+      lines.push(...rendered.map((line) => indent + line));
     }
     return { lines, starts, keys };
   }
@@ -402,11 +473,142 @@ export class ChildTranscriptOverlay implements Component {
 
   private refreshHistory(): void {
     this.current = this.input.model.history.snapshot();
+    this.syncState();
     this.version += 1;
     this.lineModel = undefined;
     this.cache = undefined;
-    this.state = emptyStateLine(this.input.model, this.current);
     this.syncMotionSubscription();
+  }
+
+  private syncState(): void {
+    this.state = emptyStateLine(this.input.model, this.current, this.hasLiveContent());
+  }
+
+  private hasLiveContent(): boolean {
+    if (this.live.completed.length > 0 || this.live.diagnostic !== undefined) return true;
+    const streaming = this.live.streaming;
+    return streaming !== undefined && (streaming.text !== "" || streaming.thinking !== "");
+  }
+
+  /** Whether the viewport currently sits at the bottom of the scroll space. */
+  private isAtTail(): boolean {
+    if (!Number.isFinite(this.scrollTop) || this.lastWidth === undefined) return true;
+    try {
+      const model = this.lineModelFor(this.lastWidth);
+      return this.scrollTop >= this.resolveViewport(model, this.bodyBudget()).maxScroll;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Drops every completed live entry whose exact persisted counterpart is now
+   * loaded. Both sides use the same bounded content projection, so equality
+   * confirms persistence without ids: an entry keeps rendering live until its
+   * persisted copy arrives, and never renders twice.
+   */
+  private dropConfirmedLive(): void {
+    if (this.live.completed.length === 0) return;
+    const persisted = this.current.items
+      .filter((item): item is TranscriptItem & { kind: "assistant" } => item.kind === "assistant")
+      .map((item) => contentKey(item.message.content));
+    const remaining: AssistantTextPart[][] = [];
+    for (const content of this.live.completed) {
+      const key = contentKey(content);
+      const index = persisted.indexOf(key);
+      if (index >= 0) persisted.splice(index, 1);
+      else remaining.push(content);
+    }
+    this.live.completed = remaining;
+  }
+
+  /**
+   * Reconciles the persisted window with the session file: retries the initial
+   * tail while it has never loaded, otherwise reads bounded newer pages the
+   * child appended. A view that was at the tail stays pinned to it; a scrolled
+   * position is preserved — live growth never pulls an older position away.
+   */
+  reconcileNow(pages = 1): void {
+    const follow = this.isAtTail();
+    let changed = false;
+    if (this.current.initialError !== undefined) {
+      changed = this.input.model.history.retryInitial();
+    } else {
+      for (let page = 0; page < Math.max(1, pages); page += 1) {
+        if (!this.input.model.history.loadNewer()) break;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.current = this.input.model.history.snapshot();
+      this.dropConfirmedLive();
+    }
+    if (follow) this.scrollTop = Number.POSITIVE_INFINITY;
+    this.refreshHistory();
+  }
+
+  /**
+   * Applies one live child view event (#306). Streaming deltas update the
+   * bounded partial without touching the session file; structural events
+   * reconcile the persisted window, confirming completed live entries.
+   */
+  applyLiveEvent(event: ChildViewEvent): void {
+    this.live.diagnostic = undefined;
+    switch (event.kind) {
+      case "message_delta":
+        this.live.streaming = { text: event.text, thinking: event.thinking };
+        this.syncState();
+        this.invalidate();
+        return;
+      case "tool_updated":
+        return;
+      case "message_completed":
+        this.live.streaming = undefined;
+        if (event.content.length > 0) {
+          this.live.completed.push(event.content);
+          if (this.live.completed.length > MAX_LIVE_COMPLETED) this.live.completed.shift();
+        }
+        break;
+      case "run_started":
+      case "tool_started":
+      case "tool_finished":
+      case "tool_result_completed":
+        break;
+      case "run_finished":
+        this.live.streaming = undefined;
+        this.reconcileNow(8);
+        return;
+    }
+    this.reconcileNow(1);
+  }
+
+  /** Updates the open view after a lifecycle transition of the child. */
+  updateLifecycle(patch: {
+    status: ChildLifecycle;
+    lifecycleLabel: string;
+    lifecycleTone: ThemeColor;
+    durationText: string;
+    failureReason?: string;
+  }): void {
+    const model = this.input.model;
+    model.status = patch.status;
+    model.lifecycleLabel = patch.lifecycleLabel;
+    model.lifecycleTone = patch.lifecycleTone;
+    model.durationText = patch.durationText;
+    if (patch.failureReason !== undefined) model.failureReason = patch.failureReason;
+    else delete model.failureReason;
+    this.syncState();
+    this.invalidate();
+  }
+
+  /**
+   * Records one contained live failure as a bounded diagnostic row; the
+   * persisted history stays visible and the next successful event clears it.
+   */
+  setLiveDiagnostic(text = "live updates paused after a viewer error"): void {
+    this.live.diagnostic = text;
+    this.syncState();
+    this.invalidate();
   }
 
   /** Subscribes to motion only while an unresolved tool call is loaded. */
@@ -539,6 +741,7 @@ export class ChildTranscriptOverlay implements Component {
   dispose(): void {
     this.motionUnsubscribe?.();
     this.motionUnsubscribe = undefined;
+    this.live = emptyLiveTail();
   }
 
   invalidate(): void {
