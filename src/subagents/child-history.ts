@@ -132,6 +132,33 @@ function safeEntryText(text: unknown): string {
   return clipWithHeadTail(sanitizeSubagentDisplay(text), MAX_ENTRY_TEXT);
 }
 
+
+/** One bounded display-safe assistant content part. */
+export type AssistantTextPart =
+  | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string };
+
+/**
+ * The ordered bounded text/thinking projection of assistant message content,
+ * shared by the persisted transcript projection and the live viewer tail so a
+ * message rendered live matches its persisted counterpart exactly — the
+ * equality the live/persisted reconciliation confirms against.
+ */
+export function boundedAssistantTextParts(content: unknown): AssistantTextPart[] {
+  const parts: AssistantTextPart[] = [];
+  if (!Array.isArray(content)) return parts;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text") {
+      const text = safeEntryText(part.text);
+      if (text) parts.push({ type: "text", text });
+    } else if (part.type === "thinking") {
+      const thinking = safeEntryText(part.thinking);
+      if (thinking) parts.push({ type: "thinking", thinking });
+    }
+  }
+  return parts;
+}
 type TextContentPart = { kind: "text"; text: string } | { kind: "unsupported" };
 
 /** Ordered text/fallback projection for user and visible custom content. */
@@ -239,7 +266,7 @@ export function projectSessionEntries(
       // Pi renders one assistant message component, then the message's tool
       // rows, whose later results update in place. Keep that native grouping;
       // unsupported provider parts remain visible as generic rows afterward.
-      const boundedContent: Array<Record<string, unknown>> = [];
+      const boundedContent = boundedAssistantTextParts(content);
       const assistantItems: Array<TranscriptItem & { kind: "assistant" }> = [];
       const calls: Array<TranscriptItem & { kind: "toolCall" }> = [];
       const unsupported: TranscriptItem[] = [];
@@ -249,13 +276,7 @@ export function projectSessionEntries(
           unsupported.push(genericLine("unsupported assistant content", entryId));
           continue;
         }
-        if (part.type === "text") {
-          const text = safeEntryText(part.text);
-          if (text) boundedContent.push({ type: "text", text });
-        } else if (part.type === "thinking") {
-          const thinking = safeEntryText(part.thinking);
-          if (thinking) boundedContent.push({ type: "thinking", thinking });
-        } else if (part.type === "toolCall") {
+        if (part.type === "toolCall") {
           // The roster-grade shared projection: cataloged identity plus
           // structural counts/ranges only; free-form paths, patterns, queries,
           // and commands never project, and unknown names stay anonymous.
@@ -272,7 +293,9 @@ export function projectSessionEntries(
           calls.push(call);
           const callId = typeof part.id === "string" ? part.id : "";
           if (callId) openCalls.set(callId, { item: call, startedAt });
-        } else {
+        } else if (part.type !== "text" && part.type !== "thinking") {
+          // Text and thinking parts already entered the bounded content
+          // projection above; only genuinely unsupported parts fall through.
           unsupported.push(genericLine("unsupported assistant content", entryId));
         }
       }

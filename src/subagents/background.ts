@@ -3,6 +3,7 @@ import { artifactsDirFor } from "./artifacts";
 import type { ParentContextMessage } from "./context";
 import type { SubagentDefinition } from "./definitions";
 import { applyRunFailure, createSubagentError, normalizeSubagentError } from "./errors";
+import { type ChildViewEvent, type ChildViewFeed, createChildViewFeed } from "./live-events";
 import { resumeSubagentTask, runSubagentTask } from "./session";
 import { createDeliveryController, type DeliveryController } from "./delivery";
 import type {
@@ -42,6 +43,12 @@ export interface BackgroundState {
    * (headless unit-test lifecycles) has nowhere to deliver and keeps none.
    */
   delivery?: DeliveryController;
+  /**
+   * Session-scoped ephemeral live view feed (#306): ordered child view events
+   * published by the running jobs and observed only by the roster controller's
+   * open overlay. Presentation state with no buffer and no persistence.
+   */
+  viewFeed?: ChildViewFeed;
 }
 
 const MAX_FINISHED_JOBS = 20;
@@ -180,7 +187,7 @@ function deliverCompletion(pi: ExtensionAPI | undefined, state: BackgroundState,
 
 /** Creates the session-owned background job store for subagent runs. */
 export function createBackgroundState(): BackgroundState {
-  return { jobs: new Map(), listeners: new Set() };
+  return { jobs: new Map(), listeners: new Set(), viewFeed: createChildViewFeed() };
 }
 
 export function subscribeBackgroundState(state: BackgroundState, listener: () => void): () => void {
@@ -465,6 +472,16 @@ export function startBackgroundJob(input: {
     job: input.job,
     operation: "delegate",
     execute: (onUpdate) => runSubagentTask({
+      // Ephemeral live view events (#306): publication is synchronous fan-out
+      // with isolated subscribers, and this guard keeps even a feed defect
+      // from reaching the child run.
+      onViewEvent: (event: ChildViewEvent) => {
+        try {
+          input.state.viewFeed?.publish(input.job.id, event);
+        } catch {
+          // The live view feed is observational only.
+        }
+      },
       ctx: input.ctx,
       id: input.job.id,
       task: input.task,
@@ -501,6 +518,13 @@ export function startBackgroundResumeJob(input: {
     job: input.job,
     operation: "resume",
     execute: (onUpdate) => resumeSubagentTask({
+      onViewEvent: (event: ChildViewEvent) => {
+        try {
+          input.state.viewFeed?.publish(input.job.id, event);
+        } catch {
+          // The live view feed is observational only.
+        }
+      },
       ctx: input.ctx,
       id: input.job.id,
       task: input.task,

@@ -37,6 +37,7 @@ import {
   SubagentError,
 } from "./errors";
 import { tryAcquireRunLease } from "./lease";
+import { type ChildViewEvent, deriveChildViewEvent } from "./live-events";
 import { compileFreshPrompt, finalizePromptSnapshot, hashPromptValue } from "./prompt";
 import { formatToolCall } from "./tool-display";
 import { resolveSubagentTools } from "./tool-policy";
@@ -518,6 +519,8 @@ async function promptSession(input: {
   definitionName?: string;
   signal?: AbortSignal;
   onUpdate?: (details: SubagentRunDetails) => void;
+  /** Ephemeral live view events (#306); contained, never affects the run. */
+  onViewEvent?: (event: ChildViewEvent) => void;
 }): Promise<{ details: SubagentRunDetails }> {
   const { session, prompt, details } = input;
   let persistenceFailure: SubagentError | undefined;
@@ -658,6 +661,18 @@ async function promptSession(input: {
       default:
         break;
     }
+    // The live view feed (#306): ordered ephemeral events derived after the
+    // run-state bookkeeping above, so the view never reorders against the
+    // timeline. Contained — a derivation or subscriber failure is
+    // presentation-only and must never escape into the child run.
+    if (input.onViewEvent) {
+      try {
+        const viewEvent = deriveChildViewEvent(event);
+        if (viewEvent) input.onViewEvent(viewEvent);
+      } catch {
+        // Ignored: the live viewer is observational only.
+      }
+    }
   };
 
   try {
@@ -761,6 +776,8 @@ export async function runSubagentTask(input: {
   definition?: SubagentDefinition;
   signal?: AbortSignal;
   onUpdate?: (details: SubagentRunDetails) => void;
+  /** Ephemeral live view events (#306); contained, never affects the run. */
+  onViewEvent?: (event: ChildViewEvent) => void;
 }): Promise<{ details: SubagentRunDetails }> {
   const cwd = resolveSubagentCwd(input.ctx.cwd, input.cwd);
   const parentSessionId = resolveParentSessionId(input.ctx, input.parentSessionId);
@@ -960,6 +977,7 @@ export async function runSubagentTask(input: {
       definitionName: input.definition?.name,
       signal: input.signal,
       onUpdate: input.onUpdate,
+      ...(input.onViewEvent ? { onViewEvent: input.onViewEvent } : {}),
     });
   } catch (error) {
     if (details) return finishRunFailure(details, error);
@@ -984,6 +1002,8 @@ export async function resumeSubagentTask(input: {
   contextMessages?: ParentContextMessage[];
   signal?: AbortSignal;
   onUpdate?: (details: SubagentRunDetails) => void;
+  /** Ephemeral live view events (#306); contained, never affects the run. */
+  onViewEvent?: (event: ChildViewEvent) => void;
 }): Promise<{ details: SubagentRunDetails }> {
   const artifactsDir = artifactsDirFor(input.id);
   if (!existsSync(artifactsDir)) {
@@ -1142,6 +1162,7 @@ export async function resumeSubagentTask(input: {
       details,
       signal: input.signal,
       onUpdate: input.onUpdate,
+      ...(input.onViewEvent ? { onViewEvent: input.onViewEvent } : {}),
     });
     return result;
   } catch (error) {
