@@ -26,7 +26,7 @@ import {
   type ChildHistoryView,
   type TranscriptItem,
 } from "./child-history";
-import { MAX_LIVE_COMPLETED, type ChildViewEvent } from "./live-events";
+import { MAX_LIVE_ITEMS, type ChildViewEvent } from "./live-events";
 
 /**
  * Read-only child transcript viewer (odradekk/pi-square#304, #305, #306).
@@ -180,6 +180,8 @@ export interface ChildOverlayInput {
   tui: TUI;
   theme: Theme;
   model: ChildOverlayModel;
+  /** Clock for live tool-row durations; defaults to the wall clock. */
+  now?: () => number;
   /** Active display runtime; absent only in isolated fallback/test rendering. */
   display?: Pick<DisplayRuntime, "createComponent" | "subscribeMotion">;
   /** Escape path: close, clear selection, and return focus to main. */
@@ -231,18 +233,57 @@ interface LineModel {
   keys: string[];
 }
 
+/** One live tool call rendered as an operational row until history covers it. */
+interface LiveToolState {
+  toolCallId: string;
+  name: string;
+  summary: string;
+  startedAt?: number;
+  endedAt?: number;
+  isError?: boolean;
+  /** Same-name persisted toolCall rows when the live row was created. */
+  baselineRows: number;
+  /** Same-name resolved persisted toolCall rows when the live row was created. */
+  baselineResolved: number;
+}
+
+/** One entry of the ordered live tail; arrival order mirrors the native stream. */
+type LiveItem =
+  | {
+    kind: "message";
+    content: AssistantTextPart[];
+    /**
+     * Identities of the persisted assistant items with exactly equal content
+     * at the moment this completion arrived. Reconciliation confirms only
+     * against equal-content occurrences that appear beyond this set, so a
+     * pre-existing identical message can never consume a new completion whose
+     * own native entry has not appended yet.
+     */
+    known: ReadonlySet<string>;
+  }
+  | { kind: "tool"; tool: LiveToolState };
+
+/** Stable identity of one persisted transcript item inside the loaded window. */
+function persistedItemIdentity(item: TranscriptItem, index: number): string {
+  return item.entryId !== undefined && item.entryId !== ""
+    ? `${item.entryId}#${item.entryItemIndex ?? 0}`
+    : `@${index}`;
+}
+
 /** Live tail state (#306): bounded ephemeral projection below the persisted window. */
 interface LiveTail {
-  /** Cumulative sanitized streaming partial of the in-flight assistant message. */
-  streaming: { text: string; thinking: string } | undefined;
-  /** Completed-but-unconfirmed messages, oldest first, bounded. */
-  completed: AssistantTextPart[][];
+  /** Ordered live entries (message completions and tool rows), bounded. */
+  items: LiveItem[];
+  /** Cumulative ordered streaming partial of the in-flight assistant message. */
+  streaming: AssistantTextPart[] | undefined;
   /** Bounded diagnostic for a contained live-subscriber failure. */
   diagnostic: string | undefined;
+  /** Explicit omission state after a bounded drop; cleared by recovery reads. */
+  omitted: boolean;
 }
 
 function emptyLiveTail(): LiveTail {
-  return { streaming: undefined, completed: [], diagnostic: undefined };
+  return { items: [], streaming: undefined, diagnostic: undefined, omitted: false };
 }
 
 function contentKey(content: unknown): string {
@@ -351,11 +392,6 @@ export class ChildTranscriptOverlay implements Component {
   }
 
   /**
-   * Builds the flattened scroll space for one width: an optional older-history
-   * edge (or the bounded retryable page error), every loaded item's rendered
-   * lines, and an optional newer-history edge. Markers and items share the
-   * same scroll space so the body budget always bounds the viewport exactly.
-   */
   /** One item's rendered lines, falling back to the sanitized generic row. */
   private renderedItemLines(item: TranscriptItem, contentWidth: number): string[] {
     try {
@@ -372,8 +408,10 @@ export class ChildTranscriptOverlay implements Component {
    * Builds the flattened scroll space for one width: an optional older-history
    * edge (or the bounded retryable page error), every loaded item's rendered
    * lines, an optional newer-history edge, and the bounded live tail (#306) —
-   * the contained diagnostic, completed-but-unconfirmed messages, and the
-   * streaming partial, in that order, always below the persisted window.
+   * the ordered live entries (completed-but-unconfirmed messages and live
+   * tool rows, in native stream order), the streaming partial, and the
+   * trailing diagnostic and omission states, always below the persisted
+   * window.
    * Markers and items share the same scroll space so the body budget always
    * bounds the viewport exactly.
    */
@@ -406,17 +444,31 @@ export class ChildTranscriptOverlay implements Component {
     }
 
     const liveItems: TranscriptItem[] = [];
+    for (const entry of this.live.items) {
+      if (entry.kind === "message") {
+        liveItems.push({ kind: "assistant", message: { role: "assistant", content: entry.content } });
+      } else {
+        const tool = entry.tool;
+        liveItems.push({
+          kind: "toolCall",
+          name: tool.name,
+          summary: tool.summary,
+          ...(tool.startedAt !== undefined
+            ? { durationMs: Math.max(0, (tool.endedAt ?? this.now()) - tool.startedAt) }
+            : {}),
+          ...(tool.endedAt !== undefined ? { result: { isError: tool.isError === true } } : {}),
+        });
+      }
+    }
+    if (this.live.streaming !== undefined && this.live.streaming.length > 0) {
+      liveItems.push({ kind: "assistant", message: { role: "assistant", content: this.live.streaming } });
+    }
+    // Status rows close the tail so a tail-following view always shows them.
     if (this.live.diagnostic !== undefined) {
       liveItems.push({ kind: "generic", text: this.live.diagnostic });
     }
-    for (const content of this.live.completed) {
-      liveItems.push({ kind: "assistant", message: { role: "assistant", content } });
-    }
-    if (this.live.streaming !== undefined) {
-      const parts: AssistantTextPart[] = [];
-      if (this.live.streaming.thinking !== "") parts.push({ type: "thinking", thinking: this.live.streaming.thinking });
-      if (this.live.streaming.text !== "") parts.push({ type: "text", text: this.live.streaming.text });
-      if (parts.length > 0) liveItems.push({ kind: "assistant", message: { role: "assistant", content: parts } });
+    if (this.live.omitted) {
+      liveItems.push({ kind: "generic", text: "… older live updates were dropped; persisted history recovers them" });
     }
     for (const [index, item] of liveItems.entries()) {
       const rendered = this.renderedItemLines(item, contentWidth);
@@ -484,10 +536,14 @@ export class ChildTranscriptOverlay implements Component {
     this.state = emptyStateLine(this.input.model, this.current, this.hasLiveContent());
   }
 
+  private now(): number {
+    return this.input.now?.() ?? Date.now();
+  }
+
   private hasLiveContent(): boolean {
-    if (this.live.completed.length > 0 || this.live.diagnostic !== undefined) return true;
+    if (this.live.items.length > 0 || this.live.diagnostic !== undefined || this.live.omitted) return true;
     const streaming = this.live.streaming;
-    return streaming !== undefined && (streaming.text !== "" || streaming.thinking !== "");
+    return streaming !== undefined && streaming.length > 0;
   }
 
   /** Whether the viewport currently sits at the bottom of the scroll space. */
@@ -501,25 +557,67 @@ export class ChildTranscriptOverlay implements Component {
     }
   }
 
-  /**
-   * Drops every completed live entry whose exact persisted counterpart is now
-   * loaded. Both sides use the same bounded content projection, so equality
-   * confirms persistence without ids: an entry keeps rendering live until its
-   * persisted copy arrives, and never renders twice.
-   */
-  private dropConfirmedLive(): void {
-    if (this.live.completed.length === 0) return;
-    const persisted = this.current.items
-      .filter((item): item is TranscriptItem & { kind: "assistant" } => item.kind === "assistant")
-      .map((item) => contentKey(item.message.content));
-    const remaining: AssistantTextPart[][] = [];
-    for (const content of this.live.completed) {
-      const key = contentKey(content);
-      const index = persisted.indexOf(key);
-      if (index >= 0) persisted.splice(index, 1);
-      else remaining.push(content);
+  /** Persisted toolCall rows for one tool name: total and resolved counts. */
+  private persistedToolCounts(name: string): { rows: number; resolved: number } {
+    let rows = 0;
+    let resolved = 0;
+    for (const item of this.current.items) {
+      if (item.kind !== "toolCall" || item.name !== name) continue;
+      rows += 1;
+      if (item.result !== undefined) resolved += 1;
     }
-    this.live.completed = remaining;
+    return { rows, resolved };
+  }
+
+  /**
+   * Confirms pending message completions against equal-content persisted
+   * occurrences that appeared after each completion arrived. Confirmation is
+   * per occurrence identity and oldest-first within a content key: a
+   * pre-existing identical message (recorded in the entry's known set at
+   * arrival) can never consume a newer completion, and repeated identical
+   * completions each consume their own appended occurrence.
+   */
+  private confirmLiveMessages(): void {
+    if (this.live.items.length === 0) return;
+    const equalContent = new Map<string, string[]>();
+    this.current.items.forEach((item, index) => {
+      if (item.kind !== "assistant") return;
+      const key = contentKey(item.message.content);
+      const bucket = equalContent.get(key) ?? [];
+      bucket.push(persistedItemIdentity(item, index));
+      equalContent.set(key, bucket);
+    });
+    const drop = new Set<LiveItem>();
+    for (const [key, identities] of equalContent) {
+      const consumed = new Set<string>();
+      for (const item of this.live.items) {
+        if (item.kind !== "message" || drop.has(item)) continue;
+        if (contentKey(item.content) !== key) continue;
+        const fresh = identities.find((identity) => !item.known.has(identity) && !consumed.has(identity));
+        if (fresh === undefined) continue;
+        consumed.add(fresh);
+        drop.add(item);
+      }
+    }
+    if (drop.size === 0) return;
+    this.live.items = this.live.items.filter((item) => !drop.has(item));
+  }
+
+  /**
+   * Drops live tool rows their own persisted occurrences now cover. A running
+   * row drops when its own call row appears beyond its baseline; a finished
+   * row waits for a resolved one so the visible terminal state never
+   * regresses to running.
+   */
+  private dropCoveredTools(): void {
+    if (this.live.items.length === 0) return;
+    this.live.items = this.live.items.filter((item) => {
+      if (item.kind !== "tool") return true;
+      const counts = this.persistedToolCounts(item.tool.name);
+      return item.tool.endedAt !== undefined
+        ? counts.resolved <= item.tool.baselineResolved
+        : counts.rows <= item.tool.baselineRows;
+    });
   }
 
   /**
@@ -527,6 +625,8 @@ export class ChildTranscriptOverlay implements Component {
    * tail while it has never loaded, otherwise reads bounded newer pages the
    * child appended. A view that was at the tail stays pinned to it; a scrolled
    * position is preserved — live growth never pulls an older position away.
+   * Loading new persisted content is also the recovery path that clears the
+   * bounded omission state.
    */
   reconcileNow(pages = 1): void {
     const follow = this.isAtTail();
@@ -541,45 +641,139 @@ export class ChildTranscriptOverlay implements Component {
     }
     if (changed) {
       this.current = this.input.model.history.snapshot();
-      this.dropConfirmedLive();
+      if (this.live.omitted) this.live.omitted = false;
+      this.confirmLiveMessages();
+      this.dropCoveredTools();
     }
     if (follow) this.scrollTop = Number.POSITIVE_INFINITY;
     this.refreshHistory();
   }
 
+  /** Appends one live entry, dropping the oldest with a visible marker at the bound. */
+  private pushLiveItem(item: LiveItem): void {
+    this.live.items.push(item);
+    while (this.live.items.length > MAX_LIVE_ITEMS) {
+      this.live.items.shift();
+      // The newest entry never drops: overflow sheds the oldest, and the
+      // explicit omission state says what was shed until history recovers it.
+      this.live.omitted = true;
+    }
+  }
+
   /**
    * Applies one live child view event (#306). Streaming deltas update the
-   * bounded partial without touching the session file; structural events
-   * reconcile the persisted window, confirming completed live entries.
+   * bounded ordered partial without touching the session file; structural
+   * events reconcile the persisted window, confirming completed live entries
+   * and shedding live tool rows that history now covers.
    */
   applyLiveEvent(event: ChildViewEvent): void {
     this.live.diagnostic = undefined;
     switch (event.kind) {
       case "message_delta":
-        this.live.streaming = { text: event.text, thinking: event.thinking };
+        this.live.streaming = event.parts;
         this.syncState();
         this.invalidate();
         return;
       case "tool_updated":
         return;
-      case "message_completed":
+      case "message_completed": {
         this.live.streaming = undefined;
         if (event.content.length > 0) {
-          this.live.completed.push(event.content);
-          if (this.live.completed.length > MAX_LIVE_COMPLETED) this.live.completed.shift();
+          const key = contentKey(event.content);
+          // Record every equal-content persisted item already visible: only
+          // occurrences beyond this set can confirm this completion, so a
+          // pre-existing identical message never consumes it.
+          const known = new Set<string>();
+          this.current.items.forEach((item, index) => {
+            if (item.kind === "assistant" && contentKey(item.message.content) === key) {
+              known.add(persistedItemIdentity(item, index));
+            }
+          });
+          this.pushLiveItem({ kind: "message", content: event.content, known });
         }
         break;
+      }
+      case "tool_started": {
+        // Baselines are captured before the reconcile so the call's own
+        // assistant entry — appended right after its message_end — cannot
+        // count as pre-existing. When the reconcile loads it, the persisted
+        // running row already shows the call and no live row is added.
+        const before = this.persistedToolCounts(event.name);
+        this.reconcileNow(1);
+        const after = this.persistedToolCounts(event.name);
+        if (after.rows > before.rows) return;
+        this.pushLiveItem({
+          kind: "tool",
+          tool: {
+            toolCallId: event.toolCallId,
+            name: event.name,
+            summary: event.summary,
+            startedAt: event.startedAt,
+            baselineRows: before.rows,
+            baselineResolved: before.resolved,
+          },
+        });
+        this.refreshLiveShape();
+        return;
+      }
+      case "tool_finished": {
+        // The end state must show without waiting for the toolResult append:
+        // a live row that survived the reconcile flips immediately; otherwise
+        // a fresh finished row appears whenever the persisted projection has
+        // not updated yet.
+        const pre = this.persistedToolCounts(event.name);
+        const existing = this.live.items.find(
+          (item): item is Extract<LiveItem, { kind: "tool" }> => item.kind === "tool" && item.tool.toolCallId === event.toolCallId,
+        );
+        this.reconcileNow(1);
+        const post = this.persistedToolCounts(event.name);
+        const stillLive = existing !== undefined && this.live.items.includes(existing);
+        if (stillLive) {
+          existing.tool.endedAt = this.now();
+          existing.tool.isError = event.isError;
+        } else if (post.resolved > pre.resolved) {
+          this.refreshLiveShape();
+          return; // the persisted row already carries the terminal state
+        } else {
+          this.pushLiveItem({
+            kind: "tool",
+            tool: {
+              toolCallId: event.toolCallId,
+              name: event.name,
+              summary: "called",
+              endedAt: this.now(),
+              isError: event.isError,
+              baselineRows: pre.rows,
+              baselineResolved: post.resolved,
+            },
+          });
+        }
+        this.refreshLiveShape();
+        return;
+      }
+      case "live_events_dropped":
+        this.live.omitted = true;
+        this.syncState();
+        this.invalidate();
+        return;
       case "run_started":
-      case "tool_started":
-      case "tool_finished":
       case "tool_result_completed":
         break;
       case "run_finished":
-        this.live.streaming = undefined;
+        // The streaming partial survives an aborted stream: a run that never
+        // delivered its message completion keeps its last observed partial
+        // visible rather than dropping it (no lost final content).
         this.reconcileNow(8);
+        this.refreshLiveShape();
         return;
     }
     this.reconcileNow(1);
+  }
+
+  /** Recomputes state and caches after a direct live-items mutation. */
+  private refreshLiveShape(): void {
+    this.syncState();
+    this.invalidate();
   }
 
   /** Updates the open view after a lifecycle transition of the child. */
@@ -611,9 +805,11 @@ export class ChildTranscriptOverlay implements Component {
     this.invalidate();
   }
 
-  /** Subscribes to motion only while an unresolved tool call is loaded. */
+  /** Subscribes to motion only while a running tool row is visible. */
   private syncMotionSubscription(): void {
-    const wantsMotion = this.current.items.some((item) => item.kind === "toolCall" && !item.result);
+    const liveToolRunning = this.live.items.some((item) => item.kind === "tool" && item.tool.endedAt === undefined);
+    const wantsMotion = liveToolRunning
+      || this.current.items.some((item) => item.kind === "toolCall" && !item.result);
     if (wantsMotion && this.input.display && this.motionUnsubscribe === undefined) {
       this.motionUnsubscribe = this.input.display.subscribeMotion(() => {
         this.invalidate();

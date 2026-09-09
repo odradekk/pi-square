@@ -640,10 +640,11 @@ export function createSubagentRosterController(
       ? rosterFailureReason(job)
       : "";
 
-    // The model is frozen at open: role, identity, lifecycle, duration, and
-    // the initial bounded tail page of the child's native history (#305).
-    // Live updates are a later slice of #302; the overlay pages the rest on
-    // demand from the validated session file.
+    // The model opens with role, identity, lifecycle, duration, and the
+    // initial bounded tail page of the child's native history (#305); the
+    // overlay pages the rest on demand from the validated session file, and
+    // live view events and store transitions keep the open view current
+    // (#306).
     const model: ChildOverlayModel = {
       role: rosterRole(job),
       idLabel,
@@ -687,6 +688,7 @@ export function createSubagentRosterController(
           tui,
           theme,
           model,
+          now: () => now(),
           ...(display ? { display } : {}),
           onClose: settle,
           onReplay: (text) => {
