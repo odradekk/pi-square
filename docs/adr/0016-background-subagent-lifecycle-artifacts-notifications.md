@@ -44,10 +44,26 @@ status: accepted
 > cross-page result consumption that survives either adjacent page's reload —
 > with no second transcript store, cache,
 > index, sidecar, lock, journal, or artifact version beside the native
-> session file, and no claim on Pi's private transcript pipeline. Live
-> streaming, cross-child navigation with per-child reading state, and the
-> remaining lifecycle/delivery qualification of the parent viewer
-> specification (#302) stay later slices.
+> session file, and no claim on Pi's private transcript pipeline. Since #306
+> the overlay is live while the child runs: the one-time child execution
+> boundary derives ordered bounded view events (assistant text/thinking
+> deltas, message completion, tool start/update/end, tool-result completion,
+> run lifecycle) after its own run-state bookkeeping and publishes them
+> through a per-child session-scoped feed with isolated subscribers and no
+> buffer, the open overlay renders the streaming partial and
+> completed-but-unconfirmed messages as a bounded tail below the persisted
+> window through the same sanitized projections and the same roster-grade
+> tool seam, ordinary delta repaints coalesce through the one
+> controller-owned timer (~110 ms) while structural events render
+> immediately, completed live entries reconcile with the session file by
+> exact shared-projection equality as Pi appends them (a child that
+> terminalizes while open stays open with its final lifecycle and content),
+> and every observer/renderer failure is contained as one bounded diagnostic
+> row — the feed stays observational and never touches the lifecycle,
+> delivery, ownership, or persistence contracts this ADR records.
+> Cross-child navigation with per-child reading state and the remaining
+> lifecycle/delivery qualification of the parent viewer specification (#302)
+> stay later slices (#307–#309).
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,
