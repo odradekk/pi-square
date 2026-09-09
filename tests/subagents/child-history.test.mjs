@@ -1,0 +1,941 @@
+import assert from "node:assert/strict";
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import jiti from "jiti";
+
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const load = jiti(import.meta.url);
+const {
+  CHILD_HISTORY_READ_ERROR,
+  MAX_LOADED_ITEMS,
+  MAX_LOADED_PAGES,
+  createChildHistory,
+  projectSessionEntries,
+} = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
+const { ensureArtifactsDir, initializeSessionFile, writeRunState } = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
+const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
+
+const ID = "subagent_00000000-0000-4000-8000-000000000001";
+const SESSION_ID = "019f0000-0000-7000-8000-000000000001";
+const OBSERVED_AT = Date.parse("2025-01-01T00:00:05.000Z");
+
+const tests = [];
+function test(name, fn) { tests.push({ name, fn }); }
+
+function root() {
+  return join(tmpdir(), `pi-square-child-history-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+}
+
+function sessionHeader(id = SESSION_ID) {
+  return { type: "session", version: 3, id, timestamp: new Date(0).toISOString(), cwd: "/tmp/project" };
+}
+
+function messageEntry(id, message, timestamp = "2025-01-01T00:00:00Z") {
+  return { type: "message", id, parentId: null, timestamp, message };
+}
+
+/** Writes run.json plus a native session file of raw JSONL lines. */
+function writeArtifacts(testRoot, lines, overrides = {}) {
+  process.env.PI_AGENT_DIR = testRoot;
+  const artifactsDir = ensureArtifactsDir(ID);
+  const sessionFile = join(artifactsDir, "session.jsonl");
+  initializeSessionFile({ id: ID, artifactsDir, sessionFile, header: sessionHeader() });
+  writeFileSync(sessionFile, [sessionHeader(), ...lines].map((line) => JSON.stringify(line)).join("\n") + "\n");
+  writeRunState(artifactsDir, {
+    version: 4,
+    id: ID,
+    operation: "delegate",
+    artifactsDir,
+    sessionFile,
+    sessionId: SESSION_ID,
+    originParentSessionId: "parent-1",
+    lastParentSessionId: "parent-1",
+    promptSnapshot: createPromptSnapshot(),
+    phase: "running",
+    task: "task",
+    cwd: "/tmp/project",
+    startedAt: 1,
+    finalText: "",
+    retries: 0,
+    toolErrors: [],
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    timeline: [],
+    ...overrides,
+  });
+  return { artifactsDir, sessionFile };
+}
+
+function recursiveListing(directory) {
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      out.push(path);
+      if (entry.isDirectory()) walk(path);
+    }
+  };
+  walk(directory);
+  return out.sort();
+}
+
+/** Positioned sync read mirroring the production descriptor-bound seam. */
+function realReadRange(file, start, end) {
+  const descriptor = openSync(file, "r");
+  try {
+    const stats = fstatSync(descriptor);
+    const length = Math.max(0, Math.min(end, stats.size) - start);
+    if (length <= 0) {
+      return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: Buffer.alloc(0) };
+    }
+    const buffer = Buffer.alloc(length);
+    let read = 0;
+    while (read < buffer.length) {
+      const bytes = readSync(descriptor, buffer, read, buffer.length - read, start + read);
+      if (bytes <= 0) break;
+      read += bytes;
+    }
+    return {
+      stat: { size: stats.size, dev: stats.dev, ino: stats.ino },
+      data: read === buffer.length ? buffer : buffer.subarray(0, read),
+    };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/** One user/assistant pair with stable per-entry ids. */
+function pair(base, text) {
+  return [
+    messageEntry(`${base}-user`, { role: "user", content: text, timestamp: 1 }),
+    messageEntry(`${base}-assistant`, { role: "assistant", content: [{ type: "text", text: `answer ${text}` }], timestamp: 2 }),
+  ];
+}
+
+function conversation(count, text = "message") {
+  const lines = [];
+  for (let index = 0; index < count; index += 1) {
+    lines.push(messageEntry(`u${index}`, { role: "user", content: `${text} ${index}`, timestamp: index }, `2025-01-01T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}Z`));
+    lines.push(messageEntry(`a${index}`, { role: "assistant", content: [{ type: "text", text: `answer ${index}` }], timestamp: index }, `2025-01-01T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}Z`));
+  }
+  return lines;
+}
+
+/** Loads every reachable page and returns the final snapshot. */
+function loadAll(pager, direction = "older") {
+  for (;;) {
+    const loaded = direction === "older" ? pager.loadOlder() : pager.loadNewer();
+    if (!loaded) return pager.snapshot();
+  }
+}
+
+test("the initial open loads one bounded tail page, not the whole file", () => {
+  const testRoot = root();
+  try {
+    writeArtifacts(testRoot, conversation(40));
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 800 });
+    const snapshot = pager.snapshot();
+    assert.equal(snapshot.initialError, undefined);
+    assert.equal(snapshot.moreBefore, true, "older history is known to exist");
+    const texts = snapshot.items.filter((item) => item.kind === "user").map((item) => item.text);
+    assert.ok(texts.length < 40, "only a bounded tail page of entries is loaded");
+    assert.match(texts.at(-1), /39/, "the newest entry is loaded first");
+    assert.ok(!texts.some((text) => /message 0\b/.test(text)), "the earliest entries are not loaded yet");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("repeated older pages reach the earliest entry in native order", () => {
+  const testRoot = root();
+  try {
+    writeArtifacts(testRoot, conversation(30));
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600 });
+    const snapshot = loadAll(pager);
+    assert.equal(snapshot.moreBefore, false, "byte 0 was reached");
+    assert.equal(snapshot.olderError, undefined);
+    assert.equal(snapshot.newerError, undefined);
+    const users = snapshot.items.filter((item) => item.kind === "user").map((item) => item.text);
+    assert.equal(users.length, 30);
+    assert.match(users[0], /message 0\b/, "the original delegation entry is reachable");
+    assert.match(users.at(-1), /message 29/, "the newest entry is retained");
+    const order = snapshot.items.map((item) => item.entryId);
+    assert.equal(new Set(order).size, order.length, "no entry is duplicated by paging");
+    const expected = [];
+    for (let index = 0; index < 30; index += 1) expected.push(`u${index}`, `a${index}`);
+    assert.deepEqual(order, expected, "one public ID pages original and continuation entries in native order");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("delegate and same-ID resume history page through in native order with tool and branch entries", () => {
+  const testRoot = root();
+  try {
+    // One native session file: the original delegation, a compaction, and a
+    // same-ID resume continuation — resume appends to the same file.
+    writeArtifacts(testRoot, [
+      messageEntry("d1", { role: "user", content: "original delegation task", timestamp: 1 }),
+      messageEntry("d2", {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { offset: 1, limit: 4 } }],
+        stopReason: "toolUse",
+        timestamp: 2,
+      }),
+      messageEntry("d3", { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "data" }], isError: false, timestamp: 3 }),
+      { type: "compaction", id: "k1", parentId: null, timestamp: "t", summary: "s" },
+      messageEntry("r1", { role: "user", content: "resume continuation task", timestamp: 4 }),
+      messageEntry("r2", { role: "assistant", content: [{ type: "text", text: "resumed answer" }], timestamp: 5 }),
+    ], { operation: "resume" });
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 120 });
+    const snapshot = loadAll(pager);
+    assert.deepEqual(
+      snapshot.items.map((item) => item.entryId),
+      ["d1", "d2", "k1", "r1", "r2"],
+      "the delegation, its tool pair, the compaction marker, and the resume continuation keep native order",
+    );
+    const kinds = snapshot.items.map((item) => item.kind);
+    assert.deepEqual(kinds, ["user", "toolCall", "generic", "user", "assistant"]);
+    const call = snapshot.items[1];
+    assert.equal(call.result.isError, false, "a call split from its result by a page boundary still pairs across the seam");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a torn final append is incomplete input, never a corrupt entry, and completes on the next newer load", () => {
+  const testRoot = root();
+  try {
+    const { sessionFile } = writeArtifacts(testRoot, [
+      messageEntry("e1", { role: "user", content: "question", timestamp: 1 }),
+    ]);
+    const full = `${JSON.stringify(messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "str" }] }))}\n`;
+    writeFileSync(sessionFile, `${readFileSync(sessionFile, "utf8")}${full.slice(0, Math.floor(full.length / 2))}`);
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096 });
+    let snapshot = pager.snapshot();
+    assert.equal(snapshot.initialError, undefined);
+    assert.deepEqual(snapshot.items.map((item) => item.entryId), ["e1"], "the torn tail never parses as history");
+
+    // The child finishes the append; a newer load picks the completed line up.
+    writeFileSync(sessionFile, `${readFileSync(sessionFile, "utf8")}${full.slice(Math.floor(full.length / 2))}`);
+    assert.equal(pager.loadNewer(), true);
+    snapshot = pager.snapshot();
+    assert.deepEqual(snapshot.items.map((item) => item.entryId), ["e1", "e2"]);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("page boundaries preserve unicode code points across every byte offset", () => {
+  const testRoot = root();
+  try {
+    const payload = "中文测试 🎉 emoji family 👨‍👩‍👧‍👦 done";
+    writeArtifacts(testRoot, [
+      messageEntry("e1", { role: "user", content: `${payload} one`, timestamp: 1 }),
+      messageEntry("e2", { role: "user", content: `${payload} two`, timestamp: 2 }),
+      messageEntry("e3", { role: "user", content: `${payload} three`, timestamp: 3 }),
+      messageEntry("e4", { role: "user", content: `${payload} four`, timestamp: 4 }),
+    ]);
+    // A sweep of page sizes forces boundaries at nearly every byte offset,
+    // including inside multibyte UTF-8 sequences of entries and the header.
+    for (const pageBytes of [17, 23, 31, 41, 59, 97, 131]) {
+      const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes });
+      const snapshot = loadAll(pager);
+      const texts = snapshot.items.map((item) => item.text).join("\n");
+      assert.equal(snapshot.items.length, 4, `pageBytes=${pageBytes} yields every entry exactly once`);
+      assert.ok(!texts.includes("\uFFFD"), `pageBytes=${pageBytes} never splits a code point`);
+      for (const word of ["one", "two", "three", "four"]) {
+        assert.match(texts, new RegExp(`${payload} ${word}`), `pageBytes=${pageBytes} decodes entry ${word} exactly`);
+      }
+    }
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a malformed complete record fails its page boundedly and keeps validated pages visible and retryable", () => {
+  const testRoot = root();
+  try {
+    const { sessionFile } = writeArtifacts(testRoot, conversation(20));
+    // Corrupt one complete middle line with invalid JSON.
+    const lines = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean);
+    lines[10] = `{"type":"message","id":"bad","payload":,password: swordfish`;
+    writeFileSync(sessionFile, `${lines.join("\n")}\n`);
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 700 });
+    let snapshot = loadAll(pager);
+    assert.equal(snapshot.olderError, CHILD_HISTORY_READ_ERROR, "the malformed older page surfaces one bounded reason");
+    assert.equal(snapshot.newerError, undefined, "an older failure never fabricates a newer one");
+    assert.ok(snapshot.items.length > 0, "previously validated pages stay visible");
+    assert.ok(!JSON.stringify(snapshot).includes("swordfish"), "the malformed fragment never leaks");
+    assert.ok(snapshot.items.some((item) => item.entryId && Number(item.entryId.slice(1)) < 10), "pages older than the corruption may still load");
+
+    // The retry re-attempts the same page and fails again boundedly, without
+    // losing what is loaded.
+    const before = snapshot.items.length;
+    assert.equal(pager.loadOlder(), false);
+    snapshot = pager.snapshot();
+    assert.equal(snapshot.olderError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(snapshot.items.length, before, "a failed retry never drops validated pages");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("an oversized entry is rejected through the per-entry cap", () => {
+  const testRoot = root();
+  try {
+    const { sessionFile } = writeArtifacts(testRoot, [
+      messageEntry("e1", { role: "user", content: "small", timestamp: 1 }),
+      messageEntry("e2", { role: "user", content: "x".repeat(5_000), timestamp: 2 }),
+      messageEntry("e3", { role: "user", content: "small tail", timestamp: 3 }),
+    ]);
+    void sessionFile;
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 512, maxEntryBytes: 2_048 });
+    const snapshot = loadAll(pager);
+    assert.equal(snapshot.olderError, CHILD_HISTORY_READ_ERROR);
+    assert.ok(snapshot.items.some((item) => /small tail/.test(item.text ?? "")), "validated tail pages stay visible");
+    assert.ok(!snapshot.items.some((item) => /xxxxx/.test(item.text ?? "")), "the oversized entry never enters the window");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("historical reads reject symlinked session files and mid-paging identity changes", () => {
+  const testRoot = root();
+  const otherRoot = root();
+  try {
+    mkdirSync(otherRoot, { recursive: true });
+    const { sessionFile } = writeArtifacts(testRoot, conversation(10));
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 500 });
+    assert.equal(pager.snapshot().initialError, undefined);
+    const firstItems = pager.snapshot().items.map((item) => item.entryId);
+
+    // A symlink pointing outside the artifacts directory is rejected on reopen.
+    const outside = join(otherRoot, "outside.jsonl");
+    writeFileSync(outside, readFileSync(sessionFile));
+    rmSync(sessionFile);
+    symlinkSync(outside, sessionFile);
+    const reopened = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 500 });
+    assert.equal(reopened.snapshot().initialError, CHILD_HISTORY_READ_ERROR, "an escaping symlink never opens");
+
+    // A symlink pointing INSIDE the artifacts directory is rejected too: the
+    // boundary requires a regular file at the recorded path.
+    rmSync(sessionFile);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const { artifactsDir: again } = writeArtifacts(testRoot, conversation(10));
+    const innerTarget = join(again, "inner-target.jsonl");
+    writeFileSync(innerTarget, readFileSync(outside));
+    rmSync(join(again, "session.jsonl"));
+    symlinkSync(innerTarget, join(again, "session.jsonl"));
+    const innerReopened = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 500 });
+    assert.equal(innerReopened.snapshot().initialError, CHILD_HISTORY_READ_ERROR, "a same-directory symlink never opens");
+
+    // Restore a real file through a rename, which deterministically installs
+    // a different inode (an unlink-plus-write can reuse the just-freed inode
+    // on some filesystems, as CI does): a same-path identity change mid-paging
+    // fails boundedly in the paging direction while loaded pages stay visible.
+    const replacement = join(otherRoot, "replacement.jsonl");
+    writeFileSync(replacement, readFileSync(outside));
+    rmSync(join(again, "session.jsonl"));
+    renameSync(replacement, join(again, "session.jsonl"));
+    const before = pager.snapshot().items.length;
+    assert.equal(pager.loadOlder(), false);
+    const failed = pager.snapshot();
+    assert.equal(failed.olderError, CHILD_HISTORY_READ_ERROR, "an identity change fails the older page read");
+    assert.equal(failed.items.length, before, "validated pages survive the identity failure");
+    assert.deepEqual(failed.items.map((item) => item.entryId).slice(0, firstItems.length), firstItems);
+
+    // A shrink below the loaded window is also an identity failure.
+    const shrinkPager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 500 });
+    writeFileSync(join(again, "session.jsonl"), `${JSON.stringify(sessionHeader())}\n`);
+    assert.equal(shrinkPager.loadOlder(), false);
+    assert.equal(shrinkPager.snapshot().olderError, CHILD_HISTORY_READ_ERROR);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+    rmSync(otherRoot, { recursive: true, force: true });
+  }
+});
+
+test("a concurrent append leaves older offsets stable and is discoverable on the next newer load", () => {
+  const testRoot = root();
+  try {
+    const { sessionFile } = writeArtifacts(testRoot, conversation(12));
+    const sizeBefore = statSync(sessionFile).size;
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600 });
+    const initial = pager.snapshot();
+    const firstLoaded = initial.items.map((item) => item.entryId);
+
+    // The child appends while the viewer holds its window.
+    const appended = `${JSON.stringify(messageEntry("late", { role: "user", content: "appended while viewing", timestamp: 99 }))}\n`;
+    writeFileSync(sessionFile, `${readFileSync(sessionFile, "utf8")}${appended}`);
+    assert.ok(statSync(sessionFile).size > sizeBefore);
+
+    loadAll(pager);
+    while (pager.loadNewer()) { /* discover the appended tail */ }
+    const full = pager.snapshot();
+    for (const id of firstLoaded) assert.ok(full.items.some((item) => item.entryId === id), `${id} keeps its stable identity across appends`);
+    assert.ok(full.items.some((item) => item.entryId === "late"), "the appended entry is reachable after paging");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a transient read failure retries successfully and clears the bounded error", () => {
+  const testRoot = root();
+  try {
+    writeArtifacts(testRoot, conversation(12));
+    let failReads = 1;
+    const io = {
+      readRange: (file, start, end) => {
+        if (failReads > 0 && end < statSync(file).size) {
+          failReads -= 1;
+          throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+        }
+        return realReadRange(file, start, end);
+      },
+    };
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600, io });
+    assert.equal(pager.snapshot().initialError, undefined);
+    assert.equal(pager.loadOlder(), false, "the transient failure fails the page");
+    assert.equal(pager.snapshot().olderError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(pager.loadOlder(), true, "the retry loads the page");
+    const snapshot = pager.snapshot();
+    assert.equal(snapshot.olderError, undefined, "a successful retry clears the bounded error");
+    assert.ok(snapshot.items.length > 0);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a successful newer retry clears its error when it confirms EOF", () => {
+  const testRoot = root();
+  try {
+    writeArtifacts(testRoot, conversation(1));
+    let reads = 0;
+    const io = {
+      readRange: (file, start, end) => {
+        reads += 1;
+        if (reads === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+        return realReadRange(file, start, end);
+      },
+    };
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096, io });
+    assert.equal(pager.loadNewer(), false, "the failed EOF probe is retryable");
+    assert.equal(pager.snapshot().newerError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(pager.loadNewer(), false, "the successful retry confirms there is no newer page");
+    assert.equal(pager.snapshot().newerError, undefined, "a successful EOF probe clears the stale error");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("the loaded window stays bounded and reloads evicted pages on demand", () => {
+  const testRoot = root();
+  try {
+    writeArtifacts(testRoot, conversation(400));
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 900 });
+    // Walk far past the item bound: prepending evicts the newest pages.
+    for (let loads = 0; loads < 200; loads += 1) {
+      if (!pager.loadOlder()) break;
+    }
+    let snapshot = pager.snapshot();
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS, "the in-memory window keeps its explicit bound");
+    assert.equal(snapshot.moreAfter, true, "evicted newer pages are known to exist");
+    const ids = snapshot.items.map((item) => item.entryId);
+    assert.equal(new Set(ids).size, ids.length, "no duplicated entries inside the window");
+    assert.ok(ids.includes("u0"), "paging reached the earliest entry");
+    assert.ok(!ids.includes("a399"), "the newest entries were evicted");
+
+    // Newer loads walk the window back down without duplication.
+    let loads = 0;
+    while (pager.loadNewer() && loads < 500) loads += 1;
+    snapshot = pager.snapshot();
+    const down = snapshot.items.map((item) => item.entryId);
+    assert.equal(new Set(down).size, down.length, "no duplicated entries after walking back down");
+    assert.ok(down.includes("a399"), "the newest entry is reachable again");
+    const textTotal = snapshot.items.reduce((total, item) => total + (item.text?.length ?? JSON.stringify(item.message ?? "").length), 0);
+    assert.ok(textTotal <= MAX_LOADED_ITEMS * 2_200, "retained text stays inside the per-entry budgets");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("paging creates no second store beside the native artifacts", () => {
+  const testRoot = root();
+  try {
+    const { artifactsDir } = writeArtifacts(testRoot, conversation(20));
+    const before = recursiveListing(artifactsDir);
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 400 });
+    loadAll(pager);
+    const after = recursiveListing(artifactsDir);
+    assert.deepEqual(after, before, "no cache, index, sidecar, journal, or lock file appears");
+    const stateRootListing = recursiveListing(join(testRoot, "state"));
+    assert.ok(stateRootListing.every((path) => before.includes(path) || !path.includes(ID) || path.startsWith(artifactsDir)), "nothing new appears outside the artifacts directory");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("identity failures at open surface the bounded initial error", () => {
+  const testRoot = root();
+  try {
+    // Header session id does not match run.json.
+    const { sessionFile } = writeArtifacts(testRoot, []);
+    writeFileSync(sessionFile, `${JSON.stringify(sessionHeader("other-session"))}\n`);
+    let pager = createChildHistory(ID, { observedAt: OBSERVED_AT });
+    let snapshot = pager.snapshot();
+    assert.equal(snapshot.initialError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(snapshot.items.length, 0);
+    assert.equal(snapshot.moreBefore, false);
+
+    // A missing run.json for another ID is the same bounded state.
+    pager = createChildHistory("subagent_00000000-0000-4000-8000-0000000000ff", { observedAt: OBSERVED_AT });
+    snapshot = pager.snapshot();
+    assert.equal(snapshot.initialError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(snapshot.olderError, undefined);
+    assert.equal(snapshot.newerError, undefined);
+    void testRoot;
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("retryInitial reloads after the artifacts recover", () => {
+  const testRoot = root();
+  try {
+    const { sessionFile } = writeArtifacts(testRoot, conversation(4));
+    const raw = readFileSync(sessionFile, "utf8");
+    writeFileSync(sessionFile, `corrupt\n`);
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096 });
+    assert.equal(pager.snapshot().initialError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(pager.loadOlder(), false, "loads never run against a failed initial read");
+
+    writeFileSync(sessionFile, raw);
+    assert.equal(pager.retryInitial(), true);
+    const snapshot = pager.snapshot();
+    assert.equal(snapshot.initialError, undefined);
+    assert.ok(snapshot.items.length > 0, "the recovered tail page loads");
+    assert.equal(pager.retryInitial(), false, "a healthy history has nothing to retry");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("forward paging stitches a long entry across many byte pages to the newest history", () => {
+  const testRoot = root();
+  try {
+    const lines = [];
+    for (let index = 0; index < 1200; index += 1) lines.push(...pair(`e${index}`, `entry ${index}`));
+    lines.push(...pair("huge", "H".repeat(2_048)));
+    lines.push(...pair("newest", "final entry"));
+    writeArtifacts(testRoot, lines);
+    // Walk older until eviction drops the tail, then forward again: the
+    // 2 KiB entry spans eight 256-byte pages and must stitch, not stall.
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 256, maxEntryBytes: 4_096 });
+    let loads = 0;
+    while (pager.loadOlder() && loads < 10_000) loads += 1;
+    const oldestReached = pager.snapshot().items[0]?.entryId;
+    assert.equal(oldestReached, "e0-user", "the older walk reaches the earliest entry");
+
+    loads = 0;
+    while (pager.loadNewer() && loads < 10_000) loads += 1;
+    const snapshot = pager.snapshot();
+    const ids = snapshot.items.map((item) => item.entryId);
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS, "the window keeps its hard bound");
+    assert.ok(ids.includes("huge-user"), "the long entry is reachable through forward stitching");
+    assert.equal(ids.at(-1), "newest-assistant", "the newest entry is reachable after the long entry");
+    assert.equal(new Set(ids).size, ids.length, "no entry is duplicated by forward stitching");
+    assert.equal(snapshot.moreAfter, false, "the forward walk reaches the file end");
+    assert.equal(snapshot.newerError, undefined);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("the hard item bound holds for one oversized page and trimmed history stays reachable both ways", () => {
+  const testRoot = root();
+  try {
+    // 900 single-item entries inside one default-size page.
+    const lines = [];
+    for (let index = 0; index < 900; index += 1) lines.push(messageEntry(`e${index}`, { role: "user", content: `x ${index}`, timestamp: index }));
+    writeArtifacts(testRoot, lines);
+
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 131_072 });
+    let snapshot = pager.snapshot();
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS, "the initial single page is windowed to the hard bound");
+    assert.equal(snapshot.items.length, MAX_LOADED_ITEMS);
+    assert.equal(snapshot.moreBefore, true, "the trimmed head of the page stays known");
+
+    // Walk older through the window, then back down, without ever exceeding
+    // the bound or losing an entry.
+    let loads = 0;
+    while (pager.loadOlder() && loads < 10_000) loads += 1;
+    snapshot = pager.snapshot();
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS);
+    assert.equal(snapshot.items[0]?.entryId, "e0", "the earliest entry is reachable through window shifts");
+    assert.equal(snapshot.moreBefore, false);
+
+    loads = 0;
+    while (pager.loadNewer() && loads < 10_000) loads += 1;
+    snapshot = pager.snapshot();
+    const ids = snapshot.items.map((item) => item.entryId);
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS);
+    assert.equal(ids.at(-1), "e899", "the newest entry is reachable again");
+    assert.equal(new Set(ids).size, ids.length, "no duplicated entries across the whole walk");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("metadata-only paging keeps retained page state bounded in both directions", () => {
+  const testRoot = root();
+  try {
+    const lines = [messageEntry("first-visible", { role: "user", content: "first", timestamp: 0 })];
+    for (let index = 0; index < 5_000; index += 1) {
+      lines.push({ type: "model_change", id: `meta-${index}`, timestamp: "2025-01-01T00:00:00Z", provider: "p", modelId: "m" });
+    }
+    lines.push(messageEntry("last-visible", { role: "user", content: "last", timestamp: 1 }));
+    writeArtifacts(testRoot, lines);
+
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 256 });
+    let loads = 0;
+    while (pager.loadOlder() && loads < 10_000) {
+      loads += 1;
+      assert.ok(pager.pages.length <= MAX_LOADED_PAGES, "older paging retains only the bounded page window");
+      assert.ok(
+        pager.snapshot().items.some((item) => item.entryId === "last-visible"),
+        "metadata-only pages do not evict the current visible anchor",
+      );
+    }
+    assert.equal(pager.snapshot().items[0]?.entryId, "first-visible", "the earliest visible entry stays reachable");
+    assert.equal(pager.snapshot().moreBefore, false);
+
+    loads = 0;
+    while (pager.loadNewer() && loads < 10_000) {
+      loads += 1;
+      assert.ok(pager.pages.length <= MAX_LOADED_PAGES, "newer paging retains only the bounded page window");
+      assert.ok(
+        pager.snapshot().items.some((item) => item.entryId === "first-visible"),
+        "metadata-only pages do not evict the current visible anchor on the return walk",
+      );
+    }
+    assert.equal(pager.snapshot().items.at(-1)?.entryId, "last-visible", "the newest visible entry stays reachable again");
+    assert.equal(pager.snapshot().moreAfter, false);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a stitched tool result stays consumed after probing the newer edge", () => {
+  const testRoot = root();
+  try {
+    const lines = [];
+    for (let index = 0; index < 100; index += 1) {
+      lines.push(messageEntry(`stitch-visible-${index}`, { role: "user", content: `older ${index}`, timestamp: index }));
+    }
+    lines.push(
+      messageEntry("padding", { role: "user", content: "P".repeat(400), timestamp: 1 }),
+      messageEntry("call-entry", {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "/private", offset: 1, limit: 2 } }],
+        stopReason: "toolUse",
+        timestamp: 2,
+      }),
+      messageEntry("result-entry", {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "payload" }],
+        isError: false,
+        timestamp: 3,
+      }),
+    );
+    writeArtifacts(testRoot, lines);
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 242 });
+    let loads = 0;
+    while (!pager.snapshot().items.some((item) => item.kind === "toolCall" && item.result?.isError === false) && loads < 20) {
+      assert.equal(pager.loadOlder(), true);
+      loads += 1;
+    }
+    let snapshot = pager.snapshot();
+    assert.deepEqual(snapshot.items.map((item) => item.kind), ["toolCall"]);
+    assert.equal(snapshot.moreAfter, false, "consuming the orphan updates the logical page size");
+    assert.equal(pager.loadNewer(), false, "the fully loaded newer edge has nothing to restore");
+    snapshot = pager.snapshot();
+    assert.deepEqual(snapshot.items.map((item) => item.kind), ["toolCall"], "the orphan result never reappears");
+
+    // Continue through visible older pages until the page cap evicts the
+    // result page but keeps its call page. Reloading that result must consume
+    // it again.
+    loads = 0;
+    while (!(snapshot.moreAfter && pager.pages.length === MAX_LOADED_PAGES) && loads < 1_000) {
+      assert.equal(pager.loadOlder(), true);
+      snapshot = pager.snapshot();
+      loads += 1;
+    }
+    assert.equal(snapshot.moreAfter, true, "the result page was evicted from the newer edge");
+    assert.ok(snapshot.items.some((item) => item.kind === "toolCall" && item.result?.isError === false));
+    assert.equal(pager.loadNewer(), true);
+    snapshot = pager.snapshot();
+    assert.ok(snapshot.items.some((item) => item.kind === "toolCall" && item.result?.isError === false));
+    assert.ok(!snapshot.items.some((item) => item.kind === "generic" && /tool result/.test(item.text)));
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("any single mid-walk page over the bound stays windowed and bounded in both directions", () => {
+  const testRoot = root();
+  try {
+    // A dense middle burst so one older page projects far past the bound.
+    const lines = [];
+    for (let index = 0; index < 100; index += 1) lines.push(...pair(`a${index}`, `head ${index}`));
+    for (let index = 0; index < 900; index += 1) lines.push(messageEntry(`m${index}`, { role: "user", content: `burst ${index}`, timestamp: index }));
+    for (let index = 0; index < 100; index += 1) lines.push(...pair(`z${index}`, `tail ${index}`));
+    writeArtifacts(testRoot, lines);
+
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 20_000 });
+    let snapshot = pager.snapshot();
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS, "the tail page stays windowed");
+    let loads = 0;
+    let maxSeen = snapshot.items.length;
+    while (pager.loadOlder() && loads < 10_000) loads += 1;
+    snapshot = pager.snapshot();
+    maxSeen = Math.max(maxSeen, snapshot.items.length);
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS);
+    assert.equal(snapshot.items[0]?.entryId, "a0-user", "the earliest entry is reachable");
+
+    loads = 0;
+    while (pager.loadNewer() && loads < 10_000) {
+      loads += 1;
+      maxSeen = Math.max(maxSeen, pager.snapshot().items.length);
+    }
+    snapshot = pager.snapshot();
+    assert.ok(maxSeen <= MAX_LOADED_ITEMS, "no intermediate state ever exceeded the hard bound");
+    assert.equal(snapshot.items.at(-1)?.entryId, "z99-assistant", "the newest entry is reachable again");
+    const ids = snapshot.items.map((item) => item.entryId);
+    assert.equal(new Set(ids).size, ids.length, "no duplicated entries after crossing the burst");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("structurally invalid envelopes and duplicate entry ids fail their page boundedly", () => {
+  const testRoot = root();
+  try {
+    const cases = [
+      ["missing id", JSON.stringify({ type: "message", parentId: null, message: { role: "user", content: "x" } })],
+      ["empty id", JSON.stringify({ type: "message", id: "", parentId: null, message: { role: "user", content: "x" } })],
+      ["non-string id", JSON.stringify({ type: "message", id: 7, parentId: null, message: { role: "user", content: "x" } })],
+      ["missing type", JSON.stringify({ id: "bad", parentId: null, message: { role: "user", content: "x" } })],
+      ["json scalar", "42"],
+    ];
+    for (const [label, badLine] of cases) {
+      const { sessionFile } = writeArtifacts(testRoot, conversation(8));
+      const raw = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean);
+      raw.splice(3, 0, badLine);
+      writeFileSync(sessionFile, `${raw.join("\n")}\n`);
+      const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 400 });
+      loadAll(pager);
+      const snapshot = pager.snapshot();
+      assert.ok(
+        snapshot.initialError === CHILD_HISTORY_READ_ERROR || snapshot.olderError === CHILD_HISTORY_READ_ERROR,
+        `${label} fails its page with the bounded reason`,
+      );
+      assert.ok(!JSON.stringify(snapshot).includes("bad"), `${label} never exposes the raw record`);
+      assert.ok(snapshot.items.length > 0 || snapshot.initialError !== undefined, `${label} keeps validated pages visible`);
+    }
+
+    // Duplicate ids within one page load and across loaded pages.
+    for (const [label, mutate] of [
+      ["duplicate within a page", (raw) => { raw.splice(4, 0, raw[2]); }],
+      ["duplicate across pages", (raw) => { raw.push(raw[1]); }],
+    ]) {
+      const { sessionFile } = writeArtifacts(testRoot, conversation(8));
+      const raw = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean);
+      mutate(raw);
+      writeFileSync(sessionFile, `${raw.join("\n")}\n`);
+      const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 400 });
+      loadAll(pager);
+      const snapshot = pager.snapshot();
+      assert.ok(
+        snapshot.initialError === CHILD_HISTORY_READ_ERROR || snapshot.olderError === CHILD_HISTORY_READ_ERROR,
+        `${label} fails with the bounded reason`,
+      );
+      const ids = snapshot.items.map((item) => item.entryId);
+      assert.equal(new Set(ids).size, ids.length, `${label} never loads a duplicated identity`);
+    }
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("older and newer page failures stay independent, visible on their own edge, and retry in direction", () => {
+  const testRoot = root();
+  try {
+    // Enough history that a partial older walk evicts the newest pages while
+    // older bytes remain: the newest edge then sits mid-file with the tail
+    // evicted and only reachable through forward reads.
+    const { sessionFile } = writeArtifacts(testRoot, conversation(300));
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 700 });
+    let loads = 0;
+    while (!pager.snapshot().moreAfter && pager.loadOlder() && loads < 10_000) loads += 1;
+    assert.equal(pager.snapshot().moreAfter, true, "the newest pages were evicted");
+    assert.equal(pager.snapshot().moreBefore, true, "older bytes remain unloaded");
+    assert.equal(pager.snapshot().olderError, undefined);
+
+    // Tamper with an entry in the evicted tail: only a forward re-read can
+    // discover it, so the failure belongs to the newer direction alone.
+    const raw = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean);
+    const validLine = raw[raw.length - 2];
+    raw.splice(raw.length - 2, 1, "{corrupt record password: swordfish");
+    writeFileSync(sessionFile, `${raw.join("\n")}\n`);
+
+    let beforeIds = pager.snapshot().items.map((item) => item.entryId);
+    loads = 0;
+    while (pager.loadNewer() && loads < 10_000) {
+      loads += 1;
+      beforeIds = pager.snapshot().items.map((item) => item.entryId);
+    }
+    let snapshot = pager.snapshot();
+    assert.equal(snapshot.newerError, CHILD_HISTORY_READ_ERROR, "the failed forward page reports on the newer edge");
+    assert.equal(snapshot.olderError, undefined, "the older direction is not implicated");
+    assert.ok(!JSON.stringify(snapshot).includes("swordfish"), "the corrupt fragment never leaks");
+    assert.deepEqual(snapshot.items.map((item) => item.entryId), beforeIds, "validated pages survive the newer failure");
+
+    // The older direction still pages while the newer error is set, and an
+    // older load never clears the newer error.
+    assert.equal(pager.loadOlder(), true);
+    snapshot = pager.snapshot();
+    assert.equal(snapshot.newerError, CHILD_HISTORY_READ_ERROR, "an older load does not clear the newer error");
+
+    // Repairing the record lets the forward retry succeed and clear the error.
+    const repaired = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean);
+    repaired[repaired.length - 2] = validLine;
+    writeFileSync(sessionFile, `${repaired.join("\n")}\n`);
+    loads = 0;
+    while (pager.loadNewer() && loads < 10_000) loads += 1;
+    snapshot = pager.snapshot();
+    assert.equal(snapshot.newerError, undefined, "a successful forward retry clears the newer error");
+    assert.ok(snapshot.items.length > 0);
+
+    // An older-only failure never sets the newer error.
+    writeArtifacts(testRoot, conversation(6));
+    const corruptPath = join(ensureArtifactsDir(ID), "session.jsonl");
+    const lines2 = readFileSync(corruptPath, "utf8").split("\n").filter(Boolean);
+    lines2[2] = "{not json";
+    writeFileSync(corruptPath, `${lines2.join("\n")}\n`);
+    const corrupt = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 300 });
+    loadAll(corrupt);
+    snapshot = corrupt.snapshot();
+    assert.equal(snapshot.olderError, CHILD_HISTORY_READ_ERROR);
+    assert.equal(snapshot.newerError, undefined);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a malformed session header never leaks its raw fragment", () => {
+  const testRoot = root();
+  try {
+    process.env.PI_AGENT_DIR = testRoot;
+    const artifactsDir = ensureArtifactsDir(ID);
+    const sessionFile = join(artifactsDir, "session.jsonl");
+    writeRunState(artifactsDir, {
+      version: 4,
+      id: ID,
+      operation: "delegate",
+      artifactsDir,
+      sessionFile,
+      sessionId: SESSION_ID,
+      originParentSessionId: "parent-1",
+      lastParentSessionId: "parent-1",
+      promptSnapshot: createPromptSnapshot(),
+      phase: "running",
+      task: "task",
+      cwd: "/tmp/project",
+      startedAt: 1,
+      finalText: "",
+      retries: 0,
+      toolErrors: [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+      timeline: [],
+    });
+    // The header line is malformed JSON that quotes a secret-bearing fragment.
+    writeFileSync(sessionFile, `{"type":"session","id":"${SESSION_ID}","cwd":"password: swordfish\n`);
+    const snapshot = createChildHistory(ID).snapshot();
+    assert.equal(snapshot.initialError, CHILD_HISTORY_READ_ERROR);
+    assert.ok(!snapshot.initialError.includes("swordfish"), "parse failures do not quote the malformed content");
+    assert.ok(!snapshot.initialError.includes("{"), "parse failures do not leak JSON fragments");
+    assert.ok(snapshot.initialError.length > 0 && snapshot.initialError.length <= 200);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("the default page size bounds the initial read on oversized session files", () => {
+  const testRoot = root();
+  try {
+    const filler = "f".repeat(2_000);
+    const entries = [
+      messageEntry("e0", { role: "user", content: filler, timestamp: 0 }),
+      messageEntry("e1", { role: "user", content: filler, timestamp: 1 }),
+    ];
+    const { sessionFile } = writeArtifacts(testRoot, entries);
+    const extra = [];
+    for (let index = 0; index < 300; index += 1) {
+      extra.push(messageEntry(`x${index}`, { role: "user", content: `${filler} ${index}`, timestamp: index }));
+    }
+    writeFileSync(sessionFile, [sessionHeader(), ...entries, ...extra].map((line) => JSON.stringify(line)).join("\n") + "\n");
+    const snapshot = createChildHistory(ID, { observedAt: OBSERVED_AT }).snapshot();
+    assert.equal(snapshot.initialError, undefined);
+    assert.ok(snapshot.items.length < 302, "only a bounded tail page of a multi-hundred-KiB session loads");
+    assert.ok(snapshot.items.length <= MAX_LOADED_ITEMS, "the initial page respects the hard item bound");
+    assert.equal(snapshot.moreBefore, true, "the remaining history stays reachable on demand");
+    assert.match(snapshot.items.at(-1).text, /299/, "the window keeps the recent tail");
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("projection still exposes its bounded window contract", () => {
+  const entries = [sessionHeader()];
+  for (let index = 0; index < 30; index += 1) {
+    entries.push(messageEntry(`e${index}`, { role: "user", content: `m ${index}`, timestamp: index }));
+  }
+  const window = projectSessionEntries(entries, 24);
+  assert.equal(window.items.length, 24);
+  assert.equal(window.omitted, 6);
+  assert.equal(window.items[0].entryId, "e6");
+
+  const oneLargeEntry = projectSessionEntries([
+    sessionHeader(),
+    messageEntry("large-entry", {
+      role: "assistant",
+      content: Array.from({ length: 600 }, () => ({ type: "unsupported" })),
+      timestamp: 1,
+    }),
+  ], MAX_LOADED_ITEMS);
+  assert.equal(oneLargeEntry.items[0].entryItemIndex, 120, "the retained slice keeps its entry-local ordinal");
+  assert.equal(oneLargeEntry.items.at(-1).entryItemIndex, 599);
+});
+
+// ---------------------------------------------------------------------------
+// Runner
+
+let failed = 0;
+for (const entry of tests) {
+  try {
+    await entry.fn();
+    console.log(`✓ ${entry.name}`);
+  } catch (error) {
+    failed += 1;
+    console.error(`✗ ${entry.name}`);
+    console.error(error);
+  }
+}
+console.log(`${tests.length} tests, ${failed} failed`);
+if (failed > 0) process.exitCode = 1;

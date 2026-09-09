@@ -23,8 +23,31 @@ status: accepted
 > and artifact diagnostics remain outside the overlay in favor of closed
 > lifecycle/error-code states; viewing is
 > observational only and never touches the lifecycle, delivery, ownership, or
-> persistence contracts this ADR records. Complete-history paging, live streaming, and cross-child navigation
-> remain later slices of the parent viewer specification (#302).
+> persistence contracts this ADR records. Since #305 the overlay pages the
+> child's complete persisted history on demand (`src/subagents/child-history.ts`):
+> bounded byte pages read tail-first from the validated native session file
+> through the same artifact identity boundary as resume — which requires a
+> directly named regular file and rejects symlinks even inside the artifacts
+> directory — byte-level stitching of only newline-terminated records in both
+> paging directions (an unterminated final line stays the running child's
+> incomplete append, and a record larger than one page stitches forward too),
+> per-read verification that pre-open path, opened descriptor, and post-open
+> path retain one regular-file dev/ino identity, minimal native-envelope
+> validation (non-empty `type`
+> and `id`, unique within the loaded window), independent older/newer bounded
+> retryable page errors that keep validated pages visible even when a page
+> projects no transcript rows, a hard 480-item and 64-parsed-page in-memory
+> window whose oversized pages keep a window into their own parse with
+> far-end trimming that stays reachable in both directions and whose
+> metadata-only pages compact without displacing the current visible anchor,
+> stable native-entry-identity plus entry-local-ordinal positioning, and
+> cross-page result consumption that survives either adjacent page's reload —
+> with no second transcript store, cache,
+> index, sidecar, lock, journal, or artifact version beside the native
+> session file, and no claim on Pi's private transcript pipeline. Live
+> streaming, cross-child navigation with per-child reading state, and the
+> remaining lifecycle/delivery qualification of the parent viewer
+> specification (#302) stay later slices.
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,

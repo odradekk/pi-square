@@ -3,6 +3,7 @@ import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@eare
 import { isOwnedInputSurfaceActive } from "../core/input-surface";
 import type { DisplayRuntime } from "../display/runtime";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
+import { createChildHistory } from "./child-history";
 import { sanitizeSubagentDisplay } from "./display";
 import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./types";
@@ -10,7 +11,6 @@ import {
   childOverlayOptions,
   type ChildOverlayModel,
   ChildTranscriptOverlay,
-  readChildTranscript,
 } from "./viewer";
 
 export const SUBAGENT_ROSTER_KEY = "pi-square.subagents.roster";
@@ -528,8 +528,10 @@ export function createSubagentRosterController(
       ? rosterFailureReason(job)
       : "";
 
-    // The model is frozen at open: role, identity, lifecycle, duration, and a
-    // bounded recent transcript. Live updates are a later slice of #302.
+    // The model is frozen at open: role, identity, lifecycle, duration, and
+    // the initial bounded tail page of the child's native history (#305).
+    // Live updates are a later slice of #302; the overlay pages the rest on
+    // demand from the validated session file.
     const model: ChildOverlayModel = {
       role: rosterRole(job),
       idLabel,
@@ -538,7 +540,7 @@ export function createSubagentRosterController(
       status: job.status,
       durationText,
       ...(failureReason ? { failureReason } : {}),
-      transcript: readChildTranscript(job.id, now()),
+      history: createChildHistory(job.id, { observedAt: now() }),
     };
 
     candidateId = undefined;

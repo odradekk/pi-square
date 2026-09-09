@@ -1,8 +1,6 @@
-import { openSync, readSync, closeSync, statSync } from "node:fs";
 import {
   AssistantMessageComponent,
   getMarkdownTheme,
-  parseSessionEntries,
   UserMessageComponent,
   type Theme,
   type ThemeColor,
@@ -21,351 +19,69 @@ import { OperationalDisplayComponent } from "../display/components";
 import { getCatalogEntry } from "../display/catalog";
 import type { DisplayRuntime } from "../display/runtime";
 import { DEFAULT_DISPLAY_POLICY, type DisplayDescriptionV1 } from "../display/types";
-import { resolveChildSessionFile } from "./artifacts";
-import { clipWithHeadTail } from "./confirmed-delivery";
-import { sanitizeSubagentDisplay } from "./display";
-import { rosterToolArgsDisplay } from "./tool-display";
+import {
+  CHILD_HISTORY_READ_ERROR,
+  type ChildHistorySnapshot,
+  type ChildHistoryView,
+  type TranscriptItem,
+} from "./child-history";
 
 /**
- * Read-only child transcript viewer (odradekk/pi-square#304).
+ * Read-only child transcript viewer (odradekk/pi-square#304, #305).
  *
  * The viewer is one presentation-only projection of a background child. It
  * reads the child's validated native session artifacts through the same
- * identity checks resume uses, renders a bounded recent transcript with Pi's
- * public message components, and never mutates lifecycle, result ownership,
+ * identity checks resume uses, renders a bounded transcript with Pi's public
+ * message components, and never mutates lifecycle, result ownership,
  * delivery, waiting, aborting, resume eligibility, persisted artifacts, or the
  * main transcript. Every rendered text is a display-safe projection first:
- * user and assistant text pass the shared credential-neutral sanitizer and
- * an explicit budget before any component sees it, and tool calls render
- * through the same roster-grade allowlisted identity/summary seam the
- * roster rows share — never raw arguments, result payloads, call IDs, or
- * internal fields.
- * The basic path here is deliberately static: the model is frozen when the
- * overlay opens; live streaming, older-history paging, and cross-child
- * navigation are later slices of #302.
+ * user and assistant text pass the shared credential-neutral sanitizer and an
+ * explicit budget before any component sees them, and tool calls render
+ * through the same roster-grade allowlisted identity/summary seam the roster
+ * rows share — never raw arguments, result payloads, call IDs, or internal
+ * fields.
+ *
+ * Since #305 the body is a demand-paged view of the child's complete
+ * persisted history: PageUp walks bounded older pages of the native session
+ * file (original delegation and every same-ID resume, in native order) until
+ * the earliest entry is reachable, PageDown reloads evicted newer pages, and
+ * Home/End jump in bounded steps. The loaded window, every read, and every
+ * rendered line stay explicitly bounded, positions are anchored by stable
+ * native entry identity rather than array offsets, and page failures render
+ * one bounded retryable error while previously validated pages stay visible.
+ * The model is still frozen when the overlay opens; live streaming,
+ * cross-child navigation, and per-child reading state are later slices of
+ * #302, and the overlay remains a plugin projection — not Pi's private native
+ * transcript pipeline.
  */
 
-/** Bytes read from the tail of the native session file. */
-const MAX_TRANSCRIPT_READ_BYTES = 262_144;
-/** Bytes read from the head just to validate the session header line. */
-const MAX_HEADER_READ_BYTES = 4_096;
-/** Renderable items kept in the recent-transcript window. */
-const MAX_TRANSCRIPT_ITEMS = 24;
-/** Per-item text budget through the shared head/tail clipper. */
-const MAX_ENTRY_TEXT = 2_000;
-/** Single-line budget for generic fallback rows. */
-const MAX_GENERIC_LINE = 200;
 /** Overlay rows that are chrome: title, two rules, and the help row. */
 const OVERLAY_CHROME_ROWS = 4;
 /** Terminal size under which the overlay degrades to a one-cell-margin panel. */
 const SMALL_TERMINAL_COLUMNS = 60;
 const SMALL_TERMINAL_ROWS = 16;
+/** Bounded page loads one Home/End press may chain toward a file edge. */
+const EDGE_LOAD_PAGES_PER_PRESS = 8;
+
+export type { ChildHistoryView, ChildHistorySnapshot, TranscriptItem } from "./child-history";
+export { createChildHistory, projectSessionEntries, staticChildHistory } from "./child-history";
 
 export type ChildLifecycle = "queued" | "running" | "cancelling" | "completed" | "failed" | "aborted";
-
-export type TranscriptItem =
-  | { kind: "user"; text: string }
-  | { kind: "assistant"; message: Record<string, unknown> }
-  | { kind: "toolCall"; name: string; summary: string; durationMs?: number; result?: { isError: boolean } }
-  | { kind: "generic"; text: string };
-
-export interface ChildTranscriptProjection {
-  items: TranscriptItem[];
-  /** Items older than the bounded window that exist in the read tail. */
-  omitted: number;
-}
-
-export type ChildTranscript =
-  | ({ ok: true } & ChildTranscriptProjection)
-  | { ok: false; reason: string };
-
-function firstLine(raw: string): string {
-  const cut = raw.indexOf("\n");
-  return cut === -1 ? raw : raw.slice(0, cut);
-}
-
-function genericLine(text: string): TranscriptItem {
-  const clean = sanitizeSubagentDisplay(text).replace(/\s+/g, " ").trim();
-  return { kind: "generic", text: clean.slice(0, MAX_GENERIC_LINE) };
-}
-
-/**
- * Display-safe entry text: the shared credential-neutral sanitizer strips
- * control sequences and redacts common credential forms first, then the shared
- * head/tail clipper bounds the length. Every user, assistant, and thinking
- * text passes here before any component can render it; provider errors never
- * cross into the projection and use fixed state text instead.
- */
-function safeEntryText(text: unknown): string {
-  return clipWithHeadTail(sanitizeSubagentDisplay(text), MAX_ENTRY_TEXT);
-}
-
-type TextContentPart = { kind: "text"; text: string } | { kind: "unsupported" };
-
-/** Ordered text/fallback projection for user and visible custom content. */
-function projectTextContent(content: unknown): TextContentPart[] {
-  if (typeof content === "string") {
-    const text = safeEntryText(content);
-    return text ? [{ kind: "text", text }] : [];
-  }
-  if (!Array.isArray(content)) return [];
-  const parts: TextContentPart[] = [];
-  for (const part of content) {
-    if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
-      const text = safeEntryText(part.text);
-      if (text) parts.push({ kind: "text", text });
-    } else {
-      parts.push({ kind: "unsupported" });
-    }
-  }
-  return parts;
-}
-
-/**
- * Projects parsed native session entries into the ordered bounded transcript.
- * System material never enters: the session header, plain custom state
- * entries, labels, and metadata entries are ignored, and every rendered text
- * is a display-safe projection — sanitized, redacted, and clipped — before it
- * reaches Pi's components or a generic fallback. Tool calls keep their
- * conversational order and state but project only through the roster-grade
- * allowlisted identity/summary seam the roster rows share: raw arguments, result
- * payloads, and call IDs never enter an item a renderer can show (the call ID
- * exists only to pair a result with its call and is never rendered). Content
- * that is out of scope but conversationally meaningful becomes one non-empty
- * sanitized generic line instead of silently disappearing.
- */
-export function projectSessionEntries(
-  entries: readonly unknown[],
-  windowSize = MAX_TRANSCRIPT_ITEMS,
-  observedAt?: number,
-): ChildTranscriptProjection {
-  const projected: TranscriptItem[] = [];
-  const openCalls = new Map<string, {
-    item: TranscriptItem & { kind: "toolCall" };
-    startedAt?: number;
-  }>();
-
-  const timestamp = (value: unknown): number | undefined => {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value !== "string") return undefined;
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  };
-
-  for (const entry of entries) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as { type?: unknown };
-    const entryTimestamp = timestamp((entry as { timestamp?: unknown }).timestamp);
-
-    if (record.type === "session") continue;
-
-    if (record.type === "compaction") {
-      projected.push(genericLine("context compacted"));
-      continue;
-    }
-    if (record.type === "branch_summary") {
-      projected.push(genericLine("branch summary recorded"));
-      continue;
-    }
-    if (record.type === "custom_message") {
-      const custom = entry as { display?: unknown; content?: unknown };
-      if (custom.display === true) {
-        const parts = projectTextContent(custom.content);
-        if (parts.length === 0) projected.push(genericLine("extension message (no readable text)"));
-        else for (const part of parts) {
-          projected.push(genericLine(part.kind === "text" ? part.text : "unsupported extension message content"));
-        }
-      }
-      continue;
-    }
-    if (record.type !== "message") continue;
-
-    const message = (entry as { message?: unknown }).message;
-    if (!message || typeof message !== "object") continue;
-    const role = (message as { role?: unknown }).role;
-
-    if (role === "user") {
-      const parts = projectTextContent((message as { content?: unknown }).content);
-      if (parts.length === 0) projected.push(genericLine("user message (no readable text)"));
-      else for (const part of parts) {
-        projected.push(part.kind === "text"
-          ? { kind: "user", text: part.text }
-          : genericLine("unsupported user message content"));
-      }
-      continue;
-    }
-
-    if (role === "assistant") {
-      const content = (message as { content?: unknown }).content;
-      const stopReason = (message as { stopReason?: unknown }).stopReason;
-      if (!Array.isArray(content)) {
-        projected.push(genericLine("assistant message (no readable content)"));
-        continue;
-      }
-      const projectedBefore = projected.length;
-      // Pi renders one assistant message component, then the message's tool
-      // rows, whose later results update in place. Keep that native grouping;
-      // unsupported provider parts remain visible as generic rows afterward.
-      const boundedContent: Array<Record<string, unknown>> = [];
-      const assistantItems: Array<TranscriptItem & { kind: "assistant" }> = [];
-      const calls: Array<TranscriptItem & { kind: "toolCall" }> = [];
-      const unsupported: TranscriptItem[] = [];
-      const startedAt = entryTimestamp;
-      for (const part of content) {
-        if (!part || typeof part !== "object") {
-          unsupported.push(genericLine("unsupported assistant content"));
-          continue;
-        }
-        if (part.type === "text") {
-          const text = safeEntryText(part.text);
-          if (text) boundedContent.push({ type: "text", text });
-        } else if (part.type === "thinking") {
-          const thinking = safeEntryText(part.thinking);
-          if (thinking) boundedContent.push({ type: "thinking", thinking });
-        } else if (part.type === "toolCall") {
-          // The roster-grade shared projection: cataloged identity plus
-          // structural counts/ranges only; free-form paths, patterns, queries,
-          // and commands never project, and unknown names stay anonymous.
-          const display = rosterToolArgsDisplay(String(part.name ?? ""), part.arguments);
-          const call = {
-            kind: "toolCall",
-            name: display.tool,
-            summary: display.summary,
-            ...(startedAt !== undefined && observedAt !== undefined
-              ? { durationMs: Math.max(0, observedAt - startedAt) }
-              : {}),
-          } as TranscriptItem & { kind: "toolCall" };
-          calls.push(call);
-          const callId = typeof part.id === "string" ? part.id : "";
-          if (callId) openCalls.set(callId, { item: call, startedAt });
-        } else {
-          unsupported.push(genericLine("unsupported assistant content"));
-        }
-      }
-      if (boundedContent.length > 0) {
-        const item = { kind: "assistant", message: { role: "assistant", content: boundedContent } } as const;
-        projected.push(item);
-        assistantItems.push(item);
-      }
-      projected.push(...calls, ...unsupported);
-
-      // Only fixed state text crosses the assistant error boundary. Pi's
-      // native transcript updates a tool call in place, so failed calls keep
-      // that same one-row identity rather than gaining a second result row.
-      if (stopReason === "error" || stopReason === "aborted") {
-        if (calls.length > 0) {
-          for (const call of calls) {
-            call.result = { isError: true };
-            // Without a tool-result entry there is no execution end boundary;
-            // do not turn time spent before a later reopen into tool duration.
-            delete call.durationMs;
-          }
-        } else if (assistantItems.length > 0) {
-          const last = assistantItems.at(-1)!;
-          last.message.stopReason = stopReason;
-          last.message.errorMessage = stopReason === "error" ? "Child request failed" : "Child request aborted";
-        } else {
-          projected.push(genericLine(stopReason === "error" ? "assistant request failed" : "assistant request aborted"));
-        }
-      } else if (stopReason === "length" && assistantItems.length > 0) {
-        assistantItems.at(-1)!.message.stopReason = "length";
-      }
-      if (projected.length === projectedBefore) {
-        projected.push(genericLine("assistant message (no readable content)"));
-      }
-      continue;
-    }
-
-    if (role === "toolResult") {
-      // Result payloads never render: the pairing keeps only the terminal
-      // state so the ordered call/result conversation stays readable.
-      const result = message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
-      const callId = typeof result.toolCallId === "string" ? result.toolCallId : "";
-      const open = callId ? openCalls.get(callId) : undefined;
-      if (open) {
-        open.item.result = { isError: result.isError === true };
-        const endedAt = entryTimestamp;
-        if (open.startedAt !== undefined && endedAt !== undefined) {
-          open.item.durationMs = Math.max(0, endedAt - open.startedAt);
-        }
-      } else {
-        // An orphan result still shows in order, but through the same
-        // cataloged-identity gate as its call: an untrusted name stays
-        // anonymous and the payload never enters.
-        const name = typeof result.toolName === "string" ? result.toolName : "";
-        projected.push(genericLine(`tool result: ${rosterToolArgsDisplay(name, undefined).tool}`));
-      }
-      continue;
-    }
-
-    // A message role outside the supported vocabulary is conversationally
-    // meaningful: it becomes one non-empty generic line, never a silent gap.
-    projected.push(genericLine("unsupported message entry"));
-  }
-
-  if (projected.length <= windowSize) return { items: projected, omitted: 0 };
-  return { items: projected.slice(projected.length - windowSize), omitted: projected.length - windowSize };
-}
-
-/**
- * Reads a bounded recent transcript from the child's native session file.
- * Reuses the shared artifact identity checks, then tolerates the running
- * child's mid-append tail: the head slice only validates the session header,
- * the tail slice drops its own torn first line, and Pi's public tolerant
- * parser skips any other malformed line. Failures surface as a bounded
- * `ok: false` reason for the overlay's explicit read-error state.
- */
-export function readChildTranscript(id: string, observedAt = Date.now()): ChildTranscript {
-  try {
-    const { details, sessionFile } = resolveChildSessionFile(id, "view");
-    const size = statSync(sessionFile).size;
-
-    const headerBuffer = Buffer.alloc(Math.min(size, MAX_HEADER_READ_BYTES));
-    const descriptor = openSync(sessionFile, "r");
-    try {
-      readSync(descriptor, headerBuffer, 0, headerBuffer.length, 0);
-    } finally {
-      closeSync(descriptor);
-    }
-    const header = JSON.parse(firstLine(headerBuffer.toString("utf8"))) as { type?: unknown; id?: unknown };
-    if (header?.type !== "session" || header.id !== details.sessionId) {
-      throw new Error("native session header does not match run.json");
-    }
-
-    const tailStart = Math.max(0, size - MAX_TRANSCRIPT_READ_BYTES);
-    const tailBuffer = Buffer.alloc(size - tailStart);
-    const tailDescriptor = openSync(sessionFile, "r");
-    try {
-      readSync(tailDescriptor, tailBuffer, 0, tailBuffer.length, tailStart);
-    } finally {
-      closeSync(tailDescriptor);
-    }
-    let tail = tailBuffer.toString("utf8");
-    if (tailStart > 0) {
-      const lineBreak = tail.indexOf("\n");
-      if (lineBreak !== -1) tail = tail.slice(lineBreak + 1);
-    }
-
-    return { ok: true, ...projectSessionEntries(parseSessionEntries(tail), MAX_TRANSCRIPT_ITEMS, observedAt) };
-  } catch {
-    // Filesystem and parser errors may quote a session path, a malformed JSON
-    // fragment, or provider-owned identifiers. The overlay exposes only the
-    // observable read state; detailed diagnostics remain outside this view.
-    return { ok: false, reason: "child history could not be read" };
-  }
-}
 
 export type ViewerInput =
   | { kind: "close" }
   | { kind: "replay"; text: string }
+  | { kind: "scroll"; delta: -1 | 1 }
+  | { kind: "jump"; to: "start" | "end" }
   | { kind: "ignore" };
 
 /**
  * Classifies one raw terminal input event for the capturing overlay. Escape
  * closes; complete printable, paste, and composed-IME content replays into
- * the main editor; Backspace and Delete against the empty editor stay no-ops,
- * and every other key (arrows, Enter, shortcuts, modified keys) is suppressed
- * so no Pi application shortcut fires through the overlay.
+ * the main editor; Backspace and Delete against the empty editor stay no-ops;
+ * PageUp/PageDown/Home/End scroll the bounded transcript; and every other key
+ * (arrows, Enter, shortcuts, modified keys) is suppressed so no Pi
+ * application shortcut fires through the overlay.
  */
 export function classifyViewerInput(data: string): ViewerInput {
   if (data === "" || isKeyRelease(data)) return { kind: "ignore" };
@@ -376,6 +92,10 @@ export function classifyViewerInput(data: string): ViewerInput {
   }
   if (matchesKey(data, "escape")) return { kind: "close" };
   if (matchesKey(data, "backspace") || matchesKey(data, "delete")) return { kind: "ignore" };
+  if (matchesKey(data, "pageUp")) return { kind: "scroll", delta: -1 };
+  if (matchesKey(data, "pageDown")) return { kind: "scroll", delta: 1 };
+  if (matchesKey(data, "home")) return { kind: "jump", to: "start" };
+  if (matchesKey(data, "end")) return { kind: "jump", to: "end" };
   if (
     matchesKey(data, "up") || matchesKey(data, "down")
     || matchesKey(data, "left") || matchesKey(data, "right")
@@ -442,7 +162,8 @@ export interface ChildOverlayModel {
   durationText: string;
   /** Closed failure/abort status sentence for terminal runs with no transcript. */
   failureReason?: string;
-  transcript: ChildTranscript;
+  /** Bounded demand-paged history over the child's native session file. */
+  history: ChildHistoryView;
 }
 
 export interface ChildOverlayInput {
@@ -457,10 +178,13 @@ export interface ChildOverlayInput {
   onReplay(text: string): void;
 }
 
-function emptyStateLine(model: ChildOverlayModel): { text: string; tone: ThemeColor } {
-  const transcript = model.transcript;
-  if (!transcript.ok) return { text: `Transcript unavailable: ${transcript.reason}`, tone: "error" };
-  if (transcript.items.length > 0) return { text: "", tone: "muted" };
+function emptyStateLine(model: ChildOverlayModel, snapshot: ChildHistorySnapshot): { text: string; tone: ThemeColor } {
+  if (snapshot.initialError !== undefined) {
+    return { text: `Transcript unavailable: ${snapshot.initialError}`, tone: "error" };
+  }
+  if (snapshot.items.length > 0 || snapshot.olderError !== undefined || snapshot.newerError !== undefined) {
+    return { text: "", tone: "muted" };
+  }
   switch (model.status) {
     case "queued":
       return { text: "Waiting to start", tone: "muted" };
@@ -476,45 +200,57 @@ function emptyStateLine(model: ChildOverlayModel): { text: string; tone: ThemeCo
   }
 }
 
+/** One item's stable identity: native entry id plus ordinal within the entry. */
+function itemKey(item: TranscriptItem, index: number, occurrences: Map<string, number>): string {
+  const base = item.entryId !== undefined && item.entryId !== "" ? item.entryId : `@${index}`;
+  const fallback = occurrences.get(base) ?? 0;
+  const occurrence = item.entryItemIndex ?? fallback;
+  occurrences.set(base, Math.max(fallback, occurrence + 1));
+  return `${base}#${occurrence}`;
+}
+
+interface LineModel {
+  lines: string[];
+  /** Scroll-space line index where each item's rendered block starts. */
+  starts: number[];
+  /** Stable per-item keys, parallel to the snapshot items. */
+  keys: string[];
+}
+
 /**
- * The capturing overlay component: one title row, one bounded transcript
- * body, and one help row between quiet rules. All content is frozen when the
- * component is built, so rendered lines cache by width and terminal size like
- * the other pi-square frame components.
+ * The capturing overlay component: one title row, one bounded scrollable
+ * transcript body, and one help row between quiet rules. Item components and
+ * the flattened scroll space are cached by width and history version; the
+ * final viewport is cached additionally by terminal size and scroll position,
+ * so a running tool still refreshes its duration at the motion interval while
+ * scrolling re-slices cached lines.
  */
 export class ChildTranscriptOverlay implements Component {
   private readonly input: ChildOverlayInput;
   private readonly theme: Theme;
   private readonly markdown = getMarkdownTheme();
-  private readonly bodyComponents: Component[] = [];
-  private readonly state: { text: string; tone: ThemeColor };
-  private readonly omitted: number;
+  private state: { text: string; tone: ThemeColor };
+  private current: ChildHistorySnapshot;
+  private version = 0;
+  private scrollTop = Number.POSITIVE_INFINITY;
+  private lastWidth: number | undefined;
+  private lineModel: { width: number; version: number; model: LineModel } | undefined;
+  private cache: {
+    width: number;
+    columns: number;
+    rows: number;
+    scrollTop: number;
+    version: number;
+    lines: string[];
+  } | undefined;
   private motionUnsubscribe: (() => void) | undefined;
-  private cache: { width: number; columns: number; rows: number; lines: string[] } | undefined;
 
   constructor(input: ChildOverlayInput) {
     this.input = input;
     this.theme = input.theme;
-    this.state = emptyStateLine(input.model);
-    this.omitted = input.model.transcript.ok ? input.model.transcript.omitted : 0;
-
-    if (input.model.transcript.ok) {
-      for (const item of input.model.transcript.items) {
-        try {
-          this.bodyComponents.push(...this.componentsFor(item));
-        } catch {
-          // A single entry that Pi's components cannot build renders through
-          // the sanitized generic fallback; the view never throws.
-          this.bodyComponents.push(this.genericTextComponent(this.describeItem(item)));
-        }
-      }
-      if (input.display && input.model.transcript.items.some((item) => item.kind === "toolCall" && !item.result)) {
-        this.motionUnsubscribe = input.display.subscribeMotion(() => {
-          this.invalidate();
-          this.input.tui.requestRender();
-        });
-      }
-    }
+    this.current = input.model.history.snapshot();
+    this.state = emptyStateLine(input.model, this.current);
+    this.syncMotionSubscription();
   }
 
   /** One static sanitized line, clipped to whatever width the renderer offers. */
@@ -576,14 +312,227 @@ export class ChildTranscriptOverlay implements Component {
     }
   }
 
+  /**
+   * Builds the flattened scroll space for one width: an optional older-history
+   * edge (or the bounded retryable page error), every loaded item's rendered
+   * lines, and an optional newer-history edge. Markers and items share the
+   * same scroll space so the body budget always bounds the viewport exactly.
+   */
+  private buildLineModel(width: number): LineModel {
+    const snapshot = this.current;
+    const indent = "  ";
+    const contentWidth = Math.max(1, width - visibleWidth(indent));
+    const lines: string[] = [];
+    const starts: number[] = [];
+    const keys: string[] = [];
+
+    if (snapshot.olderError !== undefined || snapshot.moreBefore) {
+      lines.push(snapshot.olderError !== undefined
+        ? this.theme.fg("error", `${indent}older ${CHILD_HISTORY_READ_ERROR} — page up retries`)
+        : this.theme.fg("dim", `${indent}… earlier history (page up)`));
+    }
+
+    const occurrences = new Map<string, number>();
+    for (const [index, item] of snapshot.items.entries()) {
+      let rendered: string[];
+      try {
+        rendered = this.componentsFor(item).flatMap((component) => component.render(contentWidth));
+      } catch {
+        // A single entry that Pi's components cannot build renders through
+        // the sanitized generic fallback; the view never throws.
+        rendered = this.componentsFor({ kind: "generic", text: this.describeItem(item) })[0]!
+          .render(contentWidth);
+      }
+      starts.push(lines.length);
+      keys.push(itemKey(item, index, occurrences));
+      lines.push(...rendered.map((line) => indent + line));
+    }
+
+    if (snapshot.newerError !== undefined || snapshot.moreAfter) {
+      lines.push(snapshot.newerError !== undefined
+        ? this.theme.fg("error", `${indent}newer ${CHILD_HISTORY_READ_ERROR} — page down retries`)
+        : this.theme.fg("dim", `${indent}… newer history (page down)`));
+    }
+    return { lines, starts, keys };
+  }
+
+  private lineModelFor(width: number): LineModel {
+    if (this.lineModel !== undefined && this.lineModel.width === width && this.lineModel.version === this.version) {
+      return this.lineModel.model;
+    }
+    const model = this.buildLineModel(width);
+    this.lineModel = { width, version: this.version, model };
+    return model;
+  }
+
+  private bodyBudget(): number {
+    const terminal = this.input.tui.terminal;
+    return childOverlayPlan(Math.max(1, terminal.columns), Math.max(1, terminal.rows)).bodyRows;
+  }
+
+  /**
+   * Resolves the viewport for the current scroll space and budget. The
+   * leading indicator consumes one row only while content lies above, so the
+   * bottom-most line stays visible at the bottom and the whole body fits
+   * `budget` rows exactly.
+   */
+  private resolveViewport(model: LineModel, budget: number): {
+    scrollTop: number;
+    maxScroll: number;
+    head: boolean;
+    tail: boolean;
+    count: number;
+  } {
+    const head = this.scrollTop > 0 || !Number.isFinite(this.scrollTop);
+    const avail = Math.max(1, budget - (head ? 1 : 0));
+    const maxScroll = Math.max(0, model.lines.length - avail);
+    const scrollTop = Number.isFinite(this.scrollTop)
+      ? Math.min(Math.max(0, this.scrollTop), maxScroll)
+      : maxScroll;
+    const effectiveHead = head && scrollTop > 0;
+    const tail = scrollTop + avail < model.lines.length;
+    return {
+      scrollTop,
+      maxScroll,
+      head: effectiveHead,
+      tail,
+      count: Math.max(0, avail - (tail ? 1 : 0)),
+    };
+  }
+
+  private refreshHistory(): void {
+    this.current = this.input.model.history.snapshot();
+    this.version += 1;
+    this.lineModel = undefined;
+    this.cache = undefined;
+    this.state = emptyStateLine(this.input.model, this.current);
+    this.syncMotionSubscription();
+  }
+
+  /** Subscribes to motion only while an unresolved tool call is loaded. */
+  private syncMotionSubscription(): void {
+    const wantsMotion = this.current.items.some((item) => item.kind === "toolCall" && !item.result);
+    if (wantsMotion && this.input.display && this.motionUnsubscribe === undefined) {
+      this.motionUnsubscribe = this.input.display.subscribeMotion(() => {
+        this.invalidate();
+        this.input.tui.requestRender();
+      });
+    } else if (!wantsMotion && this.motionUnsubscribe !== undefined) {
+      this.motionUnsubscribe();
+      this.motionUnsubscribe = undefined;
+    }
+  }
+
+  private scroll(delta: -1 | 1): void {
+    if (this.current.initialError !== undefined) {
+      this.input.model.history.retryInitial();
+      this.refreshHistory();
+      this.scrollTop = Number.POSITIVE_INFINITY;
+      return;
+    }
+    // A state-line body (queued, starting, or an all-unterminated tail) can
+    // still hold reachable older history, so paging stays available; empty
+    // geometry makes the movement a harmless clamp.
+    if (this.lastWidth === undefined) return;
+    const width = this.lastWidth;
+    const model = this.lineModelFor(width);
+    const budget = this.bodyBudget();
+    const view = this.resolveViewport(model, budget);
+    this.scrollTop = view.scrollTop;
+
+    if (delta < 0) {
+      if (this.scrollTop > 0) {
+        this.scrollTop = Math.max(0, this.scrollTop - budget);
+        return;
+      }
+      // At the loaded top: request one bounded older page and reveal it, so
+      // repeated presses walk the complete history until the earliest entry.
+      this.pageOlder(model, budget);
+    } else {
+      if (this.scrollTop < view.maxScroll) {
+        this.scrollTop = Math.min(view.maxScroll, this.scrollTop + budget);
+        return;
+      }
+      // At the loaded bottom: attempt one bounded newer page (evicted pages,
+      // or a concurrent append completing the tail) and follow to the edge.
+      this.pageNewer();
+    }
+  }
+
+  private pageOlder(model: LineModel, budget: number): void {
+    const seamKey = model.keys[0];
+    const loaded = this.input.model.history.loadOlder();
+    this.refreshHistory();
+    if (!loaded || seamKey === undefined) return;
+    const next = this.lineModelFor(this.lastWidth ?? 64);
+    const seamIndex = next.keys.indexOf(seamKey);
+    if (seamIndex < 0) return;
+    // Reveal the newly loaded older page: the previously top item closes the
+    // viewport at its bottom edge, so nothing visible jumps or is skipped.
+    // The one-step adjustment absorbs the indicator rows the viewport trades
+    // for content.
+    let target = Math.max(0, next.starts[seamIndex]! - budget + 2);
+    this.scrollTop = target;
+    const view = this.resolveViewport(next, budget);
+    const lastVisible = view.scrollTop + view.count - 1;
+    const seamLine = next.starts[seamIndex]!;
+    if (lastVisible < seamLine) target = view.scrollTop + (seamLine - lastVisible);
+    this.scrollTop = target;
+  }
+
+  private pageNewer(): void {
+    const loaded = this.input.model.history.loadNewer();
+    this.refreshHistory();
+    if (!loaded) return;
+    // Follow to the newest edge.
+    this.scrollTop = Number.POSITIVE_INFINITY;
+  }
+
+  private jump(to: "start" | "end"): void {
+    if (this.current.initialError !== undefined) {
+      this.input.model.history.retryInitial();
+      this.refreshHistory();
+      this.scrollTop = Number.POSITIVE_INFINITY;
+      return;
+    }
+    if (this.lastWidth === undefined) return;
+    if (to === "start") {
+      for (let page = 0; page < EDGE_LOAD_PAGES_PER_PRESS; page += 1) {
+        if (!this.current.moreBefore) break;
+        if (!this.input.model.history.loadOlder()) break;
+        this.refreshHistory();
+      }
+      this.scrollTop = 0;
+      return;
+    }
+    // End follows the newest edge; the first attempt always runs because the
+    // snapshot's newer-edge flag only updates on a read.
+    for (let page = 0; page < EDGE_LOAD_PAGES_PER_PRESS; page += 1) {
+      if (!this.input.model.history.loadNewer()) break;
+      this.refreshHistory();
+      this.scrollTop = Number.POSITIVE_INFINITY;
+    }
+  }
+
   handleInput(data: string): void {
     const classified = classifyViewerInput(data);
-    if (classified.kind === "close") {
-      this.dispose();
-      this.input.onClose();
-    } else if (classified.kind === "replay") {
-      this.dispose();
-      this.input.onReplay(classified.text);
+    switch (classified.kind) {
+      case "close":
+        this.dispose();
+        this.input.onClose();
+        return;
+      case "replay":
+        this.dispose();
+        this.input.onReplay(classified.text);
+        return;
+      case "scroll":
+        this.scroll(classified.delta);
+        return;
+      case "jump":
+        this.jump(classified.to);
+        return;
+      default:
+        return;
     }
   }
 
@@ -594,18 +543,21 @@ export class ChildTranscriptOverlay implements Component {
 
   invalidate(): void {
     this.cache = undefined;
-    for (const component of this.bodyComponents) component.invalidate?.();
+    this.lineModel = undefined;
   }
 
   render(width: number): string[] {
     const safeWidth = Math.max(1, width);
     const terminal = this.input.tui.terminal;
     const plan = childOverlayPlan(terminal.columns, terminal.rows);
+    this.lastWidth = safeWidth;
     if (
       this.cache
       && this.cache.width === safeWidth
       && this.cache.columns === terminal.columns
       && this.cache.rows === terminal.rows
+      && Number.isFinite(this.scrollTop) && this.cache.scrollTop === this.scrollTop
+      && this.cache.version === this.version
     ) return this.cache.lines;
 
     const model = this.input.model;
@@ -621,14 +573,21 @@ export class ChildTranscriptOverlay implements Component {
     );
     const rule = this.theme.fg("border", "─".repeat(safeWidth));
     const help = truncateToWidth(
-      this.theme.fg("muted", "esc close · type or paste to return to the main editor"),
+      this.theme.fg("muted", "esc close · pgup/pgdn/home/end scroll · type or paste to return to the main editor"),
       safeWidth,
       "…",
     );
 
     const body = this.renderBody(safeWidth, plan.bodyRows);
     const lines = [title, rule, ...body, rule, help];
-    this.cache = { width: safeWidth, columns: terminal.columns, rows: terminal.rows, lines };
+    this.cache = {
+      width: safeWidth,
+      columns: terminal.columns,
+      rows: terminal.rows,
+      scrollTop: Number.isFinite(this.scrollTop) ? this.scrollTop : Number.POSITIVE_INFINITY,
+      version: this.version,
+      lines,
+    };
     return lines;
   }
 
@@ -637,28 +596,26 @@ export class ChildTranscriptOverlay implements Component {
       return [truncateToWidth(this.theme.fg(this.state.tone, `  ${this.state.text}`), width, "…")];
     }
 
-    const indent = "  ";
-    const contentWidth = Math.max(1, width - visibleWidth(indent));
-    const rendered: string[] = [];
-    for (const component of this.bodyComponents) {
-      for (const line of component.render(contentWidth)) {
-        rendered.push(indent + line);
-      }
-    }
+    const model = this.lineModelFor(width);
+    const view = this.resolveViewport(model, budget);
+    this.scrollTop = view.scrollTop;
 
-    // Markers count against the body budget, so the overlay never renders
-    // more than `budget` body rows regardless of which marker shows.
-    const entriesLead = this.omitted > 0
-      ? [truncateToWidth(this.theme.fg("dim", `  … +${this.omitted} earlier entries`), width, "…")]
-      : [];
-    if (entriesLead.length + rendered.length <= budget) return [...entriesLead, ...rendered];
-    // Keep the recent tail inside the budget and state the cut once; the
-    // line-cut marker replaces the entries marker when both would show.
-    const lead = [truncateToWidth(
-      this.theme.fg("dim", `  … +${rendered.length - budget + 1} earlier lines`),
-      width,
-      "…",
-    )];
-    return [...lead, ...rendered.slice(rendered.length - budget + 1)];
+    const viewport: string[] = [];
+    if (view.head) {
+      viewport.push(truncateToWidth(
+        this.theme.fg("dim", `  … +${view.scrollTop} earlier lines`),
+        width,
+        "…",
+      ));
+    }
+    viewport.push(...model.lines.slice(view.scrollTop, view.scrollTop + view.count));
+    if (view.tail) {
+      viewport.push(truncateToWidth(
+        this.theme.fg("dim", `  … +${model.lines.length - (view.scrollTop + view.count)} later lines`),
+        width,
+        "…",
+      ));
+    }
+    return viewport;
   }
 }
