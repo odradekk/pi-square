@@ -14,6 +14,7 @@ import {
   truncateToWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { withOwnedInputSurface } from "../core/input-surface";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
 import {
   createSubagentId,
@@ -1232,9 +1233,9 @@ async function openManager(
   }
   state.refresh?.(ctx.cwd);
   const services = createProductionServices(pi, ctx, state, parentSessionId, runtime);
-  await ctx.ui.custom<void>((tui, theme, keybindings, done) => (
+  await withOwnedInputSurface(() => ctx.ui.custom<void>((tui, theme, keybindings, done) => (
     new SubagentManager(snapshot(state, parentSessionId), tui, theme, keybindings, done, services)
-  ));
+  )));
 }
 
 export function registerSubagentManager(

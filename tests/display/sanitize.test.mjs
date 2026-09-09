@@ -49,6 +49,11 @@ assert.match(flaggedRedacted, /--password \[REDACTED\]/);
 // Non-credential uses of the same flags keep their values.
 assert.equal(redactDisplaySecrets("sort -u names.txt"), "sort -u names.txt");
 
+// Quoted JSON keys and values are common in model-visible logs and messages.
+const jsonRedacted = redactDisplaySecrets('{"password":"bare-secret","token" : "quoted token","safe":"visible"}');
+assert.doesNotMatch(jsonRedacted, /bare-secret|quoted token/);
+assert.match(jsonRedacted, /"safe":"visible"/, "non-secret JSON fields remain readable");
+
 const markdown = sanitizeMarkdownForDisplay("[bad](https://evil.test) www.evil.test a@b.test\n```js\n[code](x)\n```");
 assert.match(markdown, /\\\[bad\]/);
 assert.match(markdown, /www\\\.evil/);

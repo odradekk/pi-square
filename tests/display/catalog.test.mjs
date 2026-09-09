@@ -85,6 +85,8 @@ for (const name of expectedTools) {
   assert.ok(getCatalogEntry(name), `expected tool '${name}' must be in catalog`);
 }
 assert.equal(allNames.length, expectedTools.length, `catalog has ${allNames.length} tools, expected ${expectedTools.length}`);
+assert.equal(getCatalogEntry("pwsh").title, "PowerShell", "catalog owns the canonical operational title");
+assert.ok(DISPLAY_CATALOG.every((entry) => entry.title.trim().length > 0), "every catalog entry has a title");
 
 // ── Parent/child availability ────────────────────────────────────────
 

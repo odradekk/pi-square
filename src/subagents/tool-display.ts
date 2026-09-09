@@ -129,36 +129,51 @@ export function latestToolCallSummary(timeline: SubagentTimelineItem[] | undefin
   return `${display.tool}${display.summary ? ` ${display.summary}` : ""}`;
 }
 
+/**
+ * Strict identity-plus-structure projection for one cataloged tool call:
+ * identity comes from the closed known-tool registry and the summary carries
+ * only structural counts and numeric ranges — every free-form path, pattern,
+ * query, command, or identifier is omitted, and an unknown name renders as an
+ * anonymous tool. The roster rows and the read-only child transcript viewer
+ * share this seam; the manager's broader bounded-summary formatter stays in
+ * `toolDisplayFromArgs`.
+ */
+export function rosterToolArgsDisplay(toolName: string, args: unknown): ToolEventDisplay {
+  if (!isKnownTool(toolName)) return { tool: "tool", summary: "called" };
+  const parsed = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+  if (toolName === "read") {
+    const finite = (value: unknown): number | undefined => (
+      typeof value === "number" && Number.isFinite(value) ? value : undefined
+    );
+    const offset = finite(parsed.offset);
+    const limit = finite(parsed.limit);
+    if (offset !== undefined || limit !== undefined) {
+      const start = offset ?? 1;
+      const end = limit !== undefined ? start + limit - 1 : undefined;
+      return { tool: toolName, summary: `lines ${start}${end !== undefined && end >= start ? `-${end}` : ""}` };
+    }
+  }
+  if (toolName === "web_search") {
+    const count = Array.isArray(parsed.queries) ? parsed.queries.length : 0;
+    return { tool: toolName, summary: `${count} quer${count === 1 ? "y" : "ies"}` };
+  }
+  if (toolName === "web_fetch") {
+    const count = Array.isArray(parsed.urls) ? parsed.urls.length : 0;
+    return { tool: toolName, summary: `${count} URL${count === 1 ? "" : "s"}` };
+  }
+  return { tool: toolName, summary: "called" };
+}
+
 function rosterToolEventDisplay(item: SubagentTimelineItem): ToolEventDisplay {
   const original = sanitizeSubagentDisplay(item.text).trim();
   const jsonCall = item.phase === "start"
     ? /^([A-Za-z0-9_.-]+)\s+(\{.*\})$/s.exec(original)
     : null;
   if (jsonCall) {
-    const toolName = jsonCall[1] ?? "";
-    if (!isKnownTool(toolName)) return { tool: "tool", summary: "called" };
     try {
-      const args = JSON.parse(jsonCall[2] ?? "{}");
-      if (toolName === "read") {
-        const offset = args?.offset;
-        const limit = args?.limit;
-        if (Number.isFinite(offset) || Number.isFinite(limit)) {
-          const start = Number.isFinite(offset) ? offset : 1;
-          const end = Number.isFinite(limit) ? start + limit - 1 : undefined;
-          return { tool: toolName, summary: `lines ${start}${end !== undefined && end >= start ? `-${end}` : ""}` };
-        }
-      }
-      if (toolName === "web_search") {
-        const count = Array.isArray(args?.queries) ? args.queries.length : 0;
-        return { tool: toolName, summary: `${count} quer${count === 1 ? "y" : "ies"}` };
-      }
-      if (toolName === "web_fetch") {
-        const count = Array.isArray(args?.urls) ? args.urls.length : 0;
-        return { tool: toolName, summary: `${count} URL${count === 1 ? "" : "s"}` };
-      }
-      return { tool: toolName, summary: "called" };
+      return rosterToolArgsDisplay(jsonCall[1] ?? "", JSON.parse(jsonCall[2] ?? "{}"));
     } catch {
-      return { tool: toolName, summary: "called" };
+      return rosterToolArgsDisplay(jsonCall[1] ?? "", undefined);
     }
   }
 

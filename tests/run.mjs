@@ -58,6 +58,7 @@ const suites = [
   "config.test.mjs",
   "core/workspace-path.test.mjs",
   "confirmation.test.mjs",
+  "input-surface.test.mjs",
   "native-prompt.test.mjs",
   "prompt-manager.test.mjs",
   "release/package.test.mjs",

@@ -35,6 +35,7 @@ function fakePi() {
 
 function uiContext({ sessionId, sessionDir }) {
   const calls = [];
+  let inputUnsubscribed = false;
   const ctx = {
     mode: "tui",
     hasUI: true,
@@ -42,6 +43,10 @@ function uiContext({ sessionId, sessionDir }) {
     ui: {
       theme: plainTheme(),
       setWidget(key, content, options) { calls.push({ key, content, options }); },
+      getEditorText: () => "",
+      onTerminalInput() {
+        return () => { inputUnsubscribed = true; };
+      },
       // Host-global Pi discovery can surface agent-level definition errors;
       // notifications are unrelated to the roster ordering under test.
       notify() {},
@@ -51,7 +56,7 @@ function uiContext({ sessionId, sessionDir }) {
       getSessionDir: () => sessionDir,
     },
   };
-  return { ctx, calls };
+  return { ctx, calls, inputUnsubscribed: () => inputUnsubscribed };
 }
 
 test("session replacement tears down and restarts the roster before any await", async () => {
@@ -89,10 +94,12 @@ test("session replacement tears down and restarts the roster before any await", 
     await pending;
     assert.equal(second.calls.length, 1, "the awaited reconcile adds no further roster churn");
 
-    // Shutdown teardown still clears through the session_shutdown handler.
+    // Shutdown teardown still clears through the session_shutdown handler and
+    // releases the terminal-input listener the roster installed.
     assert.ok(pi.handlers.has("session_shutdown"));
     await pi.handlers.get("session_shutdown")({}, second.ctx);
     assert.equal(second.calls.at(-1).content, undefined, "shutdown clears the roster widget");
+    assert.equal(second.inputUnsubscribed(), true, "shutdown unsubscribes the roster input listener");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;

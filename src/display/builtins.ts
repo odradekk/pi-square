@@ -27,6 +27,7 @@ import {
 } from "../anchored-edit/read-tool";
 import type { DisplayController } from "./index";
 import { inspectWritePreview } from "./file-preview";
+import { getCatalogEntry } from "./catalog";
 import { decorateToolDefinition, type DisplayRuntimeProvider, type InternalToolDisplayAdapter } from "./tool-renderer";
 import { codeSection, formatBytes, formatDisplayPath, matchesSection, pathsSection, sections } from "./adapter-utils";
 import { sanitizeDisplayLine, truncateCodePoints } from "./sanitize";
@@ -66,19 +67,8 @@ function numberMetadata(label: string, value: unknown): DisplayMetadataEntry | u
 }
 
 
-/** C1 sentence-case titles; unique within each family (`ls` is `List`, `find` is `Find`). */
-const BUILTIN_TITLES: Readonly<Record<BuiltinName, string>> = Object.freeze({
-  read: "Read",
-  ls: "List",
-  edit: "Edit",
-  write: "Write",
-  find: "Find",
-  grep: "Grep",
-  bash: "Bash",
-});
-
 function builtinTitle(name: BuiltinName): string {
-  return BUILTIN_TITLES[name];
+  return getCatalogEntry(name)!.title;
 }
 
 /**
@@ -401,7 +391,7 @@ function bashResultDescription(
     tool: "bash",
     family: "execution",
     lifecycle: isErrorResult ? "failed" : partial ? "running" : "completed",
-    title: "Bash",
+    title: builtinTitle("bash"),
     ...builtinTarget("bash", args, cwd),
     truncated: (!isErrorResult && isTruncated) || undefined,
     sections: expanded

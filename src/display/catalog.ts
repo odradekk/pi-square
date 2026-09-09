@@ -14,6 +14,8 @@ import {
 
 export interface DisplayToolCatalogEntry {
   readonly name: string;
+  /** Canonical sentence-case operational title. */
+  readonly title: string;
   readonly family: DisplayFamily;
   readonly parent: boolean;
   readonly child: boolean;
@@ -26,6 +28,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── filesystem ──────────────────────────────────────────────────
   {
     name: "read",
+    title: "Read",
     family: "filesystem",
     parent: true,
     child: true,
@@ -33,6 +36,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "ls",
+    title: "List",
     family: "filesystem",
     parent: true,
     child: true,
@@ -40,6 +44,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "edit",
+    title: "Edit",
     family: "filesystem",
     parent: true,
     child: true,
@@ -47,6 +52,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "replace",
+    title: "Replace",
     family: "filesystem",
     parent: true,
     child: false,
@@ -54,6 +60,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "insert",
+    title: "Insert",
     family: "filesystem",
     parent: true,
     child: false,
@@ -61,6 +68,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "write",
+    title: "Write",
     family: "filesystem",
     parent: true,
     child: true,
@@ -68,6 +76,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "find",
+    title: "Find",
     family: "filesystem",
     parent: true,
     child: true,
@@ -76,6 +85,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── search ──────────────────────────────────────────────────────
   {
     name: "grep",
+    title: "Grep",
     family: "search",
     parent: true,
     child: true,
@@ -84,6 +94,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── execution ───────────────────────────────────────────────────
   {
     name: "bash",
+    title: "Bash",
     family: "execution",
     parent: true,
     child: true,
@@ -92,6 +103,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "pwsh",
+    title: "PowerShell",
     family: "execution",
     parent: true,
     child: true,
@@ -101,6 +113,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── remote ──────────────────────────────────────────────────────
   {
     name: "web_search",
+    title: "Web search",
     family: "remote",
     parent: true,
     child: true,
@@ -108,6 +121,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "web_fetch",
+    title: "Web fetch",
     family: "remote",
     parent: true,
     child: true,
@@ -115,6 +129,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "library_search",
+    title: "Library search",
     family: "remote",
     parent: true,
     child: true,
@@ -122,6 +137,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "library_docs",
+    title: "Library docs",
     family: "remote",
     parent: true,
     child: true,
@@ -129,6 +145,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "ssh",
+    title: "SSH",
     family: "remote",
     parent: true,
     child: false,
@@ -137,6 +154,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── workflow ────────────────────────────────────────────────────
   {
     name: "todo",
+    title: "Tasks",
     family: "workflow",
     parent: true,
     child: false,
@@ -144,6 +162,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "ask",
+    title: "Questions",
     family: "workflow",
     parent: true,
     child: false,
@@ -152,6 +171,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   // ── agent ───────────────────────────────────────────────────────
   {
     name: "delegate_subagent",
+    title: "Subagent",
     family: "agent",
     parent: true,
     child: false,
@@ -159,6 +179,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "resume_subagent",
+    title: "Resume subagent",
     family: "agent",
     parent: true,
     child: false,
@@ -166,6 +187,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "wait_subagent",
+    title: "Wait",
     family: "agent",
     parent: true,
     child: false,
@@ -173,6 +195,7 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
   },
   {
     name: "abort_subagent",
+    title: "Abort",
     family: "agent",
     parent: true,
     child: false,

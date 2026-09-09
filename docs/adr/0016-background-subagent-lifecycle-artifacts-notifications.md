@@ -10,7 +10,21 @@ status: accepted
 > read-only projection of the background job store with no durable state, no
 > retention exemption, and no delivery interaction — and `undelivered`
 > visibility lives solely in the `/subagent` manager. Where this ADR says the
-> status row, read the roster.
+> status row, read the roster. Since #304 the roster is also keyboard-selectable
+> from an exactly empty native editor, and Enter opens the selected child in a
+> centered, capturing, read-only transcript overlay (`src/subagents/viewer.ts`)
+> built on Pi 0.84.2 public components and the roster-grade allowlisted tool
+> projection (no raw arguments or result payloads ever render). Pi's native
+> assistant grouping stays intact before the shared operational display renders
+> its tool rows with the shared marker motion, outer-entry elapsed time, muted
+> structural target, and fixed terminal outcome; tool results update pending calls
+> in place. Unsupported parts
+> remain visible afterward through fixed fallbacks, and arbitrary provider
+> and artifact diagnostics remain outside the overlay in favor of closed
+> lifecycle/error-code states; viewing is
+> observational only and never touches the lifecycle, delivery, ownership, or
+> persistence contracts this ADR records. Complete-history paging, live streaming, and cross-child navigation
+> remain later slices of the parent viewer specification (#302).
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,

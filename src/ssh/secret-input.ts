@@ -10,6 +10,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { withOwnedInputSurface } from "../core/input-surface";
 import { SSH_INPUT_MAX_CHARS } from "./contracts";
 import { sanitizeDisplayLine, truncateCodePoints } from "../display/sanitize";
 
@@ -114,11 +115,11 @@ export async function promptSecret(
   const onAbort = () => close?.(undefined);
   signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    return await ui.custom<Buffer | undefined>((tui, theme, keybindings, done) => {
+    return await withOwnedInputSurface(() => ui.custom<Buffer | undefined>((tui, theme, keybindings, done) => {
       close = done;
       if (signal?.aborted) done(undefined);
       return new SecretInputComponent(sanitize(purpose) || "Enter a secret for the selected SSH session", tui, theme, keybindings, done);
-    });
+    }));
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }
