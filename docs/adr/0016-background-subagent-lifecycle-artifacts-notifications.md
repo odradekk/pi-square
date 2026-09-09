@@ -23,8 +23,20 @@ status: accepted
 > and artifact diagnostics remain outside the overlay in favor of closed
 > lifecycle/error-code states; viewing is
 > observational only and never touches the lifecycle, delivery, ownership, or
-> persistence contracts this ADR records. Complete-history paging, live streaming, and cross-child navigation
-> remain later slices of the parent viewer specification (#302).
+> persistence contracts this ADR records. Since #305 the overlay pages the
+> child's complete persisted history on demand (`src/subagents/child-history.ts`):
+> bounded byte pages read tail-first from the validated native session file
+> through the same artifact identity boundary as resume, byte-level stitching
+> of only newline-terminated records (an unterminated final line stays the
+> running child's incomplete append), per-read dev/ino identity re-verification,
+> one bounded retryable page error that keeps validated pages visible, an
+> explicit in-memory item window with far-end eviction and on-demand reload,
+> and stable native-entry-identity positioning — with no second transcript
+> store, cache, index, sidecar, lock, journal, or artifact version beside the
+> native session file, and no claim on Pi's private transcript pipeline. Live
+> streaming, cross-child navigation with per-child reading state, and the
+> remaining lifecycle/delivery qualification of the parent viewer
+> specification (#302) stay later slices.
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,
