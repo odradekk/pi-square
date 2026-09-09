@@ -6,7 +6,7 @@ import { sanitizeSubagentDisplay } from "./display";
 import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./types";
 import {
-  childOverlayPlan,
+  childOverlayOptions,
   type ChildOverlayModel,
   ChildTranscriptOverlay,
   readChildTranscript,
@@ -473,12 +473,14 @@ export function createSubagentRosterController(
 
   const moveCandidate = (delta: number, rows: readonly RosterRow[]) => {
     if (rows.length === 0) return;
-    const index = candidateId === undefined ? undefined : rows.findIndex((row) => row.id === candidateId);
-    // First Down enters at the first child, first Up at the last; movement
-    // clamps at both ends and never wraps.
-    const next = index === undefined
+    // A candidate that no longer has a row (the child left the store between
+    // key presses) counts as no candidate, so entry semantics apply again:
+    // first Down selects the first child, first Up the last. Movement clamps
+    // at both ends and never wraps.
+    const found = candidateId === undefined ? -1 : rows.findIndex((row) => row.id === candidateId);
+    const next = found < 0
       ? (delta > 0 ? 0 : rows.length - 1)
-      : Math.min(rows.length - 1, Math.max(0, index + delta));
+      : Math.min(rows.length - 1, Math.max(0, found + delta));
     candidateId = rows[next]?.id ?? candidateId;
     refresh();
   };
@@ -513,7 +515,6 @@ export function createSubagentRosterController(
       durationText,
       ...(failureReason ? { failureReason } : {}),
       transcript: readChildTranscript(job.id),
-      cwd: job.details.cwd,
     };
 
     candidateId = undefined;
@@ -534,10 +535,13 @@ export function createSubagentRosterController(
       refresh();
     };
 
-    let plan: ReturnType<typeof childOverlayPlan> | undefined;
+    let overlayOptions: ReturnType<typeof childOverlayOptions> | undefined;
     try {
       void context.ui.custom<void>((tui, theme, _keybindings, done) => {
-        plan = childOverlayPlan(tui.terminal.columns, tui.terminal.rows);
+        // Live getters: the TUI re-reads these options every render, so the
+        // outer geometry follows terminal resizes across the small/normal
+        // threshold for as long as the overlay stays open.
+        overlayOptions = childOverlayOptions(tui);
         closeOverlay = () => done(undefined);
         return new ChildTranscriptOverlay({
           tui,
@@ -556,7 +560,7 @@ export function createSubagentRosterController(
         });
       }, {
         overlay: true,
-        overlayOptions: () => plan?.overlay ?? { width: "80%", maxHeight: "75%", anchor: "center" },
+        overlayOptions: () => overlayOptions ?? { width: "80%", maxHeight: "75%", anchor: "center" },
       }).catch(() => {
         if (openId === job.id) {
           closeOverlay = undefined;

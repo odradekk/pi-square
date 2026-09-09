@@ -144,7 +144,7 @@ test("projection keeps ordered user, thinking, text, tool call, and tool result 
       content: [
         { type: "thinking", thinking: "consider the cache" },
         { type: "text", text: "Reading the file." },
-        { type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/a.ts" } },
+        { type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/a.ts", offset: 3, limit: 38 } },
       ],
       api: "anthropic", provider: "anthropic", model: "m", usage: { totalTokens: 1 }, stopReason: "toolUse", timestamp: 2,
     }),
@@ -167,7 +167,8 @@ test("projection keeps ordered user, thinking, text, tool call, and tool result 
   );
   const call = projection.items[2];
   assert.equal(call.callId, "call-1");
-  assert.equal(call.result.text, "10 lines");
+  assert.equal(call.summary, "lines 3-40", "the call carries only the structural range summary");
+  assert.equal("text" in call.result, false, "result payloads never enter the projection");
   assert.equal(call.result.isError, false);
 });
 
@@ -197,7 +198,13 @@ test("projection hides system-shaped entries and sanitizes generic fallback line
   assert.match(texts[2], /visible/);
   assert.ok(!texts[2].includes("swordfish"), "credential forms are redacted in fallback lines");
   assert.ok(!texts[2].includes("\x1b"), "control sequences never render in fallback lines");
-  assert.match(texts[3], /tool result: web_fetch/);
+  assert.match(texts[3], /tool result: web_fetch/, "a cataloged orphan result keeps its identity");
+  const hostileOrphan = projectSessionEntries([
+    sessionHeader(),
+    messageEntry("e1", { role: "toolResult", toolCallId: "gone", toolName: "curl password: swordfish", content: [], isError: false, timestamp: 1 }),
+  ]);
+  assert.match(hostileOrphan.items[0].text, /tool result: tool/, "an untrusted orphan result name stays anonymous");
+  assert.ok(!hostileOrphan.items[0].text.includes("swordfish"));
   for (const text of texts) assert.ok(text.length <= 200, "generic lines stay bounded");
 });
 
@@ -217,6 +224,151 @@ test("projection clips unbounded text and keeps only the bounded recent window",
   assert.equal(window.omitted, 6);
   assert.match(window.items.at(-1).text, /message 29/);
   assert.match(window.items[0].text, /message 6/, "the recent tail is the visible window");
+});
+
+test("projection display-sanitizes every text channel before any renderer", () => {
+  const hostile = "keep this\npassword: swordfish\ntoken=abc123\nBearer eyJhbGc\x1b[31mred\x1b[0m";
+  const entries = [
+    sessionHeader(),
+    messageEntry("e1", { role: "user", content: hostile, timestamp: 1 }),
+    messageEntry("e2", {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: `thinking ${hostile}` },
+        { type: "text", text: `answer ${hostile}` },
+      ],
+      stopReason: "stop",
+      timestamp: 2,
+    }),
+    messageEntry("e3", {
+      role: "assistant",
+      content: [{ type: "text", text: "partial" }],
+      stopReason: "error",
+      errorMessage: `boom ${hostile}`,
+      timestamp: 3,
+    }),
+    messageEntry("e4", {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-secret-1",
+          name: "bash",
+          arguments: { command: `curl -u alice:swordfish ${hostile}` },
+        },
+      ],
+      stopReason: "toolUse",
+      timestamp: 4,
+    }),
+    messageEntry("e5", {
+      role: "toolResult",
+      toolCallId: "call-secret-1",
+      toolName: "bash",
+      content: [{ type: "text", text: "SECRET TOOL RESULT with password: swordfish" }],
+      isError: true,
+      timestamp: 5,
+    }),
+  ];
+
+  const serialized = JSON.stringify(projectSessionEntries(entries));
+  assert.ok(!serialized.includes("swordfish"), "credential values never enter any item");
+  assert.ok(!serialized.includes("abc123"), "token values never enter any item");
+  assert.ok(!serialized.includes("eyJhbGc"), "bearer values never enter any item");
+  assert.ok(!serialized.includes("\\x1b") && !serialized.includes("\u001b"), "control sequences never enter any item");
+  assert.ok(!serialized.includes("SECRET TOOL RESULT"), "tool-result payloads never enter any item");
+  assert.ok(!serialized.includes("curl"), "raw argument commands never enter any item");
+
+  const { items } = projectSessionEntries(entries);
+  const call = items.find((item) => item.kind === "toolCall");
+  assert.equal(call.name, "bash", "tool identity survives sanitization");
+  assert.match(call.summary, /called/, "the allowlisted summary replaces raw command arguments");
+
+  // The rendered overlay shows none of the hostile channels either.
+  const rendered = renderOverlayLines(baseModel({ transcript: { ok: true, omitted: 0, items } }));
+  const renderedText = plain(rendered).join("\n");
+  for (const leak of ["swordfish", "abc123", "eyJhbGc", "SECRET TOOL RESULT", "call-secret-1", "curl", "\u001b"]) {
+    assert.ok(!renderedText.includes(leak), `${leak} never renders`);
+  }
+  assert.ok(renderedText.includes("bash"), "the tool identity line still renders");
+  assert.ok(renderedText.includes("failed"), "the error result state still renders");
+  for (const line of rendered) assert.ok(visibleWidth(line) <= 64, "every rendered line stays inside the width");
+  for (const item of items) {
+    const text = item.kind === "user" ? item.text
+      : item.kind === "assistant" ? JSON.stringify(item.message)
+        : item.kind === "toolCall" ? `${item.name} ${item.summary}`
+          : item.text;
+    assert.ok(text.length < 2_600, "every projected text stays inside the entry budget");
+  }
+});
+
+test("read errors never surface raw malformed JSON fragments", () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  try {
+    process.env.PI_AGENT_DIR = root;
+    const artifactsDir = ensureArtifactsDir(ID);
+    const sessionFile = join(artifactsDir, "session.jsonl");
+    writeRunState(artifactsDir, {
+      version: 4,
+      id: ID,
+      operation: "delegate",
+      artifactsDir,
+      sessionFile,
+      sessionId: SESSION_ID,
+      originParentSessionId: "parent-1",
+      lastParentSessionId: "parent-1",
+      promptSnapshot: createPromptSnapshot(),
+      phase: "running",
+      task: "task",
+      cwd: "/tmp/project",
+      startedAt: 1,
+      finalText: "",
+      retries: 0,
+      toolErrors: [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+      timeline: [],
+    });
+    // The header line is malformed JSON that quotes a secret-bearing fragment.
+    writeFileSync(sessionFile, `{"type":"session","id":"${SESSION_ID}","cwd":"password: swordfish\n`);
+    const transcript = readChildTranscript(ID);
+    assert.equal(transcript.ok, false);
+    assert.ok(!transcript.reason.includes("swordfish"), "parse failures do not quote the malformed content");
+    assert.ok(!transcript.reason.includes("{"), "parse failures do not leak JSON fragments");
+    assert.ok(transcript.reason.length > 0 && transcript.reason.length <= 200);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unsupported but meaningful content becomes a non-empty sanitized fallback", () => {
+  const entries = [
+    sessionHeader(),
+    { type: "custom_message", id: "cm1", parentId: null, timestamp: "t", customType: "guide", content: [{ type: "image", data: "AAA", mimeType: "image/png" }], display: true },
+    messageEntry("e1", { role: "user", content: [{ type: "image", data: "AAA", mimeType: "image/png" }], timestamp: 1 }),
+    messageEntry("e2", { role: "assistant", content: [], timestamp: 2 }),
+    messageEntry("e3", { role: "assistant", content: "not-an-array", timestamp: 3 }),
+    messageEntry("e4", { role: "futureRole", content: "payload", timestamp: 4 }),
+  ];
+  const { items } = projectSessionEntries(entries);
+  assert.equal(items.length, 5, "every meaningful entry produces exactly one item");
+  assert.ok(items.every((item) => item.kind === "generic" && item.text.trim() !== ""), "no silent gaps and no empty lines");
+  const text = items.map((item) => item.text).join("\n");
+  assert.match(text, /extension message/);
+  assert.match(text, /user message/);
+  assert.match(text, /assistant message/g);
+  assert.match(text, /unsupported message entry/);
+
+  // A generic fallback fits whatever narrow width the renderer offers.
+  const { overlay } = overlayHarness(baseModel({ transcript: { ok: true, omitted: 0, items } }), 24, 10);
+  const lines = overlay.render(20);
+  for (const line of lines) assert.ok(visibleWidth(line) <= 20, "fallback lines respect narrow overlay widths");
+  const plainLines = plain(lines);
+  assert.ok(
+    plainLines.some((line) => /extension|user message|unsupported|assistant/.test(line)),
+    "fallbacks stay readable when clipped",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -388,6 +540,11 @@ function plain(lines) {
   return lines.map((line) => stripVTControlCharacters(line));
 }
 
+function renderOverlayLines(model, columns = 80, rows = 30, width = 64) {
+  const { overlay } = overlayHarness(model, columns, rows);
+  return overlay.render(width);
+}
+
 test("overlay renders title, rules, transcript body, and help within the width", () => {
   const model = baseModel({
     transcript: {
@@ -505,6 +662,73 @@ test("overlay adapts to a small terminal with the one-cell-margin plan", () => {
   for (const line of lines) assert.ok(visibleWidth(line) <= 36);
 });
 
+test("an open overlay recomputes its plan across the resize threshold", () => {
+  const tui = fakeTui(80, 30);
+  const overlay = new ChildTranscriptOverlay({
+    tui,
+    theme: plainTheme(),
+    model: baseModel({
+      transcript: {
+        ok: true,
+        omitted: 0,
+        items: Array.from({ length: 30 }, (_, index) => ({ kind: "user", text: `entry ${index}` })),
+      },
+    }),
+    onClose: () => {},
+    onReplay: () => {},
+  });
+
+  const normal = overlay.render(64);
+  assert.ok(normal.length <= childOverlayPlan(80, 30).bodyRows + 4, "normal plan bounds the open overlay");
+
+  // Same instance, same render width, small terminal now: the plan must
+  // recompute from the current terminal columns, not a cached key.
+  tui.terminal.columns = 40;
+  tui.terminal.rows = 12;
+  const small = overlay.render(64);
+  const smallPlan = childOverlayPlan(40, 12);
+  assert.ok(small.length <= smallPlan.bodyRows + 4, "small plan re-bounds the same open overlay");
+  assert.ok(small.length !== normal.length || smallPlan.bodyRows !== childOverlayPlan(80, 30).bodyRows, "the plan actually changed");
+
+  tui.terminal.columns = 80;
+  tui.terminal.rows = 30;
+  const restored = overlay.render(64);
+  assert.equal(restored.length, normal.length, "resizing back restores the normal plan");
+});
+
+test("outer overlay options follow the live terminal dimensions", async () => {
+  const { childOverlayOptions } = viewerModule;
+  const tui = fakeTui(80, 30);
+  const options = childOverlayOptions(tui);
+  assert.deepEqual(
+    { width: options.width, maxHeight: options.maxHeight, margin: options.margin },
+    { width: "80%", maxHeight: "75%", margin: undefined },
+    "normal terminal geometry at 80x30",
+  );
+
+  tui.terminal.columns = 40;
+  tui.terminal.rows = 12;
+  assert.deepEqual(
+    { width: options.width, maxHeight: options.maxHeight, margin: options.margin },
+    { width: "100%", maxHeight: "100%", margin: 1 },
+    "the same options object switches to the one-cell-margin panel after resize",
+  );
+
+  // Through the controller seam: the options an open overlay registered keep
+  // tracking the shared terminal.
+  const { input, calls, tui: harnessTui, addJob, controller } = controllerHarness();
+  addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
+  input(DOWN);
+  input(ENTER);
+  const live = calls.customs[0].options.overlayOptions();
+  assert.equal(live.width, "80%");
+  harnessTui.terminal.columns = 40;
+  harnessTui.terminal.rows = 12;
+  assert.equal(live.width, "100%");
+  assert.equal(live.margin, 1);
+  controller.stop();
+});
+
 test("the overlay renders responsively under both shipped themes", () => {
   const model = baseModel({
     transcript: {
@@ -512,7 +736,7 @@ test("the overlay renders responsively under both shipped themes", () => {
       omitted: 2,
       items: [
         { kind: "user", text: "trace the failing path through the scheduler" },
-        { kind: "toolCall", callId: "c1", name: "grep", args: { pattern: "scheduler" }, result: { text: "3 matches", isError: false } },
+        { kind: "toolCall", callId: "c1", name: "grep", summary: "/scheduler/ in .", result: { isError: false } },
       ],
     },
   });
@@ -668,6 +892,32 @@ test("first Down selects the first child, first Up the last, and movement never 
   assert.ok(ctx);
 });
 
+test("a removed candidate re-enters like no candidate: Down first, Up last", () => {
+  const { input, state, widgetLines, addJob, controller } = controllerHarness();
+  const first = job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer");
+  const second = job("subagent_22222222-2222-4222-8222-222222222222", "running", 2, "crawler");
+  const third = job("subagent_33333333-3333-4333-8333-333333333333", "running", 3, "generalist");
+  addJob(first);
+  addJob(second);
+  addJob(third);
+
+  input(DOWN);
+  input(DOWN);
+  assert.match(widgetLines()[1], /^● crawler/, "the second child is the candidate");
+
+  // The selected child leaves the store between key presses.
+  state.jobs.delete(second.id);
+  for (const listener of state.listeners) listener();
+  assert.ok(!widgetLines().some((line) => line.startsWith("● crawler")), "the removed row is gone");
+
+  input(UP);
+  assert.match(widgetLines().at(-1), /^● generalist/, "Up from a removed candidate selects the last child, not the first");
+  input("j");
+  input(DOWN);
+  assert.match(widgetLines()[0], /^● explorer/, "Down from a removed candidate selects the first child");
+  controller.stop();
+});
+
 test("navigation activates only from an exactly empty editor", () => {
   const { input, editor, widgetLines, addJob, controller } = controllerHarness();
   addJob(job("subagent_11111111-1111-4111-8111-111111111111", "running", 1, "explorer"));
@@ -699,8 +949,10 @@ test("Enter opens only an explicit candidate in a centered capturing overlay", (
   assert.equal(calls.customs.length, 1);
   const opened = calls.customs[0];
   assert.equal(opened.options.overlay, true, "the child opens as an overlay");
-  const plan = childOverlayPlan(80, 30);
-  assert.deepEqual(opened.options.overlayOptions(), plan.overlay);
+  const overlayOptions = opened.options.overlayOptions();
+  assert.equal(overlayOptions.width, "80%", "normal-terminal outer width");
+  assert.equal(overlayOptions.maxHeight, "75%", "normal-terminal outer height");
+  assert.equal(overlayOptions.margin, undefined, "normal terminals add no margin");
   assert.match(widgetLines()[0], /^● explorer/, "the open child keeps the solid marker");
 
   // While the overlay owns input the global listener passes everything through.

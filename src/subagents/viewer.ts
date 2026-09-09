@@ -3,7 +3,6 @@ import {
   AssistantMessageComponent,
   getMarkdownTheme,
   parseSessionEntries,
-  ToolExecutionComponent,
   UserMessageComponent,
   type Theme,
   type ThemeColor,
@@ -21,6 +20,7 @@ import {
 import { resolveChildSessionFile } from "./artifacts";
 import { clipWithHeadTail } from "./confirmed-delivery";
 import { sanitizeSubagentDisplay } from "./display";
+import { rosterToolArgsDisplay } from "./tool-display";
 
 /**
  * Read-only child transcript viewer (odradekk/pi-square#304).
@@ -30,9 +30,15 @@ import { sanitizeSubagentDisplay } from "./display";
  * identity checks resume uses, renders a bounded recent transcript with Pi's
  * public message components, and never mutates lifecycle, result ownership,
  * delivery, waiting, aborting, resume eligibility, persisted artifacts, or the
- * main transcript. The basic path here is deliberately static: the model is
- * frozen when the overlay opens; live streaming, older-history paging, and
- * cross-child navigation are later slices of #302.
+ * main transcript. Every rendered text is a display-safe projection first:
+ * user and assistant text passes the shared credential-neutral sanitizer and
+ * an explicit budget before any component sees it, and tool calls render
+ * through the same roster-grade allowlisted identity/summary seam the
+ * roster rows share — never raw arguments, result payloads, call IDs, or
+ * internal fields.
+ * The basic path here is deliberately static: the model is frozen when the
+ * overlay opens; live streaming, older-history paging, and cross-child
+ * navigation are later slices of #302.
  */
 
 /** Bytes read from the tail of the native session file. */
@@ -56,7 +62,7 @@ export type ChildLifecycle = "queued" | "running" | "cancelling" | "completed" |
 export type TranscriptItem =
   | { kind: "user"; text: string }
   | { kind: "assistant"; message: Record<string, unknown> }
-  | { kind: "toolCall"; callId: string; name: string; args: unknown; result?: { text: string; isError: boolean } }
+  | { kind: "toolCall"; callId: string; name: string; summary: string; result?: { isError: boolean } }
   | { kind: "generic"; text: string };
 
 export interface ChildTranscriptProjection {
@@ -91,15 +97,28 @@ function genericLine(text: string): TranscriptItem {
   return { kind: "generic", text: clean.slice(0, MAX_GENERIC_LINE) };
 }
 
-function clipEntryText(text: unknown): string {
-  return clipWithHeadTail(text, MAX_ENTRY_TEXT);
+/**
+ * Display-safe entry text: the shared credential-neutral sanitizer strips
+ * control sequences and redacts common credential forms first, then the shared
+ * head/tail clipper bounds the length. Every user, assistant, thinking, and
+ * error text passes here before any component or fallback can render it.
+ */
+function safeEntryText(text: unknown): string {
+  return clipWithHeadTail(sanitizeSubagentDisplay(text), MAX_ENTRY_TEXT);
 }
 
 /**
  * Projects parsed native session entries into the ordered bounded transcript.
  * System material never enters: the session header, plain custom state
  * entries, labels, and metadata entries are ignored, and every rendered text
- * passes the shared credential-neutral sanitizer or Pi's own components.
+ * is a display-safe projection — sanitized, redacted, and clipped — before it
+ * reaches Pi's components or a generic fallback. Tool calls keep their
+ * conversational order and state but project only through the roster-grade
+ * allowlisted identity/summary seam the roster rows share: raw arguments, result
+ * payloads, and call IDs never enter an item a renderer can show (the call ID
+ * exists only to pair a result with its call and is never rendered). Content
+ * that is out of scope but conversationally meaningful becomes one non-empty
+ * sanitized generic line instead of silently disappearing.
  */
 export function projectSessionEntries(
   entries: readonly unknown[],
@@ -124,7 +143,10 @@ export function projectSessionEntries(
     }
     if (record.type === "custom_message") {
       const custom = entry as { display?: unknown; content?: unknown };
-      if (custom.display === true) projected.push(genericLine(textFromParts(custom.content)));
+      if (custom.display === true) {
+        const text = textFromParts(custom.content).trim();
+        projected.push(genericLine(text || "extension message (no readable text)"));
+      }
       continue;
     }
     if (record.type !== "message") continue;
@@ -134,53 +156,87 @@ export function projectSessionEntries(
     const role = (message as { role?: unknown }).role;
 
     if (role === "user") {
-      const text = clipEntryText(textFromParts((message as { content?: unknown }).content));
+      const text = safeEntryText(textFromParts((message as { content?: unknown }).content));
       if (text) projected.push({ kind: "user", text });
+      else projected.push(genericLine("user message (no readable text)"));
       continue;
     }
 
     if (role === "assistant") {
       const content = (message as { content?: unknown }).content;
-      if (Array.isArray(content)) {
-        const boundedContent = content.map((part) => {
-          if (!part || typeof part !== "object") return part;
-          if (part.type === "text") return { ...part, text: clipEntryText(part.text) };
-          if (part.type === "thinking") return { ...part, thinking: clipEntryText(part.thinking) };
-          return part;
-        });
-        const speaks = boundedContent.some((part) => (
-          part
-          && typeof part === "object"
-          && ((part.type === "text" && String(part.text).trim() !== "")
-            || (part.type === "thinking" && String(part.thinking).trim() !== ""))
-        ));
-        if (speaks) projected.push({ kind: "assistant", message: { ...(message as object), content: boundedContent } });
-        for (const part of boundedContent) {
-          if (!part || typeof part !== "object" || part.type !== "toolCall") continue;
-          const call = {
-            kind: "toolCall",
-            callId: String(part.id ?? ""),
-            name: sanitizeSubagentDisplay(part.name).slice(0, 64) || "tool",
-            args: part.arguments,
-          } as TranscriptItem & { kind: "toolCall" };
-          projected.push(call);
-          if (call.callId) openCalls.set(call.callId, call);
+      const stopReason = (message as { stopReason?: unknown }).stopReason;
+      if (!Array.isArray(content)) {
+        projected.push(genericLine("assistant message (no readable content)"));
+        continue;
+      }
+      // Only sanitized text/thinking parts reach the public assistant
+      // component; tool-call parts project as separate allowlisted items.
+      const boundedContent = [];
+      for (const part of content) {
+        if (!part || typeof part !== "object") continue;
+        if (part.type === "text") {
+          const text = safeEntryText(part.text);
+          if (text) boundedContent.push({ type: "text", text });
+        } else if (part.type === "thinking") {
+          const thinking = safeEntryText(part.thinking);
+          if (thinking) boundedContent.push({ type: "thinking", thinking });
         }
+      }
+      const speaks = boundedContent.length > 0;
+      const calls = content.filter((part) => part && typeof part === "object" && part.type === "toolCall");
+      if (speaks) {
+        // The minimal copy carries only what the component renders; the raw
+        // message's usage, model, diagnostics, and identifiers never enter.
+        const bounded: Record<string, unknown> = { role: "assistant", content: boundedContent };
+        if (stopReason === "length" || stopReason === "error" || stopReason === "aborted") {
+          bounded.stopReason = stopReason;
+          const rawError = (message as { errorMessage?: unknown }).errorMessage;
+          if ((stopReason === "error" || stopReason === "aborted") && typeof rawError === "string" && rawError) {
+            bounded.errorMessage = safeEntryText(rawError);
+          }
+        }
+        projected.push({ kind: "assistant", message: bounded });
+      } else if (calls.length === 0) {
+        projected.push(genericLine("assistant message (no readable content)"));
+      }
+      for (const part of calls) {
+        // The roster-grade shared projection: cataloged identity plus
+        // structural counts/ranges only; free-form paths, patterns, queries,
+        // and commands never project, and unknown names stay anonymous.
+        const display = rosterToolArgsDisplay(String(part?.name ?? ""), part?.arguments);
+        const call = {
+          kind: "toolCall",
+          callId: String(part?.id ?? ""),
+          name: display.tool,
+          summary: display.summary,
+        } as TranscriptItem & { kind: "toolCall" };
+        projected.push(call);
+        if (call.callId) openCalls.set(call.callId, call);
       }
       continue;
     }
 
     if (role === "toolResult") {
-      const result = message as { toolCallId?: unknown; toolName?: unknown; content?: unknown; isError?: unknown };
-      const text = clipEntryText(textFromParts(result.content));
+      // Result payloads never render: the pairing keeps only the terminal
+      // state so the ordered call/result conversation stays readable.
+      const result = message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
       const callId = typeof result.toolCallId === "string" ? result.toolCallId : "";
       const open = callId ? openCalls.get(callId) : undefined;
       if (open) {
-        open.result = { text, isError: result.isError === true };
+        open.result = { isError: result.isError === true };
       } else {
-        projected.push(genericLine(`tool result: ${typeof result.toolName === "string" ? result.toolName : "tool"}`));
+        // An orphan result still shows in order, but through the same
+        // cataloged-identity gate as its call: an untrusted name stays
+        // anonymous and the payload never enters.
+        const name = typeof result.toolName === "string" ? result.toolName : "";
+        projected.push(genericLine(`tool result: ${rosterToolArgsDisplay(name, undefined).tool}`));
       }
+      continue;
     }
+
+    // A message role outside the supported vocabulary is conversationally
+    // meaningful: it becomes one non-empty generic line, never a silent gap.
+    projected.push(genericLine("unsupported message entry"));
   }
 
   if (projected.length <= windowSize) return { items: projected, omitted: 0 };
@@ -228,9 +284,13 @@ export function readChildTranscript(id: string): ChildTranscript {
 
     return { ok: true, ...projectSessionEntries(parseSessionEntries(tail)) };
   } catch (error) {
-    const reason = sanitizeSubagentDisplay(
-      error instanceof Error && error.message ? error.message : "child history could not be read",
-    ).replace(/\s+/g, " ").trim();
+    // Our own thrown reasons are static strings; a JSON.parse failure would
+    // quote raw fragments of the malformed file, so it degrades to a fixed
+    // reason. Everything still passes the sanitizer and the line budget.
+    const raw = error instanceof SyntaxError
+      ? ""
+      : error instanceof Error && error.message ? error.message : "";
+    const reason = sanitizeSubagentDisplay(raw || "child history could not be read").replace(/\s+/g, " ").trim();
     return { ok: false, reason: reason.slice(0, MAX_GENERIC_LINE) || "child history could not be read" };
   }
 }
@@ -276,10 +336,9 @@ export interface ChildOverlayPlan {
 /**
  * Responsive overlay geometry. Normal terminals target 80% width and 75%
  * height centered; small terminals degrade to a near-fullscreen panel with a
- * one-cell margin. Percentages re-resolve on every Pi render, so a resize
- * keeps the overlay proportional; the small/normal mode is chosen when the
- * overlay opens, which is as dynamic as Pi 0.84.2's public overlay options
- * allow.
+ * one-cell margin. Both the outer overlay options and the component's own
+ * body budget re-resolve from the current terminal dimensions, so a resize
+ * switches between the two layouts while the overlay stays open.
  */
 export function childOverlayPlan(columns: number, rows: number): ChildOverlayPlan {
   const small = columns < SMALL_TERMINAL_COLUMNS || rows < SMALL_TERMINAL_ROWS;
@@ -295,6 +354,24 @@ export function childOverlayPlan(columns: number, rows: number): ChildOverlayPla
   };
 }
 
+/**
+ * Live overlay options for one open overlay. Pi 0.84.2 resolves the
+ * `overlayOptions` extension value once, when the overlay is shown, but the
+ * TUI re-reads every option property on each render while re-resolving layout
+ * from the current terminal size. Property getters keep both facts true at
+ * once: the object satisfies the static public `OverlayOptions` contract while
+ * its geometry recomputes per render, so crossing the small/normal threshold
+ * after opening switches the outer layout too.
+ */
+export function childOverlayOptions(tui: TUI): OverlayOptions {
+  return {
+    get width() { return childOverlayPlan(tui.terminal.columns, tui.terminal.rows).overlay.width; },
+    get maxHeight() { return childOverlayPlan(tui.terminal.columns, tui.terminal.rows).overlay.maxHeight; },
+    get margin() { return childOverlayPlan(tui.terminal.columns, tui.terminal.rows).overlay.margin; },
+    anchor: "center",
+  };
+}
+
 export interface ChildOverlayModel {
   role: string;
   /** Collision-safe public-ID prefix computed for the current roster. */
@@ -306,7 +383,6 @@ export interface ChildOverlayModel {
   /** Cleaned failure/abort evidence for terminal runs with no transcript. */
   failureReason?: string;
   transcript: ChildTranscript;
-  cwd: string;
 }
 
 export interface ChildOverlayInput {
@@ -351,7 +427,7 @@ export class ChildTranscriptOverlay implements Component {
   private readonly bodyComponents: Component[] = [];
   private readonly state: { text: string; tone: ThemeColor };
   private readonly omitted: number;
-  private cache: { width: number; rows: number; lines: string[] } | undefined;
+  private cache: { width: number; columns: number; rows: number; lines: string[] } | undefined;
 
   constructor(input: ChildOverlayInput) {
     this.input = input;
@@ -372,9 +448,16 @@ export class ChildTranscriptOverlay implements Component {
     }
   }
 
+  /** One static sanitized line, clipped to whatever width the renderer offers. */
+  private lineComponent(line: string): Component {
+    return {
+      render: (width) => [truncateToWidth(line, Math.max(1, width), "…")],
+      invalidate: () => {},
+    };
+  }
+
   private genericTextComponent(text: string): Component {
-    const line = truncateToWidth(this.theme.fg("muted", text), 512, "…");
-    return { render: () => [line], invalidate: () => {} };
+    return this.lineComponent(this.theme.fg("muted", text));
   }
 
   private describeItem(item: TranscriptItem): string {
@@ -397,22 +480,22 @@ export class ChildTranscriptOverlay implements Component {
           this.markdown,
         )];
       case "toolCall": {
-        const tool = new ToolExecutionComponent(
-          item.name,
-          item.callId,
-          item.args,
-          { showImages: false },
-          undefined,
-          this.input.tui,
-          this.input.model.cwd,
-        );
-        tool.setExpanded(false);
-        tool.markExecutionStarted();
-        tool.setArgsComplete();
+        // The calm operational grammar over the allowlisted projection: the
+        // marker and tool-title identity carry the call, the bounded summary
+        // carries its safe target, and a paired result line carries only its
+        // terminal state. Raw arguments, payloads, and call IDs never render.
+        const call = this.theme.fg("accent", "●")
+          + " "
+          + this.theme.fg("toolTitle", this.theme.bold(item.name))
+          + (item.summary ? ` ${this.theme.fg("dim", item.summary)}` : "");
+        const lines = [call];
         if (item.result) {
-          tool.updateResult({ content: [{ type: "text", text: item.result.text }], isError: item.result.isError }, false);
+          lines.push(
+            `    ${this.theme.fg(item.result.isError ? "error" : "success", item.result.isError ? "✗" : "✓")}`
+              + ` ${this.theme.fg("muted", item.result.isError ? "failed" : "result")}`,
+          );
         }
-        return [tool];
+        return lines.map((line) => this.lineComponent(line));
       }
       default:
         return [this.genericTextComponent(item.text)];
@@ -434,7 +517,12 @@ export class ChildTranscriptOverlay implements Component {
     const safeWidth = Math.max(1, width);
     const terminal = this.input.tui.terminal;
     const plan = childOverlayPlan(terminal.columns, terminal.rows);
-    if (this.cache && this.cache.width === safeWidth && this.cache.rows === terminal.rows) return this.cache.lines;
+    if (
+      this.cache
+      && this.cache.width === safeWidth
+      && this.cache.columns === terminal.columns
+      && this.cache.rows === terminal.rows
+    ) return this.cache.lines;
 
     const model = this.input.model;
     const title = truncateToWidth(
@@ -456,7 +544,7 @@ export class ChildTranscriptOverlay implements Component {
 
     const body = this.renderBody(safeWidth, plan.bodyRows);
     const lines = [title, rule, ...body, rule, help];
-    this.cache = { width: safeWidth, rows: terminal.rows, lines };
+    this.cache = { width: safeWidth, columns: terminal.columns, rows: terminal.rows, lines };
     return lines;
   }
 
@@ -474,14 +562,14 @@ export class ChildTranscriptOverlay implements Component {
       }
     }
 
-    if (rendered.length <= budget) {
-      const lead = this.omitted > 0
-        ? [truncateToWidth(this.theme.fg("dim", `  … +${this.omitted} earlier entries`), width, "…")]
-        : [];
-      return [...lead, ...rendered];
-    }
-    // Keep the recent tail inside the budget and state the cut once. The lead
-    // line replaces the entries marker when both would show.
+    // Markers count against the body budget, so the overlay never renders
+    // more than `budget` body rows regardless of which marker shows.
+    const entriesLead = this.omitted > 0
+      ? [truncateToWidth(this.theme.fg("dim", `  … +${this.omitted} earlier entries`), width, "…")]
+      : [];
+    if (entriesLead.length + rendered.length <= budget) return [...entriesLead, ...rendered];
+    // Keep the recent tail inside the budget and state the cut once; the
+    // line-cut marker replaces the entries marker when both would show.
     const lead = [truncateToWidth(
       this.theme.fg("dim", `  … +${rendered.length - budget + 1} earlier lines`),
       width,

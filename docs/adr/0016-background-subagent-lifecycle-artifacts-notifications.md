@@ -13,9 +13,10 @@ status: accepted
 > status row, read the roster. Since #304 the roster is also keyboard-selectable
 > from an exactly empty native editor, and Enter opens the selected child in a
 > centered, capturing, read-only transcript overlay (`src/subagents/viewer.ts`)
-> built on Pi 0.84.2 public components; viewing is observational only and never
-> touches the lifecycle, delivery, ownership, or persistence contracts this ADR
-> records. Complete-history paging, live streaming, and cross-child navigation
+> built on Pi 0.84.2 public components and the roster-grade allowlisted tool
+> projection (no raw arguments or result payloads ever render); viewing is
+> observational only and never touches the lifecycle, delivery, ownership, or
+> persistence contracts this ADR records. Complete-history paging, live streaming, and cross-child navigation
 > remain later slices of the parent viewer specification (#302).
 
 pi-square completes the subagent contract change begun with the
