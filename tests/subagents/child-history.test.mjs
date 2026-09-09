@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -302,10 +302,14 @@ test("historical reads reject symlinked session files and mid-paging identity ch
     const reopened = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 500 });
     assert.equal(reopened.snapshot().initialError, CHILD_HISTORY_READ_ERROR, "a symlinked session file never opens");
 
-    // Restore a real file; a same-path inode change mid-paging fails boundedly
-    // while previously loaded pages stay visible.
+    // Restore a real file through a rename, which deterministically installs
+    // a different inode (an unlink-plus-write can reuse the just-freed inode
+    // on some filesystems, as CI does): a same-path identity change mid-paging
+    // fails boundedly while previously loaded pages stay visible.
+    const replacement = join(otherRoot, "replacement.jsonl");
+    writeFileSync(replacement, readFileSync(outside));
     rmSync(sessionFile);
-    writeFileSync(sessionFile, readFileSync(outside));
+    renameSync(replacement, sessionFile);
     const before = pager.snapshot().items.length;
     assert.equal(pager.loadOlder(), false);
     const failed = pager.snapshot();
