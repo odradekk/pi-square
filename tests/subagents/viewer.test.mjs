@@ -18,6 +18,8 @@ const rosterModule = await load(join(packageRoot, "src", "subagents", "roster.ts
 const backgroundModule = await load(join(packageRoot, "src", "subagents", "background.ts"));
 const artifactsModule = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
 const inputSurfaceModule = await load(join(packageRoot, "src", "core", "input-surface.ts"));
+const { DEFAULT_CONFIG } = await load(join(packageRoot, "src", "core", "config.ts"));
+const { DisplayRuntime } = await load(join(packageRoot, "src", "display", "runtime.ts"));
 const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
 
 const {
@@ -61,6 +63,15 @@ function plainTheme() {
     bg(_color, text) { return String(text); },
     bold(text) { return String(text); },
   };
+}
+
+class FakeClock {
+  callbacks = new Map();
+  next = 1;
+  setInterval = (callback) => { const id = this.next++; this.callbacks.set(id, callback); return id; };
+  clearInterval = (id) => { this.callbacks.delete(id); };
+  unref = () => {};
+  tick() { for (const callback of [...this.callbacks.values()]) callback(); }
 }
 
 const UP = "\x1b[A";
@@ -127,8 +138,8 @@ test("small terminals degrade to a one-cell-margin near-fullscreen panel", () =>
 // ---------------------------------------------------------------------------
 // Transcript projection
 
-function messageEntry(id, message) {
-  return { type: "message", id, parentId: null, timestamp: "2025-01-01T00:00:00Z", message };
+function messageEntry(id, message, timestamp = "2025-01-01T00:00:00Z") {
+  return { type: "message", id, parentId: null, timestamp, message };
 }
 
 function sessionHeader(id = "session-1") {
@@ -147,7 +158,7 @@ test("projection keeps ordered user, thinking, text, tool call, and tool result 
         { type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/a.ts", offset: 3, limit: 38 } },
       ],
       api: "anthropic", provider: "anthropic", model: "m", usage: { totalTokens: 1 }, stopReason: "toolUse", timestamp: 2,
-    }),
+    }, "2025-01-01T00:00:02.000Z"),
     messageEntry("e3", {
       role: "toolResult",
       toolCallId: "call-1",
@@ -155,7 +166,7 @@ test("projection keeps ordered user, thinking, text, tool call, and tool result 
       content: [{ type: "text", text: "10 lines" }],
       isError: false,
       timestamp: 3,
-    }),
+    }, "2025-01-01T00:00:03.250Z"),
     messageEntry("e4", { role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 4 }),
   ];
 
@@ -166,10 +177,11 @@ test("projection keeps ordered user, thinking, text, tool call, and tool result 
     ["user", "assistant", "toolCall", "assistant"],
   );
   const call = projection.items[2];
-  assert.equal(call.callId, "call-1");
+  assert.equal("callId" in call, false, "internal pairing IDs never enter the display projection");
   assert.equal(call.summary, "lines 3-40", "the call carries only the structural range summary");
   assert.equal("text" in call.result, false, "result payloads never enter the projection");
   assert.equal(call.result.isError, false);
+  assert.equal(call.durationMs, 1_250, "outer session-entry timestamps become the operational elapsed duration");
 });
 
 test("projection hides system-shaped entries and sanitizes generic fallback lines", () => {
@@ -226,11 +238,30 @@ test("projection clips unbounded text and keeps only the bounded recent window",
   assert.match(window.items[0].text, /message 6/, "the recent tail is the visible window");
 });
 
+test("assistant-terminal tool calls do not invent a tool duration without a result entry", () => {
+  const observedAt = Date.parse("2025-01-01T00:01:00.000Z");
+  const projection = projectSessionEntries([
+    sessionHeader(),
+    messageEntry("e1", {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call-no-result", name: "read", arguments: { offset: 1, limit: 2 } }],
+      stopReason: "error",
+      errorMessage: "provider failure",
+      timestamp: observedAt - 60_000,
+    }, "2025-01-01T00:00:02.000Z"),
+  ], 24, observedAt);
+  const call = projection.items.find((item) => item.kind === "toolCall");
+  assert.equal(call.result.isError, true, "the fixed terminal state remains visible");
+  assert.equal(call.durationMs, undefined, "no result boundary means no tool-execution duration");
+});
+
 test("projection display-sanitizes every text channel before any renderer", () => {
   const hostile = "keep this\npassword: swordfish\ntoken=abc123\nBearer eyJhbGc\x1b[31mred\x1b[0m";
+  const jsonCredential = '{"password":"bare-secret"}';
+  const providerDiagnostic = '{"request_id":"req-internal"}';
   const entries = [
     sessionHeader(),
-    messageEntry("e1", { role: "user", content: hostile, timestamp: 1 }),
+    messageEntry("e1", { role: "user", content: `${hostile}\n${jsonCredential}`, timestamp: 1 }),
     messageEntry("e2", {
       role: "assistant",
       content: [
@@ -244,7 +275,7 @@ test("projection display-sanitizes every text channel before any renderer", () =
       role: "assistant",
       content: [{ type: "text", text: "partial" }],
       stopReason: "error",
-      errorMessage: `boom ${hostile}`,
+      errorMessage: `boom ${hostile} ${jsonCredential} ${providerDiagnostic}`,
       timestamp: 3,
     }),
     messageEntry("e4", {
@@ -277,6 +308,9 @@ test("projection display-sanitizes every text channel before any renderer", () =
   assert.ok(!serialized.includes("\\x1b") && !serialized.includes("\u001b"), "control sequences never enter any item");
   assert.ok(!serialized.includes("SECRET TOOL RESULT"), "tool-result payloads never enter any item");
   assert.ok(!serialized.includes("curl"), "raw argument commands never enter any item");
+  assert.ok(!serialized.includes("bare-secret"), "structured credentials never enter any item");
+  assert.ok(!serialized.includes("req-internal"), "provider-internal error identifiers never enter any item");
+  assert.ok(!serialized.includes("call-secret-1"), "raw tool-call identifiers never enter any item");
 
   const { items } = projectSessionEntries(entries);
   const call = items.find((item) => item.kind === "toolCall");
@@ -286,10 +320,10 @@ test("projection display-sanitizes every text channel before any renderer", () =
   // The rendered overlay shows none of the hostile channels either.
   const rendered = renderOverlayLines(baseModel({ transcript: { ok: true, omitted: 0, items } }));
   const renderedText = plain(rendered).join("\n");
-  for (const leak of ["swordfish", "abc123", "eyJhbGc", "SECRET TOOL RESULT", "call-secret-1", "curl", "\u001b"]) {
+  for (const leak of ["swordfish", "abc123", "eyJhbGc", "bare-secret", "req-internal", "SECRET TOOL RESULT", "call-secret-1", "curl", "\u001b"]) {
     assert.ok(!renderedText.includes(leak), `${leak} never renders`);
   }
-  assert.ok(renderedText.includes("bash"), "the tool identity line still renders");
+  assert.ok(renderedText.includes("Bash"), "the sentence-case tool identity line still renders");
   assert.ok(renderedText.includes("failed"), "the error result state still renders");
   for (const line of rendered) assert.ok(visibleWidth(line) <= 64, "every rendered line stays inside the width");
   for (const item of items) {
@@ -369,6 +403,46 @@ test("unsupported but meaningful content becomes a non-empty sanitized fallback"
     plainLines.some((line) => /extension|user message|unsupported|assistant/.test(line)),
     "fallbacks stay readable when clipped",
   );
+});
+
+test("unsupported parts remain visible while Pi-native assistant grouping stays intact", () => {
+  const entries = [
+    sessionHeader(),
+    messageEntry("e1", {
+      role: "user",
+      content: [
+        { type: "text", text: "user before" },
+        { type: "image", data: "private-image-data", mimeType: "image/png" },
+        { type: "text", text: "user after" },
+      ],
+      timestamp: 1,
+    }),
+    messageEntry("e2", {
+      role: "assistant",
+      content: [
+        { type: "text", text: "assistant before" },
+        { type: "future", payload: "private-provider-payload" },
+        { type: "toolCall", id: "call-private", name: "read", arguments: { offset: 2, limit: 3 } },
+        { type: "thinking", thinking: "assistant after" },
+      ],
+      stopReason: "toolUse",
+      timestamp: 2,
+    }),
+  ];
+
+  const projection = projectSessionEntries(entries);
+  assert.deepEqual(
+    projection.items.map((item) => item.kind),
+    ["user", "generic", "user", "assistant", "toolCall", "generic"],
+    "Pi's native assistant group stays intact before its tool rows; unsupported content remains visible afterward",
+  );
+  const rendered = plain(renderOverlayLines(baseModel({ transcript: { ok: true, omitted: 0, items: projection.items } }))).join("\n");
+  for (const expected of ["user before", "unsupported user message content", "user after", "assistant before", "assistant after", "Read", "unsupported assistant content"]) {
+    assert.ok(rendered.includes(expected), `${expected} remains visible`);
+  }
+  for (const hidden of ["private-image-data", "private-provider-payload", "call-private"]) {
+    assert.ok(!JSON.stringify(projection).includes(hidden), `${hidden} never enters the display projection`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -461,11 +535,12 @@ test("readChildTranscript reports identity failures as bounded read errors", () 
     writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "other-session", timestamp: "t", cwd: "/tmp" })}\n`);
     const mismatch = readChildTranscript(ID);
     assert.equal(mismatch.ok, false);
-    assert.ok(mismatch.reason.length > 0 && mismatch.reason.length <= 200, "reason is a bounded line");
+    assert.equal(mismatch.reason, "child history could not be read", "artifact diagnostics stay outside the overlay");
 
     // Missing run.json entirely.
     const missing = readChildTranscript("subagent_00000000-0000-4000-8000-0000000000ff");
     assert.equal(missing.ok, false);
+    assert.equal(missing.reason, "child history could not be read", "filesystem paths and internal errors never render");
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = previousAgentDir;
@@ -560,20 +635,35 @@ test("overlay renders title, rules, transcript body, and help within the width",
             stopReason: "stop",
           },
         },
-        { kind: "toolCall", callId: "c1", name: "read", args: { path: "src/a.ts" }, result: { text: "contents", isError: false } },
+        { kind: "toolCall", name: "pwsh", summary: "called", durationMs: 1_250, result: { isError: false } },
       ],
     },
   });
-  const { overlay, events } = overlayHarness(model);
-  const lines = overlay.render(64);
+  const { overlay, events } = overlayHarness(model, 120, 45);
+  const lines = overlay.render(96);
   const text = plain(lines);
   assert.equal(text[0], "explorer aaaaaaaa ● running 1m 05s", "title carries role, ID, lifecycle, duration");
   assert.match(text[1], /^─+$/, "a quiet rule separates the title");
   assert.ok(text.some((line) => line.includes("find the bug in the parser")), "user entry renders");
   assert.ok(text.some((line) => line.includes("Found it.")), "assistant text renders");
-  assert.ok(text.some((line) => line.includes("read")), "tool call renders through the native component");
+  const toolLine = text.find((line) => line.includes("PowerShell"));
+  assert.match(toolLine, /^\s*\u2713 PowerShell called Completed.*1\.3s/, "the shared operational row owns title, target, outcome, fallback lifecycle marker, and duration");
+  assert.equal(text.filter((line) => /[✓×].*PowerShell/.test(line)).length, 1, "the call and result share exactly one row");
+  assert.ok(!text.some((line) => /^\s*[✓×]\s+(?:result|completed|failed)\b/i.test(line)), "no detached result row can survive body clipping");
+  const darkTheme = loadThemeFromPath(join(packageRoot, "themes", "pi-square-theme-dark.json"));
+  const themed = new ChildTranscriptOverlay({
+    tui: fakeTui(120, 45),
+    theme: darkTheme,
+    model,
+    onClose: () => {},
+    onReplay: () => {},
+  }).render(96).find((line) => stripVTControlCharacters(line).includes("PowerShell"));
+  assert.ok(themed, "the themed operational row renders");
+  assert.ok(themed.includes(darkTheme.fg("muted", "called")), "the structural target stays muted");
+  assert.ok(themed.includes(darkTheme.fg("toolOutput", "Completed")), "the terminal outcome stays neutral");
+  assert.ok(!themed.includes(darkTheme.fg("success", "Completed")), "success hue stays on the marker");
   assert.match(text.at(-1), /esc close/, "help row names the escape path");
-  for (const line of lines) assert.ok(visibleWidth(line) <= 64, "every line fits the overlay width");
+  for (const line of lines) assert.ok(visibleWidth(line) <= 96, "every line fits the overlay width");
   overlay.handleInput(BACKSPACE);
   assert.equal(events.closed, 0, "backspace keeps the overlay open");
 });
@@ -736,7 +826,7 @@ test("the overlay renders responsively under both shipped themes", () => {
       omitted: 2,
       items: [
         { kind: "user", text: "trace the failing path through the scheduler" },
-        { kind: "toolCall", callId: "c1", name: "grep", summary: "/scheduler/ in .", result: { isError: false } },
+        { kind: "toolCall", name: "grep", summary: "called", result: { isError: false } },
       ],
     },
   });
@@ -810,9 +900,10 @@ function job(id, status, createdAt, name, overrides = {}) {
 
 function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
   const editor = { text: "" };
-  const calls = { widgets: [], customs: [], pastes: [], inputUnsubscribed: 0 };
+  const calls = { widgets: [], customs: [], pastes: [], inputUnsubscribed: 0, renders: 0 };
   let inputHandler;
-  const tui = { terminal: { columns, rows }, requestRender() {} };
+  let rejectCustom;
+  const tui = { terminal: { columns, rows }, requestRender() { calls.renders += 1; } };
   const keybindings = { matches: () => false };
   const ui = {
     theme: plainTheme(),
@@ -834,7 +925,7 @@ function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
       const entry = { factory, options, resolved: false, component: undefined };
       calls.customs.push(entry);
       entry.component = factory(tui, plainTheme(), keybindings, (value) => { entry.resolved = true; entry.result = value; });
-      return new Promise(() => {});
+      return new Promise((_resolve, reject) => { rejectCustom = reject; });
     },
   };
   const ctx = {
@@ -846,6 +937,7 @@ function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
   return {
     ctx, calls, editor, tui,
     input: (data) => inputHandler?.(data),
+    rejectCustom: (error = new Error("custom surface failed")) => rejectCustom?.(error),
     widgetLines: (width = 80) => {
       const last = [...calls.widgets].reverse().find((call) => call.key === SUBAGENT_ROSTER_KEY && call.component);
       return last ? last.component.render(width).map(stripVTControlCharacters) : [];
@@ -853,10 +945,10 @@ function fakeUiHarness({ columns = 80, rows = 30 } = {}) {
   };
 }
 
-function controllerHarness({ columns = 80, rows = 30 } = {}) {
+function controllerHarness({ columns = 80, rows = 30, options = {} } = {}) {
   const harness = fakeUiHarness({ columns, rows });
   const state = createBackgroundState();
-  const controller = createSubagentRosterController(state, { now: () => 500_000 });
+  const controller = createSubagentRosterController(state, { now: () => 500_000, ...options });
   controller.start(harness.ctx);
   const addJob = (fixture) => { state.jobs.set(fixture.id, fixture); for (const listener of state.listeners) listener(); };
   return { ...harness, state, controller, addJob };
@@ -959,6 +1051,64 @@ test("Enter opens only an explicit candidate in a centered capturing overlay", (
   assert.equal(input(DOWN), undefined);
   assert.equal(input("a"), undefined);
   controller.stop();
+});
+
+test("controller routes transcript tools through the active display runtime and releases motion on UI rejection", async () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  const observedAt = Date.parse("2025-01-01T00:00:05.000Z");
+  const clock = new FakeClock();
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true },
+    clock,
+  });
+  let componentCreations = 0;
+  const createComponent = runtime.createComponent.bind(runtime);
+  runtime.createComponent = (...args) => {
+    componentCreations += 1;
+    return createComponent(...args);
+  };
+
+  try {
+    writeSessionFile(root, [
+      messageEntry("e1", {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-runtime", name: "read", arguments: { offset: 2, limit: 3 } }],
+        stopReason: "toolUse",
+        timestamp: observedAt - 10_000,
+      }, "2025-01-01T00:00:03.000Z"),
+    ]);
+    const { input, calls, rejectCustom, addJob, controller } = controllerHarness({
+      options: { now: () => observedAt, display: () => runtime },
+    });
+    addJob(job(ID, "running", observedAt - 4_000, "explorer", { startedAt: observedAt - 4_000 }));
+
+    input(DOWN);
+    input(ENTER);
+    const overlay = calls.customs[0].component;
+    const before = overlay.render(64);
+    const text = before.map(stripVTControlCharacters).join("\n");
+    assert.match(text, /● Read lines 2-4/, "color-capable production runtime owns the operational marker and target");
+    assert.equal(componentCreations, 1, "controller passes the active runtime into the overlay");
+
+    clock.tick();
+    assert.ok(calls.renders > 0, "the overlay's running row requests a frame on the shared motion tick");
+    assert.notEqual(overlay.render(64), before, "the motion tick invalidates the outer overlay cache");
+
+    calls.renders = 0;
+    rejectCustom();
+    await new Promise((resolve) => setImmediate(resolve));
+    clock.tick();
+    assert.equal(calls.renders, 0, "a rejected custom surface disposes the overlay motion subscriber");
+
+    controller.stop();
+    assert.equal(clock.callbacks.size, 0, "teardown releases roster and overlay motion subscriptions");
+  } finally {
+    runtime.dispose();
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("escape closes the overlay and clears the candidate", () => {
@@ -1081,6 +1231,38 @@ test("opening and viewing a child changes nothing in the background store", () =
       })),
     });
     assert.equal(storeAfter, storeBefore, "viewing never mutates lifecycle, timing, or result state");
+    controller.stop();
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = previousAgentDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an empty failed child exposes a fixed reason without provider diagnostics", () => {
+  const root = transcriptRoot();
+  const previousAgentDir = process.env.PI_AGENT_DIR;
+  try {
+    writeSessionFile(root, []);
+    const { input, calls, addJob, controller } = controllerHarness();
+    addJob(job(ID, "failed", 1, "explorer", {
+      error: 'Subagent failed: SUBAGENT_FAILED\nCause: {"password":"bare-secret","request_id":"req-internal"}\nPath: /private/session.jsonl',
+      errorInfo: {
+        code: "SUBAGENT_FAILED",
+        message: "Subagent execution failed.",
+        operation: "delegate",
+        retryable: false,
+        retries: 0,
+      },
+    }));
+
+    input(DOWN);
+    input(ENTER);
+    const text = calls.customs[0].component.render(64).map(stripVTControlCharacters).join("\n");
+    assert.match(text, /Failed: Child execution failed/);
+    for (const leak of ["bare-secret", "req-internal", "/private/session.jsonl"]) {
+      assert.ok(!text.includes(leak), `${leak} never renders in the empty failure state`);
+    }
     controller.stop();
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;

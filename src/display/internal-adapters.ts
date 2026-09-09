@@ -31,15 +31,6 @@ const TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze
   delegate_subagent: ["agent"], resume_subagent: ["id"],
 });
 
-/** C1 sentence-case titles; unique within each family (`grep` is `Text search`). */
-const TITLES: Readonly<Record<string, string>> = Object.freeze({
-  bash: "Bash", pwsh: "PowerShell",
-  ssh: "SSH", web_search: "Web search", web_fetch: "Web fetch", library_search: "Library search",
-  library_docs: "Library docs", replace: "Replace", insert: "Insert",
-  ask: "Questions", todo: "Tasks",
-  delegate_subagent: "Subagent", resume_subagent: "Resume subagent",
-});
-
 /** Target fields that hold a local filesystem path and follow C2. */
 const PATH_TARGET_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   replace: ["path"],
@@ -175,7 +166,7 @@ function summaryRows(detailsValue: unknown): { rows: { text: string }[]; metadat
 }
 
 function createAdapter(name: string, family: DisplayFamily): InternalToolDisplayAdapter<any, unknown, unknown> {
-  const title = TITLES[name] ?? name;
+  const title = getCatalogEntry(name)?.title ?? name;
   return {
     describeCall(args, context) {
       const preview = callPreview(name, args);

@@ -81,12 +81,7 @@ export default function registerSubagents(
     runtime === undefined
       ? {}
       : {
-        motion: () => {
-          const displayRuntime = typeof runtime === "function" ? runtime() : runtime;
-          return displayRuntime
-            ? { subscribe: (listener) => displayRuntime.subscribeMotion(listener) }
-            : undefined;
-        },
+        display: () => typeof runtime === "function" ? runtime() : runtime,
       },
   );
 

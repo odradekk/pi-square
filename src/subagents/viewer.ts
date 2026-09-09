@@ -17,6 +17,10 @@ import {
   type OverlayOptions,
   type TUI,
 } from "@earendil-works/pi-tui";
+import { OperationalDisplayComponent } from "../display/components";
+import { getCatalogEntry } from "../display/catalog";
+import type { DisplayRuntime } from "../display/runtime";
+import { DEFAULT_DISPLAY_POLICY, type DisplayDescriptionV1 } from "../display/types";
 import { resolveChildSessionFile } from "./artifacts";
 import { clipWithHeadTail } from "./confirmed-delivery";
 import { sanitizeSubagentDisplay } from "./display";
@@ -31,7 +35,7 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * public message components, and never mutates lifecycle, result ownership,
  * delivery, waiting, aborting, resume eligibility, persisted artifacts, or the
  * main transcript. Every rendered text is a display-safe projection first:
- * user and assistant text passes the shared credential-neutral sanitizer and
+ * user and assistant text pass the shared credential-neutral sanitizer and
  * an explicit budget before any component sees it, and tool calls render
  * through the same roster-grade allowlisted identity/summary seam the
  * roster rows share — never raw arguments, result payloads, call IDs, or
@@ -62,7 +66,7 @@ export type ChildLifecycle = "queued" | "running" | "cancelling" | "completed" |
 export type TranscriptItem =
   | { kind: "user"; text: string }
   | { kind: "assistant"; message: Record<string, unknown> }
-  | { kind: "toolCall"; callId: string; name: string; summary: string; result?: { isError: boolean } }
+  | { kind: "toolCall"; name: string; summary: string; durationMs?: number; result?: { isError: boolean } }
   | { kind: "generic"; text: string };
 
 export interface ChildTranscriptProjection {
@@ -80,18 +84,6 @@ function firstLine(raw: string): string {
   return cut === -1 ? raw : raw.slice(0, cut);
 }
 
-function textFromParts(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is { type: "text"; text: string } => (
-      Boolean(part) && typeof part === "object" && (part as { type?: unknown }).type === "text"
-      && typeof (part as { text?: unknown }).text === "string"
-    ))
-    .map((part) => part.text)
-    .join("\n");
-}
-
 function genericLine(text: string): TranscriptItem {
   const clean = sanitizeSubagentDisplay(text).replace(/\s+/g, " ").trim();
   return { kind: "generic", text: clean.slice(0, MAX_GENERIC_LINE) };
@@ -100,11 +92,33 @@ function genericLine(text: string): TranscriptItem {
 /**
  * Display-safe entry text: the shared credential-neutral sanitizer strips
  * control sequences and redacts common credential forms first, then the shared
- * head/tail clipper bounds the length. Every user, assistant, thinking, and
- * error text passes here before any component or fallback can render it.
+ * head/tail clipper bounds the length. Every user, assistant, and thinking
+ * text passes here before any component can render it; provider errors never
+ * cross into the projection and use fixed state text instead.
  */
 function safeEntryText(text: unknown): string {
   return clipWithHeadTail(sanitizeSubagentDisplay(text), MAX_ENTRY_TEXT);
+}
+
+type TextContentPart = { kind: "text"; text: string } | { kind: "unsupported" };
+
+/** Ordered text/fallback projection for user and visible custom content. */
+function projectTextContent(content: unknown): TextContentPart[] {
+  if (typeof content === "string") {
+    const text = safeEntryText(content);
+    return text ? [{ kind: "text", text }] : [];
+  }
+  if (!Array.isArray(content)) return [];
+  const parts: TextContentPart[] = [];
+  for (const part of content) {
+    if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
+      const text = safeEntryText(part.text);
+      if (text) parts.push({ kind: "text", text });
+    } else {
+      parts.push({ kind: "unsupported" });
+    }
+  }
+  return parts;
 }
 
 /**
@@ -123,13 +137,25 @@ function safeEntryText(text: unknown): string {
 export function projectSessionEntries(
   entries: readonly unknown[],
   windowSize = MAX_TRANSCRIPT_ITEMS,
+  observedAt?: number,
 ): ChildTranscriptProjection {
   const projected: TranscriptItem[] = [];
-  const openCalls = new Map<string, TranscriptItem & { kind: "toolCall" }>();
+  const openCalls = new Map<string, {
+    item: TranscriptItem & { kind: "toolCall" };
+    startedAt?: number;
+  }>();
+
+  const timestamp = (value: unknown): number | undefined => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value !== "string") return undefined;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
 
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as { type?: unknown };
+    const entryTimestamp = timestamp((entry as { timestamp?: unknown }).timestamp);
 
     if (record.type === "session") continue;
 
@@ -144,8 +170,11 @@ export function projectSessionEntries(
     if (record.type === "custom_message") {
       const custom = entry as { display?: unknown; content?: unknown };
       if (custom.display === true) {
-        const text = textFromParts(custom.content).trim();
-        projected.push(genericLine(text || "extension message (no readable text)"));
+        const parts = projectTextContent(custom.content);
+        if (parts.length === 0) projected.push(genericLine("extension message (no readable text)"));
+        else for (const part of parts) {
+          projected.push(genericLine(part.kind === "text" ? part.text : "unsupported extension message content"));
+        }
       }
       continue;
     }
@@ -156,9 +185,13 @@ export function projectSessionEntries(
     const role = (message as { role?: unknown }).role;
 
     if (role === "user") {
-      const text = safeEntryText(textFromParts((message as { content?: unknown }).content));
-      if (text) projected.push({ kind: "user", text });
-      else projected.push(genericLine("user message (no readable text)"));
+      const parts = projectTextContent((message as { content?: unknown }).content);
+      if (parts.length === 0) projected.push(genericLine("user message (no readable text)"));
+      else for (const part of parts) {
+        projected.push(part.kind === "text"
+          ? { kind: "user", text: part.text }
+          : genericLine("unsupported user message content"));
+      }
       continue;
     }
 
@@ -169,49 +202,76 @@ export function projectSessionEntries(
         projected.push(genericLine("assistant message (no readable content)"));
         continue;
       }
-      // Only sanitized text/thinking parts reach the public assistant
-      // component; tool-call parts project as separate allowlisted items.
-      const boundedContent = [];
+      const projectedBefore = projected.length;
+      // Pi renders one assistant message component, then the message's tool
+      // rows, whose later results update in place. Keep that native grouping;
+      // unsupported provider parts remain visible as generic rows afterward.
+      const boundedContent: Array<Record<string, unknown>> = [];
+      const assistantItems: Array<TranscriptItem & { kind: "assistant" }> = [];
+      const calls: Array<TranscriptItem & { kind: "toolCall" }> = [];
+      const unsupported: TranscriptItem[] = [];
+      const startedAt = entryTimestamp;
       for (const part of content) {
-        if (!part || typeof part !== "object") continue;
+        if (!part || typeof part !== "object") {
+          unsupported.push(genericLine("unsupported assistant content"));
+          continue;
+        }
         if (part.type === "text") {
           const text = safeEntryText(part.text);
           if (text) boundedContent.push({ type: "text", text });
         } else if (part.type === "thinking") {
           const thinking = safeEntryText(part.thinking);
           if (thinking) boundedContent.push({ type: "thinking", thinking });
+        } else if (part.type === "toolCall") {
+          // The roster-grade shared projection: cataloged identity plus
+          // structural counts/ranges only; free-form paths, patterns, queries,
+          // and commands never project, and unknown names stay anonymous.
+          const display = rosterToolArgsDisplay(String(part.name ?? ""), part.arguments);
+          const call = {
+            kind: "toolCall",
+            name: display.tool,
+            summary: display.summary,
+            ...(startedAt !== undefined && observedAt !== undefined
+              ? { durationMs: Math.max(0, observedAt - startedAt) }
+              : {}),
+          } as TranscriptItem & { kind: "toolCall" };
+          calls.push(call);
+          const callId = typeof part.id === "string" ? part.id : "";
+          if (callId) openCalls.set(callId, { item: call, startedAt });
+        } else {
+          unsupported.push(genericLine("unsupported assistant content"));
         }
       }
-      const speaks = boundedContent.length > 0;
-      const calls = content.filter((part) => part && typeof part === "object" && part.type === "toolCall");
-      if (speaks) {
-        // The minimal copy carries only what the component renders; the raw
-        // message's usage, model, diagnostics, and identifiers never enter.
-        const bounded: Record<string, unknown> = { role: "assistant", content: boundedContent };
-        if (stopReason === "length" || stopReason === "error" || stopReason === "aborted") {
-          bounded.stopReason = stopReason;
-          const rawError = (message as { errorMessage?: unknown }).errorMessage;
-          if ((stopReason === "error" || stopReason === "aborted") && typeof rawError === "string" && rawError) {
-            bounded.errorMessage = safeEntryText(rawError);
+      if (boundedContent.length > 0) {
+        const item = { kind: "assistant", message: { role: "assistant", content: boundedContent } } as const;
+        projected.push(item);
+        assistantItems.push(item);
+      }
+      projected.push(...calls, ...unsupported);
+
+      // Only fixed state text crosses the assistant error boundary. Pi's
+      // native transcript updates a tool call in place, so failed calls keep
+      // that same one-row identity rather than gaining a second result row.
+      if (stopReason === "error" || stopReason === "aborted") {
+        if (calls.length > 0) {
+          for (const call of calls) {
+            call.result = { isError: true };
+            // Without a tool-result entry there is no execution end boundary;
+            // do not turn time spent before a later reopen into tool duration.
+            delete call.durationMs;
           }
+        } else if (assistantItems.length > 0) {
+          const last = assistantItems.at(-1)!;
+          last.message.stopReason = stopReason;
+          last.message.errorMessage = stopReason === "error" ? "Child request failed" : "Child request aborted";
+        } else {
+          projected.push(genericLine(stopReason === "error" ? "assistant request failed" : "assistant request aborted"));
         }
-        projected.push({ kind: "assistant", message: bounded });
-      } else if (calls.length === 0) {
-        projected.push(genericLine("assistant message (no readable content)"));
+      } else if (stopReason === "length" && assistantItems.length > 0) {
+        assistantItems.at(-1)!.message.stopReason = "length";
       }
-      for (const part of calls) {
-        // The roster-grade shared projection: cataloged identity plus
-        // structural counts/ranges only; free-form paths, patterns, queries,
-        // and commands never project, and unknown names stay anonymous.
-        const display = rosterToolArgsDisplay(String(part?.name ?? ""), part?.arguments);
-        const call = {
-          kind: "toolCall",
-          callId: String(part?.id ?? ""),
-          name: display.tool,
-          summary: display.summary,
-        } as TranscriptItem & { kind: "toolCall" };
-        projected.push(call);
-        if (call.callId) openCalls.set(call.callId, call);
+      if (projected.length === projectedBefore) {
+        projected.push(genericLine("assistant message (no readable content)"));
       }
       continue;
     }
@@ -223,7 +283,11 @@ export function projectSessionEntries(
       const callId = typeof result.toolCallId === "string" ? result.toolCallId : "";
       const open = callId ? openCalls.get(callId) : undefined;
       if (open) {
-        open.result = { isError: result.isError === true };
+        open.item.result = { isError: result.isError === true };
+        const endedAt = entryTimestamp;
+        if (open.startedAt !== undefined && endedAt !== undefined) {
+          open.item.durationMs = Math.max(0, endedAt - open.startedAt);
+        }
       } else {
         // An orphan result still shows in order, but through the same
         // cataloged-identity gate as its call: an untrusted name stays
@@ -251,7 +315,7 @@ export function projectSessionEntries(
  * parser skips any other malformed line. Failures surface as a bounded
  * `ok: false` reason for the overlay's explicit read-error state.
  */
-export function readChildTranscript(id: string): ChildTranscript {
+export function readChildTranscript(id: string, observedAt = Date.now()): ChildTranscript {
   try {
     const { details, sessionFile } = resolveChildSessionFile(id, "view");
     const size = statSync(sessionFile).size;
@@ -282,16 +346,12 @@ export function readChildTranscript(id: string): ChildTranscript {
       if (lineBreak !== -1) tail = tail.slice(lineBreak + 1);
     }
 
-    return { ok: true, ...projectSessionEntries(parseSessionEntries(tail)) };
-  } catch (error) {
-    // Our own thrown reasons are static strings; a JSON.parse failure would
-    // quote raw fragments of the malformed file, so it degrades to a fixed
-    // reason. Everything still passes the sanitizer and the line budget.
-    const raw = error instanceof SyntaxError
-      ? ""
-      : error instanceof Error && error.message ? error.message : "";
-    const reason = sanitizeSubagentDisplay(raw || "child history could not be read").replace(/\s+/g, " ").trim();
-    return { ok: false, reason: reason.slice(0, MAX_GENERIC_LINE) || "child history could not be read" };
+    return { ok: true, ...projectSessionEntries(parseSessionEntries(tail), MAX_TRANSCRIPT_ITEMS, observedAt) };
+  } catch {
+    // Filesystem and parser errors may quote a session path, a malformed JSON
+    // fragment, or provider-owned identifiers. The overlay exposes only the
+    // observable read state; detailed diagnostics remain outside this view.
+    return { ok: false, reason: "child history could not be read" };
   }
 }
 
@@ -380,7 +440,7 @@ export interface ChildOverlayModel {
   lifecycleTone: ThemeColor;
   status: ChildLifecycle;
   durationText: string;
-  /** Cleaned failure/abort evidence for terminal runs with no transcript. */
+  /** Closed failure/abort status sentence for terminal runs with no transcript. */
   failureReason?: string;
   transcript: ChildTranscript;
 }
@@ -389,6 +449,8 @@ export interface ChildOverlayInput {
   tui: TUI;
   theme: Theme;
   model: ChildOverlayModel;
+  /** Active display runtime; absent only in isolated fallback/test rendering. */
+  display?: Pick<DisplayRuntime, "createComponent" | "subscribeMotion">;
   /** Escape path: close, clear selection, and return focus to main. */
   onClose(): void;
   /** Replay path: close, then place the complete text in the empty editor. */
@@ -427,6 +489,7 @@ export class ChildTranscriptOverlay implements Component {
   private readonly bodyComponents: Component[] = [];
   private readonly state: { text: string; tone: ThemeColor };
   private readonly omitted: number;
+  private motionUnsubscribe: (() => void) | undefined;
   private cache: { width: number; columns: number; rows: number; lines: string[] } | undefined;
 
   constructor(input: ChildOverlayInput) {
@@ -444,6 +507,12 @@ export class ChildTranscriptOverlay implements Component {
           // the sanitized generic fallback; the view never throws.
           this.bodyComponents.push(this.genericTextComponent(this.describeItem(item)));
         }
+      }
+      if (input.display && input.model.transcript.items.some((item) => item.kind === "toolCall" && !item.result)) {
+        this.motionUnsubscribe = input.display.subscribeMotion(() => {
+          this.invalidate();
+          this.input.tui.requestRender();
+        });
       }
     }
   }
@@ -480,22 +549,27 @@ export class ChildTranscriptOverlay implements Component {
           this.markdown,
         )];
       case "toolCall": {
-        // The calm operational grammar over the allowlisted projection: the
-        // marker and tool-title identity carry the call, the bounded summary
-        // carries its safe target, and a paired result line carries only its
-        // terminal state. Raw arguments, payloads, and call IDs never render.
-        const call = this.theme.fg("accent", "●")
-          + " "
-          + this.theme.fg("toolTitle", this.theme.bold(item.name))
-          + (item.summary ? ` ${this.theme.fg("dim", item.summary)}` : "");
-        const lines = [call];
-        if (item.result) {
-          lines.push(
-            `    ${this.theme.fg(item.result.isError ? "error" : "success", item.result.isError ? "✗" : "✓")}`
-              + ` ${this.theme.fg("muted", item.result.isError ? "failed" : "result")}`,
-          );
-        }
-        return lines.map((line) => this.lineComponent(line));
+        // The display module owns title, lifecycle marker/fallback, hue,
+        // duration, width pressure, and the one-row terminal outcome. This
+        // caller contributes only the allowlisted identity and safe summary.
+        const catalog = getCatalogEntry(item.name);
+        const description: DisplayDescriptionV1 = {
+          version: 1,
+          tool: item.name,
+          family: catalog?.family ?? "agent",
+          lifecycle: item.result?.isError ? "failed" : item.result ? "completed" : "running",
+          phase: item.result ? "result" : "call",
+          title: catalog?.title ?? "Tool",
+          ...(item.summary ? { target: item.summary } : {}),
+          ...(item.result?.isError
+            ? { error: "Tool failed" }
+            : item.result
+              ? { summary: "Completed" }
+              : {}),
+          ...(item.durationMs !== undefined ? { durationMs: item.durationMs } : {}),
+        };
+        return [this.input.display?.createComponent(description, this.theme, { expanded: false })
+          ?? new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, this.theme, { expanded: false })];
       }
       default:
         return [this.genericTextComponent(item.text)];
@@ -504,8 +578,18 @@ export class ChildTranscriptOverlay implements Component {
 
   handleInput(data: string): void {
     const classified = classifyViewerInput(data);
-    if (classified.kind === "close") this.input.onClose();
-    else if (classified.kind === "replay") this.input.onReplay(classified.text);
+    if (classified.kind === "close") {
+      this.dispose();
+      this.input.onClose();
+    } else if (classified.kind === "replay") {
+      this.dispose();
+      this.input.onReplay(classified.text);
+    }
+  }
+
+  dispose(): void {
+    this.motionUnsubscribe?.();
+    this.motionUnsubscribe = undefined;
   }
 
   invalidate(): void {

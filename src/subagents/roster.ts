@@ -1,6 +1,7 @@
 import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { isOwnedInputSurfaceActive } from "../core/input-surface";
+import type { DisplayRuntime } from "../display/runtime";
 import { listBackgroundJobs, subscribeBackgroundState, type BackgroundState } from "./background";
 import { sanitizeSubagentDisplay } from "./display";
 import { latestRosterToolCallSummary } from "./tool-display";
@@ -324,6 +325,24 @@ function rosterActivity(job: BackgroundJobSnapshot): string {
   return latestRosterToolCallSummary(job.details.timeline, terminal ? "" : "working");
 }
 
+/**
+ * Error payloads can contain provider identifiers, credentials, or artifact
+ * paths in shapes a best-effort text sanitizer cannot recognize. Empty
+ * terminal views therefore derive their reason only from the closed error-code
+ * vocabulary and lifecycle, never from `details.error`, `message`, or `cause`.
+ */
+function rosterFailureReason(job: BackgroundJobSnapshot): string {
+  if (job.status === "aborted") return "Child run was aborted";
+  switch (job.details.errorInfo?.code) {
+    case "AUTH_FAILED": return "Child authentication failed";
+    case "CONTEXT_TOO_LARGE": return "Child prompt exceeded the model context";
+    case "RETRY_EXHAUSTED": return "Child model retries were exhausted";
+    case "PERSISTENCE_FAILED": return "Child run state could not be saved";
+    case "SESSION_HISTORY_UNAVAILABLE": return "Child session history was unavailable";
+    default: return "Child execution failed";
+  }
+}
+
 export interface SubagentRosterController {
   start(ctx: ExtensionContext): void;
   stop(): void;
@@ -332,6 +351,8 @@ export interface SubagentRosterController {
 
 export interface SubagentRosterOptions {
   readonly now?: () => number;
+  /** Display runtime used by transcript tool rows and, by default, ticking. */
+  readonly display?: () => Pick<DisplayRuntime, "createComponent" | "subscribeMotion"> | undefined;
   /**
    * Session motion source, resolved at each start so a session replacement
    * that rebuilds the display runtime is followed; when absent or undefined
@@ -354,6 +375,7 @@ export function createSubagentRosterController(
   options: SubagentRosterOptions = {},
 ): SubagentRosterController {
   const now = options.now ?? Date.now;
+  let display: Pick<DisplayRuntime, "createComponent" | "subscribeMotion"> | undefined;
   let motion: RosterMotion | undefined;
   let context: ExtensionContext | undefined;
   let parentSessionId = "";
@@ -367,6 +389,8 @@ export function createSubagentRosterController(
   let openId: string | undefined;
   /** Resolves the pending `ui.custom` promise and removes the overlay. */
   let closeOverlay: (() => void) | undefined;
+  /** Component reference retained independently so a rejected custom promise can dispose it. */
+  let activeOverlay: ChildTranscriptOverlay | undefined;
   let viewportStart = 0;
   let tuiRef: WidgetTui | undefined;
   const stopMotion = () => {
@@ -501,7 +525,7 @@ export function createSubagentRosterController(
         : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
     );
     const failureReason = job.status === "failed" || job.status === "aborted"
-      ? sanitizeSubagentDisplay(job.details.error ?? job.details.errorInfo?.message ?? "").trim().slice(0, 200)
+      ? rosterFailureReason(job)
       : "";
 
     // The model is frozen at open: role, identity, lifecycle, duration, and a
@@ -514,7 +538,7 @@ export function createSubagentRosterController(
       status: job.status,
       durationText,
       ...(failureReason ? { failureReason } : {}),
-      transcript: readChildTranscript(job.id),
+      transcript: readChildTranscript(job.id, now()),
     };
 
     candidateId = undefined;
@@ -542,11 +566,11 @@ export function createSubagentRosterController(
         // outer geometry follows terminal resizes across the small/normal
         // threshold for as long as the overlay stays open.
         overlayOptions = childOverlayOptions(tui);
-        closeOverlay = () => done(undefined);
-        return new ChildTranscriptOverlay({
+        const overlay = new ChildTranscriptOverlay({
           tui,
           theme,
           model,
+          ...(display ? { display } : {}),
           onClose: settle,
           onReplay: (text) => {
             settle();
@@ -558,17 +582,28 @@ export function createSubagentRosterController(
             }
           },
         });
+        activeOverlay = overlay;
+        closeOverlay = () => {
+          overlay.dispose();
+          if (activeOverlay === overlay) activeOverlay = undefined;
+          done(undefined);
+        };
+        return overlay;
       }, {
         overlay: true,
         overlayOptions: () => overlayOptions ?? { width: "80%", maxHeight: "75%", anchor: "center" },
       }).catch(() => {
         if (openId === job.id) {
+          activeOverlay?.dispose();
+          activeOverlay = undefined;
           closeOverlay = undefined;
           openId = undefined;
           refresh();
         }
       });
     } catch {
+      activeOverlay?.dispose();
+      activeOverlay = undefined;
       closeOverlay = undefined;
       openId = undefined;
       refresh();
@@ -627,6 +662,7 @@ export function createSubagentRosterController(
     unsubscribeInput?.();
     unsubscribeInput = undefined;
     stopMotion();
+    display = undefined;
     motion = undefined;
     lastPublishAt = -Infinity;
     if (closeOverlay !== undefined) {
@@ -638,6 +674,8 @@ export function createSubagentRosterController(
         // Closing an already-closed overlay is harmless.
       }
     }
+    activeOverlay?.dispose();
+    activeOverlay = undefined;
     openId = undefined;
     candidateId = undefined;
     viewportStart = 0;
@@ -654,7 +692,10 @@ export function createSubagentRosterController(
       // no roster, no subscription, and hold no context.
       if (!ctx.hasUI || ctx.mode !== "tui") return;
       context = ctx;
-      motion = options.motion?.() ?? undefined;
+      display = options.display?.();
+      const activeDisplay = display;
+      motion = options.motion?.()
+        ?? (activeDisplay ? { subscribe: (listener) => activeDisplay.subscribeMotion(listener) } : undefined);
       parentSessionId = String(ctx.sessionManager?.getSessionId?.() ?? "").trim();
       unsubscribe = subscribeBackgroundState(state, refresh);
       if (typeof ctx.ui.onTerminalInput === "function") {
