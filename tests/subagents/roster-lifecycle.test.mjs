@@ -52,6 +52,7 @@ function plainTheme() {
   };
 }
 
+const UP = "\x1b[A";
 const DOWN = "\x1b[B";
 const PAGE_UP = "\x1b[5~";
 const ENTER = "\r";
@@ -144,13 +145,62 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   const previousAgentDir = process.env.PI_AGENT_DIR;
   process.env.PI_AGENT_DIR = root;
 
+  // A faithful stand-in for Pi's extension event chain: registrations append
+  // (one extension may add several handlers per event) and emitInput runs
+  // them in order with the runner's aggregation semantics — action:"handled"
+  // short-circuits the chain so session.prompt never sends the prompt, and
+  // action:"transform" rewrites the text later handlers see.
   const handlers = new Map();
+  const chain = {
+    on(event, handler) {
+      const list = handlers.get(event) ?? [];
+      list.push(handler);
+      handlers.set(event, list);
+    },
+    has(event) { return handlers.has(event); },
+    async emitInput(text, source, streamingBehavior) {
+      let currentText = text;
+      for (const handler of handlers.get("input") ?? []) {
+        const result = (await handler({
+          type: "input",
+          text: currentText,
+          source,
+          ...(streamingBehavior ? { streamingBehavior } : {}),
+        })) ;
+        if (result?.action === "handled") return { action: "handled" };
+        if (result?.action === "transform") currentText = result.text;
+      }
+      return currentText !== text
+        ? { action: "transform", text: currentText }
+        : { action: "continue" };
+    },
+    async emit(event, payload) {
+      for (const handler of handlers.get(event) ?? []) await handler(payload);
+    },
+    emitMessageStart(message) {
+      for (const handler of handlers.get("message_start") ?? []) {
+        handler({ type: "message_start", message });
+      }
+    },
+    emitBeforeAgentStart() {
+      for (const handler of handlers.get("before_agent_start") ?? []) {
+        handler({ type: "before_agent_start" }, undefined);
+      }
+    },
+  };
   const tools = new Map();
   const commands = new Map();
   const sent = [];
   const customs = [];
   const pastes = [];
   const notifications = [];
+  /** Prompt submissions that reached main: before_agent_start observed. */
+  const acceptedPrompts = [];
+  /**
+   * A later-registered foreign extension's input response, applied after the
+   * pi-square handlers in chain order exactly like a second extension.
+   */
+  const foreignInput = { response: undefined };
   let inputHandler;
   let inputUnsubscribed = false;
   const editor = { text: "" };
@@ -160,7 +210,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   const keybindings = { matches: () => false, getKeys: () => [] };
 
   const pi = {
-    on(event, handler) { handlers.set(event, handler); },
+    on(event, handler) { chain.on(event, handler); },
     registerTool(definition) { tools.set(definition.name, definition); },
     registerMessageRenderer() {},
     registerCommand(name, definition) { commands.set(name, definition); },
@@ -168,8 +218,8 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     sendMessage(message, options) { sent.push({ message, options }); },
     sendUserMessage(text, options) {
       // Pi routes sendUserMessage through session.prompt with source
-      // "extension"; the input handlers observe it exactly that way.
-      handlers.get("input")?.({ type: "input", text, source: "extension", streamingBehavior: options?.deliverAs });
+      // "extension"; the input chain observes it exactly that way.
+      void chain.emitInput(text, "extension", options?.deliverAs);
     },
   };
 
@@ -193,14 +243,51 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   registerSubagentManager(pi, state, undefined);
 
   // The same event wiring src/subagents/index.ts installs.
+  let pendingIdleInputSource;
+  const queuedSteerSources = [];
+  const queuedFollowUpSources = [];
+  const STREAMING_INPUT_PAIRS_MAX = 64;
+  let streamingInputDesynchronized = false;
+  let skipInitialUserMessage = false;
   pi.on("input", (event) => {
-    roster.handleMainInput(event?.source);
+    const source = event?.source === "extension" ? "extension" : "real";
+    if (event?.streamingBehavior) {
+      const queue = event.streamingBehavior === "followUp" ? queuedFollowUpSources : queuedSteerSources;
+      if (queue.length >= STREAMING_INPUT_PAIRS_MAX) {
+        streamingInputDesynchronized = true;
+        queuedSteerSources.length = 0;
+        queuedFollowUpSources.length = 0;
+        return;
+      }
+      queue.push(source);
+      return;
+    }
+    pendingIdleInputSource = source;
+  });
+  pi.on("before_agent_start", () => {
+    const source = pendingIdleInputSource;
+    pendingIdleInputSource = undefined;
+    if (source === "real") roster.handleMainInput("interactive");
+    skipInitialUserMessage = true;
   });
   pi.on("agent_start", () => { delivery.handleAgentStart(); });
   pi.on("turn_end", (event) => { delivery.handleTurnEnd(event?.message); });
   pi.on("agent_end", (event) => { delivery.handleAgentEnd(event?.messages); });
   pi.on("agent_settled", () => { delivery.handleAgentSettled(); });
-  pi.on("message_start", (event) => { delivery.observeMessage(event?.message); });
+  pi.on("message_start", (event) => {
+    delivery.observeMessage(event?.message);
+    if (event?.message?.role !== "user") return;
+    if (skipInitialUserMessage) {
+      skipInitialUserMessage = false;
+      return;
+    }
+    if (streamingInputDesynchronized) return;
+    const source = queuedSteerSources.shift() ?? queuedFollowUpSources.shift();
+    if (source === "real") roster.handleMainInput("interactive");
+  });
+  // The foreign extension registers after pi-square, so its input response
+  // applies later in the chain — the position a real second extension has.
+  chain.on("input", () => foreignInput.response ?? undefined);
   pi.on("session_shutdown", async () => {
     state.background.viewFeed?.clear();
     roster.stop();
@@ -300,14 +387,51 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     input(ENTER);
     return overlay();
   };
-  const mainInput = (source = "interactive", text = "next task please") => {
-    handlers.get("input")?.({ type: "input", text, source });
+  /**
+   * Mirrors session.prompt's event order for one submitted prompt: the input
+   * chain first (a later handler may handle or transform it), then — only if
+   * nothing handled it and preflight passes — before_agent_start and the user
+   * message_start. A streamingBehavior queues instead, exactly like Pi.
+   */
+  const submitPrompt = async (options = {}) => {
+    const {
+      source = "interactive",
+      text = "next task please",
+      streamingBehavior,
+      preflightFail = false,
+    } = options;
+    const result = await chain.emitInput(text, source, streamingBehavior);
+    if (result.action === "handled") return "handled";
+    if (streamingBehavior) return "queued";
+    if (preflightFail) return "preflight-failed";
+    acceptedPrompts.push(result.action === "transform" ? result.text : text);
+    chain.emitBeforeAgentStart();
+    chain.emitMessageStart({
+      role: "user",
+      content: [{ type: "text", text: result.action === "transform" ? result.text : text }],
+      timestamp: Date.now(),
+    });
+    return "sent";
   };
+  /** Drains one queued streaming input the way the running agent does. */
+  const drainStreamingInput = (text = "queued steering text") => {
+    chain.emitMessageStart({
+      role: "user",
+      content: [{ type: "text", text }],
+      timestamp: Date.now(),
+    });
+  };
+  const mainInput = (source = "interactive") => submitPrompt({ source });
 
   return {
     root,
     previousAgentDir,
     pi,
+    chain,
+    foreignInput,
+    acceptedPrompts,
+    submitPrompt,
+    drainStreamingInput,
     handlers,
     tools,
     commands,
@@ -404,7 +528,7 @@ test("a real prompt submitted to main expires the preceding task's terminal rows
     harness.addChild(running);
     assert.equal(harness.widgetLines().length, 2);
 
-    harness.mainInput("interactive");
+    await harness.mainInput("interactive");
     let lines = harness.widgetLines();
     assert.equal(lines.length, 1, "the terminal row expired with the preceding task");
     assert.ok(lines[0].includes("crawler"), "the active row survived the new prompt");
@@ -420,7 +544,7 @@ test("a real prompt submitted to main expires the preceding task's terminal rows
     assert.ok(lines[0].includes("✓ completed"), "the later terminalization joins the current epoch");
 
     // And expires with the next real prompt, like every ordinary terminal row.
-    harness.mainInput("interactive");
+    await harness.mainInput("interactive");
     lines = harness.widgetLines();
     assert.equal(lines.length, 0, "no rows remain after the following prompt");
     assert.equal(harness.state.background.jobs.size, 2, "store retention still unchanged");
@@ -470,31 +594,153 @@ test("slash commands, shell commands, drafts, navigation, overlay changes, and s
 
     // The same seam does expire on a real prompt, proving the trace can see
     // the difference.
-    harness.mainInput("interactive");
+    await harness.mainInput("interactive");
     assert.equal(harness.widgetLines().length, 1, "only the active row survives a real prompt");
   } finally {
     harness.cleanup();
   }
 });
 
-test("interactive and rpc prompts advance the epoch; extension sources never do", async () => {
+test("interactive and rpc idle prompts advance at before_agent_start; extension sources never do", async () => {
   const harness = lifecycleHarness();
   try {
     await harness.startSession();
     harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
 
-    harness.mainInput("rpc");
-    assert.equal(harness.widgetLines().length, 0, "an rpc prompt is a real prompt");
+    // Pi emits before_agent_start only after preflight, once the message
+    // array is built — the boundary that proves main accepted the prompt.
+    const outcome = await harness.submitPrompt({ source: "interactive", text: "next task" });
+    assert.equal(outcome, "sent");
+    assert.deepEqual(harness.acceptedPrompts, ["next task"]);
+    assert.equal(harness.widgetLines().length, 0, "an accepted interactive prompt expires the row");
 
-    // A later extension continuation must not expire the next task's rows.
     const later = jobFixture(id(2), "running", 20, "crawler");
     harness.addChild(later);
     finishJob(harness, later, "completed");
     assert.equal(harness.widgetLines().length, 1);
-    harness.mainInput("extension");
-    assert.equal(harness.widgetLines().length, 1, "extension source keeps the current task");
-    harness.mainInput("interactive");
-    assert.equal(harness.widgetLines().length, 0, "interactive expires again");
+    await harness.submitPrompt({ source: "extension", text: "config guide follow-up" });
+    assert.equal(harness.widgetLines().length, 1, "an accepted extension prompt keeps the current task");
+    await harness.submitPrompt({ source: "rpc", text: "rpc task" });
+    assert.equal(harness.widgetLines().length, 0, "an accepted rpc prompt expires again");
+    assert.deepEqual(
+      harness.acceptedPrompts,
+      ["next task", "config guide follow-up", "rpc task"],
+      "all three reached main; only the real ones moved the epoch",
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a later extension returning handled from the input chain never advances the epoch", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+    assert.equal(harness.widgetLines().length, 1);
+
+    // A second extension registered after pi-square answers the input chain
+    // with action:"handled": session.prompt returns before any agent run, so
+    // before_agent_start never fires and the prompt was never submitted.
+    harness.foreignInput.response = { action: "handled" };
+    const outcome = await harness.submitPrompt({ source: "interactive", text: "swallowed prompt" });
+    assert.equal(outcome, "handled");
+    assert.deepEqual(harness.acceptedPrompts, [], "main never accepted the prompt");
+    assert.equal(harness.widgetLines().length, 1, "the terminal row survived the unsubmitted prompt");
+
+    // The same chain with the foreign extension passive advances normally.
+    harness.foreignInput.response = undefined;
+    const second = await harness.submitPrompt({ source: "interactive", text: "real prompt" });
+    assert.equal(second, "sent");
+    assert.equal(harness.widgetLines().length, 0, "the next accepted prompt expires the row");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a transformed prompt still advances when main accepts the transformed text", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    harness.foreignInput.response = { action: "transform", text: "transformed task text" };
+    const outcome = await harness.submitPrompt({ source: "interactive", text: "original text" });
+    assert.equal(outcome, "sent");
+    assert.deepEqual(harness.acceptedPrompts, ["transformed task text"], "the transformed text is what main received");
+    assert.equal(harness.widgetLines().length, 0, "the accepted transformed prompt expires the row");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a prompt that fails preflight never advances the epoch", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    // Pi throws out of session.prompt (no model / auth) before emitting
+    // before_agent_start, so the epoch must not move.
+    const outcome = await harness.submitPrompt({ source: "interactive", preflightFail: true });
+    assert.equal(outcome, "preflight-failed");
+    assert.deepEqual(harness.acceptedPrompts, []);
+    assert.equal(harness.widgetLines().length, 1, "a rejected prompt keeps the preceding task's rows");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a queued real steer advances at its user message_start, not at the input event", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    // While the parent streams, Pi queues the steer without a new
+    // before_agent_start; the input event alone must not expire anything.
+    const queued = await harness.submitPrompt({ source: "interactive", text: "steer please", streamingBehavior: "steer" });
+    assert.equal(queued, "queued");
+    assert.equal(harness.widgetLines().length, 1, "the queued steer did not advance the epoch yet");
+
+    // The running agent drains the queue: the user message_start is the
+    // proof the steer reached main.
+    harness.drainStreamingInput("steer please");
+    assert.equal(harness.widgetLines().length, 0, "the drained real steer expires the row");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a queued extension follow-up never advances at its user message_start", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    const running = jobFixture(id(2), "running", 2, "crawler");
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+    harness.addChild(running);
+
+    harness.pi.sendUserMessage("config guide continuation", { deliverAs: "followUp" });
+    harness.drainStreamingInput("config guide continuation");
+    assert.equal(harness.widgetLines().length, 2, "an extension follow-up never expires rows");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("desynchronized streaming queues never advance the epoch", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    // Beyond the tracking bound the queues are dropped wholesale and marked
+    // desynchronized: a later user message must not guess a source.
+    for (let index = 0; index < 65; index += 1) {
+      await harness.submitPrompt({ source: "interactive", text: `steer ${index}`, streamingBehavior: "steer" });
+    }
+    harness.drainStreamingInput("one of many steers");
+    assert.equal(harness.widgetLines().length, 1, "a desynchronized drain never expires rows");
   } finally {
     harness.cleanup();
   }
@@ -507,7 +753,7 @@ test("a resumed public ID returns to the roster when re-queued and re-joins the 
     harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
     assert.equal(harness.widgetLines().length, 1);
 
-    harness.mainInput("interactive");
+    await harness.mainInput("interactive");
     assert.equal(harness.widgetLines().length, 0, "expired with its task");
 
     // Re-queue under the same public ID, exactly like createQueuedResumeJob.
@@ -528,6 +774,65 @@ test("a resumed public ID returns to the roster when re-queued and re-joins the 
     lines = harness.widgetLines();
     assert.equal(lines.length, 1, "the re-terminalized row joins the current epoch");
     assert.ok(lines[0].includes("✓ completed"));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("expiry that empties the roster drops retained reading state; a returning row starts fresh", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    writeChildArtifacts(harness.root, id(1));
+    writeChildArtifacts(harness.root, id(2));
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+    harness.addChild(jobFixture(id(2), "completed", 2, "crawler"));
+
+    // Open the second child, switch to the first, suspend its tail, and
+    // switch back: the first child now holds retained reading state (#307).
+    const overlay = harness.openChildAt(1);
+    assert.ok(overlay);
+    overlay.handleInput(UP);
+    overlay.handleInput(ENTER);
+    assert.match(harness.overlayText()[0], /^explorer /);
+    overlay.handleInput(PAGE_UP);
+    const suspended = harness.overlayText();
+    assert.ok(!suspended.some((line) => /entry 29/.test(line)), "the suspended view left the tail");
+    assert.ok(suspended.some((line) => /entry (?:0[0-9]|1[0-9])/.test(line)), "the suspended view sits above the newest entries");
+    overlay.handleInput(DOWN);
+    overlay.handleInput(ENTER);
+    assert.match(harness.overlayText()[0], /^crawler /, "switched back to the open child");
+
+    // A real prompt expires both terminal rows: the roster empties while the
+    // overlay stays open on its child.
+    await harness.mainInput("interactive");
+    assert.equal(harness.widgetLines().length, 0, "both rows expired");
+    assert.equal(harness.customs[0].resolved, false, "the overlay stays open");
+
+    // The expired child returns under the same public ID and terminalizes
+    // again inside the current epoch, so its history renders in the overlay.
+    const returning = createQueuedJob({
+      state: harness.state.background,
+      id: id(1),
+      task: "continue the work",
+      cwd: harness.root,
+      parentSessionId: SESSION_ID,
+      promptSnapshot: createPromptSnapshot(),
+    });
+    returning.details.agent.name = "explorer";
+    finishJob(harness, returning, "completed");
+    assert.equal(harness.widgetLines().length, 1, "the returning row is visible again");
+
+    // From the still-open overlay, navigate to it and confirm: the retained
+    // reading state was dropped with the expired row, so the view is fresh —
+    // it follows the tail instead of restoring the suspended position.
+    overlay.handleInput(DOWN);
+    overlay.handleInput(ENTER);
+    assert.match(harness.overlayText()[0], /^explorer /, "the overlay switched to the returning child");
+    const fresh = harness.overlayText();
+    assert.ok(fresh.some((line) => /entry 29/.test(line)), "the fresh view follows the tail");
+    assert.ok(!fresh.some((line) => /entry 0[0-4]/.test(line)), "the suspended early-history position was not restored");
+    assert.ok(!fresh.some((line) => /new output below/.test(line)), "no stale new-output notice survived");
   } finally {
     harness.cleanup();
   }
@@ -620,8 +925,8 @@ test("print, JSON, RPC, and headless contexts create no roster, overlay, listene
 
       const job = jobFixture(id(1), "running", 1, "explorer");
       harness.state.background.jobs.set(job.id, job);
-      harness.mainInput("interactive");
-      harness.mainInput("extension");
+      await harness.mainInput("interactive");
+      await harness.mainInput("extension");
       harness.roster.refresh();
       assert.equal(widgetCalls.length, 0, `${mode}: store changes and input events change nothing`);
     } finally {
@@ -631,6 +936,8 @@ test("print, JSON, RPC, and headless contexts create no roster, overlay, listene
 });
 
 test("interactive regular and fullscreen modes expose the same roster, selection, overlay, scrolling, and replay contract", async () => {
+  const TYPED = "keep working here";
+  const PASTED = "first line\nsecond line";
   async function script(harness) {
     await harness.startSession();
     writeChildArtifacts(harness.root, id(1));
@@ -645,12 +952,26 @@ test("interactive regular and fullscreen modes expose the same roster, selection
     trace.openTitle = harness.overlayText()[0];
     overlay.handleInput(PAGE_UP);
     trace.scrolled = harness.overlayText().some((line) => /earlier lines/.test(line));
-    overlay.handleInput(ESCAPE);
-    overlay.handleInput(ESCAPE);
-    trace.closed = harness.customs[0].resolved;
-    // Ordinary printable input replays into the empty editor without submit.
-    harness.input("h");
-    trace.replay = harness.pastes;
+
+    // Ordinary typed text, delivered to the OPEN overlay, closes it and
+    // replays the complete content into the empty main editor without
+    // submitting anything.
+    const promptsBefore = harness.acceptedPrompts.length;
+    overlay.handleInput(TYPED);
+    trace.typedClosed = harness.customs[0].resolved;
+    trace.typedPastes = [...harness.pastes];
+    trace.typedEditor = harness.editor.text;
+    trace.typedNoSubmit = harness.acceptedPrompts.length === promptsBefore;
+
+    // A paste with newlines behaves the same: full replay, still no submit.
+    harness.editor.text = "";
+    const second = harness.openChildAt(0);
+    assert.ok(second, "the overlay reopens for the paste replay");
+    second.handleInput(`\x1b[200~${PASTED}\x1b[201~`);
+    trace.pastedClosed = harness.customs.at(-1).resolved;
+    trace.pastedPastes = [...harness.pastes];
+    trace.pastedEditor = harness.editor.text;
+    trace.pastedNoSubmit = harness.acceptedPrompts.length === promptsBefore;
     return trace;
   }
   const regularHarness = lifecycleHarness({ tuiMode: "regular" });
@@ -664,12 +985,20 @@ test("interactive regular and fullscreen modes expose the same roster, selection
     regularHarness.cleanup();
     fullscreenHarness.cleanup();
   }
+  for (const trace of [regular, fullscreen]) {
+    assert.equal(trace.typedClosed, true, "typed input closed the overlay");
+    assert.deepEqual(trace.typedPastes, [TYPED], "the complete typed text replayed once");
+    assert.equal(trace.typedEditor, TYPED, "the main editor holds the replayed text");
+    assert.equal(trace.typedNoSubmit, true, "the replayed text was never submitted");
+    assert.equal(trace.pastedClosed, true, "paste closed the overlay");
+    assert.deepEqual(trace.pastedPastes, [TYPED, PASTED], "the complete multiline paste replayed");
+    assert.equal(trace.pastedEditor, PASTED, "the paste kept its newlines");
+    assert.equal(trace.pastedNoSubmit, true, "the pasted text was never submitted");
+  }
   assert.deepEqual(regular.rows, fullscreen.rows, "roster rows are identical");
   assert.deepEqual(regular.selection, fullscreen.selection, "selection is identical");
   assert.equal(regular.openTitle, fullscreen.openTitle, "the open overlay title is identical");
   assert.equal(regular.scrolled, fullscreen.scrolled, "transcript scrolling behaves the same");
-  assert.equal(regular.closed, fullscreen.closed, "overlay close behaves the same");
-  assert.deepEqual(regular.replay, fullscreen.replay, "input replay behaves the same");
   // The mouse wheel is the one compositing difference: pi-tui delivers wheel
   // events to the focused overlay only on the fullscreen alt screen, and the
   // roster never enables mouse tracking itself.
@@ -768,7 +1097,7 @@ test("session shutdown closes the overlay and keeps abort and delivery reset in 
     harness.state.background.delivery.enqueue({ id: id(2), status: "completed", details: finished.details });
     assert.ok(harness.state.background.delivery.pendingCount() >= 1);
 
-    await harness.handlers.get("session_shutdown")({}, harness.ctx);
+    await harness.chain.emit("session_shutdown", {});
 
     assert.equal(harness.customs[0].resolved, true, "shutdown closed the overlay");
     assert.equal(
@@ -812,20 +1141,39 @@ test("the viewer's own teardown never aborts children or resets delivery", async
   }
 });
 
-test("teardown unsubscribes every listener and cancels pending repaint work", async () => {
+test("teardown cancels a pending coalesced repaint and never repaints afterwards", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-square-roster-lifecycle-"));
   const previousAgentDir = process.env.PI_AGENT_DIR;
   process.env.PI_AGENT_DIR = root;
   try {
-    const timers = { pending: new Map(), seq: 0 };
+    writeChildArtifacts(root, id(1));
+    // Timer seam that keeps cancelled entries for inspection: firing the
+    // store after teardown proves a cancelled callback never repaints.
+    const timers = { entries: new Map(), seq: 0 };
     const paintTimers = {
-      setTimeout(callback, ms) { timers.seq += 1; timers.pending.set(timers.seq, callback); return timers.seq; },
-      clearTimeout(handle) { timers.pending.delete(handle); },
+      setTimeout(callback, ms) {
+        timers.seq += 1;
+        timers.entries.set(timers.seq, { callback, cancelled: false, ms });
+        return timers.seq;
+      },
+      clearTimeout(handle) {
+        const entry = timers.entries.get(handle);
+        if (entry) entry.cancelled = true;
+      },
     };
-    const motionSubscribers = { count: 0 };
+    const renders = { count: 0 };
+    const tui = {
+      terminal: { columns: 80, rows: 30 },
+      requestRender() { renders.count += 1; },
+    };
+    const steps = [];
     const state = createBackgroundState();
+    state.viewFeed = createChildViewFeed({ schedule: (callback) => steps.push(callback) });
     const widgets = [];
+    const customs = [];
+    let inputHandler;
     let inputUnsubscribed = false;
+    let motionSubscribers = 0;
     const ctx = {
       mode: "tui",
       hasUI: true,
@@ -834,8 +1182,15 @@ test("teardown unsubscribes every listener and cancels pending repaint work", as
         theme: plainTheme(),
         setWidget(key, content, options) { widgets.push({ key, content, options }); },
         getEditorText: () => "",
-        onTerminalInput() { return () => { inputUnsubscribed = true; }; },
-        custom() { return new Promise(() => {}); },
+        onTerminalInput(handler) {
+          inputHandler = handler;
+          return () => { inputUnsubscribed = true; };
+        },
+        custom(factory, options) {
+          const entry = { resolved: false };
+          customs.push({ entry, component: factory(tui, plainTheme(), { matches: () => false, getKeys: () => [] }, () => { entry.resolved = true; }) });
+          return new Promise(() => {});
+        },
       },
       sessionManager: { getSessionId: () => SESSION_ID, getSessionDir: () => root },
     };
@@ -843,9 +1198,9 @@ test("teardown unsubscribes every listener and cancels pending repaint work", as
       now: () => 500_000,
       motion: () => ({
         subscribe: (listener) => {
-          motionSubscribers.count += 1;
+          motionSubscribers += 1;
           void listener;
-          return () => { motionSubscribers.count -= 1; };
+          return () => { motionSubscribers -= 1; };
         },
       }),
       timers: paintTimers,
@@ -855,13 +1210,43 @@ test("teardown unsubscribes every listener and cancels pending repaint work", as
     for (const listener of state.listeners) listener();
     assert.equal(typeof widgets.at(-1).content, "function", "the running child published a widget");
 
+    // Open the overlay through the real keyboard seam.
+    inputHandler(DOWN);
+    inputHandler(ENTER);
+    assert.ok(customs[0]?.component, "the overlay opened");
+
+    // Two ordinary streaming deltas through the live feed: the first paints
+    // immediately and stamps the coalesce window; the second must leave
+    // exactly one pending repaint timer.
+    const publish = (text) => {
+      state.viewFeed.publish(id(1), { kind: "message_delta", parts: [{ type: "text", text }] });
+      while (steps.length > 0) steps.shift()?.();
+    };
+    const paintedAtOpen = renders.count;
+    publish("first delta");
+    assert.equal(renders.count, paintedAtOpen + 1, "the first delta painted immediately");
+    publish("second delta");
+    const pending = [...timers.entries.values()].filter((entry) => !entry.cancelled);
+    assert.equal(pending.length, 1, "one coalesced repaint timer is pending");
+    assert.equal(renders.count, paintedAtOpen + 1, "the second delta did not paint inside the window");
+
     controller.handleMainInput("interactive");
     controller.stop();
+
+    const pendingAfter = [...timers.entries.values()].filter((entry) => !entry.cancelled);
+    assert.equal(pendingAfter.length, 0, "teardown cancelled the pending repaint");
+    assert.equal(customs[0].entry.resolved, true, "teardown closed the overlay");
     assert.equal(state.listeners.size, 0, "background subscription released");
     assert.equal(inputUnsubscribed, true, "terminal-input listener released");
-    assert.equal(motionSubscribers.count, 0, "motion subscription released");
-    assert.equal(timers.pending.size, 0, "pending repaint work was cancelled");
+    assert.equal(motionSubscribers, 0, "motion subscription released");
     assert.equal(widgets.at(-1).content, undefined, "widget cleared");
+
+    // Let every timer fire as though it had expired: only non-cancelled
+    // entries may run, and none remain, so nothing repaints after teardown.
+    for (const entry of timers.entries.values()) {
+      if (!entry.cancelled) entry.callback();
+    }
+    assert.equal(renders.count, paintedAtOpen + 1, "no repaint ran after teardown");
 
     // A restarted controller opens its first main task with no carried-over
     // expiry: terminal rows of the new session are visible from epoch 1.
@@ -904,7 +1289,7 @@ test("automatic delivery, its confirmation, and expiry stay exact while the view
 
     // The settled idle parent receives the batch through the established path.
     harness.idleRef.value = true;
-    harness.handlers.get("agent_settled")();
+    await harness.chain.emit("agent_settled");
     assert.equal(harness.sent.length, 1, "automatic delivery fired once");
     assert.equal(harness.sent[0].message.customType, NOTIFICATION_TYPE);
     assert.equal(harness.sent[0].message.details.results[0].id, id(1));
@@ -912,19 +1297,17 @@ test("automatic delivery, its confirmation, and expiry stay exact while the view
 
     // Confirmation comes only from the transcript observation: Pi injects the
     // sent custom message into the parent transcript as message_start.
-    harness.handlers.get("message_start")({
-      message: {
-        role: "custom",
-        customType: harness.sent[0].message.customType,
-        details: harness.sent[0].message.details,
-      },
+    harness.chain.emitMessageStart({
+      role: "custom",
+      customType: harness.sent[0].message.customType,
+      details: harness.sent[0].message.details,
     });
     assert.equal(harness.state.background.delivery.pendingCount(), 0, "transcript confirmation consumed the result");
 
     // The delivered row stays visible through the current task, and expires
     // with the next real prompt like every ordinary terminal row.
     assert.ok(harness.widgetLines().some((line) => line.includes("✓ completed")));
-    harness.mainInput("interactive");
+    await harness.mainInput("interactive");
     assert.equal(harness.widgetLines().length, 0);
   } finally {
     harness.cleanup();
@@ -952,7 +1335,7 @@ test("an explicit wait claims, survives viewer use, and consumes the result with
     assert.equal(harness.sent.length, 0, "nothing delivered while the claim is held");
 
     finishJob(harness, running, "completed");
-    harness.handlers.get("agent_settled")();
+    await harness.chain.emit("agent_settled");
     assert.equal(harness.sent.length, 0, "a claimed result is excluded from automatic delivery");
 
     const result = await pending;
@@ -990,7 +1373,7 @@ test("interrupting a wait releases its claims without aborting children while th
     // The released completed result rejoins the automatic schedule.
     finishJob(harness, running, "completed");
     harness.idleRef.value = true;
-    harness.handlers.get("agent_settled")();
+    await harness.chain.emit("agent_settled");
     assert.equal(harness.sent.length, 1, "the released result delivers automatically");
   } finally {
     harness.cleanup();
@@ -1024,7 +1407,7 @@ test("explicit abort stops a viewed child, keeps the overlay open on its final s
     overlay.handleInput(ESCAPE);
     assert.equal(harness.customs[0].resolved, true);
 
-    harness.handlers.get("agent_settled")();
+    await harness.chain.emit("agent_settled");
     assert.equal(harness.sent.length, 0, "an unclaimed aborted result never notifies the parent");
     assert.ok(
       harness.widgetLines().some((line) => line.includes("× aborted")),

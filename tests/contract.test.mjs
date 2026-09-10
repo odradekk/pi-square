@@ -139,10 +139,12 @@ try {
     "pi-square.subagent-config-guide",
     "pi-square.shadow-config-guide",
   ]);
-  // Prompt-manager keeps sole ownership of system-prompt replacement;
-  // shadow-minds' second handler only freezes the per-task snapshot and
-  // never returns a prompt-modifying result (covered by the shadow e2e).
-  assert.equal(events.get("before_agent_start")?.length, 2, "prompt composition has one replacing owner plus one observing owner");
+  // Prompt-manager keeps sole ownership of system-prompt replacement; the
+  // shadow-minds observer only freezes the per-task snapshot and the
+  // subagents observer only commits the roster's main-task visibility epoch
+  // (#308) — neither returns a prompt-modifying result (covered by the
+  // shadow e2e and the roster lifecycle traces).
+  assert.equal(events.get("before_agent_start")?.length, 3, "prompt composition has one replacing owner plus two observing owners");
   assert.deepEqual(
     readdirSync(join(packageRoot, "src", "notifications", "sounds")).sort(),
     ["question_bell.wav", "stop_bell.wav"],
@@ -182,18 +184,21 @@ try {
   }
   assert.deepEqual(activeTools, ["read", "bash"]);
 
-  // shadow-minds registers its snapshot observer before prompt-manager's
-  // replacing handler: the observer returns nothing, the replacer owns the
-  // composed prompt.
-  const [observer, promptHandler] = events.get("before_agent_start");
+  // shadow-minds and subagents register their observers before
+  // prompt-manager's replacing handler: the observers return nothing, the
+  // replacer owns the composed prompt.
+  const beforeAgentHandlers = events.get("before_agent_start");
+  const promptHandler = beforeAgentHandlers.at(-1);
   const nativePrompt = "NATIVE SYSTEM\n\nNATIVE CONTEXT\n";
-  const observed = await observer({
-    type: "before_agent_start",
-    prompt: "hello",
-    systemPrompt: nativePrompt,
-    systemPromptOptions: { cwd: ctx.cwd },
-  }, ctx);
-  assert.equal(observed, undefined, "the shadow observer never modifies prompt composition");
+  for (const observer of beforeAgentHandlers.slice(0, -1)) {
+    const observed = await observer({
+      type: "before_agent_start",
+      prompt: "hello",
+      systemPrompt: nativePrompt,
+      systemPromptOptions: { cwd: ctx.cwd },
+    }, ctx);
+    assert.equal(observed, undefined, "observers never modify prompt composition");
+  }
   const result = await promptHandler({
     type: "before_agent_start",
     prompt: "hello",

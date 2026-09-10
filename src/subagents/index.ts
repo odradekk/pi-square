@@ -128,12 +128,50 @@ export default function registerSubagents(
 
   // Main-task visibility epoch (#308): a real prompt submitted to main —
   // interactive or rpc input, never an extension continuation — expires the
-  // roster's ordinary terminal rows from the preceding task. Pi emits this
-  // event only inside `session.prompt`, after slash-command handling, and
-  // local `!` shell commands never reach it, so no further discrimination is
-  // needed here.
+  // roster's ordinary terminal rows from the preceding task. Pi emits the
+  // `input` event only inside `session.prompt`, after slash-command handling,
+  // and local `!` shell commands never reach it — but the event itself cannot
+  // be the boundary: the extension input chain lets a later handler return
+  // action:"handled" so the prompt never reaches the agent, and a prompt that
+  // fails model/auth preflight never starts a run. The epoch therefore
+  // advances only where main provably accepted the prompt: at
+  // `before_agent_start` for an idle prompt (Pi emits it after preflight, once
+  // the message array is built), and at the user `message_start` for a
+  // steer/follow-up queued during a streaming run — the same commit
+  // discipline the Shadow Minds scheduler uses for its task epochs.
+  let pendingIdleInputSource: "real" | "extension" | undefined;
+  const queuedSteerSources: Array<"real" | "extension"> = [];
+  const queuedFollowUpSources: Array<"real" | "extension"> = [];
+  const STREAMING_INPUT_PAIRS_MAX = 64;
+  let streamingInputDesynchronized = false;
+  let skipInitialUserMessage = false;
   pi.on("input", (event) => {
-    roster.handleMainInput(event?.source);
+    const source = event?.source === "extension" ? "extension" : "real";
+    if (event?.streamingBehavior) {
+      // Pi queues streaming input without a new before_agent_start event and
+      // drains steering messages before follow-ups; keep those identities
+      // separate so mixed real/extension input cannot misclassify.
+      const queue = event.streamingBehavior === "followUp" ? queuedFollowUpSources : queuedSteerSources;
+      if (queue.length >= STREAMING_INPUT_PAIRS_MAX) {
+        streamingInputDesynchronized = true;
+        queuedSteerSources.length = 0;
+        queuedFollowUpSources.length = 0;
+        return;
+      }
+      queue.push(source);
+      return;
+    }
+    // Idle input is only committed at before_agent_start.
+    pendingIdleInputSource = source;
+  });
+
+  pi.on("before_agent_start", () => {
+    const source = pendingIdleInputSource;
+    pendingIdleInputSource = undefined;
+    if (source === "real") roster.handleMainInput("interactive");
+    // The idle prompt's own user message follows immediately; the queued
+    // steer/follow-up commit below must not double-count it.
+    skipInitialUserMessage = true;
   });
 
   // Delivery timing. A running parent receives results at a turn boundary; a
@@ -156,9 +194,18 @@ export default function registerSubagents(
   });
 
   // Delivery confirmation: a result counts as delivered only when Pi injects
-  // the message that carries it into the parent transcript.
+  // the message that carries it into the parent transcript. The same user
+  // message commits a queued streaming input's epoch boundary (#308).
   pi.on("message_start", (event) => {
     delivery.observeMessage(event.message);
+    if (event?.message?.role !== "user") return;
+    if (skipInitialUserMessage) {
+      skipInitialUserMessage = false;
+      return;
+    }
+    if (streamingInputDesynchronized) return;
+    const source = queuedSteerSources.shift() ?? queuedFollowUpSources.shift();
+    if (source === "real") roster.handleMainInput("interactive");
   });
 
   pi.on("session_shutdown", async () => {

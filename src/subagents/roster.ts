@@ -681,18 +681,20 @@ export function createSubagentRosterController(
     const jobs = rosterJobs();
     const rows = rosterRows(visibleRosterJobs());
 
+    // Reading state is retained only for children the roster still shows and
+    // the one still open (#307). The pruning runs in every branch: expiry that
+    // empties the roster (#308) must drop the retained views of children that
+    // left with the preceding task, so a later same-ID row starts fresh.
+    for (const id of childEntries.keys()) {
+      if (id !== openId && !rows.some((row) => row.id === id)) childEntries.delete(id);
+    }
+
     if (rows.length === 0) {
       stopMotion();
       candidateId = undefined;
       syncOverlayCandidate([]);
       context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
       return;
-    }
-
-    // Reading state is retained only for children the roster still shows and
-    // the one still open (#307).
-    for (const id of childEntries.keys()) {
-      if (id !== openId && !rows.some((row) => row.id === id)) childEntries.delete(id);
     }
 
     // Resolve the effective focus before the window moves: a candidate whose
@@ -1102,14 +1104,14 @@ export function createSubagentRosterController(
     stop,
     refresh,
     /**
-     * Visibility-epoch boundary (#308). Pi emits the `input` event only
-     * inside `session.prompt` — after slash-command handling and never for
-     * local `!` shell commands — so this seam sees exactly the prompts that
-     * were really submitted to main. Extension continuations
-     * (`source: "extension"`) are the follow-ups pi-square itself and other
-     * extensions inject; they stay inside the current task. Drafts, roster
-     * navigation, overlay changes, and transcript scrolling never reach this
-     * seam at all.
+     * Visibility-epoch boundary (#308). The registrar calls this only where
+     * main provably accepted a real prompt — `before_agent_start` for an
+     * idle prompt, the user `message_start` for a queued steer/follow-up —
+     * because the `input` event alone cannot prove submission: a later
+     * extension may return action:"handled" from the input chain, and a
+     * preflight failure never starts a run. Slash commands, local `!` shell
+     * commands, and drafts never reach those boundaries; the source check
+     * keeps extension continuations out as defense in depth.
      */
     handleMainInput(source) {
       if (source === "extension") return;
