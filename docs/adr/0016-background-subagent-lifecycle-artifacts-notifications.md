@@ -125,10 +125,20 @@ status: accepted
 > correlates pre-chain observations with accepted user messages by text hash
 > and the native enqueue timestamp, keeps steer and follow-up order separate,
 > and uses Pi's public pending-message signal to discard observations that a
-> later handler consumed. It resets at
-> every run end, new idle run, session start, and session shutdown, so a
-> handled or aborted input cannot contaminate a later run or replacement
-> session. Ordinary terminal
+> later handler consumed. The input observer remains synchronous because Pi
+> determines the event's streaming behavior before the chain and checks the
+> live streaming state again afterward; streaming observations cross that
+> settle boundary until Pi chooses either an idle start or a queued
+> continuation. Pi 0.84.2 exposes
+> neither a post-chain accepted-input event nor source metadata on queued user
+> messages. Same-text observations sharing one native millisecond timestamp —
+> including inputs that a later asynchronous handler reorders or consumes —
+> are therefore not losslessly distinguishable inside an extension. Ordinary
+> interactive submission is serial, and this unsupported collision resolves
+> deterministically to the latest eligible observation. Session replacement
+> and the next provably empty input reset stale observations, so a handled or
+> aborted input cannot contaminate a later run or replacement session.
+> Ordinary terminal
 > rows of the preceding task expire at that boundary, active children survive
 > it and join the current epoch when they later terminalize, a re-queued
 > public ID becomes visible again immediately, and the epoch is presentation

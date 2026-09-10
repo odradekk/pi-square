@@ -21,7 +21,7 @@ interface MainTaskInputCorrelator {
   observeInput(event: MainTaskInputObservation, hasPendingMessages: boolean): void;
   beginAgentRun(): boolean;
   observeUserMessage(message: { content?: unknown; timestamp?: unknown }): boolean;
-  endAgentRun(): void;
+  settleAgent(): void;
   resetSession(): void;
 }
 
@@ -136,6 +136,7 @@ function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
         accepted = candidates.find(({ entry }) => entry.textHash === expectedHash) ?? candidates[0];
       }
       if (accepted === undefined) return false;
+      pendingIdleSource = undefined;
 
       if (accepted.mode === "steer") {
         queuedSteers.splice(0, accepted.index + 1);
@@ -148,7 +149,22 @@ function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
       return accepted.entry.source === "real";
     },
 
-    endAgentRun: reset,
+    settleAgent() {
+      // Pi can settle after it emitted a streaming input event but before
+      // session.prompt re-checks isStreaming. Preserve the newest observation
+      // as the source of that possible idle prompt; an ordinary later idle
+      // input overwrites it before before_agent_start.
+      const latestSteer = queuedSteers.at(-1);
+      const latestFollowUp = queuedFollowUps.at(-1);
+      const latest = latestSteer === undefined || (
+        latestFollowUp !== undefined && latestFollowUp.sequence > latestSteer.sequence
+      ) ? latestFollowUp : latestSteer;
+      pendingIdleSource = latest?.source;
+      // Keep the observations until Pi chooses the other legal branch. An
+      // idle prompt consumes them at before_agent_start; a queued continuation
+      // consumes them at its user message_start.
+      skipInitialUserMessage = false;
+    },
     resetSession: reset,
   };
 }
@@ -161,13 +177,17 @@ export function registerMainTaskInputEvents(pi: ExtensionAPI, onRealInput: () =>
     correlator.resetSession();
   });
   pi.on("input", (event, ctx) => {
+    // This handler must stay synchronous. Pi determines streamingBehavior
+    // before the input chain, then checks its live streaming state again
+    // after the chain; awaiting here could turn an observed steer into an
+    // idle prompt and lose the accepted task boundary.
     correlator.observeInput(event, ctx.hasPendingMessages());
   });
   pi.on("before_agent_start", () => {
     if (correlator.beginAgentRun()) onRealInput();
   });
-  pi.on("agent_end", () => {
-    correlator.endAgentRun();
+  pi.on("agent_settled", () => {
+    correlator.settleAgent();
   });
   pi.on("message_start", (event) => {
     if (event.message.role === "user" && correlator.observeUserMessage(event.message)) {

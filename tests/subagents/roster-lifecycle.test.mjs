@@ -878,6 +878,43 @@ test("native enqueue timestamps isolate handled input while older messages remai
   }
 });
 
+test("streaming input observation stays synchronous across Pi's settle boundary", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+    const inputObserver = harness.handlers.get("input")[0];
+    const result = inputObserver(
+      { type: "input", source: "interactive", text: "settling steer", streamingBehavior: "steer" },
+      { hasPendingMessages: () => false },
+    );
+    assert.equal(result, undefined, "the observer never returns a promise that can outlive streaming");
+
+    // Pi may settle immediately after this synchronous handler, reinterpret
+    // the prompt as idle, and then prove acceptance at before_agent_start.
+    await harness.chain.emit("agent_end", { messages: [] });
+    await harness.chain.emit("agent_settled", { messages: [] });
+    harness.chain.emitBeforeAgentStart();
+    assert.equal(harness.widgetLines().length, 0, "the accepted idle prompt keeps its real source");
+
+    await harness.startSession();
+    inputObserver(
+      { type: "input", source: "interactive", text: "continuing steer", streamingBehavior: "steer" },
+      { hasPendingMessages: () => false },
+    );
+    await harness.chain.emit("agent_end", { messages: [] });
+    // A queued continuation is consumed before Pi emits agent_settled.
+    harness.chain.emitMessageStart({
+      role: "user",
+      content: [{ type: "text", text: "continuing steer" }],
+      timestamp: Date.now(),
+    });
+    assert.equal(harness.widgetLines().length, 0, "the accepted continuation keeps its real source");
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("queued input correlation has no arbitrary observation cap", async () => {
   const harness = lifecycleHarness();
   try {
@@ -903,7 +940,8 @@ test("an aborted run cannot poison later runs or replacement sessions", async ()
     harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
 
     // A later extension swallows this observation. agent_end is the
-    // deterministic recovery boundary after the run is aborted.
+    // next no-pending observation is the deterministic recovery boundary
+    // after the run is aborted.
     harness.foreignInput.response = { action: "handled" };
     await harness.submitPrompt({
       source: "interactive",
@@ -911,6 +949,7 @@ test("an aborted run cannot poison later runs or replacement sessions", async ()
       streamingBehavior: "steer",
     });
     await harness.chain.emit("agent_end", { messages: [] });
+    await harness.chain.emit("agent_settled", { messages: [] });
 
     harness.foreignInput.response = undefined;
     await harness.submitPrompt({
