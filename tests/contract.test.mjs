@@ -139,12 +139,6 @@ try {
     "pi-square.subagent-config-guide",
     "pi-square.shadow-config-guide",
   ]);
-  // Prompt-manager keeps sole ownership of system-prompt replacement; the
-  // shadow-minds observer only freezes the per-task snapshot and the
-  // subagents observer only commits the roster's main-task visibility epoch
-  // (#308) — neither returns a prompt-modifying result (covered by the
-  // shadow e2e and the roster lifecycle traces).
-  assert.equal(events.get("before_agent_start")?.length, 3, "prompt composition has one replacing owner plus two observing owners");
   assert.deepEqual(
     readdirSync(join(packageRoot, "src", "notifications", "sounds")).sort(),
     ["question_bell.wav", "stop_bell.wav"],
@@ -184,33 +178,28 @@ try {
   }
   assert.deepEqual(activeTools, ["read", "bash"]);
 
-  // shadow-minds and subagents register their observers before
-  // prompt-manager's replacing handler: the observers return nothing, the
-  // replacer owns the composed prompt.
+  // Prompt-manager remains the sole owner of system-prompt replacement;
+  // observer count and registration order are intentionally not contractual.
   const beforeAgentHandlers = events.get("before_agent_start");
-  const promptHandler = beforeAgentHandlers.at(-1);
   const nativePrompt = "NATIVE SYSTEM\n\nNATIVE CONTEXT\n";
-  for (const observer of beforeAgentHandlers.slice(0, -1)) {
-    const observed = await observer({
+  const beforeAgentResults = [];
+  for (const handler of beforeAgentHandlers) {
+    const observed = await handler({
       type: "before_agent_start",
       prompt: "hello",
       systemPrompt: nativePrompt,
-      systemPromptOptions: { cwd: ctx.cwd },
+      systemPromptOptions: {
+        customPrompt: "NATIVE SYSTEM",
+        appendSystemPrompt: "NATIVE APPEND",
+        contextFiles: [{ path: "/project/AGENTS.md", content: "NATIVE CONTEXT" }],
+        cwd: ctx.cwd,
+        skills: [],
+      },
     }, ctx);
-    assert.equal(observed, undefined, "observers never modify prompt composition");
+    if (observed !== undefined) beforeAgentResults.push(observed);
   }
-  const result = await promptHandler({
-    type: "before_agent_start",
-    prompt: "hello",
-    systemPrompt: nativePrompt,
-    systemPromptOptions: {
-      customPrompt: "NATIVE SYSTEM",
-      appendSystemPrompt: "NATIVE APPEND",
-      contextFiles: [{ path: "/project/AGENTS.md", content: "NATIVE CONTEXT" }],
-      cwd: ctx.cwd,
-      skills: [],
-    },
-  }, ctx);
+  assert.equal(beforeAgentResults.length, 1, "prompt composition has exactly one replacing owner");
+  const [result] = beforeAgentResults;
   assert.equal(result.systemPrompt.slice(0, nativePrompt.length), nativePrompt);
   assert.match(result.systemPrompt.slice(nativePrompt.length), /Available YAML-defined subagents/);
   console.log("extension contract tests: OK");

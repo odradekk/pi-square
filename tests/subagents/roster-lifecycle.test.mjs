@@ -38,7 +38,7 @@ const { createDeliveryController } = deliveryModule;
 const { createSubagentBlockingCallRegistry } = waitModule;
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
 const { createChildViewFeed } = liveEventsModule;
-const { createMainTaskInputCorrelator } = mainTaskInputModule;
+const { registerMainTaskInputEvents } = mainTaskInputModule;
 
 const { initTheme } = await import("@earendil-works/pi-coding-agent");
 initTheme();
@@ -153,6 +153,8 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   // short-circuits the chain so session.prompt never sends the prompt, and
   // action:"transform" rewrites the text later handlers see.
   const handlers = new Map();
+  let queuedStreamingMessages = 0;
+  const extensionCtx = { hasPendingMessages: () => queuedStreamingMessages > 0 };
   const chain = {
     on(event, handler) {
       const list = handlers.get(event) ?? [];
@@ -168,7 +170,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
           text: currentText,
           source,
           ...(streamingBehavior ? { streamingBehavior } : {}),
-        })) ;
+        }, extensionCtx)) ;
         if (result?.action === "handled") return { action: "handled" };
         if (result?.action === "transform") currentText = result.text;
       }
@@ -176,17 +178,17 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
         ? { action: "transform", text: currentText }
         : { action: "continue" };
     },
-    async emit(event, payload) {
-      for (const handler of handlers.get(event) ?? []) await handler(payload);
+    async emit(event, payload, ctxArg = extensionCtx) {
+      for (const handler of handlers.get(event) ?? []) await handler(payload, ctxArg);
     },
     emitMessageStart(message) {
       for (const handler of handlers.get("message_start") ?? []) {
-        handler({ type: "message_start", message });
+        handler({ type: "message_start", message }, extensionCtx);
       }
     },
     emitBeforeAgentStart() {
       for (const handler of handlers.get("before_agent_start") ?? []) {
-        handler({ type: "before_agent_start" }, undefined);
+        handler({ type: "before_agent_start" }, extensionCtx);
       }
     },
   };
@@ -244,32 +246,19 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   registerSubagentTool(pi, state, undefined, blockingCallRegistry);
   registerSubagentManager(pi, state, undefined);
 
-  // The same event wiring src/subagents/index.ts installs, through the shared
-  // source correlator rather than a test-owned copy of its state machine.
-  const mainTaskInput = createMainTaskInputCorrelator();
-  pi.on("input", (event) => {
-    mainTaskInput.observeInput(event);
-  });
-  pi.on("before_agent_start", () => {
-    if (mainTaskInput.beginAgentRun()) roster.handleMainInput("interactive");
-  });
+  // Exercise the production event registrar rather than copying its ordering.
+  registerMainTaskInputEvents(pi, () => roster.handleMainInput("interactive"));
   pi.on("agent_start", () => { delivery.handleAgentStart(); });
   pi.on("turn_end", (event) => { delivery.handleTurnEnd(event?.message); });
-  pi.on("agent_end", (event) => {
-    mainTaskInput.endAgentRun();
-    delivery.handleAgentEnd(event?.messages);
-  });
+  pi.on("agent_end", (event) => { delivery.handleAgentEnd(event?.messages); });
   pi.on("agent_settled", () => { delivery.handleAgentSettled(); });
   pi.on("message_start", (event) => {
     delivery.observeMessage(event?.message);
-    if (event?.message?.role !== "user") return;
-    if (mainTaskInput.observeUserMessage(event.message.content)) roster.handleMainInput("interactive");
   });
   // The foreign extension registers after pi-square, so its input response
   // applies later in the chain — the position a real second extension has.
   chain.on("input", () => foreignInput.response ?? undefined);
   pi.on("session_shutdown", async () => {
-    mainTaskInput.resetSession();
     state.background.viewFeed?.clear();
     roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");
@@ -323,7 +312,8 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   };
 
   const startSession = async (sessionCtx = ctx) => {
-    mainTaskInput.resetSession();
+    queuedStreamingMessages = 0;
+    await chain.emit("session_start", { type: "session_start", reason: "startup" }, sessionCtx);
     state.sessionCtx = sessionCtx;
     blockingCallRegistry.terminateAll("session replaced");
     delivery.reset();
@@ -384,7 +374,10 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     } = options;
     const result = await chain.emitInput(text, source, streamingBehavior);
     if (result.action === "handled") return "handled";
-    if (streamingBehavior) return "queued";
+    if (streamingBehavior) {
+      queuedStreamingMessages += 1;
+      return "queued";
+    }
     if (preflightFail) return "preflight-failed";
     acceptedPrompts.push(result.action === "transform" ? result.text : text);
     chain.emitBeforeAgentStart();
@@ -397,6 +390,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   };
   /** Drains one queued streaming input the way the running agent does. */
   const drainStreamingInput = (text = "queued steering text") => {
+    queuedStreamingMessages = Math.max(0, queuedStreamingMessages - 1);
     chain.emitMessageStart({
       role: "user",
       content: [{ type: "text", text }],
@@ -783,8 +777,8 @@ test("a handled streaming input cannot contaminate the next accepted queued mess
     harness.drainStreamingInput("accepted real follow-up");
     assert.equal(harness.widgetLines().length, 0, "the accepted real follow-up advances the epoch");
 
-    // Equal text from conflicting sources cannot be disambiguated through
-    // Pi's public events. The safe outcome is to retain the row for this run.
+    // Even equal text cannot contaminate the next accepted message when Pi's
+    // pending-message signal proves the earlier observation was handled.
     await harness.startSession();
     harness.foreignInput.response = { action: "handled" };
     await harness.submitPrompt({
@@ -799,56 +793,54 @@ test("a handled streaming input cannot contaminate the next accepted queued mess
       streamingBehavior: "steer",
     });
     harness.drainStreamingInput("identical queued input");
-    assert.equal(harness.widgetLines().length, 1, "ambiguous equal text fails closed");
+    assert.equal(harness.widgetLines().length, 1, "the accepted extension message keeps the row");
   } finally {
     harness.cleanup();
   }
 });
 
-test("desynchronized streaming queues never advance the epoch", async () => {
+test("queued input correlation has no arbitrary observation cap", async () => {
   const harness = lifecycleHarness();
   try {
     await harness.startSession();
     harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
 
-    // Beyond the tracking bound the queues are dropped wholesale and marked
-    // desynchronized: a later user message must not guess a source.
+    // Pi itself owns queue capacity. The presentation correlator must not
+    // silently stop recognizing accepted real prompts at a separate bound.
     for (let index = 0; index < 65; index += 1) {
       await harness.submitPrompt({ source: "interactive", text: `steer ${index}`, streamingBehavior: "steer" });
     }
-    harness.drainStreamingInput("one of many steers");
-    assert.equal(harness.widgetLines().length, 1, "a desynchronized drain never expires rows");
+    harness.drainStreamingInput("steer 0");
+    assert.equal(harness.widgetLines().length, 0, "the first of 65 accepted real steers still advances the epoch");
   } finally {
     harness.cleanup();
   }
 });
 
-test("an aborted or desynchronized run cannot poison later runs or replacement sessions", async () => {
+test("an aborted run cannot poison later runs or replacement sessions", async () => {
   const harness = lifecycleHarness();
   try {
     await harness.startSession();
     harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
 
-    // Overflow forces fail-closed correlation for this run. agent_end is the
-    // deterministic recovery boundary after an abort.
-    for (let index = 0; index < 65; index += 1) {
-      await harness.submitPrompt({
-        source: "interactive",
-        text: `overflow ${index}`,
-        streamingBehavior: "steer",
-      });
-    }
-    harness.drainStreamingInput("overflow 0");
-    assert.equal(harness.widgetLines().length, 1, "the desynchronized run fails closed");
+    // A later extension swallows this observation. agent_end is the
+    // deterministic recovery boundary after the run is aborted.
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({
+      source: "interactive",
+      text: "swallowed before abort",
+      streamingBehavior: "steer",
+    });
     await harness.chain.emit("agent_end", { messages: [] });
 
+    harness.foreignInput.response = undefined;
     await harness.submitPrompt({
       source: "interactive",
       text: "real after abort",
       streamingBehavior: "steer",
     });
     harness.drainStreamingInput("real after abort");
-    assert.equal(harness.widgetLines().length, 0, "agent_end restores correlation for the next run");
+    assert.equal(harness.widgetLines().length, 0, "agent_end discards the aborted run's observation");
 
     // A replacement session must also discard a swallowed source left by its
     // predecessor rather than applying it to a new-session extension message.

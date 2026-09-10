@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type InputSource = "real" | "extension";
 type StreamingMode = "steer" | "followUp";
@@ -8,21 +9,19 @@ interface StreamingInput {
   textHash: string;
 }
 
-export interface MainTaskInputObservation {
+interface MainTaskInputObservation {
   source?: unknown;
   text?: unknown;
   streamingBehavior?: unknown;
 }
 
-export interface MainTaskInputCorrelator {
-  observeInput(event: MainTaskInputObservation): void;
+interface MainTaskInputCorrelator {
+  observeInput(event: MainTaskInputObservation, hasPendingMessages: boolean): void;
   beginAgentRun(): boolean;
   observeUserMessage(content: unknown): boolean;
   endAgentRun(): void;
   resetSession(): void;
 }
-
-const MAX_STREAMING_INPUTS = 64;
 
 function inputSource(source: unknown): InputSource {
   return source === "extension" ? "extension" : "real";
@@ -47,26 +46,18 @@ function messageText(content: unknown): string {
  * Correlates Pi's pre-chain input source with the user message that the agent
  * actually accepts. Pi exposes no post-input-chain event for streaming input:
  * a later extension can handle an input after this extension observed it, so
- * correlation uses the bounded text hash and fails closed on ambiguity.
+ * correlation combines text hashes with Pi's public pending-message signal.
  */
-export function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
+function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
   let pendingIdleSource: InputSource | undefined;
   const queuedSteers: StreamingInput[] = [];
   const queuedFollowUps: StreamingInput[] = [];
-  let streamingDesynchronized = false;
   let skipInitialUserMessage = false;
 
   const clearStreaming = () => {
     queuedSteers.length = 0;
     queuedFollowUps.length = 0;
-    streamingDesynchronized = false;
     skipInitialUserMessage = false;
-  };
-
-  const failClosed = () => {
-    queuedSteers.length = 0;
-    queuedFollowUps.length = 0;
-    streamingDesynchronized = true;
   };
 
   const reset = () => {
@@ -75,7 +66,7 @@ export function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
   };
 
   return {
-    observeInput(event) {
+    observeInput(event, hasPendingMessages) {
       const mode: StreamingMode | undefined = event.streamingBehavior === "followUp"
         ? "followUp"
         : event.streamingBehavior === "steer"
@@ -86,11 +77,9 @@ export function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
         pendingIdleSource = source;
         return;
       }
-      if (streamingDesynchronized) return;
-      if (queuedSteers.length + queuedFollowUps.length >= MAX_STREAMING_INPUTS) {
-        failClosed();
-        return;
-      }
+      // If Pi has no queued messages before this input, every earlier
+      // observation was either handled downstream or already drained.
+      if (!hasPendingMessages) clearStreaming();
       const queue = mode === "followUp" ? queuedFollowUps : queuedSteers;
       queue.push({ source, textHash: textHash(String(event.text ?? "")) });
     },
@@ -110,7 +99,6 @@ export function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
         skipInitialUserMessage = false;
         return false;
       }
-      if (streamingDesynchronized) return false;
 
       const expectedHash = textHash(messageText(content));
       const steerMatches = queuedSteers
@@ -121,22 +109,11 @@ export function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
         .filter(({ entry }) => entry.textHash === expectedHash);
       const matches = [...steerMatches, ...followUpMatches];
       if (matches.length === 0) {
-        const pending = [...queuedSteers, ...queuedFollowUps];
-        if (pending.length === 0) return false;
-        // A later handler may have transformed the accepted text. When every
-        // possible record has the same source, the epoch decision remains
-        // exact even though its queue position does not; consume no guess and
-        // fail closed only for subsequent messages in this run. Mixed sources
-        // are indistinguishable and therefore never advance the epoch.
-        const sources = new Set(pending.map(({ source }) => source));
-        failClosed();
-        return sources.size === 1 && pending[0]!.source === "real";
-      }
-      if (new Set(matches.map(({ entry }) => entry.source)).size !== 1) {
-        // Equal text from conflicting sources is indistinguishable through
-        // Pi's public events. Never guess a real-user boundary.
-        failClosed();
-        return false;
+        // A later handler transformed the text. Pi drains steering before
+        // follow-ups and preserves FIFO order within each queue, so the next
+        // recorded source is the only public correlation available.
+        const transformed = queuedSteers.shift() ?? queuedFollowUps.shift();
+        return transformed?.source === "real";
       }
 
       const steer = steerMatches[0];
@@ -155,4 +132,30 @@ export function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
     endAgentRun: reset,
     resetSession: reset,
   };
+}
+
+/** Registers the complete public-event seam for main-task epoch boundaries. */
+export function registerMainTaskInputEvents(pi: ExtensionAPI, onRealInput: () => void): void {
+  const correlator = createMainTaskInputCorrelator();
+
+  pi.on("session_start", () => {
+    correlator.resetSession();
+  });
+  pi.on("input", (event, ctx) => {
+    correlator.observeInput(event, ctx.hasPendingMessages());
+  });
+  pi.on("before_agent_start", () => {
+    if (correlator.beginAgentRun()) onRealInput();
+  });
+  pi.on("agent_end", () => {
+    correlator.endAgentRun();
+  });
+  pi.on("message_start", (event) => {
+    if (event.message.role === "user" && correlator.observeUserMessage(event.message.content)) {
+      onRealInput();
+    }
+  });
+  pi.on("session_shutdown", () => {
+    correlator.resetSession();
+  });
 }

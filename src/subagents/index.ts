@@ -13,7 +13,7 @@ import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
 import { registerSubagentManager } from "./manager";
-import { createMainTaskInputCorrelator } from "./main-task-input";
+import { registerMainTaskInputEvents } from "./main-task-input";
 import { createSubagentRosterController } from "./roster";
 import { anchoredEditingEnabled, registerSubagentTool, type SubagentRuntimeState } from "./tool";
 import { decorateSubagentTool } from "./display-adapter";
@@ -85,7 +85,7 @@ export default function registerSubagents(
         display: () => typeof runtime === "function" ? runtime() : runtime,
       },
   );
-  const mainTaskInput = createMainTaskInputCorrelator();
+  registerMainTaskInputEvents(pi, () => roster.handleMainInput("interactive"));
 
   registerSubagentTool(
     pi,
@@ -96,7 +96,6 @@ export default function registerSubagents(
   registerSubagentManager(pi, state, runtime);
 
   pi.on("session_start", async (_event, ctx) => {
-    mainTaskInput.resetSession();
     state.sessionCtx = ctx;
     state.inheritedSystemCore = undefined;
     blockingCallRegistry.terminateAll("session replaced");
@@ -142,14 +141,6 @@ export default function registerSubagents(
   // the message array is built), and at the user `message_start` for a
   // steer/follow-up queued during a streaming run — the same commit
   // discipline the Shadow Minds scheduler uses for its task epochs.
-  pi.on("input", (event) => {
-    mainTaskInput.observeInput(event);
-  });
-
-  pi.on("before_agent_start", () => {
-    if (mainTaskInput.beginAgentRun()) roster.handleMainInput("interactive");
-  });
-
   // Delivery timing. A running parent receives results at a turn boundary; a
   // parent that settled naturally receives them at once; a parent that the
   // user interrupted stays silent until it starts its next turn.
@@ -162,7 +153,6 @@ export default function registerSubagents(
   });
 
   pi.on("agent_end", (event) => {
-    mainTaskInput.endAgentRun();
     delivery.handleAgentEnd(event.messages);
   });
 
@@ -175,14 +165,9 @@ export default function registerSubagents(
   // message commits a queued streaming input's epoch boundary (#308).
   pi.on("message_start", (event) => {
     delivery.observeMessage(event.message);
-    if (event?.message?.role !== "user") return;
-    if (mainTaskInput.observeUserMessage(event.message.content)) {
-      roster.handleMainInput("interactive");
-    }
   });
 
   pi.on("session_shutdown", async () => {
-    mainTaskInput.resetSession();
     state.background.viewFeed?.clear();
     roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");
