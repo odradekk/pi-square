@@ -35,7 +35,7 @@ import {
 } from "./live-events";
 
 /**
- * Read-only child transcript viewer (odradekk/pi-square#304, #305, #306).
+ * Read-only child transcript viewer (odradekk/pi-square#304, #305, #306, #307).
  *
  * The viewer is one presentation-only projection of a background child. It
  * reads the child's validated native session artifacts through the same
@@ -74,10 +74,28 @@ import {
  * first with fingerprints the omission state keeps visible until persisted
  * history actually recovers them. The overlay owns no
  * timer and never repaints on its own for live events — the controller owns
- * the one coalesced repaint timer. Cross-child navigation and per-child
- * reading state remain later slices of #302, and the overlay remains a plugin
+ * the one coalesced repaint timer.
+ *
+ * Since #307 the overlay also carries the cross-child reading experience:
+ * Up/Down move a roster candidate, Enter re-points this same overlay at the
+ * candidate child without stacking or returning to main, and Escape cancels a
+ * changed candidate before it ever closes the overlay. Transcript scrolling
+ * (PageUp/PageDown/Home/End and the mouse wheel) stays separate from roster
+ * navigation. Tail-following is an explicit per-child flag no render
+ * overwrites with a finite offset: the first open follows sustained live and
+ * persisted growth, an upward scroll suspends following with the position
+ * anchored on its stable transcript entry (width changes re-wrap without
+ * jumping to another entry), unseen growth below sets a visible new-output
+ * state that only End clears, and Pi's effective expand-tools shortcut
+ * toggles only this overlay's tool rows — a collapsed row stays one line
+ * while an expanded row reveals its bounded sanitized result projection.
+ * Scroll, follow, notice, and tool-expansion state are per-child controller
+ * state restored across direct switches. The overlay remains a plugin
  * projection — not Pi's private native transcript pipeline.
  */
+
+/** Lines one mouse-wheel notch scrolls; terminals commonly report three per notch. */
+const WHEEL_SCROLL_LINES = 3;
 
 /** Overlay rows that are chrome: title, two rules, and the help row. */
 const OVERLAY_CHROME_ROWS = 4;
@@ -86,6 +104,25 @@ const SMALL_TERMINAL_COLUMNS = 60;
 const SMALL_TERMINAL_ROWS = 16;
 /** Bounded page loads one Home/End press may chain toward a file edge. */
 const EDGE_LOAD_PAGES_PER_PRESS = 8;
+
+/**
+ * SGR/X10 mouse-wheel sequences, the same shapes pi-tui's alt-screen viewport
+ * parses. In fullscreen TUI mode the alt screen defers wheel events to the
+ * focused overlay; inline regular mode enables no mouse tracking, so the
+ * wheel keeps scrolling the native scrollback there.
+ */
+const SGR_MOUSE_WHEEL = /^\x1b\[<(64|65);\d+;\d+[Mm]$/;
+
+function wheelDelta(data: string): -1 | 1 | undefined {
+  const sgr = SGR_MOUSE_WHEEL.exec(data);
+  if (sgr) return sgr[1] === "64" ? -1 : 1;
+  if (data.length === 6 && data.startsWith("\x1b[M")) {
+    const button = data.charCodeAt(3) - 32;
+    if (button === 64) return -1;
+    if (button === 65) return 1;
+  }
+  return undefined;
+}
 
 export type { ChildHistoryView, ChildHistorySnapshot, TranscriptItem } from "./child-history";
 export { createChildHistory, projectSessionEntries, staticChildHistory } from "./child-history";
@@ -96,18 +133,31 @@ export type ViewerInput =
   | { kind: "close" }
   | { kind: "replay"; text: string }
   | { kind: "scroll"; delta: -1 | 1 }
+  | { kind: "wheel"; delta: -1 | 1 }
   | { kind: "jump"; to: "start" | "end" }
+  | { kind: "candidate"; delta: -1 | 1 }
+  | { kind: "confirm" }
+  | { kind: "expand" }
   | { kind: "ignore" };
+
+/** The slice of Pi's keybinding manager the overlay consumes. */
+export interface ViewerKeybindings {
+  matches(data: string, keybinding: string): boolean;
+  /** Effective key labels for help text, when the manager exposes them. */
+  getKeys?(keybinding: string): string[];
+}
 
 /**
  * Classifies one raw terminal input event for the capturing overlay. Escape
  * closes; complete printable, paste, and composed-IME content replays into
  * the main editor; Backspace and Delete against the empty editor stay no-ops;
- * PageUp/PageDown/Home/End scroll the bounded transcript; and every other key
- * (arrows, Enter, shortcuts, modified keys) is suppressed so no Pi
- * application shortcut fires through the overlay.
+ * PageUp/PageDown/Home/End and the mouse wheel scroll the bounded transcript;
+ * Up/Down move the roster candidate and Enter confirms it; Pi's effective
+ * expand-tools shortcut toggles this overlay's tool rows; and every other key
+ * (left/right, shortcuts, modified keys) is suppressed so no Pi application
+ * shortcut fires through the overlay.
  */
-export function classifyViewerInput(data: string): ViewerInput {
+export function classifyViewerInput(data: string, keybindings?: ViewerKeybindings): ViewerInput {
   if (data === "" || isKeyRelease(data)) return { kind: "ignore" };
   const paste = /\x1b\[200~([\s\S]*?)(?:\x1b\[201~|$)/.exec(data);
   if (paste) {
@@ -120,10 +170,13 @@ export function classifyViewerInput(data: string): ViewerInput {
   if (matchesKey(data, "pageDown")) return { kind: "scroll", delta: 1 };
   if (matchesKey(data, "home")) return { kind: "jump", to: "start" };
   if (matchesKey(data, "end")) return { kind: "jump", to: "end" };
-  if (
-    matchesKey(data, "up") || matchesKey(data, "down")
-    || matchesKey(data, "left") || matchesKey(data, "right")
-  ) return { kind: "ignore" };
+  if (matchesKey(data, "up")) return { kind: "candidate", delta: -1 };
+  if (matchesKey(data, "down")) return { kind: "candidate", delta: 1 };
+  if (matchesKey(data, "enter")) return { kind: "confirm" };
+  if (keybindings !== undefined && keybindings.matches(data, "app.tools.expand")) return { kind: "expand" };
+  if (matchesKey(data, "left") || matchesKey(data, "right")) return { kind: "ignore" };
+  const wheel = wheelDelta(data);
+  if (wheel !== undefined) return { kind: "wheel", delta: wheel };
   const kitty = decodeKittyPrintable(data);
   if (kitty !== undefined && kitty !== "") return { kind: "replay", text: kitty };
   if (!data.includes("\x1b") && data.charCodeAt(0) >= 32) return { kind: "replay", text: data };
@@ -178,6 +231,8 @@ export function childOverlayOptions(tui: TUI): OverlayOptions {
 
 export interface ChildOverlayModel {
   role: string;
+  /** Complete public child ID; identity for per-child reading state. */
+  id: string;
   /** Collision-safe public-ID prefix computed for the current roster. */
   idLabel: string;
   lifecycleLabel: string;
@@ -190,6 +245,30 @@ export interface ChildOverlayModel {
   history: ChildHistoryView;
 }
 
+export interface ChildOverlayCandidate {
+  /** Complete public ID of the tentative roster candidate. */
+  id: string;
+  role: string;
+  /** Collision-safe public-ID prefix computed for the current roster. */
+  idLabel: string;
+}
+
+/**
+ * One child's retained reading state (#307). `following` is the explicit
+ * tail-follow flag, decoupled from the numeric visual-line offset: the offset
+ * alone cannot represent "keep following new content" once a render resolves
+ * the tail to a finite position, and growth must not silently strand a
+ * following view at a stale offset.
+ */
+export interface ChildReadingState {
+  /** Visual-line offset; `Number.POSITIVE_INFINITY` while following the tail. */
+  scrollTop: number;
+  following: boolean;
+  toolsExpanded: boolean;
+  /** Unseen output below a suspended viewport; restored across switches. */
+  newOutput: boolean;
+}
+
 export interface ChildOverlayInput {
   tui: TUI;
   theme: Theme;
@@ -198,10 +277,21 @@ export interface ChildOverlayInput {
   now?: () => number;
   /** Active display runtime; absent only in isolated fallback/test rendering. */
   display?: Pick<DisplayRuntime, "createComponent" | "subscribeMotion">;
+  /**
+   * Pi's effective keybindings from the custom-overlay factory; supplies the
+   * expand-tools shortcut (#307). Absent in isolated component tests.
+   */
+  keybindings?: ViewerKeybindings;
   /** Escape path: close, clear selection, and return focus to main. */
   onClose(): void;
   /** Replay path: close, then place the complete text in the empty editor. */
   onReplay(text: string): void;
+  /** Roster navigation (#307): move the tentative candidate one row. */
+  onNavigate?(delta: -1 | 1): void;
+  /** Enter with a tentative candidate (#307): re-point this overlay at it. */
+  onConfirm?(): void;
+  /** Escape with a changed candidate (#307): cancel it and keep this overlay. */
+  onCancelCandidate?(): void;
 }
 
 function emptyStateLine(
@@ -278,6 +368,26 @@ type LiveItem =
 /** Hard bound on tracked drop fingerprints before the marker stops clearing. */
 const MAX_DROPPED_FINGERPRINTS = 64;
 
+/**
+ * Anchor for width-change remapping (#307): the stable item key containing a
+ * visual-line offset plus the offset within that item's rendered block.
+ */
+function anchorForScroll(model: LineModel, scrollTop: number): { key: string; offset: number } | undefined {
+  if (model.keys.length === 0) return undefined;
+  let index = model.starts.findIndex((start) => start > scrollTop) - 1;
+  if (index < 0) index = 0; // the offset sits in the leading edge indicator: anchor the first item
+  return { key: model.keys[index]!, offset: Math.max(0, scrollTop - model.starts[index]!) };
+}
+
+/** Resolves an anchor inside a rebuilt model; undefined when its item left the window. */
+function scrollForAnchor(model: LineModel, anchor: { key: string; offset: number }): number | undefined {
+  const index = model.keys.indexOf(anchor.key);
+  if (index < 0) return undefined;
+  const start = model.starts[index]!;
+  const end = index + 1 < model.starts.length ? model.starts[index + 1]! : model.lines.length;
+  return start + Math.min(anchor.offset, Math.max(0, end - start - 1));
+}
+
 /** Stable identity of one persisted transcript item inside the loaded window. */
 function persistedItemIdentity(item: TranscriptItem, index: number): string {
   return item.entryId !== undefined && item.entryId !== ""
@@ -335,6 +445,39 @@ function contentKey(content: unknown): string {
 }
 
 /**
+ * Composes the tentative-candidate footer (#307) under explicit budgets: the
+ * hints drop first, then the candidate role truncates, and the unique ID is
+ * the last thing to shrink — a narrow width with a long role can never hide
+ * which child Enter would open.
+ */
+function candidateFooterText(
+  candidate: ChildOverlayCandidate,
+  openRole: string,
+  width: number,
+): string {
+  const prefix = "candidate ";
+  const identity = `${prefix}${candidate.role} ${candidate.idLabel}`;
+  const hints = [
+    ` · enter opens · esc keeps ${openRole}`,
+    " · enter opens · esc",
+    " · enter",
+    "",
+  ];
+  for (const hint of hints) {
+    if (visibleWidth(identity) + visibleWidth(hint) <= width) return identity + hint;
+  }
+  const floor = `${prefix}${candidate.idLabel} · enter`;
+  // The role sits before the ID with one separator space; the floor form
+  // already accounts for every other column.
+  const roleBudget = width - visibleWidth(floor) - 1;
+  if (roleBudget >= 1) {
+    return `${prefix}${truncateToWidth(candidate.role, roleBudget, "…")} ${candidate.idLabel} · enter`;
+  }
+  const bare = `${prefix}${candidate.idLabel}`;
+  return visibleWidth(bare) <= width ? bare : candidate.idLabel;
+}
+
+/**
  * The capturing overlay component: one title row, one bounded scrollable
  * transcript body, and one help row between quiet rules. Item components and
  * the flattened scroll space are cached by width and history version; the
@@ -356,11 +499,24 @@ export class ChildTranscriptOverlay implements Component {
   private live = emptyLiveTail();
   /** Highest pre-append history floor received; duplicate/stale events fail closed. */
   private latestMessageFloor = -1;
+  /** Tentative roster candidate while the overlay owns input (#307). */
+  private candidate: ChildOverlayCandidate | undefined;
+  /** Unseen live or persisted output below a suspended-tail viewport (#307). */
+  private newOutput = false;
+  /** Tool-row expansion state for this overlay; controller state per child. */
+  private toolsExpanded = false;
+  /**
+   * Explicit tail-follow state (#307): true while the view pins to the newest
+   * content. Renders never write a finite offset back while it is set, so
+   * growth keeps a following view at the tail instead of stranding it.
+   */
+  private following = true;
   private cache: {
     width: number;
     columns: number;
     rows: number;
     scrollTop: number;
+    following: boolean;
     version: number;
     lines: string[];
   } | undefined;
@@ -424,9 +580,16 @@ export class ChildTranscriptOverlay implements Component {
               ? { summary: "Completed" }
               : {}),
           ...(item.durationMs !== undefined ? { durationMs: item.durationMs } : {}),
+          // Expanded evidence through the public adapter contract (#307): the
+          // bounded sanitized result projection renders as evidence rows only
+          // while the row is expanded — the collapsed row stays exactly one
+          // line. The display module owns wrapping, indent, and budgets.
+          ...(item.output !== undefined && item.output !== ""
+            ? { rows: [{ text: item.output }] }
+            : {}),
         };
-        return [this.input.display?.createComponent(description, this.theme, { expanded: false })
-          ?? new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, this.theme, { expanded: false })];
+        return [this.input.display?.createComponent(description, this.theme, { expanded: this.toolsExpanded })
+          ?? new OperationalDisplayComponent(description, DEFAULT_DISPLAY_POLICY, this.theme, { expanded: this.toolsExpanded })];
       }
       default:
         return [this.genericTextComponent(item.text)];
@@ -535,8 +698,21 @@ export class ChildTranscriptOverlay implements Component {
     if (this.lineModel !== undefined && this.lineModel.width === width && this.lineModel.version === this.version) {
       return this.lineModel.model;
     }
+    // A width change re-wraps every item, so a numeric visual-line offset can
+    // land on a different transcript entry. Re-anchor the offset on the stable
+    // item identity first (#307): the entry at the viewport top stays at the
+    // top across narrow/wide round trips.
+    const previous = this.lineModel;
+    const anchor = previous !== undefined && previous.width !== width && !this.following
+      && Number.isFinite(this.scrollTop)
+      ? anchorForScroll(previous.model, this.scrollTop)
+      : undefined;
     const model = this.buildLineModel(width);
     this.lineModel = { width, version: this.version, model };
+    if (anchor !== undefined) {
+      const remapped = scrollForAnchor(model, anchor);
+      if (remapped !== undefined) this.scrollTop = remapped;
+    }
     return model;
   }
 
@@ -604,15 +780,19 @@ export class ChildTranscriptOverlay implements Component {
     return streaming !== undefined && streaming.length > 0;
   }
 
-  /** Whether the viewport currently sits at the bottom of the scroll space. */
-  private isAtTail(): boolean {
-    if (!Number.isFinite(this.scrollTop) || this.lastWidth === undefined) return true;
-    try {
-      const model = this.lineModelFor(this.lastWidth);
-      return this.scrollTop >= this.resolveViewport(model, this.bodyBudget()).maxScroll;
-    } catch {
-      return true;
-    }
+  /**
+   * Content arrived (#307). The follow flag alone decides: a following view
+   * renders the new tail, so no notice appears; a suspended view has unseen
+   * output below and the footer states it. This never consults the line-model
+   * cache — the arriving event may not have invalidated it yet.
+   */
+  private markNewOutput(): void {
+    this.newOutput = !this.following;
+  }
+
+  /** One step of explicit suspension: the view stops following the tail. */
+  private suspendFollow(): void {
+    this.following = false;
   }
 
   /**
@@ -722,13 +902,13 @@ export class ChildTranscriptOverlay implements Component {
   /**
    * Reconciles the persisted window with the session file: retries the initial
    * tail while it has never loaded, otherwise reads bounded newer pages the
-   * child appended. A view that was at the tail stays pinned to it; a scrolled
-   * position is preserved — live growth never pulls an older position away.
+   * child appended. An explicitly following view stays pinned to the tail; a
+   * suspended position is preserved even when it happens to reach the current
+   * numeric bottom — live growth never resumes follow implicitly.
    * A successful load also confirms live entries against their own persisted
    * occurrences and clears exactly the drop fingerprints history recovered.
    */
   reconcileNow(pages = 1): void {
-    const follow = this.isAtTail();
     let changed = false;
     if (this.current.initialError !== undefined) {
       changed = this.input.model.history.retryInitial();
@@ -742,7 +922,11 @@ export class ChildTranscriptOverlay implements Component {
       this.current = this.input.model.history.snapshot();
       this.confirmLive();
     }
-    if (follow) this.scrollTop = Number.POSITIVE_INFINITY;
+    if (this.following) {
+      this.scrollTop = Number.POSITIVE_INFINITY;
+    } else if (changed) {
+      this.newOutput = true;
+    }
     this.refreshHistory();
   }
 
@@ -809,6 +993,7 @@ export class ChildTranscriptOverlay implements Component {
     switch (event.kind) {
       case "message_delta":
         this.live.streaming = event.parts;
+        this.markNewOutput();
         this.syncState();
         this.invalidate();
         return;
@@ -829,6 +1014,7 @@ export class ChildTranscriptOverlay implements Component {
             ...(event.historyFloor !== undefined ? { historyFloor: event.historyFloor } : {}),
           });
           this.confirmLiveMessages();
+          this.markNewOutput();
         }
         break;
       }
@@ -850,6 +1036,7 @@ export class ChildTranscriptOverlay implements Component {
         this.reconcileNow(1);
         if (this.toolCovered(running)) return;
         this.pushLiveItem({ kind: "tool", tool: running });
+        this.markNewOutput();
         this.refreshLiveShape();
         return;
       }
@@ -871,6 +1058,7 @@ export class ChildTranscriptOverlay implements Component {
         if (stillLive) {
           existing.tool.endedAt = this.now();
           existing.tool.isError = event.isError;
+          this.markNewOutput();
         } else {
           const finished: LiveToolState = {
             callKey: event.callKey,
@@ -884,12 +1072,14 @@ export class ChildTranscriptOverlay implements Component {
             return; // the call's own persisted row already carries the terminal state
           }
           this.pushLiveItem({ kind: "tool", tool: finished });
+          this.markNewOutput();
         }
         this.refreshLiveShape();
         return;
       }
       case "live_events_dropped":
         this.recordDropped(event.dropped ?? [], event.droppedUnknown === true);
+        this.markNewOutput();
         this.syncState();
         this.invalidate();
         return;
@@ -976,6 +1166,7 @@ export class ChildTranscriptOverlay implements Component {
     this.scrollTop = view.scrollTop;
 
     if (delta < 0) {
+      this.suspendFollow();
       if (this.scrollTop > 0) {
         this.scrollTop = Math.max(0, this.scrollTop - budget);
         return;
@@ -989,9 +1180,23 @@ export class ChildTranscriptOverlay implements Component {
         return;
       }
       // At the loaded bottom: attempt one bounded newer page (evicted pages,
-      // or a concurrent append completing the tail) and follow to the edge.
+      // or a concurrent append completing the tail) and reveal that edge
+      // without resuming the explicit follow state.
       this.pageNewer();
     }
+  }
+
+  /**
+   * Wheel scrolling (#307) moves within the loaded window by a small line
+   * count — no page loads, so a notch never demands history work.
+   */
+  private scrollLines(lines: number): void {
+    if (this.lastWidth === undefined) return;
+    if (lines < 0) this.suspendFollow();
+    const model = this.lineModelFor(this.lastWidth);
+    const view = this.resolveViewport(model, this.bodyBudget());
+    const base = Number.isFinite(this.scrollTop) ? this.scrollTop : view.maxScroll;
+    this.scrollTop = Math.min(view.maxScroll, Math.max(0, base + lines));
   }
 
   private pageOlder(model: LineModel, budget: number): void {
@@ -1016,22 +1221,35 @@ export class ChildTranscriptOverlay implements Component {
   }
 
   private pageNewer(): void {
+    // scroll() resolves geometry before it discovers the newer edge. Preserve
+    // the active-follow sentinel even when that edge probe finds no new page.
+    if (this.following) this.scrollTop = Number.POSITIVE_INFINITY;
     const loaded = this.input.model.history.loadNewer();
     this.refreshHistory();
     if (!loaded) return;
-    // Follow to the newest edge.
+    // PageDown reveals the newest loaded edge without changing the explicit
+    // follow state. Only End resumes live following (#307).
     this.scrollTop = Number.POSITIVE_INFINITY;
+    if (!this.following && this.lastWidth !== undefined) {
+      const view = this.resolveViewport(this.lineModelFor(this.lastWidth), this.bodyBudget());
+      this.scrollTop = view.scrollTop;
+    }
   }
 
   private jump(to: "start" | "end"): void {
     if (this.current.initialError !== undefined) {
       this.input.model.history.retryInitial();
       this.refreshHistory();
+      if (to === "end") {
+        this.following = true;
+        this.newOutput = false;
+      }
       this.scrollTop = Number.POSITIVE_INFINITY;
       return;
     }
     if (this.lastWidth === undefined) return;
     if (to === "start") {
+      this.suspendFollow();
       for (let page = 0; page < EDGE_LOAD_PAGES_PER_PRESS; page += 1) {
         if (!this.current.moreBefore) break;
         if (!this.input.model.history.loadOlder()) break;
@@ -1040,19 +1258,84 @@ export class ChildTranscriptOverlay implements Component {
       this.scrollTop = 0;
       return;
     }
-    // End follows the newest edge; the first attempt always runs because the
-    // snapshot's newer-edge flag only updates on a read.
+    // End follows the newest edge: the bounded loads catch up with any
+    // evicted or concurrently appended pages, and the follow state resumes
+    // even when the newest page was already loaded (#307).
     for (let page = 0; page < EDGE_LOAD_PAGES_PER_PRESS; page += 1) {
       if (!this.input.model.history.loadNewer()) break;
       this.refreshHistory();
-      this.scrollTop = Number.POSITIVE_INFINITY;
     }
+    this.following = true;
+    this.newOutput = false;
+    this.scrollTop = Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Publishes the controller's current roster candidate (#307). The overlay
+   * renders it in the footer — an off-screen candidate stays identifiable
+   * while the overlay covers the roster — and Escape cancels it instead of
+   * closing while it differs from the open child.
+   */
+  updateCandidate(candidate: ChildOverlayCandidate | undefined): void {
+    const previous = this.candidate;
+    this.candidate = candidate;
+    // The controller re-derives the candidate on every roster refresh; only a
+    // real change may drop the render caches.
+    if (previous?.id === candidate?.id && previous?.idLabel === candidate?.idLabel) return;
+    this.invalidate();
+  }
+
+  /** The per-child reading state the controller restores on a later switch (#307). */
+  captureViewState(): ChildReadingState {
+    return {
+      scrollTop: this.following ? Number.POSITIVE_INFINITY : this.scrollTop,
+      following: this.following,
+      toolsExpanded: this.toolsExpanded,
+      newOutput: this.newOutput,
+    };
+  }
+
+  /**
+   * Re-points this same overlay at another child (#307): one handle, no
+   * stacking, no return to main. The live tail starts fresh (an unobserved
+   * child retained no events), the persisted window is the child's own
+   * retained view, and the controller's captured scroll and expansion state
+   * for that child are restored.
+   */
+  switchChild(model: ChildOverlayModel, restore: ChildReadingState): void {
+    this.input.model = model;
+    this.current = model.history.snapshot();
+    this.live = emptyLiveTail();
+    this.latestMessageFloor = -1;
+    this.candidate = undefined;
+    this.toolsExpanded = restore.toolsExpanded;
+    this.following = restore.following;
+    this.newOutput = restore.newOutput;
+    this.scrollTop = restore.following ? Number.POSITIVE_INFINITY : restore.scrollTop;
+    this.syncState();
+    this.version += 1;
+    this.invalidate();
+    this.syncMotionSubscription();
+  }
+
+  /** Toggles this overlay's tool-row expansion (#307); state is per child. */
+  private toggleTools(): void {
+    this.toolsExpanded = !this.toolsExpanded;
+    this.invalidate();
   }
 
   handleInput(data: string): void {
-    const classified = classifyViewerInput(data);
+    const classified = classifyViewerInput(data, this.input.keybindings);
     switch (classified.kind) {
       case "close":
+        // Escape first cancels a changed candidate and restores the open
+        // child; only a second Escape closes (#307).
+        if (this.candidate !== undefined && this.candidate.id !== this.input.model.id) {
+          this.candidate = undefined;
+          this.invalidate();
+          this.input.onCancelCandidate?.();
+          return;
+        }
         this.dispose();
         this.input.onClose();
         return;
@@ -1063,8 +1346,20 @@ export class ChildTranscriptOverlay implements Component {
       case "scroll":
         this.scroll(classified.delta);
         return;
+      case "wheel":
+        this.scrollLines(classified.delta * WHEEL_SCROLL_LINES);
+        return;
       case "jump":
         this.jump(classified.to);
+        return;
+      case "candidate":
+        this.input.onNavigate?.(classified.delta);
+        return;
+      case "confirm":
+        this.input.onConfirm?.();
+        return;
+      case "expand":
+        this.toggleTools();
         return;
       default:
         return;
@@ -1092,7 +1387,8 @@ export class ChildTranscriptOverlay implements Component {
       && this.cache.width === safeWidth
       && this.cache.columns === terminal.columns
       && this.cache.rows === terminal.rows
-      && Number.isFinite(this.scrollTop) && this.cache.scrollTop === this.scrollTop
+      && this.cache.scrollTop === this.scrollTop
+      && this.cache.following === this.following
       && this.cache.version === this.version
     ) return this.cache.lines;
 
@@ -1108,11 +1404,16 @@ export class ChildTranscriptOverlay implements Component {
       "…",
     );
     const rule = this.theme.fg("border", "─".repeat(safeWidth));
-    const help = truncateToWidth(
-      this.theme.fg("muted", "esc close · pgup/pgdn/home/end scroll · type or paste to return to the main editor"),
-      safeWidth,
-      "…",
-    );
+    // The footer row is the overlay's one status surface (#307): a tentative
+    // roster candidate an off-screen roster cannot show, then the new-output
+    // notice, then the default key hints — never more than one row.
+    const expandKeys = this.input.keybindings?.getKeys?.("app.tools.expand") ?? ["ctrl+o"];
+    const helpText = this.candidate !== undefined
+      ? candidateFooterText(this.candidate, model.role, safeWidth)
+      : this.newOutput
+        ? "new output below · end resumes following · esc close"
+        : `esc close · up/down switch child · pgup/pgdn/home/end scroll · ${expandKeys.join("/") || "ctrl+o"} expand tools · type or paste to return`;
+    const help = truncateToWidth(this.theme.fg("muted", helpText), safeWidth, "…");
 
     const body = this.renderBody(safeWidth, plan.bodyRows);
     const lines = [title, rule, ...body, rule, help];
@@ -1121,6 +1422,7 @@ export class ChildTranscriptOverlay implements Component {
       columns: terminal.columns,
       rows: terminal.rows,
       scrollTop: Number.isFinite(this.scrollTop) ? this.scrollTop : Number.POSITIVE_INFINITY,
+      following: this.following,
       version: this.version,
       lines,
     };
@@ -1134,7 +1436,9 @@ export class ChildTranscriptOverlay implements Component {
 
     const model = this.lineModelFor(width);
     const view = this.resolveViewport(model, budget);
-    this.scrollTop = view.scrollTop;
+    // A following view keeps its sentinel: growth re-resolves to the new tail
+    // on every render instead of pinning to the offset this one resolved to.
+    if (!this.following) this.scrollTop = view.scrollTop;
 
     const viewport: string[] = [];
     if (view.head) {

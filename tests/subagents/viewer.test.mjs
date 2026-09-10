@@ -94,14 +94,14 @@ test("escape closes, editing no-ops stay open, and shortcuts are suppressed", ()
   assert.deepEqual(classifyViewerInput(BACKSPACE), { kind: "ignore" });
   assert.deepEqual(classifyViewerInput(DELETE), { kind: "ignore" });
   assert.deepEqual(classifyViewerInput("\x08"), { kind: "ignore" }, "ctrl+h backspace stays open");
-  assert.deepEqual(classifyViewerInput(UP), { kind: "ignore" });
-  assert.deepEqual(classifyViewerInput(DOWN), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput(UP), { kind: "candidate", delta: -1 }, "up moves the roster candidate");
+  assert.deepEqual(classifyViewerInput(DOWN), { kind: "candidate", delta: 1 }, "down moves the roster candidate");
   assert.deepEqual(classifyViewerInput(PAGE_UP), { kind: "scroll", delta: -1 }, "page up scrolls the transcript");
   assert.deepEqual(classifyViewerInput(PAGE_DOWN), { kind: "scroll", delta: 1 }, "page down scrolls the transcript");
   assert.deepEqual(classifyViewerInput(HOME), { kind: "jump", to: "start" }, "home jumps toward the earliest entry");
   assert.deepEqual(classifyViewerInput(END), { kind: "jump", to: "end" }, "end jumps to the newest edge");
   assert.deepEqual(classifyViewerInput("\x1b[C"), { kind: "ignore" }, "right arrow suppressed");
-  assert.deepEqual(classifyViewerInput(ENTER), { kind: "ignore" }, "enter never submits through the overlay");
+  assert.deepEqual(classifyViewerInput(ENTER), { kind: "confirm" }, "enter confirms a candidate and never submits through the overlay");
   assert.deepEqual(classifyViewerInput("\t"), { kind: "ignore" });
   assert.deepEqual(classifyViewerInput("\x03"), { kind: "ignore" }, "ctrl+c suppressed with the other shortcuts");
   assert.deepEqual(classifyViewerInput("\x1ba"), { kind: "ignore" }, "alt-modified keys are not replayed");
@@ -188,7 +188,7 @@ test("projection keeps ordered user, thinking, text, tool call, and tool result 
   const call = projection.items[2];
   assert.equal("callId" in call, false, "internal pairing IDs never enter the display projection");
   assert.equal(call.summary, "lines 3-40", "the call carries only the structural range summary");
-  assert.equal("text" in call.result, false, "result payloads never enter the projection");
+  assert.equal("text" in call.result, false, "terminal state never embeds result evidence");
   assert.equal(call.result.isError, false);
   assert.equal(call.durationMs, 1_250, "outer session-entry timestamps become the operational elapsed duration");
 });
@@ -315,7 +315,12 @@ test("projection display-sanitizes every text channel before any renderer", () =
   assert.ok(!serialized.includes("abc123"), "token values never enter any item");
   assert.ok(!serialized.includes("eyJhbGc"), "bearer values never enter any item");
   assert.ok(!serialized.includes("\\x1b") && !serialized.includes("\u001b"), "control sequences never enter any item");
-  assert.ok(!serialized.includes("SECRET TOOL RESULT"), "tool-result payloads never enter any item");
+  // Tool results cross as one bounded sanitized evidence projection for the
+  // expanded row (#307): the payload text survives, credentials do not.
+  const projectedCall = projectSessionEntries(entries).items.find((item) => item.kind === "toolCall");
+  assert.ok(projectedCall.output.includes("SECRET TOOL RESULT"), "the bounded result projection enters the call item");
+  assert.ok(!projectedCall.output.includes("swordfish") && !projectedCall.output.includes("abc123"), "result credentials never enter the projection");
+  assert.ok(projectedCall.output.length <= 600, "the result projection stays inside its explicit total budget");
   assert.ok(!serialized.includes("curl"), "raw argument commands never enter any item");
   assert.ok(!serialized.includes("bare-secret"), "structured credentials never enter any item");
   assert.ok(!serialized.includes("req-internal"), "provider-internal error identifiers never enter any item");
@@ -338,10 +343,32 @@ test("projection display-sanitizes every text channel before any renderer", () =
   for (const item of items) {
     const text = item.kind === "user" ? item.text
       : item.kind === "assistant" ? JSON.stringify(item.message)
-        : item.kind === "toolCall" ? `${item.name} ${item.summary}`
+        : item.kind === "toolCall" ? `${item.name} ${item.summary} ${item.output ?? ""}`
           : item.text;
     assert.ok(text.length < 2_600, "every projected text stays inside the entry budget");
   }
+});
+
+test("expanded tool evidence counts its head-tail marker inside the 600-character cap", () => {
+  const projection = projectSessionEntries([
+    messageEntry("call", {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "bounded-call", name: "bash", arguments: {} }],
+      stopReason: "toolUse",
+    }),
+    messageEntry("result", {
+      role: "toolResult",
+      toolCallId: "bounded-call",
+      toolName: "bash",
+      content: [{ type: "text", text: `HEAD-${"x".repeat(10_000)}-TAIL` }],
+      isError: false,
+    }),
+  ]);
+  const call = projection.items.find((item) => item.kind === "toolCall");
+  assert.ok(call.output.startsWith("HEAD-"), "the bounded evidence keeps its head");
+  assert.ok(call.output.endsWith("-TAIL"), "the bounded evidence keeps its tail");
+  assert.ok(call.output.includes("[omitted "), "the bounded evidence marks its omission");
+  assert.ok(call.output.length <= 600, "the omission marker is included in the hard cap");
 });
 
 test("unsupported but meaningful content becomes a non-empty sanitized fallback", () => {
@@ -845,6 +872,99 @@ test("home walks bounded page loads toward the earliest entry and end follows th
   assert.equal(appended.calls.newer, 2, "end probes the newest edge and stops at the first empty page");
   const endText = plain(endOverlay.render(80));
   assert.ok(endText.some((line) => line.includes("appended line")), "the appended entry is followed");
+});
+
+test("PageDown and structural reconciliation keep follow suspended until End", () => {
+  const items = [{ kind: "generic", text: "loaded tail", entryId: "loaded-tail" }];
+  let append = 0;
+  const history = scriptedHistory({ items, moreAfter: true }, {
+    loadNewer(view) {
+      append += 1;
+      if (append > 2) return false;
+      view.set({
+        items: [
+          ...view.snapshot().items,
+          { kind: "generic", text: `newer page ${append}`, entryId: `newer-${append}` },
+        ],
+        moreAfter: append < 2,
+      });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  overlay.render(80);
+  overlay.handleInput(PAGE_UP);
+  assert.equal(overlay.captureViewState().following, false, "upward scrolling suspends follow");
+
+  overlay.handleInput(PAGE_DOWN);
+  assert.equal(overlay.captureViewState().following, false, "PageDown may load newer history without resuming follow");
+
+  overlay.reconcileNow();
+  assert.equal(overlay.captureViewState().following, false, "a structural reconcile cannot infer follow from the numeric bottom");
+  assert.match(plain(overlay.render(80)).at(-1), /new output below/, "newer structural content remains announced");
+
+  overlay.handleInput(END);
+  assert.equal(overlay.captureViewState().following, true, "End explicitly resumes follow");
+  assert.ok(!plain(overlay.render(80)).at(-1).includes("new output"), "End clears the notice");
+});
+
+test("PageDown preserves the tail sentinel while already following", () => {
+  const initial = Array.from({ length: 20 }, (_, index) => ({
+    kind: "generic",
+    text: `loaded line ${index}`,
+    entryId: `loaded-${index}`,
+  }));
+  let loaded = false;
+  const history = scriptedHistory({ items: initial, moreAfter: true }, {
+    loadNewer(view) {
+      if (loaded) return false;
+      loaded = true;
+      view.set({
+        items: [
+          ...view.snapshot().items,
+          ...Array.from({ length: 20 }, (_, index) => ({
+            kind: "generic",
+            text: `newer line ${index}`,
+            entryId: `newer-${index}`,
+          })),
+        ],
+        moreAfter: false,
+      });
+      return true;
+    },
+  });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  overlay.render(80);
+  overlay.handleInput(PAGE_DOWN);
+  assert.equal(overlay.captureViewState().following, true, "PageDown does not suspend an active follow");
+  overlay.render(80);
+  overlay.handleInput(PAGE_DOWN);
+  assert.equal(history.calls.newer, 2, "the regression path includes a newer-edge probe that reaches EOF");
+
+  overlay.applyLiveEvent({
+    kind: "message_delta",
+    parts: [{ type: "text", text: "live content after PageDown" }],
+  });
+  const text = plain(overlay.render(80));
+  assert.ok(text.some((line) => line.includes("live content after PageDown")), "later live growth remains at the visible tail");
+  assert.ok(!text.at(-1).includes("new output"), "an actively following view has no unseen-output notice");
+});
+
+test("End resumes follow and clears unseen output while the initial history read is still failing", () => {
+  const history = scriptedHistory({ initialError: "child history could not be read" });
+  const { overlay } = overlayHarness(baseModel({ history }), 80, 20);
+  overlay.render(80);
+  overlay.handleInput("\u001b[<64;1;1M");
+  overlay.applyLiveEvent({
+    kind: "message_delta",
+    parts: [{ type: "text", text: "unseen while history is unavailable" }],
+  });
+  assert.equal(overlay.captureViewState().following, false, "upward wheel movement suspends follow");
+  assert.match(plain(overlay.render(80)).at(-1), /new output below/, "suspended live growth is announced");
+
+  overlay.handleInput(END);
+  assert.equal(overlay.captureViewState().following, true, "End resumes follow even when retry still fails");
+  assert.ok(!plain(overlay.render(80)).at(-1).includes("new output"), "End clears the unseen-output notice");
 });
 
 test("overlay lines cache by width and terminal size and invalidate cleanly", () => {

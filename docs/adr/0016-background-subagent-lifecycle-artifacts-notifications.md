@@ -14,7 +14,8 @@ status: accepted
 > from an exactly empty native editor, and Enter opens the selected child in a
 > centered, capturing, read-only transcript overlay (`src/subagents/viewer.ts`)
 > built on Pi 0.84.2 public components and the roster-grade allowlisted tool
-> projection (no raw arguments or result payloads ever render). Pi's native
+> projection. Raw arguments never render; since #307, an expanded tool row may
+> render one bounded, credential-sanitized result projection. Pi's native
 > assistant grouping stays intact before the shared operational display renders
 > its tool rows with the shared marker motion, outer-entry elapsed time, muted
 > structural target, and fixed terminal outcome; tool results update pending calls
@@ -81,8 +82,36 @@ status: accepted
 > content. Observer and renderer failures remain bounded presentation failures
 > and never touch the lifecycle, delivery, ownership, or persistence contracts
 > this ADR records.
+> Since #307 the overlay also carries cross-child navigation and per-child
+> reading state: while it is open, Up/Down move a roster candidate anchored on
+> the open child and Enter re-points the same overlay handle at the candidate
+> in place — no stacking, no return to main — while Escape cancels a changed
+> candidate before it ever closes. Transcript scrolling (PageUp/PageDown/Home/
+> End, plus the mouse wheel in fullscreen TUI mode where the alt screen defers
+> wheel events to the focused overlay) stays separate from roster navigation;
+> the first open follows the tail, upward scrolling suspends following with a
+> one-row footer new-output state that End clears while resuming follow; the
+> footer also names an off-screen candidate's role and unique short ID while a
+> candidate is tentative (budgeted so the unique ID is the last part to
+> shrink); the first open follows the tail through an explicit follow flag
+> that renders never overwrite with a finite offset, upward scrolling
+> suspends following with the position anchored on its stable transcript
+> entry, and End is the one key that resumes following; each child
+> independently retains its loaded history view, scroll position, follow
+> state, new-output notice, and tool-expansion state across direct switches
+> (retained only while the overlay session is open); and Pi's effective
+> expand-tools shortcut toggles only the open overlay's tool rows, never the
+> background main transcript — a collapsed row stays one line while an
+> expanded row reveals one bounded, credential-sanitized result projection,
+> including when the paired result crosses an adjacent history-page seam (raw
+> arguments never render). The mouse wheel scrolls only in fullscreen
+> TUI mode: pi-tui enables mouse tracking there and defers wheel events to
+> the focused overlay, while inline regular mode exposes no public API for
+> extension-visible wheel events under Pi 0.84.2. Every view-state transition
+> stays observational only — no lifecycle, delivery, ownership, claim, wait,
+> abort, resume, or persistence effect.
 > The remaining lifecycle/delivery qualification of the parent viewer
-> specification (#302) remains in later slices (#307–#309).
+> specification (#302) remains in later slices (#308–#309).
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,

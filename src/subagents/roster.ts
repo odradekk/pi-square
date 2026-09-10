@@ -16,7 +16,9 @@ import { latestRosterToolCallSummary } from "./tool-display";
 import type { BackgroundJobSnapshot } from "./types";
 import {
   childOverlayOptions,
+  type ChildHistoryView,
   type ChildOverlayModel,
+  type ChildReadingState,
   ChildTranscriptOverlay,
 } from "./viewer";
 
@@ -261,7 +263,19 @@ export function renderSubagentRoster(
   const budget = Math.max(1, options.rowBudget);
   const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
   const maxStart = Math.max(0, rows.length - budget);
-  const start = Math.min(Math.max(0, options.start ?? 0), maxStart);
+  let start = Math.min(Math.max(0, options.start ?? 0), maxStart);
+  // The controller resolves the window at publish time, but a height-only
+  // resize changes the budget without a new publication. Re-anchor on the
+  // focus row here, under the budget this render actually uses, so the solid
+  // marker can never leave the window.
+  const focusIndex = options.focusId !== undefined
+    ? rows.findIndex((row) => row.id === options.focusId)
+    : -1;
+  if (focusIndex >= 0) {
+    if (focusIndex < start) start = focusIndex;
+    else if (focusIndex >= start + budget) start = focusIndex - budget + 1;
+    start = Math.min(Math.max(0, start), maxStart);
+  }
   const visibleRows = rows.slice(start, start + budget);
   const fullPrefixes = visibleRows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
   const idBudgets = visibleRows.map((row) => {
@@ -468,6 +482,36 @@ export function createSubagentRosterController(
     openTui = undefined;
     openModelStatus = undefined;
   };
+
+  /** Drops only the live feed subscription; the overlay stays open (#307). */
+  const detachLiveFeed = () => {
+    unsubscribeLive?.();
+    unsubscribeLive = undefined;
+  };
+
+  /**
+   * Subscribes the open overlay to one child's ephemeral view feed (#306,
+   * #307). The feed's subscriber isolation keeps a broken listener from the
+   * child run; this guard keeps the overlay's own failures from escaping too,
+   * as one bounded diagnostic row.
+   */
+  const attachLiveFeed = (jobId: string) => {
+    detachLiveFeed();
+    unsubscribeLive = state.viewFeed?.subscribe(jobId, (event: ChildViewEvent) => {
+      const target = activeOverlay;
+      if (target === undefined || openId !== jobId) return;
+      try {
+        target.applyLiveEvent(event);
+      } catch {
+        try {
+          target.setLiveDiagnostic();
+        } catch {
+          // Contained: the persisted view stays usable.
+        }
+      }
+      scheduleLivePaint(isStructuralViewEvent(event));
+    });
+  };
   let viewportStart = 0;
   let tuiRef: WidgetTui | undefined;
   const stopMotion = () => {
@@ -511,7 +555,16 @@ export function createSubagentRosterController(
       || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
     ));
 
-  const focusId = () => openId ?? candidateId;
+  // While a tentative candidate exists it owns the solid marker (#307); the
+  // open child keeps it otherwise.
+  const focusId = () => candidateId ?? openId;
+
+  /** Per-child retained reading state (#307), keyed by complete public ID. */
+  interface ChildViewEntry {
+    history: ChildHistoryView;
+    reading: ChildReadingState;
+  }
+  const childEntries = new Map<string, ChildViewEntry>();
 
   /** Shifts the visible window the minimum needed to keep the focus row on screen. */
   const followViewport = (rows: readonly RosterRow[]) => {
@@ -523,8 +576,8 @@ export function createSubagentRosterController(
     const budget = rosterRowBudget(terminalRows);
     const maxStart = Math.max(0, rows.length - budget);
     const focus = focusId();
-    const focusIndex = focus === undefined ? undefined : rows.findIndex((row) => row.id === focus);
-    if (focusIndex !== undefined) {
+    const focusIndex = focus === undefined ? -1 : rows.findIndex((row) => row.id === focus);
+    if (focusIndex >= 0) {
       if (focusIndex < viewportStart) viewportStart = focusIndex;
       else if (focusIndex >= viewportStart + budget) viewportStart = focusIndex - budget + 1;
     }
@@ -573,12 +626,29 @@ export function createSubagentRosterController(
     if (rows.length === 0) {
       stopMotion();
       candidateId = undefined;
+      syncOverlayCandidate([]);
       context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
       return;
     }
 
+    // Reading state is retained only for children the roster still shows and
+    // the one still open (#307).
+    for (const id of childEntries.keys()) {
+      if (id !== openId && !rows.some((row) => row.id === id)) childEntries.delete(id);
+    }
+
+    // Resolve the effective focus before the window moves: a candidate whose
+    // row left the store must not steer the viewport away from the open child
+    // it falls back to.
+    if (candidateId !== undefined
+      && candidateId !== openId
+      && !rows.some((row) => row.id === candidateId)) {
+      candidateId = undefined;
+    }
+
     followViewport(rows);
     pushOpenOverlayLifecycle(jobs);
+    syncOverlayCandidate(rows);
     const focus = focusId();
     const snapshotAt = now();
     lastPublishAt = snapshotAt;
@@ -621,6 +691,122 @@ export function createSubagentRosterController(
     refresh();
   };
 
+  /**
+   * Builds the open-child model from the current job snapshot while reusing
+   * the child's retained history view, so a direct switch restores the loaded
+   * window and reading position rather than restarting at the tail (#307).
+   */
+  const buildOverlayModel = (job: BackgroundJobSnapshot, history: ChildHistoryView): ChildOverlayModel => {
+    const rows = rosterRows(rosterJobs());
+    const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
+    const failureReason = job.status === "failed" || job.status === "aborted"
+      ? rosterFailureReason(job)
+      : "";
+    return {
+      role: rosterRole(job),
+      id: job.id,
+      idLabel: prefixes.get(job.id) ?? rosterId(job.id),
+      lifecycleLabel: LIFECYCLE_LABELS[job.status],
+      lifecycleTone: LIFECYCLE_TONES[job.status],
+      status: job.status,
+      durationText: formatRosterDuration(
+        ACTIVE_STATUSES.has(job.status)
+          ? now() - job.details.startedAt
+          : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
+      ),
+      ...(failureReason ? { failureReason } : {}),
+      history,
+    };
+  };
+
+  /**
+   * Re-points the open overlay at another child (#307): the same overlay
+   * handle switches content in place — no stacking, no pass through main —
+   * while each child keeps its own retained history view, scroll position,
+   * follow state, and tool-expansion state. The previous child's live feed
+   * subscription ends and the new child's begins; an unobserved child
+   * retained no live events, so the tail restarts from the persisted window.
+   */
+  const switchChildOverlay = (id: string) => {
+    const overlay = activeOverlay;
+    if (overlay === undefined || openId === undefined || openId === id) return;
+    const jobs = rosterJobs();
+    const job = jobs.find((candidate) => candidate.id === id);
+    if (!job) return;
+
+    const previous = childEntries.get(openId);
+    const captured = overlay.captureViewState();
+    if (previous !== undefined) childEntries.set(openId, { history: previous.history, reading: captured });
+
+    let entry = childEntries.get(id);
+    if (entry === undefined) {
+      entry = {
+        history: createChildHistory(id, { observedAt: now() }),
+        reading: { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false },
+      };
+      childEntries.set(id, entry);
+    }
+
+    openId = job.id;
+    openModelStatus = job.status;
+    candidateId = undefined;
+    try {
+      overlay.switchChild(buildOverlayModel(job, entry.history), entry.reading);
+      // Catch the retained window up with anything the child persisted while
+      // unobserved; a position away from the tail stays put and records the
+      // new-output state instead.
+      overlay.reconcileNow(8);
+    } catch {
+      // A switching defect is contained like every refresh failure: the
+      // overlay keeps showing its last consistent state.
+    }
+    attachLiveFeed(job.id);
+    scheduleLivePaint(true);
+    refresh();
+  };
+
+  /**
+   * Keeps the open overlay's footer candidate truthful (#307): the controller
+   * owns the candidate, so every roster refresh re-derives what the overlay
+   * shows — including a candidate whose row left the store.
+   */
+  const syncOverlayCandidate = (rows: readonly RosterRow[]) => {
+    const overlay = activeOverlay;
+    if (overlay === undefined) return;
+    const changed = candidateId !== undefined
+      && candidateId !== openId
+      && rows.some((row) => row.id === candidateId);
+    if (changed) {
+      const row = rows.find((candidate) => candidate.id === candidateId);
+      const prefixes = uniqueRosterIdPrefixes(rows.map((candidate) => candidate.id));
+      overlay.updateCandidate({
+        id: row!.id,
+        role: row!.role,
+        idLabel: prefixes.get(row!.id) ?? rosterId(row!.id),
+      });
+      return;
+    }
+    if (candidateId !== undefined) candidateId = undefined;
+    overlay.updateCandidate(undefined);
+  };
+
+  /**
+   * In-overlay roster navigation (#307): movement anchors on the open child
+   * when no candidate exists, clamps at both ends, and lands back on the open
+   * child as no change at all.
+   */
+  const navigateOverlayCandidate = (delta: -1 | 1) => {
+    const rows = rosterRows(rosterJobs());
+    if (rows.length === 0 || openId === undefined) return;
+    const anchor = candidateId !== undefined && rows.some((row) => row.id === candidateId)
+      ? candidateId
+      : openId;
+    const found = rows.findIndex((row) => row.id === anchor);
+    const next = Math.min(rows.length - 1, Math.max(0, (found < 0 ? 0 : found) + delta));
+    candidateId = rows[next]?.id ?? candidateId;
+    refresh();
+  };
+
   const openChildOverlay = (id: string) => {
     if (!context?.hasUI || context.mode !== "tui") return;
     if (openId !== undefined || closeOverlay !== undefined) return;
@@ -628,33 +814,15 @@ export function createSubagentRosterController(
     const job = jobs.find((candidate) => candidate.id === id);
     if (!job) return;
 
-    const rows = rosterRows(jobs);
-    const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
-    const idLabel = prefixes.get(job.id) ?? rosterId(job.id);
-    const durationText = formatRosterDuration(
-      ACTIVE_STATUSES.has(job.status)
-        ? now() - job.details.startedAt
-        : (job.details.endedAt ?? job.details.startedAt) - job.details.startedAt,
-    );
-    const failureReason = job.status === "failed" || job.status === "aborted"
-      ? rosterFailureReason(job)
-      : "";
-
-    // The model opens with role, identity, lifecycle, duration, and the
-    // initial bounded tail page of the child's native history (#305); the
-    // overlay pages the rest on demand from the validated session file, and
-    // live view events and store transitions keep the open view current
-    // (#306).
-    const model: ChildOverlayModel = {
-      role: rosterRole(job),
-      idLabel,
-      lifecycleLabel: LIFECYCLE_LABELS[job.status],
-      lifecycleTone: LIFECYCLE_TONES[job.status],
-      status: job.status,
-      durationText,
-      ...(failureReason ? { failureReason } : {}),
+    // A fresh open starts at the tail with collapsed tools; the entry keeps
+    // the retained history view so later direct switches restore it (#307).
+    childEntries.clear();
+    const entry: ChildViewEntry = {
       history: createChildHistory(job.id, { observedAt: now() }),
+      reading: { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false },
     };
+    childEntries.set(job.id, entry);
+    const model = buildOverlayModel(job, entry.history);
 
     candidateId = undefined;
     openId = job.id;
@@ -673,12 +841,15 @@ export function createSubagentRosterController(
       detachLiveView();
       openId = undefined;
       candidateId = undefined;
+      // Closing drops per-child reading state: the next open is a first open
+      // and follows the tail again (#307).
+      childEntries.clear();
       refresh();
     };
 
     let overlayOptions: ReturnType<typeof childOverlayOptions> | undefined;
     try {
-      void context.ui.custom<void>((tui, theme, _keybindings, done) => {
+      void context.ui.custom<void>((tui, theme, keybindings, done) => {
         // Live getters: the TUI re-reads these options every render, so the
         // outer geometry follows terminal resizes across the small/normal
         // threshold for as long as the overlay stays open.
@@ -690,6 +861,18 @@ export function createSubagentRosterController(
           model,
           now: () => now(),
           ...(display ? { display } : {}),
+          // Pi's effective expand-tools shortcut reaches only this overlay
+          // (#307); the main transcript never sees the key.
+          ...(typeof keybindings?.matches === "function"
+            ? {
+              keybindings: {
+                matches: keybindings.matches.bind(keybindings),
+                ...(typeof keybindings.getKeys === "function"
+                  ? { getKeys: (keybinding: string) => (keybindings.getKeys as (binding: string) => string[])(keybinding) }
+                  : {}),
+              },
+            }
+            : {}),
           onClose: settle,
           onReplay: (text) => {
             settle();
@@ -700,25 +883,33 @@ export function createSubagentRosterController(
               // user keeps the native editor.
             }
           },
+          // Cross-child navigation (#307): Up/Down move a candidate, Enter
+          // re-points this overlay, Escape cancels a changed candidate. All
+          // three stay read-only projections of the background store.
+          onNavigate: navigateOverlayCandidate,
+          onConfirm: () => {
+            const rows = rosterRows(rosterJobs());
+            const candidate = candidateId !== undefined && candidateId !== openId
+              && rows.some((row) => row.id === candidateId)
+              ? candidateId
+              : undefined;
+            if (candidate === undefined) {
+              // Enter with no changed candidate confirms the open child.
+              candidateId = undefined;
+              refresh();
+              return;
+            }
+            switchChildOverlay(candidate);
+          },
+          onCancelCandidate: () => {
+            candidateId = undefined;
+            refresh();
+          },
         });
         activeOverlay = overlay;
-        // Live view events (#306): the feed's subscriber isolation keeps a
-        // broken listener from the child run; this guard keeps the overlay's
-        // own failures from escaping too, as one bounded diagnostic row.
-        unsubscribeLive = state.viewFeed?.subscribe(job.id, (event: ChildViewEvent) => {
-          const target = activeOverlay;
-          if (target === undefined || openId !== job.id) return;
-          try {
-            target.applyLiveEvent(event);
-          } catch {
-            try {
-              target.setLiveDiagnostic();
-            } catch {
-              // Contained: the persisted view stays usable.
-            }
-          }
-          scheduleLivePaint(isStructuralViewEvent(event));
-        });
+        // Live view events (#306) through the shared attach seam; switching
+        // children re-uses it (#307).
+        attachLiveFeed(job.id);
         closeOverlay = () => {
           overlay.dispose();
           if (activeOverlay === overlay) activeOverlay = undefined;
@@ -817,6 +1008,7 @@ export function createSubagentRosterController(
     activeOverlay = undefined;
     openId = undefined;
     candidateId = undefined;
+    childEntries.clear();
     viewportStart = 0;
     tuiRef = undefined;
     if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
