@@ -111,11 +111,16 @@ status: accepted
 > stays observational only — no lifecycle, delivery, ownership, claim, wait,
 > abort, resume, or persistence effect.
 > Since #308 the roster is also main-task scoped: the controller tracks a
-> session-scoped visibility epoch that advances only when a real prompt is
-> submitted to main — Pi emits the `input` event inside `session.prompt` with
-> an interactive or rpc source, after slash-command handling and never for
-> local `!` shell commands, while extension follow-ups such as the Config
-> Guide carry `source: "extension"` and never advance it. Ordinary terminal
+> session-scoped visibility epoch that advances only where main provably
+> accepted a real prompt — `before_agent_start` for an idle interactive or
+> rpc prompt (Pi emits it after preflight, once the message array is built)
+> and the user `message_start` for a steer or follow-up queued during a
+> streaming run — because the `input` event alone proves nothing: a later
+> extension may return `action: "handled"` from the input chain so
+> `session.prompt` never sends the prompt, a preflight failure never starts
+> a run, slash commands and local `!` shell commands never reach the chain,
+> and extension follow-ups such as the Config Guide carry
+> `source: "extension"` and never advance it. Ordinary terminal
 > rows of the preceding task expire at that boundary, active children survive
 > it and join the current epoch when they later terminalize, a re-queued
 > public ID becomes visible again immediately, and the epoch is presentation
