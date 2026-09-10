@@ -374,7 +374,7 @@ export interface SubagentRosterController {
    * visibility epoch so the preceding task's ordinary terminal rows expire,
    * while active rows survive and join the new epoch when they terminalize.
    */
-  handleMainInput(source: unknown): void;
+  advanceMainTaskEpoch(): void;
 }
 
 export interface SubagentRosterOptions {
@@ -1110,11 +1110,9 @@ export function createSubagentRosterController(
      * because the `input` event alone cannot prove submission: a later
      * extension may return action:"handled" from the input chain, and a
      * preflight failure never starts a run. Slash commands, local `!` shell
-     * commands, and drafts never reach those boundaries; the source check
-     * keeps extension continuations out as defense in depth.
+     * commands, drafts, and extension continuations never reach this method.
      */
-    handleMainInput(source) {
-      if (source === "extension") return;
+    advanceMainTaskEpoch() {
       taskEpoch += 1;
       refresh();
     },

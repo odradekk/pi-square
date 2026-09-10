@@ -7,6 +7,8 @@ type StreamingMode = "steer" | "followUp";
 interface StreamingInput {
   source: InputSource;
   textHash: string;
+  observedAt: number;
+  sequence: number;
 }
 
 interface MainTaskInputObservation {
@@ -18,7 +20,7 @@ interface MainTaskInputObservation {
 interface MainTaskInputCorrelator {
   observeInput(event: MainTaskInputObservation, hasPendingMessages: boolean): void;
   beginAgentRun(): boolean;
-  observeUserMessage(content: unknown): boolean;
+  observeUserMessage(message: { content?: unknown; timestamp?: unknown }): boolean;
   endAgentRun(): void;
   resetSession(): void;
 }
@@ -46,13 +48,15 @@ function messageText(content: unknown): string {
  * Correlates Pi's pre-chain input source with the user message that the agent
  * actually accepts. Pi exposes no post-input-chain event for streaming input:
  * a later extension can handle an input after this extension observed it, so
- * correlation combines text hashes with Pi's public pending-message signal.
+ * correlation combines text hashes, native enqueue timestamps, and Pi's
+ * public pending-message signal.
  */
 function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
   let pendingIdleSource: InputSource | undefined;
   const queuedSteers: StreamingInput[] = [];
   const queuedFollowUps: StreamingInput[] = [];
   let skipInitialUserMessage = false;
+  let nextSequence = 0;
 
   const clearStreaming = () => {
     queuedSteers.length = 0;
@@ -63,6 +67,7 @@ function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
   const reset = () => {
     pendingIdleSource = undefined;
     clearStreaming();
+    nextSequence = 0;
   };
 
   return {
@@ -81,7 +86,12 @@ function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
       // observation was either handled downstream or already drained.
       if (!hasPendingMessages) clearStreaming();
       const queue = mode === "followUp" ? queuedFollowUps : queuedSteers;
-      queue.push({ source, textHash: textHash(String(event.text ?? "")) });
+      queue.push({
+        source,
+        textHash: textHash(String(event.text ?? "")),
+        observedAt: Date.now(),
+        sequence: nextSequence++,
+      });
     },
 
     beginAgentRun() {
@@ -94,39 +104,40 @@ function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
       return source === "real";
     },
 
-    observeUserMessage(content) {
+    observeUserMessage(message) {
       if (skipInitialUserMessage) {
         skipInitialUserMessage = false;
         return false;
       }
 
-      const expectedHash = textHash(messageText(content));
-      const steerMatches = queuedSteers
-        .map((entry, index) => ({ entry, index }))
-        .filter(({ entry }) => entry.textHash === expectedHash);
-      const followUpMatches = queuedFollowUps
-        .map((entry, index) => ({ entry, index }))
-        .filter(({ entry }) => entry.textHash === expectedHash);
-      const matches = [...steerMatches, ...followUpMatches];
-      if (matches.length === 0) {
-        // A later handler transformed the text. Pi drains steering before
-        // follow-ups and preserves FIFO order within each queue, so the next
-        // recorded source is the only public correlation available.
-        const transformed = queuedSteers.shift() ?? queuedFollowUps.shift();
-        return transformed?.source === "real";
-      }
+      const expectedHash = textHash(messageText(message.content));
+      const timestamp = typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
+        ? message.timestamp
+        : undefined;
+      const candidates = [
+        ...queuedSteers.map((entry, index) => ({ entry, index, mode: "steer" as const })),
+        ...queuedFollowUps.map((entry, index) => ({ entry, index, mode: "followUp" as const })),
+      ];
+      const timestampCandidates = timestamp === undefined
+        ? candidates
+        : candidates.filter(({ entry }) => entry.observedAt <= timestamp);
+      const eligible = timestampCandidates.length > 0 ? timestampCandidates : candidates;
+      const matchingText = eligible.filter(({ entry }) => entry.textHash === expectedHash);
+      const pool = matchingText.length > 0 ? matchingText : eligible;
+      const accepted = pool.sort((left, right) => (
+        left.entry.observedAt - right.entry.observedAt || left.entry.sequence - right.entry.sequence
+      )).at(-1);
+      if (accepted === undefined) return false;
 
-      const steer = steerMatches[0];
-      if (steer !== undefined) {
-        queuedSteers.splice(0, steer.index + 1);
-        return steer.entry.source === "real";
+      if (accepted.mode === "steer") {
+        queuedSteers.splice(0, accepted.index + 1);
+        return accepted.entry.source === "real";
       }
-      const followUp = followUpMatches[0]!;
       // Pi drains steering before follow-ups. Reaching a known follow-up proves
       // every unmatched steering observation was handled downstream.
       queuedSteers.length = 0;
-      queuedFollowUps.splice(0, followUp.index + 1);
-      return followUp.entry.source === "real";
+      queuedFollowUps.splice(0, accepted.index + 1);
+      return accepted.entry.source === "real";
     },
 
     endAgentRun: reset,
@@ -151,7 +162,7 @@ export function registerMainTaskInputEvents(pi: ExtensionAPI, onRealInput: () =>
     correlator.endAgentRun();
   });
   pi.on("message_start", (event) => {
-    if (event.message.role === "user" && correlator.observeUserMessage(event.message.content)) {
+    if (event.message.role === "user" && correlator.observeUserMessage(event.message)) {
       onRealInput();
     }
   });

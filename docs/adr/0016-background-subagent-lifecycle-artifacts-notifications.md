@@ -122,9 +122,10 @@ status: accepted
 > and extension follow-ups such as the Config Guide carry
 > `source: "extension"` and never advance it. Because Pi 0.84.2 exposes no
 > post-chain streaming-input event, `src/subagents/main-task-input.ts`
-> correlates pre-chain observations with accepted user messages by text hash,
-> keeps steer and follow-up order separate, and uses Pi's public pending-message
-> signal to discard observations that a later handler consumed. It resets at
+> correlates pre-chain observations with accepted user messages by text hash
+> and the native enqueue timestamp, keeps steer and follow-up order separate,
+> and uses Pi's public pending-message signal to discard observations that a
+> later handler consumed. It resets at
 > every run end, new idle run, session start, and session shutdown, so a
 > handled or aborted input cannot contaminate a later run or replacement
 > session. Ordinary terminal

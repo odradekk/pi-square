@@ -85,7 +85,7 @@ export default function registerSubagents(
         display: () => typeof runtime === "function" ? runtime() : runtime,
       },
   );
-  registerMainTaskInputEvents(pi, () => roster.handleMainInput("interactive"));
+  registerMainTaskInputEvents(pi, () => roster.advanceMainTaskEpoch());
 
   registerSubagentTool(
     pi,

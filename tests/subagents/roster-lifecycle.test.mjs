@@ -153,8 +153,9 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   // short-circuits the chain so session.prompt never sends the prompt, and
   // action:"transform" rewrites the text later handlers see.
   const handlers = new Map();
-  let queuedStreamingMessages = 0;
-  const extensionCtx = { hasPendingMessages: () => queuedStreamingMessages > 0 };
+  const queuedSteers = [];
+  const queuedFollowUps = [];
+  const extensionCtx = { hasPendingMessages: () => queuedSteers.length + queuedFollowUps.length > 0 };
   const chain = {
     on(event, handler) {
       const list = handlers.get(event) ?? [];
@@ -247,7 +248,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   registerSubagentManager(pi, state, undefined);
 
   // Exercise the production event registrar rather than copying its ordering.
-  registerMainTaskInputEvents(pi, () => roster.handleMainInput("interactive"));
+  registerMainTaskInputEvents(pi, () => roster.advanceMainTaskEpoch());
   pi.on("agent_start", () => { delivery.handleAgentStart(); });
   pi.on("turn_end", (event) => { delivery.handleTurnEnd(event?.message); });
   pi.on("agent_end", (event) => { delivery.handleAgentEnd(event?.messages); });
@@ -312,7 +313,8 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   };
 
   const startSession = async (sessionCtx = ctx) => {
-    queuedStreamingMessages = 0;
+    queuedSteers.length = 0;
+    queuedFollowUps.length = 0;
     await chain.emit("session_start", { type: "session_start", reason: "startup" }, sessionCtx);
     state.sessionCtx = sessionCtx;
     blockingCallRegistry.terminateAll("session replaced");
@@ -375,7 +377,11 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
     const result = await chain.emitInput(text, source, streamingBehavior);
     if (result.action === "handled") return "handled";
     if (streamingBehavior) {
-      queuedStreamingMessages += 1;
+      const queue = streamingBehavior === "followUp" ? queuedFollowUps : queuedSteers;
+      queue.push({
+        text: result.action === "transform" ? result.text : text,
+        timestamp: Date.now(),
+      });
       return "queued";
     }
     if (preflightFail) return "preflight-failed";
@@ -390,11 +396,12 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   };
   /** Drains one queued streaming input the way the running agent does. */
   const drainStreamingInput = (text = "queued steering text") => {
-    queuedStreamingMessages = Math.max(0, queuedStreamingMessages - 1);
+    const queue = queuedSteers.length > 0 ? queuedSteers : queuedFollowUps;
+    const queued = queue.shift();
     chain.emitMessageStart({
       role: "user",
       content: [{ type: "text", text }],
-      timestamp: Date.now(),
+      timestamp: queued?.timestamp ?? Date.now(),
     });
   };
   const mainInput = (source = "interactive") => submitPrompt({ source });
@@ -795,6 +802,49 @@ test("a handled streaming input cannot contaminate the next accepted queued mess
     harness.drainStreamingInput("identical queued input");
     assert.equal(harness.widgetLines().length, 1, "the accepted extension message keeps the row");
   } finally {
+    harness.cleanup();
+  }
+});
+
+test("native enqueue timestamps isolate handled input while older messages remain queued", async () => {
+  const harness = lifecycleHarness();
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    // A keeps Pi's pending signal true while B is swallowed. C has B's text,
+    // so only the timestamp captured when C really entered Pi's queue can
+    // distinguish the two observations.
+    await harness.submitPrompt({ source: "extension", text: "queued A", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({ source: "extension", text: "collision", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = undefined;
+    await harness.submitPrompt({ source: "interactive", text: "collision", streamingBehavior: "steer" });
+    harness.drainStreamingInput("queued A");
+    assert.equal(harness.widgetLines().length, 1, "the older accepted extension message keeps the row");
+    harness.drainStreamingInput("collision");
+    assert.equal(harness.widgetLines().length, 0, "C uses its native enqueue timestamp and advances as real");
+
+    // Reverse B and C's sources: a swallowed real input must not make the
+    // accepted extension continuation expire the row.
+    await harness.startSession();
+    await harness.submitPrompt({ source: "extension", text: "queued A2", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({ source: "interactive", text: "collision 2", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = undefined;
+    await harness.submitPrompt({ source: "extension", text: "collision 2", streamingBehavior: "steer" });
+    harness.drainStreamingInput("queued A2");
+    harness.drainStreamingInput("collision 2");
+    assert.equal(harness.widgetLines().length, 1, "C remains an extension continuation");
+  } finally {
+    Date.now = realNow;
     harness.cleanup();
   }
 });
@@ -1349,7 +1399,7 @@ test("teardown cancels a pending coalesced repaint and never repaints afterwards
     assert.equal(pending.length, 1, "one coalesced repaint timer is pending");
     assert.equal(renders.count, paintedAtOpen + 1, "the second delta did not paint inside the window");
 
-    controller.handleMainInput("interactive");
+    controller.advanceMainTaskEpoch();
     controller.stop();
 
     const pendingAfter = [...timers.entries.values()].filter((entry) => !entry.cancelled);
