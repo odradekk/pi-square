@@ -110,8 +110,26 @@ status: accepted
 > extension-visible wheel events under Pi 0.84.2. Every view-state transition
 > stays observational only — no lifecycle, delivery, ownership, claim, wait,
 > abort, resume, or persistence effect.
-> The remaining lifecycle/delivery qualification of the parent viewer
-> specification (#302) remains in later slices (#308–#309).
+> Since #308 the roster is also main-task scoped: the controller tracks a
+> session-scoped visibility epoch that advances only when a real prompt is
+> submitted to main — Pi emits the `input` event inside `session.prompt` with
+> an interactive or rpc source, after slash-command handling and never for
+> local `!` shell commands, while extension follow-ups such as the Config
+> Guide carry `source: "extension"` and never advance it. Ordinary terminal
+> rows of the preceding task expire at that boundary, active children survive
+> it and join the current epoch when they later terminalize, a re-queued
+> public ID becomes visible again immediately, and the epoch is presentation
+> state only: the store's finished-job compaction and pending/claimed
+> delivery exemptions remain the single retention authority and the manager
+> keeps historical inspection. Parent replacement, reload, fork, resume, and
+> shutdown close the overlay, clear widget and view state, unsubscribe every
+> listener, and cancel repaint work, while the established shutdown path
+> keeps sole authority over aborting active children and resetting delivery;
+> opening and using the viewer never claims, takes, releases, confirms,
+> sends, drops, or reorders a result and never changes resume eligibility,
+> and non-interactive contexts create no roster, overlay, key listener,
+> timer, or output change. The release-facing documentation audit of the
+> parent viewer specification (#302) remains a later slice (#309).
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,
