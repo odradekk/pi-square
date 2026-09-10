@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolveChildSessionFile } from "./artifacts";
 import { clipWithHeadTail } from "./confirmed-delivery";
@@ -69,6 +70,8 @@ const EMPTY_BUFFER = Buffer.alloc(0);
 
 interface TranscriptIdentity {
   entryId?: string;
+  /** Native JSONL byte offset; internal ordering identity, never rendered. */
+  entryByteOffset?: number;
   /** Stable ordinal of this projected item inside its native session entry. */
   entryItemIndex?: number;
 }
@@ -80,6 +83,12 @@ export type TranscriptItem = (
     kind: "toolCall";
     name: string;
     summary: string;
+    /**
+     * Non-reversible key of the native tool-call id for live/persisted
+     * reconciliation; internal identity only, never rendered, and the raw id
+     * never enters the projection.
+     */
+    callKey?: string;
     durationMs?: number;
     result?: { isError: boolean };
   }
@@ -104,7 +113,7 @@ export interface OpenToolCallRef {
 
 /** One unpaired tool result in entry order, for page stitching. */
 export interface OrphanToolResultRef {
-  callId: string;
+  callKey: string;
   isError: boolean;
   endedAt?: number;
   /** Index into the projected items of the orphan's generic row. */
@@ -132,6 +141,58 @@ function safeEntryText(text: unknown): string {
   return clipWithHeadTail(sanitizeSubagentDisplay(text), MAX_ENTRY_TEXT);
 }
 
+
+/** One bounded display-safe assistant content part. */
+export type AssistantTextPart =
+  | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string };
+
+/** Hard part-count bound of the shared assistant projection, both sides. */
+export const MAX_ASSISTANT_PARTS = 512;
+
+/**
+ * Non-reversible identity of one native tool-call id, shared by the persisted
+ * projection and the live viewer tail so live tool rows reconcile against
+ * their own persisted call rows without the raw id ever entering a projected
+ * item or a rendered line.
+ */
+export function callKeyOf(nativeCallId: string): string {
+  return createHash("sha256").update(nativeCallId).digest("hex");
+}
+
+/**
+ * Bounded non-reversible identity of one already-bounded assistant content
+ * projection. Live events and persisted rows use this instead of retaining a
+ * second copy of the projected text in omission bookkeeping.
+ */
+export function assistantContentKey(content: readonly AssistantTextPart[]): string {
+  return createHash("sha256").update(JSON.stringify(content)).digest("hex");
+}
+
+/**
+ * The ordered bounded text/thinking projection of assistant message content,
+ * shared by the persisted transcript projection and the live viewer tail so a
+ * message rendered live matches its persisted counterpart exactly — the
+ * equality the live/persisted reconciliation confirms against. Both sides
+ * carry the same per-part budget and the same part-count bound, so the
+ * projection of one message is always finite and identical everywhere.
+ */
+export function boundedAssistantTextParts(content: unknown): AssistantTextPart[] {
+  const parts: AssistantTextPart[] = [];
+  if (!Array.isArray(content)) return parts;
+  for (const part of content) {
+    if (parts.length >= MAX_ASSISTANT_PARTS) break;
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text") {
+      const text = safeEntryText(part.text);
+      if (text) parts.push({ type: "text", text });
+    } else if (part.type === "thinking") {
+      const thinking = safeEntryText(part.thinking);
+      if (thinking) parts.push({ type: "thinking", thinking });
+    }
+  }
+  return parts;
+}
 type TextContentPart = { kind: "text"; text: string } | { kind: "unsupported" };
 
 /** Ordered text/fallback projection for user and visible custom content. */
@@ -159,12 +220,13 @@ function projectTextContent(content: unknown): TextContentPart[] {
  * entries, labels, and metadata entries are ignored, and every rendered text
  * is a display-safe projection — sanitized, redacted, and clipped — before it
  * reaches Pi's components or a generic fallback. Entries carry their native
- * entry id (`entryId`) so callers can key positions by stable identity rather
- * than array offset. Tool calls keep their conversational order and state but
+ * entry id (`entryId`) and, for native paged reads, their exact JSONL line-start
+ * offset, so callers can key positions and reconcile live completions without
+ * holding raw history. Tool calls keep their conversational order and state but
  * project only through the roster-grade allowlisted identity/summary seam the
  * roster rows share: raw arguments, result payloads, and call IDs never enter
- * an item a renderer can show (the call ID exists only to pair a result with
- * its call and is never rendered). Content that is out of scope but
+ * an item a renderer can show (only a bounded non-reversible call key pairs a
+ * result with its call and is never rendered). Content that is out of scope but
  * conversationally meaningful becomes one non-empty sanitized generic line
  * instead of silently disappearing.
  */
@@ -172,6 +234,7 @@ export function projectSessionEntries(
   entries: readonly unknown[],
   windowSize = 24,
   observedAt?: number,
+  entryByteOffsets: ReadonlyMap<string, number> = new Map(),
 ): ChildTranscriptProjection {
   const projected: TranscriptItem[] = [];
   const openCalls = new Map<string, OpenToolCallRef>();
@@ -239,7 +302,7 @@ export function projectSessionEntries(
       // Pi renders one assistant message component, then the message's tool
       // rows, whose later results update in place. Keep that native grouping;
       // unsupported provider parts remain visible as generic rows afterward.
-      const boundedContent: Array<Record<string, unknown>> = [];
+      const boundedContent = boundedAssistantTextParts(content);
       const assistantItems: Array<TranscriptItem & { kind: "assistant" }> = [];
       const calls: Array<TranscriptItem & { kind: "toolCall" }> = [];
       const unsupported: TranscriptItem[] = [];
@@ -249,37 +312,46 @@ export function projectSessionEntries(
           unsupported.push(genericLine("unsupported assistant content", entryId));
           continue;
         }
-        if (part.type === "text") {
-          const text = safeEntryText(part.text);
-          if (text) boundedContent.push({ type: "text", text });
-        } else if (part.type === "thinking") {
-          const thinking = safeEntryText(part.thinking);
-          if (thinking) boundedContent.push({ type: "thinking", thinking });
-        } else if (part.type === "toolCall") {
+        if (part.type === "toolCall") {
           // The roster-grade shared projection: cataloged identity plus
           // structural counts/ranges only; free-form paths, patterns, queries,
           // and commands never project, and unknown names stay anonymous.
           const display = rosterToolArgsDisplay(String(part.name ?? ""), part.arguments);
+          // The native call id travels only as a non-reversible key so live
+          // tool rows reconcile against their own persisted call and result;
+          // the raw id never enters the projection anywhere.
+          const nativeCallId = typeof part.id === "string" ? part.id : undefined;
           const call = {
             kind: "toolCall",
             name: display.tool,
             summary: display.summary,
+            ...(nativeCallId !== undefined && nativeCallId !== "" ? { callKey: callKeyOf(nativeCallId) } : {}),
             ...(startedAt !== undefined && observedAt !== undefined
               ? { durationMs: Math.max(0, observedAt - startedAt) }
               : {}),
             ...(entryId !== undefined ? { entryId } : {}),
           } as TranscriptItem & { kind: "toolCall" };
           calls.push(call);
-          const callId = typeof part.id === "string" ? part.id : "";
-          if (callId) openCalls.set(callId, { item: call, startedAt });
-        } else {
+          if (nativeCallId !== undefined && nativeCallId !== "") {
+            openCalls.set(callKeyOf(nativeCallId), { item: call, startedAt });
+          }
+        } else if (part.type !== "text" && part.type !== "thinking") {
+          // Text and thinking parts already entered the bounded content
+          // projection above; only genuinely unsupported parts fall through.
           unsupported.push(genericLine("unsupported assistant content", entryId));
         }
       }
       if (boundedContent.length > 0) {
+        // The message timestamp travels with the projection as internal
+        // identity for live/persisted reconciliation; no renderer shows it.
+        const messageTimestamp = timestamp((message as { timestamp?: unknown }).timestamp);
         const item = {
           kind: "assistant",
-          message: { role: "assistant", content: boundedContent },
+          message: {
+            role: "assistant",
+            content: boundedContent,
+            ...(messageTimestamp !== undefined ? { timestamp: messageTimestamp } : {}),
+          },
           ...(entryId !== undefined ? { entryId } : {}),
         } as const;
         projected.push(item);
@@ -319,7 +391,8 @@ export function projectSessionEntries(
       // state so the ordered call/result conversation stays readable.
       const result = message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
       const callId = typeof result.toolCallId === "string" ? result.toolCallId : "";
-      const open = callId ? openCalls.get(callId) : undefined;
+      const callKey = callId ? callKeyOf(callId) : "";
+      const open = callKey ? openCalls.get(callKey) : undefined;
       if (open) {
         open.item.result = { isError: result.isError === true };
         const endedAt = entryTimestamp;
@@ -335,7 +408,7 @@ export function projectSessionEntries(
         const name = typeof result.toolName === "string" ? result.toolName : "";
         projected.push(genericLine(`tool result: ${rosterToolArgsDisplay(name, undefined).tool}`, entryId));
         orphanResults.push({
-          callId,
+          callKey,
           isError: result.isError === true,
           ...(entryTimestamp !== undefined ? { endedAt: entryTimestamp } : {}),
           index: projected.length - 1,
@@ -354,6 +427,8 @@ export function projectSessionEntries(
   const entryOccurrences = new Map<string, number>();
   for (const item of projected) {
     if (item.entryId === undefined) continue;
+    const entryByteOffset = entryByteOffsets.get(item.entryId);
+    if (entryByteOffset !== undefined) item.entryByteOffset = entryByteOffset;
     const occurrence = entryOccurrences.get(item.entryId) ?? 0;
     item.entryItemIndex = occurrence;
     entryOccurrences.set(item.entryId, occurrence + 1);
@@ -474,9 +549,9 @@ export interface ChildHistoryOptions {
 interface PagePairing {
   openCalls: Map<string, OpenToolCallRef>;
   /**
-   * Unpaired results by call ID. `itemIndex` is stable within the full page
-   * projection; `index` locates the row inside the retained window or is null
-   * while that row lies outside it.
+   * Unpaired results by non-reversible call key. `itemIndex` is stable within
+   * the full page projection; `index` locates the row inside the retained
+   * window or is null while that row lies outside it.
    */
   results: Map<string, { isError: boolean; endedAt?: number; index: number | null; itemIndex: number }>;
 }
@@ -652,7 +727,12 @@ export class ChildHistoryPager implements ChildHistoryView {
       }
       const lastNewline = tail.lastIndexOf(NEWLINE);
       const startAt = tailStart === 0 ? 0 : firstNewline + 1;
-      const group = this.parseGroup(tail, collectCompleteLines(tail, startAt), this.pages);
+      const group = this.parseGroup(
+        tail,
+        collectCompleteLines(tail, startAt),
+        this.pages,
+        { sliceStart: tailStart },
+      );
       this.pages.push({
         readStart: tailStart,
         parsedStart: tailStart + startAt,
@@ -731,6 +811,7 @@ export class ChildHistoryPager implements ChildHistoryView {
         data,
         [...(firstLine.length > 0 ? [{ start: -1, end: firstLine.length }] : []), ...interior],
         this.pages,
+        { sliceStart: cursor, stitchedStart: start },
         firstLine,
       );
       const trailing = data.subarray(lastNewline + 1);
@@ -814,6 +895,7 @@ export class ChildHistoryPager implements ChildHistoryView {
       read.data,
       collectCompleteLines(read.data, 0),
       others,
+      { sliceStart: page.parsedStart },
       undefined,
       page.consumedResults,
     );
@@ -848,7 +930,13 @@ export class ChildHistoryPager implements ChildHistoryView {
     const lines = collectCompleteLines(slice, startAt);
     const straddle = Buffer.concat([slice.subarray(lastNewline + 1), stitch]);
     const ordered = [...lines, ...(straddle.length > 0 ? [{ start: -1, end: straddle.length }] : [])];
-    const group = this.parseGroup(slice, ordered, this.pages, straddle);
+    const group = this.parseGroup(
+      slice,
+      ordered,
+      this.pages,
+      { sliceStart: target, stitchedStart: target + lastNewline + 1 },
+      straddle,
+    );
     this.pages.unshift({
       readStart: target,
       parsedStart: target + startAt,
@@ -888,7 +976,12 @@ export class ChildHistoryPager implements ChildHistoryView {
       // slice; its leading bytes here are dropped, never parsed as history.
       const lastNewline = slice.lastIndexOf(NEWLINE);
       const startAt = target === 0 ? 0 : firstNewline + 1;
-      const group = this.parseGroup(slice, collectCompleteLines(slice, startAt), this.pages);
+      const group = this.parseGroup(
+        slice,
+        collectCompleteLines(slice, startAt),
+        this.pages,
+        { sliceStart: target },
+      );
       this.pages.unshift({
         readStart: target,
         parsedStart: target + startAt,
@@ -920,6 +1013,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     slice: Buffer,
     lines: ReadonlyArray<{ start: number; end: number }>,
     others: readonly HistoryPage[],
+    locations: { sliceStart: number; stitchedStart?: number },
     stitchedFirstLine?: Buffer,
     consumedResults: ReadonlyMap<string, { isError: boolean; endedAt?: number }> = new Map(),
   ): {
@@ -933,6 +1027,7 @@ export class ChildHistoryPager implements ChildHistoryView {
   } {
     const entries: unknown[] = [];
     const entryIds = new Set<string>();
+    const entryByteOffsets = new Map<string, number>();
     for (const line of lines) {
       let entry: unknown;
       if (line.start === -1) {
@@ -948,9 +1043,12 @@ export class ChildHistoryPager implements ChildHistoryView {
         if (page.entryIds.has(id)) throw new Error("duplicate entry id across pages");
       }
       entryIds.add(id);
+      const entryByteOffset = line.start === -1 ? locations.stitchedStart : locations.sliceStart + line.start;
+      if (entryByteOffset === undefined) throw new Error("stitched entry has no byte offset");
+      entryByteOffsets.set(id, entryByteOffset);
       entries.push(entry);
     }
-    const full = projectSessionEntries(entries, Number.POSITIVE_INFINITY, this.observedAt);
+    const full = projectSessionEntries(entries, Number.POSITIVE_INFINITY, this.observedAt, entryByteOffsets);
     suppressConsumedResults(full, consumedResults);
     const groupCount = full.items.length;
     if (groupCount <= MAX_LOADED_ITEMS) {
@@ -1135,7 +1233,7 @@ function suppressConsumedResults(
 ): void {
   if (consumed.size === 0) return;
   const dropped = full.orphanResults
-    .filter((orphan) => consumed.has(orphan.callId))
+    .filter((orphan) => consumed.has(orphan.callKey))
     .map((orphan) => orphan.index)
     .sort((left, right) => left - right);
   for (let index = dropped.length - 1; index >= 0; index -= 1) {
@@ -1144,7 +1242,7 @@ function suppressConsumedResults(
   let droppedBefore = 0;
   const remaining: OrphanToolResultRef[] = [];
   for (const orphan of full.orphanResults) {
-    if (consumed.has(orphan.callId)) {
+    if (consumed.has(orphan.callKey)) {
       droppedBefore += 1;
       continue;
     }
@@ -1161,7 +1259,7 @@ function pagePairing(full: ChildTranscriptProjection, from: number, length = ful
   }
   const results = new Map<string, { isError: boolean; endedAt?: number; index: number | null; itemIndex: number }>();
   for (const orphan of full.orphanResults) {
-    results.set(orphan.callId, {
+    results.set(orphan.callKey, {
       isError: orphan.isError,
       ...(orphan.endedAt !== undefined ? { endedAt: orphan.endedAt } : {}),
       index: orphan.index >= from && orphan.index < from + length ? orphan.index - from : null,

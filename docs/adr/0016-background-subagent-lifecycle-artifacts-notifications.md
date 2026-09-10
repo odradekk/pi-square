@@ -42,12 +42,47 @@ status: accepted
 > metadata-only pages compact without displacing the current visible anchor,
 > stable native-entry-identity plus entry-local-ordinal positioning, and
 > cross-page result consumption that survives either adjacent page's reload —
-> with no second transcript store, cache,
-> index, sidecar, lock, journal, or artifact version beside the native
-> session file, and no claim on Pi's private transcript pipeline. Live
-> streaming, cross-child navigation with per-child reading state, and the
-> remaining lifecycle/delivery qualification of the parent viewer
-> specification (#302) stay later slices.
+> with no second transcript store, cache, index, sidecar, lock, journal, or
+> artifact version beside the native session file. Since #306 the overlay is
+> live while the child runs: the one-time child execution boundary derives
+> ordered bounded view events (assistant deltas as ordered text/thinking parts,
+> message completion, tool start/update/end, tool-result completion, and run
+> lifecycle) after its own run-state bookkeeping and hashes native call IDs
+> before they enter the feed. An unobserved child retains no events. For an
+> open observer, publication only enqueues into the session generation's hard-
+> bounded ordered FIFO; omission markers count inside the same cap. Ordinary
+> updates drain one per scheduler tick. Before a queued structural boundary,
+> superseded no-op tool updates are discarded and cumulative assistant deltas
+> reduce to their newest state; the remaining ordered prefix drains through
+> the newest boundary while a 25 ms total flush budget remains, and a slow
+> observer yields the remainder. The default two-stage scheduler gives the
+> child a continuation turn before viewer work and never invokes a subscriber
+> inside the child's event dispatch. A real 25 ms
+> JavaScript watchdog interrupts and evicts a throwing or blocked subscriber;
+> scheduler failure never falls back inline. Parent-session replacement
+> installs a new feed generation, and a running child keeps its publisher
+> captured to the old generation, so late events cannot enter the replacement.
+> The open overlay renders a bounded live tail below persisted history through
+> the same sanitized assistant and roster-grade tool projections, coalesces
+> ordinary repaint requests through one controller-owned timer (~110 ms), and
+> repaints structural events at their first flush. Immediately before Pi 0.84.2
+> persists each completed message, the event captures the native session JSONL
+> size; persisted projections carry their exact line-start byte offsets. A live
+> completion reconciles only against the same bounded content hash and native
+> timestamp whose line begins exactly at that pre-append floor. Pi persists
+> each message-end before emitting the next, so equal occurrences remain exact across delayed
+> delivery and demand paging without a lifetime consumed-occurrence ledger. A
+> missing floor or byte offset fails closed and leaves the bounded live row or
+> omission marker visible.
+> Live and persisted tool rows share the same non-reversible hash of the full
+> native call ID. Overflow sheds oldest-first, keeps unknown drops visibly
+> sticky, and clears a terminal-tool fingerprint only after its result appears.
+> A child that terminalizes while open stays open with final lifecycle and
+> content. Observer and renderer failures remain bounded presentation failures
+> and never touch the lifecycle, delivery, ownership, or persistence contracts
+> this ADR records.
+> The remaining lifecycle/delivery qualification of the parent viewer
+> specification (#302) remains in later slices (#307–#309).
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,

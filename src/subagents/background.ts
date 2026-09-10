@@ -3,6 +3,7 @@ import { artifactsDirFor } from "./artifacts";
 import type { ParentContextMessage } from "./context";
 import type { SubagentDefinition } from "./definitions";
 import { applyRunFailure, createSubagentError, normalizeSubagentError } from "./errors";
+import { type ChildViewEvent, type ChildViewFeed, createChildViewFeed } from "./live-events";
 import { resumeSubagentTask, runSubagentTask } from "./session";
 import { createDeliveryController, type DeliveryController } from "./delivery";
 import type {
@@ -42,6 +43,14 @@ export interface BackgroundState {
    * (headless unit-test lifecycles) has nowhere to deliver and keeps none.
    */
   delivery?: DeliveryController;
+  /**
+   * Session-scoped ephemeral live view feed (#306): ordered child view events
+   * published by running jobs only while the roster controller observes their
+   * open overlay. Delivery runs outside child dispatch through one bounded
+   * queue; there is no persistence, and session replacement installs a new
+   * generation while shutdown clears the current one.
+   */
+  viewFeed?: ChildViewFeed;
 }
 
 const MAX_FINISHED_JOBS = 20;
@@ -180,7 +189,13 @@ function deliverCompletion(pi: ExtensionAPI | undefined, state: BackgroundState,
 
 /** Creates the session-owned background job store for subagent runs. */
 export function createBackgroundState(): BackgroundState {
-  return { jobs: new Map(), listeners: new Set() };
+  return { jobs: new Map(), listeners: new Set(), viewFeed: createChildViewFeed() };
+}
+
+/** Replaces the ephemeral feed so publishers from an older parent generation stay fenced out. */
+export function replaceBackgroundViewFeed(state: BackgroundState): void {
+  state.viewFeed?.clear();
+  state.viewFeed = createChildViewFeed();
 }
 
 export function subscribeBackgroundState(state: BackgroundState, listener: () => void): () => void {
@@ -364,6 +379,22 @@ export function cancelBackgroundJobs(input: {
   return details;
 }
 
+/**
+ * The guarded live-view publisher both start paths share (#306): publication
+ * captures the current session generation, only enqueues into its bounded
+ * FIFO, and keeps even a feed defect from reaching the child run.
+ */
+function viewEventPublisher(state: BackgroundState, job: BackgroundJob): (event: ChildViewEvent) => void {
+  const feed = state.viewFeed;
+  return (event) => {
+    try {
+      feed?.publish(job.id, event);
+    } catch {
+      // The live view feed is observational only.
+    }
+  };
+}
+
 function startBackgroundLifecycle(input: {
   pi: ExtensionAPI;
   state: BackgroundState;
@@ -465,6 +496,7 @@ export function startBackgroundJob(input: {
     job: input.job,
     operation: "delegate",
     execute: (onUpdate) => runSubagentTask({
+      onViewEvent: viewEventPublisher(input.state, input.job),
       ctx: input.ctx,
       id: input.job.id,
       task: input.task,
@@ -501,6 +533,7 @@ export function startBackgroundResumeJob(input: {
     job: input.job,
     operation: "resume",
     execute: (onUpdate) => resumeSubagentTask({
+      onViewEvent: viewEventPublisher(input.state, input.job),
       ctx: input.ctx,
       id: input.job.id,
       task: input.task,
