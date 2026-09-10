@@ -843,6 +843,35 @@ test("native enqueue timestamps isolate handled input while older messages remai
     harness.drainStreamingInput("queued A2");
     harness.drainStreamingInput("collision 2");
     assert.equal(harness.widgetLines().length, 1, "C remains an extension continuation");
+
+    // A transform can make C's final text equal B's raw text. The newer
+    // enqueue boundary still identifies C; text equality must not select B.
+    await harness.startSession();
+    now += 10;
+    await harness.submitPrompt({ source: "extension", text: "queued A3", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({ source: "extension", text: "transformed collision", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = { action: "transform", text: "transformed collision" };
+    await harness.submitPrompt({ source: "interactive", text: "original C3", streamingBehavior: "steer" });
+    harness.drainStreamingInput("queued A3");
+    harness.drainStreamingInput("transformed collision");
+    assert.equal(harness.widgetLines().length, 0, "a transformed real C wins over handled B's matching text");
+
+    await harness.startSession();
+    now += 10;
+    harness.foreignInput.response = undefined;
+    await harness.submitPrompt({ source: "extension", text: "queued A4", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({ source: "interactive", text: "transformed collision 2", streamingBehavior: "steer" });
+    now += 10;
+    harness.foreignInput.response = { action: "transform", text: "transformed collision 2" };
+    await harness.submitPrompt({ source: "extension", text: "original C4", streamingBehavior: "steer" });
+    harness.drainStreamingInput("queued A4");
+    harness.drainStreamingInput("transformed collision 2");
+    assert.equal(harness.widgetLines().length, 1, "a transformed extension C never inherits handled real B's text");
   } finally {
     Date.now = realNow;
     harness.cleanup();

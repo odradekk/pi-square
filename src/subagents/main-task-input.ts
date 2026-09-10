@@ -121,12 +121,20 @@ function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
       const timestampCandidates = timestamp === undefined
         ? candidates
         : candidates.filter(({ entry }) => entry.observedAt <= timestamp);
-      const eligible = timestampCandidates.length > 0 ? timestampCandidates : candidates;
-      const matchingText = eligible.filter(({ entry }) => entry.textHash === expectedHash);
-      const pool = matchingText.length > 0 ? matchingText : eligible;
-      const accepted = pool.sort((left, right) => (
-        left.entry.observedAt - right.entry.observedAt || left.entry.sequence - right.entry.sequence
-      )).at(-1);
+      let accepted: (typeof candidates)[number] | undefined;
+      if (timestampCandidates.length > 0) {
+        // The native timestamp is assigned immediately after the complete
+        // input chain accepts this message. Later handled observations can
+        // share its final text but cannot precede that enqueue boundary.
+        const latestObservedAt = Math.max(...timestampCandidates.map(({ entry }) => entry.observedAt));
+        const latest = timestampCandidates.filter(({ entry }) => entry.observedAt === latestObservedAt);
+        const matchingLatest = latest.filter(({ entry }) => entry.textHash === expectedHash);
+        accepted = (matchingLatest.length > 0 ? matchingLatest : latest).at(-1);
+      } else {
+        // Native user messages always carry timestamps. Keep a deterministic
+        // queue-order fallback for malformed test doubles or a clock rollback.
+        accepted = candidates.find(({ entry }) => entry.textHash === expectedHash) ?? candidates[0];
+      }
       if (accepted === undefined) return false;
 
       if (accepted.mode === "steer") {
