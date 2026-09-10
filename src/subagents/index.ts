@@ -126,6 +126,16 @@ export default function registerSubagents(
     }
   });
 
+  // Main-task visibility epoch (#308): a real prompt submitted to main —
+  // interactive or rpc input, never an extension continuation — expires the
+  // roster's ordinary terminal rows from the preceding task. Pi emits this
+  // event only inside `session.prompt`, after slash-command handling, and
+  // local `!` shell commands never reach it, so no further discrimination is
+  // needed here.
+  pi.on("input", (event) => {
+    roster.handleMainInput(event?.source);
+  });
+
   // Delivery timing. A running parent receives results at a turn boundary; a
   // parent that settled naturally receives them at once; a parent that the
   // user interrupted stays silent until it starts its next turn.
