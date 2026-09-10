@@ -94,14 +94,14 @@ test("escape closes, editing no-ops stay open, and shortcuts are suppressed", ()
   assert.deepEqual(classifyViewerInput(BACKSPACE), { kind: "ignore" });
   assert.deepEqual(classifyViewerInput(DELETE), { kind: "ignore" });
   assert.deepEqual(classifyViewerInput("\x08"), { kind: "ignore" }, "ctrl+h backspace stays open");
-  assert.deepEqual(classifyViewerInput(UP), { kind: "ignore" });
-  assert.deepEqual(classifyViewerInput(DOWN), { kind: "ignore" });
+  assert.deepEqual(classifyViewerInput(UP), { kind: "candidate", delta: -1 }, "up moves the roster candidate");
+  assert.deepEqual(classifyViewerInput(DOWN), { kind: "candidate", delta: 1 }, "down moves the roster candidate");
   assert.deepEqual(classifyViewerInput(PAGE_UP), { kind: "scroll", delta: -1 }, "page up scrolls the transcript");
   assert.deepEqual(classifyViewerInput(PAGE_DOWN), { kind: "scroll", delta: 1 }, "page down scrolls the transcript");
   assert.deepEqual(classifyViewerInput(HOME), { kind: "jump", to: "start" }, "home jumps toward the earliest entry");
   assert.deepEqual(classifyViewerInput(END), { kind: "jump", to: "end" }, "end jumps to the newest edge");
   assert.deepEqual(classifyViewerInput("\x1b[C"), { kind: "ignore" }, "right arrow suppressed");
-  assert.deepEqual(classifyViewerInput(ENTER), { kind: "ignore" }, "enter never submits through the overlay");
+  assert.deepEqual(classifyViewerInput(ENTER), { kind: "confirm" }, "enter confirms a candidate and never submits through the overlay");
   assert.deepEqual(classifyViewerInput("\t"), { kind: "ignore" });
   assert.deepEqual(classifyViewerInput("\x03"), { kind: "ignore" }, "ctrl+c suppressed with the other shortcuts");
   assert.deepEqual(classifyViewerInput("\x1ba"), { kind: "ignore" }, "alt-modified keys are not replayed");
