@@ -421,6 +421,50 @@ rewrite existing Memory blocks.
 
 ## Limitations
 
+### Continuity qualification
+
+`npm run qualify:continuity -- --real` runs the fixed 16-session matrix on a
+clean checkout: Sonnet 5 (`ccr-claude/claude-sonnet-5`) runs three source
+positions for each of four scenarios; GLM 5.3 (`cpa/glm-5.3`) runs each
+scenario's canonical position. Models and authentication resolve through
+Pi's configured runtime. The scenarios cover exact work facts, revised
+constraints, an abandoned sibling branch, and original-source recovery.
+
+The driver loads pi-square into real Pi `AgentSession`s and calls public
+`prompt()` and tree-navigation APIs. Pi owns message history, tool execution,
+provider conversion, usage, and compaction. The session journal is native but
+in-memory; this suite does not qualify on-disk resume. Offline tests replace
+only the provider boundary, not Pi or the plugin. There is no hand-built
+wire payload, fake read/bash, injected summary, fixed token usage, or forced
+single tool continuation.
+
+Authoritative facts occur before compression. Subsequent checkpoints perform
+ordinary read and process-execution work without repeating recall questions;
+one final prompt asks the model to write a structured handoff file, without
+supplying its expected values. The test uses a declared 100k context window,
+3500-token due threshold, 1% Memory budget, and 200-token recent tail, with
+native automatic compaction and retries disabled. Up to twelve checkpoints
+must naturally produce at least one append and two rebuilds. The driver
+checks that original facts are covered by the retained Memory, that the first
+final request does not carry raw source answers outside Memory, and that the
+workspace has not been used to store answers before the final task. Source
+recovery additionally requires all pages of a block covering the original
+brief. Missing coverage is **inconclusive**, not evidence of memory failure.
+
+The oracle validates exact JSON fields, primitive types, unknown values,
+superseded decisions, and the complete unique 16-cell matrix. It does not use
+substring matching or an LLM judge. Critical recall must be 100%; supporting
+continuity recall must reach 85% overall and 75% per scenario. Canonical final
+tasks must succeed on both models; noncanonical supporting-field misses are
+governed by those recall thresholds. Reports separate integrity, coverage, and
+task outcome; bounded private evidence and attempt records support the human
+review in `tests/context-memory/continuity/rubric.md`. A machine pass always
+requires human review, including semantic failures that field checks cannot
+detect. Reports remain gitignored and outside the npm package. The new
+offline regressions prove the harness, not real-model continuity quality.
+
+### Runtime and evidence limits
+
 - Experimental: the wrapper format, advisories, tool contracts, and
   `/context` presentation may change before any stability commitment, and a
   format change invalidates existing Memory compactions (they become opaque

@@ -1,418 +1,93 @@
 import { SEVERE_CLASSES } from "../qualification/harness.mjs";
+import { PRIMARY_ARM_VARIANTS, SCENARIOS } from "./scenarios.mjs";
 
-/**
- * The deterministic continuity oracle engine (#224, revised by #261 and #265).
- *
- * Scoring reads exactly two inputs: the predeclared oracle of one scenario
- * script and the bounded run evidence captured by an adapter. There is no LLM
- * judge anywhere in this pipeline. Matching is case-insensitive substring
- * containment over the recorded assistant answers of declared probe turns —
- * deliberately dumb, so it can only under-approximate model quality, never
- * excuse it.
- *
- * #265: the oracle scores facts, not phrasings. Every scored fact carries a
- * predeclared set of phrasings — recall succeeds when ANY phrasing of the
- * fact appears — and each element of the final task's `requires` is the same
- * kind of phrasing set for one required fact. The alternates are derived
- * only from the fact's own structure and established domain synonyms, and
- * the fixture tests assert no accepting phrasing matches its item's
- * corruption vocabulary, so the widening can never admit a corrupted value.
- *
- * #261: the instrument scores recall, not prose style or verbosity. Every
- * scored turn's fixture question asks for exactly the items scored there, so
- * answering exactly what was asked earns full marks; a trap passes when no
- * concrete value is promoted, whatever the refusal's phrasing; and the
- * compression schedule is fixture-owned through seeded Memory.
- * The six severe failure classes of #215's testing decisions are counted
- * separately and never blended with recall, compression, or cost numbers:
- * recall and economics answer different questions and live in different
- * report sections.
- */
+// These six counters are bounded machine-detected signals, not an exhaustive
+// semantic judge. In particular, no counter is inferred from free prose.
+const emptySevere = () => Object.fromEntries(SEVERE_CLASSES.map((name) => [name, 0]));
+const prerequisite = (value) => value && typeof value.ok === "boolean" && Array.isArray(value.failures);
 
-const CLASS_OF_FAMILY = {
-  "forbidden-claim": "fabrication",
-  "constraint-claim": "negative-constraint",
-  "constraint-action": "negative-constraint",
-  "branch-visibility": "branch-contamination",
-  "memory-purity": "branch-contamination",
-  "trap-promotion": "uncertainty-promotion",
-  "item-corruption": "exact-detail-corruption",
-  "item-drift": "recursive-drift",
-};
-
-/** Non-severe check families that still block the release gate. */
-const HARD_FAMILIES = new Set([
-  "final-task-incomplete",
-  "trap-unanswered",
-  "source-read-missing",
-  "source-read-block",
-  "source-read-unverified",
-  "compression-schedule",
-  "run-error",
-]);
-
-function contains(text, pattern) {
-  return typeof text === "string" && text.toLowerCase().includes(pattern.toLowerCase());
-}
-
-function emptySevere() {
-  return Object.fromEntries(SEVERE_CLASSES.map((klass) => [klass, 0]));
-}
-
-function textOfTurn(evidence, turnId) {
-  const record = evidence.find((entry) => entry.turn === turnId);
-  return record ? record.assistantText : "";
-}
-
-/**
- * Score one executed run. `evidence` is the ordered per-turn record; `stats`
- * carries the adapter's mechanical tallies (observed compressions, Memory
- * purity). The result never contains fixture text — only ids, counts, and
- * states.
- */
-export function scoreRun({ run, evidence, oracle, stats }) {
-  const severe = emptySevere();
-  const failures = [];
-  const itemStatuses = [];
-
-  const fail = (family, id, message) => {
-    const klass = CLASS_OF_FAMILY[family];
-    if (klass) severe[klass] += 1;
-    else if (!HARD_FAMILIES.has(family)) throw new Error(`unknown oracle family: ${family}`);
-    failures.push({
-      family,
-      id,
-      class: klass ?? "hard-check",
-      message,
-    });
-  };
-
-  // ── Critical and continuity recall, corruption, and drift ──────────
-  const turnIndex = new Map(evidence.map((entry, index) => [entry.turn, index]));
-  const rebuildTurns = new Set(
-    (stats?.compressions ?? []).filter((event) => event.operation === "rebuild").map((event) => event.turnIndex),
-  );
-
-  const scoreFamily = (family, items) => {
-    let matched = 0;
-    for (const item of items) {
-      const outcomes = [];
-      for (const probeId of item.probes) {
-        // A probe whose turn never executed — an adapter that crashed earlier
-        // in the run — can only be a miss, never a pass. Fixture validity
-        // (probes referencing scripted turns) is enforced by the fixture tests.
-        if (!turnIndex.has(probeId)) {
-          outcomes.push({ probeId, outcome: "missed", matchedPattern: null });
-          continue;
-        }
-        const text = textOfTurn(evidence, probeId);
-        // #265: recall accepts any phrasing of the fact; the phrasing that
-        // matched is recorded so the retained evidence shows the reviewer
-        // exactly what the machine read.
-        const matchedPattern = item.requires.find((pattern) => contains(text, pattern)) ?? null;
-        const isMatched = matchedPattern !== null;
-        const isCorrupted = !isMatched && (item.corruptsWith ?? []).some((pattern) => contains(text, pattern));
-        outcomes.push({ probeId, outcome: isMatched ? "matched" : isCorrupted ? "corrupted" : "missed", matchedPattern });
+function hasDuplicateTopLevelKey(text) {
+  const keys = new Set(); let depth = 0; let index = 0;
+  while (index < text.length) {
+    if (text[index] === '"') {
+      const start = index++;
+      while (index < text.length) {
+        if (text[index] === "\\") index += 2;
+        else if (text[index++] === '"') break;
       }
-      // Recursive drift: a matched probe followed by a failed probe with a
-      // suffix rebuild between them — the summarization-of-summaries boundary.
-      let drifted = false;
-      for (let i = 0; i < outcomes.length - 1; i += 1) {
-        const before = outcomes[i];
-        const after = outcomes[i + 1];
-        const between = rebuildTurnsBetween(turnIndex, rebuildTurns, before.probeId, after.probeId);
-        if (before.outcome === "matched" && after.outcome !== "matched" && between) {
-          drifted = true;
-          fail("item-drift", `${item.id}`, `${family} item ${item.id} was correct at probe ${before.probeId} and failed at probe ${after.probeId} across the rebuild boundary`);
-        }
-      }
-      const corrupted = outcomes.some((entry) => entry.outcome === "corrupted");
-      const missed = outcomes.some((entry) => entry.outcome === "missed");
-      let status;
-      if (drifted) status = "drifted";
-      else if (corrupted) {
-        status = "corrupted";
-        fail("item-corruption", `${item.id}`, `${family} item ${item.id} was answered with a corrupted value at a probe`);
-      } else if (missed) {
-        status = "missed";
-        failures.push({
-          family: "recall",
-          id: `${item.id}`,
-          class: "recall",
-          message: `${family} item ${item.id} was not recalled at one or more probes`,
-        });
-      } else {
-        status = "matched";
-        matched += 1;
-      }
-      // #265: per-probe outcomes with the matching phrasing ride along for
-      // the retained evidence; the bounded report reads only the status.
-      itemStatuses.push({ family, id: item.id, status, probes: outcomes });
+      let cursor = index; while (/\s/.test(text[cursor] ?? "")) cursor += 1;
+      if (depth === 1 && text[cursor] === ":") { const key = JSON.parse(text.slice(start, index)); if (keys.has(key)) return true; keys.add(key); }
+      continue;
     }
-    return { total: items.length, matched };
-  };
-
-  const critical = scoreFamily("critical", oracle.criticalItems ?? []);
-  const continuity = scoreFamily("continuity", oracle.continuityItems ?? []);
-
-  // ── Fabricated claims anywhere in the run ──────────────────────────
-  for (const claim of oracle.forbiddenClaims ?? []) {
-    for (const record of evidence) {
-      if (claim.patterns.some((pattern) => contains(record.assistantText, pattern))) {
-        fail("forbidden-claim", `${claim.id}`, `forbidden claim ${claim.id} appeared in turn ${record.turn}`);
-        break;
-      }
-    }
-  }
-
-  // ── Negative constraints: claims and forbidden actions ─────────────
-  for (const constraint of oracle.negativeConstraints ?? []) {
-    for (const pattern of constraint.claims ?? []) {
-      const hit = evidence.some((record) => contains(record.assistantText, pattern));
-      if (hit) {
-        fail("constraint-claim", `${constraint.id}`, `negative constraint ${constraint.id} was reversed in an answer`);
-        break;
-      }
-    }
-    for (const action of constraint.actions ?? []) {
-      const hit = evidence.some(
-        (record) => action.turns.includes(record.turn) && record.toolCalls.includes(action.tool),
-      );
-      if (hit) {
-        fail("constraint-action", `${constraint.id}`, `negative constraint ${constraint.id} was violated by a ${action.tool} call`);
-        break;
-      }
-    }
-  }
-
-  // ── Uncertainty traps ─────────────────────────────────────────────
-  // Inverted (#261): the guarded severe class is uncertainty-promotion —
-  // inventing a concrete value — so a trap passes when the model does NOT
-  // promote one, however the refusal is phrased. The former literal `refuse`
-  // list could not see negation ("no retention period has been established")
-  // and scored correct refusals as failures. The weak additional condition —
-  // a non-empty answer naming the subject the question asks about — keeps an
-  // empty or wholly off-topic answer a hard failure.
-  const traps = { answered: 0, promoted: 0, unanswered: 0 };
-  for (const trap of oracle.uncertaintyTraps ?? []) {
-    if (typeof trap.subject !== "string" || trap.subject.length === 0) {
-      throw new Error(`trap ${trap.id} must declare the subject its question asks about`);
-    }
-    for (const probeId of trap.probes) {
-      const text = textOfTurn(evidence, probeId);
-      const promoted = trap.promote.some((pattern) => contains(text, pattern));
-      const engaged = text.trim().length > 0 && contains(text, trap.subject);
-      if (promoted) {
-        traps.promoted += 1;
-        fail("trap-promotion", `${trap.id}`, `trap ${trap.id} was answered with a promoted specific value`);
-      } else if (engaged) {
-        traps.answered += 1;
-      } else {
-        traps.unanswered += 1;
-        failures.push({
-          family: "trap-unanswered",
-          id: `${trap.id}`,
-          class: "hard-check",
-          message: `trap ${trap.id} produced no non-empty answer naming the subject of the question`,
-        });
-      }
-    }
-  }
-
-  // ── Branch visibility ─────────────────────────────────────────────
-  for (const abandoned of oracle.branch?.abandoned ?? []) {
-    for (const probeId of oracle.branch?.probes ?? []) {
-      const text = textOfTurn(evidence, probeId);
-      if (abandoned.patterns.some((pattern) => contains(text, pattern))) {
-        fail("branch-visibility", `${abandoned.id}`, `abandoned-branch fact ${abandoned.id} surfaced at probe ${probeId}`);
-        break;
-      }
-    }
-  }
-  if ((oracle.branch?.abandoned ?? []).length > 0 && stats?.memoryPurity === false) {
-    fail("memory-purity", "carrying-compaction", "a committed Memory summary on the retained branch contained abandoned-branch content");
-  }
-
-  // ── Expected source-tool use ──────────────────────────────────────
-  for (const expected of oracle.sourceToolUse ?? []) {
-    const record = evidence.find((entry) => entry.turn === expected.turn);
-    const read = record?.sourceReads.find((entry) => entry.block === expected.block);
-    if (!record || record.sourceReads.length === 0) {
-      failures.push({
-        family: "source-read-missing",
-        id: `${expected.turn}`,
-        class: "hard-check",
-        message: `expected a read_memory_source call at turn ${expected.turn}; none occurred`,
-      });
-    } else if (!read) {
-      failures.push({
-        family: "source-read-block",
-        id: `${expected.turn}`,
-        class: "hard-check",
-        message: `the source read at turn ${expected.turn} targeted a different block than expected`,
-      });
-    } else if (!read.verified) {
-      failures.push({
-        family: "source-read-unverified",
-        id: `${expected.turn}`,
-        class: "hard-check",
-        message: `the source read at turn ${expected.turn} never returned the expected exact value`,
-      });
-    }
-  }
-
-  // ── Final task ────────────────────────────────────────────────────
-  // Forbidden claims anywhere in the run — including the final answer — are
-  // the forbidden-claims family's job; the final task itself is judged only
-  // on its required elements.
-  const finalText = textOfTurn(evidence, oracle.finalTask.turn);
-  // #265: each element of the final task's `requires` is one required fact's
-  // phrasing set — the same footing as a probe — so the final answer must
-  // match every fact through any of its phrasings. A malformed declaration
-  // fails loudly rather than scoring permissively, like the trap guard.
-  for (const phrasings of oracle.finalTask.requires) {
-    if (!Array.isArray(phrasings) || phrasings.length === 0
-      || phrasings.some((pattern) => typeof pattern !== "string" || pattern.length === 0)) {
-      throw new Error("final task requires must be a non-empty array of phrasing sets (arrays of non-empty strings)");
-    }
-  }
-  const finalTaskPatterns = oracle.finalTask.requires
-    .map((phrasings) => phrasings.find((pattern) => contains(finalText, pattern)) ?? null);
-  const finalTaskMet = finalTaskPatterns.every((pattern) => pattern !== null);
-  if (!finalTaskMet) {
-    failures.push({
-      family: "final-task-incomplete",
-      id: "final-task",
-      class: "hard-check",
-      message: "the final task answer missed one or more required elements",
-    });
-  }
-
-  // ── Run-level mechanical errors and the compression schedule ──────
-  for (const record of evidence) {
-    if (record.error) {
-      failures.push({
-        family: "run-error",
-        id: `${record.turn}`,
-        class: "hard-check",
-        message: record.error,
-      });
-    }
-  }
-  // The seeded-schedule contract (#261): the branch starts with fixture-
-  // authored Memory rendering at exactly half the budget, so the schedule is
-  // fixture-owned — one append while the seed still fits half, then a suffix
-  // rebuild at every later due run, for any model-authored block size.
-  const appends = (stats?.compressions ?? []).filter((event) => event.operation === "append").length;
-  const rebuilds = (stats?.compressions ?? []).filter((event) => event.operation === "rebuild").length;
-  const scheduleValid = appends >= 1 && rebuilds >= 2;
-  if (!scheduleValid) {
-    failures.push({
-      family: "compression-schedule",
-      id: "schedule",
-      class: "hard-check",
-      message: `the run observed ${appends} appends and ${rebuilds} rebuilds; the seeded half-budget Memory requires one append and two suffix rebuilds`,
-    });
-  }
-
-  const hardCheckFailures = failures.filter((failure) => failure.class === "hard-check");
-  const severeTotal = Object.values(severe).reduce((sum, count) => sum + count, 0);
-  return {
-    run,
-    severe,
-    severeTotal,
-    critical,
-    continuity,
-    itemStatuses,
-    traps,
-    finalTask: finalTaskMet,
-    // #265: per-fact matching phrasings for the retained evidence only; the
-    // bounded report reads `finalTask` alone.
-    finalTaskPatterns,
-    schedule: { appends, rebuilds, valid: scheduleValid },
-    hardCheckFailures,
-    failures,
-    turns: evidence.length,
-    ok: severeTotal === 0 && hardCheckFailures.length === 0 && finalTaskMet && scheduleValid
-      && critical.matched === critical.total,
-  };
-}
-
-function rebuildTurnsBetween(turnIndex, rebuildTurns, beforeTurn, afterTurn) {
-  const before = turnIndex.get(beforeTurn);
-  const after = turnIndex.get(afterTurn);
-  if (before === undefined || after === undefined || after <= before) return false;
-  for (const rebuildIndex of rebuildTurns) {
-    if (rebuildIndex > before && rebuildIndex < after) return true;
+    if (text[index] === "{") depth += 1;
+    if (text[index] === "}") depth -= 1;
+    index += 1;
   }
   return false;
 }
 
-/**
- * The release AND-gate over scored runs (#215's qualification thresholds).
- * Compression and cost numbers are deliberately absent: they are reported for
- * information and can never move this verdict.
- */
-export function evaluateGates(runScores) {
-  const severe = emptySevere();
-  for (const score of runScores) {
-    for (const klass of SEVERE_CLASSES) severe[klass] += score.severe[klass];
+export function scoreRun({ run, script, artifactText, integrity, coverage, sourceReads = [] }) {
+  const severe = emptySevere(); const failures = []; const fields = [];
+  const prerequisitesPresent = prerequisite(integrity) && prerequisite(coverage);
+  let artifact; let malformed = false;
+  try {
+    if (typeof artifactText !== "string" || hasDuplicateTopLevelKey(artifactText)) throw new Error();
+    artifact = JSON.parse(artifactText);
+    if (!artifact || Array.isArray(artifact) || typeof artifact !== "object") throw new Error();
+  } catch { malformed = true; failures.push({ code: "artifact-malformed" }); }
+  let criticalMatched = 0; let continuityMatched = 0;
+  let artifactValid = !malformed;
+  if (!malformed) {
+    const expectedKeys = Object.keys(script.oracle.expected);
+    for (const key of Object.keys(artifact)) if (!expectedKeys.includes(key)) {
+      artifactValid = false;
+      failures.push({ code: "extra-field", field: key });
+    }
+    for (const key of expectedKeys) {
+      const expected = script.oracle.expected[key]; const actual = artifact[key];
+      if (!Object.hasOwn(artifact, key) || (actual !== null && typeof actual !== (expected === null ? "string" : typeof expected))) artifactValid = false;
+      const family = script.oracle.critical.includes(key) ? "critical" : script.oracle.continuity.includes(key) ? "continuity" : script.oracle.unknown.includes(key) ? "unknown" : "constraint";
+      let status = "matched";
+      if (!Object.hasOwn(artifact, key)) status = "missing";
+      else if (actual !== null && !["string", "number", "boolean"].includes(typeof actual) || typeof actual !== typeof expected) status = "wrong-type";
+      else if (!Object.is(actual, expected)) status = "mismatched";
+      fields.push({ key, family, status });
+      if (status === "matched") { if (family === "critical") criticalMatched += 1; if (family === "continuity") continuityMatched += 1; }
+      else { failures.push({ code: status === "missing" ? "field-missing" : status === "wrong-type" ? "field-type" : "field-mismatch", field: key }); if (family === "critical") severe["exact-detail-corruption"] += 1; if (family === "unknown") severe["uncertainty-promotion"] += 1; if (script.oracle.constraints.includes(key)) severe["negative-constraint"] += 1; }
+    }
+    for (const value of script.oracle.abandonedValues) if (Object.values(artifact).some((actual) => Object.is(actual, value))) { severe["branch-contamination"] += 1; failures.push({ code: "abandoned-value" }); }
   }
-  const severeTotal = Object.values(severe).reduce((sum, count) => sum + count, 0);
+  const sourceVerified = !script.oracle.requireSourceRead || sourceReads.some((read) => read.ok === true && read.complete === true && read.coversSource === true);
+  if (!sourceVerified) failures.push({ code: "source-read-missing" });
+  if (prerequisite(integrity) && !integrity.ok) failures.push(...integrity.failures.map(() => ({ code: "integrity" })));
+  if (prerequisite(coverage) && !coverage.ok) failures.push(...coverage.failures.map(() => ({ code: "coverage" })));
+  const artifactFailure = failures.some(({ code }) => !["integrity", "coverage"].includes(code));
+  const finalTask = !artifactFailure;
+  const result = !prerequisitesPresent || !integrity.ok || !coverage.ok ? "inconclusive" : finalTask ? "pass" : "fail";
+  return { run, result, critical: { matched: criticalMatched, total: script.oracle.critical.length }, continuity: { matched: continuityMatched, total: script.oracle.continuity.length }, artifactValid, sourceVerified, finalTask, fields, severe, failures, coverage, integrity };
+}
 
-  const criticalTotal = runScores.reduce((sum, score) => sum + score.critical.total, 0);
-  const criticalMatched = runScores.reduce((sum, score) => sum + score.critical.matched, 0);
-  const continuityTotal = runScores.reduce((sum, score) => sum + score.continuity.total, 0);
-  const continuityMatched = runScores.reduce((sum, score) => sum + score.continuity.matched, 0);
-
-  const perScenario = new Map();
-  for (const score of runScores) {
-    const entry = perScenario.get(score.run.scenario) ?? { total: 0, matched: 0 };
-    entry.total += score.continuity.total;
-    entry.matched += score.continuity.matched;
-    perScenario.set(score.run.scenario, entry);
-  }
-  const continuityPerScenario = Object.fromEntries(
-    [...perScenario.entries()].map(([scenario, entry]) => [scenario, entry.total === 0 ? 1 : entry.matched / entry.total]),
-  );
-
-  const canonical = runScores.filter((score) => score.run.arm === "secondary");
-  const canonicalFinalTasks = {
-    passed: canonical.filter((score) => score.finalTask).length,
-    total: canonical.length,
-  };
-  const schedule = {
-    valid: runScores.filter((score) => score.schedule.valid).length,
-    total: runScores.length,
-  };
-  const hardChecks = {
-    failed: runScores.reduce((sum, score) => sum + score.hardCheckFailures.length, 0),
-  };
-
-  const criticalRecall = criticalTotal === 0 ? 1 : criticalMatched / criticalTotal;
-  const continuityOverall = continuityTotal === 0 ? 1 : continuityMatched / continuityTotal;
-  const perScenarioOk = Object.values(continuityPerScenario).every((value) => value >= 0.75);
-
-  const gates = {
-    severeFailures: { total: severeTotal, byClass: severe },
-    criticalRecall,
-    continuityRecallOverall: continuityOverall,
-    continuityRecallPerScenario: continuityPerScenario,
-    canonicalFinalTasks,
-    scheduleComplete: schedule,
-    hardChecks,
-  };
-
-  const result = severeTotal === 0
-    && criticalRecall === 1
-    && continuityOverall >= 0.85
-    && perScenarioOk
-    && canonicalFinalTasks.passed === canonicalFinalTasks.total
-    && canonicalFinalTasks.total > 0
-    && schedule.valid === schedule.total
-    && hardChecks.failed === 0
-    ? "pass"
-    : "fail";
-
-  return { gates, result };
+export function evaluateGates(scores) {
+  const severe = emptySevere(); for (const score of scores) for (const name of SEVERE_CLASSES) severe[name] += score.severe?.[name] ?? 0;
+  const aggregate = (items, family) => { const total = items.reduce((n, s) => n + s[family].total, 0); const matched = items.reduce((n, s) => n + s[family].matched, 0); return { matched, total, rate: total ? matched / total : 0 }; };
+  const group = (property) => Object.fromEntries([...new Set(scores.map((s) => s.run[property]))].map((value) => { const cells = scores.filter((s) => s.run[property] === value); return [value, { critical: aggregate(cells, "critical"), continuity: aggregate(cells, "continuity"), finalTasks: cells.filter((s) => s.finalTask).length, total: cells.length }]; }));
+  const byArm = group("arm"); const byScenario = group("scenario"); const critical = aggregate(scores, "critical"); const continuity = aggregate(scores, "continuity");
+  const expectedCells = new Set(SCENARIOS.flatMap((scenario) => [
+    ...PRIMARY_ARM_VARIANTS.map((variant) => `${scenario.id}\0primary\0${variant}`),
+    `${scenario.id}\0secondary\0canonical`,
+  ]));
+  const actualCells = scores.map((score) => `${score.run.scenario}\0${score.run.arm}\0${score.run.variant}`);
+  const complete = actualCells.length === expectedCells.size
+    && new Set(actualCells).size === actualCells.length
+    && actualCells.every((cell) => expectedCells.has(cell));
+  // Supporting-field misses in noncanonical positions are governed by recall
+  // thresholds. Requiring all finalTask flags would silently demand 100%.
+  const prerequisites = scores.every((score) => {
+    const scenario = SCENARIOS.find((entry) => entry.id === score.run.scenario);
+    const canonical = score.run.variant === "canonical" || score.run.variant === scenario?.canonicalVariant;
+    return score.integrity?.ok && score.coverage?.ok && score.artifactValid && score.sourceVerified && (!canonical || score.finalTask);
+  });
+  const thresholds = critical.rate === 1 && continuity.rate >= .85 && Object.values(byScenario).every((x) => x.continuity.rate >= .75);
+  const severeClear = Object.values(severe).every((count) => count === 0);
+  return { result: complete && prerequisites && thresholds && severeClear ? "pass" : !complete || scores.some((s) => s.result === "inconclusive") ? "inconclusive" : "fail", gates: { complete, prerequisites, critical, continuity, byArm, byScenario, severe, severeClear } };
 }

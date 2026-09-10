@@ -1,92 +1,60 @@
-import { pathToFileURL, fileURLToPath } from "node:url";
-import { dirname, join, relative } from "node:path";
-import { createFakeAdapter } from "./fake-model.mjs";
+import { dirname, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runQualification } from "./runner.mjs";
-import { continuityProgress } from "../progress.mjs";
-
-/**
- * The Context Memory continuity qualification command (#224).
- *
- * `npm run qualify:continuity` executes the full 16-run matrix in dry-run
- * mode with the scripted fake adapter: no provider credential is read, no
- * network call is made, and the resulting report proves the machinery —
- * orchestration, scoring, report shape, failure propagation — never release
- * readiness.
- *
- * Real qualification (#227) passes `--adapter <module.mjs>` pointing at an
- * adapter module implementing the contract in `runner.mjs`. The command then
- * verifies the adapter's declared `requiredEnv` variable *names* are present
- * (never their values) and runs the same matrix in real mode.
- */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPORT_DIR = join(HERE, "report");
+const REPORT_DIR = resolve(HERE, "report");
 
-function parseArgs(argv) {
-  const options = { json: false, adapterPath: null, quiet: false };
+function usage() {
+  return [
+    "Usage: npm run qualify:continuity -- --real [--runtime <module>] [--json]",
+    "",
+    "This command never makes a provider request unless --real is explicit.",
+    "--real runs the fixed native Pi 16-run matrix. It refuses a dirty checkout",
+    "before any request. Offline regression belongs in the test suite's faux provider.",
+  ].join("\n");
+}
+
+function parse(argv) {
+  const options = { real: false, json: false, runtimePath: null };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
-    if (flag === "--json") options.json = true;
-    else if (flag === "--quiet") options.quiet = true;
-    else if (flag === "--adapter") {
-      const value = argv[index + 1];
-      if (!value || value.startsWith("--")) {
-        console.error("--adapter requires a module path");
-        process.exit(2);
-      }
-      options.adapterPath = value;
-      index += 1;
-    } else {
-      console.error(`unknown argument: ${flag}`);
-      console.error("usage: qualify.mjs [--json] [--quiet] [--adapter <adapter-module.mjs>]");
-      process.exit(2);
-    }
+    if (flag === "--real") options.real = true;
+    else if (flag === "--json") options.json = true;
+    else if (flag === "--runtime") { options.runtimePath = argv[++index]; if (!options.runtimePath) throw new Error("--runtime requires a module path"); }
+    else if (flag === "--help" || flag === "-h") return null;
+    else throw new Error(`unknown argument: ${flag}`);
   }
   return options;
 }
 
-async function loadAdapter(path) {
-  const module = await import(pathToFileURL(path).href);
-  const adapter = module.default ?? module.adapter;
-  if (!adapter) {
-    console.error(`adapter module ${path} must default-export an adapter (see fake-model.mjs)`);
-    process.exit(2);
-  }
-  return adapter;
+async function runtimeFrom(path) {
+  if (!path) return undefined;
+  const module = await import(pathToFileURL(resolve(process.cwd(), path)).href);
+  return module.default ?? module.runtime ?? module.createRuntime?.();
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
-
-  let adapter = createFakeAdapter();
-  let mode = "dry-run";
-  if (options.adapterPath !== null) {
-    adapter = await loadAdapter(options.adapterPath);
-    const required = adapter?.requiredEnv ?? adapter?.declaration?.requiredEnv ?? [];
-    const missing = required.filter((name) => !process.env[name]);
-    if (missing.length > 0) {
-      console.error(`real-mode adapter requires environment variables that are not set: ${missing.join(", ")}`);
-      console.error("the command never prints credential values; set them and re-run");
-      process.exit(2);
-    }
-    mode = "real";
+try {
+  const options = parse(process.argv.slice(2));
+  if (!options || !options.real) {
+    console.log(usage());
+  } else {
+    const result = await runQualification({
+      runtime: await runtimeFrom(options.runtimePath),
+      reportDir: REPORT_DIR,
+      mode: "real",
+      onEvent(event) {
+        if (event.type === "run-start") console.error(`start: ${event.run.scenario}/${event.run.variant}/${event.run.arm}`);
+        if (event.type === "run-end") console.error(`end:   ${event.run.scenario}/${event.run.variant}/${event.run.arm} (${event.record.score.result})`);
+      },
+    });
+    console.log(options.json ? result.json : result.markdown.trimEnd());
+    console.error(`report: ${relative(process.cwd(), result.files.reportMarkdown)}`);
+    if (result.files.evidence) console.error(`private evidence: ${relative(process.cwd(), result.files.evidence)}`);
+    process.exitCode = result.report.machineStatus === "pass-needs-human-review" ? 0 : 1;
   }
-
-  // Live progress on stderr for the long credentialed run; the dry run is
-  // fast enough that it only adds noise, and --quiet turns it off entirely.
-  const onEvent = options.quiet || mode !== "real" ? undefined : continuityProgress();
-  const { report, json, markdown, files } = await runQualification({ adapter, reportDir: REPORT_DIR, mode, onEvent });
-  if (options.json) console.log(json);
-  else console.log(markdown.trimEnd());
-  // Where this attempt's artifacts landed, on stderr so the report on stdout
-  // stays pipeable. The evidence file is the one the fixed human review of
-  // rubric.md reads, and nothing else in the run names it (#265).
-  if (files) {
-    console.error(`\nreport:   ${relative(process.cwd(), files.reportMarkdown)}`);
-    console.error(`json:     ${relative(process.cwd(), files.reportJson)}`);
-    if (files.evidence) console.error(`evidence: ${relative(process.cwd(), files.evidence)}  ← the fixed human review reads this`);
-  }
-  process.exitCode = report.result === "pass" ? 0 : 1;
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  console.error(usage());
+  process.exitCode = 2;
 }
-
-await main();

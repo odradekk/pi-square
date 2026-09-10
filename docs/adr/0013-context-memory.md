@@ -169,6 +169,14 @@ message, and deletion stays the ordinary Pi session boundary.
   additionally require the real-model and provider-cache qualification
   evidence, tied to the exact release commit under fixed impact-based rerun
   rules.
+- Continuity qualification uses native Pi sessions as well: public prompts,
+  real tools, and native tree navigation drive four scenarios on Sonnet 5
+  and GLM 5.3. A single final handoff artifact is scored after verified source
+  eviction and naturally observed append/rebuild coverage; unexercised
+  coverage is inconclusive. Pi's in-memory journal is the evidence source,
+  not a simulated host or reconstructed HTTP transcript. The bounded machine
+  checks supplement the human rubric; they do not establish semantic quality
+  or persisted-resume correctness by themselves.
 - The provider-bound projection is uniform (#297): while the feature is
   enabled, every request's carrying Memory summary message is re-projected
   as one ordered text content block per current block — leading framing and
@@ -188,7 +196,7 @@ message, and deletion stays the ordinary Pi session boundary.
   declared 100k experiment window with native auto-compaction disabled so a
   bounded run reaches two Context Memory compactions, and it reports Pi's own
   cache-hit formula over every real assistant response plus a warm aggregate
-  that excludes only the first cold request. This evidence measures the current
+  that excludes only the first request, which is not guaranteed cold. This evidence measures the current
   multi-block implementation end to end; it deliberately makes no isolated
   single-block counterfactual claim. Placing a cache breakpoint at the carried
   Memory's end remains deliberately undone here (#269); any need for it must be

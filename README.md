@@ -611,6 +611,15 @@ npm run package:check
 npm run changeset:status
 ```
 
+Context Memory continuity qualification is a separate, credentialed command:
+`npm run qualify:continuity -- --real`. It requires a clean checkout and uses
+native Pi sessions with Sonnet 5 (12 runs) and GLM 5.3 (4 runs). A single final
+handoff file is scored after verified compression coverage; missing coverage
+is inconclusive and a machine pass still requires human review. See the
+[qualification workflow](docs/context-memory.md#continuity-qualification).
+`npm test` exercises the same Pi session boundary with an offline provider,
+not real-model quality.
+
 Run the optional, non-blocking deterministic CodeGraph retrieval comparison separately. It reports one semantic query against a fixed three-file fixture; it is not a model-quality benchmark and is not part of `npm test`:
 
 ```bash
