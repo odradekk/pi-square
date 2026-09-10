@@ -14,7 +14,8 @@ status: accepted
 > from an exactly empty native editor, and Enter opens the selected child in a
 > centered, capturing, read-only transcript overlay (`src/subagents/viewer.ts`)
 > built on Pi 0.84.2 public components and the roster-grade allowlisted tool
-> projection (no raw arguments or result payloads ever render). Pi's native
+> projection. Raw arguments never render; since #307, an expanded tool row may
+> render one bounded, credential-sanitized result projection. Pi's native
 > assistant grouping stays intact before the shared operational display renders
 > its tool rows with the shared marker motion, outer-entry elapsed time, muted
 > structural target, and fixed terminal outcome; tool results update pending calls
@@ -101,8 +102,9 @@ status: accepted
 > (retained only while the overlay session is open); and Pi's effective
 > expand-tools shortcut toggles only the open overlay's tool rows, never the
 > background main transcript — a collapsed row stays one line while an
-> expanded row reveals one bounded, credential-sanitized result projection
-> (raw arguments never render). The mouse wheel scrolls only in fullscreen
+> expanded row reveals one bounded, credential-sanitized result projection,
+> including when the paired result crosses an adjacent history-page seam (raw
+> arguments never render). The mouse wheel scrolls only in fullscreen
 > TUI mode: pi-tui enables mouse tracking there and defers wheel events to
 > the focused overlay, while inline regular mode exposes no public API for
 > extension-visible wheel events under Pi 0.84.2. Every view-state transition

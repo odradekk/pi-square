@@ -780,18 +780,6 @@ export class ChildTranscriptOverlay implements Component {
     return streaming !== undefined && streaming.length > 0;
   }
 
-  /** Whether the viewport currently sits at the bottom of the scroll space. */
-  private isAtTail(): boolean {
-    if (this.following) return true;
-    if (!Number.isFinite(this.scrollTop) || this.lastWidth === undefined) return true;
-    try {
-      const model = this.lineModelFor(this.lastWidth);
-      return this.scrollTop >= this.resolveViewport(model, this.bodyBudget()).maxScroll;
-    } catch {
-      return true;
-    }
-  }
-
   /**
    * Content arrived (#307). The follow flag alone decides: a following view
    * renders the new tail, so no notice appears; a suspended view has unseen
@@ -800,11 +788,6 @@ export class ChildTranscriptOverlay implements Component {
    */
   private markNewOutput(): void {
     this.newOutput = !this.following;
-  }
-
-  /** Position changes clear the state only once the tail is visible again. */
-  private syncNewOutput(): void {
-    if (this.newOutput && this.isAtTail()) this.newOutput = false;
   }
 
   /** One step of explicit suspension: the view stops following the tail. */
@@ -919,13 +902,13 @@ export class ChildTranscriptOverlay implements Component {
   /**
    * Reconciles the persisted window with the session file: retries the initial
    * tail while it has never loaded, otherwise reads bounded newer pages the
-   * child appended. A view that was at the tail stays pinned to it; a scrolled
-   * position is preserved — live growth never pulls an older position away.
+   * child appended. An explicitly following view stays pinned to the tail; a
+   * suspended position is preserved even when it happens to reach the current
+   * numeric bottom — live growth never resumes follow implicitly.
    * A successful load also confirms live entries against their own persisted
    * occurrences and clears exactly the drop fingerprints history recovered.
    */
   reconcileNow(pages = 1): void {
-    const follow = this.isAtTail();
     let changed = false;
     if (this.current.initialError !== undefined) {
       changed = this.input.model.history.retryInitial();
@@ -939,8 +922,7 @@ export class ChildTranscriptOverlay implements Component {
       this.current = this.input.model.history.snapshot();
       this.confirmLive();
     }
-    if (follow) {
-      this.following = true;
+    if (this.following) {
       this.scrollTop = Number.POSITIVE_INFINITY;
     } else if (changed) {
       this.newOutput = true;
@@ -1187,7 +1169,6 @@ export class ChildTranscriptOverlay implements Component {
       this.suspendFollow();
       if (this.scrollTop > 0) {
         this.scrollTop = Math.max(0, this.scrollTop - budget);
-        this.syncNewOutput();
         return;
       }
       // At the loaded top: request one bounded older page and reveal it, so
@@ -1196,14 +1177,13 @@ export class ChildTranscriptOverlay implements Component {
     } else {
       if (this.scrollTop < view.maxScroll) {
         this.scrollTop = Math.min(view.maxScroll, this.scrollTop + budget);
-        this.syncNewOutput();
         return;
       }
       // At the loaded bottom: attempt one bounded newer page (evicted pages,
-      // or a concurrent append completing the tail) and follow to the edge.
+      // or a concurrent append completing the tail) and reveal that edge
+      // without resuming the explicit follow state.
       this.pageNewer();
     }
-    this.syncNewOutput();
   }
 
   /**
@@ -1217,7 +1197,6 @@ export class ChildTranscriptOverlay implements Component {
     const view = this.resolveViewport(model, this.bodyBudget());
     const base = Number.isFinite(this.scrollTop) ? this.scrollTop : view.maxScroll;
     this.scrollTop = Math.min(view.maxScroll, Math.max(0, base + lines));
-    this.syncNewOutput();
   }
 
   private pageOlder(model: LineModel, budget: number): void {
@@ -1242,19 +1221,29 @@ export class ChildTranscriptOverlay implements Component {
   }
 
   private pageNewer(): void {
+    // scroll() resolves geometry before it discovers the newer edge. Preserve
+    // the active-follow sentinel even when that edge probe finds no new page.
+    if (this.following) this.scrollTop = Number.POSITIVE_INFINITY;
     const loaded = this.input.model.history.loadNewer();
     this.refreshHistory();
     if (!loaded) return;
-    // Follow to the newest edge (the #305 PageDown contract).
-    this.following = true;
+    // PageDown reveals the newest loaded edge without changing the explicit
+    // follow state. Only End resumes live following (#307).
     this.scrollTop = Number.POSITIVE_INFINITY;
-    this.syncNewOutput();
+    if (!this.following && this.lastWidth !== undefined) {
+      const view = this.resolveViewport(this.lineModelFor(this.lastWidth), this.bodyBudget());
+      this.scrollTop = view.scrollTop;
+    }
   }
 
   private jump(to: "start" | "end"): void {
     if (this.current.initialError !== undefined) {
       this.input.model.history.retryInitial();
       this.refreshHistory();
+      if (to === "end") {
+        this.following = true;
+        this.newOutput = false;
+      }
       this.scrollTop = Number.POSITIVE_INFINITY;
       return;
     }
@@ -1267,7 +1256,6 @@ export class ChildTranscriptOverlay implements Component {
         this.refreshHistory();
       }
       this.scrollTop = 0;
-      this.syncNewOutput();
       return;
     }
     // End follows the newest edge: the bounded loads catch up with any
@@ -1278,8 +1266,8 @@ export class ChildTranscriptOverlay implements Component {
       this.refreshHistory();
     }
     this.following = true;
+    this.newOutput = false;
     this.scrollTop = Number.POSITIVE_INFINITY;
-    this.syncNewOutput();
   }
 
   /**

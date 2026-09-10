@@ -662,6 +662,11 @@ test("a stitched tool result stays consumed after probing the newer edge", () =>
     }
     let snapshot = pager.snapshot();
     assert.deepEqual(snapshot.items.map((item) => item.kind), ["toolCall"]);
+    assert.equal(
+      snapshot.items[0].output,
+      "payload",
+      "cross-page pairing preserves the bounded expanded result evidence",
+    );
     assert.equal(snapshot.moreAfter, false, "consuming the orphan updates the logical page size");
     assert.equal(pager.loadNewer(), false, "the fully loaded newer edge has nothing to restore");
     snapshot = pager.snapshot();
@@ -681,6 +686,11 @@ test("a stitched tool result stays consumed after probing the newer edge", () =>
     assert.equal(pager.loadNewer(), true);
     snapshot = pager.snapshot();
     assert.ok(snapshot.items.some((item) => item.kind === "toolCall" && item.result?.isError === false));
+    assert.equal(
+      snapshot.items.find((item) => item.kind === "toolCall")?.output,
+      "payload",
+      "reloading either adjacent page restores the expanded result evidence",
+    );
     assert.ok(!snapshot.items.some((item) => item.kind === "generic" && /tool result/.test(item.text)));
   } finally {
     rmSync(testRoot, { recursive: true, force: true });

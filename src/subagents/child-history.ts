@@ -119,11 +119,16 @@ export interface OpenToolCallRef {
   startedAt?: number;
 }
 
-/** One unpaired tool result in entry order, for page stitching. */
-export interface OrphanToolResultRef {
-  callKey: string;
+/** Bounded terminal evidence retained while a result crosses a page seam. */
+interface ToolResultProjection {
   isError: boolean;
   endedAt?: number;
+  output?: string;
+}
+
+/** One unpaired tool result in entry order, for page stitching. */
+export interface OrphanToolResultRef extends ToolResultProjection {
+  callKey: string;
   /** Index into the projected items of the orphan's generic row. */
   index: number;
 }
@@ -136,7 +141,7 @@ const MAX_TOOL_OUTPUT = 600;
 /**
  * Bounded sanitized result evidence for the expanded tool row: only text
  * parts of the tool-result content cross, through the shared sanitizer and
- * the shared head/tail clipper. Anything else (images, structured payloads,
+ * a hard-total head/tail clip. Anything else (images, structured payloads,
  * unbounded text) stays out of the projection entirely.
  */
 function boundedToolOutput(content: unknown): string | undefined {
@@ -150,7 +155,22 @@ function boundedToolOutput(content: unknown): string | undefined {
     }
   }
   if (parts.length === 0) return undefined;
-  const clipped = clipWithHeadTail(sanitizeSubagentDisplay(parts.join("\n")), MAX_TOOL_OUTPUT);
+  const clean = sanitizeSubagentDisplay(parts.join("\n")).trim();
+  if (clean === "") return undefined;
+  if (clean.length <= MAX_TOOL_OUTPUT) return clean;
+  // The shared delivery clipper excludes its omission marker from the caller's
+  // budget. Viewer evidence instead has a hard total projection cap, so choose
+  // the largest 70/30 head-tail split whose marker also fits inside 600 chars.
+  let clipped = "";
+  for (let retained = MAX_TOOL_OUTPUT; retained >= 0; retained -= 1) {
+    const head = Math.floor(retained * 0.7);
+    const tail = retained - head;
+    const omitted = clean.length - retained;
+    const marker = `\n... [omitted ${omitted} characters] ...\n`;
+    if (retained + marker.length > MAX_TOOL_OUTPUT) continue;
+    clipped = `${clean.slice(0, head)}${marker}${clean.slice(clean.length - tail)}`;
+    break;
+  }
   return clipped === "" ? undefined : clipped;
 }
 /** Single-line budget for generic fallback rows. */
@@ -255,9 +275,10 @@ function projectTextContent(content: unknown): TextContentPart[] {
  * offset, so callers can key positions and reconcile live completions without
  * holding raw history. Tool calls keep their conversational order and state but
  * project only through the roster-grade allowlisted identity/summary seam the
- * roster rows share: raw arguments, result payloads, and call IDs never enter
- * an item a renderer can show (only a bounded non-reversible call key pairs a
- * result with its call and is never rendered). Content that is out of scope but
+ * roster rows share. Raw arguments and call IDs never enter an item a renderer
+ * can show; a paired result may add one bounded, sanitized text projection for
+ * the expanded evidence body. A bounded non-reversible call key pairs a result
+ * with its call and is never rendered. Content that is out of scope but
  * conversationally meaningful becomes one non-empty sanitized generic line
  * instead of silently disappearing.
  */
@@ -418,32 +439,34 @@ export function projectSessionEntries(
     }
 
     if (role === "toolResult") {
-      // Result payloads never render: the pairing keeps only the terminal
-      // state so the ordered call/result conversation stays readable.
+      // A result contributes terminal state plus one bounded, sanitized text
+      // projection for expanded evidence; raw and unbounded payloads never
+      // enter the transcript projection.
       const result = message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown; content?: unknown };
       const callId = typeof result.toolCallId === "string" ? result.toolCallId : "";
       const callKey = callId ? callKeyOf(callId) : "";
       const open = callKey ? openCalls.get(callKey) : undefined;
+      const output = boundedToolOutput(result.content);
       if (open) {
         open.item.result = { isError: result.isError === true };
-        const output = boundedToolOutput(result.content);
         if (output !== undefined) open.item.output = output;
         const endedAt = entryTimestamp;
         if (open.startedAt !== undefined && endedAt !== undefined) {
           open.item.durationMs = Math.max(0, endedAt - open.startedAt);
         }
       } else {
-        // An orphan result still shows in order, but through the same
-        // cataloged-identity gate as its call: an untrusted name stays
-        // anonymous and the payload never enters. The pager stitches a page
-        // boundary that split the call from its result back together; a gap
-        // wider than one page keeps the bounded orphan row.
+        // An orphan result still shows in order through the same cataloged-
+        // identity gate as its call: an untrusted name stays anonymous, and
+        // its bounded sanitized output is retained only for a later adjacent-
+        // page pairing. Until then no result evidence renders. A gap wider
+        // than one page keeps the bounded orphan row.
         const name = typeof result.toolName === "string" ? result.toolName : "";
         projected.push(genericLine(`tool result: ${rosterToolArgsDisplay(name, undefined).tool}`, entryId));
         orphanResults.push({
           callKey,
           isError: result.isError === true,
           ...(entryTimestamp !== undefined ? { endedAt: entryTimestamp } : {}),
+          ...(output !== undefined ? { output } : {}),
           index: projected.length - 1,
         });
       }
@@ -586,7 +609,7 @@ interface PagePairing {
    * the full page projection; `index` locates the row inside the retained
    * window or is null while that row lies outside it.
    */
-  results: Map<string, { isError: boolean; endedAt?: number; index: number | null; itemIndex: number }>;
+  results: Map<string, ToolResultProjection & { index: number | null; itemIndex: number }>;
 }
 
 interface HistoryPage {
@@ -611,7 +634,7 @@ interface HistoryPage {
   /** Entry ids this page parsed, for duplicate-identity detection. */
   entryIds: Set<string>;
   /** Cross-page results already folded into their older tool-call row. */
-  consumedResults: Map<string, { isError: boolean; endedAt?: number }>;
+  consumedResults: Map<string, ToolResultProjection>;
   pairing: PagePairing;
 }
 
@@ -1048,7 +1071,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     others: readonly HistoryPage[],
     locations: { sliceStart: number; stitchedStart?: number },
     stitchedFirstLine?: Buffer,
-    consumedResults: ReadonlyMap<string, { isError: boolean; endedAt?: number }> = new Map(),
+    consumedResults: ReadonlyMap<string, ToolResultProjection> = new Map(),
   ): {
     items: TranscriptItem[];
     itemFrom: number;
@@ -1234,6 +1257,7 @@ function stitchSeam(older: HistoryPage, newer: HistoryPage): void {
     newer.consumedResults.set(callId, {
       isError: result.isError,
       ...(result.endedAt !== undefined ? { endedAt: result.endedAt } : {}),
+      ...(result.output !== undefined ? { output: result.output } : {}),
     });
     newer.groupCount = Math.max(0, newer.groupCount - 1);
     if (result.itemIndex < newer.itemFrom) newer.itemFrom = Math.max(0, newer.itemFrom - 1);
@@ -1249,9 +1273,11 @@ function stitchSeam(older: HistoryPage, newer: HistoryPage): void {
 
 function resolveOpenCall(
   open: OpenToolCallRef,
-  result: { isError: boolean; endedAt?: number },
+  result: ToolResultProjection,
 ): void {
   open.item.result = { isError: result.isError };
+  if (result.output !== undefined) open.item.output = result.output;
+  else delete open.item.output;
   if (open.startedAt !== undefined && result.endedAt !== undefined) {
     open.item.durationMs = Math.max(0, result.endedAt - open.startedAt);
   } else {
@@ -1262,7 +1288,7 @@ function resolveOpenCall(
 /** Removes result rows already folded into an older call before re-windowing. */
 function suppressConsumedResults(
   full: ChildTranscriptProjection,
-  consumed: ReadonlyMap<string, { isError: boolean; endedAt?: number }>,
+  consumed: ReadonlyMap<string, ToolResultProjection>,
 ): void {
   if (consumed.size === 0) return;
   const dropped = full.orphanResults
@@ -1290,11 +1316,12 @@ function pagePairing(full: ChildTranscriptProjection, from: number, length = ful
   for (const [callId, ref] of full.openToolCalls) {
     if (full.items.indexOf(ref.item) >= from) openCalls.set(callId, ref);
   }
-  const results = new Map<string, { isError: boolean; endedAt?: number; index: number | null; itemIndex: number }>();
+  const results = new Map<string, ToolResultProjection & { index: number | null; itemIndex: number }>();
   for (const orphan of full.orphanResults) {
     results.set(orphan.callKey, {
       isError: orphan.isError,
       ...(orphan.endedAt !== undefined ? { endedAt: orphan.endedAt } : {}),
+      ...(orphan.output !== undefined ? { output: orphan.output } : {}),
       index: orphan.index >= from && orphan.index < from + length ? orphan.index - from : null,
       itemIndex: orphan.index,
     });
