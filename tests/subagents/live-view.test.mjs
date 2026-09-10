@@ -3,7 +3,7 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import jiti from "jiti";
 
@@ -12,27 +12,33 @@ const load = jiti(import.meta.url, { moduleCache: false });
 
 const liveEventsModule = await load(join(packageRoot, "src", "subagents", "live-events.ts"));
 const {
+  LIVE_LISTENER_BUDGET_MS,
+  LIVE_REPAINT_COALESCE_MS,
   MAX_LIVE_ITEMS,
   MAX_PENDING_EVENTS,
-  LIVE_REPAINT_COALESCE_MS,
   createChildViewFeed,
   deriveChildViewEvent,
   isStructuralViewEvent,
 } = liveEventsModule;
 const childHistoryModule = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
-const { createChildHistory, boundedAssistantTextParts } = childHistoryModule;
+const { createChildHistory, boundedAssistantTextParts, MAX_ASSISTANT_PARTS } = childHistoryModule;
 const viewerModule = await load(join(packageRoot, "src", "subagents", "viewer.ts"));
 const { ChildTranscriptOverlay } = viewerModule;
 const rosterModule = await load(join(packageRoot, "src", "subagents", "roster.ts"));
 const { createSubagentRosterController } = rosterModule;
 const backgroundModule = await load(join(packageRoot, "src", "subagents", "background.ts"));
 const { createBackgroundState } = backgroundModule;
-const registrarModule = await load(join(packageRoot, "src", "subagents", "index.ts"));
 const artifactsModule = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
-const { createPromptSnapshot, createPiStub, setRunSubagentTaskMock, waitFor } = await load(
-  join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"),
-);
+const helpers = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
+const { createPromptSnapshot, createPiStub, setRunSubagentTaskMock, waitFor } = helpers;
+// The registrar loaded with the background module captured for teardown tests.
+const capturePath = join(packageRoot, "tests", "subagents", "lib", "background-capture.mjs");
+// One cached loader for the registrar and its aliased background capture, so
+// both share a single capture-module instance.
+const registrarLoad = jiti(import.meta.url, { alias: { "./background": capturePath } });
+const registrarCapture = registrarLoad(capturePath);
+const registrarModule = registrarLoad(join(packageRoot, "src", "subagents", "index.ts"));
 // The real promptSession seam, without the background-test alias.
 const { __testables } = await load(join(packageRoot, "src", "subagents", "session.ts"));
 
@@ -95,15 +101,23 @@ function appendSessionLine(sessionFile, entry) {
   appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`);
 }
 
-/** A feed with a manually driven scheduler, so delivery order is deterministic. */
-function manualFeed() {
+/** A feed with a manually driven scheduler; one tick delivers exactly one event. */
+function manualFeed(scheduleOverride) {
   const steps = [];
-  const feed = createChildViewFeed({ schedule: (callback) => steps.push(callback) });
+  const feed = createChildViewFeed({
+    schedule: scheduleOverride ?? ((callback) => steps.push(callback)),
+  });
   return {
     feed,
     deliver: () => {
-      const pending = steps.splice(0, steps.length);
-      for (const callback of pending) callback();
+      const callback = steps.shift();
+      if (callback !== undefined) callback();
+    },
+    deliverAll: () => {
+      while (steps.length > 0) {
+        const callback = steps.shift();
+        if (callback !== undefined) callback();
+      }
     },
     pending: () => steps.length,
   };
@@ -168,9 +182,20 @@ test("derivation maps one native run into the ordered view-event sequence", () =
   ]);
 });
 
+test("a completion carries the native message timestamp as publish-time identity", () => {
+  const event = deriveChildViewEvent({
+    type: "message_end",
+    message: { role: "assistant", timestamp: 1_735_689_600_123, content: [{ type: "text", text: "Done" }] },
+  });
+  assert.equal(event.timestamp, 1_735_689_600_123);
+  const without = deriveChildViewEvent({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "Done" }] },
+  });
+  assert.equal(without.timestamp, undefined);
+});
+
 test("deltas keep native text/thinking interleaving order and stay sanitized and bounded", () => {
-  // Regression (#306 review): the projection must be ordered parts, not
-  // text/thinking buckets, so text→thinking→text renders in native order.
   const interleaved = deriveChildViewEvent({
     type: "message_update",
     message: { role: "assistant", content: [
@@ -196,11 +221,7 @@ test("deltas keep native text/thinking interleaving order and stay sanitized and
   assert.match(text, /tail-marker/);
   assert.ok(!text.includes("SK-1234567890abcdef"), "credentials never cross into a live event");
 
-  const nonAssistant = deriveChildViewEvent({
-    type: "message_update",
-    message: { role: "user", content: [] },
-  });
-  assert.equal(nonAssistant, undefined);
+  assert.equal(deriveChildViewEvent({ type: "message_update", message: { role: "user", content: [] } }), undefined);
 });
 
 test("tool events use the roster-grade projection and never raw arguments or results", () => {
@@ -245,25 +266,31 @@ test("tool events use the roster-grade projection and never raw arguments or res
   assert.deepEqual(finished, { kind: "tool_finished", toolCallId: "call-9", name: "grep", summary: "called", isError: true });
 });
 
-test("completed message content equals the persisted projection exactly, beyond any part cap", () => {
-  // Regression (#306 review): a message with more parts than any live cap
-  // must project identically on both sides so reconciliation stays exact.
-  const content = [];
-  for (let index = 0; index < 200; index += 1) {
-    content.push(index % 2 === 0
-      ? { type: "text", text: `part ${index}` }
-      : { type: "thinking", thinking: `thought ${index}` });
-  }
-  const event = deriveChildViewEvent({ type: "message_end", message: { role: "assistant", content } });
-  assert.equal(event.kind, "message_completed");
-  assert.equal(event.content.length, 200, "no live part cap diverges from the persisted projection");
-  assert.deepEqual(event.content, boundedAssistantTextParts(content));
+test("both projections share one bounded projection, beyond any live-only cap", () => {
+  // Regression (review round 2): the live and persisted projections must be
+  // the same bounded function, so part counts at or beyond the shared bound
+  // still reconcile exactly.
+  const build = (count) => {
+    const content = [];
+    for (let index = 0; index < count; index += 1) {
+      content.push(index % 2 === 0 ? { type: "text", text: `part ${index}` } : { type: "thinking", thinking: `t ${index}` });
+    }
+    return content;
+  };
 
-  const persisted = childHistoryModule.projectSessionEntries([
-    messageEntry("e1", { role: "assistant", content }),
-  ]);
-  const persistedAssistant = persisted.items.find((item) => item.kind === "assistant");
-  assert.equal(JSON.stringify(event.content), JSON.stringify(persistedAssistant.message.content));
+  const within = deriveChildViewEvent({ type: "message_end", message: { role: "assistant", content: build(200) } });
+  assert.equal(within.content.length, 200);
+  const persistedWithin = childHistoryModule.projectSessionEntries([
+    messageEntry("e1", { role: "assistant", content: build(200) }),
+  ]).items.find((item) => item.kind === "assistant");
+  assert.equal(JSON.stringify(within.content), JSON.stringify(persistedWithin.message.content));
+
+  const over = deriveChildViewEvent({ type: "message_end", message: { role: "assistant", content: build(MAX_ASSISTANT_PARTS + 100) } });
+  assert.equal(over.content.length, MAX_ASSISTANT_PARTS, "the shared part bound applies to both sides identically");
+  const persistedOver = childHistoryModule.projectSessionEntries([
+    messageEntry("e2", { role: "assistant", content: build(MAX_ASSISTANT_PARTS + 100) }),
+  ]).items.find((item) => item.kind === "assistant");
+  assert.equal(JSON.stringify(over.content), JSON.stringify(persistedOver.message.content));
 });
 
 test("derivation ignores malformed events without throwing", () => {
@@ -334,6 +361,7 @@ test("promptSession publishes ordered view events without changing the run outco
   try {
     const buildFinal = () => ({
       role: "assistant",
+      timestamp: 1_000,
       content: [{ type: "text", text: "# Final\n\nComplete answer." }],
       usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 0, cost: { total: 0.0001 } },
       model: { provider: "provider", id: "model" },
@@ -376,8 +404,11 @@ test("promptSession publishes ordered view events without changing the run outco
       "message_completed",
       "run_finished",
     ]);
-    assert.deepEqual(events[1], { kind: "message_delta", parts: [{ type: "text", text: "Partial" }] });
-    assert.deepEqual(events[2], { kind: "message_delta", parts: [{ type: "text", text: "Partial answer" }] });
+    assert.deepEqual(events[6], {
+      kind: "message_completed",
+      content: boundedAssistantTextParts([{ type: "text", text: "# Final\n\nComplete answer." }]),
+      timestamp: 1_000,
+    });
 
     assert.equal(withFeed.details.phase, "completed");
     assert.equal(withFeed.details.finalText, baseline.details.finalText);
@@ -430,10 +461,6 @@ test("a throwing view subscriber cannot fail, delay, or alter the child run", as
 });
 
 test("a slow live subscriber never runs inside the child's native event dispatch", async () => {
-  // Regression (#306 review): feed delivery must be decoupled from the child
-  // run. Every subscriber invocation happens after the child's synchronous
-  // dispatch finished and after the run itself resolved — however slow the
-  // subscriber is, it cannot delay the child.
   const artifactsDir = mkdtempSync(join(tmpdir(), "pi-square-live-decoupled-"));
   try {
     const feed = createChildViewFeed();
@@ -459,10 +486,10 @@ test("a slow live subscriber never runs inside the child's native event dispatch
     feed.subscribe(ID, () => {
       if (observed.dispatching || !observed.runDone) observed.illegal += 1;
       observed.invocations += 1;
-      busyWait(15);
+      busyWait(10);
     });
 
-    const runDone = __testables.promptSession({
+    await __testables.promptSession({
       session: seamSession(script),
       prompt: "p",
       details: seamDetails(artifactsDir),
@@ -470,13 +497,72 @@ test("a slow live subscriber never runs inside the child's native event dispatch
     }).then(() => {
       observed.runDone = true;
     });
-    await runDone;
-    // Let the scheduled flush run; it was scheduled during the run, so this
-    // immediate queues strictly behind it.
-    await new Promise((resolve) => setImmediate(resolve));
+    for (let tick = 0; tick < 10 && observed.invocations < 4; tick += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
 
     assert.equal(observed.illegal, 0, "no subscriber work ran during dispatch or before the run resolved");
     assert.ok(observed.invocations >= 4, "the decoupled flush still delivers every coalesced event");
+  } finally {
+    rmSync(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test("a child that yields between events is never blocked behind a batch of deliveries", async () => {
+  // Regression (review round 2): each scheduler tick delivers exactly one
+  // event, so a child continuation that yields between its events never waits
+  // behind more than one delivered event's subscriber work.
+  const artifactsDir = mkdtempSync(join(tmpdir(), "pi-square-live-interleave-"));
+  try {
+    const feed = createChildViewFeed();
+    const trace = [];
+    const script = async (emit, session) => {
+      emit({ type: "agent_start" });
+      for (let step = 0; step < 3; step += 1) {
+        emit({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: `s${step}a` }] } });
+        emit({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: `s${step}b` }] } });
+        trace.push(`child-step-${step}`);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: "Done" }],
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+        model: { provider: "p", id: "m" },
+        stopReason: "stop",
+      };
+      session.state.messages = [message];
+      emit({ type: "message_end", message });
+      emit({ type: "agent_end" });
+    };
+    feed.subscribe(ID, () => {
+      trace.push("delivery");
+      busyWait(5);
+    });
+    await __testables.promptSession({
+      session: seamSession(script),
+      prompt: "p",
+      details: seamDetails(artifactsDir),
+      onViewEvent(event) { feed.publish(ID, event); },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Between two child continuations, at most one delivery may run; the
+    // child's final emits have no following continuation to delay.
+    const lastStep = trace.map((entry) => entry.startsWith("child")).lastIndexOf(true);
+    let longestRun = 0;
+    let run = 0;
+    for (const entry of trace.slice(0, lastStep + 1)) {
+      if (entry === "delivery") run += 1;
+      else {
+        longestRun = Math.max(longestRun, run);
+        run = 0;
+      }
+    }
+    assert.ok(longestRun <= 1, `one delivery per child yield, saw a run of ${longestRun}: ${trace.join(",")}`);
+    assert.ok(trace.includes("child-step-2"), "the child run progressed through every yield");
   } finally {
     rmSync(artifactsDir, { recursive: true, force: true });
   }
@@ -486,17 +572,17 @@ test("a slow live subscriber never runs inside the child's native event dispatch
 // Feed
 
 test("the feed is ephemeral: no subscribers means no work and no buffering", () => {
-  const { feed, deliver } = manualFeed();
+  const { feed, deliverAll } = manualFeed();
   feed.publish("child-1", { kind: "run_started" });
-  deliver();
+  deliverAll();
   const seen = [];
   feed.subscribe("child-1", (event) => seen.push(event.kind));
   feed.publish("child-1", { kind: "run_finished" });
-  deliver();
+  deliverAll();
   assert.deepEqual(seen, ["run_finished"]);
 });
 
-test("delivery is ordered, isolated, and never synchronous", () => {
+test("delivery is ordered, isolated, asynchronous, and one event per tick", () => {
   const { feed, deliver } = manualFeed();
   const healthy = [];
   let syncPublish = true;
@@ -510,56 +596,170 @@ test("delivery is ordered, isolated, and never synchronous", () => {
   syncPublish = false;
   feed.publish("child-1", { kind: "message_completed", content: [] });
   deliver();
+  assert.deepEqual(healthy, ["run_started"], "one scheduled tick delivers exactly one event");
+  deliver();
   assert.deepEqual(healthy, ["run_started", "message_completed"]);
+  deliver();
+  assert.deepEqual(healthy, ["run_started", "message_completed"], "an empty queue schedules nothing");
 });
 
-test("cumulative deltas coalesce in place without disturbing order", () => {
-  const { feed, deliver } = manualFeed();
+test("a delta never reorders across a structural boundary of its child", () => {
+  // Regression (review round 2): the minimal FIFO race — delta A, completion
+  // A, delta B must deliver in exactly that order; the old backward scan
+  // replaced delta A in place with B's payload ahead of the completion.
+  const { feed, deliverAll } = manualFeed();
+  const seen = [];
+  feed.subscribe("child-1", (event) => seen.push(event));
+  feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "A" }] });
+  feed.publish("child-1", { kind: "message_completed", content: [{ type: "text", text: "A done" }], timestamp: 1 });
+  feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "B" }] });
+  deliverAll();
+  assert.deepEqual(seen.map((event) => event.kind), ["message_delta", "message_completed", "message_delta"]);
+  assert.deepEqual(seen[0].parts, [{ type: "text", text: "A" }], "delta A keeps its own payload and position");
+  assert.deepEqual(seen[2].parts, [{ type: "text", text: "B" }], "delta B stays behind the completion boundary");
+});
+
+test("adjacent cumulative deltas still coalesce in place without disturbing order", () => {
+  const { feed, deliverAll } = manualFeed();
   const seen = [];
   feed.subscribe("child-1", (event) => seen.push(event));
   feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "a" }] });
+  feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "ab" }] });
   feed.publish("child-1", { kind: "tool_started", toolCallId: "c1", name: "grep", summary: "called", startedAt: 1 });
   feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "abc" }] });
-  deliver();
-  assert.deepEqual(seen.map((event) => event.kind), ["message_delta", "tool_started"]);
-  assert.deepEqual(seen[0].parts, [{ type: "text", text: "abc" }], "the pending delta kept its queue position with the newest payload");
+  deliverAll();
+  assert.deepEqual(seen.map((event) => event.kind), ["message_delta", "tool_started", "message_delta"]);
+  assert.deepEqual(seen[0].parts, [{ type: "text", text: "ab" }], "adjacent deltas coalesce to the newest payload");
+  assert.deepEqual(seen[2].parts, [{ type: "text", text: "abc" }], "the post-boundary delta keeps its own position");
+});
+
+test("a listener that overruns the time budget is evicted after one overrun", () => {
+  // Regression (review round 2): the feed stays on this thread, so a listener
+  // is time-budgeted; an overrunning listener is evicted after one delivery
+  // instead of repeatedly preempting everything else.
+  const feed = createChildViewFeed();
+  const healthy = [];
+  let slowInvocations = 0;
+  feed.subscribe(ID, () => {
+    slowInvocations += 1;
+    busyWait(LIVE_LISTENER_BUDGET_MS + 60);
+  });
+  feed.subscribe(ID, (event) => healthy.push(event.kind));
+  feed.publish(ID, { kind: "run_started" });
+  feed.publish(ID, { kind: "tool_result_completed" });
+  feed.publish(ID, { kind: "run_finished" });
+  return new Promise((resolve, reject) => {
+    const settle = setInterval(() => {
+      if (healthy.length >= 3) {
+        clearInterval(settle);
+        try {
+          assert.equal(slowInvocations, 1, "the overrunning listener delivered at most once");
+          assert.deepEqual(healthy, ["run_started", "tool_result_completed", "run_finished"],
+            "the healthy listener keeps receiving every event");
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      }
+    }, 10);
+    setTimeout(() => {
+      clearInterval(settle);
+      reject(new Error(`eviction did not settle: slow=${slowInvocations} healthy=${healthy.length}`));
+    }, 5_000).unref?.();
+  });
+});
+
+test("a scheduler that throws never flushes inline and the queue stays bounded", () => {
+  // Regression (review round 2): the old inline fallback re-ran subscriber
+  // work inside the publishing stack. A broken scheduler must drop nothing
+  // synchronously; a later working scheduler drains the retained queue.
+  const steps = [];
+  let broken = true;
+  const feed = createChildViewFeed({
+    schedule: (callback) => {
+      if (broken) throw new Error("scheduler unavailable");
+      steps.push(callback);
+    },
+  });
+  const seen = [];
+  let syncDelivery = 0;
+  let inPublish = false;
+  feed.subscribe(ID, (event) => {
+    if (inPublish) syncDelivery += 1;
+    seen.push(event.kind);
+  });
+  inPublish = true;
+  feed.publish(ID, { kind: "run_started" });
+  feed.publish(ID, { kind: "message_completed", content: [] });
+  inPublish = false;
+  assert.deepEqual(seen, [], "a throwing scheduler delivers nothing, inline or otherwise");
+
+  broken = false;
+  feed.publish(ID, { kind: "run_finished" });
+  for (let tick = 0; tick < 5 && steps.length > 0; tick += 1) {
+    const callback = steps.shift();
+    if (callback !== undefined) callback();
+  }
+  assert.deepEqual(seen, ["run_started", "message_completed", "run_finished"],
+    "a recovered scheduler drains the retained queue in order");
+  assert.equal(syncDelivery, 0);
 });
 
 test("a bounded pending queue drops the oldest with one visible omission marker", () => {
-  const { feed, deliver } = manualFeed();
+  const { feed, deliverAll } = manualFeed();
   const seen = [];
   feed.subscribe("child-1", (event) => seen.push(event.kind));
   for (let index = 0; index < MAX_PENDING_EVENTS + 5; index += 1) {
     feed.publish("child-1", { kind: "tool_result_completed" });
   }
-  deliver();
-  assert.ok(seen.length <= MAX_PENDING_EVENTS + 1, "the delivered batch stays bounded");
+  deliverAll();
+  assert.ok(seen.length <= MAX_PENDING_EVENTS + 1, "the delivered stream stays bounded");
   assert.equal(seen[0], "live_events_dropped", "the drop is explicit, never silent");
 });
 
+test("overflow markers carry the dropped completions' fingerprints for recovery", () => {
+  const { feed, deliverAll } = manualFeed();
+  const markers = [];
+  feed.subscribe("child-1", (event) => {
+    if (event.kind === "live_events_dropped") markers.push(event);
+  });
+  for (let index = 0; index < MAX_PENDING_EVENTS + 2; index += 1) {
+    feed.publish("child-1", { kind: "tool_result_completed" });
+  }
+  feed.publish("child-1", { kind: "message_completed", content: [{ type: "text", text: "final" }], timestamp: 42 });
+  for (let index = 0; index < MAX_PENDING_EVENTS + 2; index += 1) {
+    feed.publish("child-1", { kind: "tool_result_completed" });
+  }
+  deliverAll();
+  assert.ok(markers.length > 0, "overflow produced at least one marker");
+  assert.ok(markers.some((marker) => (marker.dropped ?? []).some(
+    (entry) => entry.kind === "message" && entry.timestamp === 42,
+  )), "the dropped completion's fingerprint travels with the marker");
+});
+
 test("unsubscribe, clear, and the subscriber bound hold", () => {
-  const { feed, deliver } = manualFeed();
+  const { feed, deliverAll } = manualFeed();
   const seen = [];
   const unsubscribe = feed.subscribe("child-1", (event) => seen.push(event.kind));
   feed.publish("child-1", { kind: "run_started" });
-  deliver();
+  deliverAll();
   unsubscribe();
   feed.publish("child-1", { kind: "run_finished" });
-  deliver();
+  deliverAll();
   assert.deepEqual(seen, ["run_started"]);
 
   for (let index = 0; index < 12; index += 1) feed.subscribe("child-2", () => {});
   const late = [];
   feed.subscribe("child-2", (event) => late.push(event.kind));
   feed.publish("child-2", { kind: "run_started" });
-  deliver();
+  deliverAll();
   assert.deepEqual(late, [], "the per-child subscriber bound rejects the ninth subscription");
 
   const before = [];
   feed.subscribe("child-3", (event) => before.push(event.kind));
   feed.clear();
   feed.publish("child-3", { kind: "run_started" });
-  deliver();
+  deliverAll();
   assert.deepEqual(before, [], "clear drops subscribers and undelivered events");
 });
 
@@ -578,7 +778,7 @@ function runningModel(history) {
   };
 }
 
-function openOverlay(root, lines, options = {}) {
+function freshOverlay(root, lines, options = {}) {
   writeChildArtifacts(root, ID, lines);
   return overlayHarness(
     runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })),
@@ -588,10 +788,14 @@ function openOverlay(root, lines, options = {}) {
   );
 }
 
+function liveOverlayRoot() {
+  return mkdtempSync(join(tmpdir(), `pi-square-live-${Math.random().toString(16).slice(2)}-`));
+}
+
 test("streaming assistant parts render below the persisted window in native order", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-overlay-"));
+  const root = liveOverlayRoot();
   try {
-    const { overlay } = openOverlay(root, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "please research" }] }),
     ]);
     let lines = plain(overlay.render(64));
@@ -626,20 +830,24 @@ test("streaming assistant parts render below the persisted window in native orde
 });
 
 test("a completed message reconciles with the persisted entry exactly once", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-reconcile-"));
+  const root = liveOverlayRoot();
   try {
-    const { sessionFile } = writeChildArtifacts(root, ID, [
+    const { overlay, } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
     ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })));
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
     overlay.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "Working" }] });
-    overlay.applyLiveEvent({ kind: "message_completed", content: boundedAssistantTextParts([{ type: "text", text: "Working" }]) });
+    overlay.applyLiveEvent({
+      kind: "message_completed",
+      content: boundedAssistantTextParts([{ type: "text", text: "Working" }]),
+      timestamp: 5_000,
+    });
     let lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Working"), 1, "the completed live message stays visible before persistence lands");
 
-    appendSessionLine(sessionFile, messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "Working" }] }));
+    appendSessionLine(sessionFile, messageEntry("e2", { role: "assistant", timestamp: 5_000, content: [{ type: "text", text: "Working" }] }));
     overlay.applyLiveEvent({ kind: "run_started" });
     lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Working"), 1, "reconciliation never duplicates the message");
@@ -648,28 +856,69 @@ test("a completed message reconciles with the persisted entry exactly once", () 
   }
 });
 
-test("a pre-existing identical message never consumes a newer completion", () => {
-  // Regression (#306 review): the loaded history already contains the same
-  // text. The new completion's own entry has not appended yet, so the live
-  // copy must survive reconciliation instead of being matched against the old
-  // occurrence.
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-prerace-"));
+test("a terminal reconcile before delayed delivery shows the final message exactly once", () => {
+  // Regression (review round 2): the background store can transition the job
+  // and the roster's terminal reconcile can load the persisted final entry
+  // BEFORE the scheduled feed flush delivers the completion. The completion
+  // identifies its own occurrence by publish-time timestamp, so it confirms
+  // instead of duplicating.
+  const root = liveOverlayRoot();
   try {
-    const { sessionFile } = writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
-      messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "Same words" }] }),
     ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })));
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
-    overlay.applyLiveEvent({ kind: "message_completed", content: boundedAssistantTextParts([{ type: "text", text: "Same words" }]) });
+    // Pi appended the final entry (message timestamp 7_000) and the store
+    // transitioned; the overlay reconciles to the terminal state first.
+    appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", timestamp: 7_000, content: [{ type: "text", text: "final words" }] }));
+    overlay.updateLifecycle({ status: "completed", lifecycleLabel: "✓ completed", lifecycleTone: "success", durationText: "9s" });
+    overlay.reconcileNow(8);
     let lines = plain(overlay.render(64)).join("\n");
-    assert.equal(occurrences(lines, "Same words"), 2,
-      "the live copy stays: only occurrences beyond the recorded baseline can confirm it");
+    assert.equal(occurrences(lines, "final words"), 1, "the persisted final shows once");
 
-    // An unrelated entry appends and a structural event reconciles: the new
-    // completion's own entry still has not landed, so consuming the live copy
-    // against the old identical occurrence would hide the new message.
+    // Only now does the scheduled flush deliver the queued completion.
+    overlay.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "final words" }] });
+    overlay.applyLiveEvent({
+      kind: "message_completed",
+      content: boundedAssistantTextParts([{ type: "text", text: "final words" }]),
+      timestamp: 7_000,
+    });
+    overlay.applyLiveEvent({ kind: "run_finished" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "final words"), 1,
+      "the delayed completion confirms against its own persisted occurrence instead of duplicating");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a consumed occurrence never confirms a second identical completion", () => {
+  // Regression (review round 2): two identical completions, only the first
+  // persisted; an unrelated append and reconcile in between must not let the
+  // second completion re-consume the same persisted occurrence.
+  const root = liveOverlayRoot();
+  try {
+    const { overlay } = freshOverlay(root, [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+    ]);
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
+    overlay.render(64);
+
+    const completion = () => ({
+      kind: "message_completed",
+      content: boundedAssistantTextParts([{ type: "text", text: "Same words" }]),
+      timestamp: 9_000,
+    });
+    overlay.applyLiveEvent(completion());
+    overlay.applyLiveEvent(completion());
+
+    appendSessionLine(sessionFile, messageEntry("e2", { role: "assistant", timestamp: 9_000, content: [{ type: "text", text: "Same words" }] }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    let lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Same words"), 2, "the first completion confirmed; the second stays live");
+
     appendSessionLine(sessionFile, messageEntry("e8", {
       role: "assistant",
       content: [{ type: "toolCall", id: "c9", name: "grep", arguments: { pattern: "x" } }],
@@ -677,10 +926,45 @@ test("a pre-existing identical message never consumes a newer completion", () =>
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
     lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Same words"), 2,
-      "an unrelated persisted append never consumes the live completion against the pre-existing identical message");
+      "an unrelated append never lets the second completion re-consume the consumed occurrence");
 
-    // The new entry appends; only now may reconciliation drop the live copy.
-    appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", content: [{ type: "text", text: "Same words" }] }));
+    appendSessionLine(sessionFile, messageEntry("e3", { role: "assistant", timestamp: 9_000, content: [{ type: "text", text: "Same words" }] }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Same words"), 2, "its own second occurrence confirms the second completion");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a pre-existing identical message never consumes a newer completion", () => {
+  const root = liveOverlayRoot();
+  try {
+    const { overlay } = freshOverlay(root, [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+      messageEntry("e2", { role: "assistant", timestamp: 1_000, content: [{ type: "text", text: "Same words" }] }),
+    ]);
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
+    overlay.render(64);
+
+    overlay.applyLiveEvent({
+      kind: "message_completed",
+      content: boundedAssistantTextParts([{ type: "text", text: "Same words" }]),
+      timestamp: 8_000,
+    });
+    let lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Same words"), 2,
+      "the live copy stays: the old identical message carries a different timestamp");
+
+    appendSessionLine(sessionFile, messageEntry("e8", {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "c9", name: "grep", arguments: { pattern: "x" } }],
+    }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Same words"), 2, "an unrelated append still consumes nothing");
+
+    appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", timestamp: 8_000, content: [{ type: "text", text: "Same words" }] }));
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
     lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Same words"), 2, "two persisted occurrences show, no live duplicate");
@@ -690,28 +974,28 @@ test("a pre-existing identical message never consumes a newer completion", () =>
 });
 
 test("a message longer than any live part cap reconciles exactly", () => {
-  // Regression (#306 review): the live and persisted projections must be one
-  // projection, so a 200-part message confirms instead of lingering.
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-manyparts-"));
+  const root = liveOverlayRoot();
   try {
-    const { sessionFile } = writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
-    ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })), 80, 400);
+    ], { rows: 400 });
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
     const content = [];
     for (let index = 0; index < 200; index += 1) {
       content.push({ type: "text", text: `part ${index}` });
     }
-    // Through the derivation, so any live-side cap makes reconciliation fail.
-    const completed = deriveChildViewEvent({ type: "message_end", message: { role: "assistant", content } });
+    const completed = deriveChildViewEvent({
+      type: "message_end",
+      message: { role: "assistant", timestamp: 3_000, content },
+    });
     assert.equal(completed.kind, "message_completed");
     overlay.applyLiveEvent(completed);
     let lines = plain(overlay.render(64)).join("\n");
     assert.ok(lines.includes("part 199"));
 
-    appendSessionLine(sessionFile, messageEntry("e2", { role: "assistant", content }));
+    appendSessionLine(sessionFile, messageEntry("e2", { role: "assistant", timestamp: 3_000, content }));
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
     lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "part 0"), 1, "the exact projection confirms and never duplicates");
@@ -721,45 +1005,13 @@ test("a message longer than any live part cap reconciles exactly", () => {
   }
 });
 
-test("identical completions reconcile one-to-one without reordering", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-order-"));
-  try {
-    const { sessionFile } = writeChildArtifacts(root, ID, [
-      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
-    ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })));
-    overlay.render(64);
-
-    const first = boundedAssistantTextParts([{ type: "text", text: "Same words" }]);
-    const second = boundedAssistantTextParts([{ type: "text", text: "Same words" }]);
-    overlay.applyLiveEvent({ kind: "message_completed", content: first });
-    overlay.applyLiveEvent({ kind: "message_completed", content: second });
-
-    appendSessionLine(sessionFile, messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "Same words" }] }));
-    overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "c1", name: "grep", summary: "called", startedAt: 1 });
-    let lines = plain(overlay.render(64)).join("\n");
-    assert.equal(occurrences(lines, "Same words"), 2, "two identical live completions stay until both persist");
-
-    appendSessionLine(sessionFile, messageEntry("e3", { role: "assistant", content: [{ type: "text", text: "Same words" }] }));
-    overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "c1", name: "grep", isError: false });
-    lines = plain(overlay.render(64)).join("\n");
-    assert.equal(occurrences(lines, "Same words"), 2, "each live copy drops against its own persisted counterpart");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("live tail overflow sheds the oldest with an explicit omission state and recovers", () => {
-  // Regression (#306 review): overflowing the bounded live tail must never
-  // silently lose an unpersisted message. The oldest entry drops with a
-  // visible omission marker, and persisted history recovers everything once
-  // the appends land.
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-overflow-"));
+  const root = liveOverlayRoot();
   try {
-    const { sessionFile } = writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
-    ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })), 80, 400);
+    ], { rows: 400 });
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
     const total = MAX_LIVE_ITEMS + 4;
@@ -767,6 +1019,7 @@ test("live tail overflow sheds the oldest with an explicit omission state and re
       overlay.applyLiveEvent({
         kind: "message_completed",
         content: boundedAssistantTextParts([{ type: "text", text: `completion ${index}` }]),
+        timestamp: 10_000 + index,
       });
     }
     let lines = plain(overlay.render(64)).join("\n");
@@ -774,15 +1027,26 @@ test("live tail overflow sheds the oldest with an explicit omission state and re
     assert.ok(lines.includes(`completion ${total - 1}`), "the newest entry never drops");
     assert.match(lines, /older live updates were dropped/, "the drop is an explicit omission state");
 
+    // An unrelated append recovers nothing: the omission state stays.
+    appendSessionLine(sessionFile, messageEntry("u1", {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "cu", name: "grep", arguments: { pattern: "x" } }],
+    }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.match(lines, /older live updates were dropped/, "an unrelated append does not clear the omission state");
+    assert.ok(!lines.includes("completion 0"), "the dropped entry is still unrecovered");
+
     for (let index = 0; index < total; index += 1) {
       appendSessionLine(sessionFile, messageEntry(`p${index}`, {
         role: "assistant",
+        timestamp: 10_000 + index,
         content: [{ type: "text", text: `completion ${index}` }],
       }));
     }
     overlay.applyLiveEvent({ kind: "run_finished" });
     lines = plain(overlay.render(64)).join("\n");
-    assert.ok(!lines.includes("older live updates were dropped"), "a recovering load clears the omission state");
+    assert.ok(!lines.includes("older live updates were dropped"), "actual recovery clears the omission state");
     assert.ok(lines.includes("completion 0") && lines.includes(`completion ${total - 1}`),
       "persisted history recovers every dropped message");
   } finally {
@@ -791,18 +1055,14 @@ test("live tail overflow sheds the oldest with an explicit omission state and re
 });
 
 test("live tool start, update, and end are observable without any persisted append", () => {
-  // Regression (#306 review): tool progress must render from the live events
-  // themselves — a running row on start, an immediate terminal state on end —
-  // while the persisted projection catches up.
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-tools-"));
+  const root = liveOverlayRoot();
   try {
-    const { sessionFile } = writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "search things" }] }),
-    ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })), 80, 30, 5_000);
+    ], { now: 5_000 });
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
-    // No assistant entry has been appended yet: the live row is the only view.
     overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "c1", name: "grep", summary: "called", startedAt: 1_000 });
     let lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Grep"), 1, "a running live tool row appears immediately");
@@ -817,13 +1077,11 @@ test("live tool start, update, and end are observable without any persisted appe
     assert.equal(occurrences(lines, "Grep"), 1, "the same row flips in place");
     assert.match(lines, /Tool failed/, "the end state shows immediately, before any toolResult append");
 
-    // A finished call that was never started still shows its terminal state.
     overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "c2", name: "find", isError: false });
     lines = plain(overlay.render(64)).join("\n");
     assert.ok(lines.includes("Find"), "a finish without a start still renders a live row");
     assert.match(lines, /Completed/);
 
-    // History catches up: the persisted projection takes over, one row each.
     appendSessionLine(sessionFile, messageEntry("e2", {
       role: "assistant",
       content: [{ type: "toolCall", id: "c1", name: "grep", arguments: { pattern: "SECRET-PATTERN", path: "." } }],
@@ -850,13 +1108,65 @@ test("live tool start, update, and end are observable without any persisted appe
   }
 });
 
-test("a tool call already covered by persisted history adds no duplicate live row", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-toolcover-"));
+test("same-name calls reconcile per call id, never per name aggregate", () => {
+  // Regression (review round 2): two live grep rows finish; history persists
+  // both call rows but only one result. Per-name counting dropped both live
+  // rows; per-call identity keeps the unresolved one visible exactly once.
+  const root = liveOverlayRoot();
   try {
-    const { sessionFile } = writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+    ], { now: 9_000 });
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
+    overlay.render(64);
+
+    overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "g1", name: "grep", summary: "called", startedAt: 1_000 });
+    overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "g2", name: "grep", summary: "called", startedAt: 1_500 });
+    let lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Grep"), 2, "both live rows render");
+
+    overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "g1", name: "grep", isError: false });
+    overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "g2", name: "grep", isError: true });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Grep"), 2, "both rows keep their own terminal state");
+
+    // One assistant message with both same-name calls, only one result.
+    appendSessionLine(sessionFile, messageEntry("e2", {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "g1", name: "grep", arguments: { pattern: "a" } },
+        { type: "toolCall", id: "g2", name: "grep", arguments: { pattern: "b" } },
+      ],
+    }));
+    appendSessionLine(sessionFile, messageEntry("e3", {
+      role: "toolResult", toolCallId: "g1", toolName: "grep", isError: false,
+      content: [{ type: "text", text: "SECRET RESULT BODY" }],
+    }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Grep"), 2,
+      "the resolved call's live row sheds and its persisted row renders; the unresolved call keeps exactly one row");
+    assert.ok(!lines.includes("SECRET RESULT BODY"));
+
+    appendSessionLine(sessionFile, messageEntry("e4", {
+      role: "toolResult", toolCallId: "g2", toolName: "grep", isError: true,
+      content: [{ type: "text", text: "SECRET RESULT BODY" }],
+    }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Grep"), 2, "both persisted rows now carry their own results, no live rows left");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a tool call already covered by persisted history adds no duplicate live row", () => {
+  const root = liveOverlayRoot();
+  try {
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
     ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })));
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
     appendSessionLine(sessionFile, messageEntry("e2", {
       role: "assistant",
@@ -871,23 +1181,25 @@ test("a tool call already covered by persisted history adds no duplicate live ro
 });
 
 test("a final message that never persists is not lost while the overlay stays open", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-final-"));
+  const root = liveOverlayRoot();
   try {
-    writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
     ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })));
     overlay.render(64);
 
     overlay.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "Final answer text" }] });
-    overlay.applyLiveEvent({ kind: "message_completed", content: boundedAssistantTextParts([{ type: "text", text: "Final answer text" }]) });
+    overlay.applyLiveEvent({
+      kind: "message_completed",
+      content: boundedAssistantTextParts([{ type: "text", text: "Final answer text" }]),
+      timestamp: 6_000,
+    });
     overlay.applyLiveEvent({ kind: "run_finished" });
 
     const lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Final answer text"), 1,
       "run_finished without a persisted copy keeps the final buffered content visible");
 
-    // A stream that never completed keeps its last observed partial too.
     overlay.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "uncommitted tail" }] });
     overlay.applyLiveEvent({ kind: "run_finished" });
     assert.ok(plain(overlay.render(64)).join("\n").includes("uncommitted tail"));
@@ -897,15 +1209,14 @@ test("a final message that never persists is not lost while the overlay stays op
 });
 
 test("a view scrolled away from the tail is not pulled back by live growth", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-scroll-"));
+  const root = liveOverlayRoot();
   try {
-    writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "first line of a long task" }] }),
       messageEntry("e2", { role: "assistant", content: [{ type: "text", text: "second entry with body text" }] }),
-    ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })), 80, 12);
+    ], { columns: 80, rows: 12 });
     overlay.render(64);
-    overlay.handleInput("\x1b[H"); // Home: pin the viewport to the top.
+    overlay.handleInput("\x1b[H");
 
     overlay.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "streaming tail content" }] });
     const lines = plain(overlay.render(64)).join("\n");
@@ -916,7 +1227,7 @@ test("a view scrolled away from the tail is not pulled back by live growth", () 
 });
 
 test("a queued child shows the waiting state even before a session file exists", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-queued-"));
+  const root = liveOverlayRoot();
   try {
     process.env.PI_AGENT_DIR = root;
     const { overlay } = overlayHarness({
@@ -932,12 +1243,11 @@ test("a queued child shows the waiting state even before a session file exists",
 });
 
 test("a contained live failure renders one bounded diagnostic and recovers", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-diag-"));
+  const root = liveOverlayRoot();
   try {
-    writeChildArtifacts(root, ID, [
+    const { overlay } = freshOverlay(root, [
       messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
     ]);
-    const { overlay } = overlayHarness(runningModel(createChildHistory(ID, { observedAt: Date.parse("2025-01-01T00:00:05Z") })));
     overlay.render(64);
     overlay.setLiveDiagnostic();
     let lines = plain(overlay.render(64)).join("\n");
@@ -979,7 +1289,7 @@ function fakePaintTimers() {
 
 function controllerHarness(root, { status = "running", startedAt = 0 } = {}) {
   process.env.PI_AGENT_DIR = root;
-  const { artifactsDir, sessionFile } = writeChildArtifacts(root, ID, [
+  const { sessionFile } = writeChildArtifacts(root, ID, [
     messageEntry("e1", { role: "user", content: [{ type: "text", text: "task text" }] }),
   ]);
   const state = createBackgroundState();
@@ -1029,11 +1339,11 @@ function controllerHarness(root, { status = "running", startedAt = 0 } = {}) {
   });
   controller.start(ctx);
   const input = (data) => inputHandler?.(data);
-  return { state, job, controller, timers, calls, input, tui, sessionFile, deliver: live.deliver };
+  return { state, job, controller, timers, calls, input, tui, sessionFile, deliver: live.deliver, deliverAll: live.deliverAll };
 }
 
 test("live deltas coalesce to at most one repaint per window; structure renders immediately", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-paint-"));
+  const root = liveOverlayRoot();
   try {
     const { state, job, timers, calls, input, deliver } = controllerHarness(root);
     input("\x1b[B");
@@ -1082,7 +1392,7 @@ test("live deltas coalesce to at most one repaint per window; structure renders 
 });
 
 test("overlay close and session teardown cancel the pending repaint timer", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-dispose-"));
+  const root = liveOverlayRoot();
   try {
     const { state, job, timers, calls, input, controller, deliver } = controllerHarness(root);
     input("\x1b[B");
@@ -1095,7 +1405,7 @@ test("overlay close and session teardown cancel the pending repaint timer", () =
     deliver();
     assert.equal(timers.pending(), 1);
 
-    calls.component.handleInput("\x1b"); // Escape closes the open overlay.
+    calls.component.handleInput("\x1b");
     assert.equal(timers.pending(), 0, "overlay close cancels the pending repaint");
 
     timers.clock.now = 500;
@@ -1122,39 +1432,42 @@ test("overlay close and session teardown cancel the pending repaint timer", () =
   }
 });
 
-test("a child that terminalizes while open shows its final lifecycle and content", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-terminal-"));
+test("a real background terminal order shows the final content exactly once", () => {
+  // Regression (review round 2): the store transition reconciles the terminal
+  // overlay while the scheduled feed flush is still pending; the queued
+  // completion must confirm against its own persisted occurrence.
+  const root = liveOverlayRoot();
   try {
-    const { state, job, timers, calls, input, sessionFile, deliver } = controllerHarness(root);
+    const { state, job, timers, calls, input, sessionFile, deliverAll } = controllerHarness(root);
     input("\x1b[B");
     input("\r");
     timers.clock.now = 0;
     state.viewFeed.publish(job.id, { kind: "message_delta", parts: [{ type: "text", text: "final words" }] });
-    deliver();
     state.viewFeed.publish(job.id, {
       kind: "message_completed",
       content: boundedAssistantTextParts([{ type: "text", text: "final words" }]),
+      timestamp: 7_000,
     });
-    deliver();
 
-    appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", content: [{ type: "text", text: "final words" }] }));
+    appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", timestamp: 7_000, content: [{ type: "text", text: "final words" }] }));
     job.status = "completed";
     job.details.phase = "completed";
     job.details.endedAt = 9_000;
     job.details.finalText = "final words";
     for (const listener of state.listeners) listener();
 
+    deliverAll();
     assert.ok(calls.renders >= 1, "the terminal transition renders immediately");
     const lines = plain(calls.component.render(64)).join("\n");
     assert.match(lines, /completed/, "the open overlay title shows the final lifecycle");
-    assert.equal(occurrences(lines, "final words"), 1, "the final content reconciled exactly once");
+    assert.equal(occurrences(lines, "final words"), 1, "the final content shows exactly once across both orders");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("a broken overlay renderer is contained as one diagnostic and never stops repaints", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-contained-"));
+  const root = liveOverlayRoot();
   try {
     const { state, job, timers, calls, input, deliver } = controllerHarness(root);
     input("\x1b[B");
@@ -1182,12 +1495,12 @@ test("a broken overlay renderer is contained as one diagnostic and never stops r
 // Integration
 
 test("background integration: feed events flow in order and a broken subscriber changes nothing", async () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-background-"));
+  const root = liveOverlayRoot();
   try {
     const pi = createPiStub();
     process.env.PI_AGENT_DIR = root;
     const state = createBackgroundState();
-    const mockedBackground = await (await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"))).loadBackgroundModule();
+    const mockedBackground = await helpers.loadBackgroundModule();
     const queued = mockedBackground.createQueuedJob({
       state,
       id: ID,
@@ -1231,7 +1544,7 @@ test("background integration: feed events flow in order and a broken subscriber 
 
     await waitFor(() => state.jobs.get(queued.id)?.status === "completed", "job completion");
     await waitFor(() => pi.sent.length === 1, "the ordinary completion delivery");
-    await new Promise((resolve) => setImmediate(resolve));
+    await waitFor(() => captured.length >= 4, "the decoupled flush drains");
     assert.deepEqual(captured, ["run_started", "message_delta", "message_completed", "run_finished"]);
     assert.equal(queued.details.finalText, "ACK");
     assert.equal(queued.details.phase, "completed");
@@ -1243,10 +1556,10 @@ test("background integration: feed events flow in order and a broken subscriber 
 });
 
 test("session replacement and shutdown clear the session-scoped live view feed", async () => {
-  // Regression (#306 review): no subscriber of one parent session may survive
-  // into its replacement or past shutdown.
-  const root = mkdtempSync(join(tmpdir(), "pi-square-live-feedclear-"));
-  const previousAgentDir = process.env.PI_AGENT_DIR;
+  // Regression (review rounds 1+2): no subscriber of one parent session may
+  // survive into its replacement or past shutdown; observed through the
+  // registrar itself, with the background module captured by the test alias.
+  const root = liveOverlayRoot();
   process.env.PI_AGENT_DIR = join(root, "agent");
   try {
     const handlers = new Map();
@@ -1259,12 +1572,16 @@ test("session replacement and shutdown clear the session-scoped live view feed",
       getThinkingLevel: () => "medium",
       sendMessage() {},
     };
+    const capture = registrarCapture;
+    capture.__resetCapturedStates();
     registrarModule.default(pi, undefined, () => ({
       version: 2,
       anchoredEditing: { enabled: false, autoRead: true },
     }));
-    const state = registrarModule.__testables.lastState();
-    assert.ok(state?.background?.viewFeed, "the registrar owns a session-scoped view feed");
+    const states = capture.__capturedStates();
+    assert.ok(states.length >= 1, "the registrar created its session-scoped state");
+    const state = states.at(-1);
+    assert.ok(state.viewFeed, "the registrar owns a session-scoped view feed");
 
     const ctx = (sessionId) => ({
       mode: "tui",
@@ -1281,20 +1598,22 @@ test("session replacement and shutdown clear the session-scoped live view feed",
     });
 
     const seen = [];
-    state.background.viewFeed.subscribe(ID, (event) => seen.push(event.kind));
+    state.viewFeed.subscribe(ID, (event) => seen.push(event.kind));
     await handlers.get("session_start")({}, ctx("parent-1"));
-    state.background.viewFeed.publish(ID, { kind: "run_started" });
+    state.viewFeed.publish(ID, { kind: "run_started" });
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(seen, [], "replacement clears subscribers and undelivered events");
 
     const after = [];
-    state.background.viewFeed.subscribe(ID, (event) => after.push(event.kind));
+    const currentState = capture.__capturedStates().at(-1);
+    currentState.viewFeed.subscribe(ID, (event) => after.push(event.kind));
     await handlers.get("session_shutdown")();
-    state.background.viewFeed.publish(ID, { kind: "run_started" });
+    currentState.viewFeed.publish(ID, { kind: "run_started" });
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(after, [], "shutdown clears the session-scoped feed");
   } finally {
-    if (previousAgentDir !== undefined) process.env.PI_AGENT_DIR = previousAgentDir;
     rmSync(root, { recursive: true, force: true });
   }
 });

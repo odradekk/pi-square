@@ -373,6 +373,21 @@ export function cancelBackgroundJobs(input: {
   return details;
 }
 
+/**
+ * The guarded live-view publisher both start paths share (#306): publication
+ * only enqueues into the session feed's bounded FIFO, and this guard keeps
+ * even a feed defect from reaching the child run.
+ */
+function viewEventPublisher(state: BackgroundState, job: BackgroundJob): (event: ChildViewEvent) => void {
+  return (event) => {
+    try {
+      state.viewFeed?.publish(job.id, event);
+    } catch {
+      // The live view feed is observational only.
+    }
+  };
+}
+
 function startBackgroundLifecycle(input: {
   pi: ExtensionAPI;
   state: BackgroundState;
@@ -474,16 +489,7 @@ export function startBackgroundJob(input: {
     job: input.job,
     operation: "delegate",
     execute: (onUpdate) => runSubagentTask({
-      // Ephemeral live view events (#306): publication is synchronous fan-out
-      // with isolated subscribers, and this guard keeps even a feed defect
-      // from reaching the child run.
-      onViewEvent: (event: ChildViewEvent) => {
-        try {
-          input.state.viewFeed?.publish(input.job.id, event);
-        } catch {
-          // The live view feed is observational only.
-        }
-      },
+      onViewEvent: viewEventPublisher(input.state, input.job),
       ctx: input.ctx,
       id: input.job.id,
       task: input.task,
@@ -520,13 +526,7 @@ export function startBackgroundResumeJob(input: {
     job: input.job,
     operation: "resume",
     execute: (onUpdate) => resumeSubagentTask({
-      onViewEvent: (event: ChildViewEvent) => {
-        try {
-          input.state.viewFeed?.publish(input.job.id, event);
-        } catch {
-          // The live view feed is observational only.
-        }
-      },
+      onViewEvent: viewEventPublisher(input.state, input.job),
       ctx: input.ctx,
       id: input.job.id,
       task: input.task,

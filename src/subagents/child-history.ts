@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolveChildSessionFile } from "./artifacts";
 import { clipWithHeadTail } from "./confirmed-delivery";
@@ -80,6 +81,12 @@ export type TranscriptItem = (
     kind: "toolCall";
     name: string;
     summary: string;
+    /**
+     * Non-reversible key of the native tool-call id for live/persisted
+     * reconciliation; internal identity only, never rendered, and the raw id
+     * never enters the projection.
+     */
+    callKey?: string;
     durationMs?: number;
     result?: { isError: boolean };
   }
@@ -138,16 +145,32 @@ export type AssistantTextPart =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string };
 
+/** Hard part-count bound of the shared assistant projection, both sides. */
+export const MAX_ASSISTANT_PARTS = 512;
+
+/**
+ * Non-reversible identity of one native tool-call id, shared by the persisted
+ * projection and the live viewer tail so live tool rows reconcile against
+ * their own persisted call rows without the raw id ever entering a projected
+ * item or a rendered line.
+ */
+export function callKeyOf(nativeCallId: string): string {
+  return createHash("sha256").update(nativeCallId).digest("hex").slice(0, 16);
+}
+
 /**
  * The ordered bounded text/thinking projection of assistant message content,
  * shared by the persisted transcript projection and the live viewer tail so a
  * message rendered live matches its persisted counterpart exactly — the
- * equality the live/persisted reconciliation confirms against.
+ * equality the live/persisted reconciliation confirms against. Both sides
+ * carry the same per-part budget and the same part-count bound, so the
+ * projection of one message is always finite and identical everywhere.
  */
 export function boundedAssistantTextParts(content: unknown): AssistantTextPart[] {
   const parts: AssistantTextPart[] = [];
   if (!Array.isArray(content)) return parts;
   for (const part of content) {
+    if (parts.length >= MAX_ASSISTANT_PARTS) break;
     if (!part || typeof part !== "object") continue;
     if (part.type === "text") {
       const text = safeEntryText(part.text);
@@ -281,18 +304,22 @@ export function projectSessionEntries(
           // structural counts/ranges only; free-form paths, patterns, queries,
           // and commands never project, and unknown names stay anonymous.
           const display = rosterToolArgsDisplay(String(part.name ?? ""), part.arguments);
+          // The native call id travels only as a non-reversible key so live
+          // tool rows reconcile against their own persisted call and result;
+          // the raw id never enters the projection anywhere.
+          const nativeCallId = typeof part.id === "string" ? part.id.slice(0, 128) : undefined;
           const call = {
             kind: "toolCall",
             name: display.tool,
             summary: display.summary,
+            ...(nativeCallId !== undefined && nativeCallId !== "" ? { callKey: callKeyOf(nativeCallId) } : {}),
             ...(startedAt !== undefined && observedAt !== undefined
               ? { durationMs: Math.max(0, observedAt - startedAt) }
               : {}),
             ...(entryId !== undefined ? { entryId } : {}),
           } as TranscriptItem & { kind: "toolCall" };
           calls.push(call);
-          const callId = typeof part.id === "string" ? part.id : "";
-          if (callId) openCalls.set(callId, { item: call, startedAt });
+          if (nativeCallId !== undefined && nativeCallId !== "") openCalls.set(nativeCallId, { item: call, startedAt });
         } else if (part.type !== "text" && part.type !== "thinking") {
           // Text and thinking parts already entered the bounded content
           // projection above; only genuinely unsupported parts fall through.
@@ -300,9 +327,16 @@ export function projectSessionEntries(
         }
       }
       if (boundedContent.length > 0) {
+        // The message timestamp travels with the projection as internal
+        // identity for live/persisted reconciliation; no renderer shows it.
+        const messageTimestamp = timestamp((message as { timestamp?: unknown }).timestamp);
         const item = {
           kind: "assistant",
-          message: { role: "assistant", content: boundedContent },
+          message: {
+            role: "assistant",
+            content: boundedContent,
+            ...(messageTimestamp !== undefined ? { timestamp: messageTimestamp } : {}),
+          },
           ...(entryId !== undefined ? { entryId } : {}),
         } as const;
         projected.push(item);

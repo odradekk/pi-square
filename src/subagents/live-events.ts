@@ -8,11 +8,16 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * The one-time child execution boundary derives these ordered events from the
  * native session events it already observes and hands them to a session-scoped
  * feed. Delivery is decoupled from the child: `publish` only enqueues into a
- * bounded FIFO and schedules one flush, so no subscriber — however slow — ever
- * runs inside the child's native event dispatch. Flushing preserves publish
- * order, replaces a pending streaming delta in place (deltas are cumulative),
- * and surfaces overflow through one bounded omission marker instead of silent
- * loss. Every text crossing an event is the shared sanitized, bounded
+ * bounded FIFO and schedules a flush, so no subscriber ever runs inside the
+ * child's native event dispatch. Flushing delivers exactly one event per
+ * scheduler tick in publish order, coalesces a pending streaming delta only
+ * while no structural event of the same child was published after it, and
+ * surfaces overflow through bounded omission-marker entries instead of silent
+ * loss. Subscriber callbacks stay on this thread: each call is time-budgeted
+ * and a listener that exceeds the budget is evicted after that one overrun,
+ * so viewer work cannot repeatedly preempt the child — this is a bounded
+ * same-thread model, not an isolation guarantee against a callback that never
+ * returns. Every text crossing an event is the shared sanitized, bounded
  * projection the persisted viewer already uses, so a live-rendered message
  * matches its persisted counterpart exactly.
  */
@@ -27,10 +32,16 @@ export const LIVE_REPAINT_COALESCE_MS = 110;
 export const MAX_LIVE_STREAM_PARTS = 128;
 /** Ordered live tail entries (message completions and tool rows) retained. */
 export const MAX_LIVE_ITEMS = 16;
-/** Pending feed events before the oldest is dropped with a visible marker. */
+/** Pending feed entries (events plus omission markers) before the oldest drops. */
 export const MAX_PENDING_EVENTS = 256;
 /** Per-child feed subscribers; the roster controller needs one. */
 const MAX_FEED_SUBSCRIBERS = 8;
+/**
+ * Wall-clock budget for one subscriber callback. A listener that exceeds it is
+ * evicted after that single overrun: the feed stays on this thread, so the
+ * budget bounds how long viewer work can repeatedly preempt the child.
+ */
+export const LIVE_LISTENER_BUDGET_MS = 250;
 
 function boundedId(value: unknown): string {
   const clean = sanitizeSubagentDisplay(value);
@@ -46,13 +57,59 @@ function liveToolDisplay(toolName: unknown, args: unknown): { name: string; summ
 export type ChildViewEvent =
   | { kind: "run_started" }
   | { kind: "message_delta"; parts: AssistantTextPart[] }
-  | { kind: "message_completed"; content: AssistantTextPart[] }
+  | {
+    kind: "message_completed";
+    content: AssistantTextPart[];
+    /**
+     * Native message timestamp, recorded at publish time — the same value the
+     * persisted entry carries — so reconciliation identifies the completion's
+     * own occurrence no matter when delivery runs. Never rendered.
+     */
+    timestamp?: number;
+  }
   | { kind: "tool_started"; toolCallId: string; name: string; summary: string; startedAt: number }
   | { kind: "tool_updated"; toolCallId: string; name: string }
   | { kind: "tool_finished"; toolCallId: string; name: string; isError: boolean }
   | { kind: "tool_result_completed" }
   | { kind: "run_finished" }
-  | { kind: "live_events_dropped" };
+  | {
+    kind: "live_events_dropped";
+    /**
+     * Fingerprints of the dropped entries the viewer can verify against
+     * persisted history; internal identity only, never rendered. Absent for
+     * dropped events that carry no recoverable content (deltas, lifecycle).
+     */
+    dropped?: DroppedEventFingerprint[];
+  };
+
+/**
+ * Fingerprint of one dropped live event, computed at drop time so the
+ * viewer's omission state can clear only when persisted history actually
+ * recovers that entry. Internal identity only.
+ */
+export type DroppedEventFingerprint =
+  | { kind: "message"; key: string; timestamp?: number }
+  | { kind: "tool"; callId?: string; name: string };
+
+/** Fingerprints one marker may carry; drops beyond the cap stay untracked. */
+const MAX_MARKER_FINGERPRINTS = 16;
+
+function eventFingerprint(event: ChildViewEvent): DroppedEventFingerprint | undefined {
+  if (event.kind === "message_completed" && event.content.length > 0) {
+    let key = "";
+    try {
+      key = JSON.stringify(event.content) ?? "";
+    } catch {
+      key = "";
+    }
+    if (key === "") return undefined;
+    return { kind: "message", key, ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {}) };
+  }
+  if (event.kind === "tool_started" || event.kind === "tool_finished") {
+    return { kind: "tool", name: event.name, ...(event.toolCallId !== "" ? { callId: event.toolCallId } : {}) };
+  }
+  return undefined;
+}
 
 /**
  * Structural events render immediately once delivered; ordinary streaming
@@ -94,9 +151,17 @@ export function deriveChildViewEvent(event: any): ChildViewEvent | undefined {
       if (!message || typeof message !== "object") return undefined;
       if (message.role === "toolResult") return { kind: "tool_result_completed" };
       if (message.role !== "assistant") return undefined;
-      // No part-count cap: the persisted projection of the same message is
-      // uncapped too, and reconciliation compares both projections exactly.
-      return { kind: "message_completed", content: boundedAssistantTextParts(message.content) };
+      // Both sides share one bounded projection (per-part budget and part
+      // count), so reconciliation compares them exactly, and the native
+      // message timestamp travels as publish-time occurrence identity.
+      const timestamp = typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
+        ? message.timestamp
+        : undefined;
+      return {
+        kind: "message_completed",
+        content: boundedAssistantTextParts(message.content),
+        ...(timestamp !== undefined ? { timestamp } : {}),
+      };
     }
     case "tool_execution_start": {
       const display = liveToolDisplay(event.toolName, event.args);
@@ -122,9 +187,11 @@ export type ChildViewEventListener = (event: ChildViewEvent) => void;
 
 export interface ChildViewFeed {
   /**
-   * Enqueues one event for ordered delivery in a later scheduler tick. Never
-   * runs subscriber work in the calling stack, so a slow or stuck subscriber
-   * cannot delay the child run that publishes.
+   * Enqueues one event for ordered delivery in later scheduler ticks. Never
+   * runs subscriber work in the calling stack, so viewer work cannot run
+   * inside the child run that publishes. Each scheduled tick delivers exactly
+   * one event; a listener that overruns the time budget is evicted after that
+   * overrun.
    */
   publish(id: string, event: ChildViewEvent): void;
   subscribe(id: string, listener: ChildViewEventListener): () => void;
@@ -136,9 +203,13 @@ export interface ChildViewFeedOptions {
   /**
    * Delivery scheduler. The default `setImmediate` keeps all subscriber work
    * out of the publishing call stack (and out of the microtask chain the
-   * child run itself resolves through); tests inject a manual clock.
+   * child run itself resolves through); tests inject a manual clock. A
+   * scheduler that throws is never worked around inline — the queue waits for
+   * a working scheduler and stays bounded.
    */
   schedule?: (callback: () => void) => void;
+  /** Clock for the listener time budget; defaults to the wall clock. */
+  now?: () => number;
 }
 
 const defaultSchedule = (callback: () => void) => {
@@ -154,82 +225,129 @@ interface PendingEvent {
 export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildViewFeed {
   const subscribers = new Map<string, Set<ChildViewEventListener>>();
   const schedule = options.schedule ?? defaultSchedule;
+  const now = options.now ?? Date.now;
+  /** Bounded FIFO of events and omission markers; never exceeds the cap. */
   const queue: PendingEvent[] = [];
-  /** Children whose events were dropped at the bound; flushed as one marker. */
-  const omitted = new Map<string, number>();
   let flushScheduled = false;
 
   const fanOut = (id: string, event: ChildViewEvent) => {
     const listeners = subscribers.get(id);
     if (!listeners || listeners.size === 0) return;
     for (const listener of [...listeners]) {
+      const startedAt = now();
       try {
         listener(event);
       } catch {
-        // A broken viewer subscriber must never reach the child run.
+        // A throwing viewer subscriber must never reach the child run.
+      }
+      if (now() - startedAt > LIVE_LISTENER_BUDGET_MS) {
+        // Budget overrun: evict after this one delivery so a slow or stuck
+        // listener cannot repeatedly preempt the child. One overrun is the
+        // total exposure; the rest of the feed keeps working.
+        listeners.delete(listener);
+        if (listeners.size === 0) subscribers.delete(id);
       }
     }
   };
 
+  /**
+   * One event per scheduler tick: a child continuation that yields between
+   * events never waits behind more than one delivered event's subscriber
+   * work, and the flush discipline stays deterministic under any scheduler.
+   */
   const flush = () => {
     flushScheduled = false;
-    const batch = queue.splice(0, queue.length);
-    if (omitted.size > 0) {
-      // One omission marker leads each affected child's remaining events: the
-      // dropped entries were older than everything still queued.
-      const markers = new Map<string, PendingEvent[]>();
-      for (const id of [...omitted.keys()]) {
-        omitted.delete(id);
-        markers.set(id, [{ id, event: { kind: "live_events_dropped" } }]);
-      }
-      const ordered: PendingEvent[] = [];
-      const inserted = new Set<string>();
-      for (const entry of batch) {
-        const marker = markers.get(entry.id);
-        if (marker && !inserted.has(entry.id)) {
-          ordered.push(marker[0]!);
-          inserted.add(entry.id);
-        }
-        ordered.push(entry);
-      }
-      for (const [id, marker] of markers) {
-        if (!inserted.has(id)) ordered.push(marker[0]!);
-      }
-      batch.length = 0;
-      batch.push(...ordered);
-    }
-    for (const { id, event } of batch) fanOut(id, event);
+    const entry = queue.shift();
+    if (entry === undefined) return;
+    fanOut(entry.id, entry.event);
+    if (queue.length > 0) ensureFlush();
   };
+
   const ensureFlush = () => {
     if (flushScheduled) return;
     flushScheduled = true;
     try {
       schedule(flush);
     } catch {
-      // A scheduler defect must not wedge the feed; flush inline as a fallback.
+      // Never flush inline: a broken scheduler must not pull subscriber work
+      // back into the publishing stack. Reset and let a later publish retry;
+      // the queue keeps its bound and drops overflow with markers.
       flushScheduled = false;
-      flush();
     }
   };
 
   return {
     publish(id, event) {
       if (event.kind === "message_delta") {
-        // Deltas are cumulative: replacing the pending one in place keeps the
-        // queue bounded under heavy streaming without disturbing order.
+        // Deltas are cumulative, so a pending one may be replaced in place —
+        // but only while it is still the most recent entry of this child: a
+        // structural event published after the delta is a message boundary
+        // the newer delta must never be reordered across.
+        let coalesced = false;
         for (let index = queue.length - 1; index >= 0; index -= 1) {
           const pending = queue[index]!;
-          if (pending.id === id && pending.event.kind === "message_delta") {
+          if (pending.id !== id) continue;
+          if (pending.event.kind === "message_delta") {
             pending.event = event;
-            return;
+            coalesced = true;
           }
+          break;
         }
+        if (coalesced) return;
       }
-      while (queue.length >= MAX_PENDING_EVENTS) {
-        const dropped = queue.shift();
-        if (dropped && dropped.event.kind !== "live_events_dropped") {
-          omitted.set(dropped.id, (omitted.get(dropped.id) ?? 0) + 1);
+      // Make room for the new entry plus any omission markers, shedding
+      // oldest first. Markers are real queue entries — one per shed child —
+      // so the delivered stream stays explicit and the cap covers them too.
+      // Shed oldest until the new event plus one marker per shed child fits
+      // the cap; each marker carries that child's dropped fingerprints so the
+      // viewer can gate its omission state on real recovery.
+      const fingerprints = new Map<string, DroppedEventFingerprint[]>();
+      const shedInto = (entry: PendingEvent) => {
+        const list = fingerprints.get(entry.id) ?? [];
+        if (list.length < MAX_MARKER_FINGERPRINTS) {
+          const fingerprint = eventFingerprint(entry.event);
+          if (fingerprint !== undefined) list.push(fingerprint);
         }
+        fingerprints.set(entry.id, list);
+      };
+      // Shed oldest-first past markers: a queued omission marker stays queued
+      // (its evidence must be delivered), so the cursor steps over markers
+      // instead of removing them.
+      let cursor = 0;
+      while (queue.length + fingerprints.size + 1 > MAX_PENDING_EVENTS) {
+        const entry = queue[cursor];
+        if (entry === undefined || entry.event.kind === "live_events_dropped") {
+          cursor += 1;
+          if (cursor >= queue.length) break;
+          continue;
+        }
+        queue.splice(cursor, 1);
+        shedInto(entry);
+      }
+      // One marker per child: new fingerprints merge into a marker already
+      // queued for that child instead of stacking new ones.
+      for (const [child, list] of fingerprints) {
+        const existing = queue.find(
+          (entry): entry is PendingEvent & { event: { kind: "live_events_dropped"; dropped?: DroppedEventFingerprint[] } } =>
+            entry.id === child && entry.event.kind === "live_events_dropped",
+        );
+        if (existing !== undefined) {
+          const merged = [...(existing.event.dropped ?? [])];
+          for (const fingerprint of list) {
+            if (merged.length >= MAX_MARKER_FINGERPRINTS) break;
+            merged.push(fingerprint);
+          }
+          existing.event = merged.length > 0
+            ? { kind: "live_events_dropped", dropped: merged }
+            : existing.event;
+          continue;
+        }
+        queue.unshift({
+          id: child,
+          event: list.length > 0
+            ? { kind: "live_events_dropped", dropped: list }
+            : { kind: "live_events_dropped" },
+        });
       }
       queue.push({ id, event });
       ensureFlush();
@@ -252,7 +370,6 @@ export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildVi
     clear() {
       subscribers.clear();
       queue.length = 0;
-      omitted.clear();
     },
   };
 }

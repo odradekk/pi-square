@@ -43,13 +43,6 @@ export interface SubagentFeature {
   setInheritedSystemCore(systemPrompt: string | undefined): void;
 }
 
-/**
- * Exposed for focused registration tests; not part of the public extension
- * API. Holds the most recently registered runtime state so tests can observe
- * session-scoped teardown like the live view feed.
- */
-const registrarStates: SubagentRuntimeState[] = [];
-export const __testables = { lastState: () => registrarStates.at(-1) };
 
 export default function registerSubagents(
   pi: ExtensionAPI,
@@ -81,7 +74,6 @@ export default function registerSubagents(
   // clears any memory-only wait claims.
   const blockingCallRegistry = createSubagentBlockingCallRegistry();
   state.background.delivery = delivery;
-  registrarStates.push(state);
   // The roster ticks through the display runtime's session motion scheduler,
   // resolved at each session start because a replacement session rebuilds the
   // runtime; motion `off` and downgraded environments never schedule a timer.
