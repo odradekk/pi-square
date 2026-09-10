@@ -91,11 +91,21 @@ status: accepted
 > the first open follows the tail, upward scrolling suspends following with a
 > one-row footer new-output state that End clears while resuming follow; the
 > footer also names an off-screen candidate's role and unique short ID while a
-> candidate is tentative; each child independently retains its loaded history
-> view, scroll position, follow state, and tool-expansion state across direct
-> switches (retained only while the overlay session is open); and Pi's
-> effective expand-tools shortcut toggles only the open overlay's tool
-> rendering, never the background main transcript. Every view-state transition
+> candidate is tentative (budgeted so the unique ID is the last part to
+> shrink); the first open follows the tail through an explicit follow flag
+> that renders never overwrite with a finite offset, upward scrolling
+> suspends following with the position anchored on its stable transcript
+> entry, and End is the one key that resumes following; each child
+> independently retains its loaded history view, scroll position, follow
+> state, new-output notice, and tool-expansion state across direct switches
+> (retained only while the overlay session is open); and Pi's effective
+> expand-tools shortcut toggles only the open overlay's tool rows, never the
+> background main transcript — a collapsed row stays one line while an
+> expanded row reveals one bounded, credential-sanitized result projection
+> (raw arguments never render). The mouse wheel scrolls only in fullscreen
+> TUI mode: pi-tui enables mouse tracking there and defers wheel events to
+> the focused overlay, while inline regular mode exposes no public API for
+> extension-visible wheel events under Pi 0.84.2. Every view-state transition
 > stays observational only — no lifecycle, delivery, ownership, claim, wait,
 > abort, resume, or persistence effect.
 > The remaining lifecycle/delivery qualification of the parent viewer
