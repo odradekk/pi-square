@@ -44,29 +44,41 @@ status: accepted
 > cross-page result consumption that survives either adjacent page's reload —
 > with no second transcript store, cache,
 > index, sidecar, lock, journal, or artifact version beside the native
-> session file, and no claim on Pi's private transcript pipeline. Since #306
-> the overlay is live while the child runs: the one-time child execution
-> boundary derives ordered bounded view events (assistant deltas as ordered
-> text/thinking parts, message completion, tool start/update/end,
-> tool-result completion, run lifecycle) after its own run-state bookkeeping,
-> and publication only enqueues into a per-child session-scoped feed whose
-> bounded ordered FIFO flushes in its own scheduler tick — no subscriber,
-> however slow or broken, ever runs inside the child's native event dispatch,
-> and the feed is cleared on parent-session replacement and shutdown. The
-> open overlay renders the ordered live tail below the persisted window
-> (completed-but-unconfirmed messages and live tool rows whose terminal state
-> shows immediately, through the same sanitized projections and the same
-> roster-grade tool seam), coalesces ordinary delta repaints through the one
-> controller-owned timer (~110 ms) while structural events are delivered and
-> repainted immediately, confirms a completed live message only against an
-> equal-content persisted occurrence that appeared after the completion
-> arrived (a pre-existing identical message never consumes it), bounds the
-> tail by shedding the oldest entries with one explicit omission state that
-> persisted history recovers (a child that terminalizes while open stays open
-> with its final lifecycle and content), and contains every observer/renderer
-> failure as one bounded diagnostic row — the feed stays observational and
-> never touches the lifecycle, delivery, ownership, or persistence contracts
-> this ADR records. Cross-child navigation with per-child reading state and
+Since #306
+the overlay is live while the child runs: the one-time child execution
+boundary derives ordered bounded view events (assistant deltas as ordered
+text/thinking parts, message completion, tool start/update/end,
+tool-result completion, run lifecycle) after its own run-state bookkeeping,
+and publication only enqueues into a per-child session-scoped feed whose
+bounded ordered FIFO (events plus omission markers) delivers exactly one
+event per scheduler tick in publish order — never inside the child's native
+event dispatch. Subscriber callbacks are time-budgeted with eviction after
+one overrun (a bounded same-thread model, not an isolation claim against a
+callback that never returns), a scheduler that throws is never retried
+inline (the queue waits, bounded), and the feed is cleared on
+parent-session replacement and shutdown. The open overlay renders the
+ordered live tail below the persisted window (completed-but-unconfirmed
+messages and live tool rows whose terminal state shows immediately, through
+the same sanitized projections — one shared bounded assistant projection on
+both sides — and the same roster-grade tool seam), coalesces ordinary delta
+repaints through the one controller-owned timer (~110 ms) while structural
+events are delivered and repainted immediately, confirms a completed live
+message only against the persisted occurrence carrying the same bounded
+content projection and the same native message timestamp with each
+occurrence consumed at most once for the overlay's lifetime (so delayed
+delivery, a terminal reconcile that loaded the final entry first,
+pre-existing identical history, and repeated identical completions can
+neither duplicate nor strand live content), sheds live tool rows only when
+their own persisted call/result rows appear — matched by a non-reversible
+key of the native call id — the raw id never enters a projected item —
+with a per-name baseline fallback — bounds
+the tail by shedding the oldest entries with one explicit omission state
+that clears only when persisted history actually recovers the dropped
+entries by fingerprint (a child that terminalizes while open stays open
+with its final lifecycle and content), and contains every observer/renderer
+failure as one bounded diagnostic row — the feed stays observational and
+never touches the lifecycle, delivery, ownership, or persistence contracts
+this ADR records.
 > the remaining lifecycle/delivery qualification of the parent viewer
 > specification (#302) stay later slices (#307–#309).
 
