@@ -121,11 +121,16 @@ export function createMainTaskInputCorrelator(): MainTaskInputCorrelator {
         .filter(({ entry }) => entry.textHash === expectedHash);
       const matches = [...steerMatches, ...followUpMatches];
       if (matches.length === 0) {
-        // No pending record is normal for an untracked user-role injection.
-        // Outstanding records make it ambiguous whether a downstream handler
-        // transformed or handled them, so ignore the rest of this run.
-        if (queuedSteers.length > 0 || queuedFollowUps.length > 0) failClosed();
-        return false;
+        const pending = [...queuedSteers, ...queuedFollowUps];
+        if (pending.length === 0) return false;
+        // A later handler may have transformed the accepted text. When every
+        // possible record has the same source, the epoch decision remains
+        // exact even though its queue position does not; consume no guess and
+        // fail closed only for subsequent messages in this run. Mixed sources
+        // are indistinguishable and therefore never advance the epoch.
+        const sources = new Set(pending.map(({ source }) => source));
+        failClosed();
+        return sources.size === 1 && pending[0]!.source === "real";
       }
       if (new Set(matches.map(({ entry }) => entry.source)).size !== 1) {
         // Equal text from conflicting sources is indistinguishable through

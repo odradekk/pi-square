@@ -710,6 +710,35 @@ test("a queued extension follow-up never advances at its user message_start", as
   }
 });
 
+test("a transformed streaming prompt advances only when its source remains unambiguous", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    harness.foreignInput.response = { action: "transform", text: "transformed real steer" };
+    await harness.submitPrompt({
+      source: "interactive",
+      text: "original real steer",
+      streamingBehavior: "steer",
+    });
+    harness.drainStreamingInput("transformed real steer");
+    assert.equal(harness.widgetLines().length, 0, "an accepted transformed real steer advances the epoch");
+
+    await harness.startSession();
+    harness.foreignInput.response = { action: "transform", text: "transformed extension follow-up" };
+    await harness.submitPrompt({
+      source: "extension",
+      text: "original extension follow-up",
+      streamingBehavior: "followUp",
+    });
+    harness.drainStreamingInput("transformed extension follow-up");
+    assert.equal(harness.widgetLines().length, 1, "an accepted transformed extension follow-up does not advance");
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("a handled streaming input cannot contaminate the next accepted queued message", async () => {
   const harness = lifecycleHarness();
   try {
