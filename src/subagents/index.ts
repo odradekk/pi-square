@@ -13,6 +13,7 @@ import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
 import { registerSubagentManager } from "./manager";
+import { createMainTaskInputCorrelator } from "./main-task-input";
 import { createSubagentRosterController } from "./roster";
 import { anchoredEditingEnabled, registerSubagentTool, type SubagentRuntimeState } from "./tool";
 import { decorateSubagentTool } from "./display-adapter";
@@ -84,6 +85,7 @@ export default function registerSubagents(
         display: () => typeof runtime === "function" ? runtime() : runtime,
       },
   );
+  const mainTaskInput = createMainTaskInputCorrelator();
 
   registerSubagentTool(
     pi,
@@ -94,6 +96,7 @@ export default function registerSubagents(
   registerSubagentManager(pi, state, runtime);
 
   pi.on("session_start", async (_event, ctx) => {
+    mainTaskInput.resetSession();
     state.sessionCtx = ctx;
     state.inheritedSystemCore = undefined;
     blockingCallRegistry.terminateAll("session replaced");
@@ -139,39 +142,12 @@ export default function registerSubagents(
   // the message array is built), and at the user `message_start` for a
   // steer/follow-up queued during a streaming run — the same commit
   // discipline the Shadow Minds scheduler uses for its task epochs.
-  let pendingIdleInputSource: "real" | "extension" | undefined;
-  const queuedSteerSources: Array<"real" | "extension"> = [];
-  const queuedFollowUpSources: Array<"real" | "extension"> = [];
-  const STREAMING_INPUT_PAIRS_MAX = 64;
-  let streamingInputDesynchronized = false;
-  let skipInitialUserMessage = false;
   pi.on("input", (event) => {
-    const source = event?.source === "extension" ? "extension" : "real";
-    if (event?.streamingBehavior) {
-      // Pi queues streaming input without a new before_agent_start event and
-      // drains steering messages before follow-ups; keep those identities
-      // separate so mixed real/extension input cannot misclassify.
-      const queue = event.streamingBehavior === "followUp" ? queuedFollowUpSources : queuedSteerSources;
-      if (queue.length >= STREAMING_INPUT_PAIRS_MAX) {
-        streamingInputDesynchronized = true;
-        queuedSteerSources.length = 0;
-        queuedFollowUpSources.length = 0;
-        return;
-      }
-      queue.push(source);
-      return;
-    }
-    // Idle input is only committed at before_agent_start.
-    pendingIdleInputSource = source;
+    mainTaskInput.observeInput(event);
   });
 
   pi.on("before_agent_start", () => {
-    const source = pendingIdleInputSource;
-    pendingIdleInputSource = undefined;
-    if (source === "real") roster.handleMainInput("interactive");
-    // The idle prompt's own user message follows immediately; the queued
-    // steer/follow-up commit below must not double-count it.
-    skipInitialUserMessage = true;
+    if (mainTaskInput.beginAgentRun()) roster.handleMainInput("interactive");
   });
 
   // Delivery timing. A running parent receives results at a turn boundary; a
@@ -186,6 +162,7 @@ export default function registerSubagents(
   });
 
   pi.on("agent_end", (event) => {
+    mainTaskInput.endAgentRun();
     delivery.handleAgentEnd(event.messages);
   });
 
@@ -199,16 +176,13 @@ export default function registerSubagents(
   pi.on("message_start", (event) => {
     delivery.observeMessage(event.message);
     if (event?.message?.role !== "user") return;
-    if (skipInitialUserMessage) {
-      skipInitialUserMessage = false;
-      return;
+    if (mainTaskInput.observeUserMessage(event.message.content)) {
+      roster.handleMainInput("interactive");
     }
-    if (streamingInputDesynchronized) return;
-    const source = queuedSteerSources.shift() ?? queuedFollowUpSources.shift();
-    if (source === "real") roster.handleMainInput("interactive");
   });
 
   pi.on("session_shutdown", async () => {
+    mainTaskInput.resetSession();
     state.background.viewFeed?.clear();
     roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");

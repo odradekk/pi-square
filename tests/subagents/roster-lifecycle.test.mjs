@@ -20,6 +20,7 @@ const deliveryModule = await load(join(packageRoot, "src", "subagents", "deliver
 const waitModule = await load(join(packageRoot, "src", "subagents", "wait.ts"));
 const artifactsModule = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
 const liveEventsModule = await load(join(packageRoot, "src", "subagents", "live-events.ts"));
+const mainTaskInputModule = await load(join(packageRoot, "src", "subagents", "main-task-input.ts"));
 const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
 
 const { SUBAGENT_ROSTER_KEY, createSubagentRosterController } = rosterModule;
@@ -37,6 +38,7 @@ const { createDeliveryController } = deliveryModule;
 const { createSubagentBlockingCallRegistry } = waitModule;
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = artifactsModule;
 const { createChildViewFeed } = liveEventsModule;
+const { createMainTaskInputCorrelator } = mainTaskInputModule;
 
 const { initTheme } = await import("@earendil-works/pi-coding-agent");
 initTheme();
@@ -242,53 +244,32 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   registerSubagentTool(pi, state, undefined, blockingCallRegistry);
   registerSubagentManager(pi, state, undefined);
 
-  // The same event wiring src/subagents/index.ts installs.
-  let pendingIdleInputSource;
-  const queuedSteerSources = [];
-  const queuedFollowUpSources = [];
-  const STREAMING_INPUT_PAIRS_MAX = 64;
-  let streamingInputDesynchronized = false;
-  let skipInitialUserMessage = false;
+  // The same event wiring src/subagents/index.ts installs, through the shared
+  // source correlator rather than a test-owned copy of its state machine.
+  const mainTaskInput = createMainTaskInputCorrelator();
   pi.on("input", (event) => {
-    const source = event?.source === "extension" ? "extension" : "real";
-    if (event?.streamingBehavior) {
-      const queue = event.streamingBehavior === "followUp" ? queuedFollowUpSources : queuedSteerSources;
-      if (queue.length >= STREAMING_INPUT_PAIRS_MAX) {
-        streamingInputDesynchronized = true;
-        queuedSteerSources.length = 0;
-        queuedFollowUpSources.length = 0;
-        return;
-      }
-      queue.push(source);
-      return;
-    }
-    pendingIdleInputSource = source;
+    mainTaskInput.observeInput(event);
   });
   pi.on("before_agent_start", () => {
-    const source = pendingIdleInputSource;
-    pendingIdleInputSource = undefined;
-    if (source === "real") roster.handleMainInput("interactive");
-    skipInitialUserMessage = true;
+    if (mainTaskInput.beginAgentRun()) roster.handleMainInput("interactive");
   });
   pi.on("agent_start", () => { delivery.handleAgentStart(); });
   pi.on("turn_end", (event) => { delivery.handleTurnEnd(event?.message); });
-  pi.on("agent_end", (event) => { delivery.handleAgentEnd(event?.messages); });
+  pi.on("agent_end", (event) => {
+    mainTaskInput.endAgentRun();
+    delivery.handleAgentEnd(event?.messages);
+  });
   pi.on("agent_settled", () => { delivery.handleAgentSettled(); });
   pi.on("message_start", (event) => {
     delivery.observeMessage(event?.message);
     if (event?.message?.role !== "user") return;
-    if (skipInitialUserMessage) {
-      skipInitialUserMessage = false;
-      return;
-    }
-    if (streamingInputDesynchronized) return;
-    const source = queuedSteerSources.shift() ?? queuedFollowUpSources.shift();
-    if (source === "real") roster.handleMainInput("interactive");
+    if (mainTaskInput.observeUserMessage(event.message.content)) roster.handleMainInput("interactive");
   });
   // The foreign extension registers after pi-square, so its input response
   // applies later in the chain — the position a real second extension has.
   chain.on("input", () => foreignInput.response ?? undefined);
   pi.on("session_shutdown", async () => {
+    mainTaskInput.resetSession();
     state.background.viewFeed?.clear();
     roster.stop();
     blockingCallRegistry.terminateAll("session shutdown");
@@ -342,6 +323,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   };
 
   const startSession = async (sessionCtx = ctx) => {
+    mainTaskInput.resetSession();
     state.sessionCtx = sessionCtx;
     blockingCallRegistry.terminateAll("session replaced");
     delivery.reset();
@@ -728,6 +710,72 @@ test("a queued extension follow-up never advances at its user message_start", as
   }
 });
 
+test("a handled streaming input cannot contaminate the next accepted queued message", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    // pi-square observes this real steer first, but a later extension handles
+    // it, so Pi never queues it and no user message_start will consume it.
+    harness.foreignInput.response = { action: "handled" };
+    const swallowedReal = await harness.submitPrompt({
+      source: "interactive",
+      text: "swallowed real steer",
+      streamingBehavior: "steer",
+    });
+    assert.equal(swallowedReal, "handled");
+
+    // The next accepted message is an extension follow-up. Its source must be
+    // correlated with its own text rather than the swallowed real input.
+    harness.foreignInput.response = undefined;
+    await harness.submitPrompt({
+      source: "extension",
+      text: "accepted extension follow-up",
+      streamingBehavior: "followUp",
+    });
+    harness.drainStreamingInput("accepted extension follow-up");
+    assert.equal(harness.widgetLines().length, 1, "the extension follow-up did not inherit the swallowed real source");
+
+    // The inverse ordering must still recognize the real message that main
+    // actually receives.
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({
+      source: "extension",
+      text: "swallowed extension steer",
+      streamingBehavior: "steer",
+    });
+    harness.foreignInput.response = undefined;
+    await harness.submitPrompt({
+      source: "interactive",
+      text: "accepted real follow-up",
+      streamingBehavior: "followUp",
+    });
+    harness.drainStreamingInput("accepted real follow-up");
+    assert.equal(harness.widgetLines().length, 0, "the accepted real follow-up advances the epoch");
+
+    // Equal text from conflicting sources cannot be disambiguated through
+    // Pi's public events. The safe outcome is to retain the row for this run.
+    await harness.startSession();
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({
+      source: "interactive",
+      text: "identical queued input",
+      streamingBehavior: "steer",
+    });
+    harness.foreignInput.response = undefined;
+    await harness.submitPrompt({
+      source: "extension",
+      text: "identical queued input",
+      streamingBehavior: "steer",
+    });
+    harness.drainStreamingInput("identical queued input");
+    assert.equal(harness.widgetLines().length, 1, "ambiguous equal text fails closed");
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("desynchronized streaming queues never advance the epoch", async () => {
   const harness = lifecycleHarness();
   try {
@@ -741,6 +789,56 @@ test("desynchronized streaming queues never advance the epoch", async () => {
     }
     harness.drainStreamingInput("one of many steers");
     assert.equal(harness.widgetLines().length, 1, "a desynchronized drain never expires rows");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("an aborted or desynchronized run cannot poison later runs or replacement sessions", async () => {
+  const harness = lifecycleHarness();
+  try {
+    await harness.startSession();
+    harness.addChild(jobFixture(id(1), "completed", 1, "explorer"));
+
+    // Overflow forces fail-closed correlation for this run. agent_end is the
+    // deterministic recovery boundary after an abort.
+    for (let index = 0; index < 65; index += 1) {
+      await harness.submitPrompt({
+        source: "interactive",
+        text: `overflow ${index}`,
+        streamingBehavior: "steer",
+      });
+    }
+    harness.drainStreamingInput("overflow 0");
+    assert.equal(harness.widgetLines().length, 1, "the desynchronized run fails closed");
+    await harness.chain.emit("agent_end", { messages: [] });
+
+    await harness.submitPrompt({
+      source: "interactive",
+      text: "real after abort",
+      streamingBehavior: "steer",
+    });
+    harness.drainStreamingInput("real after abort");
+    assert.equal(harness.widgetLines().length, 0, "agent_end restores correlation for the next run");
+
+    // A replacement session must also discard a swallowed source left by its
+    // predecessor rather than applying it to a new-session extension message.
+    await harness.startSession();
+    harness.foreignInput.response = { action: "handled" };
+    await harness.submitPrompt({
+      source: "interactive",
+      text: "old-session swallowed steer",
+      streamingBehavior: "steer",
+    });
+    harness.foreignInput.response = undefined;
+    await harness.startSession();
+    await harness.submitPrompt({
+      source: "extension",
+      text: "new-session extension follow-up",
+      streamingBehavior: "followUp",
+    });
+    harness.drainStreamingInput("new-session extension follow-up");
+    assert.equal(harness.widgetLines().length, 1, "session replacement discards the predecessor's source state");
   } finally {
     harness.cleanup();
   }

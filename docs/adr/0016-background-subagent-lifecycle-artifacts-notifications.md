@@ -120,7 +120,14 @@ status: accepted
 > `session.prompt` never sends the prompt, a preflight failure never starts
 > a run, slash commands and local `!` shell commands never reach the chain,
 > and extension follow-ups such as the Config Guide carry
-> `source: "extension"` and never advance it. Ordinary terminal
+> `source: "extension"` and never advance it. Because Pi 0.84.2 exposes no
+> post-chain streaming-input event, `src/subagents/main-task-input.ts`
+> correlates the bounded pre-chain observations with accepted user messages
+> by text hash, keeps steer and follow-up order separate, and fails closed for
+> the rest of a run when conflicting sources are indistinguishable. It resets
+> at every run end, new idle run, session start, and session shutdown, so a
+> handled or aborted input and a bounded-queue overflow cannot contaminate a
+> later run or replacement session. Ordinary terminal
 > rows of the preceding task expire at that boundary, active children survive
 > it and join the current epoch when they later terminalize, a re-queued
 > public ID becomes visible again immediately, and the epoch is presentation
