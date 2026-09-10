@@ -119,10 +119,11 @@ function completedAtCurrentEnd(sessionFile, content, timestamp) {
 }
 
 /** A feed with a manually driven scheduler; structural prefixes may drain together. */
-function manualFeed(scheduleOverride) {
+function manualFeed(scheduleOverride, now) {
   const steps = [];
   const feed = createChildViewFeed({
     schedule: scheduleOverride ?? ((callback) => steps.push(callback)),
+    ...(now !== undefined ? { now } : {}),
   });
   return {
     feed,
@@ -828,11 +829,12 @@ test("overflow across many observed children never exceeds the total feed bound"
 });
 
 test("a structural event is delivered in the first flush despite an ordinary-update backlog", () => {
-  const { feed, deliver } = manualFeed();
+  let clock = 0;
+  const { feed, deliver } = manualFeed(undefined, () => clock);
   const seen = [];
   feed.subscribe(ID, (event) => {
     seen.push(event.kind);
-    busyWait(20);
+    clock += 20;
   });
   for (let index = 0; index < 80; index += 1) {
     feed.publish(ID, { kind: "tool_updated", callKey: callKeyOf(`call-${index}`), name: "grep" });
@@ -843,20 +845,18 @@ test("a structural event is delivered in the first flush despite an ordinary-upd
 });
 
 test("a slow subscriber cannot monopolize one structural flush", () => {
-  const { feed, deliver, pending } = manualFeed();
+  let clock = 0;
+  const { feed, deliver, pending } = manualFeed(undefined, () => clock);
   const seen = [];
   feed.subscribe(ID, (event) => {
     seen.push(event.kind);
-    busyWait(20);
+    clock += 20;
   });
   feed.publish(ID, { kind: "tool_started", callKey: callKeyOf("slow"), name: "grep", summary: "called", startedAt: 1 });
   feed.publish(ID, { kind: "run_finished" });
 
-  const startedAt = Date.now();
   deliver();
-  const elapsed = Date.now() - startedAt;
-  assert.ok(elapsed < LIVE_FLUSH_BUDGET_MS + LIVE_LISTENER_BUDGET_MS + 25,
-    `one flush stayed bounded instead of running the whole backlog (${elapsed} ms)`);
+  assert.equal(clock, 20, "one flush spends only its deterministic total budget");
   assert.deepEqual(seen, ["tool_started"], "the remaining structural boundary yields to another scheduler turn");
   assert.equal(pending(), 1, "the remainder is scheduled rather than dropped");
 });
@@ -876,21 +876,19 @@ test("run completion keeps only the newest cumulative assistant partial", () => 
 });
 
 test("the total flush budget applies across distinct subscribers", () => {
-  const { feed, deliver, pending } = manualFeed();
+  let clock = 0;
+  const { feed, deliver, pending } = manualFeed(undefined, () => clock);
   let delivered = 0;
   for (let index = 0; index < 8; index += 1) {
     feed.subscribe(ID, () => {
       delivered += 1;
-      busyWait(20);
+      clock += 20;
     });
   }
   feed.publish(ID, { kind: "run_finished" });
 
-  const startedAt = Date.now();
   deliver();
-  const elapsed = Date.now() - startedAt;
-  assert.ok(elapsed < LIVE_FLUSH_BUDGET_MS + LIVE_LISTENER_BUDGET_MS,
-    `subscriber fan-out stayed inside one total turn budget (${elapsed} ms)`);
+  assert.equal(clock, 20, "subscriber fan-out stays inside one deterministic total turn budget");
   assert.equal(delivered, 1, "later subscribers yield rather than accumulating their budgets");
   assert.equal(pending(), 1, "fan-out resumes at the next subscriber position");
 });

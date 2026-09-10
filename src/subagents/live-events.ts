@@ -233,6 +233,8 @@ export interface ChildViewFeedOptions {
    * bounded.
    */
   schedule?: (callback: () => void) => void;
+  /** Monotonic flush clock. Tests may inject one for deterministic budgets. */
+  now?: () => number;
 }
 
 const defaultSchedule = (callback: () => void) => {
@@ -262,6 +264,7 @@ const invokeSubscriber = new Script("listener(event)");
 export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildViewFeed {
   const subscribers = new Map<string, Set<SubscriberRecord>>();
   const schedule = options.schedule ?? defaultSchedule;
+  const now = options.now ?? (() => performance.now());
   /** Bounded FIFO of events and omission markers; never exceeds the cap. */
   const queue: PendingEvent[] = [];
   let flushScheduled = false;
@@ -280,7 +283,7 @@ export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildVi
     entry.delivery ??= { listeners: [...listeners], next: 0 };
     while (entry.delivery.next < entry.delivery.listeners.length) {
       const record = entry.delivery.listeners[entry.delivery.next]!;
-      const remainingExact = deadline - performance.now();
+      const remainingExact = deadline - now();
       const expected = record.lastDurationMs === undefined
         ? LIVE_LISTENER_BUDGET_MS - 1
         : Math.min(LIVE_LISTENER_BUDGET_MS, Math.max(1, record.lastDurationMs + 1));
@@ -291,13 +294,13 @@ export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildVi
       if (remaining <= 0) return false;
       entry.delivery.next += 1;
       if (!listeners.has(record)) continue;
-      const startedAt = performance.now();
+      const startedAt = now();
       try {
         record.context.event = entry.event;
         invokeSubscriber.runInContext(record.context, {
           timeout: Math.max(1, Math.min(LIVE_LISTENER_BUDGET_MS, remaining)),
         });
-        record.lastDurationMs = performance.now() - startedAt;
+        record.lastDurationMs = now() - startedAt;
       } catch {
         // Throwing and time-budgeted subscribers are both evicted. The VM
         // timeout interrupts JavaScript that never returns instead of merely
@@ -333,7 +336,7 @@ export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildVi
       if (isStructuralViewEvent(queue[index]!.event)) structural = index;
     }
     const count = structural < 0 ? 1 : structural + 1;
-    const deadline = performance.now() + LIVE_FLUSH_BUDGET_MS;
+    const deadline = now() + LIVE_FLUSH_BUDGET_MS;
     for (let delivered = 0; delivered < count; delivered += 1) {
       const entry = queue[0];
       if (entry === undefined) break;
@@ -342,7 +345,7 @@ export function createChildViewFeed(options: ChildViewFeedOptions = {}): ChildVi
       // Healthy callbacks drain every queued structural boundary immediately.
       // A cumulatively slow listener instead yields the remaining ordered
       // prefix to another scheduler turn so it cannot monopolize the child.
-      if (performance.now() >= deadline) break;
+      if (now() >= deadline) break;
     }
     if (queue.length > 0) ensureFlush();
   };
