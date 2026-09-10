@@ -6,6 +6,7 @@ import {
   abortAllBackgroundJobs,
   createBackgroundState,
   notifyBackgroundChange,
+  replaceBackgroundViewFeed,
 } from "./background";
 import { createDeliveryController } from "./delivery";
 import { listRetainedSubagentIds } from "./artifacts";
@@ -42,8 +43,6 @@ export interface SubagentFeature {
   buildSubagentCatalog(cwd: string, turnSeq: number): PromptManagerSegment;
   setInheritedSystemCore(systemPrompt: string | undefined): void;
 }
-
-
 export default function registerSubagents(
   pi: ExtensionAPI,
   runtime?: DisplayRuntimeProvider,
@@ -103,9 +102,10 @@ export default function registerSubagents(
     // synchronously, before the first await below: a slow child-partition
     // reconcile must never leave the previous session's widget, subscription,
     // or motion tick alive. The session-scoped live view feed is part of that
-    // teardown: its subscribers and any undelivered events never survive into
-    // the replacement session.
-    state.background.viewFeed?.clear();
+    // teardown: a fresh generation replaces it, so subscribers, undelivered
+    // events, and late publications from old children cannot enter the new
+    // parent session.
+    replaceBackgroundViewFeed(state.background);
     roster.stop();
     roster.start(ctx);
     refresh(ctx.cwd);

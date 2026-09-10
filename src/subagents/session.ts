@@ -6,7 +6,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { createChildAnchoredReadTool } from "../anchored-edit/child-read";
 import { createChildAnchoredReplaceTool, createChildAnchoredInsertTool } from "../anchored-edit/child-edit";
@@ -668,7 +668,22 @@ async function promptSession(input: {
     if (input.onViewEvent) {
       try {
         const viewEvent = deriveChildViewEvent(event);
-        if (viewEvent) input.onViewEvent(viewEvent);
+        if (viewEvent?.kind === "message_completed") {
+          let historyFloor: number | undefined;
+          try {
+            const stat = lstatSync(details.sessionFile);
+            if (stat.isFile()) historyFloor = stat.size;
+          } catch {
+            // A missing floor makes reconciliation fail closed; the bounded
+            // live content remains visible and execution is unaffected.
+          }
+          input.onViewEvent({
+            ...viewEvent,
+            ...(historyFloor !== undefined ? { historyFloor } : {}),
+          });
+        } else if (viewEvent) {
+          input.onViewEvent(viewEvent);
+        }
       } catch {
         // Ignored: the live viewer is observational only.
       }

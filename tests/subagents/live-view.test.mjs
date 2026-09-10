@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -12,6 +12,7 @@ const load = jiti(import.meta.url, { moduleCache: false });
 
 const liveEventsModule = await load(join(packageRoot, "src", "subagents", "live-events.ts"));
 const {
+  LIVE_FLUSH_BUDGET_MS,
   LIVE_LISTENER_BUDGET_MS,
   LIVE_REPAINT_COALESCE_MS,
   MAX_LIVE_ITEMS,
@@ -21,7 +22,13 @@ const {
   isStructuralViewEvent,
 } = liveEventsModule;
 const childHistoryModule = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
-const { createChildHistory, boundedAssistantTextParts, MAX_ASSISTANT_PARTS } = childHistoryModule;
+const {
+  createChildHistory,
+  boundedAssistantTextParts,
+  assistantContentKey,
+  callKeyOf,
+  MAX_ASSISTANT_PARTS,
+} = childHistoryModule;
 const viewerModule = await load(join(packageRoot, "src", "subagents", "viewer.ts"));
 const { ChildTranscriptOverlay } = viewerModule;
 const rosterModule = await load(join(packageRoot, "src", "subagents", "roster.ts"));
@@ -58,6 +65,7 @@ function plainTheme() {
 
 const ID = "subagent_00000000-0000-4000-8000-000000000301";
 const SESSION_ID = "019f0000-0000-7000-8000-000000000301";
+const PAGE_UP = "\x1b[5~";
 
 function sessionHeader() {
   return { type: "session", version: 3, id: SESSION_ID, timestamp: new Date(0).toISOString(), cwd: "/tmp/project" };
@@ -101,7 +109,16 @@ function appendSessionLine(sessionFile, entry) {
   appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`);
 }
 
-/** A feed with a manually driven scheduler; one tick delivers exactly one event. */
+function completedAtCurrentEnd(sessionFile, content, timestamp) {
+  return {
+    kind: "message_completed",
+    content: boundedAssistantTextParts(content),
+    timestamp,
+    historyFloor: statSync(sessionFile).size,
+  };
+}
+
+/** A feed with a manually driven scheduler; structural prefixes may drain together. */
 function manualFeed(scheduleOverride) {
   const steps = [];
   const feed = createChildViewFeed({
@@ -234,7 +251,7 @@ test("tool events use the roster-grade projection and never raw arguments or res
   assert.equal(started.kind, "tool_started");
   assert.equal(started.name, "grep");
   assert.equal(started.summary, "called");
-  assert.equal(started.toolCallId, "call-9");
+  assert.equal(started.callKey, callKeyOf("call-9"));
   assert.ok(Number.isFinite(started.startedAt), "tool start carries a clock for the live duration");
 
   const unknown = deriveChildViewEvent({
@@ -245,7 +262,7 @@ test("tool events use the roster-grade projection and never raw arguments or res
   });
   assert.deepEqual(
     { ...unknown, startedAt: 0 },
-    { kind: "tool_started", toolCallId: "call-x", name: "tool", summary: "called", startedAt: 0 },
+    { kind: "tool_started", callKey: callKeyOf("call-x"), name: "tool", summary: "called", startedAt: 0 },
   );
 
   const updated = deriveChildViewEvent({
@@ -254,7 +271,7 @@ test("tool events use the roster-grade projection and never raw arguments or res
     toolName: "grep",
     partialResult: { content: [{ type: "text", text: "partial SECRET" }] },
   });
-  assert.deepEqual(updated, { kind: "tool_updated", toolCallId: "call-9", name: "grep" });
+  assert.deepEqual(updated, { kind: "tool_updated", callKey: callKeyOf("call-9"), name: "grep" });
 
   const finished = deriveChildViewEvent({
     type: "tool_execution_end",
@@ -263,7 +280,26 @@ test("tool events use the roster-grade projection and never raw arguments or res
     isError: true,
     result: { content: [{ type: "text", text: "SECRET FAILURE BODY" }] },
   });
-  assert.deepEqual(finished, { kind: "tool_finished", toolCallId: "call-9", name: "grep", summary: "called", isError: true });
+  assert.deepEqual(finished, { kind: "tool_finished", callKey: callKeyOf("call-9"), name: "grep", summary: "called", isError: true });
+});
+
+test("live and persisted tools share one exact non-reversible call identity", () => {
+  const nativeCallId = `${"a".repeat(100)}${"b".repeat(100)}`;
+  const started = deriveChildViewEvent({
+    type: "tool_execution_start",
+    toolCallId: nativeCallId,
+    toolName: "grep",
+    args: { pattern: "x" },
+  });
+  const persisted = childHistoryModule.projectSessionEntries([
+    messageEntry("e1", {
+      role: "assistant",
+      content: [{ type: "toolCall", id: nativeCallId, name: "grep", arguments: { pattern: "x" } }],
+    }),
+  ]).items.find((item) => item.kind === "toolCall");
+  assert.equal(started.callKey, persisted.callKey,
+    "long native IDs are hashed identically instead of passing through incompatible truncation");
+  assert.ok(!JSON.stringify(started).includes(nativeCallId), "the raw native ID never enters the event");
 });
 
 test("both projections share one bounded projection, beyond any live-only cap", () => {
@@ -299,12 +335,16 @@ test("derivation ignores malformed events without throwing", () => {
   assert.equal(deriveChildViewEvent("agent_start"), undefined);
   assert.equal(deriveChildViewEvent({}), undefined);
   assert.equal(deriveChildViewEvent({ type: "message_end", message: 5 }), undefined);
-  assert.equal(deriveChildViewEvent({ type: "tool_execution_start", toolName: null, args: null }).name, "tool");
+  assert.deepEqual(
+    deriveChildViewEvent({ type: "tool_execution_start", toolName: null, args: null }),
+    { kind: "live_events_dropped", droppedUnknown: true },
+    "a tool event without its native call identity becomes a visible fail-closed omission",
+  );
 });
 
 test("structural classification separates completion from streaming deltas", () => {
   for (const kind of ["message_delta", "tool_updated"]) {
-    assert.equal(isStructuralViewEvent({ kind, parts: [], toolCallId: "", name: "" }), false, kind);
+    assert.equal(isStructuralViewEvent({ kind, parts: [], callKey: "", name: "" }), false, kind);
   }
   for (const kind of ["run_started", "message_completed", "tool_started", "tool_finished", "tool_result_completed", "run_finished", "live_events_dropped"]) {
     assert.equal(isStructuralViewEvent({ kind }), true, kind);
@@ -508,6 +548,27 @@ test("a slow live subscriber never runs inside the child's native event dispatch
   }
 });
 
+test("scheduled viewer work cannot materially delay the child's next continuation", async () => {
+  // A scheduled callback still shares Node's event-loop thread. Give the
+  // child one continuation turn before viewer delivery and enforce a real
+  // watchdog when the callback eventually runs.
+  const feed = createChildViewFeed();
+  let invoked = 0;
+  feed.subscribe(ID, () => {
+    invoked += 1;
+    busyWait(300);
+  });
+  feed.publish(ID, { kind: "run_started" });
+  const startedAt = Date.now();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(Date.now() - startedAt < 100, "the child continuation runs before viewer work");
+  for (let turn = 0; turn < 4 && invoked === 0; turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(invoked, 1, "the isolated delivery still attempts the subscriber once");
+  feed.clear();
+});
+
 test("a child that yields between events is never blocked behind a batch of deliveries", async () => {
   // Regression (review round 2): each scheduler tick delivers exactly one
   // event, so a child continuation that yields between its events never waits
@@ -572,8 +633,9 @@ test("a child that yields between events is never blocked behind a batch of deli
 // Feed
 
 test("the feed is ephemeral: no subscribers means no work and no buffering", () => {
-  const { feed, deliverAll } = manualFeed();
+  const { feed, deliverAll, pending } = manualFeed();
   feed.publish("child-1", { kind: "run_started" });
+  assert.equal(pending(), 0, "an unobserved child creates no scheduled work or retained event");
   deliverAll();
   const seen = [];
   feed.subscribe("child-1", (event) => seen.push(event.kind));
@@ -582,7 +644,7 @@ test("the feed is ephemeral: no subscribers means no work and no buffering", () 
   assert.deepEqual(seen, ["run_finished"]);
 });
 
-test("delivery is ordered, isolated, asynchronous, and one event per tick", () => {
+test("delivery is ordered, isolated, asynchronous, and structural-boundary aware", () => {
   const { feed, deliver } = manualFeed();
   const healthy = [];
   let syncPublish = true;
@@ -596,7 +658,8 @@ test("delivery is ordered, isolated, asynchronous, and one event per tick", () =
   syncPublish = false;
   feed.publish("child-1", { kind: "message_completed", content: [] });
   deliver();
-  assert.deepEqual(healthy, ["run_started"], "one scheduled tick delivers exactly one event");
+  assert.deepEqual(healthy, ["run_started", "message_completed"],
+    "one scheduled tick drains through the newest queued structural boundary");
   deliver();
   assert.deepEqual(healthy, ["run_started", "message_completed"]);
   deliver();
@@ -625,7 +688,7 @@ test("adjacent cumulative deltas still coalesce in place without disturbing orde
   feed.subscribe("child-1", (event) => seen.push(event));
   feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "a" }] });
   feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "ab" }] });
-  feed.publish("child-1", { kind: "tool_started", toolCallId: "c1", name: "grep", summary: "called", startedAt: 1 });
+  feed.publish("child-1", { kind: "tool_started", callKey: callKeyOf("c1"), name: "grep", summary: "called", startedAt: 1 });
   feed.publish("child-1", { kind: "message_delta", parts: [{ type: "text", text: "abc" }] });
   deliverAll();
   assert.deepEqual(seen.map((event) => event.kind), ["message_delta", "tool_started", "message_delta"]);
@@ -669,6 +732,21 @@ test("a listener that overruns the time budget is evicted after one overrun", ()
   });
 });
 
+test("the listener watchdog interrupts one blocking callback within a bounded turn", () => {
+  const { feed, deliver } = manualFeed();
+  let healthy = 0;
+  feed.subscribe(ID, () => busyWait(LIVE_LISTENER_BUDGET_MS * 4));
+  feed.subscribe(ID, () => { healthy += 1; });
+  feed.publish(ID, { kind: "run_started" });
+  const startedAt = Date.now();
+  deliver();
+  assert.ok(Date.now() - startedAt < LIVE_LISTENER_BUDGET_MS * 3,
+    "the callback is interrupted rather than merely measured after returning");
+  assert.equal(healthy, 0, "the exhausted total budget yields before the healthy sibling");
+  deliver();
+  assert.equal(healthy, 1, "a blocked sibling cannot prevent healthy delivery on the next tick");
+});
+
 test("a scheduler that throws never flushes inline and the queue stays bounded", () => {
   // Regression (review round 2): the old inline fallback re-ran subscriber
   // work inside the publishing stack. A broken scheduler must drop nothing
@@ -705,6 +783,25 @@ test("a scheduler that throws never flushes inline and the queue stays bounded",
   assert.equal(syncDelivery, 0);
 });
 
+test("a recovered scheduler retries when the only later publication coalesces a delta", () => {
+  const steps = [];
+  let broken = true;
+  const feed = createChildViewFeed({
+    schedule: (callback) => {
+      if (broken) throw new Error("scheduler unavailable");
+      steps.push(callback);
+    },
+  });
+  const seen = [];
+  feed.subscribe(ID, (event) => seen.push(event));
+  feed.publish(ID, { kind: "message_delta", parts: [{ type: "text", text: "old" }] });
+  broken = false;
+  feed.publish(ID, { kind: "message_delta", parts: [{ type: "text", text: "new" }] });
+  assert.equal(steps.length, 1, "the coalesced publication retries scheduling");
+  steps.shift()?.();
+  assert.deepEqual(seen, [{ kind: "message_delta", parts: [{ type: "text", text: "new" }] }]);
+});
+
 test("a bounded pending queue drops the oldest with one visible omission marker", () => {
   const { feed, deliverAll } = manualFeed();
   const seen = [];
@@ -713,8 +810,89 @@ test("a bounded pending queue drops the oldest with one visible omission marker"
     feed.publish("child-1", { kind: "tool_result_completed" });
   }
   deliverAll();
-  assert.ok(seen.length <= MAX_PENDING_EVENTS + 1, "the delivered stream stays bounded");
+  assert.ok(seen.length <= MAX_PENDING_EVENTS, "the delivered stream stays within the hard queue bound");
   assert.equal(seen[0], "live_events_dropped", "the drop is explicit, never silent");
+});
+
+test("overflow across many observed children never exceeds the total feed bound", () => {
+  const { feed, deliverAll } = manualFeed();
+  let delivered = 0;
+  for (let child = 0; child < MAX_PENDING_EVENTS + 44; child += 1) {
+    feed.subscribe(`child-${child}`, () => { delivered += 1; });
+  }
+  for (let index = 0; index < MAX_PENDING_EVENTS + 44; index += 1) {
+    feed.publish(`child-${index}`, { kind: "tool_result_completed" });
+  }
+  deliverAll();
+  assert.ok(delivered <= MAX_PENDING_EVENTS, `delivered ${delivered} entries past the hard bound`);
+});
+
+test("a structural event is delivered in the first flush despite an ordinary-update backlog", () => {
+  const { feed, deliver } = manualFeed();
+  const seen = [];
+  feed.subscribe(ID, (event) => {
+    seen.push(event.kind);
+    busyWait(20);
+  });
+  for (let index = 0; index < 80; index += 1) {
+    feed.publish(ID, { kind: "tool_updated", callKey: callKeyOf(`call-${index}`), name: "grep" });
+  }
+  feed.publish(ID, { kind: "tool_finished", callKey: callKeyOf("call-final"), name: "grep", isError: false });
+  deliver();
+  assert.deepEqual(seen, ["tool_finished"], "superseded ordinary updates cannot strand the boundary");
+});
+
+test("a slow subscriber cannot monopolize one structural flush", () => {
+  const { feed, deliver, pending } = manualFeed();
+  const seen = [];
+  feed.subscribe(ID, (event) => {
+    seen.push(event.kind);
+    busyWait(20);
+  });
+  feed.publish(ID, { kind: "tool_started", callKey: callKeyOf("slow"), name: "grep", summary: "called", startedAt: 1 });
+  feed.publish(ID, { kind: "run_finished" });
+
+  const startedAt = Date.now();
+  deliver();
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < LIVE_FLUSH_BUDGET_MS + LIVE_LISTENER_BUDGET_MS + 25,
+    `one flush stayed bounded instead of running the whole backlog (${elapsed} ms)`);
+  assert.deepEqual(seen, ["tool_started"], "the remaining structural boundary yields to another scheduler turn");
+  assert.equal(pending(), 1, "the remainder is scheduled rather than dropped");
+});
+
+test("run completion keeps only the newest cumulative assistant partial", () => {
+  const { feed, deliverAll } = manualFeed();
+  const seen = [];
+  feed.subscribe(ID, (event) => seen.push(event));
+  feed.publish(ID, { kind: "message_delta", parts: [{ type: "text", text: "old" }] });
+  feed.publish(ID, { kind: "message_delta", parts: [{ type: "text", text: "final partial" }] });
+  feed.publish(ID, { kind: "run_finished" });
+  deliverAll();
+  assert.deepEqual(seen, [
+    { kind: "message_delta", parts: [{ type: "text", text: "final partial" }] },
+    { kind: "run_finished" },
+  ]);
+});
+
+test("the total flush budget applies across distinct subscribers", () => {
+  const { feed, deliver, pending } = manualFeed();
+  let delivered = 0;
+  for (let index = 0; index < 8; index += 1) {
+    feed.subscribe(ID, () => {
+      delivered += 1;
+      busyWait(20);
+    });
+  }
+  feed.publish(ID, { kind: "run_finished" });
+
+  const startedAt = Date.now();
+  deliver();
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < LIVE_FLUSH_BUDGET_MS + LIVE_LISTENER_BUDGET_MS,
+    `subscriber fan-out stayed inside one total turn budget (${elapsed} ms)`);
+  assert.equal(delivered, 1, "later subscribers yield rather than accumulating their budgets");
+  assert.equal(pending(), 1, "fan-out resumes at the next subscriber position");
 });
 
 test("overflow markers carry the dropped completions' fingerprints for recovery", () => {
@@ -732,6 +910,8 @@ test("overflow markers carry the dropped completions' fingerprints for recovery"
   }
   deliverAll();
   assert.ok(markers.length > 0, "overflow produced at least one marker");
+  assert.ok(markers.some((marker) => marker.droppedUnknown === true),
+    "unfingerprintable dropped lifecycle events remain explicitly unknown");
   assert.ok(markers.some((marker) => (marker.dropped ?? []).some(
     (entry) => entry.kind === "message" && entry.timestamp === 42,
   )), "the dropped completion's fingerprint travels with the marker");
@@ -748,19 +928,23 @@ test("unsubscribe, clear, and the subscriber bound hold", () => {
   deliverAll();
   assert.deepEqual(seen, ["run_started"]);
 
-  for (let index = 0; index < 12; index += 1) feed.subscribe("child-2", () => {});
+  for (let index = 0; index < 8; index += 1) feed.subscribe("child-2", () => {});
   const late = [];
   feed.subscribe("child-2", (event) => late.push(event.kind));
   feed.publish("child-2", { kind: "run_started" });
   deliverAll();
-  assert.deepEqual(late, [], "the per-child subscriber bound rejects the ninth subscription");
+  assert.deepEqual(late, [], "the global subscriber bound rejects the ninth subscription");
 
+  feed.clear();
   const before = [];
   feed.subscribe("child-3", (event) => before.push(event.kind));
-  feed.clear();
   feed.publish("child-3", { kind: "run_started" });
   deliverAll();
-  assert.deepEqual(before, [], "clear drops subscribers and undelivered events");
+  assert.deepEqual(before, ["run_started"], "clear releases the global subscriber capacity");
+  feed.clear();
+  feed.publish("child-3", { kind: "run_finished" });
+  deliverAll();
+  assert.deepEqual(before, ["run_started"], "clear drops subscribers and later unobserved events");
 });
 
 // ---------------------------------------------------------------------------
@@ -791,6 +975,27 @@ function freshOverlay(root, lines, options = {}) {
 function liveOverlayRoot() {
   return mkdtempSync(join(tmpdir(), `pi-square-live-${Math.random().toString(16).slice(2)}-`));
 }
+
+test("native history items retain their exact JSONL entry byte offsets", () => {
+  const root = liveOverlayRoot();
+  try {
+    const entries = [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+      messageEntry("e2", { role: "assistant", timestamp: 9_000, content: [{ type: "text", text: "answer" }] }),
+    ];
+    writeChildArtifacts(root, ID, entries);
+    const snapshot = createChildHistory(ID).snapshot();
+    const headerBytes = Buffer.byteLength(`${JSON.stringify(sessionHeader())}\n`);
+    const firstBytes = Buffer.byteLength(`${JSON.stringify(entries[0])}\n`);
+    assert.deepEqual(
+      snapshot.items.map((item) => item.entryByteOffset),
+      [headerBytes, headerBytes + firstBytes],
+      "projected rows keep the native line-start offsets used by live reconciliation",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("streaming assistant parts render below the persisted window in native order", () => {
   const root = liveOverlayRoot();
@@ -839,11 +1044,11 @@ test("a completed message reconciles with the persisted entry exactly once", () 
     overlay.render(64);
 
     overlay.applyLiveEvent({ kind: "message_delta", parts: [{ type: "text", text: "Working" }] });
-    overlay.applyLiveEvent({
-      kind: "message_completed",
-      content: boundedAssistantTextParts([{ type: "text", text: "Working" }]),
-      timestamp: 5_000,
-    });
+    overlay.applyLiveEvent(completedAtCurrentEnd(
+      sessionFile,
+      [{ type: "text", text: "Working" }],
+      5_000,
+    ));
     let lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Working"), 1, "the completed live message stays visible before persistence lands");
 
@@ -872,6 +1077,7 @@ test("a terminal reconcile before delayed delivery shows the final message exact
 
     // Pi appended the final entry (message timestamp 7_000) and the store
     // transitioned; the overlay reconciles to the terminal state first.
+    const historyFloor = statSync(sessionFile).size;
     appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", timestamp: 7_000, content: [{ type: "text", text: "final words" }] }));
     overlay.updateLifecycle({ status: "completed", lifecycleLabel: "✓ completed", lifecycleTone: "success", durationText: "9s" });
     overlay.reconcileNow(8);
@@ -884,6 +1090,7 @@ test("a terminal reconcile before delayed delivery shows the final message exact
       kind: "message_completed",
       content: boundedAssistantTextParts([{ type: "text", text: "final words" }]),
       timestamp: 7_000,
+      historyFloor,
     });
     overlay.applyLiveEvent({ kind: "run_finished" });
     lines = plain(overlay.render(64)).join("\n");
@@ -894,10 +1101,7 @@ test("a terminal reconcile before delayed delivery shows the final message exact
   }
 });
 
-test("a consumed occurrence never confirms a second identical completion", () => {
-  // Regression (review round 2): two identical completions, only the first
-  // persisted; an unrelated append and reconcile in between must not let the
-  // second completion re-consume the same persisted occurrence.
+test("distinct pre-append floors keep identical completions occurrence-exact", () => {
   const root = liveOverlayRoot();
   try {
     const { overlay } = freshOverlay(root, [
@@ -906,27 +1110,17 @@ test("a consumed occurrence never confirms a second identical completion", () =>
     const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
-    const completion = () => ({
-      kind: "message_completed",
-      content: boundedAssistantTextParts([{ type: "text", text: "Same words" }]),
-      timestamp: 9_000,
-    });
-    overlay.applyLiveEvent(completion());
-    overlay.applyLiveEvent(completion());
-
+    overlay.applyLiveEvent(completedAtCurrentEnd(sessionFile, [{ type: "text", text: "Same words" }], 9_000));
     appendSessionLine(sessionFile, messageEntry("e2", { role: "assistant", timestamp: 9_000, content: [{ type: "text", text: "Same words" }] }));
-    overlay.applyLiveEvent({ kind: "tool_result_completed" });
-    let lines = plain(overlay.render(64)).join("\n");
-    assert.equal(occurrences(lines, "Same words"), 2, "the first completion confirmed; the second stays live");
-
     appendSessionLine(sessionFile, messageEntry("e8", {
       role: "assistant",
       content: [{ type: "toolCall", id: "c9", name: "grep", arguments: { pattern: "x" } }],
     }));
+    overlay.applyLiveEvent(completedAtCurrentEnd(sessionFile, [{ type: "text", text: "Same words" }], 9_000));
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
-    lines = plain(overlay.render(64)).join("\n");
+    let lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Same words"), 2,
-      "an unrelated append never lets the second completion re-consume the consumed occurrence");
+      "the first completion confirms and unrelated prior history cannot consume the second");
 
     appendSessionLine(sessionFile, messageEntry("e3", { role: "assistant", timestamp: 9_000, content: [{ type: "text", text: "Same words" }] }));
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
@@ -935,6 +1129,144 @@ test("a consumed occurrence never confirms a second identical completion", () =>
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a newer completion cannot consume an older occurrence after paging it back in", () => {
+  const content = [{ type: "text", text: "same completion" }];
+  const persisted = {
+    kind: "assistant",
+    message: { role: "assistant", content, timestamp: 9_000 },
+    entryId: "persisted-once",
+    entryByteOffset: 100,
+    entryItemIndex: 0,
+  };
+  const snapshot = { items: [persisted], moreBefore: false, moreAfter: false };
+  let changed = false;
+  const history = {
+    snapshot: () => snapshot,
+    loadOlder: () => false,
+    loadNewer: () => {
+      const result = changed;
+      changed = false;
+      return result;
+    },
+    retryInitial: () => false,
+  };
+  const { overlay } = overlayHarness(runningModel(history));
+  const completion = {
+    kind: "message_completed",
+    content: boundedAssistantTextParts(content),
+    timestamp: 9_000,
+    historyFloor: 100,
+  };
+
+  overlay.applyLiveEvent(completion);
+  overlay.applyLiveEvent({ ...completion, historyFloor: 200 });
+  snapshot.items = [];
+  changed = true;
+  overlay.applyLiveEvent({ kind: "tool_result_completed" });
+  snapshot.items = [persisted];
+  changed = true;
+  overlay.applyLiveEvent({ kind: "tool_result_completed" });
+
+  assert.equal(occurrences(plain(overlay.render(64)).join("\n"), "same completion"), 2,
+    "the reloaded old row cannot consume the still-unpersisted second completion");
+});
+
+test("delayed identical completions cannot both consume the newer loaded occurrence", () => {
+  const content = [{ type: "text", text: "delayed identical" }];
+  const newer = {
+    kind: "assistant",
+    message: { role: "assistant", content, timestamp: 9_000 },
+    entryId: "newer-loaded",
+    entryByteOffset: 200,
+    entryItemIndex: 0,
+  };
+  const history = {
+    snapshot: () => ({ items: [newer], moreBefore: true, moreAfter: false }),
+    loadOlder: () => false,
+    loadNewer: () => false,
+    retryInitial: () => false,
+  };
+  const { overlay } = overlayHarness(runningModel(history));
+  overlay.applyLiveEvent({ kind: "message_completed", content, timestamp: 9_000, historyFloor: 100 });
+  overlay.applyLiveEvent({ kind: "message_completed", content, timestamp: 9_000, historyFloor: 200 });
+  assert.equal(occurrences(plain(overlay.render(64)).join("\n"), "delayed identical"), 2,
+    "the newer row confirms only the completion whose pre-append floor it equals");
+});
+
+test("page up reconciles a live completion against the older page it loads", () => {
+  const content = [{ type: "text", text: "paged completion" }];
+  const persisted = {
+    kind: "assistant",
+    message: { role: "assistant", content, timestamp: 9_000 },
+    entryId: "older-match",
+    entryByteOffset: 100,
+    entryItemIndex: 0,
+  };
+  const recent = { kind: "generic", text: "recent", entryId: "recent", entryByteOffset: 200, entryItemIndex: 0 };
+  const snapshot = { items: [recent], moreBefore: true, moreAfter: false };
+  const history = {
+    snapshot: () => snapshot,
+    loadOlder: () => {
+      snapshot.items = [persisted, recent];
+      snapshot.moreBefore = false;
+      return true;
+    },
+    loadNewer: () => false,
+    retryInitial: () => false,
+  };
+  const { overlay } = overlayHarness(runningModel(history), 64, 30);
+  overlay.applyLiveEvent({ kind: "message_completed", content, timestamp: 9_000, historyFloor: 100 });
+  overlay.render(64);
+  overlay.handleInput(PAGE_UP);
+  assert.equal(occurrences(plain(overlay.render(64)).join("\n"), "paged completion"), 1,
+    "demand paging confirms the live row as soon as its persisted occurrence enters the window");
+});
+
+test("occurrence matching follows append position, not a wall-clock timestamp", () => {
+  const firstContent = [{ type: "text", text: "first" }];
+  const secondContent = [{ type: "text", text: "clock moved backward" }];
+  const snapshot = {
+    items: [{
+      kind: "assistant",
+      message: { role: "assistant", content: firstContent, timestamp: 2_000 },
+      entryId: "first",
+      entryByteOffset: 100,
+      entryItemIndex: 0,
+    }],
+    moreBefore: false,
+    moreAfter: false,
+  };
+  let changed = false;
+  const history = {
+    snapshot: () => snapshot,
+    loadOlder: () => false,
+    loadNewer: () => {
+      const result = changed;
+      changed = false;
+      return result;
+    },
+    retryInitial: () => false,
+  };
+  const { overlay } = overlayHarness(runningModel(history));
+  overlay.applyLiveEvent({ kind: "message_completed", content: firstContent, timestamp: 2_000, historyFloor: 100 });
+  snapshot.items = [];
+  changed = true;
+  overlay.applyLiveEvent({ kind: "tool_result_completed" });
+
+  snapshot.items = [{
+    kind: "assistant",
+    message: { role: "assistant", content: secondContent, timestamp: 1_000 },
+    entryId: "second",
+    entryByteOffset: 200,
+    entryItemIndex: 0,
+  }];
+  changed = true;
+  overlay.applyLiveEvent({ kind: "tool_result_completed" });
+  overlay.applyLiveEvent({ kind: "message_completed", content: secondContent, timestamp: 1_000, historyFloor: 200 });
+  assert.equal(occurrences(plain(overlay.render(64)).join("\n"), "clock moved backward"), 1,
+    "a later JSONL occurrence confirms even when its wall clock moved backward");
 });
 
 test("a pre-existing identical message never consumes a newer completion", () => {
@@ -947,22 +1279,22 @@ test("a pre-existing identical message never consumes a newer completion", () =>
     const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
-    overlay.applyLiveEvent({
-      kind: "message_completed",
-      content: boundedAssistantTextParts([{ type: "text", text: "Same words" }]),
-      timestamp: 8_000,
-    });
-    let lines = plain(overlay.render(64)).join("\n");
-    assert.equal(occurrences(lines, "Same words"), 2,
-      "the live copy stays: the old identical message carries a different timestamp");
-
     appendSessionLine(sessionFile, messageEntry("e8", {
       role: "assistant",
       content: [{ type: "toolCall", id: "c9", name: "grep", arguments: { pattern: "x" } }],
     }));
+    overlay.applyLiveEvent(completedAtCurrentEnd(
+      sessionFile,
+      [{ type: "text", text: "Same words" }],
+      8_000,
+    ));
+    let lines = plain(overlay.render(64)).join("\n");
+    assert.equal(occurrences(lines, "Same words"), 2,
+      "the live copy stays: the old identical message carries a different timestamp");
+
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
     lines = plain(overlay.render(64)).join("\n");
-    assert.equal(occurrences(lines, "Same words"), 2, "an unrelated append still consumes nothing");
+    assert.equal(occurrences(lines, "Same words"), 2, "unrelated persisted history consumes nothing");
 
     appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", timestamp: 8_000, content: [{ type: "text", text: "Same words" }] }));
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
@@ -991,7 +1323,7 @@ test("a message longer than any live part cap reconciles exactly", () => {
       message: { role: "assistant", timestamp: 3_000, content },
     });
     assert.equal(completed.kind, "message_completed");
-    overlay.applyLiveEvent(completed);
+    overlay.applyLiveEvent({ ...completed, historyFloor: statSync(sessionFile).size });
     let lines = plain(overlay.render(64)).join("\n");
     assert.ok(lines.includes("part 199"));
 
@@ -1015,12 +1347,24 @@ test("live tail overflow sheds the oldest with an explicit omission state and re
     overlay.render(64);
 
     const total = MAX_LIVE_ITEMS + 4;
+    const unrelated = messageEntry("u1", {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "cu", name: "grep", arguments: { pattern: "x" } }],
+    });
+    const persisted = Array.from({ length: total }, (_, index) => messageEntry(`p${index}`, {
+      role: "assistant",
+      timestamp: 10_000 + index,
+      content: [{ type: "text", text: `completion ${index}` }],
+    }));
+    let nextOffset = statSync(sessionFile).size + Buffer.byteLength(`${JSON.stringify(unrelated)}\n`);
     for (let index = 0; index < total; index += 1) {
       overlay.applyLiveEvent({
         kind: "message_completed",
         content: boundedAssistantTextParts([{ type: "text", text: `completion ${index}` }]),
         timestamp: 10_000 + index,
+        historyFloor: nextOffset,
       });
+      nextOffset += Buffer.byteLength(`${JSON.stringify(persisted[index])}\n`);
     }
     let lines = plain(overlay.render(64)).join("\n");
     assert.ok(!lines.includes("completion 0"), "the oldest overflow entry is dropped");
@@ -1028,27 +1372,118 @@ test("live tail overflow sheds the oldest with an explicit omission state and re
     assert.match(lines, /older live updates were dropped/, "the drop is an explicit omission state");
 
     // An unrelated append recovers nothing: the omission state stays.
-    appendSessionLine(sessionFile, messageEntry("u1", {
-      role: "assistant",
-      content: [{ type: "toolCall", id: "cu", name: "grep", arguments: { pattern: "x" } }],
-    }));
+    appendSessionLine(sessionFile, unrelated);
     overlay.applyLiveEvent({ kind: "tool_result_completed" });
     lines = plain(overlay.render(64)).join("\n");
     assert.match(lines, /older live updates were dropped/, "an unrelated append does not clear the omission state");
     assert.ok(!lines.includes("completion 0"), "the dropped entry is still unrecovered");
 
-    for (let index = 0; index < total; index += 1) {
-      appendSessionLine(sessionFile, messageEntry(`p${index}`, {
-        role: "assistant",
-        timestamp: 10_000 + index,
-        content: [{ type: "text", text: `completion ${index}` }],
-      }));
-    }
+    for (const entry of persisted) appendSessionLine(sessionFile, entry);
     overlay.applyLiveEvent({ kind: "run_finished" });
     lines = plain(overlay.render(64)).join("\n");
     assert.ok(!lines.includes("older live updates were dropped"), "actual recovery clears the omission state");
     assert.ok(lines.includes("completion 0") && lines.includes(`completion ${total - 1}`),
       "persisted history recovers every dropped message");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("duplicate dropped completions require distinct persisted occurrences to recover", () => {
+  const root = liveOverlayRoot();
+  try {
+    const content = boundedAssistantTextParts([{ type: "text", text: "same dropped completion" }]);
+    const { overlay } = freshOverlay(root, [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+    ]);
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
+    overlay.render(64);
+    const first = messageEntry("e2", { role: "assistant", timestamp: 7_000, content });
+    const firstFloor = statSync(sessionFile).size;
+    const secondFloor = firstFloor + Buffer.byteLength(`${JSON.stringify(first)}\n`);
+    overlay.applyLiveEvent({
+      kind: "live_events_dropped",
+      dropped: [
+        { kind: "message", key: assistantContentKey(content), timestamp: 7_000, historyFloor: firstFloor },
+        { kind: "message", key: assistantContentKey(content), timestamp: 7_000, historyFloor: secondFloor },
+      ],
+    });
+
+    appendSessionLine(sessionFile, first);
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    let lines = plain(overlay.render(64)).join("\n");
+    assert.match(lines, /older live updates were dropped/,
+      "one persisted occurrence cannot recover two dropped occurrences");
+
+    appendSessionLine(sessionFile, messageEntry("e3", { role: "assistant", timestamp: 7_000, content }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.ok(!lines.includes("older live updates were dropped"),
+      "the second distinct occurrence completes recovery");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a dropped tool end recovers only after its own persisted result", () => {
+  const root = liveOverlayRoot();
+  try {
+    const callId = "call-terminal-recovery";
+    const { overlay } = freshOverlay(root, [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+    ]);
+    const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
+    overlay.render(64);
+    overlay.applyLiveEvent({
+      kind: "live_events_dropped",
+      dropped: [{ kind: "tool", callKey: callKeyOf(callId), name: "grep", terminal: true }],
+    });
+    appendSessionLine(sessionFile, messageEntry("e2", {
+      role: "assistant",
+      content: [{ type: "toolCall", id: callId, name: "grep", arguments: { pattern: "x" } }],
+    }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    let lines = plain(overlay.render(64)).join("\n");
+    assert.match(lines, /older live updates were dropped/,
+      "the call row alone does not recover the dropped terminal state");
+
+    appendSessionLine(sessionFile, messageEntry("e3", {
+      role: "toolResult", toolCallId: callId, toolName: "grep", isError: false, content: [],
+    }));
+    overlay.applyLiveEvent({ kind: "tool_result_completed" });
+    lines = plain(overlay.render(64)).join("\n");
+    assert.ok(!lines.includes("older live updates were dropped"),
+      "the call's persisted result recovers the terminal state");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unfingerprintable feed drop still renders a sticky omission state", () => {
+  const root = liveOverlayRoot();
+  try {
+    const { overlay } = freshOverlay(root, [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+    ]);
+    overlay.applyLiveEvent({ kind: "live_events_dropped", droppedUnknown: true });
+    assert.match(plain(overlay.render(64)).join("\n"), /older live updates were dropped/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a malformed tool event cannot reconcile by name and stays visibly omitted", () => {
+  const root = liveOverlayRoot();
+  try {
+    const { overlay } = freshOverlay(root, [
+      messageEntry("e1", { role: "user", content: [{ type: "text", text: "task" }] }),
+    ]);
+    overlay.applyLiveEvent({ kind: "tool_started", callKey: "", name: "grep", summary: "called", startedAt: 1 });
+    assert.match(plain(overlay.render(64)).join("\n"), /older live updates were dropped/);
+
+    overlay.applyLiveEvent({ kind: "run_finished" });
+    assert.match(plain(overlay.render(64)).join("\n"), /older live updates were dropped/,
+      "history cannot prove recovery without a call identity");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1063,21 +1498,21 @@ test("live tool start, update, and end are observable without any persisted appe
     const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
-    overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "c1", name: "grep", summary: "called", startedAt: 1_000 });
+    overlay.applyLiveEvent({ kind: "tool_started", callKey: callKeyOf("c1"), name: "grep", summary: "called", startedAt: 1_000 });
     let lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Grep"), 1, "a running live tool row appears immediately");
     assert.ok(!lines.includes("SECRET"), "no raw argument ever renders");
 
-    overlay.applyLiveEvent({ kind: "tool_updated", toolCallId: "c1", name: "grep" });
+    overlay.applyLiveEvent({ kind: "tool_updated", callKey: callKeyOf("c1"), name: "grep" });
     lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Grep"), 1, "an update leaves exactly one row");
 
-    overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "c1", name: "grep", isError: true });
+    overlay.applyLiveEvent({ kind: "tool_finished", callKey: callKeyOf("c1"), name: "grep", isError: true });
     lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Grep"), 1, "the same row flips in place");
     assert.match(lines, /Tool failed/, "the end state shows immediately, before any toolResult append");
 
-    overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "c2", name: "find", isError: false });
+    overlay.applyLiveEvent({ kind: "tool_finished", callKey: callKeyOf("c2"), name: "find", isError: false });
     lines = plain(overlay.render(64)).join("\n");
     assert.ok(lines.includes("Find"), "a finish without a start still renders a live row");
     assert.match(lines, /Completed/);
@@ -1120,13 +1555,13 @@ test("same-name calls reconcile per call id, never per name aggregate", () => {
     const sessionFile = join(process.env.PI_AGENT_DIR, "state", "subagents", ID, "session.jsonl");
     overlay.render(64);
 
-    overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "g1", name: "grep", summary: "called", startedAt: 1_000 });
-    overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "g2", name: "grep", summary: "called", startedAt: 1_500 });
+    overlay.applyLiveEvent({ kind: "tool_started", callKey: callKeyOf("g1"), name: "grep", summary: "called", startedAt: 1_000 });
+    overlay.applyLiveEvent({ kind: "tool_started", callKey: callKeyOf("g2"), name: "grep", summary: "called", startedAt: 1_500 });
     let lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Grep"), 2, "both live rows render");
 
-    overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "g1", name: "grep", isError: false });
-    overlay.applyLiveEvent({ kind: "tool_finished", toolCallId: "g2", name: "grep", isError: true });
+    overlay.applyLiveEvent({ kind: "tool_finished", callKey: callKeyOf("g1"), name: "grep", isError: false });
+    overlay.applyLiveEvent({ kind: "tool_finished", callKey: callKeyOf("g2"), name: "grep", isError: true });
     lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Grep"), 2, "both rows keep their own terminal state");
 
@@ -1172,7 +1607,7 @@ test("a tool call already covered by persisted history adds no duplicate live ro
       role: "assistant",
       content: [{ type: "toolCall", id: "c1", name: "grep", arguments: { pattern: "x" } }],
     }));
-    overlay.applyLiveEvent({ kind: "tool_started", toolCallId: "c1", name: "grep", summary: "called", startedAt: 1_000 });
+    overlay.applyLiveEvent({ kind: "tool_started", callKey: callKeyOf("c1"), name: "grep", summary: "called", startedAt: 1_000 });
     const lines = plain(overlay.render(64)).join("\n");
     assert.equal(occurrences(lines, "Grep"), 1, "the persisted running row covers the call; no live duplicate");
   } finally {
@@ -1443,10 +1878,12 @@ test("a real background terminal order shows the final content exactly once", ()
     input("\r");
     timers.clock.now = 0;
     state.viewFeed.publish(job.id, { kind: "message_delta", parts: [{ type: "text", text: "final words" }] });
+    const historyFloor = statSync(sessionFile).size;
     state.viewFeed.publish(job.id, {
       kind: "message_completed",
       content: boundedAssistantTextParts([{ type: "text", text: "final words" }]),
       timestamp: 7_000,
+      historyFloor,
     });
 
     appendSessionLine(sessionFile, messageEntry("e9", { role: "assistant", timestamp: 7_000, content: [{ type: "text", text: "final words" }] }));
@@ -1550,6 +1987,62 @@ test("background integration: feed events flow in order and a broken subscriber 
     assert.equal(queued.details.phase, "completed");
     assert.equal(pi.sent[0].message.customType, "pi-square.subagent-notification",
       "a broken live subscriber leaves the ordinary completion delivery untouched");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a replaced parent feed fences late events from its still-running child", async () => {
+  const root = liveOverlayRoot();
+  try {
+    process.env.PI_AGENT_DIR = root;
+    const pi = createPiStub();
+    const state = createBackgroundState();
+    const mockedBackground = await helpers.loadBackgroundModule();
+    const queued = mockedBackground.createQueuedJob({
+      state,
+      id: ID,
+      task: "old parent task",
+      cwd: "/tmp/subagents",
+      parentSessionId: "parent-old",
+      promptSnapshot: createPromptSnapshot(),
+    });
+    let oldPublisher;
+    let finishRun;
+    const finish = new Promise((resolve) => { finishRun = resolve; });
+    state.viewFeed.subscribe(ID, () => {});
+    setRunSubagentTaskMock(async (input) => {
+      oldPublisher = input.onViewEvent;
+      await finish;
+      return {
+        details: {
+          ...queued.details,
+          phase: "completed",
+          finalText: "done",
+          endedAt: 20,
+          durationMs: 10,
+        },
+      };
+    });
+    mockedBackground.startBackgroundJob({
+      pi: pi.api,
+      state,
+      job: queued,
+      ctx: {},
+      task: "old parent task",
+      parentSessionId: "parent-old",
+    });
+    await waitFor(() => typeof oldPublisher === "function", "old-generation publisher capture");
+
+    mockedBackground.replaceBackgroundViewFeed(state);
+    const seenByNewParent = [];
+    state.viewFeed.subscribe(ID, (event) => seenByNewParent.push(event.kind));
+    oldPublisher({ kind: "run_started" });
+    for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(seenByNewParent, [], "the old publisher remains bound to the discarded feed generation");
+
+    finishRun();
+    await waitFor(() => queued.status === "completed", "old child cleanup");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

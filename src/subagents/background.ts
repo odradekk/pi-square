@@ -45,10 +45,10 @@ export interface BackgroundState {
   delivery?: DeliveryController;
   /**
    * Session-scoped ephemeral live view feed (#306): ordered child view events
-   * published by the running jobs and observed only by the roster controller's
-   * open overlay. Delivery runs in its own scheduler tick through one bounded
-   * queue; there is no persistence, and session replacement and shutdown
-   * clear the feed.
+   * published by running jobs only while the roster controller observes their
+   * open overlay. Delivery runs outside child dispatch through one bounded
+   * queue; there is no persistence, and session replacement installs a new
+   * generation while shutdown clears the current one.
    */
   viewFeed?: ChildViewFeed;
 }
@@ -190,6 +190,12 @@ function deliverCompletion(pi: ExtensionAPI | undefined, state: BackgroundState,
 /** Creates the session-owned background job store for subagent runs. */
 export function createBackgroundState(): BackgroundState {
   return { jobs: new Map(), listeners: new Set(), viewFeed: createChildViewFeed() };
+}
+
+/** Replaces the ephemeral feed so publishers from an older parent generation stay fenced out. */
+export function replaceBackgroundViewFeed(state: BackgroundState): void {
+  state.viewFeed?.clear();
+  state.viewFeed = createChildViewFeed();
 }
 
 export function subscribeBackgroundState(state: BackgroundState, listener: () => void): () => void {
@@ -375,13 +381,14 @@ export function cancelBackgroundJobs(input: {
 
 /**
  * The guarded live-view publisher both start paths share (#306): publication
- * only enqueues into the session feed's bounded FIFO, and this guard keeps
- * even a feed defect from reaching the child run.
+ * captures the current session generation, only enqueues into its bounded
+ * FIFO, and keeps even a feed defect from reaching the child run.
  */
 function viewEventPublisher(state: BackgroundState, job: BackgroundJob): (event: ChildViewEvent) => void {
+  const feed = state.viewFeed;
   return (event) => {
     try {
-      state.viewFeed?.publish(job.id, event);
+      feed?.publish(job.id, event);
     } catch {
       // The live view feed is observational only.
     }

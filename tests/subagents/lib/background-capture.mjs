@@ -37,6 +37,7 @@ export const createQueuedResumeJob = real.createQueuedResumeJob;
 export const ensureDeliveryController = real.ensureDeliveryController;
 export const listBackgroundJobs = real.listBackgroundJobs;
 export const notifyBackgroundChange = real.notifyBackgroundChange;
+export const replaceBackgroundViewFeed = real.replaceBackgroundViewFeed;
 export const startBackgroundJob = real.startBackgroundJob;
 export const startBackgroundResumeJob = real.startBackgroundResumeJob;
 export const subscribeBackgroundState = real.subscribeBackgroundState;
