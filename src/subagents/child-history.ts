@@ -91,6 +91,14 @@ export type TranscriptItem = (
     callKey?: string;
     durationMs?: number;
     result?: { isError: boolean };
+    /**
+     * Bounded, sanitized result evidence for the expanded tool row (#307):
+     * the shared credential-neutral sanitizer plus an explicit head/tail
+     * budget, projected from the tool-result entry's text parts. The collapsed
+     * row never shows it, raw arguments never enter, and no unbounded payload
+     * crosses the projection boundary.
+     */
+    output?: string;
   }
   | { kind: "generic"; text: string }
 ) & TranscriptIdentity;
@@ -122,6 +130,29 @@ export interface OrphanToolResultRef {
 
 /** Per-item text budget through the shared head/tail clipper. */
 const MAX_ENTRY_TEXT = 2_000;
+/** Head/tail budget for one tool call's expanded result evidence (#307). */
+const MAX_TOOL_OUTPUT = 600;
+
+/**
+ * Bounded sanitized result evidence for the expanded tool row: only text
+ * parts of the tool-result content cross, through the shared sanitizer and
+ * the shared head/tail clipper. Anything else (images, structured payloads,
+ * unbounded text) stays out of the projection entirely.
+ */
+function boundedToolOutput(content: unknown): string | undefined {
+  const parts: string[] = [];
+  if (typeof content === "string") parts.push(content);
+  else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const text = (part as { type?: unknown; text?: unknown }).text;
+      if ((part as { type?: unknown }).type === "text" && typeof text === "string") parts.push(text);
+    }
+  }
+  if (parts.length === 0) return undefined;
+  const clipped = clipWithHeadTail(sanitizeSubagentDisplay(parts.join("\n")), MAX_TOOL_OUTPUT);
+  return clipped === "" ? undefined : clipped;
+}
 /** Single-line budget for generic fallback rows. */
 const MAX_GENERIC_LINE = 200;
 
@@ -389,12 +420,14 @@ export function projectSessionEntries(
     if (role === "toolResult") {
       // Result payloads never render: the pairing keeps only the terminal
       // state so the ordered call/result conversation stays readable.
-      const result = message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
+      const result = message as { toolCallId?: unknown; toolName?: unknown; isError?: unknown; content?: unknown };
       const callId = typeof result.toolCallId === "string" ? result.toolCallId : "";
       const callKey = callId ? callKeyOf(callId) : "";
       const open = callKey ? openCalls.get(callKey) : undefined;
       if (open) {
         open.item.result = { isError: result.isError === true };
+        const output = boundedToolOutput(result.content);
+        if (output !== undefined) open.item.output = output;
         const endedAt = entryTimestamp;
         if (open.startedAt !== undefined && endedAt !== undefined) {
           open.item.durationMs = Math.max(0, endedAt - open.startedAt);

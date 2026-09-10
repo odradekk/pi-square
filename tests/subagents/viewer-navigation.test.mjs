@@ -17,6 +17,8 @@ const backgroundModule = await load(join(packageRoot, "src", "subagents", "backg
 const artifactsModule = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
 const liveEventsModule = await load(join(packageRoot, "src", "subagents", "live-events.ts"));
 const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
+const { DEFAULT_CONFIG } = await load(join(packageRoot, "src", "core", "config.ts"));
+const { DisplayRuntime } = await load(join(packageRoot, "src", "display", "runtime.ts"));
 
 const { createSubagentRosterController, rosterRowBudget, SUBAGENT_ROSTER_KEY } = rosterModule;
 const { createBackgroundState } = backgroundModule;
@@ -803,6 +805,322 @@ test("no view-state transition performs a child control or result-ownership oper
 });
 
 // ---------------------------------------------------------------------------
+// Follow-state decoupling (#307 review)
+
+test("a following view keeps following sustained live growth after the first render", () => {
+  const harness = navigationHarness();
+  try {
+    writeChildArtifacts(harness.root, ALPHA, longHistory("alpha"));
+    harness.addChild(job(ALPHA, "running", 1, "explorer"));
+
+    const overlay = harness.openChild(ALPHA);
+    overlay.render(64);
+    assert.ok(harness.overlayText().some((line) => line.includes("alpha entry 59")), "the first render shows the tail");
+
+    for (let round = 1; round <= 3; round += 1) {
+      harness.live.feed.publish(ALPHA, {
+        kind: "message_delta",
+        parts: [{ type: "text", text: `streaming round ${round} with plenty of new content to push the tail far past the viewport` }],
+      });
+      harness.live.deliverAll();
+      const text = harness.overlayText();
+      assert.ok(text.some((line) => line.includes(`streaming round ${round}`)), `round ${round}: a following view renders the new tail`);
+      assert.ok(!text.at(-1).includes("new output"), `round ${round}: following sets no notice`);
+      assert.ok(!text.some((line) => /later lines/.test(line)), `round ${round}: nothing is stranded below the viewport`);
+    }
+
+    // Persisted completion keeps following too.
+    harness.live.feed.publish(ALPHA, {
+      kind: "message_completed",
+      content: [{ type: "text", text: "completed message that arrives after sustained growth" }],
+      timestamp: 500_000,
+    });
+    harness.live.deliverAll();
+    const text = harness.overlayText();
+    assert.ok(text.some((line) => line.includes("completed message that arrives")), "completion stays visible");
+    assert.ok(!text.at(-1).includes("new output"), "following views never see the notice");
+  } finally {
+    cleanup(harness);
+  }
+});
+
+test("only End resumes a suspended follow; scrolling to the numeric bottom does not", () => {
+  const harness = navigationHarness();
+  try {
+    writeChildArtifacts(harness.root, ALPHA, longHistory("alpha"));
+    harness.addChild(job(ALPHA, "running", 1, "explorer"));
+
+    const overlay = harness.openChild(ALPHA);
+    overlay.render(64);
+    overlay.handleInput(PAGE_UP);
+    assert.ok(harness.overlayText().some((line) => /later lines/.test(line)), "page up suspends following");
+
+    harness.live.feed.publish(ALPHA, {
+      kind: "message_delta",
+      parts: [{ type: "text", text: "unseen growth below the suspended position" }],
+    });
+    harness.live.deliverAll();
+    assert.match(harness.overlayText().at(-1), /new output below/, "suspended growth sets the notice");
+
+    // Wheel down to the numeric bottom: the position moves, the follow state
+    // and the notice semantics do not.
+    for (let notch = 0; notch < 30; notch += 1) overlay.handleInput(WHEEL_DOWN_SGR);
+    let text = harness.overlayText();
+    assert.ok(!text.some((line) => /later lines/.test(line)), "the wheel can reach the numeric bottom");
+    harness.live.feed.publish(ALPHA, {
+      kind: "message_delta",
+      parts: [{ type: "text", text: "unseen growth below the suspended position\nstill not following after reaching the bottom by wheel" }],
+    });
+    harness.live.deliverAll();
+    text = harness.overlayText();
+    assert.ok(!text.some((line) => line.includes("still not following")), "a wheel-bottom view stays numerically pinned");
+    assert.match(text.at(-1), /new output below/, "growth below it still sets the notice");
+
+    overlay.handleInput(END);
+    text = harness.overlayText();
+    assert.ok(text.some((line) => line.includes("still not following")), "end resumes following at the newest tail");
+    assert.ok(!text.at(-1).includes("new output"), "end clears the notice");
+  } finally {
+    cleanup(harness);
+  }
+});
+
+test("per-child reading state keeps follow and suspension independent across switches", () => {
+  const harness = navigationHarness();
+  try {
+    writeChildArtifacts(harness.root, ALPHA, longHistory("alpha"));
+    const { sessionFile: betaFile } = writeChildArtifacts(harness.root, BETA, longHistory("beta"));
+    harness.addChild(job(ALPHA, "running", 1, "explorer"));
+    harness.addChild(job(BETA, "running", 2, "crawler"));
+
+    const overlay = harness.openChild(ALPHA);
+    overlay.render(64);
+    overlay.handleInput(PAGE_UP); // alpha suspended
+    harness.live.feed.publish(ALPHA, {
+      kind: "message_delta",
+      parts: [{ type: "text", text: "alpha growth below the suspended position" }],
+    });
+    harness.live.deliverAll();
+    assert.match(harness.overlayText().at(-1), /new output below/, "the suspended child carries a notice");
+
+    overlay.handleInput(DOWN);
+    overlay.handleInput(ENTER); // beta opens following
+    overlay.render(64);
+    harness.live.feed.publish(BETA, {
+      kind: "message_delta",
+      parts: [{ type: "text", text: "beta keeps streaming while alpha stays suspended" }],
+    });
+    harness.live.deliverAll();
+    assert.ok(harness.overlayText().some((line) => line.includes("beta keeps streaming")), "beta follows its growth");
+    assert.ok(!harness.overlayText().at(-1).includes("new output"), "no notice for a following child");
+
+    overlay.handleInput(UP);
+    overlay.handleInput(ENTER); // back to alpha: still suspended, notice intact
+    const alphaText = harness.overlayText();
+    assert.ok(!alphaText.some((line) => line.includes("beta keeps streaming")), "alpha shows its own window");
+    assert.match(alphaText.at(-1), /new output below/, "the suspended child kept its notice across switches");
+
+    // Beta persisted growth while unobserved; its restored follow state
+    // shows it without a notice. (The ephemeral streamed partial itself is
+    // correctly gone: unobserved children retain no live events.)
+    appendSessionLine(betaFile, messageEntry("beta-late", {
+      role: "user",
+      content: "beta persisted while unobserved",
+      timestamp: 61,
+    }, new Date(61_000).toISOString()));
+    overlay.handleInput(DOWN);
+    overlay.handleInput(ENTER); // beta again: still following
+    const betaText = harness.overlayText();
+    assert.ok(betaText.some((line) => line.includes("beta persisted while unobserved")), "beta's restored follow shows the persisted growth");
+    assert.ok(!betaText.at(-1).includes("new output"), "beta never gained a notice");
+  } finally {
+    cleanup(harness);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Roster viewport stability (#307 review)
+
+test("a height-only resize keeps the focus row inside the roster window", () => {
+  const rows = 30;
+  const harness = navigationHarness({ columns: 80, rows });
+  try {
+    const fixtures = [];
+    for (let index = 0; index < 12; index += 1) {
+      const head = `${(index + 1).toString(16).padStart(2, "0")}111111`;
+      const id = `subagent_${head}-1111-4111-8111-111111111111`;
+      writeChildArtifacts(harness.root, id, longHistory(`role${index}`, 2));
+      fixtures.push(job(id, "running", index, `role${index}`));
+    }
+    for (const fixture of fixtures) harness.addChild(fixture);
+
+    const overlay = harness.openChild(fixtures[0].id);
+    for (let index = 0; index < fixtures.length; index += 1) overlay.handleInput(DOWN);
+    assert.ok(harness.widgetLines().some((line) => line.startsWith("● role11")), "the candidate starts visible at the far end");
+
+    for (const height of [14, 8, 45]) {
+      harness.tui.terminal.rows = height;
+      const lines = harness.widgetLines();
+      const solid = lines.filter((line) => line.startsWith("●"));
+      assert.equal(solid.length, 1, `height ${height}: exactly one solid row`);
+      assert.match(solid[0], /role11/, `height ${height}: the focus row stays inside the window`);
+      const budget = rosterRowBudget(height);
+      assert.ok(lines.length <= budget + 2, `height ${height}: the window respects the shrunk budget`);
+    }
+  } finally {
+    cleanup(harness);
+  }
+});
+
+test("removing an off-screen candidate keeps the open child visible", () => {
+  const rows = 30;
+  const harness = navigationHarness({ columns: 80, rows });
+  try {
+    const fixtures = [];
+    for (let index = 0; index < 12; index += 1) {
+      const head = `${(index + 1).toString(16).padStart(2, "0")}111111`;
+      const id = `subagent_${head}-1111-4111-8111-111111111111`;
+      writeChildArtifacts(harness.root, id, longHistory(`role${index}`, 2));
+      fixtures.push(job(id, "running", index, `role${index}`));
+    }
+    for (const fixture of fixtures) harness.addChild(fixture);
+
+    const overlay = harness.openChild(fixtures[0].id);
+    for (let index = 0; index < fixtures.length; index += 1) overlay.handleInput(DOWN);
+    assert.match(harness.widgetLines()[0], /earlier/, "the window sits at the far end while the candidate lives");
+
+    harness.removeChild(fixtures[11].id);
+    const lines = harness.widgetLines();
+    assert.ok(lines.some((line) => line.startsWith("● role0")), "the open child is visible again after the candidate vanished");
+    assert.ok(!lines.some((line) => line.includes("role11")), "the removed child is gone");
+    const solid = lines.filter((line) => line.startsWith("●"));
+    assert.equal(solid.length, 1, "exactly the open child carries the solid marker");
+  } finally {
+    cleanup(harness);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Body anchoring and footer budgets (#307 review)
+
+test("a width round trip anchors the body on the same transcript entry", () => {
+  const harness = navigationHarness({ columns: 120, rows: 45 });
+  try {
+    writeChildArtifacts(harness.root, ALPHA, longHistory("alpha"));
+    harness.addChild(job(ALPHA, "running", 1, "explorer"));
+
+    const overlay = harness.openChild(ALPHA);
+    overlay.render(96);
+    overlay.handleInput(PAGE_UP);
+    overlay.handleInput(PAGE_UP);
+    // Entry identity, not padded line equality: components pad to the width.
+    const topEntryId = (width) => /alpha entry (\d+)/.exec(harness.overlayText(width).join("\n"))?.[1];
+    const wide = topEntryId(96);
+    assert.ok(wide !== undefined && wide !== "59", "a mid-history entry is visible after paging up");
+
+    harness.tui.terminal.columns = 40;
+    assert.equal(topEntryId(36), wide, "narrowing keeps the same entry at the viewport top");
+
+    harness.tui.terminal.columns = 120;
+    assert.equal(topEntryId(96), wide, "widening back keeps the same entry at the top");
+    assert.ok(harness.overlayText(96).some((line) => /later lines|earlier lines/.test(line)), "the view is still a stable mid-history window");
+  } finally {
+    cleanup(harness);
+  }
+});
+
+test("the candidate footer keeps the unique ID when a long role meets a narrow width", () => {
+  const harness = navigationHarness();
+  try {
+    writeChildArtifacts(harness.root, ALPHA, longHistory("alpha", 4));
+    writeChildArtifacts(harness.root, BETA, longHistory("beta", 4));
+    harness.addChild(job(ALPHA, "running", 1, "explorer"));
+    harness.addChild(job(BETA, "running", 2, "crawler-with-a-very-long-descriptive-role-name"));
+
+    const overlay = harness.openChild(ALPHA);
+    overlay.render(64);
+    overlay.handleInput(DOWN);
+
+    const wide = harness.overlayText(96).at(-1);
+    assert.match(wide, /candidate crawler-with-a-very-long-descriptive-role-name 22222222/, "wide widths show role and ID");
+    assert.match(wide, /enter opens/, "wide widths keep the hints");
+
+    const narrow = harness.overlayText(36).at(-1);
+    assert.ok(narrow.includes("22222222"), "the unique short ID always renders");
+    assert.ok(!narrow.includes("11111111"), "no other child's ID leaks into the footer");
+    assert.ok(narrow.length <= 36, "the footer stays one bounded row");
+  } finally {
+    cleanup(harness);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Real expand-tools evidence through the production display runtime (#307 review)
+
+test("expand-tools reveals bounded sanitized result evidence through the real display runtime", () => {
+  const clock = { callbacks: new Map(), next: 1 };
+  clock.setInterval = (callback) => { const id = clock.next++; clock.callbacks.set(id, callback); return id; };
+  clock.clearInterval = (id) => clock.callbacks.delete(id);
+  clock.unref = () => {};
+  const runtime = new DisplayRuntime(structuredClone(DEFAULT_CONFIG), {
+    environment: { isTTY: true },
+    clock,
+  });
+  const theme = loadThemeFromPath(join(packageRoot, "themes", "pi-square-theme-dark.json"));
+  const harness = navigationHarness({
+    theme,
+    display: {
+      createComponent: runtime.createComponent.bind(runtime),
+      subscribeMotion: runtime.subscribeMotion.bind(runtime),
+    },
+  });
+  try {
+    writeChildArtifacts(harness.root, ALPHA, [
+      messageEntry("e1", {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/a.ts", offset: 2, limit: 3 } }],
+        stopReason: "toolUse",
+        timestamp: 2,
+      }),
+      messageEntry("e2", {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "line two of the evidence\npassword: swordfish\nline four of the evidence" }],
+        isError: false,
+        timestamp: 3,
+      }),
+    ]);
+    writeChildArtifacts(harness.root, BETA, longHistory("beta", 4));
+    harness.addChild(job(ALPHA, "running", 1, "explorer"));
+    harness.addChild(job(BETA, "running", 2, "crawler"));
+
+    const overlay = harness.openChild(ALPHA);
+    const collapsed = plain(harness.overlayText(96));
+    assert.ok(collapsed.some((line) => line.includes("Read")), "the collapsed operational row renders");
+    assert.ok(!collapsed.some((line) => line.includes("line two of the evidence")), "the collapsed row never shows result evidence");
+    assert.ok(!collapsed.some((line) => line.includes("swordfish")), "credentials never render collapsed");
+
+    overlay.handleInput(EXPAND);
+    const expanded = plain(harness.overlayText(96));
+    const evidence = expanded.find((line) => line.includes("line two of the evidence"));
+    assert.ok(evidence, "the expand shortcut reveals the bounded result evidence through the real renderer");
+    assert.ok(!expanded.some((line) => line.includes("swordfish")), "the revealed evidence is credential-sanitized");
+    assert.ok(!expanded.some((line) => line.includes("src/a.ts")), "raw arguments never render expanded");
+
+    overlay.handleInput(EXPAND);
+    assert.ok(!plain(harness.overlayText(96)).some((line) => line.includes("line two of the evidence")), "toggling back collapses the evidence");
+  } finally {
+    cleanup(harness);
+    runtime.dispose();
+  }
+});
+
+function plain(lines) {
+  return lines.map((line) => stripVTControlCharacters(line));
+}
+
+// ---------------------------------------------------------------------------
 // Real theme snapshots
 
 test("real light and dark themes snapshot the navigation overlay across layouts", () => {
@@ -851,6 +1169,14 @@ test("real light and dark themes snapshot the navigation overlay across layouts"
         const roster = harness.widgetLines(Math.min(columns, 80));
         for (const line of roster) assert.ok(visibleWidth(line) <= Math.min(columns, 80), `${name}: roster rows fit`);
         assert.ok(roster.some((line) => line.startsWith("●")), `${name}: the candidate row stays solid`);
+        // The "no permanent help rows" criterion is about the roster, which
+        // stays rows plus accounting only; the overlay's single status row is
+        // its designed help surface, asserted above.
+        assert.ok(
+          !roster.some((line) => /esc|enter|pgup|pgdn|home|end|scroll|switch/.test(line)),
+          `${name}: the roster renders no help row`,
+        );
+
       } finally {
         cleanup(harness);
       }

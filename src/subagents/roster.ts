@@ -18,6 +18,7 @@ import {
   childOverlayOptions,
   type ChildHistoryView,
   type ChildOverlayModel,
+  type ChildReadingState,
   ChildTranscriptOverlay,
 } from "./viewer";
 
@@ -262,7 +263,19 @@ export function renderSubagentRoster(
   const budget = Math.max(1, options.rowBudget);
   const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
   const maxStart = Math.max(0, rows.length - budget);
-  const start = Math.min(Math.max(0, options.start ?? 0), maxStart);
+  let start = Math.min(Math.max(0, options.start ?? 0), maxStart);
+  // The controller resolves the window at publish time, but a height-only
+  // resize changes the budget without a new publication. Re-anchor on the
+  // focus row here, under the budget this render actually uses, so the solid
+  // marker can never leave the window.
+  const focusIndex = options.focusId !== undefined
+    ? rows.findIndex((row) => row.id === options.focusId)
+    : -1;
+  if (focusIndex >= 0) {
+    if (focusIndex < start) start = focusIndex;
+    else if (focusIndex >= start + budget) start = focusIndex - budget + 1;
+    start = Math.min(Math.max(0, start), maxStart);
+  }
   const visibleRows = rows.slice(start, start + budget);
   const fullPrefixes = visibleRows.map((row) => prefixes.get(row.id) ?? rosterId(row.id));
   const idBudgets = visibleRows.map((row) => {
@@ -549,8 +562,7 @@ export function createSubagentRosterController(
   /** Per-child retained reading state (#307), keyed by complete public ID. */
   interface ChildViewEntry {
     history: ChildHistoryView;
-    scrollTop: number;
-    toolsExpanded: boolean;
+    reading: ChildReadingState;
   }
   const childEntries = new Map<string, ChildViewEntry>();
 
@@ -564,8 +576,8 @@ export function createSubagentRosterController(
     const budget = rosterRowBudget(terminalRows);
     const maxStart = Math.max(0, rows.length - budget);
     const focus = focusId();
-    const focusIndex = focus === undefined ? undefined : rows.findIndex((row) => row.id === focus);
-    if (focusIndex !== undefined) {
+    const focusIndex = focus === undefined ? -1 : rows.findIndex((row) => row.id === focus);
+    if (focusIndex >= 0) {
       if (focusIndex < viewportStart) viewportStart = focusIndex;
       else if (focusIndex >= viewportStart + budget) viewportStart = focusIndex - budget + 1;
     }
@@ -623,6 +635,15 @@ export function createSubagentRosterController(
     // the one still open (#307).
     for (const id of childEntries.keys()) {
       if (id !== openId && !rows.some((row) => row.id === id)) childEntries.delete(id);
+    }
+
+    // Resolve the effective focus before the window moves: a candidate whose
+    // row left the store must not steer the viewport away from the open child
+    // it falls back to.
+    if (candidateId !== undefined
+      && candidateId !== openId
+      && !rows.some((row) => row.id === candidateId)) {
+      candidateId = undefined;
     }
 
     followViewport(rows);
@@ -715,14 +736,13 @@ export function createSubagentRosterController(
 
     const previous = childEntries.get(openId);
     const captured = overlay.captureViewState();
-    if (previous !== undefined) childEntries.set(openId, { ...previous, ...captured });
+    if (previous !== undefined) childEntries.set(openId, { history: previous.history, reading: captured });
 
     let entry = childEntries.get(id);
     if (entry === undefined) {
       entry = {
         history: createChildHistory(id, { observedAt: now() }),
-        scrollTop: Number.POSITIVE_INFINITY,
-        toolsExpanded: false,
+        reading: { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false },
       };
       childEntries.set(id, entry);
     }
@@ -731,10 +751,7 @@ export function createSubagentRosterController(
     openModelStatus = job.status;
     candidateId = undefined;
     try {
-      overlay.switchChild(buildOverlayModel(job, entry.history), {
-        scrollTop: entry.scrollTop,
-        toolsExpanded: entry.toolsExpanded,
-      });
+      overlay.switchChild(buildOverlayModel(job, entry.history), entry.reading);
       // Catch the retained window up with anything the child persisted while
       // unobserved; a position away from the tail stays put and records the
       // new-output state instead.
@@ -802,8 +819,7 @@ export function createSubagentRosterController(
     childEntries.clear();
     const entry: ChildViewEntry = {
       history: createChildHistory(job.id, { observedAt: now() }),
-      scrollTop: Number.POSITIVE_INFINITY,
-      toolsExpanded: false,
+      reading: { scrollTop: Number.POSITIVE_INFINITY, following: true, toolsExpanded: false, newOutput: false },
     };
     childEntries.set(job.id, entry);
     const model = buildOverlayModel(job, entry.history);

@@ -315,7 +315,12 @@ test("projection display-sanitizes every text channel before any renderer", () =
   assert.ok(!serialized.includes("abc123"), "token values never enter any item");
   assert.ok(!serialized.includes("eyJhbGc"), "bearer values never enter any item");
   assert.ok(!serialized.includes("\\x1b") && !serialized.includes("\u001b"), "control sequences never enter any item");
-  assert.ok(!serialized.includes("SECRET TOOL RESULT"), "tool-result payloads never enter any item");
+  // Tool results cross as one bounded sanitized evidence projection for the
+  // expanded row (#307): the payload text survives, credentials do not.
+  const projectedCall = projectSessionEntries(entries).items.find((item) => item.kind === "toolCall");
+  assert.ok(projectedCall.output.includes("SECRET TOOL RESULT"), "the bounded result projection enters the call item");
+  assert.ok(!projectedCall.output.includes("swordfish") && !projectedCall.output.includes("abc123"), "result credentials never enter the projection");
+  assert.ok(projectedCall.output.length <= 620, "the result projection stays inside its explicit budget");
   assert.ok(!serialized.includes("curl"), "raw argument commands never enter any item");
   assert.ok(!serialized.includes("bare-secret"), "structured credentials never enter any item");
   assert.ok(!serialized.includes("req-internal"), "provider-internal error identifiers never enter any item");
@@ -338,7 +343,7 @@ test("projection display-sanitizes every text channel before any renderer", () =
   for (const item of items) {
     const text = item.kind === "user" ? item.text
       : item.kind === "assistant" ? JSON.stringify(item.message)
-        : item.kind === "toolCall" ? `${item.name} ${item.summary}`
+        : item.kind === "toolCall" ? `${item.name} ${item.summary} ${item.output ?? ""}`
           : item.text;
     assert.ok(text.length < 2_600, "every projected text stays inside the entry budget");
   }
