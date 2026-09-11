@@ -259,8 +259,11 @@ real-user run, and it takes effect on the next request — not at run end:
    and the run continues. Acceptance validates the body bounds, the total
    rendered Memory budget, the state serialization cap, and the projected net
    benefit of this handler's request projection — evicted source tokens minus the
-   carrier **delta** the request gains (an append onto existing Memory adds
-   only the new block's part; the unchanged prefix is never charged again);
+   carrier **delta** the request gains, measured against the final
+   replacement set (an append onto existing Memory adds only the new block's
+   part; the unchanged prefix is never charged again; a rebuild never books a
+   retained exception as savings — instructions that stay raw in every
+   request are not savings);
    an attempt with no provable source, no capacity, or no positive savings is
    refused with one bounded short-coded message — the covered source total is
    never mistaken for savings. A refusal counts against the pending

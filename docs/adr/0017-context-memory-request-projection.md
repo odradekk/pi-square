@@ -32,10 +32,14 @@ acceptance records one block spanning the suffix originals plus new eligible
 history with the replaced blocks' retained exceptions kept raw, and a rebuild
 whose complete serving cannot fit the window reports an honest scale limit
 instead of truncating, paging, or deleting anything — its deterministic
-acceptance runs a real Pi `AgentSession` through append → deferred rebuild →
-continued work with a follow-up user instruction inside the covered range →
-second rebuild, plus post-completion source recovery, observed at the
-provider request exit. #322 adds the interruption and native-branch
+acceptance runs a real Pi `AgentSession` through one user input covering
+append → deferred rebuild → ordinary tool continuation with no second
+prompt, user message, or extension wake → second deferred rebuild → the
+task's final answer, plus a follow-up user instruction crossing a third
+rebuild's covered range and post-completion source recovery, observed at the
+provider request exit. Rebuild net benefit is measured against the final
+replacement set — retained exceptions that stay raw in every request never
+count as savings. #322 adds the interruption and native-branch
 lifecycle matrix on the same seam:
 event-coordinated cancellations before and after the write, restart recovery
 with byte-identical carriers, replacement sets, and source pages, fork,
