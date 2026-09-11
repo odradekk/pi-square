@@ -293,7 +293,14 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
         description = "opaque · latest carrier is not valid Context Memory · native summary retained";
         break;
       case "due":
-        description = "due · threshold reached · compression advisory rides the next request";
+        // #320: the pending maintenance request's bounded state rides the
+        // same one line — pinned sources, or suppression after repeated
+        // identical refusals. Never a second line and never a log.
+        description = memory.maintenance !== undefined
+          ? `due · maintenance over ${memory.maintenance.sources} source${memory.maintenance.sources === 1 ? "" : "s"} · ${memory.maintenance.suppressed
+            ? `advisory paused after repeated refusals (${memory.maintenance.lastErrorCode ?? "unknown"})`
+            : "compression advisory riding requests"}`
+          : "due · threshold reached · compression advisory rides the next request";
         break;
     }
     if (isEphemeralMemorySnapshot(memory)) {
@@ -337,6 +344,45 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
       RAIL_CONT + "     " +
       paint(theme, "dim", `usage ${formatShort(memory.currentTokens)} / ${formatShort(memory.contextWindow)} window`),
     );
+  }
+
+  // #320: at most two bounded diagnostic rows — the pending maintenance
+  // request with its failure state and net change, and the pressure split
+  // keeping estimates and provider reports distinguishable.
+  if (memory.maintenance !== undefined || memory.pressure !== undefined) {
+    const parts: string[] = [];
+    if (memory.maintenance !== undefined) {
+      parts.push(
+        `maintenance over ${memory.maintenance.sources} ${memory.maintenance.sources === 1 ? "source" : "sources"}`,
+        memory.maintenance.suppressed
+          ? `advisory paused (${memory.maintenance.lastErrorCode ?? "unknown"})`
+          : "advisory riding",
+      );
+    }
+    if (memory.lastNetSavingsTokens !== undefined) {
+      parts.push(`last append −${formatShort(memory.lastNetSavingsTokens)} tok`);
+    }
+    if (parts.length > 0) {
+      lines.push(
+        RAIL_CONT + "     " + paint(theme, "muted", parts.join(" · ")),
+      );
+    }
+  }
+  if (memory.pressure !== undefined) {
+    const pressureParts: string[] = [];
+    if (memory.pressure.estimated !== null) {
+      pressureParts.push(`~${formatShort(memory.pressure.estimated)} tok est`);
+    }
+    if (memory.pressure.reported !== null) {
+      pressureParts.push(
+        `${formatShort(memory.pressure.reported)} tok reported${memory.pressure.reportedForCurrentMemory ? "" : " (before current Memory)"}`,
+      );
+    }
+    if (pressureParts.length > 0) {
+      lines.push(
+        RAIL_CONT + "     " + paint(theme, "dim", `request ${pressureParts.join(" · ")}`),
+      );
+    }
   }
 
   const previewWidth = Math.min(

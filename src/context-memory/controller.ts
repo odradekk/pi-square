@@ -19,6 +19,13 @@ import {
   type MemoryStateBlock,
   type MemoryStateData,
 } from "./format";
+import {
+  type MaintenanceFailures,
+  type MaintenanceRequest,
+  maintenanceSuppressed,
+  noteMaintenanceFailure,
+  sameMaintenanceScope,
+} from "./maintenance";
 import type { ContextMemoryThreshold, ContextMemoryConfig } from "../core/config";
 import {
   paginateTranscript,
@@ -39,12 +46,14 @@ import {
   CONTEXT_MEMORY_BLOCKS_TYPE,
   CONTEXT_MEMORY_MAX_VIEW_ROWS,
   type ContextMemoryBlockRow,
+  type ContextMemoryMaintenanceInfo,
+  type ContextMemoryPressureInfo,
   type ContextMemorySnapshot,
 } from "./view";
 
 /**
  * The session-scoped Context Memory controller (odradekk/pi-square#215, #216,
- * #217, #319).
+ * #217, #319, #320).
  *
  * #319 replaces the settle-driven submission protocol with in-task recording
  * and request projection, per ADR-0017 and #317. The controller keeps one
@@ -54,6 +63,21 @@ import {
  * projection that evicts covered originals and inserts the one complete
  * Memory carrier, bounded source recovery, and the read-only `/context`
  * snapshot that separates recorded from applied Memory.
+ *
+ * #320 adds sustained maintenance inside one long task: pressure is judged on
+ * every ordinary request (never only at user input or settle), one pending
+ * maintenance request pins the exact append sources the advisory invites, and
+ * later tool work extends coverage only through an explicit re-scope at a
+ * request boundary where the new sources are served. Repeated refused or
+ * zero-benefit attempts against one pinned scope suppress the advisory
+ * (bounded, with the specific refusal kept); real growth or a Memory state
+ * change re-enables evaluation without waiting for the next user input.
+ * Provider usage is bound to the request and Memory version it measured: the
+ * deterministic request estimate plus a bounded calibration term (the system
+ * prompt, tool definitions, and framing the handler's messages never carry,
+ * refreshed from each provider report) is the only pressure input, so a
+ * pre-compression report never floors post-compression pressure and an
+ * accepted compression rebuilds the baseline through the next estimate.
  *
  * Recording never blocks the run: the accepted block lands as a Pi custom
  * state entry (SessionManager stays the only session-file writer), and the
@@ -111,6 +135,22 @@ export function renderedMemoryTokens(markdowns: readonly string[]): number {
   return Math.ceil(chars / 4);
 }
 
+
+/**
+ * The calibration term may claim at most this share of the model window (#320):
+ * the system prompt, tool definitions, and framing outside the handler's
+ * messages are real but bounded contributions, and a pathological provider
+ * report can never inflate pressure through it.
+ */
+const USAGE_CALIBRATION_WINDOW_SHARE = 4;
+
+/**
+ * The minimal valid block body, used only for the establishment-time savings
+ * floor of a maintenance request (#320): savings shrink as the body grows, so
+ * a range that cannot save tokens even with the smallest legal body can never
+ * back an advisory.
+ */
+const MINIMAL_BLOCK_BODY = "x";
 /**
  * The latest input to this controller's context handler (#319): its branch
  * leaf and the entry ids whose native messages aligned at this point. Earlier
@@ -230,12 +270,13 @@ function memoryCarrierMessage(memory: StateMemory): unknown {
 const ADVISORY_CONTINUATION_SENTENCE =
   "After the acknowledgement, continue the same run and deliver your answer to the user.";
 
-/** The fixed due advisory body (#319: resident tool, source scope, secret warning). */
+/** The fixed due advisory body (#319: resident tool, source scope; #320: fixed range). */
 const DUE_ADVISORY_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
   `Call compact_to_memory_block as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the older conversation it covers — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
   "The next request after the acknowledgement will carry that block in place of the covered older conversation; your current request and everything you do for it stay uncompressed.",
+  "The covered range is fixed once this advisory appears: work you finish afterwards stays uncompressed until the next maintenance request.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
 
@@ -477,8 +518,6 @@ interface AppendSource {
   readonly sourceEndPosition: number;
   /** The latest user instruction inside the range, retained raw in requests. */
   readonly retainedEntryIds: readonly string[];
-  /** The working set anchor: the retained region begins at this position. */
-  readonly retainedFrom: number;
 }
 
 /** The tool calls one assistant message entry carries, as id/name pairs. */
@@ -507,39 +546,7 @@ function assistantToolCalls(entry: SessionEntry): readonly { id: string; name: u
  * qualified source exists.
  */
 function selectAppendSource(branch: readonly SessionEntry[], previousEndPosition: number): AppendSource | null {
-  const resultsByCallId = new Map<string, number>();
-  for (let i = 0; i < branch.length; i++) {
-    const entry = branch[i]!;
-    if (entry.type !== "message") continue;
-    const message = (entry as { message?: { role?: unknown; toolCallId?: unknown } }).message;
-    if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
-      resultsByCallId.set(message.toolCallId, i);
-    }
-  }
-  let retainedFrom = -1;
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const calls = assistantToolCalls(branch[i]!);
-    if (calls.length === 0) continue;
-    // Completed Context Memory protocol batches never anchor the working
-    // set: they are maintenance bookkeeping, not recent work, and anchoring
-    // on them would strand the conversation around them (#319).
-    if (calls.every((call) => isProtocolToolName(call.name))) continue;
-    if (calls.every((call) => {
-      const position = resultsByCallId.get(call.id);
-      return position !== undefined && position > i;
-    })) {
-      retainedFrom = i;
-      break;
-    }
-  }
-  if (retainedFrom === -1) {
-    for (let i = branch.length - 1; i >= 0; i--) {
-      if (isUserMessageEntry(branch[i]!)) {
-        retainedFrom = i;
-        break;
-      }
-    }
-  }
+  const retainedFrom = workingSetAnchor(branch);
   if (retainedFrom === -1) return null;
   let sourceEndPosition = -1;
   for (let i = retainedFrom - 1; i > previousEndPosition; i--) {
@@ -549,9 +556,57 @@ function selectAppendSource(branch: readonly SessionEntry[], previousEndPosition
     }
   }
   if (sourceEndPosition <= previousEndPosition) return null;
-  // Batch integrity inside the range: every tool call paired inside, every
-  // result belonging to a call inside. An orphan in the range refuses the
-  // compression rather than dropping messages to force a fit (#319).
+  return buildAppendSource(branch, previousEndPosition, sourceEndPosition);
+}
+
+/**
+ * The retained working set's anchor position on the branch (#319): the most
+ * recent completed ordinary tool batch — every call of the assistant message
+ * has its result later on the branch — or, with no completed ordinary batch,
+ * the latest user instruction. Completed Context Memory protocol batches
+ * never anchor the working set: they are maintenance bookkeeping, not recent
+ * work, and anchoring on them would strand the conversation around them.
+ */
+function workingSetAnchor(branch: readonly SessionEntry[]): number {
+  const resultsByCallId = new Map<string, number>();
+  for (let i = 0; i < branch.length; i++) {
+    const entry = branch[i]!;
+    if (entry.type !== "message") continue;
+    const message = (entry as { message?: { role?: unknown; toolCallId?: unknown } }).message;
+    if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+      resultsByCallId.set(message.toolCallId, i);
+    }
+  }
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const calls = assistantToolCalls(branch[i]!);
+    if (calls.length === 0) continue;
+    if (calls.every((call) => isProtocolToolName(call.name))) continue;
+    if (calls.every((call) => {
+      const position = resultsByCallId.get(call.id);
+      return position !== undefined && position > i;
+    })) {
+      return i;
+    }
+  }
+  for (let i = branch.length - 1; i >= 0; i--) {
+    if (isUserMessageEntry(branch[i]!)) return i;
+  }
+  return -1;
+}
+
+/**
+ * Validate and build the append source ending at one fixed position (#319,
+ * #320). Batch integrity inside the range: every tool call paired inside,
+ * every result belonging to a call inside. An orphan in the range refuses the
+ * compression rather than dropping messages to force a fit. The same
+ * validation backs the natural selection and a pinned maintenance request's
+ * fixed end.
+ */
+function buildAppendSource(
+  branch: readonly SessionEntry[],
+  previousEndPosition: number,
+  sourceEndPosition: number,
+): AppendSource | null {
   const rangeCalls = new Map<string, number>();
   const rangeResults = new Map<string, number>();
   for (let i = previousEndPosition + 1; i <= sourceEndPosition; i++) {
@@ -582,7 +637,44 @@ function selectAppendSource(branch: readonly SessionEntry[], previousEndPosition
       break;
     }
   }
-  return { sourceEndPosition, retainedEntryIds, retainedFrom };
+  return { sourceEndPosition, retainedEntryIds };
+}
+
+/**
+ * The eligible, non-retained entries a source range would evict from the
+ * request (#319): retained protected instructions never count as savings.
+ */
+function evictableEntries(
+  branch: readonly SessionEntry[],
+  previousEndPosition: number,
+  source: AppendSource,
+): readonly SessionEntry[] {
+  return branch
+    .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
+    .filter((entry) => isEligibleSourceEntry(entry) && !source.retainedEntryIds.includes(entry.id));
+}
+
+/**
+ * Deterministic projected net request savings of one append (#319, #320): the
+ * evicted source tokens minus the carrier DELTA the request gains. An append
+ * onto existing Memory adds only the new block's part to the carrier already
+ * in the request; the unchanged prefix is never charged again.
+ */
+function netAppendSavings(
+  evictable: readonly SessionEntry[],
+  current: CurrentMemory,
+  markdown: string,
+): number {
+  const carrierDelta = current.kind === "valid"
+    ? estimateTextTokens(MEMORY_BLOCK_SEPARATOR + markdown)
+    : estimateTextTokens(composeMemorySummary([markdown]));
+  let savings = -carrierDelta;
+  for (const entry of evictable) {
+    for (const message of sessionEntryToContextMessages(entry)) {
+      savings += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+    }
+  }
+  return savings;
 }
 
 export class ContextMemoryController {
@@ -605,6 +697,26 @@ export class ContextMemoryController {
   private observedContext: ObservedContextBoundary | undefined;
   /** Tool-call ids of the most recent assistant message (#319 sole-call check). */
   private lastToolBatch: ToolBatch | undefined;
+  /** The pending maintenance request riding due requests, when one is due (#320). */
+  private maintenance: MaintenanceRequest | undefined;
+  /** Bounded refusal bookkeeping for the pending request (#320). */
+  private maintenanceFailures: MaintenanceFailures | undefined;
+  /** The last provider-bound request this controller transformed (#320). */
+  private lastRequest: { readonly estimateTokens: number; readonly memoryVersion: string } | undefined;
+  /** The provider-reported size of the last measured request and the Memory version it measured (#320). */
+  private reportedRequest: { readonly tokens: number; readonly memoryVersion: string } | undefined;
+  /**
+   * Calibrated token contribution of everything outside the handler's
+   * messages — system prompt, tool definitions, framing — refreshed from
+   * each provider report and bounded by a window share (#320). The term is
+   * bound to the Memory version of the request it was derived from: when a
+   * compression changes the request view, the term is suspended until the
+   * next report recalibrates it, so a pre-compression report can never floor
+   * the post-compression pressure through the calibration channel.
+   */
+  private calibration: { readonly offsetTokens: number; readonly memoryVersion: string } | undefined;
+  /** Projected net request savings of the most recent accepted compression (#320). */
+  private lastNetSavingsTokens: number | undefined;
 
   constructor(options: ContextMemoryControllerOptions) {
     this.config = options.config;
@@ -628,12 +740,21 @@ export class ContextMemoryController {
   /**
    * Read-only view snapshot; Prompt Manager renders it as `/context` `memory[]`.
    * `active` distinguishes Memory that has been recorded from Memory whose
-   * carrier has already been applied to a request in this session (#319).
+   * carrier has already been applied to a request in this session (#319), and
+   * carries the bounded #320 sustained-maintenance diagnostics when they exist.
    */
   snapshot(usage?: ContextMemoryUsageInput): ContextMemorySnapshot {
     if (!this.config.enabled) return { state: "disabled" };
     if (!this.support.supported) return { state: "unsupported", reason: this.support.reason };
-    if (this.current.kind === "none") return this.markEphemeral(this.due ? { state: "due" } : { state: "no-memory" });
+    if (this.current.kind === "none") {
+      if (!this.due) return this.markEphemeral({ state: "no-memory" });
+      const due: { state: "due"; maintenance?: ContextMemoryMaintenanceInfo; pressure?: ContextMemoryPressureInfo } = { state: "due" };
+      const maintenance = this.maintenanceInfo();
+      if (maintenance !== undefined) due.maintenance = maintenance;
+      const pressure = this.pressureInfo();
+      if (pressure !== undefined) due.pressure = pressure;
+      return this.markEphemeral(due);
+    }
     if (this.current.kind === "opaque") return this.markEphemeral({ state: "opaque" });
     return this.markEphemeral(this.activeSnapshot(this.current, usage));
   }
@@ -725,9 +846,11 @@ export class ContextMemoryController {
 
   /**
    * Recompute the in-memory due flag for display and budget gating (#215,
-   * #319). The estimate is projection-aware: recorded Memory evicts its
+   * #319, #320). The estimate is projection-aware: recorded Memory evicts its
    * covered sources before the pressure is judged, so an accepted compression
    * relieves pressure immediately instead of waiting for a stale usage anchor.
+   * #320 adds the bounded calibration term so run-boundary checks agree with
+   * the per-request judgment; no reported usage number ever acts as a floor.
    */
   recomputeDue(ctx: ContextMemoryRunContext): void {
     this.refresh(ctx.sessionManager);
@@ -745,7 +868,7 @@ export class ContextMemoryController {
     if (duePoint === null) return;
     this.modelWindow = contextWindow;
     const estimate = this.projectedRequestTokens(ctx.sessionManager);
-    this.due = estimate !== null && estimate >= duePoint;
+    this.due = estimate !== null && estimate + this.activeCalibrationTokens(memoryVersionOf(this.current)) >= duePoint;
   }
 
   /**
@@ -765,14 +888,84 @@ export class ContextMemoryController {
   }
 
   /**
-   * Execute one `compact_to_memory_block` call (#319): validate the sole tool
-   * call, the block body, the append capacity, the source range, batch
-   * pairing, budgets, and the net benefit, then record the versioned state
-   * entry through Pi's public custom-entry seam. The fixed acknowledgement
-   * says the Memory is recorded — it never claims a future request already
-   * carried it. The run continues; the next ordinary request applies the
-   * projection. Throws one safe short-coded sentence and never echoes
-   * Markdown.
+   * Bind the provider's own report to the request it measured and calibrate
+   * the pressure accounting (#320). The assistant message's usage describes
+   * the last request this controller transformed; the additive difference
+   * between the reported request size and the deterministic estimate is the
+   * bounded calibration term for everything the handler's messages never
+   * carry — system prompt, tool definitions, framing — and images and
+   * thinking, which the per-message estimator already counts. The report is
+   * recorded with the Memory version it measured, so a pre-compression
+   * report is distinguishable from the current view and never acts as a
+   * floor: pressure always re-derives from the next request's estimate plus
+   * the calibration term, and the next response recalibrates it.
+   */
+  noteAssistantUsage(message: unknown): void {
+    const record = message as
+      | { role?: unknown; usage?: { input?: unknown; cacheRead?: unknown; cacheWrite?: unknown } }
+      | null
+      | undefined;
+    if (!record || record.role !== "assistant" || record.usage === undefined) return;
+    const { input, cacheRead, cacheWrite } = record.usage;
+    if (typeof input !== "number" || typeof cacheRead !== "number" || typeof cacheWrite !== "number") return;
+    if (!Number.isFinite(input) || !Number.isFinite(cacheRead) || !Number.isFinite(cacheWrite)) return;
+    const reported = input + cacheRead + cacheWrite;
+    if (reported <= 0 || this.lastRequest === undefined) return;
+    this.reportedRequest = { tokens: reported, memoryVersion: this.lastRequest.memoryVersion };
+    if (this.modelWindow === null) return;
+    // Clamp to [0, a window share]: the term models real contributions, not
+    // a runaway drift channel, and a missing or malformed report simply
+    // keeps the previous calibration.
+    const bound = Math.floor(this.modelWindow / USAGE_CALIBRATION_WINDOW_SHARE);
+    const offsetTokens = Math.min(Math.max(reported - this.lastRequest.estimateTokens, 0), bound);
+    this.calibration = { offsetTokens, memoryVersion: this.lastRequest.memoryVersion };
+  }
+
+  /**
+   * Drop the pending maintenance request (#320): a model, branch, or
+   * compaction change invalidates the pinned sources, and the next due
+   * request boundary re-establishes a fresh request from the live branch —
+   * never a replay of the dropped one.
+   */
+  invalidateMaintenanceRequest(): void {
+    this.maintenance = undefined;
+    this.maintenanceFailures = undefined;
+  }
+
+  /**
+   * Drop the usage calibration (#320): a model change replaces the system
+   * prompt, tool selection, and window, so the old offset and report are
+   * meaningless until the next provider report recalibrates them.
+   */
+  invalidateUsageCalibration(): void {
+    this.calibration = undefined;
+    this.reportedRequest = undefined;
+    this.lastRequest = undefined;
+  }
+
+  /**
+   * The calibration term for one judged Memory version (#320): suspended
+   * unless the provider report measured this exact view. A pre-compression
+   * report therefore contributes nothing to post-compression pressure.
+   */
+  private activeCalibrationTokens(memoryVersion: string): number {
+    return this.calibration !== undefined && this.calibration.memoryVersion === memoryVersion
+      ? this.calibration.offsetTokens
+      : 0;
+  }
+
+  /**
+   * Execute one `compact_to_memory_block` call (#319, #320): validate the sole
+   * tool call, the block body, the append capacity, the authorized source
+   * range, batch pairing, budgets, and the net benefit, then record the
+   * versioned state entry through Pi's public custom-entry seam. The fixed
+   * acknowledgement says the Memory is recorded — it never claims a future
+   * request already carried it. The run continues; the next ordinary request
+   * applies the projection. #320: a refusal inside the append binding counts
+   * against the pending maintenance request's bounded failure budget, and a
+   * successful recording clears the completed request and records its
+   * projected net savings. Throws one safe short-coded sentence and never
+   * echoes Markdown.
    */
   async compactToBlock(
     markdown: string,
@@ -790,7 +983,16 @@ export class ContextMemoryController {
     if (!isValidMemoryBlockBody(markdown)) {
       fail("BOUND_EXCEEDED", "the Memory block body exceeds the size or content bounds");
     }
-    const candidate = this.bindAppend(markdown, session);
+    let candidate: { state: MemoryStateData; savings: number };
+    try {
+      candidate = this.bindAppend(markdown, session);
+    } catch (error) {
+      // Bounded suppression bookkeeping (#320): the refusal stays specific and
+      // the tool remains resident; only the advisory invitation is bounded.
+      const code = error instanceof Error ? error.message.split(":", 1)[0]! : "MEMORY_CHANGED";
+      this.maintenanceFailures = noteMaintenanceFailure(this.maintenanceFailures, code);
+      throw error;
+    }
     recording.appendEntry(MEMORY_STATE_CUSTOM_TYPE, candidate.state);
     // `appendEntry` writes synchronously through the SessionManager as a
     // child of the current leaf, so the leaf is the recorded state entry;
@@ -802,6 +1004,12 @@ export class ContextMemoryController {
     }
     this.current = deriveCurrentMemory(session);
     this.appliedStateEntryId = undefined;
+    // The completed maintenance request clears (#320): pressure is re-judged
+    // on the next request against the recorded projection, and later growth in
+    // the same task can establish a fresh request without any user input.
+    this.maintenance = undefined;
+    this.maintenanceFailures = undefined;
+    this.lastNetSavingsTokens = candidate.savings;
     return {
       content: [{ type: "text", text: "Memory block recorded. The next model request will carry it in place of the covered older conversation." }],
       details: { recorded: true },
@@ -809,13 +1017,15 @@ export class ContextMemoryController {
   }
 
   /**
-   * Resolve the append binding against the live branch, or refuse safely:
-   * the continuous source range before the retained working set, batch
-   * pairing by call id, the latest user instruction as the retained
-   * exception, the byte-stable prefix from the current carrier, and the
-   * single-block, total-Memory, and serialization budgets (#319).
+   * Resolve the append binding against the live branch, or refuse safely: the
+   * continuous source range — the pending maintenance request's pinned range
+   * while one still authorizes this Memory state, otherwise a request pinned
+   * at this call (#320) — batch pairing by call id, the latest user
+   * instruction as the retained exception, the byte-stable prefix from the
+   * current carrier, and the single-block, total-Memory, and serialization
+   * budgets (#319).
    */
-  private bindAppend(markdown: string, session: MemorySessionReader): { state: MemoryStateData } {
+  private bindAppend(markdown: string, session: MemorySessionReader): { state: MemoryStateData; savings: number } {
     const leafId = session.getLeafId?.() ?? null;
     if (leafId === null) {
       fail("MEMORY_CHANGED", "the current branch no longer carries this session");
@@ -846,7 +1056,7 @@ export class ContextMemoryController {
       // entry recorded, kept by every later one.
       baseCompactionId = current.compactionId;
     }
-    const source = selectAppendSource(branch, previousEndPosition);
+    const source = this.authorizedAppendSource(branch, current, previousEndPosition);
     if (source === null) {
       fail("COMPACT_NOT_DUE", "no completed eligible conversation is available to compress since the existing Memory blocks");
     }
@@ -872,9 +1082,7 @@ export class ContextMemoryController {
     // existing Memory only adds one new block part to the carrier already in
     // the request; the unchanged prefix is never charged again. Retained
     // protected instructions never count as savings.
-    const evictable = branch
-      .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
-      .filter((entry) => isEligibleSourceEntry(entry) && !source.retainedEntryIds.includes(entry.id));
+    const evictable = evictableEntries(branch, previousEndPosition, source);
     // Acceptance is scoped to the latest input observed by our context
     // handler, not the final provider request. Earlier filtering invalidates
     // a source here; later transformations cannot be observed with Pi's
@@ -886,19 +1094,105 @@ export class ContextMemoryController {
       || evictable.some((entry) => !observed.entryIds.has(entry.id))) {
       fail("SOURCE_NOT_SERVED", "the covered conversation was not observed in its native form by the Context Memory context handler");
     }
-    const carrierDelta = current.kind === "valid"
-      ? estimateTextTokens(MEMORY_BLOCK_SEPARATOR + markdown)
-      : estimateTextTokens(composeMemorySummary([markdown]));
-    let savings = -carrierDelta;
-    for (const entry of evictable) {
-      for (const message of sessionEntryToContextMessages(entry)) {
-        savings += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+    const savings = netAppendSavings(evictable, current, markdown);
+    if (savings <= 0) {
+      fail("NO_NET_BENEFIT", "the Memory block would not reduce the next model request; wait for more eligible conversation or a changed source");
+    }
+    return { state, savings };
+  }
+
+  /**
+   * The append source this call may cover (#320): the pending maintenance
+   * request's pinned range while it still matches the derived Memory state
+   * and resolves on the branch — later tool growth never silently expands an
+   * established request — or a live selection pinned at this call, the only
+   * moment a proactive call can observe its own sources. A stale or
+   * unmatched pin falls back to the live selection, never to a refusal that
+   * only the pin caused.
+   */
+  private authorizedAppendSource(
+    branch: readonly SessionEntry[],
+    current: CurrentMemory,
+    previousEndPosition: number,
+  ): AppendSource | null {
+    const memoryVersion = memoryVersionOf(current);
+    const previousEndEntryId = previousEndPosition === -1 ? null : branch[previousEndPosition]!.id;
+    const pinned = this.maintenance;
+    if (pinned !== undefined
+      && pinned.memoryVersion === memoryVersion
+      && pinned.previousEndEntryId === previousEndEntryId) {
+      const endPosition = branch.findIndex((entry) => entry.id === pinned.sourceEndEntryId);
+      if (endPosition > previousEndPosition && isEligibleSourceEntry(branch[endPosition]!)) {
+        const source = buildAppendSource(branch, previousEndPosition, endPosition);
+        if (source !== null) return source;
       }
     }
-    if (savings <= 0) {
-      fail("NO_NET_BENEFIT", "the Memory block would not reduce the next model request");
+    const live = selectAppendSource(branch, previousEndPosition);
+    if (live === null) return null;
+    this.maintenance = {
+      sourceEndEntryId: branch[live.sourceEndPosition]!.id,
+      retainedEntryIds: live.retainedEntryIds,
+      previousEndEntryId,
+      memoryVersion,
+      sourceCount: branch
+        .slice(previousEndPosition + 1, live.sourceEndPosition + 1)
+        .filter(isEligibleSourceEntry).length,
+    };
+    return live;
+  }
+
+  /**
+   * Establish, re-scope, or clear the pending maintenance request at a
+   * request boundary while the projected request is due (#320). The request
+   * pins the exact sources the advisory invites; the same evaluation
+   * re-scopes it when real growth extends the eligible range — the old
+   * request is invalidated and the new sources are served in this very
+   * request, which is what makes the re-scope explicit rather than silent —
+   * and clears it when no qualified, observable, net-beneficial range
+   * exists. Failure bookkeeping survives only an identical scope.
+   */
+  private evaluateMaintenance(session: MemorySessionReader): void {
+    const previous = this.maintenance;
+    const clear = (): void => {
+      this.maintenance = undefined;
+      this.maintenanceFailures = undefined;
+    };
+    const leafId = session.getLeafId?.() ?? null;
+    if (leafId === null) return clear();
+    const branch = [...session.getBranch(leafId)];
+    const current = deriveCurrentMemory(session);
+    if (!this.appendAdvisoryAllowed(current)) return clear();
+    let previousEndPosition = -1;
+    let previousEndEntryId: string | null = null;
+    if (current.kind === "valid") {
+      const lastEnd = current.blocks[current.blocks.length - 1]!.endEntryId;
+      previousEndPosition = branch.findIndex((entry) => entry.id === lastEnd);
+      if (previousEndPosition === -1) return clear();
+      previousEndEntryId = lastEnd;
     }
-    return { state };
+    const source = selectAppendSource(branch, previousEndPosition);
+    if (source === null) return clear();
+    const request: MaintenanceRequest = {
+      sourceEndEntryId: branch[source.sourceEndPosition]!.id,
+      retainedEntryIds: source.retainedEntryIds,
+      previousEndEntryId,
+      memoryVersion: memoryVersionOf(current),
+      sourceCount: branch
+        .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
+        .filter(isEligibleSourceEntry).length,
+    };
+    // Every evictable entry inside the pinned range must have been served in
+    // its native form in this very request: an upstream transform that
+    // filtered a source leaves no request to bind (#320, ADR-0017).
+    const observed = this.observedContext;
+    if (observed === undefined || observed.leafId !== leafId) return clear();
+    const evictable = evictableEntries(branch, previousEndPosition, source);
+    if (evictable.some((entry) => !observed.entryIds.has(entry.id))) return clear();
+    // The advisory never invites a range that cannot save request tokens
+    // even with the smallest legal body: coverage total is not savings.
+    if (netAppendSavings(evictable, current, MINIMAL_BLOCK_BODY) <= 0) return clear();
+    if (!sameMaintenanceScope(previous, request)) this.maintenanceFailures = undefined;
+    this.maintenance = request;
   }
 
   /** The model window the current budget was computed against. */
@@ -953,7 +1247,9 @@ export class ContextMemoryController {
         leafId: session.getLeafId?.() ?? null,
         entryIds: new Set(aligned.flatMap((item) => (item.entryId === undefined ? [] : [item.entryId]))),
       };
-      let messages = this.applyMemoryProjection(aligned, projection, deriveCurrentMemory(session), true);
+      const memory = deriveCurrentMemory(session);
+      let messages = this.applyMemoryProjection(aligned, projection, memory, true);
+      const applicationApplied = messages !== undefined;
       if (messages === undefined) {
         // Alignment could not map every eviction target to its source entry:
         // apply no custom projection and keep protocol history intact.
@@ -965,7 +1261,11 @@ export class ContextMemoryController {
       messages = this.projectV1Blocks(messages, session);
       // Due is judged on the projected request itself, never on a stale
       // pre-compression usage anchor: a recorded compression relieves
-      // pressure as soon as it applies (#319).
+      // pressure as soon as it applies (#319). #320 adds the bounded
+      // calibration term — the system prompt, tool definitions, and framing
+      // the handler's messages never carry — so the judged size reflects the
+      // request the model is actually sent, while an estimate stays an
+      // estimate and a provider report stays a report.
       const window = usage && typeof usage.contextWindow === "number" ? usage.contextWindow : this.modelWindow;
       const duePoint = window === null || window === undefined
         ? null
@@ -976,8 +1276,19 @@ export class ContextMemoryController {
         for (const message of messages) {
           total += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
         }
-        this.due = total >= duePoint;
-        if (this.due && this.appendAdvisoryAllowed()) {
+        this.due = total + this.activeCalibrationTokens(
+          memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none",
+        ) >= duePoint;
+        // Maintenance need is evaluated before every ordinary request (#320):
+        // while due, the pending request is established, re-scoped onto real
+        // growth, or cleared; the advisory rides this request only while a
+        // request is pending and not suppressed.
+        if (this.due) {
+          this.evaluateMaintenance(session);
+        } else {
+          this.invalidateMaintenanceRequest();
+        }
+        if (this.due && this.maintenance !== undefined && !maintenanceSuppressed(this.maintenanceFailures)) {
           const insertAfter = findLastIndexOf(messages, (message) =>
             (message as { role?: unknown } | null)?.role === "user");
           if (insertAfter !== -1) {
@@ -993,19 +1304,32 @@ export class ContextMemoryController {
           }
         }
       }
+      // The estimate of the request actually returned — projection, artifact
+      // filtering, and advisory included — anchors the next usage report's
+      // calibration and the `/context` pressure split (#320). The recorded
+      // version is the Memory the request actually carried: "none" whenever
+      // the state-carrier application refused for this request.
+      let finalEstimate = 0;
+      for (const message of messages) {
+        finalEstimate += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+      }
+      this.lastRequest = {
+        estimateTokens: finalEstimate,
+        memoryVersion: memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none",
+      };
       return { messages };
     } catch {
       return undefined;
     }
   }
 
-  /** Whether the advisory may ask for an append right now (#319). */
-  private appendAdvisoryAllowed(): boolean {
-    if (this.current.kind === "opaque") return false;
-    if (this.current.kind === "none") return true;
+  /** Whether the advisory may ask for an append right now (#319, #320). */
+  private appendAdvisoryAllowed(current: CurrentMemory): boolean {
+    if (current.kind === "opaque") return false;
+    if (current.kind === "none") return true;
     const halfBudget = this.halfBudgetTokens();
     if (halfBudget === null) return false;
-    const markdowns = this.current.blocks.map((block) => block.markdown);
+    const markdowns = current.blocks.map((block) => block.markdown);
     return renderedMemoryTokens(markdowns) <= halfBudget;
   }
 
@@ -1235,7 +1559,7 @@ export class ContextMemoryController {
       });
     }
 
-    return {
+    const snapshot: ContextMemorySnapshot = {
       state: "active",
       carrier: memory.carrier,
       applied: memory.carrier === "state" && memory.stateEntryId === this.appliedStateEntryId,
@@ -1245,6 +1569,49 @@ export class ContextMemoryController {
       budgetTokens,
       currentTokens: usage && typeof usage.tokens === "number" ? usage.tokens : null,
       contextWindow: typeof window === "number" && window > 0 ? window : null,
+    };
+    const active = snapshot as {
+      maintenance?: ContextMemoryMaintenanceInfo;
+      pressure?: ContextMemoryPressureInfo;
+      lastNetSavingsTokens?: number;
+    };
+    const maintenance = this.maintenanceInfo();
+    if (maintenance !== undefined) active.maintenance = maintenance;
+    const pressure = this.pressureInfo();
+    if (pressure !== undefined) active.pressure = pressure;
+    if (this.lastNetSavingsTokens !== undefined) active.lastNetSavingsTokens = this.lastNetSavingsTokens;
+    return snapshot;
+  }
+
+  /**
+   * The bounded pending-request diagnostics for `/context` (#320): present
+   * exactly while a maintenance request is pending, never a log.
+   */
+  private maintenanceInfo(): ContextMemoryMaintenanceInfo | undefined {
+    if (this.maintenance === undefined) return undefined;
+    return {
+      sources: this.maintenance.sourceCount,
+      suppressed: maintenanceSuppressed(this.maintenanceFailures),
+      lastErrorCode: this.maintenanceFailures?.lastCode ?? null,
+    };
+  }
+
+  /**
+   * The bounded pressure split for `/context` (#320): the deterministic
+   * estimate of the last projected request (calibration term included), the
+   * provider-reported size of the last measured request, and whether that
+   * report measured the current Memory version. Absent until a request has
+   * been projected or a report observed.
+   */
+  private pressureInfo(): ContextMemoryPressureInfo | undefined {
+    if (this.lastRequest === undefined && this.reportedRequest === undefined) return undefined;
+    return {
+      estimated: this.lastRequest !== undefined
+        ? this.lastRequest.estimateTokens + this.activeCalibrationTokens(this.lastRequest.memoryVersion)
+        : null,
+      reported: this.reportedRequest?.tokens ?? null,
+      reportedForCurrentMemory: this.reportedRequest !== undefined
+        && this.reportedRequest.memoryVersion === memoryVersionOf(this.current),
     };
   }
 }
@@ -1258,6 +1625,11 @@ export interface ExtensionAPIForTools {
 /** The stable identity of one valid Memory derivation (#319). */
 function memoryIdentity(memory: ValidMemory): string {
   return memory.carrier === "state" ? memory.stateEntryId : memory.compactionId!;
+}
+
+/** The derivation identity pressure bookkeeping uses: a valid Memory's carrier id, else "none" (#320). */
+function memoryVersionOf(memory: CurrentMemory): string {
+  return memory.kind === "valid" ? memoryIdentity(memory) : "none";
 }
 
 /** Last index satisfying the predicate, or -1. */
