@@ -158,3 +158,87 @@ export function parseMemorySummary(
 export function composeMemorySummary(bodies: readonly string[]): string {
   return MEMORY_SUMMARY_WRAPPER + bodies.map((body) => MEMORY_BLOCK_SEPARATOR + body).join("");
 }
+
+/**
+ * The v2 Context Memory state-entry format (odradekk/pi-square#319).
+ *
+ * Accepted Memory is recorded through Pi's public custom state entry
+ * (`ctx.appendEntry`) instead of a compaction takeover: the entry carries the
+ * complete ordered block list — each block's body plus the inclusive end of its
+ * continuous original-entry range and the retained exceptions inside that range
+ * — so the request projection can derive both the carrier and the exact
+ * replacement set. Pi's SessionManager stays the only session-file writer; the
+ * entry itself never participates in LLM context (`buildSessionContext` skips
+ * plain custom entries), so every covered entry stays in the raw session and
+ * each request projection re-applies the eviction deterministically.
+ *
+ * A `baseCompactionId` records when the state extends compaction-carried v1
+ * Memory: the projection then replaces that compaction's summary message with
+ * the single complete carrier instead of duplicating it. A native compaction
+ * appended after the state entry supersedes it (new baseline), exactly like a
+ * later state entry supersedes an earlier one.
+ */
+
+/** Custom-entry type identifying a Context Memory state entry (#319). */
+export const MEMORY_STATE_CUSTOM_TYPE = "pi-square.context-memory/memory";
+
+/** State-entry format tag (v2; distinct from the v1 compaction details tag). */
+export const MEMORY_STATE_FORMAT_TAG = "pi-square.context-memory/2";
+
+/**
+ * One recorded block: the Markdown body, the inclusive end of its continuous
+ * source-entry range on the recording branch, and the retained entries inside
+ * that range which stay raw in requests (protected instructions recorded at
+ * acceptance — the replacement set is `range minus retained`, and restart must
+ * derive the same set).
+ */
+export interface MemoryStateBlock {
+  readonly endEntryId: string;
+  readonly markdown: string;
+  readonly retainedEntryIds: readonly string[];
+}
+
+/** The data a Context Memory state entry carries. */
+export interface MemoryStateData {
+  readonly format: typeof MEMORY_STATE_FORMAT_TAG;
+  readonly blocks: readonly MemoryStateBlock[];
+  /** The compaction entry whose v1 Memory provided the unchanged prefix. */
+  readonly baseCompactionId?: string;
+}
+
+/**
+ * Strict state-entry validation for parsing: exact field set, exact v2 format
+ * tag, non-empty ordered blocks with valid bounded bodies, unique retained
+ * entry ids, and the full serialization within the 64 KiB cap. Unknown fields
+ * are rejected rather than guessed (#319).
+ */
+export function parseMemoryState(data: unknown): MemoryStateData | undefined {
+  if (!isPlainObject(data)) return undefined;
+  const hasBase = "baseCompactionId" in data;
+  const keys = Object.keys(data).sort();
+  const expected = hasBase ? ["baseCompactionId", "blocks", "format"] : ["blocks", "format"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return undefined;
+  if (data.format !== MEMORY_STATE_FORMAT_TAG) return undefined;
+  if (hasBase && (typeof data.baseCompactionId !== "string" || data.baseCompactionId.length === 0)) return undefined;
+  if (!Array.isArray(data.blocks) || data.blocks.length === 0) return undefined;
+  const blocks: MemoryStateBlock[] = [];
+  for (const item of data.blocks) {
+    if (!isPlainObject(item)) return undefined;
+    const itemKeys = Object.keys(item).sort();
+    if (itemKeys.length !== 3 || itemKeys[0] !== "endEntryId" || itemKeys[1] !== "markdown" || itemKeys[2] !== "retainedEntryIds") return undefined;
+    if (typeof item.endEntryId !== "string" || item.endEntryId.length === 0) return undefined;
+    if (typeof item.markdown !== "string" || !isValidMemoryBlockBody(item.markdown)) return undefined;
+    if (!Array.isArray(item.retainedEntryIds)) return undefined;
+    const retained: string[] = [];
+    const seen = new Set<string>();
+    for (const id of item.retainedEntryIds) {
+      if (typeof id !== "string" || id.length === 0 || seen.has(id)) return undefined;
+      seen.add(id);
+      retained.push(id);
+    }
+    blocks.push({ endEntryId: item.endEntryId, markdown: item.markdown, retainedEntryIds: retained });
+  }
+  const serialized = Buffer.byteLength(JSON.stringify({ format: data.format, blocks, ...(hasBase ? { baseCompactionId: data.baseCompactionId as string } : {}) }), "utf8");
+  if (serialized > MEMORY_DETAILS_MAX_BYTES) return undefined;
+  return { format: MEMORY_STATE_FORMAT_TAG, blocks, ...(hasBase ? { baseCompactionId: data.baseCompactionId as string } : {}) };
+}

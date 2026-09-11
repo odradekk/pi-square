@@ -23,7 +23,7 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   // github uses per-operation GITHUB_ARG_FIELDS below, not this flat map.
   // Context Memory tools (odradekk/pi-square#215): submitted Memory Markdown
   // and transcript pages must never reach display metadata or previews.
-  submit_memory: [],
+  compact_to_memory_block: [],
   read_memory_source: [],
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
@@ -50,7 +50,7 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
   ssh: "SSH", search: "Web search", fetch: "Web fetch", libs: "Library search",
   docs: "Documentation", parse: "PDF parse", replace: "Replace", github: "GitHub",
   ask: "Questions", todo: "Tasks",
-  submit_memory: "Memory submit", read_memory_source: "Memory source",
+  compact_to_memory_block: "Memory compact", read_memory_source: "Memory source",
   delegate: "Subagent", resume: "Resume subagent",
 });
 
@@ -300,7 +300,7 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
         ? createRemoteAdapter(definition.name, base)
         : definition.name === "ask"
           || definition.name === "todo"
-          || definition.name === "submit_memory"
+          || definition.name === "compact_to_memory_block"
           || definition.name === "read_memory_source"
           ? createWorkflowAdapter(definition.name, base)
           : base;

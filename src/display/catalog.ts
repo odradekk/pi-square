@@ -171,11 +171,11 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     description: "Present interactive questions to the user",
   },
   {
-    name: "submit_memory",
+    name: "compact_to_memory_block",
     family: "workflow",
     parent: true,
     child: false,
-    description: "Submit one Memory block during a due compression run",
+    description: "Compact covered older conversation into one Memory block",
   },
   {
     name: "read_memory_source",

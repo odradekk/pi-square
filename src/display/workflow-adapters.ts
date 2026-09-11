@@ -209,11 +209,11 @@ export function createWorkflowAdapter(
         });
       }
 
-      // ── submit_memory ──: neutral target only; never the Markdown body.
-      if (name === "submit_memory") {
+      // ── compact_to_memory_block ──: neutral target only; never the Markdown body.
+      if (name === "compact_to_memory_block") {
         return baseDescription(description, {
           lifecycle: context.executionStarted ? "running" : context.argsComplete ? "pending" : "queued",
-          title: "Memory submit",
+          title: "Memory compact",
           target: "candidate",
           metadata: [],
           sections: [],
@@ -340,15 +340,15 @@ export function createWorkflowAdapter(
         });
       }
 
-      // ── submit_memory ──
-      if (name === "submit_memory") {
+      // ── compact_to_memory_block ──
+      if (name === "compact_to_memory_block") {
         // One neutral collapsed row: fixed pending outcome, no Markdown/body
         // preview even when expanded (#215 display contract).
         if (isError) {
           const sentence = memoryErrorSentence(text);
           return baseDescription(description, {
             lifecycle: "failed",
-            title: "Memory submit",
+            title: "Memory compact",
             target: "candidate",
             metadata: [],
             sections: [],
@@ -360,12 +360,12 @@ export function createWorkflowAdapter(
         }
         return baseDescription(description, {
           lifecycle: "completed",
-          title: "Memory submit",
+          title: "Memory compact",
           target: "candidate",
           metadata: [],
           sections: [],
           rows: [],
-          summary: "Memory candidate accepted; compaction pending",
+          summary: "Memory block recorded for the next request",
         });
       }
 

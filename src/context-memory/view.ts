@@ -1,32 +1,25 @@
 /**
- * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #218, #219, #220, #221).
+ * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #219, #221, #319).
  *
  * The controller publishes this bounded snapshot through the registrar's
  * view provider; Prompt Manager renders it as the `/context` `memory[]`
  * section. It is not a system-prompt segment and never enters the system
- * prompt. #217 added the reading states (`opaque`, `active`); #218 adds the
- * submission-handshake states: `due` (threshold reached, the next real-user
- * run authors the first Memory block), `pending` (a candidate was accepted
- * this run and compaction follows), and `committing` (takeover in progress).
- * #221 adds the `ephemeral` marker for in-memory sessions. #220 adds the
- * `scale-limit` state: Memory sits above half its budget and the complete
- * maintenance request cannot fit the model window, so the structured
- * takeover stops and Pi native compaction keeps owning the boundary.
- * #222 records the phase survival rule: `pending` and `committing` report
- * until Pi's seam confirms or clears the slot, and a compaction that never
- * starts or never saves keeps the phase visible — with no write and no
- * blocked native compaction — until the next run boundary clears it. #255
- * replaces the exact-version gate with capability detection: `unsupported`
- * now always means missing required interfaces, and the running host version
- * rides along as informational reporting only.
+ * prompt. #217 added the reading states (`opaque`, `active`); #221 added the
+ * `ephemeral` marker for in-memory sessions. #319 replaces the submission
+ * handshake states with the recorded/applied distinction: `active` Memory
+ * reports `applied: true` only after its carrier has actually been applied to
+ * a request in this session, so `/context` never reports a future request as
+ * already delivered. #255 keeps capability detection as the only unsupported
+ * cause, with the running host version riding along as informational
+ * reporting only.
  */
 
-/** Custom-message type of the one ephemeral due-run advisory (#218). */
+/** Custom-message type of the one ephemeral due advisory (#218, #319). */
 export const CONTEXT_MEMORY_ADVISORY_TYPE = "pi-square.context-memory/advisory";
 
 /**
- * Custom-message type of the ephemeral provider-bound Memory projection
- * (#297): one ordered text content block per current Memory block. It exists
+ * Custom-message type of the ephemeral provider-bound Memory carrier (#297,
+ * #319): one ordered text content block per current Memory block. It exists
  * only inside the transformed request, never persists, and is never rendered.
  */
 export const CONTEXT_MEMORY_BLOCKS_TYPE = "pi-square.context-memory/blocks";
@@ -56,20 +49,20 @@ export type ContextMemorySnapshot =
   }
   | { readonly state: "no-memory"; readonly ephemeral?: true }
   | { readonly state: "due"; readonly ephemeral?: true }
-  | { readonly state: "pending"; readonly ephemeral?: true }
-  | { readonly state: "committing"; readonly ephemeral?: true }
   | { readonly state: "opaque"; readonly ephemeral?: true }
-  | { readonly state: "scale-limit"; readonly ephemeral?: true }
   | {
     readonly state: "active";
+    /** Which carrier holds the blocks: a #319 state entry or a v1 compaction. */
+    readonly carrier: "state" | "compaction";
+    /**
+     * Whether the carrier has been applied to at least one request in this
+     * session (#319): `false` means recorded but not yet seen by a request.
+     */
+    readonly applied: boolean;
     /** Total blocks in current Memory. */
     readonly blocks: number;
     /** Block rows in source chronology, capped to the oldest rows; `rows.length < blocks` marks the clip. */
     readonly rows: readonly ContextMemoryBlockRow[];
-    /** Blocks left byte-stable by the next operation (null when unknown). */
-    readonly stablePrefix: number | null;
-    /** Next operation by the half-budget rule (null when the budget is unknown). */
-    readonly nextOperation: "append" | "rebuild" | null;
     /** Estimated tokens of the complete rendered Memory. */
     readonly memoryTokens: number;
     /** Configured Memory budget in tokens (null when the model window is unknown). */

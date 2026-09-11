@@ -269,8 +269,8 @@ function renderSystemSection(
  * per block. No format versions, entry ranges/IDs, paths, timestamps, or
  * storage details ever appear. Never part of the usage bar — Memory
  * accounting leaves the total usage bar unchanged (#215). Ephemeral
- * in-memory sessions are reported as such (#221); the scale-limit line
- * states that Pi native compaction owns the boundary (#220).
+ * in-memory sessions are reported as such (#221); active Memory reports the
+ * recorded/applied distinction instead of a settle pipeline (#319).
  */
 function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySnapshot): string[] {
   if (memory.state !== "active") {
@@ -290,19 +290,10 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
         description = "enabled · no Memory blocks yet";
         break;
       case "opaque":
-        description = "opaque · latest compaction is not valid Context Memory · native summary retained";
-        break;
-      case "scale-limit":
-        description = "scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary";
+        description = "opaque · latest carrier is not valid Context Memory · native summary retained";
         break;
       case "due":
-        description = "due · threshold reached · the next run authors the first Memory block";
-        break;
-      case "pending":
-        description = "pending · Memory candidate accepted this run · compaction follows at run end";
-        break;
-      case "committing":
-        description = "committing · writing the Memory compaction";
+        description = "due · threshold reached · compression advisory rides the next request";
         break;
     }
     if (isEphemeralMemorySnapshot(memory)) {
@@ -327,14 +318,12 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
     ` ${paint(theme, "dim", "·")} `,
     paint(theme, "text", `${memory.blocks} ${memory.blocks === 1 ? "block" : "blocks"}`),
   ];
-  if (memory.stablePrefix !== null && memory.nextOperation !== null) {
-    headParts.push(
-      ` ${paint(theme, "dim", "·")} `,
-      paint(theme, "muted", `stable ${memory.stablePrefix}/${memory.blocks}`),
-      ` ${paint(theme, "dim", "· next:")} `,
-      paint(theme, "text", memory.nextOperation),
-    );
-  }
+  // Recorded versus applied (#319): a recorded-but-unapplied carrier still
+  // waits for its first request; the distinction never claims delivery.
+  headParts.push(
+    ` ${paint(theme, "dim", "·")} `,
+    paint(theme, "muted", memory.applied ? "applied to requests" : "recorded · not yet applied"),
+  );
   if (isEphemeralMemorySnapshot(memory)) {
     headParts.push(
       ` ${paint(theme, "dim", "·")} `,
