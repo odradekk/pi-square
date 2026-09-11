@@ -549,21 +549,30 @@ function selectAppendSource(branch: readonly SessionEntry[], previousEndPosition
     }
   }
   if (sourceEndPosition <= previousEndPosition) return null;
-  // Batch integrity inside the range: every tool call paired inside, every
-  // result belonging to a call inside. An orphan in the range refuses the
-  // compression rather than dropping messages to force a fit (#319).
+  // Batch integrity inside the range: every ordinary tool call paired inside,
+  // every ordinary result belonging to a call inside. An orphan in the range
+  // refuses the compression rather than dropping messages to force a fit
+  // (#319). Protocol artifacts are exempt (#322): a compression or reading
+  // call left unanswered by a native branch cut at the recorded state entry —
+  // or by an aborted batch — is protocol bookkeeping, never evidence, and the
+  // request-side pair rules already drop it from provider requests; refusing
+  // the append would permanently block every later compression on the branch.
   const rangeCalls = new Map<string, number>();
   const rangeResults = new Map<string, number>();
   for (let i = previousEndPosition + 1; i <= sourceEndPosition; i++) {
     const entry = branch[i]!;
     if (entry.type !== "message") continue;
-    const message = (entry as { message?: { role?: unknown; content?: unknown; toolCallId?: unknown } }).message;
+    const message = (entry as { message?: { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown } }).message;
     if (message?.role === "assistant" && Array.isArray(message.content)) {
       for (const part of message.content) {
-        const candidate = part as { type?: unknown; id?: unknown } | null;
-        if (candidate?.type === "toolCall" && typeof candidate.id === "string") rangeCalls.set(candidate.id, i);
+        const candidate = part as { type?: unknown; id?: unknown; name?: unknown } | null;
+        if (candidate?.type === "toolCall" && typeof candidate.id === "string"
+          && !isProtocolToolName((candidate as { name?: unknown }).name)) {
+          rangeCalls.set(candidate.id, i);
+        }
       }
-    } else if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+    } else if (message?.role === "toolResult" && typeof message.toolCallId === "string"
+      && !isProtocolToolName(message.toolName)) {
       rangeResults.set(message.toolCallId, i);
     }
   }
