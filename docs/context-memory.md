@@ -18,12 +18,12 @@ This guide documents what ships today; the architecture decisions live in
 history), and `README.md` carries the summary. Recorded Memory survives
 interruptions and native session branches (see
 [Branches, resume, forks, and copies](#branches-resume-forks-and-copies)).
-Sustained re-triggering and failure recovery, the suffix rebuild,
-cross-provider combination guarantees, native-fallback arbitration, and
-real-model qualification are owned by the continuation tickets
-(#320, #321, #323–#325) and are **not implemented yet**; everything this
-guide describes as shipping is covered by deterministic tests against real
-Pi sessions.
+Sustained in-task maintenance and bounded failure recovery are implemented.
+The suffix rebuild, cross-provider combination guarantees, native-fallback
+arbitration, and real-model qualification are owned by the continuation
+tickets (#321, #323–#325) and are **not implemented yet**. The implemented
+contracts are covered by deterministic native Pi requests and the explicitly
+identified boundary-injected tests described below.
 
 No performance claim is made here. Context Memory has not been qualified with
 the required real-model and provider-cache evidence yet; until that evidence
@@ -131,38 +131,89 @@ aborts or restarts the current run, and never calls Pi's native `compact()`
 for a normal compression. Every compression happens inside an ordinary
 real-user run, and it takes effect on the next request — not at run end:
 
-1. **Threshold.** Pressure is measured on the **projected request itself** —
-   the request the model would actually see — so a recorded compression
+1. **Threshold.** Pressure is measured before **every ordinary request** —
+   never only at user input or settle — on the **projected request itself**,
+   the request the model would actually see, so a recorded compression
    relieves pressure as soon as it applies and a stale pre-compression usage
-   number can never manufacture false pressure. The configured threshold (a
-   percent of the model window or a fixed token count) is capped at ten
-   percent of the window below Pi's own native compaction boundary (window
-   minus Pi's configured compaction reserve minus ten percent of the window).
-   If that effective due point is non-positive, or the Memory budget is not
-   strictly smaller than it, the advisory stays off for the model and Pi
-   native compaction keeps owning the boundary. Nothing is persisted — no
-   counters, timers, or growth history.
+   number can never manufacture false pressure. Three numbers stay
+   distinguished and are never conflated: the raw session log size, the
+   deterministic request estimate, and the provider's reported usage. The
+   estimate counts every message with Pi's own per-message estimator — text,
+   thinking, tool calls, and images included — plus the request's non-message
+   composition read directly from the host's public seams on every request:
+   the effective system prompt and the active tool definitions (name,
+   description, and parameter schema). System or tool-schema growth is
+   therefore visible on the very request it appears, with or without any
+   usage report. A provider report contributes only a bounded residual — the
+   clamped difference between the report and that same request's full
+   estimate, covering provider tokenization and framing differences — and
+   the residual applies only while the Memory version and the system/tool
+   composition it measured are unchanged: a compression or a composition
+   change suspends it until the next report recalibrates, so nothing is
+   charged twice, a pre-compression report can never floor post-compression
+   pressure (the still-present system and tool overhead stays counted), and
+   an old peak never spins the mechanism. The residual is clamped to a
+   quarter of the model window. The
+   configured threshold (a percent of the model window or a fixed token
+   count) is capped at ten percent of the window below Pi's own native
+   compaction boundary (window minus Pi's configured compaction reserve minus
+   ten percent of the window). If that effective due point is non-positive,
+   or the Memory budget is not strictly smaller than it, the advisory stays
+   off for the model and Pi native compaction keeps owning the boundary.
+   Nothing is persisted — no counters, timers, or growth history.
 2. **The resident tool and the advisory.** `compact_to_memory_block` is
    resident: while the feature is enabled on a supported host it stays in the
    model's tool list from the first request, regardless of thresholds or
-   previous submissions, and its schema never changes. When the projected
-   request sits at or above the due point, every due request carries one
-   short ephemeral advisory (custom type `pi-square.context-memory/advisory`,
-   non-display) appended after your message. The advisory instructs the agent
-   to call `compact_to_memory_block` as the **sole tool call of its batch**
-   carrying the new block, then continue the same run and deliver its answer,
-   and not to copy credentials, private keys, access tokens, or other secrets
-   into the block. The advisory exists only inside due requests: it is never
-   persisted, never accumulates (at most one instance per request), and
-   disappears as soon as the projection relieves the pressure.
-3. **Append — the half-budget rule.** While the rendered Memory is at or
+   previous submissions, and its schema never changes; the threshold only
+   controls the advisory. When the projected request sits at or above the due
+   point, every due request carries one short ephemeral advisory (custom type
+   `pi-square.context-memory/advisory`, non-display) with fixed content,
+   inserted after your message at the same safe position every time. The
+   advisory instructs the agent to call `compact_to_memory_block` as the
+   **sole tool call of its batch** carrying the new block, then continue the
+   same run and deliver its answer, notes that the covered range is fixed
+   once the advisory appears, and asks the model not to copy credentials,
+   private keys, access tokens, or other secrets into the block. The advisory
+   exists only inside due requests: it is never persisted, never accumulates
+   (at most one instance per request), and disappears as soon as the
+   projection relieves the pressure — ordinary tool work in between never
+   removes it and never appends a second copy. No extra summarization call,
+   background model, autonomous turn, or "continue" message is ever
+   produced.
+3. **The pinned maintenance request.** At most one maintenance request is
+   pending at any time. When a due request is served, the runtime pins the
+   exact append sources the advisory invites: the inclusive range end, the
+   retained exceptions inside it, the Memory boundary it extends, and the
+   Memory version it was established against. That pinned range never
+   silently grows — tool work completed after the advisory stays
+   uncompressed until a later request covers it. When real growth extends
+   the eligible range, the next due request **re-scopes** the pending
+   request: the old one is invalidated and the new sources are served in
+   that very request before any submission can cover them. A model change,
+   branch switch, or compaction invalidates the request, and the next due
+   request re-establishes a fresh one from the live branch. A successful
+   recording completes the request and clears it; pressure is then re-judged
+   on the next request against the recorded projection, so later growth in
+   the same task can trigger the next compression without any new user
+   input. Repeated refused, invalid, or zero-benefit submissions against one
+   unchanged scope are **suppressed within a bounded budget** (three
+   consecutive refusals): every reachable submission refusal counts — a
+   mixed batch, an invalid body (the schema counts characters while the bound
+   counts canonical UTF-8 bytes, so short-but-wide text can pass the schema
+   and still exceed 16 KiB), or a refused append binding — while an
+   unavailable session's error never enters any scope's budget. The advisory
+   stops inviting the same attempt while the specific refusal and its
+   next-step hint keep reaching the model through the tool result, and real
+   new sources or a substantive Memory state change re-enable evaluation —
+   the next user input is never the only way back.
+4. **Append — the half-budget rule.** While the rendered Memory is at or
    below half the configured budget, the next operation **appends**: the new
    block covers the conversation accumulated since the existing blocks, and
    every existing block stays byte-identical. Above half budget the next
    operation would be a **suffix rebuild** — that operation is not
    implemented yet (#321); the append is refused with `MAINTENANCE_PENDING`
    and no block is degraded to force a fit.
-4. **Sources, batches, and the working set.** The runtime — never the model —
+5. **Sources, batches, and the working set.** The runtime — never the model —
    selects the source range. The retained working set is the most recent
    completed ordinary tool batch and everything after it on the branch; the
    source range ends at the last eligible entry before it, so unfinished
@@ -182,7 +233,7 @@ real-user run, and it takes effect on the next request — not at run end:
    (`compact_to_memory_block`, the retired `submit_memory`, and
    `read_memory_source`) are never original sources, so recovered text cannot
    be recursively re-compressed.
-5. **Recording.** A validated call is recorded immediately: the complete new
+6. **Recording.** A validated call is recorded immediately: the complete new
    Memory state lands as one Pi custom state entry (see above), the tool
    returns the fixed acknowledgement `Memory block recorded. The next model
    request will carry it in place of the covered older conversation.` with
@@ -193,10 +244,13 @@ real-user run, and it takes effect on the next request — not at run end:
    carrier **delta** the request gains (an append onto existing Memory adds
    only the new block's part; the unchanged prefix is never charged again);
    an attempt with no provable source, no capacity, or no positive savings is
-   refused with one bounded short-coded message. A repeated or competing submission in the same state
+   refused with one bounded short-coded message — the covered source total is
+   never mistaken for savings. A refusal counts against the pending
+   request's bounded failure budget, and an accepted recording reports its
+   projected net savings to `/context`. A repeated or competing submission in the same state
    finds no uncovered source and records nothing — the recording happens
    exactly once.
-6. **Application.** The next ordinary request — including a tool continuation
+7. **Application.** The next ordinary request — including a tool continuation
    — applies the recorded Memory through the public `context` transform:
    covered non-retained entries leave, the one complete carrier enters at the
    eviction boundary (or replaces the base compaction's summary message),
@@ -317,7 +371,7 @@ unchanged — Memory accounting never alters it.
 | `disabled` | `disabled · enable through agent-level contextMemory configuration` |
 | `unsupported` | `unsupported Pi host <version> · required interfaces unavailable · native compaction unchanged` — the running host version is reported, never used to gate |
 | `no-memory` | `enabled · no Memory blocks yet` |
-| `due` | `due · threshold reached · compression advisory rides the next request` |
+| `due` | `due · threshold reached · compression advisory rides the next request`, or with a pending request `due · maintenance over N sources · compression advisory riding requests` (or `advisory paused after repeated refusals (CODE)`) |
 | `opaque` | `opaque · latest carrier is not valid Context Memory · native summary retained` |
 
 Active Memory shows one header row (`active · ~N tok / N budget · N blocks ·
@@ -326,7 +380,16 @@ window` row when Pi reports both numbers, and one bounded chronological row
 per block with a
 single-line preview, token estimate, and safe source count. At most 64 rows
 render; older blocks beyond that appear only in the `⋯ +N more blocks` clip
-while the total count stays visible. In-memory (`--no-session`) sessions show
+while the total count stays visible. While a maintenance request is pending,
+the `due` line names its pinned source count (`due · maintenance over N
+sources · …`) and an active view gains at most two bounded diagnostic rows:
+the pending request with its failure state and the last accepted
+compression's projected net savings (`maintenance over N sources · advisory
+riding · last append −N tok`, or `advisory paused (CODE)` once suppressed),
+and the pressure split that keeps estimates and provider reports
+distinguishable (`request ~N tok est · N tok reported` — a report that
+predates the current Memory version is labeled `before current Memory`).
+No widget, no live tail, and no unbounded metric is added. In-memory (`--no-session`) sessions show
 an `ephemeral session` marker and never write a file or sidecar. No format
 versions, entry IDs, paths, or timestamps appear in the default view.
 

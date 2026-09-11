@@ -1,5 +1,5 @@
 /**
- * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #219, #221, #319).
+ * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #219, #221, #319, #320).
  *
  * The controller publishes this bounded snapshot through the registrar's
  * view provider; Prompt Manager renders it as the `/context` `memory[]`
@@ -9,9 +9,10 @@
  * handshake states with the recorded/applied distinction: `active` Memory
  * reports `applied: true` only after its carrier has actually been applied to
  * a request in this session, so `/context` never reports a future request as
- * already delivered. #255 keeps capability detection as the only unsupported
- * cause, with the running host version riding along as informational
- * reporting only.
+ * already delivered. #320 adds the bounded sustained-maintenance diagnostics
+ * (pending request, pressure split, net savings) below. #255 keeps capability
+ * detection as the only unsupported cause, with the running host version
+ * riding along as informational reporting only.
  */
 
 /** Custom-message type of the one ephemeral due advisory (#218, #319). */
@@ -34,6 +35,33 @@ export interface ContextMemoryBlockRow {
   readonly sources: number;
 }
 
+/**
+ * Bounded diagnostics for the pending maintenance request (#320): the safe
+ * count of eligible source entries inside the pinned range, whether the
+ * advisory is suppressed after repeated identical refusals, and the most
+ * recent refusal code. Never a log and never unbounded.
+ */
+export interface ContextMemoryMaintenanceInfo {
+  readonly sources: number;
+  readonly suppressed: boolean;
+  readonly lastErrorCode: string | null;
+}
+
+/**
+ * The pressure split (#320): the deterministic estimate of the projected
+ * provider-bound request (including the calibrated contribution of content
+ * outside the handler's messages), the provider-reported size of the last
+ * request when one was observed, and whether that report measured the
+ * current Memory version. An estimate is never presented as a reported
+ * number and a pre-compression report never floors post-compression
+ * pressure.
+ */
+export interface ContextMemoryPressureInfo {
+  readonly estimated: number | null;
+  readonly reported: number | null;
+  readonly reportedForCurrentMemory: boolean;
+}
+
 export type ContextMemorySnapshot =
   | { readonly state: "disabled" }
   | {
@@ -48,7 +76,14 @@ export type ContextMemorySnapshot =
     readonly hostVersion?: string;
   }
   | { readonly state: "no-memory"; readonly ephemeral?: true }
-  | { readonly state: "due"; readonly ephemeral?: true }
+  | {
+    readonly state: "due";
+    /** The pinned maintenance request riding due requests, when one is pending (#320). */
+    readonly maintenance?: ContextMemoryMaintenanceInfo;
+    /** Pressure split for the last projected request (#320). */
+    readonly pressure?: ContextMemoryPressureInfo;
+    readonly ephemeral?: true;
+  }
   | { readonly state: "opaque"; readonly ephemeral?: true }
   | {
     readonly state: "active";
@@ -71,6 +106,16 @@ export type ContextMemorySnapshot =
     readonly currentTokens: number | null;
     /** Current model context window, when reported. */
     readonly contextWindow: number | null;
+    /** The pinned maintenance request riding due requests, when one is pending (#320). */
+    readonly maintenance?: ContextMemoryMaintenanceInfo;
+    /** Pressure split for the last projected request (#320). */
+    readonly pressure?: ContextMemoryPressureInfo;
+    /**
+     * Projected net request savings of the most recent accepted compression
+     * (#320): evicted source tokens minus the carrier delta. Absent until a
+     * compression is accepted in this session.
+     */
+    readonly lastNetSavingsTokens?: number;
     readonly ephemeral?: true;
   };
 

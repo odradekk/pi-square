@@ -2,7 +2,7 @@ import { DEFAULT_COMPACTION_SETTINGS, type ContextEvent, type ExtensionAPI } fro
 import type { PiSquareConfig } from "../core/config";
 import { decorateInternalTool } from "../display/internal-adapters";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
-import { ContextMemoryController, type ContextMemoryUsageInput } from "./controller";
+import { ContextMemoryController, type ContextMemoryUsageInput, type ContextOverheadInput } from "./controller";
 import type { MemorySessionReader } from "./derive";
 import {
   buildContextMemoryConfigGuide,
@@ -25,8 +25,8 @@ import {
 import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./view";
 
 /**
- * Context Memory registrar (odradekk/pi-square#215, #216, #217, #219, #221, #319) — the
- * module's single external interface.
+ * Context Memory registrar (odradekk/pi-square#215, #216, #217, #219, #221, #319,
+ * #320) — the module's single external interface.
  *
  * One call installs the feature's event handlers and the two parent-only
  * tool definitions (decorated through the shared display adapter) and
@@ -44,7 +44,11 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
  * accepted Memory is recorded through Pi's public custom-entry seam during
  * the tool call and applied to the next ordinary model request through the
  * public `context` transform — no settle, no compaction takeover, no
- * autonomous turn. The registrar subscribes none of Pi's cancellable
+ * autonomous turn. #320 adds the sustained-maintenance wiring: assistant
+ * usage reports calibrate the pressure accounting at `message_end`, and
+ * model, tree, and compaction boundaries invalidate the pending maintenance
+ * request so the next due request re-establishes it from the live branch.
+ * The registrar subscribes none of Pi's cancellable
  * `session_before_switch`/`session_before_fork`/`session_before_tree`
  * events, so Context Memory can never block resume, tree navigation, fork,
  * clone, import, or session replacement, and every session boundary
@@ -142,6 +146,41 @@ export default function registerContextMemory(
     return ctx.sessionManager as MemorySessionReader;
   }
 
+  /**
+   * The request's non-message composition from the host's public seams
+   * (#320): the effective system prompt through the context surface the host
+   * gate already requires, and the active tool definitions — name,
+   * description, parameter schema — filtered from every configured tool by
+   * the active list. Nothing here is trusted blindly: a host surface that
+   * throws or returns a non-string simply contributes nothing, and the
+   * controller treats an absent composition as zero rather than blocking the
+   * request.
+   */
+  function currentRequestOverhead(ctx: { getSystemPrompt?: unknown }): ContextOverheadInput {
+    let systemPrompt: string | undefined;
+    if (typeof ctx.getSystemPrompt === "function") {
+      try {
+        const prompt = (ctx.getSystemPrompt as () => unknown)();
+        if (typeof prompt === "string" && prompt.length > 0) systemPrompt = prompt;
+      } catch {
+        systemPrompt = undefined;
+      }
+    }
+    let toolDefinitions: ContextOverheadInput["toolDefinitions"];
+    try {
+      const active = new Set(pi.getActiveTools());
+      toolDefinitions = pi.getAllTools()
+        .filter((tool) => active.has(tool.name))
+        .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
+    } catch {
+      toolDefinitions = undefined;
+    }
+    return {
+      ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+      ...(toolDefinitions !== undefined ? { toolDefinitions } : {}),
+    };
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     controller = new ContextMemoryController({
       config: dependencies.configProvider().contextMemory,
@@ -167,13 +206,20 @@ export default function registerContextMemory(
     } catch {
       usage = undefined;
     }
-    const transformed = controller?.transformContext(event, sessionReaderOf(ctx), usage);
+    // The request's system prompt and active tool definitions ride along so
+    // pressure counts what the model is actually sent beside the messages
+    // (#320) — with or without any usage report.
+    const transformed = controller?.transformContext(event, sessionReaderOf(ctx), usage, currentRequestOverhead(ctx));
     return transformed === undefined ? undefined : { messages: transformed.messages as ContextEvent["messages"] };
   });
 
-  // The sole-tool-call check reads the most recent assistant batch (#319).
+  // The sole-tool-call check reads the most recent assistant batch, and the
+  // assistant message's provider usage calibrates the pressure accounting
+  // against the request that produced it (#319, #320).
   pi.on("message_end", async (event) => {
-    controller?.noteAssistantToolBatch((event as { message?: unknown }).message);
+    const message = (event as { message?: unknown }).message;
+    controller?.noteAssistantToolBatch(message);
+    controller?.noteAssistantUsage(message);
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
@@ -182,9 +228,14 @@ export default function registerContextMemory(
     controller.synchronizeActiveTools(pi, sessionReaderOf(ctx));
   });
 
-  // Model changes recompute every budget and re-derive the reading state (#215).
+  // Model changes recompute every budget and re-derive the reading state
+  // (#215), and drop the pending maintenance request and usage calibration:
+  // the pinned sources, system prompt, tool selection, and window all changed
+  // with the model (#320). The next due request boundary re-establishes both.
   pi.on("model_select", async (_event, ctx) => {
     if (!controller) return;
+    controller.invalidateMaintenanceRequest();
+    controller.invalidateUsageCalibration();
     controller.recomputeDue(ctx);
     controller.synchronizeActiveTools(pi, sessionReaderOf(ctx));
   });
@@ -192,11 +243,16 @@ export default function registerContextMemory(
   // Re-derive after tree navigation and after any compaction completes: both
   // can change which carrier is the latest on the current leaf path. A
   // native compaction becomes the new baseline; the registrar never takes
-  // over or cancels Pi's own compaction (#319).
+  // over or cancels Pi's own compaction (#319). Both boundaries drop the
+  // pending maintenance request — its pinned sources belong to the previous
+  // leaf path — and the next due request re-establishes one from the live
+  // branch (#320).
   pi.on("session_tree", async (_event, ctx) => {
+    controller?.invalidateMaintenanceRequest();
     controller?.synchronizeActiveTools(pi, sessionReaderOf(ctx));
   });
   pi.on("session_compact", async (_event, ctx) => {
+    controller?.invalidateMaintenanceRequest();
     controller?.synchronizeActiveTools(pi, sessionReaderOf(ctx));
   });
 

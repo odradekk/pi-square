@@ -15,9 +15,17 @@ Accepted on 2026-09-11. Implementation status: #319 implements the resident
 `compact_to_memory_block` tool, validated append recording through Pi custom
 state entries, the next-request projection with strict message-to-entry
 alignment, bounded source recovery, and the recorded-versus-applied
-diagnostics; its deterministic acceptance runs against a real Pi
-`AgentSession` with a faux provider at the provider-request exit. #322 adds
-the interruption and native-branch lifecycle matrix on the same seam:
+diagnostics. #320 implements sustained maintenance inside one long task:
+per-request pressure evaluation counting the current system prompt and active
+tool definitions directly, with a request-bound usage residual, one
+pinned maintenance request per due cycle (fixed sources, explicit re-scope
+at served requests, invalidation on model/branch/compaction change),
+bounded failure suppression with recovery on real growth or state change,
+and the bounded `/context` diagnostics; its deterministic acceptance runs a
+real Pi `AgentSession` with one user input through two in-task compressions,
+each net reduction visible at its next request, with no settle, abort, or
+extra wake. #322 adds the interruption and native-branch lifecycle matrix on
+the same seam:
 event-coordinated cancellations before and after the write, restart recovery
 with byte-identical carriers, replacement sets, and source pages, fork,
 clone, import, tree navigation, and sibling isolation, native-compaction
@@ -25,8 +33,7 @@ supersession, disable/re-enable and uninstall observability, valid-v1
 read-only baseline use, corrupt-record degradation after reopen, and
 ephemeral sessions, plus the protocol-artifact pairing rules below. Native
 request evidence and boundary-injected unit evidence are kept clearly
-separated in the guide. Sustained re-triggering and failure
-recovery (#320), the suffix rebuild (#321), cross-provider combination
+separated in the guide. The suffix rebuild (#321), cross-provider combination
 guarantees (#323), native-fallback arbitration (#324), and real-model
 qualification (#325, #227) are still pending — acceptance of this record
 never authorizes claiming them as shipped.
