@@ -7,8 +7,14 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import jiti from "jiti";
 
+import { setMaxListeners } from "node:events";
+
+// One process hosts many sequential AgentSessions; each installs process
+// listeners, so silence the listener-count warning the matrix would raise.
+setMaxListeners(0);
+
 const load = jiti(import.meta.url, { moduleCache: false });
-const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_SUMMARY_WRAPPER } = await load("../../src/context-memory/format.ts");
+const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_SUMMARY_WRAPPER, MEMORY_FORMAT_TAG, composeMemorySummary } = await load("../../src/context-memory/format.ts");
 
 /**
  * #322 mechanical acceptance: recorded Context Memory survives interruptions
@@ -118,7 +124,16 @@ function walkFiles(dir) {
 
 const environments = [];
 
-function prepareEnvironment({ name, enabled = true } = {}) {
+/** Rewrite a session JSONL file the way an external in-place edit would. */
+function rewriteSessionFile(file, mutate) {
+  const entries = readFileSync(file, "utf8").split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
+  mutate(entries);
+  writeFileSync(file, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+}
+
+function prepareEnvironment({ name, enabled = true, withoutExtension = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), `pi-square-lifecycle-${name}-`));
   const agentDir = join(root, "agent");
   const cwd = join(root, "workspace");
@@ -135,7 +150,7 @@ function prepareEnvironment({ name, enabled = true } = {}) {
     },
   }, null, 2) + "\n");
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
-    packages: [{ source: packageRoot }],
+    packages: withoutExtension ? [] : [{ source: packageRoot }],
     quietStartup: true,
     compaction: { enabled: false, keepRecentTokens: 200 },
     retry: { enabled: false, provider: { maxRetries: 0 } },
@@ -280,7 +295,10 @@ try {
           : "The original early instruction is missing from the recovered source.",
           { stopReason: "stop" });
       }
-      return fauxAssistantMessage(fauxToolCall("read_memory_source", { block: 1, page: 1 }), { stopReason: "toolUse" });
+      return fauxAssistantMessage([
+        { type: "text", text: "recovering the original source of the earlier block" },
+        fauxToolCall("read_memory_source", { block: 1, page: 1 }),
+      ], { stopReason: "toolUse" });
     }
     return undefined;
   });
@@ -400,6 +418,137 @@ try {
     "restart appended to the session file without rewriting recorded history");
 
   // ════════════════════════════════════════════════════════════════════
+  // §12 Reading artifacts under compression (native request exit): an
+  //    answered read_memory_source pair inside the covered range leaves
+  //    together with its exchange — never an unpaired result — and the
+  //    recovered copy never becomes a source for the next block.
+  // ════════════════════════════════════════════════════════════════════
+
+  const secondMemory = "# Verification digest\n\n- the source verification confirmed the early instruction";
+  const recoveredPageText = resumedSourceResult.message.content.find((part) => part.text.includes("EARLY-ANCHOR")).text;
+  script(({ lastToolName, lastText }) => {
+    if (lastToolName === "read" && lastText.includes("FILE-D-NEEDLE")) {
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: secondMemory }), { stopReason: "toolUse" });
+    }
+    if (lastToolName === "compact_to_memory_block") {
+      return fauxAssistantMessage("verification exchange compressed", { stopReason: "stop" });
+    }
+    return fauxAssistantMessage(fauxToolCall("read", { path: "file-d.txt" }), { stopReason: "toolUse" });
+  });
+  await prompt(resumed.session,
+    "Read file-d.txt once more, then compress the whole verification exchange into one additional Memory block. ");
+  const pathStates = stateEntriesOf(resumedManager);
+  const mainLineLeafId = resumedManager.getLeafId();
+  const mainLineStateEntryId = pathStates.at(-1).id;
+  assert.equal(pathStates.length, 2, "the verification exchange recorded a second block on the main line");
+  const afterReadRequest = resumed.requests.at(-1);
+  const afterReadParts = carrierParts(afterReadRequest.messages);
+  assert.deepEqual(afterReadParts.slice(0, 2), mainCarrierParts,
+    "the second block keeps the first block's carrier parts byte-stable");
+  assert.equal(afterReadParts[2], `\n---\n\n${secondMemory}`);
+  const afterReadText = requestText(afterReadRequest.messages);
+  assert.ok(!afterReadText.includes("EARLY-ANCHOR"),
+    "the covered verification exchange — recovered page and quoting answer together — left the request");
+  const callIdsOf = (messages) => messages.flatMap((message) =>
+    (Array.isArray(message.content) ? message.content : [])
+      .filter((part) => part?.type === "toolCall")
+      .map((part) => ({ id: part.id, name: part.name })));
+  const resultIdsOf = (messages) => messages
+    .filter((message) => message.role === "toolResult" && typeof message.toolCallId === "string")
+    .map((message) => ({ id: message.toolCallId, name: message.toolName }));
+  const afterReadCalls = callIdsOf(afterReadRequest.messages);
+  const afterReadResults = resultIdsOf(afterReadRequest.messages);
+  assert.ok(afterReadCalls.every((call) => call.name !== "read_memory_source")
+    && afterReadResults.every((result) => result.name !== "read_memory_source"),
+    "no reading artifact half-pair survives the covered exchange");
+  const callIdSet = new Set(afterReadCalls.map((call) => call.id));
+  const resultIdSet = new Set(afterReadResults.map((result) => result.id));
+  assert.ok(afterReadResults.every((result) => callIdSet.has(result.id))
+    && afterReadCalls.every((call) => resultIdSet.has(call.id)),
+    "every tool call and result in the projected request stays paired");
+  assert.ok(!afterReadText.includes("FILE-A-NEEDLE"), "the older coverage stays covered");
+  // The recovered copy never becomes a source: block 2's transcript carries
+  // the exchange's conversation entries but not the protocol result page.
+  const secondBlockRead = await resumed.session.getToolDefinition("read_memory_source").execute(
+    "lifecycle:second-read", { block: 2, page: 1 }, undefined, undefined,
+    resumed.session.createReplacedSessionContext(),
+  );
+  const secondTranscript = secondBlockRead.content.map((part) => part.text).join("\n");
+  assert.ok(!secondTranscript.includes(recoveredPageText),
+    "the recovered protocol page never enters a later block's source stream");
+  assert.ok(secondTranscript.includes("recovering the original source of the earlier block"),
+    "the exchange's ordinary conversation entries remain readable sources");
+
+  // ════════════════════════════════════════════════════════════════════
+  // §12b A trailing reading pair (native): the recovery exchange sits
+  //    directly before the working-set anchor, so the range end moves below
+  //    it and the pair stays raw and whole instead of being split.
+  // ════════════════════════════════════════════════════════════════════
+
+  const trailingEnv = prepareEnvironment({ name: "trailing" });
+  process.env.PI_CODING_AGENT_DIR = trailingEnv.agentDir;
+  const trailingFaux = createFaux();
+  runtime.registerNativeProvider(trailingFaux.faux.provider);
+  const trailingManager = SessionManager.create(trailingEnv.cwd, trailingEnv.sessionsDir);
+  const trailingSession = await openSession({ runtime, faux: trailingFaux.faux, environment: trailingEnv, manager: trailingManager });
+  const trailingFirstBody = "# Trailing first digest\n\n- the early reads established the workspace";
+  script(({ lastToolName, lastText }) => {
+    if (lastToolName === "read" && lastText.includes("FILE-A-NEEDLE")) {
+      return fauxAssistantMessage(fauxToolCall("read", { path: "file-b.txt" }), { stopReason: "toolUse" });
+    }
+    if (lastToolName === "read" && lastText.includes("FILE-B-NEEDLE")) {
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: trailingFirstBody }), { stopReason: "toolUse" });
+    }
+    if (lastToolName === "compact_to_memory_block") {
+      return fauxAssistantMessage("first block recorded", { stopReason: "stop" });
+    }
+    return fauxAssistantMessage(fauxToolCall("read", { path: "file-a.txt" }), { stopReason: "toolUse" });
+  });
+  await prompt(trailingSession.session,
+    "Read file-a.txt and file-b.txt, then compress the older conversation into one Memory block. ");
+  assert.equal(stateEntriesOf(trailingManager).length, 1, "the trailing session recorded its first block");
+
+  const trailingSecondBody = "# Trailing second digest\n\n- the mid exchange covered the deployment notes";
+  let trailingStep = 0;
+  script(({ lastToolName }) => {
+    trailingStep += 1;
+    if (trailingStep === 1) return fauxAssistantMessage(fauxToolCall("read", { path: "file-c.txt" }), { stopReason: "toolUse" });
+    if (trailingStep === 2) {
+      return fauxAssistantMessage([
+        { type: "text", text: "recovering the original source of block 1 before compressing" },
+        fauxToolCall("read_memory_source", { block: 1, page: 1 }),
+      ], { stopReason: "toolUse" });
+    }
+    if (trailingStep === 3) return fauxAssistantMessage(fauxToolCall("read", { path: "file-d.txt" }), { stopReason: "toolUse" });
+    if (trailingStep === 4) return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: trailingSecondBody }), { stopReason: "toolUse" });
+    return fauxAssistantMessage("second block recorded over the trailing pair", { stopReason: "stop" });
+  });
+  await prompt(trailingSession.session,
+    "Read file-c.txt, then recover the original source of Memory block 1, then read file-d.txt, then compress the newer conversation into a second Memory block. ");
+  assert.equal(stateEntriesOf(trailingManager).length, 2,
+    "the second block recorded even though a reading pair trails the range");
+  const trailingRequest = trailingSession.requests.at(-1);
+  const trailingCalls = trailingRequest.messages.flatMap((message) =>
+    (Array.isArray(message.content) ? message.content : []).filter((part) => part?.type === "toolCall"));
+  const trailingResults = trailingRequest.messages.filter((message) => message.role === "toolResult");
+  const trailingReadCalls = trailingCalls.filter((call) => call.name === "read_memory_source");
+  const trailingReadResults = trailingResults.filter((result) => result.toolName === "read_memory_source");
+  assert.equal(trailingReadCalls.length, 1, "the trailing reading call stays raw in the request");
+  assert.equal(trailingReadResults.length, 1, "the trailing reading result stays raw in the request");
+  assert.equal(trailingReadResults[0].toolCallId, trailingReadCalls[0].id,
+    "the trailing pair stays whole — the call and its result remain paired");
+  const trailingText = requestText(trailingRequest.messages);
+  assert.ok(!trailingText.includes("FILE-C-NEEDLE"), "the mid-range ordinary exchange was covered");
+  assert.deepEqual(carrierParts(trailingRequest.messages), [
+    MEMORY_SUMMARY_WRAPPER,
+    `\n---\n\n${trailingFirstBody}`,
+    `\n---\n\n${trailingSecondBody}`,
+  ], "the second block keeps the first block's carrier parts byte-stable");
+  await trailingSession.session.dispose();
+  opened.length = 0;
+  process.env.PI_CODING_AGENT_DIR = main.agentDir;
+
+  // ════════════════════════════════════════════════════════════════════
   // §3 Sibling branches in one file: tree navigation isolates both ways,
   //    and a second recording on the sibling keeps the old prefix stable.
   // ════════════════════════════════════════════════════════════════════
@@ -419,6 +568,7 @@ try {
   await prompt(resumed.session,
     "SIBLING-UNIFORM: read file-e.txt, then compress this branch's new work into one additional Memory block. ");
   const siblingStates = stateEntriesOf(resumedManager);
+  const siblingLeafId = resumedManager.getLeafId();
   assert.equal(siblingStates.length, 2, "the sibling branch recorded its own second state entry");
   assert.deepEqual(siblingStates[1].data.blocks[0], siblingStates[0].data.blocks[0],
     "the append kept the earlier block byte-identical");
@@ -584,6 +734,276 @@ try {
     "disabling deletes and rewrites nothing in the session file");
   await disabled.session.dispose();
   opened.length = 0;
+  process.env.PI_CODING_AGENT_DIR = main.agentDir;
+
+  // ════════════════════════════════════════════════════════════════════
+  // §13 Disable then re-enable over the same recorded file: the disabled
+  //    period leaves the Memory intact and the projection returns.
+  // ════════════════════════════════════════════════════════════════════
+
+  const reenableEnv = prepareEnvironment({ name: "reenable" });
+  const reenabledFile = join(reenableEnv.root, "reenabled-copy.jsonl");
+  cpSync(disabledFile, reenabledFile);
+  process.env.PI_CODING_AGENT_DIR = reenableEnv.agentDir;
+  const reenableFaux = createFaux();
+  runtime.registerNativeProvider(reenableFaux.faux.provider);
+  const reenabledManager = SessionManager.open(reenabledFile, reenableEnv.sessionsDir);
+  const reenabled = await openSession({
+    runtime, faux: reenableFaux.faux, environment: reenableEnv, manager: reenabledManager,
+    startReason: "resume", previousSessionFile: disabledFile,
+  });
+  script(() => fauxAssistantMessage("re-enabled and projecting again", { stopReason: "stop" }));
+  await prompt(reenabled.session, "Status check after re-enabling. ");
+  const reenabledRequest = reenabled.requests[0];
+  assert.deepEqual(carrierParts(reenabledRequest.messages), mainCarrierParts,
+    "re-enabling re-derives the same carrier from the untouched record");
+  assert.ok(!requestText(reenabledRequest.messages).includes(EARLY_NEEDLE),
+    "the coverage applies again after the disabled period");
+  assert.ok(reenabledRequest.toolNames.includes("read_memory_source"),
+    "the reading surface reopens with the feature");
+  assert.ok(requestText(reenabledRequest.messages).includes("Status check with the feature disabled"),
+    "the disabled period's exchange stays ordinary visible history");
+  await reenabled.session.dispose();
+  opened.length = 0;
+  process.env.PI_CODING_AGENT_DIR = main.agentDir;
+
+  // ════════════════════════════════════════════════════════════════════
+  // §14 Uninstalled behavior: without pi-square loaded at all, the raw
+  //    history is model-visible, nothing is rewritten, and reinstalling
+  //    derives the same Memory again.
+  // ════════════════════════════════════════════════════════════════════
+
+  const uninstalledEnv = prepareEnvironment({ name: "uninstalled", withoutExtension: true });
+  const uninstalledFile = join(uninstalledEnv.root, "uninstalled-copy.jsonl");
+  cpSync(mainFile, uninstalledFile);
+  process.env.PI_CODING_AGENT_DIR = uninstalledEnv.agentDir;
+  const uninstalledFaux = createFaux();
+  runtime.registerNativeProvider(uninstalledFaux.faux.provider);
+  const uninstalledManager = SessionManager.open(uninstalledFile, uninstalledEnv.sessionsDir);
+  const uninstalled = await openSession({
+    runtime, faux: uninstalledFaux.faux, environment: uninstalledEnv, manager: uninstalledManager,
+    startReason: "resume", previousSessionFile: mainFile,
+  });
+  const uninstalledBefore = uninstalledManager.getEntries().map((entry) => JSON.stringify(entry));
+  script(() => fauxAssistantMessage("acknowledged without any extension loaded", { stopReason: "stop" }));
+  await prompt(uninstalled.session, "Status check without the extension installed. ");
+  const uninstalledRequest = uninstalled.requests[0];
+  const uninstalledText = requestText(uninstalledRequest.messages);
+  assert.equal(carrierOf(uninstalledRequest.messages), undefined,
+    "without the extension no Memory carrier is promised or produced");
+  assert.ok(uninstalledText.includes(EARLY_NEEDLE),
+    "the raw conversation is model-visible without the extension");
+  assert.ok(JSON.stringify(uninstalledRequest.messages).includes("compact_to_memory_block"),
+    "historical compression-tool entries are plain visible history without the extension");
+  assert.ok(!uninstalledRequest.toolNames.includes("compact_to_memory_block")
+    && !uninstalledRequest.toolNames.includes("read_memory_source"),
+    "neither Memory tool exists without the extension");
+  assert.deepEqual(
+    uninstalledManager.getEntries().slice(0, uninstalledBefore.length).map((entry) => JSON.stringify(entry)),
+    uninstalledBefore,
+    "running without the extension deletes and rewrites nothing");
+  await uninstalled.session.dispose();
+  opened.length = 0;
+
+  const reinstallEnv = prepareEnvironment({ name: "reinstall" });
+  const reinstallFile = join(reinstallEnv.root, "reinstall-copy.jsonl");
+  cpSync(uninstalledFile, reinstallFile);
+  process.env.PI_CODING_AGENT_DIR = reinstallEnv.agentDir;
+  const reinstallFaux = createFaux();
+  runtime.registerNativeProvider(reinstallFaux.faux.provider);
+  const reinstallManager = SessionManager.open(reinstallFile, reinstallEnv.sessionsDir);
+  const reinstalled = await openSession({
+    runtime, faux: reinstallFaux.faux, environment: reinstallEnv, manager: reinstallManager,
+    startReason: "resume", previousSessionFile: uninstalledFile,
+  });
+  script(() => fauxAssistantMessage("reinstalled and deriving again", { stopReason: "stop" }));
+  await prompt(reinstalled.session, "Status check after reinstalling. ");
+  assert.deepEqual(carrierParts(reinstalled.requests[0].messages), mainCarrierParts,
+    "the dormant record survives the uninstalled period and derives the same Memory");
+  await reinstalled.session.dispose();
+  opened.length = 0;
+  process.env.PI_CODING_AGENT_DIR = main.agentDir;
+
+  // ════════════════════════════════════════════════════════════════════
+  // §15 A valid v1 compaction-carried baseline: read-only derivation at the
+  //    request exit, and one append over the base replaces the v1 summary
+  //    with the single state carrier — the two never coexist.
+  // ════════════════════════════════════════════════════════════════════
+
+  const v1Env = prepareEnvironment({ name: "v1-baseline" });
+  process.env.PI_CODING_AGENT_DIR = v1Env.agentDir;
+  const v1Faux = createFaux();
+  runtime.registerNativeProvider(v1Faux.faux.provider);
+  const v1Manager = SessionManager.create(v1Env.cwd, v1Env.sessionsDir);
+  v1Manager.appendMessage({ role: "user", content: "walk me through the repo structure", timestamp: 1 });
+  v1Manager.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "text", text: "one entry point registers each feature module" },
+      { type: "toolCall", id: "v1:read-1", name: "read", arguments: { path: "src/index.ts" } },
+    ],
+    usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "toolUse", timestamp: 2,
+  });
+  const v1FirstResult = v1Manager.appendMessage({
+    role: "toolResult", toolCallId: "v1:read-1", toolName: "read",
+    content: [{ type: "text", text: "export default register()" }], isError: false, timestamp: 3,
+  });
+  v1Manager.appendMessage({ role: "user", content: "now fix the login flow", timestamp: 4 });
+  const v1SecondAssistant = v1Manager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "the session cookie was set after the redirect" }],
+    usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "stop", timestamp: 5,
+  });
+  const v1Kept = v1Manager.appendMessage({ role: "user", content: "ship it", timestamp: 6 });
+  const v1Bodies = [
+    "# Repo tour\n\n- index.ts registers each feature module",
+    "# Login fix\n\n- session cookie set before the redirect",
+  ];
+  v1Manager.appendCompaction(
+    composeMemorySummary(v1Bodies),
+    v1Kept,
+    9000,
+    {
+      format: MEMORY_FORMAT_TAG,
+      blocks: [
+        { endEntryId: v1FirstResult, markdownBytes: Buffer.byteLength(v1Bodies[0], "utf8") },
+        { endEntryId: v1SecondAssistant, markdownBytes: Buffer.byteLength(v1Bodies[1], "utf8") },
+      ],
+    },
+    true,
+  );
+  v1Manager.appendMessage({ role: "user", content: "continue with the deployment notes", timestamp: 8 });
+  v1Manager.appendMessage({
+    role: "assistant",
+    content: [{ type: "toolCall", id: "v1:read-2", name: "read", arguments: { path: "file-b.txt" } }],
+    usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "toolUse", timestamp: 9,
+  });
+  v1Manager.appendMessage({
+    role: "toolResult", toolCallId: "v1:read-2", toolName: "read",
+    content: [{ type: "text", text: "V1-TAIL-EVIDENCE " + FILLER }], isError: false, timestamp: 10,
+  });
+  const v1 = await openSession({ runtime, faux: v1Faux.faux, environment: v1Env, manager: v1Manager });
+  script(() => fauxAssistantMessage("v1 baseline acknowledged", { stopReason: "stop" }));
+  await prompt(v1.session, "Acknowledge the carried baseline. ");
+  const v1Request = v1.requests[0];
+  const v1Text = requestText(v1Request.messages);
+  assert.equal(v1Text.split(MEMORY_SUMMARY_WRAPPER).length - 1, 1,
+    "the v1 baseline renders exactly one wrapper in the request");
+  assert.ok(v1Text.includes(v1Bodies[0]) && v1Text.includes(v1Bodies[1]),
+    "the v1 blocks projection carries both block bodies");
+  assert.ok(v1Request.toolNames.includes("read_memory_source"),
+    "the reading surface is active on a valid v1 baseline");
+  assert.ok(v1Request.toolNames.includes("compact_to_memory_block"),
+    "the resident compression tool is available over the v1 baseline");
+
+  const v2Body = "# Deployment notes\n\n- the tail exchange covered the deployment flow";
+  script(({ lastToolName, lastText }) => {
+    if (lastToolName === "read" && lastText.includes("FILE-C-NEEDLE")) {
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: v2Body }), { stopReason: "toolUse" });
+    }
+    if (lastToolName === "compact_to_memory_block") {
+      return fauxAssistantMessage("appended over the v1 base", { stopReason: "stop" });
+    }
+    return fauxAssistantMessage(fauxToolCall("read", { path: "file-c.txt" }), { stopReason: "toolUse" });
+  });
+  await prompt(v1.session,
+    "Read file-c.txt, then compress the newer conversation into one additional Memory block. ");
+  const v1States = stateEntriesOf(v1Manager);
+  assert.equal(v1States.length, 1, "one state entry records the append over the v1 base");
+  assert.equal(v1States[0].data.baseCompactionId, v1Manager.getBranch().find((entry) => entry.type === "compaction").id,
+    "the state entry names the v1 base compaction");
+  const overBaseRequest = v1.requests.at(-1);
+  const overBaseParts = carrierParts(overBaseRequest.messages);
+  assert.deepEqual(overBaseParts, [
+    MEMORY_SUMMARY_WRAPPER,
+    `\n---\n\n${v1Bodies[0]}`,
+    `\n---\n\n${v1Bodies[1]}`,
+    `\n---\n\n${v2Body}`,
+  ], "the state carrier replaces the v1 summary with the inherited prefix byte-stable");
+  assert.equal(requestText(overBaseRequest.messages).split(MEMORY_SUMMARY_WRAPPER).length - 1, 1,
+    "the v1 summary message and the state carrier never coexist");
+  const v1BlockRead = await v1.session.getToolDefinition("read_memory_source").execute(
+    "lifecycle:v1-read", { block: 1, page: 1 }, undefined, undefined,
+    v1.session.createReplacedSessionContext(),
+  );
+  assert.ok(v1BlockRead.content[1].text.includes("walk me through the repo structure"),
+    "the inherited v1 block stays source-readable through the state carrier");
+  await v1.session.dispose();
+  opened.length = 0;
+
+  // ════════════════════════════════════════════════════════════════════
+  // §16 A corrupt or unknown-format newest state record degrades the
+  //    reopened session explicitly to opaque: no carrier, no silent
+  //    fallback onto the older valid record, no rewrite of the file.
+  // ════════════════════════════════════════════════════════════════════
+
+  const corruptEnv = prepareEnvironment({ name: "corrupt" });
+  process.env.PI_CODING_AGENT_DIR = corruptEnv.agentDir;
+  const corruptFaux = createFaux();
+  runtime.registerNativeProvider(corruptFaux.faux.provider);
+  // The tamper targets the newest record on the reopened path (the file also
+  // carries later off-path sibling records that must stay untouched).
+  const tamperVariants = [
+    {
+      label: "unknown-format-tag",
+      mutate(entries) {
+        const newest = entries.find((entry) => entry.id === mainLineStateEntryId);
+        newest.data.format = "pi-square.context-memory/99";
+      },
+    },
+    {
+      label: "non-resolving-end",
+      mutate(entries) {
+        const newest = entries.find((entry) => entry.id === mainLineStateEntryId);
+        newest.data.blocks[0].endEntryId = "entry-that-never-exists";
+      },
+    },
+  ];
+  for (const variant of tamperVariants) {
+    const corruptFile = join(corruptEnv.root, `corrupt-${variant.label}.jsonl`);
+    cpSync(mainFile, corruptFile);
+    rewriteSessionFile(corruptFile, variant.mutate);
+    const corruptManager = SessionManager.open(corruptFile, corruptEnv.sessionsDir);
+    // Reopen on the main-line path that carries both state records; the
+    // tampered newest record is the derivation boundary.
+    corruptManager.branch(mainLineLeafId);
+    const corruptSession = await openSession({
+      runtime, faux: corruptFaux.faux, environment: corruptEnv, manager: corruptManager,
+      startReason: "resume", previousSessionFile: mainFile,
+    });
+    const corruptBefore = corruptManager.getEntries().map((entry) => JSON.stringify(entry));
+    let corruptRefusal = null;
+    script(({ lastToolName }) => {
+      if (lastToolName === "compact_to_memory_block") {
+        return fauxAssistantMessage("the corrupt record refuses compression", { stopReason: "stop" });
+      }
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: "# Over corrupt\n\n- must refuse" }), { stopReason: "toolUse" });
+    });
+    await prompt(corruptSession.session, `Try to compress over the ${variant.label} record. `);
+    corruptRefusal = resultText(compactToolResultsOf(corruptManager).at(-1));
+    assert.match(corruptRefusal, /^MEMORY_CHANGED: /,
+      `the ${variant.label} newest record refuses compression with a bounded code`);
+    const corruptRequest = corruptSession.requests.at(-1);
+    assert.equal(carrierOf(corruptRequest.messages), undefined,
+      `the ${variant.label} record produces no custom carrier`);
+    assert.ok(requestText(corruptRequest.messages).includes(EARLY_NEEDLE),
+      `the older valid record's coverage is not silently applied as a fallback (${variant.label})`);
+    assert.ok(!corruptRequest.toolNames.includes("read_memory_source"),
+      `an opaque branch exposes no structured reading surface (${variant.label})`);
+    assert.ok(corruptRequest.toolNames.includes("compact_to_memory_block"),
+      `the resident compression tool stays available (${variant.label})`);
+    assert.equal(stateEntriesOf(corruptManager).length, 2,
+      `nothing was recorded or repaired on the opaque branch (${variant.label})`);
+    assert.deepEqual(
+      corruptManager.getEntries().slice(0, corruptBefore.length).map((entry) => JSON.stringify(entry)),
+      corruptBefore,
+      `the corrupt record is never silently rewritten (${variant.label})`);
+    await corruptSession.session.dispose();
+    opened.length = 0;
+  }
   process.env.PI_CODING_AGENT_DIR = main.agentDir;
 
   // ════════════════════════════════════════════════════════════════════
@@ -1039,6 +1459,159 @@ try {
       () => ordinaryHarness.tools.get("compact_to_memory_block").execute("h:compact-8", { markdown: FIRST_BODY }, undefined, undefined, ordinaryCtx),
       /COMPACT_NOT_DUE: /,
       "an unanswered ordinary call inside the covered range still refuses");
+  }
+
+  // (r5) Reading-artifact pairing shapes. These are boundary-injected cells —
+  //      manually seeded trees driven through the registrar harness — pinning
+  //      the exact projected-request shape for interruptions that cannot be
+  //      reproduced deterministically through a real session; the native
+  //      counterparts are §12 (mid-range pair leaves with the exchange) and
+  //      §12b (trailing pair stays whole).
+  {
+    const shapes = [];
+    const runShape = async (label, build) => {
+      const manager = SessionManager.inMemory("/project");
+      build(manager);
+      const shapeHarness = harnessRecording(HARNESS_CONFIG, manager);
+      const shapeCtx = harnessContext(manager);
+      await shapeHarness.emit("session_start", { type: "session_start", reason: "startup" }, shapeCtx);
+      await serveAndNote(shapeHarness, manager, shapeCtx, `r5:${label}`, `# ${label} digest`);
+      let outcome;
+      try {
+        await shapeHarness.tools.get("compact_to_memory_block").execute(`r5:${label}`, { markdown: `# ${label} digest` }, undefined, undefined, shapeCtx);
+        outcome = "recorded";
+      } catch (error) {
+        outcome = error.message.split(":")[0];
+      }
+      const projected = await shapeHarness.emit("context", { type: "context", messages: manager.buildSessionContext().messages }, shapeCtx);
+      const readCalls = projected.messages.flatMap((message) =>
+        (Array.isArray(message.content) ? message.content : []).filter((part) => part?.type === "toolCall" && part.name === "read_memory_source"));
+      const readResults = projected.messages.filter((message) => message.role === "toolResult" && message.toolName === "read_memory_source");
+      shapes.push({
+        label, outcome,
+        readCalls: readCalls.length,
+        readResults: readResults.length,
+        paired: readCalls.every((call) => readResults.some((result) => result.toolCallId === call.id))
+          && readResults.every((result) => readCalls.some((call) => call.id === result.toolCallId)),
+        carries: projected.messages.some((message) => message?.customType === "pi-square.context-memory/blocks"),
+      });
+    };
+
+    const ordinaryBatch = (manager, callId, path, text, timestamp) => {
+      manager.appendMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: callId, name: "read", arguments: { path } }],
+        stopReason: "toolUse", timestamp,
+      });
+      manager.appendMessage({
+        role: "toolResult", toolCallId: callId, toolName: "read",
+        content: [{ type: "text", text: `${text} ${READ_TOOL_RESULT_PADDING}` }], isError: false, timestamp: timestamp + 1,
+      });
+    };
+
+    // Mid-range answered pair: the whole exchange leaves together (§12's shape).
+    await runShape("midrange-answered", (manager) => {
+      manager.appendMessage({ role: "user", content: "explore the archive", timestamp: 1 });
+      ordinaryBatch(manager, "r5:pre", "pre.txt", "PRE-EVIDENCE", 2);
+      manager.appendMessage({
+        role: "assistant",
+        content: [
+          { type: "text", text: "recovering the original source of the earlier block" },
+          { type: "toolCall", id: "r5:read-src", name: "read_memory_source", arguments: { block: 1, page: 1 } },
+        ],
+        stopReason: "toolUse", timestamp: 4,
+      });
+      manager.appendMessage({
+        role: "toolResult", toolCallId: "r5:read-src", toolName: "read_memory_source",
+        content: [{ type: "text", text: `RECOVERED-PAGE ${READ_TOOL_RESULT_PADDING}` }], isError: false, timestamp: 5,
+      });
+      manager.appendMessage({ role: "user", content: "continue the task", timestamp: 6 });
+      ordinaryBatch(manager, "r5:work", "a.txt", "WORK-EVIDENCE", 7);
+    });
+
+    // Mixed aborted batch: one answered ordinary call plus one unanswered
+    // reading call in the same assistant message (abort landed between executions).
+    await runShape("mixed-aborted", (manager) => {
+      manager.appendMessage({ role: "user", content: "explore the archive", timestamp: 1 });
+      ordinaryBatch(manager, "r5:pre", "pre.txt", "PRE-EVIDENCE", 2);
+      manager.appendMessage({
+        role: "assistant",
+        content: [
+          { type: "text", text: "checking the workspace then recovering source" },
+          { type: "toolCall", id: "r5:work", name: "read", arguments: { path: "a.txt" } },
+          { type: "toolCall", id: "r5:read-src", name: "read_memory_source", arguments: { block: 1, page: 1 } },
+        ],
+        stopReason: "aborted", timestamp: 4,
+      });
+      manager.appendMessage({
+        role: "toolResult", toolCallId: "r5:work", toolName: "read",
+        content: [{ type: "text", text: `WORK-EVIDENCE ${READ_TOOL_RESULT_PADDING}` }], isError: false, timestamp: 5,
+      });
+      manager.appendMessage({ role: "user", content: "continue after the abort", timestamp: 6 });
+      ordinaryBatch(manager, "r5:work2", "b.txt", "MORE-EVIDENCE", 7);
+    });
+
+    // Standalone unanswered reading call (pure protocol assistant message).
+    await runShape("standalone-unanswered", (manager) => {
+      manager.appendMessage({ role: "user", content: "explore the archive", timestamp: 1 });
+      ordinaryBatch(manager, "r5:pre", "pre.txt", "PRE-EVIDENCE", 2);
+      manager.appendMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "r5:read-src", name: "read_memory_source", arguments: { block: 1, page: 1 } }],
+        stopReason: "aborted", timestamp: 4,
+      });
+      manager.appendMessage({ role: "user", content: "continue after the abort", timestamp: 5 });
+      ordinaryBatch(manager, "r5:work2", "b.txt", "MORE-EVIDENCE", 6);
+    });
+
+    // Trailing answered pair: the result sits between the last eligible entry
+    // and the working-set anchor (§12b's shape).
+    await runShape("trailing-answered", (manager) => {
+      manager.appendMessage({ role: "user", content: "explore the archive", timestamp: 1 });
+      ordinaryBatch(manager, "r5:pre", "pre.txt", "PRE-EVIDENCE", 2);
+      manager.appendMessage({
+        role: "assistant",
+        content: [
+          { type: "text", text: "recovering the original source of the earlier block" },
+          { type: "toolCall", id: "r5:read-src", name: "read_memory_source", arguments: { block: 1, page: 1 } },
+        ],
+        stopReason: "toolUse", timestamp: 4,
+      });
+      manager.appendMessage({
+        role: "toolResult", toolCallId: "r5:read-src", toolName: "read_memory_source",
+        content: [{ type: "text", text: `RECOVERED-PAGE ${READ_TOOL_RESULT_PADDING}` }], isError: false, timestamp: 5,
+      });
+      ordinaryBatch(manager, "r5:work2", "b.txt", "MORE-EVIDENCE", 6);
+    });
+
+    const byLabel = Object.fromEntries(shapes.map((shape) => [shape.label, shape]));
+    assert.equal(byLabel["midrange-answered"].outcome, "recorded",
+      "an answered reading pair inside the covered range no longer blocks the append");
+    assert.equal(byLabel["midrange-answered"].readCalls, 0, "the covered reading call leaves the request");
+    assert.equal(byLabel["midrange-answered"].readResults, 0,
+      "the covered reading result leaves with its call — no unpaired result");
+    assert.ok(byLabel["midrange-answered"].carries, "the mid-range shape still records its Memory");
+
+    assert.equal(byLabel["mixed-aborted"].outcome, "recorded",
+      "an aborted mixed batch with an unanswered reading call no longer blocks the append");
+    assert.equal(byLabel["mixed-aborted"].readCalls, 0,
+      "the unanswered reading call left with its evicted assistant entry");
+    assert.ok(byLabel["mixed-aborted"].paired, "no half pair remains in the projected request");
+
+    assert.equal(byLabel["standalone-unanswered"].outcome, "recorded",
+      "a standalone unanswered reading call no longer blocks the append");
+    assert.equal(byLabel["standalone-unanswered"].readCalls, 1,
+      "the pure-protocol unanswered call keeps its Pi-native rendering");
+    assert.equal(byLabel["standalone-unanswered"].readResults, 0,
+      "no result is fabricated for the unanswered call");
+
+    assert.equal(byLabel["trailing-answered"].outcome, "recorded",
+      "a trailing reading pair no longer blocks the append");
+    assert.equal(byLabel["trailing-answered"].readCalls, 1, "the trailing reading call stays raw");
+    assert.equal(byLabel["trailing-answered"].readResults, 1, "the trailing reading result stays raw");
+    assert.ok(byLabel["trailing-answered"].paired,
+      "the trailing pair stays whole — the range end moved below its exchange");
+    assert.ok(byLabel["trailing-answered"].carries, "the trailing shape still records its Memory");
   }
 } catch (error) {
   console.error(error);
