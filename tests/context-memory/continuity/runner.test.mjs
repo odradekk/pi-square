@@ -27,7 +27,7 @@ import { MODEL_LANES, RUN_LIMITS, buildPrivateEvidence, deriveSeed, executeRun, 
   const result = await executeRun({
     run,
     runtime: null,
-    sessionRunner: async () => ({ integrity: { ok: false, failures: ["native JSONL was replaced"] }, coverage: { ok: false, failures: ["raw source appeared"], compactions: 0, appends: 0, rebuilds: 0 } }),
+    sessionRunner: async () => ({ integrity: { ok: false, failures: ["native JSONL was replaced"] }, coverage: { ok: false, failures: ["raw source appeared"], memoryStates: 0, appends: 0, rebuilds: 0 } }),
   });
   assert.equal(result.score.result, "inconclusive", "integrity or coverage failure reaches the oracle as inconclusive");
   assert.equal(result.error, null, "a valid terminal native result is not an execution exception");

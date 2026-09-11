@@ -142,8 +142,8 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
           state: "active",
           blocks: 2,
           rows: [{ preview: "Fix login flow", tokens: 812, sources: 14 }],
-          stablePrefix: 2,
-          nextOperation: "append",
+          carrier: "compaction",
+          applied: false,
           memoryTokens: 900,
           budgetTokens: 20000,
           currentTokens: 74223,
@@ -304,14 +304,10 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
     assert.equal(sentUserMessages.length, 1);
   }
 
-  // ─── #218 handshake states render one bounded line each ───
-
+  // ─── Context Memory states render one bounded line each (#217, #319) ───
   for (const [state, needle, memory] of [
-    ["due", /due · threshold reached · the next run authors the first Memory block/, { state: "due" }],
-    ["pending", /pending · Memory candidate accepted this run · compaction follows at run end/, { state: "pending" }],
-    ["committing", /committing · writing the Memory compaction/, { state: "committing" }],
-    ["scale-limit", /scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary/, { state: "scale-limit" }],
-    ["opaque", /opaque · latest compaction is not valid Context Memory · native summary retained/, { state: "opaque" }],
+    ["due", /due · threshold reached · compression advisory rides the next request/, { state: "due" }],
+    ["opaque", /opaque · latest carrier is not valid Context Memory · native summary retained/, { state: "opaque" }],
     ["unsupported", /unsupported Pi host 0\.91\.0 · required interfaces unavailable · native compaction unchanged/, { state: "unsupported", reason: "host-interfaces", hostVersion: "0.91.0" }],
   ]) {
     const stateMemory = { ...contextMemory, snapshot: () => memory };
@@ -353,8 +349,8 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
       state: "active",
       blocks: 1,
       rows: [{ preview: "Repo tour", tokens: 12, sources: 3 }],
-      stablePrefix: 1,
-      nextOperation: "append",
+      carrier: "state",
+      applied: true,
       memoryTokens: 24,
       budgetTokens: 20000,
       currentTokens: 74223,

@@ -113,7 +113,8 @@ function compactCoverage(value = {}) {
   return {
     ok: value.ok === true,
     failures: Array.isArray(value.failures) ? value.failures.slice(0, 32).map(String) : ["missing coverage"],
-    compactions: Number(value.compactions ?? 0), appends: Number(value.appends ?? 0), rebuilds: Number(value.rebuilds ?? 0),
+    memoryStates: Number(value.memoryStates ?? 0), appends: Number(value.appends ?? 0), rebuilds: Number(value.rebuilds ?? 0),
+    multiBlockMemory: value.multiBlockMemory === true,
     sourceCovered: value.sourceCovered === true, rawSourceAbsent: value.rawSourceAbsent === true,
   };
 }

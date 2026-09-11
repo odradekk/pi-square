@@ -6,7 +6,8 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import { workloadPrompt } from "./scenarios.mjs";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { deriveCurrentMemory } = await load("../../../src/context-memory/derive.ts");
+const { deriveCurrentMemory, isEligibleSourceEntry } = await load("../../../src/context-memory/derive.ts");
+const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG } = await load("../../../src/context-memory/format.ts");
 
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
   contextWindow: 100_000,
@@ -106,8 +107,10 @@ function responseUsage(message, phase, request) {
   };
 }
 
-function memoryShape(memory) {
-  return memory.kind === "valid" ? memory.blocks.map((block) => ({ endEntryId: block.endEntryId, markdown: block.markdown })) : [];
+/** The identity of the carrying Memory: the recorded state entry (#319). */
+function memoryIdOf(memory) {
+  if (memory.kind !== "valid") return undefined;
+  return memory.carrier === "state" ? memory.stateEntryId : memory.compactionId;
 }
 
 function appendOperation(previous, current) {
@@ -133,11 +136,8 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   let finalContextSeen = false;
   let finalContext = null;
   let rawSourceAbsent = false;
-  let compactionEnds = 0;
-  let acceptedSubmissions = 0;
   let requestStarts = 0;
-  let previousMemory = [];
-  let lastCompactionId;
+  let lastRecordedShape = [];
   const sessionManager = SessionManager.inMemory(environment.cwd);
   const pendingSourceReads = new Map();
   try {
@@ -146,8 +146,9 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         if (phase !== "final" || finalContextSeen) return;
         finalContextSeen = true;
         finalContext = structuredClone(event.messages.map(withoutThinking));
-        // Runs after pi-square's transform; maintenance source reinsertion is
-        // visible here too. Only the actual Memory projection may contain facts.
+        // Runs after pi-square's transform; the projection's carrier and
+        // maintenance source reinsertion are visible here too. Only the actual
+        // Memory carrier may contain facts.
         const raw = event.messages.filter((message) => message.customType !== "pi-square.context-memory/blocks" && message.role !== "compactionSummary");
         rawSourceAbsent = !containsEvidence(JSON.stringify(raw), script)
           && !sourceEntryIds.some((id) => {
@@ -160,13 +161,12 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         const memory = deriveCurrentMemory(sessionManager);
         const block = memory.kind === "valid" ? memory.blocks[event.args.block - 1] : undefined;
         pendingSourceReads.set(event.toolCallId, {
-          compactionId: memory.kind === "valid" ? memory.compactionId : null,
+          memoryId: memoryIdOf(memory) ?? null,
           block: event.args.block, page: event.args.page,
           coversSource: block?.sourceEntries.some((entry) => sourceEntryIds.includes(entry.id)) === true,
         });
       });
       pi.on("tool_execution_end", (event) => {
-        if (event.toolName === "submit_memory" && !event.isError && event.result?.details?.accepted === true) acceptedSubmissions += 1;
         const read = pendingSourceReads.get(event.toolCallId);
         if (!read) return;
         pendingSourceReads.delete(event.toolCallId);
@@ -191,41 +191,61 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         void session.abort();
       }
       if (event.type === "message_end" && event.message.role === "assistant") requests.push(responseUsage(event.message, phase, requests.length + 1));
-      if (event.type === "compaction_end") {
-        compactionEnds += 1;
-        if (event.aborted || event.errorMessage) failures.add("compaction-error");
-      }
+      // Native compaction is disabled in this harness and the feature never
+      // takes it over (#319): any compaction entry is an integrity failure.
+      if (event.type === "compaction_start" || event.type === "compaction_end") failures.add("native-compaction-occurred");
     });
 
-    function collectCompaction() {
+    // Accepted Memory is recorded synchronously during the compact tool call.
+    // Each recorded state entry is one compression observation, classified
+    // against the state entry it extends, so two recordings inside one prompt
+    // are both observed — no settle wait anywhere.
+    const recordedMemoryIds = new Set();
+    function collectMemoryState() {
       const memory = deriveCurrentMemory(sessionManager);
       if (memory.kind === "opaque") failures.add("opaque-memory");
-      if (memory.kind !== "valid" || memory.compactionId === lastCompactionId) return;
-      const shape = memoryShape(memory);
-      const entry = sessionManager.getEntry(memory.compactionId);
-      if (entry.fromHook !== true) failures.add("non-extension-compaction");
-      compressions.push({ id: memory.compactionId, phase, operation: appendOperation(previousMemory, shape) ? "append" : "rebuild",
-        blocks: shape.length, sourceEntryIds: memory.blocks.flatMap((block) => block.sourceEntries.map((source) => source.id)) });
-      previousMemory = shape;
-      lastCompactionId = memory.compactionId;
+      if (memory.kind === "valid" && memory.carrier === "state") {
+        const entry = sessionManager.getEntry(memory.stateEntryId);
+        if (entry?.type !== "custom" || entry.customType !== MEMORY_STATE_CUSTOM_TYPE || entry.data?.format !== MEMORY_STATE_FORMAT_TAG) {
+          failures.add("memory-state-entry-missing");
+        }
+      }
+      const branch = sessionManager.getBranch();
+      const positions = new Map(branch.map((entry, index) => [entry.id, index]));
+      const stateEntries = branch.filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
+      let previousShape = lastRecordedShape;
+      for (const stateEntry of stateEntries) {
+        if (recordedMemoryIds.has(stateEntry.id)) continue;
+        recordedMemoryIds.add(stateEntry.id);
+        const blocks = Array.isArray(stateEntry.data?.blocks) ? stateEntry.data.blocks : [];
+        const shape = blocks.map((block) => ({ endEntryId: block.endEntryId, markdown: block.markdown }));
+        const sourceEntryIdsOfEntry = [];
+        let previousEnd = -1;
+        for (const block of blocks) {
+          const end = positions.get(block.endEntryId) ?? -1;
+          if (end > previousEnd) {
+            for (let index = previousEnd + 1; index <= end; index += 1) {
+              const source = branch[index];
+              if (source && isEligibleSourceEntry(source)) sourceEntryIdsOfEntry.push(source.id);
+            }
+            previousEnd = end;
+          }
+        }
+        compressions.push({ id: stateEntry.id, phase, operation: appendOperation(previousShape, shape) ? "append" : "rebuild",
+          blocks: shape.length, sourceEntryIds: sourceEntryIdsOfEntry });
+        previousShape = shape;
+        lastRecordedShape = shape;
+      }
     }
 
     async function prompt(text, nextPhase) {
       if (failures.size > 0) return;
       phase = nextPhase;
       const firstRequest = requests.length;
-      const previousEnds = compactionEnds;
-      const previousAccepted = acceptedSubmissions;
       const beforeIds = new Set(sessionManager.getEntries().map((entry) => entry.id));
       const timer = setTimeout(() => { failures.add("prompt-timeout"); void session.abort(); }, CONTINUITY_SESSION_CONFIG.promptTimeoutMs);
       try {
         await session.prompt(text, { source: "interactive", expandPromptTemplates: false });
-        const submitted = acceptedSubmissions > previousAccepted;
-        const deadline = Date.now() + 10_000;
-        while (session.isCompacting || (submitted && compactionEnds === previousEnds)) {
-          if (Date.now() > deadline) { failures.add("compaction-did-not-settle"); break; }
-          await new Promise((done) => setTimeout(done, 5));
-        }
       } finally { clearTimeout(timer); }
       if (requests.length === firstRequest) failures.add("missing-assistant-response");
       if (requests.slice(firstRequest).some((row) => !["stop", "toolUse"].includes(row.stopReason))) failures.add("unfinished-response");
@@ -234,7 +254,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         if (user) sourceEntryIds.push(user.id);
         else failures.add("source-entry-missing");
       }
-      collectCompaction();
+      collectMemoryState();
     }
 
     await prompt(script.introPrompt, "intro");
@@ -246,11 +266,8 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       abandonedEntryIds.push(...sessionManager.getEntries().filter((entry) => !beforeIds.has(entry.id)).map((entry) => entry.id));
       const navigation = await session.navigateTree(retained, { summarize: false });
       if (navigation.cancelled || navigation.aborted) failures.add("branch-navigation-failed");
-      // The branch operation is native; its current Memory can precede the
-      // last observed compaction on the now-abandoned sibling.
-      const retainedMemory = deriveCurrentMemory(sessionManager);
-      previousMemory = memoryShape(retainedMemory);
-      lastCompactionId = retainedMemory.kind === "valid" ? retainedMemory.compactionId : undefined;
+      // The branch operation is native; state entries on the abandoned
+      // sibling simply never appear on the retained branch again.
     }
 
     function retainedCompressions() {
@@ -267,7 +284,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       await prompt(workloadPrompt(checkpoint), "work");
       const events = retainedCompressions();
       if (events.length > before && events.some((entry) => entry.operation === "append")
-        && events.filter((entry) => entry.operation === "rebuild").length >= 2 && sourceCovered()) break;
+        && events.some((entry) => entry.blocks >= 2) && sourceCovered()) break;
     }
     const preFinalSourceCovered = sourceCovered();
     const coverageEvents = retainedCompressions();
@@ -288,7 +305,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       else artifactText = readFileSync(path, "utf8");
     } catch (error) { if (error.code !== "ENOENT") failures.add("artifact-read-error"); }
     for (const read of sourceReads) {
-      const pages = sourceReads.filter((other) => other.compactionId === read.compactionId && other.block === read.block && other.ok && other.totalPages === read.totalPages);
+      const pages = sourceReads.filter((other) => other.memoryId === read.memoryId && other.block === read.block && other.ok && other.totalPages === read.totalPages);
       const seen = new Set(pages.map((page) => page.page));
       read.complete = read.ok && Number.isSafeInteger(read.totalPages) && read.totalPages > 0 && read.totalPages <= 100
         && Array.from({ length: read.totalPages }, (_, index) => index + 1).every((page) => seen.has(page))
@@ -297,7 +314,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     if (!preFinalSourceCovered) coverageFailures.add("source-not-covered-by-final-memory");
     if (!finalContextSeen || !rawSourceAbsent) coverageFailures.add("final-context-has-raw-answer-or-was-not-observed");
     if (!coverageEvents.some((entry) => entry.operation === "append")) coverageFailures.add("append-not-observed");
-    if (coverageEvents.filter((entry) => entry.operation === "rebuild").length < 2) coverageFailures.add("two-rebuilds-not-observed");
+    if (!coverageEvents.some((entry) => entry.blocks >= 2)) coverageFailures.add("multi-block-memory-not-observed");
     if (script.oracle.requireSourceRead && !sourceReads.some((read) => read.complete && read.coversSource)) coverageFailures.add("original-source-not-read-completely");
     if (requests.some((row) => [row.input, row.output, row.cacheRead, row.cacheWrite].some((count) => count === null))) failures.add("missing-native-usage");
     const entries = sessionManager.getEntries().map((entry) => entry.type === "message"
@@ -308,9 +325,10 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     return {
       run, model: { provider: model.provider, id: model.id, api: model.api }, artifactText, requests, sourceReads, evidence,
       integrity: { ok: failures.size === 0, failures: [...failures] },
-      coverage: { ok: coverageFailures.size === 0, failures: [...coverageFailures], compactions: coverageEvents.length,
+      coverage: { ok: coverageFailures.size === 0, failures: [...coverageFailures], memoryStates: coverageEvents.length,
         appends: coverageEvents.filter((entry) => entry.operation === "append").length,
         rebuilds: coverageEvents.filter((entry) => entry.operation === "rebuild").length,
+        multiBlockMemory: coverageEvents.some((entry) => entry.blocks >= 2),
         sourceCovered: preFinalSourceCovered, rawSourceAbsent },
     };
   } finally {

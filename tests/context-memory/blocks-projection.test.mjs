@@ -307,7 +307,10 @@ try {
 
   // A mismatched rendering (the request's summary is not the live composed
   // summary) fails safely to the unmodified ordinary message while the other
-  // transform rules keep applying in the same request.
+  // transform rules keep applying in the same request. The mismatch means the
+  // Memory carrier is not established here, so the older historical pair must
+  // be a refused one — refused pairs always drop, while an older accepted pair
+  // would survive until a request actually carries the complete Memory.
   const mismatchRun = harness(branch);
   await mismatchRun.emit("session_start", { type: "session_start", reason: "startup" });
   const mismatchRequest = [
@@ -318,7 +321,7 @@ try {
         { type: "toolCall", id: "old-call", name: "submit_memory", arguments: { markdown: "old" } },
       ], timestamp: 44,
     },
-    { role: "toolResult", toolCallId: "old-call", toolName: "submit_memory", content: [{ type: "text", text: "Memory candidate accepted; compaction pending." }], timestamp: 45 },
+    { role: "toolResult", toolCallId: "old-call", toolName: "submit_memory", isError: true, content: [{ type: "text", text: "COMPACT_NOT_SOAL_TOOL: compact_to_memory_block must be the sole tool call in its batch" }], timestamp: 45 },
     { role: "user", content: "the current request", timestamp: 43 },
   ];
   const mismatchTransformed = await mismatchRun.emit("context", { type: "context", messages: mismatchRequest });

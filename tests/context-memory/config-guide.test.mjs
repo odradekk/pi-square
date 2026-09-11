@@ -320,12 +320,12 @@ try {
     assert.match(live.content, /Pi compaction reserve: 32000 tokens/);
 
     // The guide is read-only: building it changes no active tool and writes
-    // no session entry.
-    // An empty branch keeps read_memory_source inactive; building the guide
-    // changes no active tool either way.
-    assert.deepEqual(active, ["read", "bash"]);
+    // no session entry. The resident compression tool is the only Memory tool
+    // active on an empty branch; read_memory_source stays inactive and
+    // building the guide changes nothing either way.
+    assert.deepEqual(active, ["read", "bash", "compact_to_memory_block"]);
     registration.configGuide();
-    assert.deepEqual(active, ["read", "bash"]);
+    assert.deepEqual(active, ["read", "bash", "compact_to_memory_block"]);
 
     await emit("session_shutdown", { type: "session_shutdown" }, ctx);
     const settled = registration.configGuide({ tokens: 40_000, contextWindow: WINDOW });

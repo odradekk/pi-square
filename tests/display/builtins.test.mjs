@@ -146,7 +146,7 @@ try {
       getAllTools() { return []; },
     };
     const controller = new DisplayController(DEFAULT_CONFIG);
-    registerDisplayBuiltinsDefault(pi, controller, undefined, ["read_memory_source", "submit_memory"]);
+    registerDisplayBuiltinsDefault(pi, controller, undefined, ["read_memory_source", "compact_to_memory_block"]);
 
     const ctx = {
       cwd: temp,
@@ -163,14 +163,14 @@ try {
     // First start: the baseline is captured without the dynamic names.
     await emit();
     assert.ok(!active.includes("read_memory_source"), "the baseline never contains the dynamic names");
-    assert.ok(!active.includes("submit_memory"));
+    assert.ok(!active.includes("compact_to_memory_block"));
 
     // A reload after Context Memory activated the read tool: the restore keeps it.
     active = [...active, "read_memory_source"];
     await emit();
     assert.ok(active.includes("read_memory_source"),
       "the baseline restore preserves a dynamically added owned name");
-    assert.ok(!active.includes("submit_memory"),
+    assert.ok(!active.includes("compact_to_memory_block"),
       "an owned name another module removed stays removed");
 
     // A reload after Context Memory deactivated it again: nothing resurrects.

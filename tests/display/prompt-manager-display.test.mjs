@@ -176,8 +176,8 @@ const activeMemory = {
     { preview: "DB migration notes", tokens: 1105, sources: 9 },
     { preview: "Review feedback", tokens: 480, sources: 6 },
   ],
-  stablePrefix: 3,
-  nextOperation: "append",
+  carrier: "compaction",
+  applied: false,
   memoryTokens: 2400,
   budgetTokens: 20000,
   currentTokens: 74223,
@@ -200,8 +200,8 @@ const activeMemory = {
   assert.match(header, /~2\.40k tok/);
   assert.match(header, /20\.0k budget/);
   assert.match(header, /3 blocks/);
-  assert.match(header, /stable 3\/3/);
-  assert.match(header, /next: append/);
+  assert.match(header, /recorded · not yet applied/);
+  assert.match(header, /3 blocks · recorded · not yet applied$/, "the head ends with the recorded marker");
 
   const usage = lines.find((line) => line.includes("usage "));
   assert.ok(usage, "the usage line exists");
@@ -229,34 +229,32 @@ const activeMemory = {
 }
 
 {
-  // Unknown budget omits the stable prefix and next operation.
+  // Unknown budget keeps the budget-unknown marker; the recorded marker
+  // still reports the carrier state (#319).
   const input = makeMessagesInput({
     memory: {
       ...activeMemory,
       budgetTokens: null,
       contextWindow: null,
       currentTokens: null,
-      stablePrefix: null,
-      nextOperation: null,
     },
   });
   const text = stripVTControlCharacters(renderVerbose(input, plainTheme()));
   const header = text.split("\n").find((line) => line.includes("memory[]"));
   assert.match(header, /budget unknown/);
-  assert.ok(!header.includes("stable"), "no stable prefix without a budget");
-  assert.ok(!header.includes("next:"), "no next operation without a budget");
+  assert.match(header, /recorded · not yet applied/, "the recorded marker still renders without a budget");
   assert.ok(!text.split("\n").some((line) => line.includes("usage ")), "no usage line without usage data");
 }
 
 {
-  // Above half budget the next operation flips to rebuild with a bounded prefix.
+  // A carrier applied to at least one request reports the applied marker (#319).
   const input = makeMessagesInput({
-    memory: { ...activeMemory, memoryTokens: 18000, nextOperation: "rebuild", stablePrefix: 1 },
+    memory: { ...activeMemory, carrier: "state", applied: true },
   });
   const header = stripVTControlCharacters(renderVerbose(input, plainTheme()))
     .split("\n").find((line) => line.includes("memory[]"));
-  assert.match(header, /next: rebuild/);
-  assert.match(header, /stable 1\/3/);
+  assert.match(header, /applied to requests/);
+  assert.ok(!header.includes("recorded"), "the applied head never claims recorded");
 }
 
 {
@@ -289,7 +287,7 @@ const activeMemory = {
   assert.equal(memoryLines.length, 1, "the opaque state renders exactly one bounded line");
   assert.match(
     memoryLines[0],
-    /opaque · latest compaction is not valid Context Memory · native summary retained/,
+    /opaque · latest carrier is not valid Context Memory · native summary retained/,
   );
 }
 

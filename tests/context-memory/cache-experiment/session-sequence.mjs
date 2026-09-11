@@ -7,12 +7,22 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import jiti from "jiti";
 
-const SCHEMA = "pi-square.context-memory/pi-session-cache-sequence/1";
+const load = jiti(import.meta.url, { moduleCache: false });
+const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG } = await load("../../../src/context-memory/format.ts");
+
+const SCHEMA = "pi-square.context-memory/pi-session-cache-sequence/2";
+const MATRIX_SCHEMA = "pi-square.context-memory/pi-session-cache-matrix/2";
 const DEFAULT_CONTEXT_WINDOW = 100_000;
 const COMPRESSION_THRESHOLD = 3_500;
 const MEMORY_BUDGET_PERCENT = 1;
-const COMPACTION_WAIT_MS = 10_000;
+const REFERENCE_FILE = "reference.txt";
+const REFERENCE_MATERIAL = [
+  "Stable operational reference for the measurement lane: the build entry registers every feature module,",
+  "the footer derives usage from the read-only context, and the theme pair ships two calibrated palettes.",
+  "This local evidence payload is the ordinary tool work each prompt round reads before any compression. ",
+].join("\n").repeat(24);
 
 function usageRow(message, promptIndex, requestIndex) {
   const usage = message.usage ?? {};
@@ -66,19 +76,10 @@ function aggregate(rows) {
   };
 }
 
+/** Block count a recorded Memory state entry carries (#319 custom entries, not compactions). */
 function memoryBlockCount(entry) {
-  const blocks = entry?.details?.blocks;
+  const blocks = entry?.data?.blocks;
   return Array.isArray(blocks) ? blocks.length : 0;
-}
-
-async function waitForCompaction(session, sessionManager, before, expected, completed, completedBefore) {
-  const deadline = Date.now() + COMPACTION_WAIT_MS;
-  while (true) {
-    const count = sessionManager.getBranch().filter((entry) => entry.type === "compaction").length;
-    if (!session.isCompacting && (!expected || count > before || completed() > completedBefore)) return;
-    if (Date.now() >= deadline) throw new Error("Pi Context Memory compaction did not settle within 10 seconds");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
 }
 
 function prepareEnvironment(packageRoot, workspaceCount = 1) {
@@ -103,6 +104,7 @@ function prepareEnvironment(packageRoot, workspaceCount = 1) {
   const workspaces = Array.from({ length: workspaceCount }, (_, index) => {
     const cwd = join(root, `workspace-${index + 1}`);
     mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, REFERENCE_FILE), REFERENCE_MATERIAL, "utf8");
     return cwd;
   });
   return { root, agentDir, workspaces };
@@ -111,8 +113,11 @@ function prepareEnvironment(packageRoot, workspaceCount = 1) {
 /**
  * Drive one cache measurement through Pi's public session API. The only
  * caller-supplied boundary is the ModelRuntime/provider; Pi owns prompt
- * construction, extension transforms, tool execution, persistence, and
- * Context Memory compaction.
+ * construction, extension transforms, tool execution, persistence, and the
+ * Context Memory recording/projection cycle: accepted Memory lands as a
+ * custom state entry during the `compact_to_memory_block` call and the next
+ * ordinary request applies it — synchronously, with no settle wait and no
+ * native compaction anywhere.
  */
 async function runSequenceInEnvironment({ modelRuntime, model, prompts, environment, cwd }) {
   if (!Array.isArray(prompts) || prompts.length < 2 || prompts.some((prompt) => typeof prompt !== "string" || prompt.length === 0)) {
@@ -150,12 +155,12 @@ async function runSequenceInEnvironment({ modelRuntime, model, prompts, environm
       onError: (error) => extensionErrors.push(String(error?.message ?? error)),
     });
 
+    const memoryStateEntries = () => sessionManager.getBranch()
+      .filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
     const requests = [];
-    const compactionEnds = [];
     let promptIndex = 0;
     let requestIndex = 0;
     const unsubscribe = session.subscribe((event) => {
-      if (event.type === "compaction_end") compactionEnds.push(event);
       if (event.type !== "message_end" || event.message?.role !== "assistant") return;
       requestIndex += 1;
       requests.push(usageRow(event.message, promptIndex, requestIndex));
@@ -165,26 +170,17 @@ async function runSequenceInEnvironment({ modelRuntime, model, prompts, environm
       for (const prompt of prompts) {
         promptIndex += 1;
         requestIndex = 0;
-        const firstRequest = requests.length;
-        const completedBefore = compactionEnds.length;
-        const before = sessionManager.getBranch().filter((entry) => entry.type === "compaction").length;
+        const statesBefore = memoryStateEntries().length;
         await session.prompt(prompt, { expandPromptTemplates: false, source: "interactive" });
-        const submitted = requests.slice(firstRequest).some((row) => row.toolNames.includes("submit_memory"));
-        await waitForCompaction(
-          session,
-          sessionManager,
-          before,
-          submitted,
-          () => compactionEnds.length,
-          completedBefore,
-        );
-        const after = sessionManager.getBranch().filter((entry) => entry.type === "compaction").length;
+        // Recording happens synchronously inside the tool call, so the state
+        // entries are observable the moment the prompt resolves.
+        const statesAfter = memoryStateEntries().length;
         promptRows.push({
           prompt: promptIndex,
           requests: requestIndex,
-          compactionsBefore: before,
-          compactionsAfter: after,
-          compactionAttempted: compactionEnds.length > completedBefore,
+          memoryStatesBefore: statesBefore,
+          memoryStatesAfter: statesAfter,
+          memoryRecorded: statesAfter > statesBefore,
           activeTools: session.state.tools.map((tool) => tool.name),
         });
       }
@@ -193,24 +189,28 @@ async function runSequenceInEnvironment({ modelRuntime, model, prompts, environm
     }
 
     const branch = sessionManager.getBranch();
-    const compactions = branch.filter((entry) => entry.type === "compaction");
+    const stateEntries = branch
+      .filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
     const persistedAssistants = branch.filter((entry) => entry.type === "message" && entry.message.role === "assistant");
     const failures = [];
     if (requests.length < prompts.length) failures.push("one or more prompts produced no assistant response");
     if (requests.some((row) => row.input === null || row.output === null || row.cacheRead === null || row.cacheWrite === null)) {
       failures.push("one or more assistant responses lacked Pi-normalized usage");
     }
-    if (compactions.some((entry) => entry.fromHook !== true)) {
-      failures.push("a compaction was not committed through the Context Memory hook");
+    if (stateEntries.some((entry) => entry.data?.format !== MEMORY_STATE_FORMAT_TAG)) {
+      failures.push("a Memory state entry did not carry the v2 state format tag");
+    }
+    if (branch.some((entry) => entry.type === "compaction")) {
+      failures.push("a native Pi compaction carried Context Memory instead of a recorded state entry");
     }
     if (requests.some((row) => row.stopReason === "error" || row.stopReason === "aborted")) {
       failures.push("one or more Pi requests failed or were aborted");
     }
-    if (!requests.some((row) => row.toolNames.includes("submit_memory"))) {
-      failures.push("the real Pi tool loop never called submit_memory");
+    if (!requests.some((row) => row.toolNames.includes("compact_to_memory_block"))) {
+      failures.push("the real Pi tool loop never called compact_to_memory_block");
     }
-    if (compactions.length < 2 || Math.max(0, ...compactions.map(memoryBlockCount)) < 2) {
-      failures.push("the sequence did not commit a multi-block Context Memory");
+    if (stateEntries.length < 2 || Math.max(0, ...stateEntries.map(memoryBlockCount)) < 2) {
+      failures.push("the sequence did not record a multi-block Context Memory");
     }
     if (extensionErrors.length > 0) failures.push(`${extensionErrors.length} extension error(s) occurred`);
     if (!session.extensionRunner.getExtensionPaths().some((path) => path.endsWith("/src/index.ts"))) {
@@ -245,9 +245,8 @@ async function runSequenceInEnvironment({ modelRuntime, model, prompts, environm
       cache: { all, warm },
       session: {
         extensionLoaded: session.extensionRunner.getExtensionPaths().some((path) => path.endsWith("/src/index.ts")),
-        compactions: compactions.length,
-        maximumMemoryBlocks: Math.max(0, ...compactions.map(memoryBlockCount)),
-        extensionCompactions: compactions.filter((entry) => entry.fromHook === true).length,
+        memoryStateEntries: stateEntries.length,
+        maximumMemoryBlocks: Math.max(0, ...stateEntries.map(memoryBlockCount)),
         persistedAssistantResponses: persistedAssistants.length,
       },
       integrity: { ok: failures.length === 0, failures },
@@ -288,7 +287,7 @@ export async function runPiSessionMatrix({ packageRoot, modelRuntime, models, pr
       cwd: environment.workspaces[index],
     })));
     return {
-      schema: "pi-square.context-memory/pi-session-cache-matrix/1",
+      schema: MATRIX_SCHEMA,
       generatedAt: new Date().toISOString(),
       execution: {
         driver: "AgentSession.prompt",
@@ -301,7 +300,7 @@ export async function runPiSessionMatrix({ packageRoot, modelRuntime, models, pr
         provider: run.model.provider,
         model: run.model.id,
         requests: run.requests.length,
-        compactions: run.session.compactions,
+        memoryStateEntries: run.session.memoryStateEntries,
         maximumMemoryBlocks: run.session.maximumMemoryBlocks,
         allHitRate: run.cache.all.hitRate,
         warmHitRate: run.cache.warm.hitRate,
@@ -322,9 +321,9 @@ export async function runPiSessionMatrix({ packageRoot, modelRuntime, models, pr
 export function piSessionCachePrompts() {
   const material = "stable project fact and implementation detail. ".repeat(520);
   return [
-    `Read this reference and acknowledge it briefly.\n\n${material}`,
+    `Read reference.txt in this workspace and acknowledge it briefly.\n\n${material}`,
     "Confirm the reference is understood.",
-    `Read this additional reference and acknowledge it briefly.\n\n${material}`,
+    `Read reference.txt again and acknowledge it briefly.\n\n${material}`,
     "Confirm both references are understood.",
     "Give a one-line status update.",
     "Give another one-line status update.",
@@ -337,11 +336,11 @@ export function renderPiSessionMatrix(report) {
   const lines = [
     "Context Memory provider cache — real Pi request sequence",
     `execution: ${report.execution.modelLanes} AgentSession lanes in parallel; prompts sequential inside each lane`,
-    "model                              all        warm       requests  compactions  blocks  integrity",
+    "model                              all        warm       requests  memoryStates  blocks  integrity",
   ];
   for (const row of report.comparison) {
     const model = `${row.provider}/${row.model}`.slice(0, 34).padEnd(34);
-    lines.push(`${model} ${percent(row.allHitRate).padEnd(10)} ${percent(row.warmHitRate).padEnd(10)} ${String(row.requests).padEnd(9)} ${String(row.compactions).padEnd(12)} ${String(row.maximumMemoryBlocks).padEnd(7)} ${row.integrityOk ? "ok" : "FAILED"}`);
+    lines.push(`${model} ${percent(row.allHitRate).padEnd(10)} ${percent(row.warmHitRate).padEnd(10)} ${String(row.requests).padEnd(9)} ${String(row.memoryStateEntries).padEnd(13)} ${String(row.maximumMemoryBlocks).padEnd(7)} ${row.integrityOk ? "ok" : "FAILED"}`);
   }
   lines.push("rate = cacheRead / (input + cacheRead + cacheWrite); warm excludes only the first cold request");
   return lines.join("\n");
