@@ -36,13 +36,18 @@ export interface ContextMemoryBlockRow {
 }
 
 /**
- * Bounded diagnostics for the pending maintenance request (#320): the safe
- * count of eligible source entries inside the pinned range, whether the
- * advisory is suppressed after repeated identical refusals, and the most
- * recent refusal code. Never a log and never unbounded.
+ * Bounded diagnostics for the pending maintenance request (#320, #321): the
+ * operation it invites, the safe count of eligible source entries inside the
+ * pinned range, whether the advisory is suppressed after repeated identical
+ * refusals, the most recent refusal code, and — for a rebuild — the number
+ * of newest adjacent blocks being replaced. Never a log and never unbounded.
  */
 export interface ContextMemoryMaintenanceInfo {
+  /** `append` extends existing Memory; `rebuild` replaces a block suffix (#321). */
+  readonly operation: "append" | "rebuild";
   readonly sources: number;
+  /** Rebuild only: the count of blocks the request replaces; null for an append. */
+  readonly suffixBlocks: number | null;
   readonly suppressed: boolean;
   readonly lastErrorCode: string | null;
 }
@@ -116,6 +121,14 @@ export type ContextMemorySnapshot =
      * compression is accepted in this session.
      */
     readonly lastNetSavingsTokens?: number;
+    /**
+     * The honest scale endpoint (#321): rendered Memory is above half its
+     * budget and the complete rebuild request — suffix originals, retained
+     * context, and headroom — does not fit the model window, so structured
+     * maintenance stays off this cycle and Pi native compaction keeps owning
+     * the boundary.
+     */
+    readonly scaleLimit?: true;
     readonly ephemeral?: true;
   };
 

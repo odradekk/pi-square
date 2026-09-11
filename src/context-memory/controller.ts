@@ -6,7 +6,7 @@ import {
   estimateTokens as estimateMessageTokens,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import { deriveCurrentMemory, isEligibleSourceEntry, isProtocolToolName, isUserMessageEntry, type CurrentMemory, type DerivedMemoryBlock, type MemorySessionReader, type StateMemory, type ValidMemory } from "./derive";
+import { deriveCurrentMemory, isEligibleSourceEntry, isProtocolToolName, isUserMessageEntry, type CurrentMemory, type DerivedMemoryBlock, type MemorySessionReader, type ValidMemory } from "./derive";
 import {
   MEMORY_BLOCK_SEPARATOR,
   MEMORY_DETAILS_MAX_BYTES,
@@ -53,7 +53,7 @@ import {
 
 /**
  * The session-scoped Context Memory controller (odradekk/pi-square#215, #216,
- * #217, #319, #320).
+ * #217, #319, #320, #321).
  *
  * #319 replaces the settle-driven submission protocol with in-task recording
  * and request projection, per ADR-0017 and #317. The controller keeps one
@@ -78,6 +78,16 @@ import {
  * request compositions. Thus a pre-compression report never floors
  * post-compression pressure and an
  * accepted compression rebuilds the baseline through the next estimate.
+ *
+ * #321 extends the same maintenance machine with the suffix rebuild: while
+ * rendered Memory sits above half its budget, the pending request replaces
+ * the shortest newest adjacent block suffix (never recursive summaries), the
+ * request projection keeps serving that suffix's complete original sources
+ * while its summaries are absent, acceptance records one new block spanning
+ * the suffix's originals plus the new eligible history with every retained
+ * exception of the replaced blocks kept raw, and a rebuild whose complete
+ * request cannot fit the window stays a reported `scale-limit` instead of
+ * truncating, paging, or deleting anything.
  *
  * Recording never blocks the run: the accepted block lands as a Pi custom
  * state entry (SessionManager stays the only session-file writer), and the
@@ -284,14 +294,19 @@ function alignMessages(
 }
 
 /**
- * The entry ids of the replacement set a state-carried Memory records (#319,
- * #322): every non-retained source entry, plus the protocol tool results
- * whose producing assistant is among those evicted sources so the call and
- * its result always leave provider requests together.
+ * The entry ids of the replacement set one ordered block list records (#319,
+ * #322, #321): every non-retained source entry, plus the protocol tool
+ * results whose producing assistant is among those evicted sources so the
+ * call and its result always leave provider requests together. A rebuild's
+ * serving projection applies exactly this set over the kept prefix blocks.
  */
-function replacementEntryIds(memory: StateMemory): ReadonlySet<string> {
+function replacementEntryIdsOf(blocks: readonly {
+  readonly sourceEntries: readonly SessionEntry[];
+  readonly retainedEntryIds: readonly string[];
+  readonly protocolResultEntryIds: readonly string[];
+}[]): ReadonlySet<string> {
   const evict = new Set<string>();
-  for (const block of memory.blocks) {
+  for (const block of blocks) {
     const retained = new Set(block.retainedEntryIds);
     for (const entry of block.sourceEntries) {
       if (!retained.has(entry.id)) evict.add(entry.id);
@@ -301,17 +316,17 @@ function replacementEntryIds(memory: StateMemory): ReadonlySet<string> {
   return evict;
 }
 
-/** The one complete Memory carrier: one ordered text part per block (#297, #319). */
-function memoryCarrierMessage(memory: StateMemory): unknown {
+/** The one complete Memory carrier: one ordered text part per block (#297, #319, #321). */
+function memoryCarrierMessage(blocks: readonly { readonly markdown: string }[], carrierTimestamp: number): unknown {
   return {
     role: "custom",
     customType: CONTEXT_MEMORY_BLOCKS_TYPE,
     content: [
       { type: "text", text: MEMORY_SUMMARY_WRAPPER },
-      ...memory.blocks.map((block) => ({ type: "text", text: MEMORY_BLOCK_SEPARATOR + block.markdown })),
+      ...blocks.map((block) => ({ type: "text", text: MEMORY_BLOCK_SEPARATOR + block.markdown })),
     ],
     display: false,
-    timestamp: memory.carrierTimestamp,
+    timestamp: carrierTimestamp,
   };
 }
 
@@ -329,6 +344,22 @@ const DUE_ADVISORY_TEXT = [
   "",
   `Call compact_to_memory_block as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the older conversation it covers — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
   "The next request after the acknowledgement will carry that block in place of the covered older conversation; your current request and everything you do for it stay uncompressed.",
+  "The covered range is fixed once this advisory appears: work you finish afterwards stays uncompressed until the next maintenance request.",
+  "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
+].join("\n");
+
+/**
+ * The fixed due advisory body for a suffix rebuild (#321): the model authors
+ * one block from the complete original sources served in the same request,
+ * never from the summaries those sources replace. Same fixed frame as the
+ * append advisory — sole call, continuation, fixed range, secrets.
+ */
+const DUE_ADVISORY_REBUILD_TEXT = [
+  "Context Memory: compression is due for this conversation.",
+  "",
+  "Rendered Memory is above half its budget, so this maintenance rebuilds the newest Memory suffix. The complete original conversation behind the replaced blocks is present again in this request, in order, ahead of your current work, and their summaries are gone.",
+  `Call compact_to_memory_block as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from that complete original conversation — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
+  "The next request after the acknowledgement will carry the rebuilt block — and every older block unchanged — in place of the covered original conversation; your current request and everything you do for it stay uncompressed.",
   "The covered range is fixed once this advisory appears: work you finish afterwards stays uncompressed until the next maintenance request.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
@@ -769,6 +800,108 @@ function netAppendSavings(
   return savings;
 }
 
+/**
+ * Select the suffix a rebuild replaces (#321): the shortest newest adjacent
+ * suffix whose removal leaves the unselected prefix rendered at or below half
+ * the Memory budget, measured with the one deterministic
+ * {@link renderedMemoryTokens} measure shared by the half-budget rule,
+ * `/context`, and the submission budget. `minimumPrefix` is the smallest
+ * recordable prefix — blocks whose originals the native context projection
+ * cannot serve (below a compaction's kept boundary) must stay in the prefix,
+ * and a state entry over a v1 base must keep the complete inherited prefix.
+ * When even the minimum prefix renders above half, that floor is returned:
+ * the suffix is still recordable and the invariant prefix is never rewritten.
+ * Returns null when no block is rebuildable at all.
+ */
+export function selectRebuildSuffix(
+  markdowns: readonly string[],
+  halfBudgetTokens: number,
+  minimumPrefix: number,
+): { readonly prefixCount: number; readonly suffixCount: number } | null {
+  const total = markdowns.length;
+  if (minimumPrefix >= total) return null;
+  for (let prefixCount = total - 1; prefixCount >= minimumPrefix; prefixCount--) {
+    if (renderedMemoryTokens(markdowns.slice(0, prefixCount)) <= halfBudgetTokens) {
+      return { prefixCount, suffixCount: total - prefixCount };
+    }
+  }
+  return { prefixCount: minimumPrefix, suffixCount: total - minimumPrefix };
+}
+
+/**
+ * The smallest block index whose complete original range the native context
+ * projection can serve (#321): with a compaction on the branch, Pi carries
+ * only the compaction entry plus entries from its `firstKeptEntryId` onward,
+ * so any block whose range starts below that boundary has originals that can
+ * never re-enter a request. Blocks are range-ordered, so every block from
+ * this index on is servable. Without a compaction (or when everything from
+ * the first entry is kept) every block is servable and the index is 0.
+ */
+export function firstFullyServableBlockIndex(
+  branch: readonly SessionEntry[],
+  blocks: readonly { readonly endEntryId: string }[],
+): number {
+  let keptPosition = -2;
+  for (let i = branch.length - 1; i >= 0; i--) {
+    if (branch[i]!.type !== "compaction") continue;
+    const keptId = (branch[i] as { firstKeptEntryId?: unknown }).firstKeptEntryId;
+    keptPosition = typeof keptId === "string" ? branch.findIndex((entry) => entry.id === keptId) : -1;
+    break;
+  }
+  if (keptPosition <= 0) return 0;
+  for (let i = 0; i < blocks.length; i++) {
+    const rangeStart = i === 0 ? 0 : branch.findIndex((entry) => entry.id === blocks[i - 1]!.endEntryId) + 1;
+    if (rangeStart >= keptPosition) return i;
+  }
+  return blocks.length;
+}
+
+/**
+ * The retained exceptions a rebuild's new block records (#321): the union of
+ * the replaced suffix blocks' retained instructions — protection decided by an
+ * earlier acceptance is fixed and cannot silently disappear when the recent
+ * zone moves — with the latest user instruction inside the new range, ordered
+ * by branch position. Derivation validates every id resolves as a protected
+ * user instruction inside the range.
+ */
+function rebuildRetainedEntryIds(
+  branch: readonly SessionEntry[],
+  source: AppendSource,
+  suffixBlocks: readonly { readonly retainedEntryIds: readonly string[] }[],
+): readonly string[] {
+  const retained = new Set<string>(source.retainedEntryIds);
+  for (const block of suffixBlocks) {
+    for (const id of block.retainedEntryIds) retained.add(id);
+  }
+  const positionById = new Map<string, number>();
+  for (let i = 0; i < branch.length; i++) positionById.set(branch[i]!.id, i);
+  return [...retained].sort((left, right) =>
+    (positionById.get(left) ?? Number.MAX_SAFE_INTEGER) - (positionById.get(right) ?? Number.MAX_SAFE_INTEGER));
+}
+
+/**
+ * Deterministic projected net request savings of one rebuild (#321), measured
+ * against the served pending request the model actually saw: the evicted
+ * source tokens minus the carrier delta from the prefix-only carrier the
+ * served request carried to the rebuilt carrier — the suffix summaries were
+ * already absent during the pending request and are never charged again.
+ */
+function netRebuildSavings(
+  evictable: readonly SessionEntry[],
+  prefixMarkdowns: readonly string[],
+  markdown: string,
+): number {
+  const carrierDelta = renderedMemoryTokens([...prefixMarkdowns, markdown])
+    - renderedMemoryTokens(prefixMarkdowns);
+  let savings = -carrierDelta;
+  for (const entry of evictable) {
+    for (const message of sessionEntryToContextMessages(entry)) {
+      savings += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+    }
+  }
+  return savings;
+}
+
 export class ContextMemoryController {
   private readonly config: ContextMemoryConfig;
   private readonly support: HostSupport;
@@ -820,6 +953,25 @@ export class ContextMemoryController {
   } | undefined;
   /** Projected net request savings of the most recent accepted compression (#320). */
   private lastNetSavingsTokens: number | undefined;
+  /**
+   * The honest scale endpoint (#321): the last due request found rendered
+   * Memory above half its budget with a rebuild whose complete serving —
+   * suffix originals, retained context, and headroom — does not fit the
+   * window. No maintenance request is pinned, no sources are re-served, and
+   * Pi native compaction keeps owning the boundary. Recomputed every request.
+   */
+  private scaleLimit = false;
+  /**
+   * The rebuild sources the last outgoing request actually served (#321).
+   * A rebuild submission is accepted only when the request that carried the
+   * call served exactly these sources in their native form: an un-served
+   * (for example scale-limited) request can never authorize a rebuild.
+   */
+  private lastServedRebuild: {
+    readonly prefixEndEntryId: string | null;
+    readonly sourceEndEntryId: string;
+    readonly memoryVersion: string;
+  } | undefined;
 
   constructor(options: ContextMemoryControllerOptions) {
     this.config = options.config;
@@ -1039,14 +1191,18 @@ export class ContextMemoryController {
   }
 
   /**
-   * Drop the pending maintenance request (#320): a model, branch, or
+   * Drop the pending maintenance request (#320, #321): a model, branch, or
    * compaction change invalidates the pinned sources, and the next due
    * request boundary re-establishes a fresh request from the live branch —
-   * never a replay of the dropped one.
+   * never a replay of the dropped one. The per-request rebuild markers drop
+   * with it: a request that never served rebuild sources can never authorize
+   * one.
    */
   invalidateMaintenanceRequest(): void {
     this.maintenance = undefined;
     this.maintenanceFailures = undefined;
+    this.scaleLimit = false;
+    this.lastServedRebuild = undefined;
   }
 
   /**
@@ -1136,7 +1292,7 @@ export class ContextMemoryController {
     }
     let candidate: { state: MemoryStateData; savings: number };
     try {
-      candidate = this.bindAppend(markdown, session);
+      candidate = this.bindOperation(markdown, session);
     } catch (error) {
       // Bounded suppression bookkeeping (#320): the refusal stays specific and
       // the tool remains resident; only the advisory invitation is bounded.
@@ -1168,15 +1324,17 @@ export class ContextMemoryController {
   }
 
   /**
-   * Resolve the append binding against the live branch, or refuse safely: the
-   * continuous source range — the pending maintenance request's pinned range
-   * while one still authorizes this Memory state, otherwise a request pinned
-   * at this call (#320) — batch pairing by call id, the latest user
-   * instruction as the retained exception, the byte-stable prefix from the
-   * current carrier, and the single-block, total-Memory, and serialization
-   * budgets (#319).
+   * Resolve one submission's binding against the live branch, or refuse
+   * safely (#319, #321): while rendered Memory sits at or below half its
+   * budget the operation appends one block; above half it rebuilds the
+   * shortest newest adjacent block suffix from its complete original sources.
+   * Both paths validate the continuous source range — the pending maintenance
+   * request's pinned range while one still authorizes this Memory state,
+   * otherwise a request pinned at this call (#320) — batch pairing by call
+   * id, retained exceptions, the byte-stable prefix from the current carrier,
+   * and the single-block, total-Memory, and serialization budgets.
    */
-  private bindAppend(markdown: string, session: MemorySessionReader): { state: MemoryStateData; savings: number } {
+  private bindOperation(markdown: string, session: MemorySessionReader): { state: MemoryStateData; savings: number } {
     const leafId = session.getLeafId?.() ?? null;
     if (leafId === null) {
       fail("MEMORY_CHANGED", "the current branch no longer carries this session");
@@ -1186,15 +1344,27 @@ export class ContextMemoryController {
     if (current.kind === "opaque") {
       fail("MEMORY_CHANGED", "current Memory is no longer valid structured Context Memory");
     }
+    const halfBudget = this.halfBudgetTokens();
+    if (current.kind === "valid" && halfBudget !== null
+      && renderedMemoryTokens(current.blocks.map((block) => block.markdown)) > halfBudget) {
+      return this.bindRebuild(markdown, branch, current, halfBudget);
+    }
+    return this.bindAppend(markdown, branch, current);
+  }
+
+  /**
+   * The append binding (#319): one new block over the conversation accumulated
+   * since the existing blocks, every existing block byte-identical.
+   */
+  private bindAppend(
+    markdown: string,
+    branch: readonly SessionEntry[],
+    current: CurrentMemory,
+  ): { state: MemoryStateData; savings: number } {
     const prefix: MemoryStateBlock[] = [];
     let previousEndPosition = -1;
     let baseCompactionId: string | undefined;
     if (current.kind === "valid") {
-      const markdowns = current.blocks.map((block) => block.markdown);
-      const halfBudget = this.halfBudgetTokens();
-      if (halfBudget !== null && renderedMemoryTokens(markdowns) > halfBudget) {
-        fail("MAINTENANCE_PENDING", "rendered Memory is above half its budget; the next operation is a suffix rebuild, which is not available yet");
-      }
       const lastEnd = current.blocks[current.blocks.length - 1]!.endEntryId;
       previousEndPosition = branch.findIndex((entry) => entry.id === lastEnd);
       if (previousEndPosition === -1) {
@@ -1253,6 +1423,130 @@ export class ContextMemoryController {
   }
 
   /**
+   * The rebuild binding (#321): the selected suffix — the shortest newest
+   * adjacent block suffix whose removal leaves the kept prefix at or below
+   * half the Memory budget — and the new eligible history form one continuous
+   * original range, and one new block replaces the whole suffix over it.
+   * Every retained exception of the replaced blocks stays retained
+   * (protection decided by an earlier acceptance is fixed), the kept prefix is
+   * byte-identical, and the base compaction stays stable. A rebuild is
+   * accepted only when the request that carried this call served exactly its
+   * complete sources: the pinned request's range while it still matches the
+   * derived Memory state, or a live selection whose sources the last outgoing
+   * request served in full — an un-served request (a scale limit, a refused
+   * projection, an unestablished advisory) can never authorize summarizing
+   * text the model never saw.
+   */
+  private bindRebuild(
+    markdown: string,
+    branch: readonly SessionEntry[],
+    current: ValidMemory,
+    halfBudget: number,
+  ): { state: MemoryStateData; savings: number } {
+    const markdowns = current.blocks.map((block) => block.markdown);
+    const minimumPrefix = firstFullyServableBlockIndex(branch, current.blocks);
+    const plan = selectRebuildSuffix(markdowns, halfBudget, minimumPrefix);
+    if (plan === null) {
+      fail("SOURCE_NOT_SERVED", "the Memory suffix's complete original sources cannot be served on this branch; compression stays available again below half the Memory budget");
+    }
+    const prefixCount = plan.prefixCount;
+    const prefixEndPosition = prefixCount === 0
+      ? -1
+      : branch.findIndex((entry) => entry.id === current.blocks[prefixCount - 1]!.endEntryId);
+    if (prefixCount > 0 && prefixEndPosition === -1) {
+      fail("MEMORY_CHANGED", "the existing Memory blocks no longer resolve on the current branch");
+    }
+    const prefixEndEntryId = prefixCount === 0 ? null : current.blocks[prefixCount - 1]!.endEntryId;
+    const memoryVersion = memoryVersionOf(current);
+    let source: AppendSource | null = null;
+    const pinned = this.maintenance;
+    if (pinned !== undefined
+      && pinned.operation === "rebuild"
+      && pinned.memoryVersion === memoryVersion
+      && pinned.previousEndEntryId === prefixEndEntryId) {
+      const endPosition = branch.findIndex((entry) => entry.id === pinned.sourceEndEntryId);
+      if (endPosition > prefixEndPosition && isEligibleSourceEntry(branch[endPosition]!)) {
+        source = buildAppendSource(branch, prefixEndPosition, endPosition);
+      }
+    }
+    if (source === null) {
+      const live = selectAppendSource(branch, prefixEndPosition);
+      if (live === null) {
+        fail("COMPACT_NOT_DUE", "no completed eligible conversation is available to compress since the kept Memory prefix");
+      }
+      // A live-pinned rebuild is legitimate only when the last outgoing
+      // request served exactly these sources: unlike an append, the sources
+      // are covered by recorded Memory, so an un-served request can never
+      // back a rebuild over text the model never saw in native form (#321).
+      const served = this.lastServedRebuild;
+      if (served === undefined
+        || served.memoryVersion !== memoryVersion
+        || served.prefixEndEntryId !== prefixEndEntryId
+        || served.sourceEndEntryId !== branch[live.sourceEndPosition]!.id) {
+        fail("SOURCE_NOT_SERVED", "the complete original sources for this rebuild were not served in their native form by the Context Memory context handler");
+      }
+      source = live;
+      this.maintenance = {
+        operation: "rebuild",
+        sourceEndEntryId: branch[live.sourceEndPosition]!.id,
+        retainedEntryIds: rebuildRetainedEntryIds(branch, live, current.blocks.slice(prefixCount)),
+        previousEndEntryId: prefixEndEntryId,
+        memoryVersion,
+        sourceCount: branch
+          .slice(prefixEndPosition + 1, live.sourceEndPosition + 1)
+          .filter(isEligibleSourceEntry).length,
+        prefixBlocks: prefixCount,
+        suffixBlocks: plan.suffixCount,
+      };
+    }
+    const retainedEntryIds = rebuildRetainedEntryIds(branch, source, current.blocks.slice(prefixCount));
+    const prefix: MemoryStateBlock[] = current.blocks.slice(0, prefixCount).map((block) => ({
+      endEntryId: block.endEntryId,
+      markdown: block.markdown,
+      retainedEntryIds: [...block.retainedEntryIds],
+    }));
+    const newBlock: MemoryStateBlock = {
+      endEntryId: branch[source.sourceEndPosition]!.id,
+      markdown,
+      retainedEntryIds: [...retainedEntryIds],
+    };
+    const blocks = [...prefix, newBlock];
+    const state: MemoryStateData = {
+      format: MEMORY_STATE_FORMAT_TAG,
+      blocks,
+      ...(current.compactionId !== undefined ? { baseCompactionId: current.compactionId } : {}),
+    };
+    if (parseMemoryState(state) === undefined) {
+      fail("BOUND_EXCEEDED", "the Memory state entry exceeds the persisted format bounds");
+    }
+    const contextWindow = this.windowForBudget();
+    if (estimateTextTokens(composeMemorySummary(blocks.map((block) => block.markdown))) > Math.round((contextWindow * this.config.memoryBudgetPercent) / 100)) {
+      fail("BOUND_EXCEEDED", "the Memory blocks exceed the configured Memory budget");
+    }
+    if (Buffer.byteLength(JSON.stringify(state), "utf8") > MEMORY_DETAILS_MAX_BYTES) {
+      fail("BOUND_EXCEEDED", "the Memory state entry exceeds the persisted format bounds");
+    }
+    const evictable = evictableEntries(branch, prefixEndPosition, source);
+    // Acceptance stays scoped to the latest input observed by our context
+    // handler, exactly like an append (ADR-0017).
+    const observed = this.observedContext;
+    if (observed === undefined
+      || observed.leafId === null
+      || !branch.some((entry) => entry.id === observed.leafId)
+      || evictable.some((entry) => !observed.entryIds.has(entry.id))) {
+      fail("SOURCE_NOT_SERVED", "the covered conversation was not observed in its native form by the Context Memory context handler");
+    }
+    // Net benefit is measured against the served pending request the model
+    // actually saw: the suffix summaries were already absent there, so only
+    // the carrier delta from the prefix-only carrier is charged (#321).
+    const savings = netRebuildSavings(evictable, markdowns.slice(0, prefixCount), markdown);
+    if (savings <= 0) {
+      fail("NO_NET_BENEFIT", "the Memory block would not reduce the next model request; wait for more eligible conversation or a changed source");
+    }
+    return { state, savings };
+  }
+
+  /**
    * The append source this call may cover (#320): the pending maintenance
    * request's pinned range while it still matches the derived Memory state
    * and resolves on the branch — later tool growth never silently expands an
@@ -1270,6 +1564,7 @@ export class ContextMemoryController {
     const previousEndEntryId = previousEndPosition === -1 ? null : branch[previousEndPosition]!.id;
     const pinned = this.maintenance;
     if (pinned !== undefined
+      && pinned.operation === "append"
       && pinned.memoryVersion === memoryVersion
       && pinned.previousEndEntryId === previousEndEntryId) {
       const endPosition = branch.findIndex((entry) => entry.id === pinned.sourceEndEntryId);
@@ -1281,6 +1576,7 @@ export class ContextMemoryController {
     const live = selectAppendSource(branch, previousEndPosition);
     if (live === null) return null;
     this.maintenance = {
+      operation: "append",
       sourceEndEntryId: branch[live.sourceEndPosition]!.id,
       retainedEntryIds: live.retainedEntryIds,
       previousEndEntryId,
@@ -1294,25 +1590,43 @@ export class ContextMemoryController {
 
   /**
    * Establish, re-scope, or clear the pending maintenance request at a
-   * request boundary while the projected request is due (#320). The request
-   * pins the exact sources the advisory invites; the same evaluation
-   * re-scopes it when real growth extends the eligible range — the old
-   * request is invalidated and the new sources are served in this very
-   * request, which is what makes the re-scope explicit rather than silent —
-   * and clears it when no qualified, observable, net-beneficial range
-   * exists. Failure bookkeeping survives only an identical scope.
+   * request boundary while the projected request is due (#320, #321). The
+   * request pins the exact sources the advisory invites: an append while
+   * rendered Memory sits at or below half its budget, otherwise a suffix
+   * rebuild whose complete original sources this very request must serve.
+   * The same evaluation re-scopes the request when real growth extends the
+   * eligible range — the old request is invalidated and the new sources are
+   * served in this very request, which is what makes the re-scope explicit
+   * rather than silent — and clears it when no qualified, observable,
+   * net-beneficial range exists. A rebuild whose complete serving, advisory,
+   * and composition cannot fit under the due-point safety clamp pins nothing
+   * and reports the honest scale limit instead. Failure bookkeeping survives
+   * only an identical scope.
    */
-  private evaluateMaintenance(session: MemorySessionReader): void {
+  private evaluateMaintenance(
+    session: MemorySessionReader,
+    view: {
+      readonly projection: NativeProjection;
+      readonly aligned: readonly AlignedMessage[];
+      readonly memory: CurrentMemory;
+      readonly systemTokens: number;
+      readonly toolsTokens: number;
+      readonly window: number;
+    },
+  ): { readonly request?: MaintenanceRequest; readonly scaleLimit?: boolean; readonly served?: unknown[] } {
     const previous = this.maintenance;
-    const clear = (): void => {
+    const clear = (): { readonly request?: undefined; readonly scaleLimit?: undefined; readonly served?: undefined } => {
       this.maintenance = undefined;
       this.maintenanceFailures = undefined;
+      return {};
     };
     const leafId = session.getLeafId?.() ?? null;
     if (leafId === null) return clear();
     const branch = [...session.getBranch(leafId)];
-    const current = deriveCurrentMemory(session);
-    if (!this.appendAdvisoryAllowed(current)) return clear();
+    const current = view.memory;
+    if (current.kind === "opaque") return clear();
+    const halfBudget = this.halfBudgetTokens();
+    if (halfBudget === null) return clear();
     let previousEndPosition = -1;
     let previousEndEntryId: string | null = null;
     if (current.kind === "valid") {
@@ -1321,29 +1635,149 @@ export class ContextMemoryController {
       if (previousEndPosition === -1) return clear();
       previousEndEntryId = lastEnd;
     }
-    const source = selectAppendSource(branch, previousEndPosition);
-    if (source === null) return clear();
-    const request: MaintenanceRequest = {
-      sourceEndEntryId: branch[source.sourceEndPosition]!.id,
-      retainedEntryIds: source.retainedEntryIds,
-      previousEndEntryId,
-      memoryVersion: memoryVersionOf(current),
-      sourceCount: branch
-        .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
-        .filter(isEligibleSourceEntry).length,
-    };
-    // Every evictable entry inside the pinned range must have been served in
+    // Every evictable entry inside a pinned range must have been served in
     // its native form in this very request: an upstream transform that
     // filtered a source leaves no request to bind (#320, ADR-0017).
     const observed = this.observedContext;
     if (observed === undefined || observed.leafId !== leafId) return clear();
-    const evictable = evictableEntries(branch, previousEndPosition, source);
+    if (current.kind !== "valid"
+      || renderedMemoryTokens(current.blocks.map((block) => block.markdown)) <= halfBudget) {
+      // ── The append request (#319, #320), unchanged in shape ──
+      const source = selectAppendSource(branch, previousEndPosition);
+      if (source === null) return clear();
+      const request: MaintenanceRequest = {
+        operation: "append",
+        sourceEndEntryId: branch[source.sourceEndPosition]!.id,
+        retainedEntryIds: source.retainedEntryIds,
+        previousEndEntryId,
+        memoryVersion: memoryVersionOf(current),
+        sourceCount: branch
+          .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
+          .filter(isEligibleSourceEntry).length,
+      };
+      const evictable = evictableEntries(branch, previousEndPosition, source);
+      if (evictable.some((entry) => !observed.entryIds.has(entry.id))) return clear();
+      // The advisory never invites a range that cannot save request tokens
+      // even with the smallest legal body: coverage total is not savings.
+      if (netAppendSavings(evictable, current, MINIMAL_BLOCK_BODY) <= 0) return clear();
+      if (!sameMaintenanceScope(previous, request)) this.maintenanceFailures = undefined;
+      this.maintenance = request;
+      return { request };
+    }
+    // ── The suffix rebuild request (#321) ──
+    const markdowns = current.blocks.map((block) => block.markdown);
+    const minimumPrefix = firstFullyServableBlockIndex(branch, current.blocks);
+    const plan = selectRebuildSuffix(markdowns, halfBudget, minimumPrefix);
+    if (plan === null) {
+      // No block's complete originals can re-enter a request (for example a
+      // v1 compaction-carried baseline): the honest boundary, not a
+      // summary-of-summary fallback.
+      this.maintenance = undefined;
+      this.maintenanceFailures = undefined;
+      return { scaleLimit: true };
+    }
+    const prefixCount = plan.prefixCount;
+    const prefixEndPosition = prefixCount === 0
+      ? -1
+      : branch.findIndex((entry) => entry.id === current.blocks[prefixCount - 1]!.endEntryId);
+    if (prefixCount > 0 && prefixEndPosition === -1) return clear();
+    const source = selectAppendSource(branch, prefixEndPosition);
+    if (source === null) return clear();
+    const retainedEntryIds = rebuildRetainedEntryIds(branch, source, current.blocks.slice(prefixCount));
+    const request: MaintenanceRequest = {
+      operation: "rebuild",
+      sourceEndEntryId: branch[source.sourceEndPosition]!.id,
+      retainedEntryIds,
+      previousEndEntryId: prefixCount === 0 ? null : current.blocks[prefixCount - 1]!.endEntryId,
+      memoryVersion: memoryVersionOf(current),
+      sourceCount: branch
+        .slice(prefixEndPosition + 1, source.sourceEndPosition + 1)
+        .filter(isEligibleSourceEntry).length,
+      prefixBlocks: prefixCount,
+      suffixBlocks: plan.suffixCount,
+    };
+    const evictable = evictableEntries(branch, prefixEndPosition, source);
     if (evictable.some((entry) => !observed.entryIds.has(entry.id))) return clear();
-    // The advisory never invites a range that cannot save request tokens
-    // even with the smallest legal body: coverage total is not savings.
-    if (netAppendSavings(evictable, current, MINIMAL_BLOCK_BODY) <= 0) return clear();
+    if (netRebuildSavings(evictable, markdowns.slice(0, prefixCount), MINIMAL_BLOCK_BODY) <= 0) return clear();
+    // This very request must serve the complete sources it invites: the
+    // prefix carrier plus the suffix's originals, raw and in order. If the
+    // serving projection cannot be constructed, no request is pinned — an
+    // invitation the model cannot actually read from is never sent (#321).
+    const served = this.rebuildServingMessages(view.aligned, view.projection, current, prefixCount);
+    if (served === undefined) return clear();
+    // The honest scale endpoint (#321): the complete serving, the advisory
+    // that invites it, and the request's composition must fit under the same
+    // safety clamp the due point uses — below Pi's native compaction
+    // boundary. Otherwise nothing is pinned, nothing is truncated, paged, or
+    // deleted, and Pi native compaction keeps owning the boundary.
+    const bound = view.window - this.reserveTokens - Math.round(view.window / 10);
+    const estimate = this.estimateMessages(served) + estimateTextTokens(DUE_ADVISORY_REBUILD_TEXT)
+      + view.systemTokens + view.toolsTokens
+      + this.activeCalibrationTokens(request.memoryVersion, view.systemTokens, view.toolsTokens);
+    if (estimate > bound) {
+      this.maintenance = undefined;
+      this.maintenanceFailures = undefined;
+      return { scaleLimit: true };
+    }
     if (!sameMaintenanceScope(previous, request)) this.maintenanceFailures = undefined;
     this.maintenance = request;
+    return { request, served };
+  }
+
+  /**
+   * The projection that serves a pending rebuild's complete sources (#321):
+   * the kept prefix's replacement set is applied with a prefix-only carrier
+   * while the selected suffix's original entries pass through raw — their
+   * summaries absent, their originals whole, for as long as the request stays
+   * pending. With an empty prefix there is no carrier at all: the request is
+   * the raw conversation plus the advisory. Refusal semantics match the
+   * ordinary application — an upstream transform that breaks the prefix
+   * alignment returns undefined and nothing is pinned. Accepted compression
+   * pairs drop whole: every block's summary is either carried by the prefix
+   * carrier or deliberately replaced by its served originals, never both.
+   */
+  private rebuildServingMessages(
+    aligned: readonly AlignedMessage[],
+    projection: NativeProjection,
+    memory: ValidMemory,
+    prefixCount: number,
+  ): unknown[] | undefined {
+    if (prefixCount === 0) {
+      return filterCompressionArtifacts(aligned, true);
+    }
+    const prefixBlocks = memory.blocks.slice(0, prefixCount);
+    const evict = replacementEntryIdsOf(prefixBlocks);
+    const mappedEntryIds = new Set<string>();
+    for (const item of aligned) {
+      if (item.entryId !== undefined) mappedEntryIds.add(item.entryId);
+    }
+    for (const id of evict) {
+      if (projection.carriedEntryIds.has(id) && !mappedEntryIds.has(id)) return undefined;
+    }
+    const carrier = memoryCarrierMessage(prefixBlocks, memory.carrierTimestamp);
+    const out: unknown[] = [];
+    let carrierPlaced = false;
+    const baseSummaryId = memory.carrier === "state" ? memory.compactionId : undefined;
+    for (const item of aligned) {
+      if (item.entryId !== undefined && evict.has(item.entryId)) {
+        if (!carrierPlaced) {
+          out.push(carrier);
+          carrierPlaced = true;
+        }
+        continue;
+      }
+      if (item.entryId !== undefined && baseSummaryId !== undefined && item.entryId === baseSummaryId) {
+        out.push(carrier);
+        carrierPlaced = true;
+        continue;
+      }
+      out.push(item.message);
+    }
+    if (!carrierPlaced) return undefined;
+    return filterCompressionArtifacts(
+      out.map((message) => ({ message, entryId: undefined }) as AlignedMessage),
+      true,
+    );
   }
 
   /** The model window the current budget was computed against. */
@@ -1433,25 +1867,48 @@ export class ContextMemoryController {
       const duePoint = window === null || window === undefined
         ? null
         : effectiveDuePoint(this.config.compressionThreshold, this.config.memoryBudgetPercent, window, this.reserveTokens);
-      if (duePoint !== null) {
+      if (typeof window === "number" && duePoint !== null) {
         this.modelWindow ??= window;
-        let total = 0;
-        for (const message of messages) {
-          total += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
-        }
+        // Per-request state (#321): the scale-limit marker and the
+        // last-served rebuild describe exactly this outgoing request.
+        this.scaleLimit = false;
+        this.lastServedRebuild = undefined;
+        const total = this.estimateMessages(messages);
         const memoryVersion = memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none";
         this.due = total + systemTokens + toolsTokens
           + this.activeCalibrationTokens(memoryVersion, systemTokens, toolsTokens) >= duePoint;
         // Maintenance need is evaluated before every ordinary request (#320):
         // while due, the pending request is established, re-scoped onto real
         // growth, or cleared; the advisory rides this request only while a
-        // request is pending and not suppressed.
+        // request is pending and not suppressed. #321: a rebuild request
+        // swaps the projection for the serving one — the suffix's complete
+        // originals raw, its summaries gone — in this very request.
         if (this.due) {
-          this.evaluateMaintenance(session);
+          const decision = this.evaluateMaintenance(session, {
+            projection,
+            aligned,
+            memory,
+            systemTokens,
+            toolsTokens,
+            window,
+          });
+          if (decision.request !== undefined && decision.request.operation === "rebuild" && decision.served !== undefined) {
+            messages = decision.served;
+            this.lastServedRebuild = {
+              prefixEndEntryId: decision.request.previousEndEntryId,
+              sourceEndEntryId: decision.request.sourceEndEntryId,
+              memoryVersion: decision.request.memoryVersion,
+            };
+          } else if (decision.scaleLimit === true) {
+            this.scaleLimit = true;
+          }
         } else {
           this.invalidateMaintenanceRequest();
         }
         if (this.due && this.maintenance !== undefined && !maintenanceSuppressed(this.maintenanceFailures)) {
+          const advisoryText = this.maintenance.operation === "rebuild"
+            ? DUE_ADVISORY_REBUILD_TEXT
+            : DUE_ADVISORY_TEXT;
           const insertAfter = findLastIndexOf(messages, (message) =>
             (message as { role?: unknown } | null)?.role === "user");
           if (insertAfter !== -1) {
@@ -1459,7 +1916,7 @@ export class ContextMemoryController {
             next.splice(insertAfter + 1, 0, {
               role: "custom",
               customType: CONTEXT_MEMORY_ADVISORY_TYPE,
-              content: DUE_ADVISORY_TEXT,
+              content: advisoryText,
               display: false,
               timestamp: Date.now(),
             });
@@ -1468,15 +1925,12 @@ export class ContextMemoryController {
         }
       }
       // The estimate of the request actually returned — projection, artifact
-      // filtering, and advisory included — anchors the next usage report's
-      // residual and the `/context` pressure split (#320). The recorded
-      // version is the Memory the request actually carried ("none" whenever
-      // the state-carrier application refused), beside the request's own
-      // system-prompt and tool estimates.
-      let finalEstimate = 0;
-      for (const message of messages) {
-        finalEstimate += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
-      }
+      // filtering, rebuild serving, and advisory included — anchors the next
+      // usage report's residual and the `/context` pressure split (#320). The
+      // recorded version is the Memory the request actually carried ("none"
+      // whenever the state-carrier application refused), beside the request's
+      // own system-prompt and tool estimates.
+      const finalEstimate = this.estimateMessages(messages);
       this.lastRequest = {
         estimateTokens: finalEstimate,
         systemTokens,
@@ -1489,14 +1943,17 @@ export class ContextMemoryController {
     }
   }
 
-  /** Whether the advisory may ask for an append right now (#319, #320). */
-  private appendAdvisoryAllowed(current: CurrentMemory): boolean {
-    if (current.kind === "opaque") return false;
-    if (current.kind === "none") return true;
-    const halfBudget = this.halfBudgetTokens();
-    if (halfBudget === null) return false;
-    const markdowns = current.blocks.map((block) => block.markdown);
-    return renderedMemoryTokens(markdowns) <= halfBudget;
+  /**
+   * Pi's per-message estimate over one message list with Context Memory
+   * protocol artifacts removed (#320, #321): the one measure due judgment,
+   * rebuild scale-limit proof, and the `/context` pressure split share.
+   */
+  private estimateMessages(messages: readonly unknown[]): number {
+    let total = 0;
+    for (const message of messages) {
+      total += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+    }
+    return total;
   }
 
   /**
@@ -1514,11 +1971,7 @@ export class ContextMemoryController {
     recordApplication: boolean,
   ): unknown[] | undefined {
     if (memory.kind !== "valid" || memory.carrier !== "state") return undefined;
-    const evict = replacementEntryIds(memory);
-    const retained = new Set<string>();
-    for (const block of memory.blocks) {
-      for (const id of block.retainedEntryIds) retained.add(id);
-    }
+    const evict = replacementEntryIdsOf(memory.blocks);
     // Every eviction target the native projection carries must be mapped;
     // an unmapped target means an upstream transform changed it and the
     // application refuses rather than guessing.
@@ -1529,7 +1982,7 @@ export class ContextMemoryController {
     for (const id of evict) {
       if (projection.carriedEntryIds.has(id) && !mappedEntryIds.has(id)) return undefined;
     }
-    const carrier = memoryCarrierMessage(memory);
+    const carrier = memoryCarrierMessage(memory.blocks, memory.carrierTimestamp);
     const out: unknown[] = [];
     let carrierPlaced = false;
     const baseSummaryId = memory.compactionId;
@@ -1740,23 +2193,31 @@ export class ContextMemoryController {
       maintenance?: ContextMemoryMaintenanceInfo;
       pressure?: ContextMemoryPressureInfo;
       lastNetSavingsTokens?: number;
+      scaleLimit?: true;
     };
     const maintenance = this.maintenanceInfo();
     if (maintenance !== undefined) active.maintenance = maintenance;
     const pressure = this.pressureInfo();
     if (pressure !== undefined) active.pressure = pressure;
     if (this.lastNetSavingsTokens !== undefined) active.lastNetSavingsTokens = this.lastNetSavingsTokens;
+    if (this.scaleLimit) active.scaleLimit = true;
     return snapshot;
   }
 
   /**
-   * The bounded pending-request diagnostics for `/context` (#320): present
-   * exactly while a maintenance request is pending, never a log.
+   * The bounded pending-request diagnostics for `/context` (#320, #321):
+   * present exactly while a maintenance request is pending, never a log.
+   * #321 names the invited operation and, for a rebuild, the replaced block
+   * count.
    */
   private maintenanceInfo(): ContextMemoryMaintenanceInfo | undefined {
     if (this.maintenance === undefined) return undefined;
     return {
+      operation: this.maintenance.operation,
       sources: this.maintenance.sourceCount,
+      suffixBlocks: this.maintenance.operation === "rebuild"
+        ? this.maintenance.suffixBlocks ?? null
+        : null,
       suppressed: maintenanceSuppressed(this.maintenanceFailures),
       lastErrorCode: this.maintenanceFailures?.lastCode ?? null,
     };

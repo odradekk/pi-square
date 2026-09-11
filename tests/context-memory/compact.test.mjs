@@ -357,8 +357,10 @@ try {
     assert.deepEqual(stateEntriesOf(sm), []);
   }
 
-  // Rendered Memory above half its budget: the append is refused pending the
-  // (unavailable) suffix rebuild.
+  // Rendered Memory above half its budget over a v1 compaction-carried
+  // baseline (#321): the suffix's complete originals sit below the native
+  // kept boundary and can never re-enter a request, so the rebuild refuses —
+  // never a summary-of-summary over the v1 blocks — and nothing records.
   {
     const sm = SessionManager.inMemory("/project");
     sm.appendMessage({ role: "user", content: "explore the parser", timestamp: 1 });
@@ -379,7 +381,7 @@ try {
     await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
     await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("h:3")]);
-    assert.match(await refusalMessage(session, ctx, "h:3", "# Small append"), /^MAINTENANCE_PENDING: /);
+    assert.match(await refusalMessage(session, ctx, "h:3", "# Small append"), /^SOURCE_NOT_SERVED: /);
     assert.deepEqual(stateEntriesOf(sm), []);
   }
 

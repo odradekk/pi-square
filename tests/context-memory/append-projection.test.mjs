@@ -28,16 +28,20 @@ const CONTEXT_WINDOW = 40_000;
 const COMPRESSION_THRESHOLD_TOKENS = 500;
 const MEMORY_BUDGET_PERCENT = 1;
 
-/** The block body exceeds 200 characters; the key fact sits at its very end. */
+/**
+ * The block body exceeds 200 characters with the key fact at its very end,
+ * while the rendered one-block Memory stays below half of the 1% budget —
+ * this suite pins the append path; #321's suffix rebuild has its own suites.
+ */
 const KEY_FACT = "The access code for the vault is MARS-ROVER-77.";
 const MEMORY_MARKDOWN = [
   "# Task research digest",
   "",
   "The repository tour covered the build entry points and the login flow.",
   "The first two reads established the workspace layout facts that later",
-  "steps depend on, including the fixture filenames and their purposes.",
-  "Ordinary operational notes follow so the block exceeds the length bound",
-  "that guarantees a complete carrier matters: padding detail, still true.",
+  "steps depend on, including the fixture filenames. Padding notes follow",
+  "so the block clears the length bound that guarantees a complete",
+  "carrier matters.",
   "",
   KEY_FACT,
 ].join("\n");
@@ -271,8 +275,10 @@ try {
     "the request that prompted the block carries the advisory");
   assert.ok(advisoryCounts.slice(0, compactCallIndex).some((count) => count === 1),
     "the advisory persisted across earlier ordinary requests");
-  assert.ok(advisoryCounts.slice(compactCallIndex + 1).every((count) => count === 0),
-    "the advisory clears once the recorded Memory relieves the pressure");
+  assert.equal(advisoryCounts[compactCallIndex], 0,
+    "the completed request's advisory clears once the recorded Memory relieves the pressure");
+  assert.ok(advisoryCounts.slice(compactCallIndex + 1).every((count) => count <= 1),
+    "later requests re-arm at most one sustained-maintenance advisory from real growth (#320)");
 
   // ── The acceptance seam: the request that follows the recorded block ──
   const appliedIndex = requests.findIndex((request) =>
