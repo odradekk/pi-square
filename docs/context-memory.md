@@ -97,7 +97,7 @@ stays the only session-file writer:
   summary message with the single complete carrier — the two carriers never
   coexist in one request.
 
-Every provider-bound request renders the recorded Memory as **one complete
+pi-square's context handler renders the recorded Memory as **one complete
 carrier message** (custom type `pi-square.context-memory/blocks`): the leading
 part carries the fixed wrapper, each block's part carries the fixed separator
 plus that block's body, and the parts concatenate byte-for-byte to one
@@ -167,13 +167,12 @@ real-user run, and it takes effect on the next request — not at run end:
    calls and the batch in flight are never covered. Tool batches are
    validated by call id across the whole range: a call whose result falls
    outside the range, or a result without its call, refuses the compression —
-   orphan messages are never dropped to force a fit. **Serving proof:** every
-   eviction target must have reached the model in its current native form in
-   the most recent observed request — an upstream transform that replaced or
-   removed a source entry removes it from the served boundary, and the call
-   refuses with `SOURCE_NOT_SERVED` instead of compressing text the model
-   never saw (or text the eviction would not actually remove from the
-   current request). The compression tool's own batch must be its sole call;
+   orphan messages are never dropped to force a fit. **Source observation:**
+   every eviction target must match its native form in the latest input to
+   pi-square's `context` handler. An earlier transform that replaced or removed
+   a source invalidates that observation, and the call refuses with
+   `SOURCE_NOT_SERVED`. This validates the handler's input, not final model
+   delivery. The compression tool's own batch must be its sole call;
    a mixed batch is refused and the sibling tools' real results are preserved
    untouched. The latest user instruction is protected: if it falls inside a
    covered range it is recorded as a retained exception, stays raw in every
@@ -188,7 +187,7 @@ real-user run, and it takes effect on the next request — not at run end:
    `recorded: true` — the acknowledgement states recording, never delivery —
    and the run continues. Acceptance validates the body bounds, the total
    rendered Memory budget, the state serialization cap, and the projected net
-   benefit of the actual final request — evicted source tokens minus the
+   benefit of this handler's request projection — evicted source tokens minus the
    carrier **delta** the request gains (an append onto existing Memory adds
    only the new block's part; the unchanged prefix is never charged again);
    an attempt with no provable source, no capacity, or no positive savings is
@@ -200,9 +199,11 @@ real-user run, and it takes effect on the next request — not at run end:
    covered non-retained entries leave, the one complete carrier enters at the
    eviction boundary (or replaces the base compaction's summary message),
    older compression call/result pairs are dropped now that the carrier
-   duplicates their argument bodies, and the trailing pair survives whole
-   with its arguments reduced to a bounded placeholder — removing it would
-   end the request on an assistant turn, which providers reject. The
+   duplicates their argument bodies. The current assistant batch and all its
+   results survive until the next user or assistant message, including a
+   mixed batch's rejection and ordinary sibling results. Only accepted
+   compression arguments become bounded placeholders once the complete
+   carrier exists; rejected arguments and diagnostic feedback stay intact. The
    application needs reliable message-to-entry alignment; an upstream
    transform that removed or modified an eviction target refuses the whole
    application for that request. `/context` distinguishes `recorded · not yet
@@ -213,6 +214,18 @@ A failure before recording changes nothing; after recording, the state entry
 is real history and stays recorded even if the tool result is interrupted.
 Unrecorded candidates are never replayed on restart — derivation rebuilds
 from the branch alone.
+
+**Compatibility boundary.** Pi 0.84.2 has no public observer after all
+`context` and `before_provider_request` handlers. pi-square validates sources
+and constructs its projection at its own handler; later extensions and
+provider conversion may still change the request. `SOURCE_NOT_SERVED` means
+the source was not observed here, and `applied to requests` means the
+projection was constructed here, not that the provider acknowledged delivery.
+Final delivery under later modifiers is outside this runtime guarantee.
+Native-session tests inspect actual provider requests for the combinations
+they exercise; they do not certify arbitrary extension chains. The package
+continues to use unmodified Pi and does not replace providers to gain control
+of their requests.
 
 **Relation to Pi native compaction.** The feature never cancels or takes over
 Pi's own compaction. If Pi's native compaction runs (manually or by
@@ -357,10 +370,11 @@ a session operation.
   only bounded mechanical metadata (states, counts, token estimates, safe
   codes) — never Memory Markdown or source bodies — so the feature does not
   create another sensitive copy.
-- **Every provider sees the same block structure.** The provider-bound
-  projection renders each current Memory block as its own ordered text
+- **One provider-neutral block structure.** pi-square's context handler
+  constructs each current Memory block as its own ordered text
   content block for every model and provider — no provider-specific branch,
-  no cache marker, and no breakpoint moved. Cache behavior across a Memory
+  no cache marker, and no breakpoint moved. Later modifiers and provider
+  conversion remain outside this construction guarantee. Cache behavior across a Memory
   append is a measured property, not a promise: the pinned provider-cache
   experiment drives real `AgentSession.prompt()` sequences through the
   installed pi-square extension. Pi itself grows the transcript, builds every
@@ -385,14 +399,14 @@ a session operation.
 - **Protocol artifacts are filtered while enabled.** Compression tool calls
   (`compact_to_memory_block` and the retired `submit_memory`) and their
   results are removed from provider-bound requests while the feature is
-  enabled, with two boundaries: the current trailing call/result pair passes
-  through whole — the continuation request must not end on an assistant turn,
-  and a refused result has to stay visible so the model can correct itself —
-  and an older **accepted** pair survives until the complete Memory carrier is
-  established in the same request, so a recorded summary is never silently
-  lost from a request the projection could not serve. Once the carrier is
-  established, a trailing pair's argument body is reduced to a bounded
-  placeholder so the same Markdown is never paid twice. `read_memory_source`
+  enabled, with two boundaries: the current assistant batch and all its
+  results remain intact until a later user or assistant message, including
+  refused compression feedback and ordinary siblings in a mixed batch.
+  An older **accepted** pair survives until the complete Memory carrier is
+  established in this handler's projection, so a recorded summary is never
+  silently lost when projection refuses. Only accepted compression arguments
+  become bounded placeholders once their carrier exists; rejected arguments
+  and feedback stay intact for the current batch. `read_memory_source`
   artifacts stay visible in their own run.
 - **Disabling or uninstalling affects future behavior only.** Existing
   custom state entries remain in Pi history as inert records (they never

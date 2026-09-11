@@ -12,16 +12,17 @@ const { MEMORY_STATE_CUSTOM_TYPE } = await load("../../src/context-memory/format
 const { MEMORY_SUMMARY_WRAPPER } = await load("../../src/context-memory/format.ts");
 
 /**
- * #319 acceptance fixes at the real request exit: an extension whose
- * `context` transform runs BEFORE pi-square rewrites one covered tool
- * result. A compression over sources that never reached the model in their
- * current form must refuse (`SOURCE_NOT_SERVED`), and once recorded Memory
+ * #319 observation boundary at the real request exit: a transform BEFORE
+ * pi-square that rewrites a source prevents authorization (`SOURCE_NOT_SERVED`).
+ * A transform AFTER pi-square can still alter the final request; the accepted
+ * compatibility boundary does not treat our observation as a delivery receipt.
+ * Once recorded Memory
  * cannot be applied to a modified request, the protocol history must stay
  * whole — no orphan results, no lost summary body, no carrier.
  *
- * The upstream extension is a real file loaded through
- * `additionalExtensionPaths`, which Pi resolves ahead of package extensions,
- * so its transform precedes pi-square's in every request.
+ * A real extension file loaded through `additionalExtensionPaths` runs before
+ * the package. For the downstream case, that file registers the package first
+ * and then the filter, fixing their order without changing the Pi host.
  */
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -39,8 +40,11 @@ const WORK_FILES = {
 };
 
 /** The upstream transform extension; `mode` is baked per generated file. */
-function upstreamFilterSource(mode) {
-  return `export default function register(pi) {
+function upstreamFilterSource(mode, filterOrder) {
+  const imported = filterOrder === "after"
+    ? `import registerPackage from ${JSON.stringify(join(packageRoot, "src/index.ts"))};\n` : "";
+  return `${imported}export default function register(pi) {
+  ${filterOrder === "after" ? "registerPackage(pi);" : ""}
   const MODE = ${JSON.stringify(mode)};
   const NEEDLE = ${JSON.stringify(FILTER_NEEDLE)};
   const STATE_TYPE = ${JSON.stringify(MEMORY_STATE_CUSTOM_TYPE)};
@@ -66,7 +70,7 @@ function upstreamFilterSource(mode) {
 `;
 }
 
-function prepareEnvironment(upstreamExtensionPath) {
+function prepareEnvironment(upstreamExtensionPath, filterOrder) {
   const root = mkdtempSync(join(tmpdir(), "pi-square-upstream-transform-"));
   const agentDir = join(root, "agent");
   const cwd = join(root, "workspace");
@@ -82,7 +86,7 @@ function prepareEnvironment(upstreamExtensionPath) {
     },
   }, null, 2) + "\n");
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
-    packages: [{ source: packageRoot }],
+    packages: filterOrder === "after" ? [] : [{ source: packageRoot }],
     quietStartup: true,
     compaction: { enabled: false, keepRecentTokens: 200 },
     retry: { enabled: false, provider: { maxRetries: 0 } },
@@ -115,11 +119,11 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
  * recording succeeds, then the application must refuse without damaging
  * protocol history).
  */
-async function runSession({ mode, onDone }) {
+async function runSession({ mode, filterOrder = "before", mixedOrder, onDone }) {
   const extensionDir = mkdtempSync(join(tmpdir(), "pi-square-upstream-ext-"));
-  const extensionPath = join(extensionDir, "upstream-filter.mjs");
-  writeFileSync(extensionPath, upstreamFilterSource(mode));
-  const environment = prepareEnvironment(extensionPath);
+  const extensionPath = join(extensionDir, "context-filter.ts");
+  writeFileSync(extensionPath, upstreamFilterSource(mode, filterOrder));
+  const environment = prepareEnvironment(extensionPath, filterOrder);
   process.env.PI_CODING_AGENT_DIR = environment.agentDir;
   let session;
   let unsubscribe;
@@ -141,7 +145,6 @@ async function runSession({ mode, onDone }) {
     const compactionEvents = [];
     const memoryMarkdown = "# Upstream digest\n\n- the workspace layout facts from the first two reads were established, including the entry point and the login flow notes.";
     let readA = false;
-    let readB = false;
     let compacted = false;
 
     faux.setResponses(Array.from({ length: 40 }, () => (context) => {
@@ -157,16 +160,13 @@ async function runSession({ mode, onDone }) {
         }
         return fauxAssistantMessage("continuing after the compression attempt", { stopReason: "stop" });
       }
-      if (lastToolName === "compact_to_memory_block") {
-        compacted = true;
-        return fauxAssistantMessage("the compression was refused; reporting", { stopReason: "stop" });
-      }
       if (lastToolName === "read" && messageText(last).includes("FILE-B-NEEDLE")) {
-        readB = true;
-        return fauxAssistantMessage(
-          fauxToolCall("compact_to_memory_block", { markdown: memoryMarkdown }),
-          { stopReason: "toolUse" },
-        );
+        compacted = true;
+        const compact = fauxToolCall("compact_to_memory_block", { markdown: memoryMarkdown });
+        const read = fauxToolCall("read", { path: "file-c.txt" });
+        const calls = mixedOrder === "first" ? [compact, read]
+          : mixedOrder === "last" ? [read, compact] : compact;
+        return fauxAssistantMessage(calls, { stopReason: "toolUse" });
       }
       if (!readA) {
         readA = true;
@@ -221,7 +221,7 @@ async function runSession({ mode, onDone }) {
 }
 
 try {
-  // ── Fix 1: a compression over never-served sources refuses ──
+  // Earlier filtering prevents source observation and therefore recording.
   const refused = await runSession({
     mode: "always",
     onDone: ({ requests, compactionEvents, sessionManager }) => {
@@ -240,13 +240,31 @@ try {
       assert.equal(compactResults.length, 1);
       assert.equal(compactResults[0].message.isError, true, "the compression call failed visibly");
       assert.match(compactResults[0].message.content[0].text, /^SOURCE_NOT_SERVED: /,
-        "the refusal names the served-source boundary");
+        "the refusal names the local source-observation boundary");
       assert.ok(!JSON.stringify(requests).includes(MEMORY_SUMMARY_WRAPPER),
         "no carrier exists without a recording");
       return "refused";
     },
   });
   assert.equal(refused, "refused");
+
+  // Later filtering is outside the accepted runtime guarantee. This checks
+  // the limitation explicitly, not successful delivery or summary quality.
+  await runSession({
+    mode: "always",
+    filterOrder: "after",
+    onDone: ({ requests, sessionManager }) => {
+      assert.ok(!JSON.stringify(requests).includes(FILTER_NEEDLE),
+        "the later transform removes raw evidence from every provider request");
+      assert.ok(JSON.stringify(requests).includes(FILTER_PLACEHOLDER));
+      const branch = sessionManager.getBranch();
+      assert.equal(branch.filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE).length, 1,
+        "source authorization covers the handler's observed input, not later transforms");
+      const result = branch.find((entry) => entry.type === "message"
+        && entry.message.role === "toolResult" && entry.message.toolName === "compact_to_memory_block");
+      assert.equal(result?.message.isError, false, "the observed source can be recorded without claiming final delivery");
+    },
+  });
 
   // ── Fix 2: a refused application keeps protocol history whole ──
   const preserved = await runSession({
@@ -290,6 +308,34 @@ try {
     },
   });
   assert.equal(preserved, "preserved");
+
+  for (const mixedOrder of ["first", "last"]) {
+    await runSession({
+      mode: "never",
+      mixedOrder,
+      onDone: ({ requests, sessionManager }) => {
+        const branch = sessionManager.getBranch();
+        const refusal = branch.find((entry) => entry.type === "message"
+          && entry.message.role === "toolResult" && entry.message.toolName === "compact_to_memory_block");
+        assert.ok(refusal?.message.isError, "a mixed compression batch refuses without recording");
+        assert.match(messageText(refusal.message), /^COMPACT_NOT_SOAL_TOOL:/);
+        assert.ok(!branch.some((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE));
+        const continuation = requests.find((request) => request.messages.some((message) =>
+          message.role === "toolResult" && message.toolName === "read" && messageText(message).includes("FILE-C-NEEDLE")));
+        assert.ok(continuation, "the ordinary sibling completes and reaches the model");
+        const error = continuation.messages.find((message) => message.role === "toolResult"
+          && message.toolCallId === refusal.message.toolCallId);
+        assert.ok(error?.isError, `the first continuation preserves the rejection when compact is ${mixedOrder}`);
+        assert.match(messageText(error), /^COMPACT_NOT_SOAL_TOOL:/);
+        const calls = continuation.messages.filter((message) => message.role === "assistant")
+          .flatMap((message) => message.content.filter((part) => part.type === "toolCall"));
+        assert.ok(calls.some((call) => call.id === error.toolCallId && call.name === "compact_to_memory_block"));
+        for (const message of continuation.messages) {
+          if (message.role === "toolResult") assert.ok(calls.some((call) => call.id === message.toolCallId));
+        }
+      },
+    });
+  }
 
   console.log("context-memory upstream transform native session: OK");
 } finally {

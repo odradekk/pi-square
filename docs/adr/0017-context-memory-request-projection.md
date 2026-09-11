@@ -59,8 +59,8 @@ an autonomous turn, background summarizer, or separate model request.
 
 An unfinished maintenance request keeps the same instruction and complete
 required sources in subsequent projections. It does not append a new message
-to durable history on each request. Bind it to the source view actually
-served: subsequent work cannot silently enlarge the range it authorizes.
+to durable history on each request. Bind it to the source view observed at
+pi-square's context handler: subsequent work cannot silently enlarge the range it authorizes.
 Replace an invalidated request only after serving the replacement sources.
 During rebuild, selected summaries stay absent while their original sources
 are served; they do not return merely because another tool ran.
@@ -143,6 +143,28 @@ writing remains unsupported.
 
 ### Complete outgoing content, stable intervals, and honest accounting
 
+#### Accepted observation boundary
+
+The maintainer limits changes to pi-square: no Pi source changes, patched Pi
+dependency, private-state writes, or provider replacement to obtain a later
+observation point. Pi 0.84.2 runs both `context` and `before_provider_request`
+handlers sequentially and exposes no public observer after every modifier.
+
+Source authorization and runtime projection checks therefore cover only the
+messages pi-square observes and returns at its own `context` handler. Earlier
+filtering must still refuse unobservable sources or an unmappable projection.
+Later context handlers, payload modifiers, and provider conversion can change
+the outgoing request; final delivery through those combinations is a known
+compatibility limit, not a runtime guarantee. `SOURCE_NOT_SERVED` retains its
+existing code but denotes missing observation at this handler, and `applied`
+denotes a constructed projection here, not a provider delivery receipt.
+
+This accepted scope replaces stronger runtime-delivery wording in #317/#319.
+Native AgentSession tests must still inspect actual provider requests for the
+tested combinations. A downstream-filter scenario documents the limit; it
+does not establish successful delivery. This does not lower the separate
+continuity/cache qualification requirements or authorize publishing a release.
+
 Each Memory block has one explicit, complete model-visible carrier, using the
 same multi-block rendering path for every provider. Only remove duplicate
 summary text from tool history once that carrier is established. Verify both
@@ -163,7 +185,7 @@ important than keeping the task within its window.
 Distinguish raw transcript size, current request estimates, and provider usage
 for a prior request. Associate usage with the request/Memory version it
 measured, invalidate a pre-compression anchor, and rebase growth after actual
-reduction. Estimate the final rendered request, including system, tools and
+reduction. Estimate the handler's rendered request, including system, tools and
 retained non-text contributions, with output and tool-growth headroom. Do not
 substitute an intermediate representation or covered-source total for actual
 outgoing size or net savings.

@@ -55,8 +55,8 @@ export type ContextMemorySnapshot =
     /** Which carrier holds the blocks: a #319 state entry or a v1 compaction. */
     readonly carrier: "state" | "compaction";
     /**
-     * Whether the carrier has been applied to at least one request in this
-     * session (#319): `false` means recorded but not yet seen by a request.
+     * Whether this session's context handler has constructed the carrier in
+     * a request projection (#319). This is not a final provider-delivery receipt.
      */
     readonly applied: boolean;
     /** Total blocks in current Memory. */

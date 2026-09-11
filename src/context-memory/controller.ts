@@ -112,13 +112,13 @@ export function renderedMemoryTokens(markdowns: readonly string[]): number {
 }
 
 /**
- * The most recent provider-bound request the controller observed (#319): the
- * leaf it was served on and the entry ids whose native messages reached the
- * transform aligned — the only proof that a source entry was actually served
- * to the model in its current form. Entries an upstream transform replaced or
- * removed never enter this set.
+ * The latest input to this controller's context handler (#319): its branch
+ * leaf and the entry ids whose native messages aligned at this point. Earlier
+ * transforms that replace or remove entries cannot authorize those entries.
+ * This is not final delivery evidence: later context/payload handlers and
+ * provider conversion remain outside this observation boundary (ADR-0017).
  */
-interface ServedBoundary {
+interface ObservedContextBoundary {
   readonly leafId: string | null;
   readonly entryIds: ReadonlySet<string>;
 }
@@ -250,19 +250,19 @@ const CARRIED_BLOCK_ARGUMENT_PLACEHOLDER = "(this Memory block is carried in ful
  * Remove compression-tool artifacts from a provider-bound message list (#215,
  * #253, #319) as whole call/result pairs, never half-pairs:
  *
- * - The current trailing compression call/result pair passes through whole,
- *   accepted or refused: removing it would end the request on an assistant
- *   turn, and a refused result must stay visible for the model to correct
- *   itself. Once the complete Memory carrier is established in the same
+ * - The latest assistant batch and all its results pass through whole,
+ *   accepted or refused, until the next user or assistant message: a mixed
+ *   batch's rejection must reach the model alongside ordinary sibling results.
+ *   Once the complete Memory carrier is established in the same
  *   request, an accepted trailing call's arguments carry only the bounded
  *   placeholder — the body survives in full exactly once, inside the carrier.
  * - Older accepted pairs survive untouched while no carrier is established:
  *   their arguments are the only request-side copy of the recorded summary,
  *   so dropping either half would orphan the result or silently lose the
  *   body. Once the carrier is established the whole pair drops together.
- * - Refused pairs (error results) always drop together — call part and
- *   result — whether or not a carrier exists; the model already saw and
- *   addressed the refusal, and nothing recorded duplicates the attempt.
+ * - Older refused pairs (error results) drop together — call part and
+ *   result — whether or not a carrier exists; a later message ends the
+ *   current batch's feedback retention, and no Memory was recorded by the attempt.
  * - A compression call whose result is absent (an aborted batch mid-request)
  *   drops from its assistant message while ordinary text and sibling calls
  *   survive: an unanswered call cannot stay in a provider request.
@@ -298,12 +298,16 @@ function filterCompressionArtifacts(
     else acceptedCallIds.add(record.toolCallId);
   }
 
-  let keepFrom = messages.length;
-  if (messages.length >= 2 && isCompressionResult(messages[messages.length - 1]) && hasCompressionCall(messages[messages.length - 2])) {
-    keepFrom = messages.length - 2;
-  } else if (messages.length >= 1 && hasCompressionCall(messages[messages.length - 1])) {
-    keepFrom = messages.length - 1;
-  }
+  // Results need not be adjacent to their assistant: one batch can contain
+  // many calls, and their results may complete in either order. A later
+  // user or assistant message, not the last result's position, ends this
+  // exception.
+  const latestConversation = findLastIndexOf(messages, (message) => {
+    const role = (message as { role?: unknown } | null)?.role;
+    return role === "assistant" || role === "user";
+  });
+  const keepFrom = latestConversation !== -1 && hasCompressionCall(messages[latestConversation])
+    ? latestConversation : messages.length;
 
   // The trailing pair's accepted arguments collapse to the bounded
   // placeholder once the carrier carries the body in full; a refused attempt
@@ -597,8 +601,8 @@ export class ContextMemoryController {
   private due = false;
   /** The state entry whose carrier has been applied to at least one request (#319). */
   private appliedStateEntryId: string | undefined;
-  /** The most recent served request boundary: what actually reached the model (#319). */
-  private served: ServedBoundary | undefined;
+  /** Sources observed at our context handler, not proof of final delivery (#319). */
+  private observedContext: ObservedContextBoundary | undefined;
   /** Tool-call ids of the most recent assistant message (#319 sole-call check). */
   private lastToolBatch: ToolBatch | undefined;
 
@@ -871,18 +875,16 @@ export class ContextMemoryController {
     const evictable = branch
       .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
       .filter((entry) => isEligibleSourceEntry(entry) && !source.retainedEntryIds.includes(entry.id));
-    // Serving proof (#319): every eviction target must have reached the model
-    // in its current native form in the most recent observed request on this
-    // branch. An upstream transform that replaced or removed a source entry
-    // removes it from the served boundary, and the compression refuses rather
-    // than claiming to replace text the model never saw — or text the
-    // eviction would not actually remove from the current request.
-    const served = this.served;
-    if (served === undefined
-      || served.leafId === null
-      || !branch.some((entry) => entry.id === served.leafId)
-      || evictable.some((entry) => !served.entryIds.has(entry.id))) {
-      fail("SOURCE_NOT_SERVED", "the covered conversation has not reached the model in its current form; cannot prove it as compression source");
+    // Acceptance is scoped to the latest input observed by our context
+    // handler, not the final provider request. Earlier filtering invalidates
+    // a source here; later transformations cannot be observed with Pi's
+    // public API and remain a documented compatibility limit (ADR-0017).
+    const observed = this.observedContext;
+    if (observed === undefined
+      || observed.leafId === null
+      || !branch.some((entry) => entry.id === observed.leafId)
+      || evictable.some((entry) => !observed.entryIds.has(entry.id))) {
+      fail("SOURCE_NOT_SERVED", "the covered conversation was not observed in its native form by the Context Memory context handler");
     }
     const carrierDelta = current.kind === "valid"
       ? estimateTextTokens(MEMORY_BLOCK_SEPARATOR + markdown)
@@ -945,11 +947,9 @@ export class ContextMemoryController {
     try {
       const projection = nativeProjection(session);
       const aligned = alignMessages(original, projection);
-      // The alignment is the served boundary (#319): these native messages
-      // reached the transform in their current form, whatever upstream
-      // transforms did to the rest. Acceptance later refuses to cover a
-      // source entry this boundary never observed.
-      this.served = {
+      // Capture only what this handler observed. Neither this alignment nor
+      // the returned projection proves delivery after downstream modifiers.
+      this.observedContext = {
         leafId: session.getLeafId?.() ?? null,
         entryIds: new Set(aligned.flatMap((item) => (item.entryId === undefined ? [] : [item.entryId]))),
       };
