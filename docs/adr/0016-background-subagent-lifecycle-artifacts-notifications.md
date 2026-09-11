@@ -152,7 +152,16 @@ status: accepted
 > sends, drops, or reorders a result and never changes resume eligibility,
 > and non-interactive contexts create no roster, overlay, key listener,
 > timer, or output change. The release-facing documentation audit of the
-> parent viewer specification (#302) remains a later slice (#309).
+> parent viewer specification (#302) closed with #309: the user documentation,
+> the contributor architecture, and this record now describe the roster/viewer
+> boundary and its published limitations together — the main session is never
+> a roster row, opening a child is never a writable session switch, the whole
+> surface runs on Pi 0.84.2 public extension APIs alone (no private transcript
+> pipeline, no upstream fork), a third-party capturing overlay cannot be
+> detected through any public focus query, and parity with Pi's private
+> transcript features (transcript search, prompt jump, click selection,
+> third-party renderers, native image handling) is neither used nor promised —
+> with no new viewer behavior added by that slice.
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,
