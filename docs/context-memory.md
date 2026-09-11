@@ -3,16 +3,25 @@
 Context Memory is an experimental parent-session capability that represents
 older conversation history on one Pi session branch as a small ordered list of
 **Memory blocks** — compact Markdown written by the current main agent —
-followed by the recent uncompressed conversation. When enabled and active, it
-replaces Pi's recursively rewritten native compaction summary with blocks that
-stay byte-stable between compressions and remain source-addressable: the
-original conversation behind every block can be recovered from the session
-itself.
+followed by the recent uncompressed conversation. When enabled and active, a
+recorded Memory block is applied to the **next ordinary model request** — the
+covered original entries leave the request, one complete carrier message
+enters, and the run continues without waiting for anything to settle. Blocks
+stay byte-stable across appends and remain source-addressable: the original
+conversation behind every block stays in the session and can be recovered in
+bounded pages.
 
 The feature is **experimental** and **disabled by default**. Installing or
 upgrading pi-square never creates Context Memory model calls, tools, or files.
-This guide documents what ships today; see `docs/adr/0013-context-memory.md`
-for the architecture decisions and `README.md` for the summary.
+This guide documents what ships today; the architecture decisions live in
+`docs/adr/0017-context-memory-request-projection.md` (ADR-0013 is superseded
+history), and `README.md` carries the summary. Sustained re-triggering and
+failure recovery, the suffix rebuild, the full interruption and branch
+recovery matrix, cross-provider combination guarantees, native-fallback
+arbitration, and real-model qualification are owned by the continuation
+tickets (#320–#325) and are **not implemented yet**; everything this guide
+describes as shipping is covered by deterministic tests against real Pi
+sessions.
 
 No performance claim is made here. Context Memory has not been qualified with
 the required real-model and provider-cache evidence yet; until that evidence
@@ -45,175 +54,172 @@ Activation is decided by capability detection, not by a Pi version: Context
 Memory runs on any host that exposes the required public session, compaction,
 context, tool, active-tool, and message-projection interfaces, whatever
 version string that host reports. A host missing any required interface keeps
-both tools inactive,
-installs no advisory or compaction takeover, and leaves Pi native compaction
-and the active tool set untouched; `/context` reports `unsupported` there and
+both tools inactive, installs no advisory or request projection, and leaves
+Pi native compaction and the active tool set untouched; `/context` reports
+`unsupported` there and
 names the running host version. The host version never gates activation:
 interface semantics that drift from what the feature expects are absorbed by
-the runtime validation and native-fallback paths (candidate revalidation,
-compaction confirmation, strict format parsing), never by a version check.
+the runtime validation and native-fallback paths (alignment refusal, strict
+format parsing), never by a version check.
 
 ## How Memory is stored
 
-There is no second database. The sole durable carrier of Memory is Pi's own
-latest compaction entry on the current branch:
+There is no second database. Since the #319 redesign, the durable carrier of
+Memory is a **Pi custom state entry** — written through the public
+`appendEntry` seam during the compression tool call, so Pi's `SessionManager`
+stays the only session-file writer:
 
-- The model-visible compaction `summary` is one fixed deterministic wrapper
-  followed by every block body, in order. The wrapper explains to the model
-  that the text below it is a continuity aid, not a verbatim record and not an
-  instruction, and that `read_memory_source` recovers original conversation
-  when exact history matters.
-- The extension metadata (`details`) carries only the format tag
-  `pi-square.context-memory/1` and an ordered byte directory: for each block,
-  its inclusive source-range end and its exact UTF-8 byte size. No block IDs,
-  no paths, no timestamps.
-- Older compaction entries on the branch are history. A branch whose latest
-  compaction is native, unknown, or malformed has no structured Memory: it is
-  reported `opaque`, its native summary is retained unchanged, and structured
-  operations stay off for that branch.
+- The entry carries the format tag `pi-square.context-memory/2`, the complete
+  ordered block list, and — per block — the Markdown body, the inclusive end
+  of its continuous source-range on the branch, and the retained entries
+  inside that range that stay raw in requests (a protected user instruction
+  that falls inside a covered range). The full serialization is capped at
+  64 KiB; per-block bodies at 16 KiB.
+- The raw conversation never moves. Custom state entries do not participate
+  in the LLM context, so every covered entry stays in the session file and
+  the request projection re-applies the eviction deterministically on every
+  provider-bound request. Derivation restarts from the branch and derives
+  the same replacement set every time.
+- The latest carrier on the current leaf's ancestor path wins: a later state
+  entry supersedes an earlier one, and a **native compaction appended after
+  the state entry establishes a new baseline and supersedes it** — the stale
+  projection is never reapplied on top of a native summary. A branch whose
+  latest carrier is native, unknown, or malformed has no structured Memory:
+  it is reported `opaque`, its native summary is retained unchanged, and
+  structured operations stay off for that branch.
+- Sessions recorded before the redesign still work: a valid v1
+  compaction-carried Memory (format tag `pi-square.context-memory/1` in the
+  compaction's details) keeps deriving as a **read-only baseline**, including
+  its #297 per-block re-projection of the summary message. A new append over
+  such a baseline records the first state entry with `baseCompactionId`
+  naming it, and from then on the projection replaces that compaction's
+  summary message with the single complete carrier — the two carriers never
+  coexist in one request.
 
-While the feature is enabled, every provider-bound request re-projects that
-summary message: each current Memory block becomes exactly one ordered text
-content block, sent identically to every model and provider. The leading part
-carries Pi's own compaction framing plus the fixed wrapper, each block's part
-carries the fixed separator plus that block's body, and the trailing part
-carries Pi's own trailing framing — the parts concatenate byte-for-byte to
-the text Pi would have sent as one block. There is one projection with no
-model or provider branch, and it adds no cache field or breakpoint of any
-kind; Pi's own prompt-cache breakpoint placement is untouched. Appending a
-block inserts exactly one new part before the trailing part and leaves every
-carried part byte-identical. The provider-cache experiment observes the cache
-behavior of this production projection inside real Pi sessions. The step is fail-safe: when the request does not
-carry exactly the current composed rendering — no Memory, an opaque or native
-branch, a mismatched summary, or more than one compaction summary message —
-the ordinary unmodified compaction summary messages are left in place. The
-maintenance projection mutates the request, so it validates a unique carrying
-summary before changing anything; on any ambiguity the whole due-run
-projection is dropped and the original request is restored unchanged.
-Nothing about this changes what is persisted: the projection exists only
-inside the transformed request.
+Every provider-bound request renders the recorded Memory as **one complete
+carrier message** (custom type `pi-square.context-memory/blocks`): the leading
+part carries the fixed wrapper, each block's part carries the fixed separator
+plus that block's body, and the parts concatenate byte-for-byte to one
+rendering. There is one projection with no model or provider branch, and it
+adds no cache field or breakpoint of any kind; Pi's own prompt-cache
+breakpoint placement is untouched. Appending a block inserts exactly one new
+part before the trailing part and leaves every carried part byte-identical.
+The application is fail-safe: it aligns every incoming message to the native
+session projection by strict equality, and any upstream deletion or
+modification that breaks the mapping refuses the whole application — the
+unmodified request is sent instead, with protocol history intact. Nothing is
+half-applied and no filtered history is resurrected.
 
 A Memory block is at most 16 KiB of canonical UTF-8, non-empty, and free of
 NUL and C0 control characters except tab, newline, and carriage return.
 Accepted Markdown is preserved byte-for-byte; nothing is trimmed, rewritten,
-or truncated. The complete metadata serialization is capped at 64 KiB — a
-candidate that would exceed any bound is rejected, never truncated or evicted.
+or truncated. A candidate that would exceed any bound is rejected, never
+truncated or evicted.
 
 Blocks are branch-private. Each is bound to one continuous range of original
 session entries on the current branch, jointly covering the eligible old
 conversation without gaps or overlaps, and the block list always ends before
-the recent uncompressed tail that includes your current request.
+the retained working set that includes your current request.
 
 ## The compression cycle
 
-Context Memory never wakes the agent and never starts a run of its own. Every
-compression happens inside an ordinary real-user run:
+Context Memory never wakes the agent, never starts a run of its own, never
+aborts or restarts the current run, and never calls Pi's native `compact()`
+for a normal compression. Every compression happens inside an ordinary
+real-user run, and it takes effect on the next request — not at run end:
 
-1. **Threshold.** Usage is estimated at session start, on model selection, and
-   at each agent settle — from Pi's numeric context usage when available,
-   otherwise from one deterministic projection of the branch. The configured
-   threshold (a percent of the model window or a fixed token count) is capped
-   at ten percent of the window below Pi's own native compaction boundary
-   (window minus Pi's configured compaction reserve minus ten percent of the
-   window). If that effective due point is non-positive, or the Memory budget
-   is not strictly smaller than it, structured takeover is disabled for the
-   model and Pi native compaction keeps owning the boundary. Nothing is
-   persisted — no counters, timers, or growth history.
-2. **The due run.** When usage reaches the due point, the next real-user input
-   opens a due run. Its first provider request carries one short ephemeral
-   advisory (custom message type `pi-square.context-memory/advisory`,
+1. **Threshold.** Pressure is measured on the **projected request itself** —
+   the request the model would actually see — so a recorded compression
+   relieves pressure as soon as it applies and a stale pre-compression usage
+   number can never manufacture false pressure. The configured threshold (a
+   percent of the model window or a fixed token count) is capped at ten
+   percent of the window below Pi's own native compaction boundary (window
+   minus Pi's configured compaction reserve minus ten percent of the window).
+   If that effective due point is non-positive, or the Memory budget is not
+   strictly smaller than it, the advisory stays off for the model and Pi
+   native compaction keeps owning the boundary. Nothing is persisted — no
+   counters, timers, or growth history.
+2. **The resident tool and the advisory.** `compact_to_memory_block` is
+   resident: while the feature is enabled on a supported host it stays in the
+   model's tool list from the first request, regardless of thresholds or
+   previous submissions, and its schema never changes. When the projected
+   request sits at or above the due point, every due request carries one
+   short ephemeral advisory (custom type `pi-square.context-memory/advisory`,
    non-display) appended after your message. The advisory instructs the agent
-   to finish your task first, then make `submit_memory` the sole tool call of
-   its batch carrying the new block, then continue the same run and deliver
-   its answer, and not to copy credentials, private keys, access tokens, or
-   other secrets into the block. The submission does not end the run: the
-   agent receives the acknowledgement and keeps working, so a long task that
-   crosses a compression threshold runs to completion instead of stopping at
-   the moment of compression. The advisory exists only in that request: it is
-   never persisted, never repeated, and never nags if ignored. A steering
-   input during the open run keeps it; a new real-user run discards the
-   previous transient state first.
-3. **Append or rebuild — the half-budget rule.** While the rendered Memory is
-   at or below half the configured budget, the next run **appends**: the new
+   to call `compact_to_memory_block` as the **sole tool call of its batch**
+   carrying the new block, then continue the same run and deliver its answer,
+   and not to copy credentials, private keys, access tokens, or other secrets
+   into the block. The advisory exists only inside due requests: it is never
+   persisted, never accumulates (at most one instance per request), and
+   disappears as soon as the projection relieves the pressure.
+3. **Append — the half-budget rule.** While the rendered Memory is at or
+   below half the configured budget, the next operation **appends**: the new
    block covers the conversation accumulated since the existing blocks, and
-   every existing block stays byte-identical. Above half budget, the next run
-   **rebuilds a suffix**: it selects the shortest newest contiguous block
-   suffix whose removal leaves an older unchanged prefix at or below half
-   budget. The first provider request of that maintenance run replaces the
-   selected summaries with their complete original conversation — inserted
-   once, in source order — so the replacement block is written from original
-   entries, never from previous summaries. The unselected older prefix stays
-   byte-stable, and divergence begins exactly at the first rebuilt block.
-4. **Submission.** `submit_memory` accepts the block only when it is the only
-   tool call of its assistant message, validates the body bounds and the
-   total Memory budget, and returns the fixed acknowledgement
-   `Memory candidate accepted; compaction pending.` with `accepted: true` —
-   the acknowledgement never claims persistence. The call does not end the
-   run: the model continues in the same turn. The immediate continuation
-   request keeps the trailing submit call and its paired result — removing
-   them would end that request on an assistant turn, which providers reject —
-   and every request after it carries neither, while the run keeps the
-   current request and all of its work uncompressed.
-   Exactly one submission is taken per due run — a block covers one
-   continuous range of entries, so a second block in the same run has no
-   defined boundary — and `submit_memory` leaves the model's tool list for
-   the rest of the due run at acceptance, so a repeat call cannot be spent on
-   a guaranteed refusal.
-5. **Commit.** At the end of the run, pi-square offers the accepted candidate
-   through Pi's public compaction seam; no second model call is made. The
-   committed compaction keeps the whole current run — your request, the
-   submission, and all work appended after it — uncompressed
-   (`firstKeptEntryId` is the user entry that began the run, and
-   post-submission work falls after that kept boundary). Success is confirmed
-   only when Pi actually saved the expected compaction entry; a competing or
-   mismatched compaction discards the
-   candidate with one bounded `COMPACTION_CONFLICT` notice instead of
-   retrying or rewriting.
+   every existing block stays byte-identical. Above half budget the next
+   operation would be a **suffix rebuild** — that operation is not
+   implemented yet (#321); the append is refused with `MAINTENANCE_PENDING`
+   and no block is degraded to force a fit.
+4. **Sources, batches, and the working set.** The runtime — never the model —
+   selects the source range. The retained working set is the most recent
+   completed ordinary tool batch and everything after it on the branch; the
+   source range ends at the last eligible entry before it, so unfinished
+   calls and the batch in flight are never covered. Tool batches are
+   validated by call id across the whole range: a call whose result falls
+   outside the range, or a result without its call, refuses the compression —
+   orphan messages are never dropped to force a fit. The compression tool's
+   own batch must be its sole call; a mixed batch is refused and the sibling
+   tools' real results are preserved untouched. The latest user instruction
+   is protected: if it falls inside a covered range it is recorded as a
+   retained exception, stays raw in every request, and never counts toward
+   the savings. Maintenance protocol calls (`compact_to_memory_block`, the
+   retired `submit_memory`, and `read_memory_source`) are never original
+   sources, so recovered text cannot be recursively re-compressed.
+5. **Recording.** A validated call is recorded immediately: the complete new
+   Memory state lands as one Pi custom state entry (see above), the tool
+   returns the fixed acknowledgement `Memory block recorded. The next model
+   request will carry it in place of the covered older conversation.` with
+   `recorded: true` — the acknowledgement states recording, never delivery —
+   and the run continues. Acceptance validates the body bounds, the total
+   rendered Memory budget, the state serialization cap, and the projected net
+   benefit of the actual final request; an attempt with no provable source,
+   no capacity, or no positive savings is refused with one bounded
+   short-coded message. A repeated or competing submission in the same state
+   finds no uncovered source and records nothing — the recording happens
+   exactly once.
+6. **Application.** The next ordinary request — including a tool continuation
+   — applies the recorded Memory through the public `context` transform:
+   covered non-retained entries leave, the one complete carrier enters at the
+   eviction boundary (or replaces the base compaction's summary message),
+   older compression call/result pairs are dropped now that the carrier
+   duplicates their argument bodies, and the trailing pair survives whole
+   with its arguments reduced to a bounded placeholder — removing it would
+   end the request on an assistant turn, which providers reject. The
+   application needs reliable message-to-entry alignment; an upstream
+   transform that removed or modified an eviction target refuses the whole
+   application for that request. `/context` distinguishes `recorded · not yet
+   applied` from `applied to requests`; a tool result can never claim the
+   future.
 
-A candidate survives only until Pi's compaction seam confirms or clears it or
-the next run boundary clears it. If a compaction never starts or never saves,
-the pending or committing phase stays visible in `/context` without writing
-anything and without blocking native compaction.
+A failure before recording changes nothing; after recording, the state entry
+is real history and stays recorded even if the tool result is interrupted.
+Unrecorded candidates are never replayed on restart — derivation rebuilds
+from the branch alone.
 
-**The bound on post-submission work.** Because the run continues after a
-submission, its further output competes with the distance left before Pi's
-own compaction boundary. The ten-percent figure is the minimum of that
-gap: the effective due point is at most window minus Pi's configured
-compaction reserve minus ten percent of the window (a lower configured
-threshold widens the gap further), so the due point always sits at least
-ten percent of the window below the boundary. The distance that remains
-when the due run opens is a different quantity, and it is not guaranteed in
-either direction: usage is only re-checked at session start, model
-selection, and agent settle, so the previous run can end with usage already
-past the due point and the due run then opens with less than ten percent
-left below the boundary, while a run that opens near a low configured
-threshold starts with far more than ten percent left. A run whose
-post-submission work exhausts the remaining distance simply meets Pi's own
-compaction check — the existing safe fallback: Pi 0.84.2 checks threshold
-compaction after a completed run and before the next prompt, never
-mid-run. With an accepted candidate pending, Pi's compaction seam consumes
-it and the Memory compaction commits as usual; with no candidate submitted,
-Pi native compaction proceeds and its foreign entry closes the due run.
-Nothing is truncated or force-settled to stay inside the remaining
-distance.
+**Relation to Pi native compaction.** The feature never cancels or takes over
+Pi's own compaction. If Pi's native compaction runs (manually or by
+threshold), its entry becomes the new baseline and supersedes earlier custom
+state entries; if it does not run, the custom projection keeps owning the
+in-task boundary. With the feature disabled, native compaction behaves
+exactly as without pi-square.
 
 ## The scale endpoint
 
-Before a maintenance run opens, the complete temporary request — current
-context baseline, the unchanged prefix rendering, every selected block's
-complete original conversation, the raw tail, the advisory, and your request —
-must fit the model window under a ten-percent safety allowance. When it
-cannot, Context Memory stops cleanly: `/context` reports `scale-limit`, no
-submission handshake is exposed, and Pi native compaction owns the boundary
-from that point on. Nothing is truncated, paged across runs, partially
-reconstructed, or recursively summarized — the feature does not pretend
-partial compression is exact.
-
-Switching to a model with a different window recomputes every threshold and
-budget. Existing blocks are never deleted, truncated, or proportionally
-rewritten to fit a smaller budget; if they exceed the new budget, the next
-compression is a rebuild (when the complete sources fit) or the scale-limit
-path.
+The scale endpoint belongs to the suffix rebuild and therefore to #321; it is
+not implemented in this revision. When recorded Memory renders above half its
+budget, the append refuses (`MAINTENANCE_PENDING`) and nothing is deleted,
+truncated, or proportionally rewritten. Switching to a model with a different
+window recomputes every threshold and budget against the new window; existing
+blocks are never deleted, truncated, or rewritten to fit.
 
 ## Reading original sources
 
@@ -238,16 +244,18 @@ recovered text is never recursively treated as new original evidence.
 
 The two tools' failure modes each report one safe sentence beginning with a
 stable short code — `MEMORY_NOT_AVAILABLE`, `BLOCK_OUT_OF_RANGE`,
-`PAGE_OUT_OF_RANGE`, `MEMORY_CHANGED`, `SUBMIT_NOT_DUE`,
-`SUBMIT_NOT_SOLE_TOOL`, `BOUND_EXCEEDED`, or `COMPACTION_BUSY` — and never
-echo Memory Markdown, ranges, or identifiers.
+`PAGE_OUT_OF_RANGE`, `MEMORY_CHANGED`, `COMPACT_NOT_AVAILABLE`,
+`COMPACT_NOT_DUE`, `COMPACT_NOT_SOAL_TOOL`, `MAINTENANCE_PENDING`,
+`BOUND_EXCEEDED`, or `NO_NET_BENEFIT` — and never echo Memory Markdown,
+ranges, or identifiers.
 
-Both tools are dynamically active only in their windows. `submit_memory`
-exists in the model's tool list only during an open due run that has not yet
-accepted its one submission — acceptance removes it for the rest of the run;
-`read_memory_source` only while valid non-empty Memory exists. Neither ever
-appears in a child, Shadow, or subagent catalog, and pi-square removes and
-re-adds only these two owned names, preserving every other active tool.
+`compact_to_memory_block` is resident while the feature is enabled on a
+supported host; `read_memory_source` is active only while valid non-empty
+Memory exists. Neither ever appears in a child, Shadow, or subagent catalog,
+and pi-square removes and re-adds only these two owned names, preserving
+every other active tool. The retired `submit_memory` name is not registered
+anywhere; historical calls in existing sessions are recognized as protocol
+history and keep filtering out of provider-bound requests.
 
 ## Inspecting with `/context`
 
@@ -260,15 +268,13 @@ unchanged — Memory accounting never alters it.
 | `disabled` | `disabled · enable through agent-level contextMemory configuration` |
 | `unsupported` | `unsupported Pi host <version> · required interfaces unavailable · native compaction unchanged` — the running host version is reported, never used to gate |
 | `no-memory` | `enabled · no Memory blocks yet` |
-| `due` | `due · threshold reached · the next run authors the first Memory block` |
-| `pending` | `pending · Memory candidate accepted this run · compaction follows at run end` |
-| `committing` | `committing · writing the Memory compaction` |
-| `opaque` | `opaque · latest compaction is not valid Context Memory · native summary retained` |
-| `scale-limit` | `scale limit · complete Memory sources no longer fit the model window · native compaction owns the boundary` |
+| `due` | `due · threshold reached · compression advisory rides the next request` |
+| `opaque` | `opaque · latest carrier is not valid Context Memory · native summary retained` |
 
 Active Memory shows one header row (`active · ~N tok / N budget · N blocks ·
-stable X/Y · next: append|rebuild`), a `usage N / W window` row when Pi
-reports both numbers, and one bounded chronological row per block with a
+applied to requests` or `… · recorded · not yet applied`), a `usage N / W
+window` row when Pi reports both numbers, and one bounded chronological row
+per block with a
 single-line preview, token estimate, and safe source count. At most 64 rows
 render; older blocks beyond that appear only in the `⋯ +N more blocks` clip
 while the total count stays visible. In-memory (`--no-session`) sessions show
@@ -347,37 +353,44 @@ a session operation.
   content block for every model and provider — no provider-specific branch,
   no cache marker, and no breakpoint moved. Cache behavior across a Memory
   append is a measured property, not a promise: the pinned provider-cache
-  experiment drives seven real `AgentSession.prompt()` calls through the
+  experiment drives real `AgentSession.prompt()` sequences through the
   installed pi-square extension. Pi itself grows the transcript, builds every
-  request, executes `submit_memory`, saves the extension compactions, and sends
-  the projected multi-block Memory. The command runs independent
+  request, executes the `compact_to_memory_block` loop, records the Memory
+  state entries, and sends the projected multi-block carrier. The command runs
+  independent
   `claude-sonnet-5`, `glm-5.3`, and `gpt-5.6-luna` sessions concurrently while
   preserving prompt order inside each session. It constructs no synthetic
   Context or provider payload, injects no cache-isolation nonce, and appends no
   messages by hand. Reports contain every assistant response's Pi-normalized
   usage and compute the same hit rate as Pi's footer:
   `cacheRead / (input + cacheRead + cacheWrite)`; the warm aggregate excludes
-  only the first cold request. The bounded experiment declares a 100k context
-  window and disables native auto-compaction so two Context Memory compactions
-  occur without an oversized paid run. Integrity requires the real tool loop,
-  at least two extension compactions, and a final Memory carrying multiple
-  blocks. This measures production behavior; it no longer claims an isolated
-  multi-block-versus-single-block causal comparison.
+  only the first cold request. The bounded experiment disables native
+  auto-compaction so multiple Context Memory recordings occur without an
+  oversized paid run. Integrity requires the real tool loop, multiple
+  recorded state entries, and a final Memory carrying multiple blocks. This
+  measures production behavior; it claims no causal comparison.
   The offline regression test substitutes Pi's public faux provider only to
   verify this session path deterministically; its simulated cache counts are
   never performance evidence. Only the credentialed command's provider usage
   is used for a cache conclusion.
-- **Protocol artifacts are filtered while enabled.** `submit_memory` calls and
-  their results are removed from provider-bound requests while the feature is
-  enabled, except the current trailing call/result pair, which passes through
-  whole whether the call was accepted or refused — the continuation request
-  must not end on an assistant turn, and a refused result has to stay visible
-  so the model can correct itself; `read_memory_source` artifacts stay
-  visible in their own run.
+- **Protocol artifacts are filtered while enabled.** Compression tool calls
+  (`compact_to_memory_block` and the retired `submit_memory`) and their
+  results are removed from provider-bound requests while the feature is
+  enabled, with two boundaries: the current trailing call/result pair passes
+  through whole — the continuation request must not end on an assistant turn,
+  and a refused result has to stay visible so the model can correct itself —
+  and an older **accepted** pair survives until the complete Memory carrier is
+  established in the same request, so a recorded summary is never silently
+  lost from a request the projection could not serve. Once the carrier is
+  established, a trailing pair's argument body is reduced to a bounded
+  placeholder so the same Markdown is never paid twice. `read_memory_source`
+  artifacts stay visible in their own run.
 - **Disabling or uninstalling affects future behavior only.** Existing
-  compaction entries remain in Pi history as ordinary compaction summaries
-  and stay model-visible; artifact filtering stops too, so historical
-  submit/read tool entries may become model-visible again. Setting
+  custom state entries remain in Pi history as inert records (they never
+  participate in LLM context on their own), and the covered original entries
+  become model-visible again through Pi's native projection; artifact
+  filtering stops too, so historical compression-tool entries may become
+  model-visible again. Setting
   `"enabled": false` (or removing the package) never deletes or rewrites
   existing session content.
 
@@ -393,7 +406,7 @@ a session operation.
 
 Both threshold forms are exclusive: declaring both keys, neither key, or a
 scalar shorthand is rejected. The Memory budget must remain strictly smaller
-than the effective due point or structured takeover stays off for that model.
+than the effective due point or the advisory stays off for that model.
 
 ### Configuring through `/context <request>`
 
@@ -408,8 +421,9 @@ The guide carries computed current values for the running model, not
 formulas: the active configuration, the model's declared context window,
 Pi's compaction reserve, the resulting effective due point, the resulting
 Memory budget, the half-budget that decides append versus rebuild, and
-whether structured takeover is currently armed. It states the silent-disable
-rule (a Memory budget at or above the effective due point disables takeover
+whether the compression advisory is currently armed. It states the
+silent-disable rule (a Memory budget at or above the effective due point
+disables the advisory
 without any error or diagnostic) and gives the agent the arithmetic to check
 a proposed value before writing it. Because `contextMemory` is agent-layer
 only, the agent edits only the agent-level file through the ordinary read,
@@ -482,8 +496,8 @@ offline regressions prove the harness, not real-model continuity quality.
 - Qualification evidence (deterministic protocol replay, real-model
   long-session scenarios, and the provider-cache experiment — concurrent real
   Pi session sequences across Sonnet 5, GLM 5.3, and GPT-5.6 Luna, including
-  the actual `submit_memory` loop and multiple extension compactions)
-  is required before any quality or cache claim;
+  the actual `compact_to_memory_block` loop and multiple recorded Memory
+  state entries) is required before any quality or cache claim;
   reports are development evidence kept out of the npm package, and reruns
   follow the fixed impact-based rules — model-visible or algorithm changes
   rerun the full suites, pure UI or documentation changes rerun nothing,
