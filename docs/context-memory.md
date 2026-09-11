@@ -136,14 +136,21 @@ real-user run, and it takes effect on the next request — not at run end:
    distinguished and are never conflated: the raw session log size, the
    deterministic request estimate, and the provider's reported usage. The
    estimate counts every message with Pi's own per-message estimator — text,
-   thinking, tool calls, and images included — plus one bounded calibration
-   term derived from each provider report that covers what the handler's
-   messages never carry (system prompt, tool definitions, framing). The
-   calibration term is clamped to a quarter of the model window and is bound
-   to the Memory version of the request it measured: when a compression
-   changes the request view, the term is suspended until the next report
-   recalibrates it, so a pre-compression report can never floor
-   post-compression pressure and an old peak never spins the mechanism. The
+   thinking, tool calls, and images included — plus the request's non-message
+   composition read directly from the host's public seams on every request:
+   the effective system prompt and the active tool definitions (name,
+   description, and parameter schema). System or tool-schema growth is
+   therefore visible on the very request it appears, with or without any
+   usage report. A provider report contributes only a bounded residual — the
+   clamped difference between the report and that same request's full
+   estimate, covering provider tokenization and framing differences — and
+   the residual applies only while the Memory version and the system/tool
+   composition it measured are unchanged: a compression or a composition
+   change suspends it until the next report recalibrates, so nothing is
+   charged twice, a pre-compression report can never floor post-compression
+   pressure (the still-present system and tool overhead stays counted), and
+   an old peak never spins the mechanism. The residual is clamped to a
+   quarter of the model window. The
    configured threshold (a percent of the model window or a fixed token
    count) is capped at ten percent of the window below Pi's own native
    compaction boundary (window minus Pi's configured compaction reserve minus
@@ -187,11 +194,15 @@ real-user run, and it takes effect on the next request — not at run end:
    the same task can trigger the next compression without any new user
    input. Repeated refused, invalid, or zero-benefit submissions against one
    unchanged scope are **suppressed within a bounded budget** (three
-   consecutive refusals): the advisory stops inviting the same attempt while
-   the specific refusal and its next-step hint keep reaching the model
-   through the tool result, and real new sources or a substantive Memory
-   state change re-enable evaluation — the next user input is never the only
-   way back.
+   consecutive refusals): every reachable submission refusal counts — a
+   mixed batch, an invalid body (the schema counts characters while the bound
+   counts canonical UTF-8 bytes, so short-but-wide text can pass the schema
+   and still exceed 16 KiB), or a refused append binding — while an
+   unavailable session's error never enters any scope's budget. The advisory
+   stops inviting the same attempt while the specific refusal and its
+   next-step hint keep reaching the model through the tool result, and real
+   new sources or a substantive Memory state change re-enable evaluation —
+   the next user input is never the only way back.
 4. **Append — the half-budget rule.** While the rendered Memory is at or
    below half the configured budget, the next operation **appends**: the new
    block covers the conversation accumulated since the existing blocks, and

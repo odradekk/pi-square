@@ -135,12 +135,59 @@ export function renderedMemoryTokens(markdowns: readonly string[]): number {
   return Math.ceil(chars / 4);
 }
 
+/**
+ * The request's non-message composition, gathered from the host's public
+ * seams (#320): the effective system prompt and the active tool definitions
+ * — name, description, and parameter schema — that the provider-bound
+ * request carries beside the handler's messages. Images and thinking stay
+ * inside the per-message estimate; this carries only what the messages never
+ * include.
+ */
+export interface ContextOverheadInput {
+  readonly systemPrompt?: string;
+  readonly toolDefinitions?: readonly {
+    readonly name: unknown;
+    readonly description: unknown;
+    readonly parameters: unknown;
+  }[];
+}
+
+/** Deterministic chars/4 estimate of the system prompt's contribution (#320). */
+function estimateSystemPromptTokens(systemPrompt: string): number {
+  return Math.ceil(Array.from(systemPrompt).length / 4);
+}
+
+/**
+ * Deterministic estimate of one active tool definition's provider-side
+ * contribution (#320): the JSON form of its name, description, and parameter
+ * schema. Provider serialization differs, but the residual calibration term
+ * absorbs the systematic difference; a definition that cannot be serialized
+ * estimates as zero rather than blocking the request.
+ */
+function estimateToolDefinitionTokens(definition: {
+  readonly name: unknown;
+  readonly description: unknown;
+  readonly parameters: unknown;
+}): number {
+  let chars = 0;
+  try {
+    const serialized = JSON.stringify({
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters,
+    });
+    if (typeof serialized === "string") chars = serialized.length;
+  } catch {
+    chars = 0;
+  }
+  return Math.ceil(chars / 4);
+}
 
 /**
  * The calibration term may claim at most this share of the model window (#320):
- * the system prompt, tool definitions, and framing outside the handler's
- * messages are real but bounded contributions, and a pathological provider
- * report can never inflate pressure through it.
+ * the residual between a provider report and the same request's full estimate
+ * is a real but bounded correction, and a pathological provider report can
+ * never inflate pressure through it.
  */
 const USAGE_CALIBRATION_WINDOW_SHARE = 4;
 
@@ -702,19 +749,30 @@ export class ContextMemoryController {
   /** Bounded refusal bookkeeping for the pending request (#320). */
   private maintenanceFailures: MaintenanceFailures | undefined;
   /** The last provider-bound request this controller transformed (#320). */
-  private lastRequest: { readonly estimateTokens: number; readonly memoryVersion: string } | undefined;
+  private lastRequest: {
+    readonly estimateTokens: number;
+    readonly systemTokens: number;
+    readonly toolsTokens: number;
+    readonly memoryVersion: string;
+  } | undefined;
   /** The provider-reported size of the last measured request and the Memory version it measured (#320). */
   private reportedRequest: { readonly tokens: number; readonly memoryVersion: string } | undefined;
   /**
-   * Calibrated token contribution of everything outside the handler's
-   * messages — system prompt, tool definitions, framing — refreshed from
-   * each provider report and bounded by a window share (#320). The term is
-   * bound to the Memory version of the request it was derived from: when a
-   * compression changes the request view, the term is suspended until the
-   * next report recalibrates it, so a pre-compression report can never floor
-   * the post-compression pressure through the calibration channel.
+   * Residual calibration for the request a provider report actually measured
+   * (#320): the bounded difference between the report and that request's full
+   * estimate — messages plus the directly estimated system prompt and active
+   * tool definitions — so nothing is charged twice. The residual applies only
+   * while the Memory version and the system/tool composition it was derived
+   * from are unchanged: a compression or a composition change suspends it
+   * until the next report recalibrates, so stale residuals never mask growth
+   * and post-compression requests keep their still-present overhead.
    */
-  private calibration: { readonly offsetTokens: number; readonly memoryVersion: string } | undefined;
+  private calibration: {
+    readonly offsetTokens: number;
+    readonly memoryVersion: string;
+    readonly systemTokens: number;
+    readonly toolsTokens: number;
+  } | undefined;
   /** Projected net request savings of the most recent accepted compression (#320). */
   private lastNetSavingsTokens: number | undefined;
 
@@ -868,7 +926,14 @@ export class ContextMemoryController {
     if (duePoint === null) return;
     this.modelWindow = contextWindow;
     const estimate = this.projectedRequestTokens(ctx.sessionManager);
-    this.due = estimate !== null && estimate + this.activeCalibrationTokens(memoryVersionOf(this.current)) >= duePoint;
+    // Run-boundary checks reuse the last observed request composition — the
+    // system prompt and active tools of the most recent transform — because
+    // the authoritative judgment stays at the next request boundary.
+    const systemTokens = this.lastRequest?.systemTokens ?? 0;
+    const toolsTokens = this.lastRequest?.toolsTokens ?? 0;
+    this.due = estimate !== null
+      && estimate + systemTokens + toolsTokens
+        + this.activeCalibrationTokens(memoryVersionOf(this.current), systemTokens, toolsTokens) >= duePoint;
   }
 
   /**
@@ -889,16 +954,17 @@ export class ContextMemoryController {
 
   /**
    * Bind the provider's own report to the request it measured and calibrate
-   * the pressure accounting (#320). The assistant message's usage describes
-   * the last request this controller transformed; the additive difference
-   * between the reported request size and the deterministic estimate is the
-   * bounded calibration term for everything the handler's messages never
-   * carry — system prompt, tool definitions, framing — and images and
-   * thinking, which the per-message estimator already counts. The report is
-   * recorded with the Memory version it measured, so a pre-compression
-   * report is distinguishable from the current view and never acts as a
-   * floor: pressure always re-derives from the next request's estimate plus
-   * the calibration term, and the next response recalibrates it.
+   * the residual pressure accounting (#320). The assistant message's usage
+   * describes the last request this controller transformed; the bounded
+   * difference between the report and that request's **full** estimate —
+   * messages, the directly estimated system prompt, and the active tool
+   * definitions — is the residual term for provider tokenization and framing
+   * differences. Images and thinking are already inside the per-message
+   * estimate and are never charged again. The report is recorded with the
+   * Memory version and composition it measured: a pre-compression report is
+   * distinguishable from the current view and never acts as a floor, and a
+   * stale residual is suspended once the system prompt or tool selection
+   * changes, until the next report recalibrates it.
    */
   noteAssistantUsage(message: unknown): void {
     const record = message as
@@ -913,12 +979,18 @@ export class ContextMemoryController {
     if (reported <= 0 || this.lastRequest === undefined) return;
     this.reportedRequest = { tokens: reported, memoryVersion: this.lastRequest.memoryVersion };
     if (this.modelWindow === null) return;
-    // Clamp to [0, a window share]: the term models real contributions, not
-    // a runaway drift channel, and a missing or malformed report simply
-    // keeps the previous calibration.
+    // Clamp to [0, a window share]: the term models a real residual, not a
+    // runaway drift channel, and a missing or malformed report simply keeps
+    // the previous calibration.
     const bound = Math.floor(this.modelWindow / USAGE_CALIBRATION_WINDOW_SHARE);
-    const offsetTokens = Math.min(Math.max(reported - this.lastRequest.estimateTokens, 0), bound);
-    this.calibration = { offsetTokens, memoryVersion: this.lastRequest.memoryVersion };
+    const basis = this.lastRequest.estimateTokens + this.lastRequest.systemTokens + this.lastRequest.toolsTokens;
+    const offsetTokens = Math.min(Math.max(reported - basis, 0), bound);
+    this.calibration = {
+      offsetTokens,
+      memoryVersion: this.lastRequest.memoryVersion,
+      systemTokens: this.lastRequest.systemTokens,
+      toolsTokens: this.lastRequest.toolsTokens,
+    };
   }
 
   /**
@@ -944,14 +1016,32 @@ export class ContextMemoryController {
   }
 
   /**
-   * The calibration term for one judged Memory version (#320): suspended
-   * unless the provider report measured this exact view. A pre-compression
-   * report therefore contributes nothing to post-compression pressure.
+   * The residual calibration for one judged request composition (#320):
+   * suspended unless the provider report measured this exact Memory version
+   * with this exact system-prompt and tool estimate. A pre-compression
+   * report therefore contributes nothing to post-compression pressure, and a
+   * system or tool-schema change suspends the stale residual until the next
+   * report recalibrates it.
    */
-  private activeCalibrationTokens(memoryVersion: string): number {
-    return this.calibration !== undefined && this.calibration.memoryVersion === memoryVersion
+  private activeCalibrationTokens(memoryVersion: string, systemTokens: number, toolsTokens: number): number {
+    return this.calibration !== undefined
+      && this.calibration.memoryVersion === memoryVersion
+      && this.calibration.systemTokens === systemTokens
+      && this.calibration.toolsTokens === toolsTokens
       ? this.calibration.offsetTokens
       : 0;
+  }
+
+  /**
+   * Count one refused or invalid submission against the pending maintenance
+   * request's bounded failure budget (#320): the specific refusal still
+   * reaches the model, the tool stays resident, and only the advisory
+   * invitation is bounded. Failures attach to the current scope — a later
+   * scope change resets them, so one scope's suppression never leaks into
+   * another.
+   */
+  private noteSubmissionFailure(code: string): void {
+    this.maintenanceFailures = noteMaintenanceFailure(this.maintenanceFailures, code);
   }
 
   /**
@@ -961,10 +1051,12 @@ export class ContextMemoryController {
    * versioned state entry through Pi's public custom-entry seam. The fixed
    * acknowledgement says the Memory is recorded — it never claims a future
    * request already carried it. The run continues; the next ordinary request
-   * applies the projection. #320: a refusal inside the append binding counts
-   * against the pending maintenance request's bounded failure budget, and a
-   * successful recording clears the completed request and records its
-   * projected net savings. Throws one safe short-coded sentence and never
+   * applies the projection. #320: every reachable submission refusal — a
+   * mixed batch, an invalid body, or a refused append binding — counts
+   * against the pending maintenance request's bounded failure budget (an
+   * unavailable session never does), and a successful recording clears the
+   * completed request and records its projected net savings. Throws one safe
+   * short-coded sentence, at most one bounded next-step hint, and never
    * echoes Markdown.
    */
   async compactToBlock(
@@ -974,14 +1066,28 @@ export class ContextMemoryController {
     recording: MemoryRecordingContext,
   ): Promise<AgentToolResult<CompactMemoryDetails>> {
     if (!this.operational()) {
+      // An unavailable session is never a submission against a scope: its
+      // error stays outside every failure budget (#320).
       fail("COMPACT_NOT_AVAILABLE", "Context Memory compression is not available in this session");
     }
     const batch = this.lastToolBatch;
     if (batch === undefined || !batch.ids.includes(toolCallId) || batch.ids.length > 1) {
+      // An invalid submission (#320): a mixed batch counts against the
+      // pending request's bounded failure budget exactly like a refused
+      // binding, so a model that keeps mis-calling stops being invited.
+      this.noteSubmissionFailure("COMPACT_NOT_SOAL_TOOL");
       fail("COMPACT_NOT_SOAL_TOOL", "compact_to_memory_block must be the sole tool call in its batch");
     }
     if (!isValidMemoryBlockBody(markdown)) {
-      fail("BOUND_EXCEEDED", "the Memory block body exceeds the size or content bounds");
+      // An invalid submission (#320): the schema counts characters while the
+      // bound counts canonical UTF-8 bytes, so a short-but-wide body (for
+      // example CJK text) can pass the schema and still exceed 16 KiB. The
+      // refusal counts against the same bounded budget with its next step.
+      this.noteSubmissionFailure("BOUND_EXCEEDED");
+      fail(
+        "BOUND_EXCEEDED",
+        "the Memory block body exceeds the size or content bounds; keep it within 16 KiB of canonical UTF-8 without NUL or other C0 control characters",
+      );
     }
     let candidate: { state: MemoryStateData; savings: number };
     try {
@@ -990,7 +1096,7 @@ export class ContextMemoryController {
       // Bounded suppression bookkeeping (#320): the refusal stays specific and
       // the tool remains resident; only the advisory invitation is bounded.
       const code = error instanceof Error ? error.message.split(":", 1)[0]! : "MEMORY_CHANGED";
-      this.maintenanceFailures = noteMaintenanceFailure(this.maintenanceFailures, code);
+      this.noteSubmissionFailure(code);
       throw error;
     }
     recording.appendEntry(MEMORY_STATE_CUSTOM_TYPE, candidate.state);
@@ -1235,6 +1341,7 @@ export class ContextMemoryController {
     event: { readonly messages: readonly unknown[] },
     session: MemorySessionReader,
     usage?: { tokens: number | null; contextWindow: number } | undefined,
+    overhead?: ContextOverheadInput | undefined,
   ): { messages: readonly unknown[] } | undefined {
     if (!this.operational()) return undefined;
     const original = event.messages;
@@ -1261,11 +1368,22 @@ export class ContextMemoryController {
       messages = this.projectV1Blocks(messages, session);
       // Due is judged on the projected request itself, never on a stale
       // pre-compression usage anchor: a recorded compression relieves
-      // pressure as soon as it applies (#319). #320 adds the bounded
-      // calibration term — the system prompt, tool definitions, and framing
-      // the handler's messages never carry — so the judged size reflects the
-      // request the model is actually sent, while an estimate stays an
-      // estimate and a provider report stays a report.
+      // pressure as soon as it applies (#319). #320 counts the request's
+      // non-message composition directly — the effective system prompt and
+      // the active tool definitions from the host's public seams — and adds
+      // only the bounded residual from a provider report that measured this
+      // exact composition, so system or tool growth is visible on the very
+      // request it appears, with or without any usage report, while an
+      // estimate stays an estimate and a provider report stays a report.
+      // Output and tool-growth headroom stay in effectiveDuePoint's clamp
+      // below Pi's native compaction boundary.
+      const systemTokens = typeof overhead?.systemPrompt === "string"
+        ? estimateSystemPromptTokens(overhead.systemPrompt)
+        : 0;
+      let toolsTokens = 0;
+      for (const definition of overhead?.toolDefinitions ?? []) {
+        toolsTokens += estimateToolDefinitionTokens(definition);
+      }
       const window = usage && typeof usage.contextWindow === "number" ? usage.contextWindow : this.modelWindow;
       const duePoint = window === null || window === undefined
         ? null
@@ -1276,9 +1394,9 @@ export class ContextMemoryController {
         for (const message of messages) {
           total += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
         }
-        this.due = total + this.activeCalibrationTokens(
-          memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none",
-        ) >= duePoint;
+        const memoryVersion = memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none";
+        this.due = total + systemTokens + toolsTokens
+          + this.activeCalibrationTokens(memoryVersion, systemTokens, toolsTokens) >= duePoint;
         // Maintenance need is evaluated before every ordinary request (#320):
         // while due, the pending request is established, re-scoped onto real
         // growth, or cleared; the advisory rides this request only while a
@@ -1306,15 +1424,18 @@ export class ContextMemoryController {
       }
       // The estimate of the request actually returned — projection, artifact
       // filtering, and advisory included — anchors the next usage report's
-      // calibration and the `/context` pressure split (#320). The recorded
-      // version is the Memory the request actually carried: "none" whenever
-      // the state-carrier application refused for this request.
+      // residual and the `/context` pressure split (#320). The recorded
+      // version is the Memory the request actually carried ("none" whenever
+      // the state-carrier application refused), beside the request's own
+      // system-prompt and tool estimates.
       let finalEstimate = 0;
       for (const message of messages) {
         finalEstimate += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
       }
       this.lastRequest = {
         estimateTokens: finalEstimate,
+        systemTokens,
+        toolsTokens,
         memoryVersion: memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none",
       };
       return { messages };
@@ -1607,7 +1728,12 @@ export class ContextMemoryController {
     if (this.lastRequest === undefined && this.reportedRequest === undefined) return undefined;
     return {
       estimated: this.lastRequest !== undefined
-        ? this.lastRequest.estimateTokens + this.activeCalibrationTokens(this.lastRequest.memoryVersion)
+        ? this.lastRequest.estimateTokens + this.lastRequest.systemTokens + this.lastRequest.toolsTokens
+          + this.activeCalibrationTokens(
+            this.lastRequest.memoryVersion,
+            this.lastRequest.systemTokens,
+            this.lastRequest.toolsTokens,
+          )
         : null,
       reported: this.reportedRequest?.tokens ?? null,
       reportedForCurrentMemory: this.reportedRequest !== undefined

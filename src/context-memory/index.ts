@@ -2,7 +2,7 @@ import { DEFAULT_COMPACTION_SETTINGS, type ContextEvent, type ExtensionAPI } fro
 import type { PiSquareConfig } from "../core/config";
 import { decorateInternalTool } from "../display/internal-adapters";
 import type { DisplayRuntimeProvider } from "../display/tool-renderer";
-import { ContextMemoryController, type ContextMemoryUsageInput } from "./controller";
+import { ContextMemoryController, type ContextMemoryUsageInput, type ContextOverheadInput } from "./controller";
 import type { MemorySessionReader } from "./derive";
 import {
   buildContextMemoryConfigGuide,
@@ -146,6 +146,41 @@ export default function registerContextMemory(
     return ctx.sessionManager as MemorySessionReader;
   }
 
+  /**
+   * The request's non-message composition from the host's public seams
+   * (#320): the effective system prompt through the context surface the host
+   * gate already requires, and the active tool definitions — name,
+   * description, parameter schema — filtered from every configured tool by
+   * the active list. Nothing here is trusted blindly: a host surface that
+   * throws or returns a non-string simply contributes nothing, and the
+   * controller treats an absent composition as zero rather than blocking the
+   * request.
+   */
+  function currentRequestOverhead(ctx: { getSystemPrompt?: unknown }): ContextOverheadInput {
+    let systemPrompt: string | undefined;
+    if (typeof ctx.getSystemPrompt === "function") {
+      try {
+        const prompt = (ctx.getSystemPrompt as () => unknown)();
+        if (typeof prompt === "string" && prompt.length > 0) systemPrompt = prompt;
+      } catch {
+        systemPrompt = undefined;
+      }
+    }
+    let toolDefinitions: ContextOverheadInput["toolDefinitions"];
+    try {
+      const active = new Set(pi.getActiveTools());
+      toolDefinitions = pi.getAllTools()
+        .filter((tool) => active.has(tool.name))
+        .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
+    } catch {
+      toolDefinitions = undefined;
+    }
+    return {
+      ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+      ...(toolDefinitions !== undefined ? { toolDefinitions } : {}),
+    };
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     controller = new ContextMemoryController({
       config: dependencies.configProvider().contextMemory,
@@ -171,7 +206,10 @@ export default function registerContextMemory(
     } catch {
       usage = undefined;
     }
-    const transformed = controller?.transformContext(event, sessionReaderOf(ctx), usage);
+    // The request's system prompt and active tool definitions ride along so
+    // pressure counts what the model is actually sent beside the messages
+    // (#320) — with or without any usage report.
+    const transformed = controller?.transformContext(event, sessionReaderOf(ctx), usage, currentRequestOverhead(ctx));
     return transformed === undefined ? undefined : { messages: transformed.messages as ContextEvent["messages"] };
   });
 

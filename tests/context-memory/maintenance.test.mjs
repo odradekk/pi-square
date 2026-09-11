@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { SessionManager, buildContextEntries, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { SessionManager, buildContextEntries, estimateTokens, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const registerContextMemory = (await load("../../src/context-memory/index.ts")).default;
 const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG } = await load("../../src/context-memory/format.ts");
 const { MAINTENANCE_ADVISORY_FAILURE_LIMIT } = await load("../../src/context-memory/maintenance.ts");
+const { CompactMemoryParamsSchema } = await load("../../src/context-memory/tools.ts");
+const { Check } = await import("typebox/value");
 const { CONTEXT_MEMORY_ADVISORY_TYPE } = await load("../../src/context-memory/view.ts");
 
 /**
@@ -54,7 +56,11 @@ function harness(config = DUE_CONFIG, sessionManager) {
     reserveTokens: () => 16384,
   });
   return {
-    tools, events, registration, activeTools: () => [...active],
+    tools, events, registration,
+    activeTools: () => [...active],
+    setActiveTools: (names) => {
+      active = [...names];
+    },
     async emit(name, event, ctx) {
       let last;
       for (const handler of events.get(name) ?? []) last = await handler(event, ctx);
@@ -63,7 +69,7 @@ function harness(config = DUE_CONFIG, sessionManager) {
   };
 }
 
-function commandContext(sessionManager, usage) {
+function commandContext(sessionManager, usage, systemPrompt) {
   return {
     cwd: "/project",
     hasUI: false,
@@ -71,11 +77,31 @@ function commandContext(sessionManager, usage) {
     sessionManager,
     compact() {},
     getContextUsage: usage ?? (() => ({ tokens: 40000, contextWindow: 200000, percent: 20 })),
-    getSystemPrompt: () => "",
+    getSystemPrompt: systemPrompt ?? (() => ""),
     isIdle: () => true,
     hasPendingMessages: () => false,
     isProjectTrusted: () => true,
   };
+}
+
+/** The deterministic tools estimate the controller computes, replicated for exact assertions. */
+function expectedToolsTokens(session) {
+  const active = new Set(session.activeTools());
+  let chars = 0;
+  for (const tool of session.tools.values()) {
+    if (!active.has(tool.name)) continue;
+    chars += JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }).length;
+  }
+  return Math.ceil(chars / 4);
+}
+
+/** Pi's own per-message estimate over the branch's native projection. */
+function expectedMessageTokens(sm) {
+  let total = 0;
+  for (const message of buildContextEntries(sm.getBranch(), sm.getLeafId()).flatMap(sessionEntryToContextMessages)) {
+    total += estimateTokens(message);
+  }
+  return total;
 }
 
 /** Serve one provider request through the real context handler (#319). */
@@ -390,6 +416,218 @@ try {
     const derived = session.registration.snapshot({ tokens: null, contextWindow: 200000 });
     assert.equal(derived.rows[0].sources, 5,
       "the accepted block counts only eligible sources — the refused protocol pair is excluded");
+  }
+
+  // ── The request's system prompt counts directly, with no usage report at all ──
+  {
+    // The reviewer reproduction: threshold 6000, a comparable small usage
+    // report, then only the system prompt grows from empty to 200000
+    // characters while messages and Memory stay unchanged. The long-system
+    // request must arm the advisory — the contribution is read from the
+    // host's public system-prompt seam every request, not reconstructed from
+    // a stale usage residual.
+    const SYSTEM_CONFIG = { enabled: true, compressionThreshold: { tokens: 6000 }, memoryBudgetPercent: 1 };
+    let systemPromptText = "";
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: `research task ${PADDING}`, timestamp: 1 });
+    appendReadRound(sm, "y:1", "a.txt", `EVIDENCE-A ${PADDING}`, 2);
+    appendReadRound(sm, "y:2", "b.txt", `EVIDENCE-B ${PADDING}`, 4);
+    const session = harness(SYSTEM_CONFIG, sm);
+    const ctx = commandContext(sm, undefined, () => systemPromptText);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+
+    const emptySystem = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(emptySystem).length, 0,
+      "an empty system prompt leaves the message estimate below the threshold");
+
+    // A comparable small report on the empty-system view: its residual is
+    // tiny and must not be able to grow with the system prompt later.
+    await noteBatch(session, ctx, [{ type: "text", text: "ok" }], { input: 4000, cacheRead: 0, cacheWrite: 0, output: 1, totalTokens: 4001 });
+    const afterReport = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(afterReport).length, 0,
+      "the small report's residual keeps the empty-system request below the threshold");
+
+    systemPromptText = "s".repeat(200000);
+    const longSystem = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(longSystem).length, 1,
+      "a 200000-character system prompt crosses the threshold on the very request it appears");
+    const snapshot = session.registration.snapshot({ tokens: null, contextWindow: 200000 });
+    assert.ok(snapshot.pressure.estimated >= 50000,
+      "the estimate counts the system prompt directly (>= 50000 tokens)");
+    assert.equal(snapshot.maintenance.sources, 3, "the pinned sources are unaffected by the system change");
+    assert.equal(snapshot.pressure.reported, 4000, "the old report stays distinguishable from the estimate");
+  }
+
+  // ── Active tool schema growth counts on the request it appears ──
+  {
+    const SYSTEM_CONFIG = { enabled: true, compressionThreshold: { tokens: 6000 }, memoryBudgetPercent: 1 };
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: `research task ${PADDING}`, timestamp: 1 });
+    appendReadRound(sm, "t:1", "a.txt", `EVIDENCE-A ${PADDING}`, 2);
+    appendReadRound(sm, "t:2", "b.txt", `EVIDENCE-B ${PADDING}`, 4);
+    const session = harness(SYSTEM_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const beforeTools = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(beforeTools).length, 0, "the baseline composition stays below the threshold");
+    const baselineEstimated = expectedMessageTokens(sm) + expectedToolsTokens(session);
+    assert.ok(baselineEstimated < 6000, "the baseline stays below the threshold by construction");
+
+    // One huge additional active tool definition crosses the threshold.
+    const HUGE_DESCRIPTION = "tool guidance padding that makes this schema a substantial contribution. ".repeat(700);
+    session.tools.set("huge-evidence-tool", {
+      name: "huge-evidence-tool",
+      description: HUGE_DESCRIPTION,
+      parameters: { type: "object", additionalProperties: false },
+    });
+    session.setActiveTools([...session.activeTools(), "huge-evidence-tool"]);
+    const afterTools = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(afterTools).length, 1,
+      "activating a large tool schema arms the advisory on the next request");
+    const grownEstimated = session.registration.snapshot({ tokens: null, contextWindow: 200000 }).pressure.estimated;
+    assert.ok(grownEstimated - baselineEstimated >= Math.ceil(HUGE_DESCRIPTION.length / 4),
+      "the grown estimate counts the new schema directly, not through a stale residual");
+  }
+
+  // ── After a compression the still-present overhead stays counted ──
+  {
+    const SYSTEM_CONFIG = { enabled: true, compressionThreshold: { tokens: 6000 }, memoryBudgetPercent: 1 };
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: `research task ${PADDING}`, timestamp: 1 });
+    appendReadRound(sm, "o:1", "a.txt", `EVIDENCE-A ${PADDING}`, 2);
+    appendReadRound(sm, "o:2", "b.txt", `EVIDENCE-B ${PADDING}`, 4);
+    const session = harness(SYSTEM_CONFIG, sm);
+    const ctx = commandContext(sm, undefined, () => "o".repeat(200000));
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
+    sm.appendMessage(assistantWith([compactCallPart("o:3")], 6));
+    await serveContext(session, sm, ctx);
+    await noteBatch(session, ctx, [compactCallPart("o:3")]);
+    await compactTool(session).execute("o:3", { markdown: "# Overhead digest" }, undefined, undefined, ctx);
+    const applied = await serveContext(session, sm, ctx);
+    assert.ok(!JSON.stringify(applied).includes("EVIDENCE-A"),
+      "the covered sources leave the applied request");
+    const snapshot = session.registration.snapshot({ tokens: null, contextWindow: 200000 });
+    assert.equal(snapshot.state, "active");
+    assert.ok(snapshot.pressure.estimated >= 50000,
+      "the system prompt stays counted after the compression — the stable overhead is not lost");
+    assert.equal(snapshot.maintenance, undefined,
+      "no new advisory invites work while nothing beyond the recorded block is uncovered");
+  }
+
+  // ── A stale residual suspends on composition change and never double counts ──
+  {
+    const SYSTEM_CONFIG = { enabled: true, compressionThreshold: { tokens: 2500 }, memoryBudgetPercent: 1 };
+    let systemPromptText = "v".repeat(40000);
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: `research task ${PADDING}`, timestamp: 1 });
+    appendReadRound(sm, "d:1", "a.txt", `EVIDENCE-A ${PADDING}`, 2);
+    appendReadRound(sm, "d:2", "b.txt", `EVIDENCE-B ${PADDING}`, 4);
+    const session = harness(SYSTEM_CONFIG, sm);
+    const ctx = commandContext(sm, undefined, () => systemPromptText);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
+
+    // A report 300 tokens above the full basis pins a 300-token residual.
+    const basis = session.registration.snapshot({ tokens: null, contextWindow: 200000 }).pressure.estimated;
+    await noteBatch(session, ctx, [{ type: "text", text: "ok" }], { input: basis + 300, cacheRead: 0, cacheWrite: 0, output: 1, totalTokens: basis + 301 });
+    let snapshot = session.registration.snapshot({ tokens: null, contextWindow: 200000 });
+    assert.equal(snapshot.pressure.estimated, basis + 300,
+      "an unchanged composition carries the residual from the report that measured it");
+
+    // The system prompt changes: the residual suspends until the next report,
+    // and the estimate is exactly the new composition — no double count and
+    // no stale residue.
+    systemPromptText = "w".repeat(80000);
+    await serveContext(session, sm, ctx);
+    const expectedAfterChange = basis - Math.ceil(40000 / 4) + Math.ceil(80000 / 4);
+    snapshot = session.registration.snapshot({ tokens: null, contextWindow: 200000 });
+    assert.equal(snapshot.pressure.estimated, expectedAfterChange,
+      "a composition change suspends the stale residual instead of stacking it");
+
+    // A fresh report on the new composition recalibrates the residual.
+    await noteBatch(session, ctx, [{ type: "text", text: "ok" }], { input: expectedAfterChange + 500, cacheRead: 0, cacheWrite: 0, output: 1, totalTokens: expectedAfterChange + 501 });
+    snapshot = session.registration.snapshot({ tokens: null, contextWindow: 200000 });
+    assert.equal(snapshot.pressure.estimated, expectedAfterChange + 500,
+      "the next report on the new composition recalibrates the residual");
+  }
+
+  // ── A schema-passing, byte-over-wide body counts as an invalid submission ──
+  {
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: `research task ${PADDING}`, timestamp: 1 });
+    appendReadRound(sm, "w:1", "a.txt", `EVIDENCE-A ${PADDING}`, 2);
+    appendReadRound(sm, "w:2", "b.txt", `EVIDENCE-B ${PADDING}`, 4);
+    const session = harness(DUE_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const armed = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(armed).length, 1,
+      "the advisory is armed on the due request before the invalid submissions begin");
+
+    // 6000 CJK characters pass the tool schema — maxLength counts characters
+    // — while the canonical UTF-8 encoding is 18000 bytes, far over the
+    // 16 KiB body bound.
+    const wideBody = "汉".repeat(6000);
+    assert.equal(Check(CompactMemoryParamsSchema, { markdown: wideBody }), true,
+      "the wide body passes the provider-visible schema");
+    assert.ok(Buffer.byteLength(wideBody, "utf8") > 16 * 1024, "the canonical bytes exceed the body bound");
+
+    for (let attempt = 1; attempt <= MAINTENANCE_ADVISORY_FAILURE_LIMIT; attempt++) {
+      const callId = `w:c${attempt}`;
+      sm.appendMessage(assistantWith([compactCallPart(callId, wideBody)], 6 + attempt));
+      await noteBatch(session, ctx, [compactCallPart(callId, wideBody)]);
+      const message = await refusalMessage(session, ctx, callId, wideBody);
+      assert.match(message, /^BOUND_EXCEEDED: /, `attempt ${attempt} refuses with the specific code`);
+      assert.match(message, /16 KiB of canonical UTF-8/,
+        "the refusal names the bounded next step");
+      // The failed call and its error result enter the branch exactly as a
+      // real run records them, and the next request is served.
+      sm.appendMessage({
+        role: "toolResult",
+        toolCallId: callId,
+        toolName: "compact_to_memory_block",
+        content: [{ type: "text", text: message }],
+        isError: true,
+        timestamp: 7 + attempt,
+      });
+      await serveContext(session, sm, ctx);
+    }
+    const suppressed = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(suppressed).length, 0,
+      "schema-passing over-byte bodies suppress the advisory within the bounded budget");
+    const snapshot = session.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
+    assert.equal(snapshot.maintenance.suppressed, true);
+    assert.equal(snapshot.maintenance.lastErrorCode, "BOUND_EXCEEDED");
+    assert.equal(snapshot.maintenance.sources, 3,
+      "the refused protocol pairs never change the pinned scope");
+
+    // Real growth in the same task re-enables the advisory without a user
+    // input, exactly like any other suppressed scope.
+    appendReadRound(sm, "w:3", "c.txt", `EVIDENCE-C ${PADDING}`, 40);
+    const recovered = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(recovered).length, 1, "real growth re-enables the advisory");
+  }
+
+  // ── Mixed batches count as invalid submissions against the same budget ──
+  {
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: `research task ${PADDING}`, timestamp: 1 });
+    appendReadRound(sm, "x:1", "a.txt", `EVIDENCE-A ${PADDING}`, 2);
+    appendReadRound(sm, "x:2", "b.txt", `EVIDENCE-B ${PADDING}`, 4);
+    const session = harness(DUE_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    for (let attempt = 1; attempt <= MAINTENANCE_ADVISORY_FAILURE_LIMIT; attempt++) {
+      await serveContext(session, sm, ctx);
+      const callId = `x:c${attempt}`;
+      await noteBatch(session, ctx, [compactCallPart(callId), readCallPart(`${callId}:sibling`, "c.txt")]);
+      assert.match(await refusalMessage(session, ctx, callId, "# Mixed"), /^COMPACT_NOT_SOAL_TOOL: /);
+    }
+    const suppressed = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(suppressed).length, 0,
+      "repeated mixed batches suppress the advisory within the bounded budget");
+    assert.equal(session.registration.snapshot({ tokens: 40000, contextWindow: 200000 }).maintenance.lastErrorCode, "COMPACT_NOT_SOAL_TOOL");
   }
 
   console.log("context-memory maintenance boundary tests: OK");
