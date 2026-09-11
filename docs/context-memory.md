@@ -18,12 +18,13 @@ This guide documents what ships today; the architecture decisions live in
 history), and `README.md` carries the summary. Recorded Memory survives
 interruptions and native session branches (see
 [Branches, resume, forks, and copies](#branches-resume-forks-and-copies)).
-Sustained in-task maintenance and bounded failure recovery are implemented.
-The suffix rebuild, cross-provider combination guarantees, native-fallback
-arbitration, and real-model qualification are owned by the continuation
-tickets (#321, #323–#325) and are **not implemented yet**. The implemented
-contracts are covered by deterministic native Pi requests and the explicitly
-identified boundary-injected tests described below.
+Sustained in-task maintenance, bounded failure recovery, and the suffix
+rebuild from complete original sources are implemented. Cross-provider
+combination guarantees, native-fallback arbitration, and real-model
+qualification are owned by the continuation tickets (#323–#325) and are
+**not implemented yet**. The implemented contracts are covered by
+deterministic native Pi requests and the explicitly identified
+boundary-injected tests described below.
 
 No performance claim is made here. Context Memory has not been qualified with
 the required real-model and provider-cache evidence yet; until that evidence
@@ -206,13 +207,30 @@ real-user run, and it takes effect on the next request — not at run end:
    next-step hint keep reaching the model through the tool result, and real
    new sources or a substantive Memory state change re-enable evaluation —
    the next user input is never the only way back.
-4. **Append — the half-budget rule.** While the rendered Memory is at or
-   below half the configured budget, the next operation **appends**: the new
-   block covers the conversation accumulated since the existing blocks, and
-   every existing block stays byte-identical. Above half budget the next
-   operation would be a **suffix rebuild** — that operation is not
-   implemented yet (#321); the append is refused with `MAINTENANCE_PENDING`
-   and no block is degraded to force a fit.
+4. **Append or rebuild — the half-budget rule (#321).** While the rendered
+   Memory is at or below half the configured budget, the next operation
+   **appends**: the new block covers the conversation accumulated since the
+   existing blocks, and every existing block stays byte-identical. Above half
+   budget the next operation is a **suffix rebuild**: the runtime selects the
+   shortest newest adjacent block suffix whose removal leaves the unselected
+   prefix within half the budget, and the pending maintenance request invites
+   one new block authored from that suffix's **complete original sources**
+   plus the new eligible history — never from the summaries it replaces.
+   While the request is pending, every due request carries the suffix's
+   originals raw and in order, the prefix-only carrier byte-exact, and the
+   selected summaries nowhere: the model reads the same complete sources for
+   as long as it defers, across any number of ordinary tool requests, with no
+   accumulation and no silent growth (growth joins only through the explicit
+   re-scope at a served request). The new block spans one continuous original
+   range and keeps every retained exception of the replaced blocks —
+   protection fixed by an earlier acceptance never disappears when the recent
+   zone moves — and after acceptance the next ordinary request replaces the
+   suffix: the prefix parts are untouched byte-for-byte, the covered
+   originals leave together, and work can grow into the next maintenance
+   cycle. A block whose originals sit below a native compaction's kept
+   boundary can never re-enter a request, so such blocks stay in the prefix
+   and a v1 compaction-carried baseline above half budget never rebuilds —
+   summarizing old summaries is never an option.
 5. **Sources, batches, and the working set.** The runtime — never the model —
    selects the source range. The retained working set is the most recent
    completed ordinary tool batch and everything after it on the branch; the
@@ -317,12 +335,19 @@ exactly as without pi-square.
 
 ## The scale endpoint
 
-The scale endpoint belongs to the suffix rebuild and therefore to #321; it is
-not implemented in this revision. When recorded Memory renders above half its
-budget, the append refuses (`MAINTENANCE_PENDING`) and nothing is deleted,
-truncated, or proportionally rewritten. Switching to a model with a different
-window recomputes every threshold and budget against the new window; existing
-blocks are never deleted, truncated, or rewritten to fit.
+When rendered Memory is above half its budget, a rebuild is due, and the
+complete serving — the suffix's originals, the retained context, the advisory,
+and the request's system prompt and tool definitions, plus the bounded
+provider residual — cannot fit under the same safety clamp the due point uses
+(below Pi's native compaction boundary), the runtime reports an honest
+**scale limit**: `/context` shows a `scale-limit` line, no maintenance
+request is pinned, no sources are re-served, and Pi native compaction keeps
+owning the boundary. Nothing is truncated, no sources are paged across
+requests pretending to be complete, no block is deleted to make room, and no
+summary-of-summary ever runs. A model with a larger window reopens the
+maintenance path on its very next request; switching models recomputes every
+threshold and budget against the new window, and existing blocks are never
+deleted, truncated, or rewritten to fit.
 
 ## Reading original sources
 
@@ -338,8 +363,11 @@ represents image and binary parts by safe type/MIME/size placeholders. There
 is no cursor, no configurable limit, and no cached read state; the next-page
 hint names the exact follow-up call.
 
-Block positions are transient selectors for the current ordered list, not
-stable IDs. Reads revalidate the branch: if Memory changed since the tool
+A suffix rebuild merges its covered blocks into one: the merged block's
+source transcript pages over the complete original conversation behind all
+of them, so every replaced block's originals stay checkable after the merge —
+reading never expands the older Memory prefix to do it. Block positions are
+transient selectors for the current ordered list, not stable IDs. Reads revalidate the branch: if Memory changed since the tool
 became active, the call fails with `MEMORY_CHANGED` rather than serving a
 stale position. A `read_memory_source` call and its result stay visible in
 their own run but are excluded from every future Memory source stream, so
@@ -349,8 +377,10 @@ The two tools' failure modes each report one safe sentence beginning with a
 stable short code — `MEMORY_NOT_AVAILABLE`, `BLOCK_OUT_OF_RANGE`,
 `PAGE_OUT_OF_RANGE`, `MEMORY_CHANGED`, `COMPACT_NOT_AVAILABLE`,
 `COMPACT_NOT_DUE`, `COMPACT_NOT_SOAL_TOOL`, `SOURCE_NOT_SERVED`,
-`MAINTENANCE_PENDING`, `BOUND_EXCEEDED`, or `NO_NET_BENEFIT` — and never
-echo Memory Markdown, ranges, or identifiers.
+`BOUND_EXCEEDED`, or `NO_NET_BENEFIT` — and never echo Memory Markdown,
+ranges, or identifiers. A rebuild above half budget that was never served its
+complete original sources (for example at a scale limit) refuses with
+`SOURCE_NOT_SERVED`.
 
 `compact_to_memory_block` is resident while the feature is enabled on a
 supported host; `read_memory_source` is active only while valid non-empty
@@ -371,7 +401,7 @@ unchanged — Memory accounting never alters it.
 | `disabled` | `disabled · enable through agent-level contextMemory configuration` |
 | `unsupported` | `unsupported Pi host <version> · required interfaces unavailable · native compaction unchanged` — the running host version is reported, never used to gate |
 | `no-memory` | `enabled · no Memory blocks yet` |
-| `due` | `due · threshold reached · compression advisory rides the next request`, or with a pending request `due · maintenance over N sources · compression advisory riding requests` (or `advisory paused after repeated refusals (CODE)`) |
+| `due` | `due · threshold reached · compression advisory rides the next request`, or with a pending request `due · maintenance over N sources · compression advisory riding requests` / `due · suffix rebuild of M blocks over N sources · …` (or `advisory paused after repeated refusals (CODE)`) |
 | `opaque` | `opaque · latest carrier is not valid Context Memory · native summary retained` |
 
 Active Memory shows one header row (`active · ~N tok / N budget · N blocks ·
@@ -381,11 +411,15 @@ per block with a
 single-line preview, token estimate, and safe source count. At most 64 rows
 render; older blocks beyond that appear only in the `⋯ +N more blocks` clip
 while the total count stays visible. While a maintenance request is pending,
-the `due` line names its pinned source count (`due · maintenance over N
+the `due` line names its pinned operation and source count (`due ·
+maintenance over N sources · …`, or `due · suffix rebuild of M blocks over N
 sources · …`) and an active view gains at most two bounded diagnostic rows:
 the pending request with its failure state and the last accepted
 compression's projected net savings (`maintenance over N sources · advisory
-riding · last append −N tok`, or `advisory paused (CODE)` once suppressed),
+riding · last compression −N tok`, `suffix rebuild of M blocks over N
+sources · advisory riding`, or `advisory paused (CODE)` once suppressed).
+While the scale limit holds, the row reads `scale-limit · complete rebuild
+does not fit the window · native compaction owns the boundary`,
 and the pressure split that keeps estimates and provider reports
 distinguishable (`request ~N tok est · N tok reported` — a report that
 predates the current Memory version is labeled `before current Memory`).

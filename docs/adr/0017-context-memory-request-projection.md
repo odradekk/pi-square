@@ -24,8 +24,19 @@ bounded failure suppression with recovery on real growth or state change,
 and the bounded `/context` diagnostics; its deterministic acceptance runs a
 real Pi `AgentSession` with one user input through two in-task compressions,
 each net reduction visible at its next request, with no settle, abort, or
-extra wake. #322 adds the interruption and native-branch lifecycle matrix on
-the same seam:
+extra wake. #321 adds the suffix rebuild: above half the Memory budget the
+pending maintenance request replaces the shortest newest adjacent block
+suffix, every due request serves that suffix's complete original sources raw
+while its summaries are absent and the prefix-only carrier stays byte-exact,
+acceptance records one block spanning the suffix originals plus new eligible
+history with the replaced blocks' retained exceptions kept raw, and a rebuild
+whose complete serving cannot fit the window reports an honest scale limit
+instead of truncating, paging, or deleting anything — its deterministic
+acceptance runs a real Pi `AgentSession` through append → deferred rebuild →
+continued work with a follow-up user instruction inside the covered range →
+second rebuild, plus post-completion source recovery, observed at the
+provider request exit. #322 adds the interruption and native-branch
+lifecycle matrix on the same seam:
 event-coordinated cancellations before and after the write, restart recovery
 with byte-identical carriers, replacement sets, and source pages, fork,
 clone, import, tree navigation, and sibling isolation, native-compaction
@@ -33,10 +44,10 @@ supersession, disable/re-enable and uninstall observability, valid-v1
 read-only baseline use, corrupt-record degradation after reopen, and
 ephemeral sessions, plus the protocol-artifact pairing rules below. Native
 request evidence and boundary-injected unit evidence are kept clearly
-separated in the guide. The suffix rebuild (#321), cross-provider combination
-guarantees (#323), native-fallback arbitration (#324), and real-model
-qualification (#325, #227) are still pending — acceptance of this record
-never authorizes claiming them as shipped.
+separated in the guide. Cross-provider combination guarantees (#323),
+native-fallback arbitration (#324), and real-model qualification (#325,
+#227) are still pending — acceptance of this record never authorizes
+claiming them as shipped.
 
 ## Why the old boundary is insufficient
 
