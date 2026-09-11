@@ -15,13 +15,19 @@ Accepted on 2026-09-11. Implementation status: #319 implements the resident
 `compact_to_memory_block` tool, validated append recording through Pi custom
 state entries, the next-request projection with strict message-to-entry
 alignment, bounded source recovery, and the recorded-versus-applied
-diagnostics; its deterministic acceptance runs against a real Pi
-`AgentSession` with a faux provider at the provider-request exit. Sustained
-re-triggering and failure recovery (#320), the suffix rebuild (#321), the
-full interruption/branch matrix (#322), cross-provider combination
-guarantees (#323), native-fallback arbitration (#324), and real-model
-qualification (#325, #227) are still pending — acceptance of this record
-never authorizes claiming them as shipped.
+diagnostics. #320 implements sustained maintenance inside one long task:
+per-request pressure evaluation with a version-bound usage calibration, one
+pinned maintenance request per due cycle (fixed sources, explicit re-scope
+at served requests, invalidation on model/branch/compaction change),
+bounded failure suppression with recovery on real growth or state change,
+and the bounded `/context` diagnostics; its deterministic acceptance runs a
+real Pi `AgentSession` with one user input through two in-task compressions,
+each net reduction visible at its next request, with no settle, abort, or
+extra wake. The suffix rebuild (#321), the full interruption/branch matrix
+(#322), cross-provider combination guarantees (#323), native-fallback
+arbitration (#324), and real-model qualification (#325, #227) are still
+pending — acceptance of this record never authorizes claiming them as
+shipped.
 
 ## Why the old boundary is insufficient
 
