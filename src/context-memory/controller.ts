@@ -765,16 +765,22 @@ function buildAppendSource(
 
 /**
  * The eligible, non-retained entries a source range would evict from the
- * request (#319): retained protected instructions never count as savings.
+ * request (#319, #321): retained protected instructions never count as
+ * savings. The retained set defaults to the source's own latest-instruction
+ * scan (the complete set for an append); a rebuild passes the final recorded
+ * union — the replaced blocks' retained exceptions included — so its savings
+ * are measured against the replacement set that actually evicts, never
+ * against instructions that stay raw in every request.
  */
 function evictableEntries(
   branch: readonly SessionEntry[],
   previousEndPosition: number,
   source: AppendSource,
+  retainedEntryIds: readonly string[] = source.retainedEntryIds,
 ): readonly SessionEntry[] {
   return branch
     .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
-    .filter((entry) => isEligibleSourceEntry(entry) && !source.retainedEntryIds.includes(entry.id));
+    .filter((entry) => isEligibleSourceEntry(entry) && !retainedEntryIds.includes(entry.id));
 }
 
 /**
@@ -854,6 +860,39 @@ export function firstFullyServableBlockIndex(
     if (rangeStart >= keptPosition) return i;
   }
   return blocks.length;
+}
+
+/**
+ * The one rebuild plan both the advisory and the acceptance compute (#321):
+ * suffix selection over the half budget plus the kept prefix's boundary on
+ * the branch. `none` when no block's complete originals can re-enter a
+ * request; `unresolved` when the kept prefix no longer resolves (an invalid
+ * derivation the callers each treat as their own invalid-state refusal).
+ * Sharing the computation keeps the pinned advisory and the later acceptance
+ * from drifting apart.
+ */
+function planRebuild(
+  branch: readonly SessionEntry[],
+  blocks: readonly { readonly markdown: string; readonly endEntryId: string }[],
+  halfBudget: number,
+): { readonly kind: "plan"; readonly prefixCount: number; readonly suffixCount: number; readonly prefixEndPosition: number; readonly prefixEndEntryId: string | null }
+  | { readonly kind: "none" }
+  | { readonly kind: "unresolved" } {
+  const minimumPrefix = firstFullyServableBlockIndex(branch, blocks);
+  const plan = selectRebuildSuffix(blocks.map((block) => block.markdown), halfBudget, minimumPrefix);
+  if (plan === null) return { kind: "none" };
+  const prefixCount = plan.prefixCount;
+  const prefixEndPosition = prefixCount === 0
+    ? -1
+    : branch.findIndex((entry) => entry.id === blocks[prefixCount - 1]!.endEntryId);
+  if (prefixCount > 0 && prefixEndPosition === -1) return { kind: "unresolved" };
+  return {
+    kind: "plan",
+    prefixCount,
+    suffixCount: plan.suffixCount,
+    prefixEndPosition,
+    prefixEndEntryId: prefixCount === 0 ? null : blocks[prefixCount - 1]!.endEntryId,
+  };
 }
 
 /**
@@ -1444,19 +1483,14 @@ export class ContextMemoryController {
     halfBudget: number,
   ): { state: MemoryStateData; savings: number } {
     const markdowns = current.blocks.map((block) => block.markdown);
-    const minimumPrefix = firstFullyServableBlockIndex(branch, current.blocks);
-    const plan = selectRebuildSuffix(markdowns, halfBudget, minimumPrefix);
-    if (plan === null) {
+    const planned = planRebuild(branch, current.blocks, halfBudget);
+    if (planned.kind === "none") {
       fail("SOURCE_NOT_SERVED", "the Memory suffix's complete original sources cannot be served on this branch; compression stays available again below half the Memory budget");
     }
-    const prefixCount = plan.prefixCount;
-    const prefixEndPosition = prefixCount === 0
-      ? -1
-      : branch.findIndex((entry) => entry.id === current.blocks[prefixCount - 1]!.endEntryId);
-    if (prefixCount > 0 && prefixEndPosition === -1) {
+    if (planned.kind === "unresolved") {
       fail("MEMORY_CHANGED", "the existing Memory blocks no longer resolve on the current branch");
     }
-    const prefixEndEntryId = prefixCount === 0 ? null : current.blocks[prefixCount - 1]!.endEntryId;
+    const { prefixCount, prefixEndPosition, prefixEndEntryId } = planned;
     const memoryVersion = memoryVersionOf(current);
     let source: AppendSource | null = null;
     const pinned = this.maintenance;
@@ -1496,7 +1530,7 @@ export class ContextMemoryController {
           .slice(prefixEndPosition + 1, live.sourceEndPosition + 1)
           .filter(isEligibleSourceEntry).length,
         prefixBlocks: prefixCount,
-        suffixBlocks: plan.suffixCount,
+        suffixBlocks: planned.suffixCount,
       };
     }
     const retainedEntryIds = rebuildRetainedEntryIds(branch, source, current.blocks.slice(prefixCount));
@@ -1526,19 +1560,26 @@ export class ContextMemoryController {
     if (Buffer.byteLength(JSON.stringify(state), "utf8") > MEMORY_DETAILS_MAX_BYTES) {
       fail("BOUND_EXCEEDED", "the Memory state entry exceeds the persisted format bounds");
     }
-    const evictable = evictableEntries(branch, prefixEndPosition, source);
     // Acceptance stays scoped to the latest input observed by our context
-    // handler, exactly like an append (ADR-0017).
+    // handler, exactly like an append (ADR-0017). The gate keeps covering
+    // every eligible entry the pinned range names beyond the latest
+    // instruction; only the savings measurement narrows below.
+    const observable = evictableEntries(branch, prefixEndPosition, source);
     const observed = this.observedContext;
     if (observed === undefined
       || observed.leafId === null
       || !branch.some((entry) => entry.id === observed.leafId)
-      || evictable.some((entry) => !observed.entryIds.has(entry.id))) {
+      || observable.some((entry) => !observed.entryIds.has(entry.id))) {
       fail("SOURCE_NOT_SERVED", "the covered conversation was not observed in its native form by the Context Memory context handler");
     }
     // Net benefit is measured against the served pending request the model
-    // actually saw: the suffix summaries were already absent there, so only
-    // the carrier delta from the prefix-only carrier is charged (#321).
+    // actually saw and against the replacement set that actually evicts: the
+    // recorded retained union — including the replaced blocks' protected
+    // instructions — stays raw in every request and never counts as savings,
+    // while the suffix summaries were already absent during the pending
+    // request, so only the carrier delta from the prefix-only carrier is
+    // charged (#321).
+    const evictable = evictableEntries(branch, prefixEndPosition, source, retainedEntryIds);
     const savings = netRebuildSavings(evictable, markdowns.slice(0, prefixCount), markdown);
     if (savings <= 0) {
       fail("NO_NET_BENEFIT", "the Memory block would not reduce the next model request; wait for more eligible conversation or a changed source");
@@ -1666,9 +1707,8 @@ export class ContextMemoryController {
     }
     // ── The suffix rebuild request (#321) ──
     const markdowns = current.blocks.map((block) => block.markdown);
-    const minimumPrefix = firstFullyServableBlockIndex(branch, current.blocks);
-    const plan = selectRebuildSuffix(markdowns, halfBudget, minimumPrefix);
-    if (plan === null) {
+    const planned = planRebuild(branch, current.blocks, halfBudget);
+    if (planned.kind === "none") {
       // No block's complete originals can re-enter a request (for example a
       // v1 compaction-carried baseline): the honest boundary, not a
       // summary-of-summary fallback.
@@ -1676,11 +1716,8 @@ export class ContextMemoryController {
       this.maintenanceFailures = undefined;
       return { scaleLimit: true };
     }
-    const prefixCount = plan.prefixCount;
-    const prefixEndPosition = prefixCount === 0
-      ? -1
-      : branch.findIndex((entry) => entry.id === current.blocks[prefixCount - 1]!.endEntryId);
-    if (prefixCount > 0 && prefixEndPosition === -1) return clear();
+    if (planned.kind === "unresolved") return clear();
+    const { prefixCount, prefixEndPosition, prefixEndEntryId } = planned;
     const source = selectAppendSource(branch, prefixEndPosition);
     if (source === null) return clear();
     const retainedEntryIds = rebuildRetainedEntryIds(branch, source, current.blocks.slice(prefixCount));
@@ -1688,16 +1725,21 @@ export class ContextMemoryController {
       operation: "rebuild",
       sourceEndEntryId: branch[source.sourceEndPosition]!.id,
       retainedEntryIds,
-      previousEndEntryId: prefixCount === 0 ? null : current.blocks[prefixCount - 1]!.endEntryId,
+      previousEndEntryId: prefixEndEntryId,
       memoryVersion: memoryVersionOf(current),
       sourceCount: branch
         .slice(prefixEndPosition + 1, source.sourceEndPosition + 1)
         .filter(isEligibleSourceEntry).length,
       prefixBlocks: prefixCount,
-      suffixBlocks: plan.suffixCount,
+      suffixBlocks: planned.suffixCount,
     };
-    const evictable = evictableEntries(branch, prefixEndPosition, source);
-    if (evictable.some((entry) => !observed.entryIds.has(entry.id))) return clear();
+    // The observation gate keeps covering every eligible entry the range
+    // names beyond the latest instruction; the savings floor narrows to the
+    // final replacement set, exactly like acceptance — a huge retained
+    // instruction never makes a rebuild look beneficial (#321 review).
+    const observable = evictableEntries(branch, prefixEndPosition, source);
+    if (observable.some((entry) => !observed.entryIds.has(entry.id))) return clear();
+    const evictable = evictableEntries(branch, prefixEndPosition, source, retainedEntryIds);
     if (netRebuildSavings(evictable, markdowns.slice(0, prefixCount), MINIMAL_BLOCK_BODY) <= 0) return clear();
     // This very request must serve the complete sources it invites: the
     // prefix carrier plus the suffix's originals, raw and in order. If the

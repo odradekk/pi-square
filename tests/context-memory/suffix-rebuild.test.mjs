@@ -408,6 +408,103 @@ try {
     assert.equal(recoveredSnapshot.maintenance?.operation, "rebuild");
   }
 
+  // ── #321 review: retained exceptions never count as rebuild savings ──
+  //
+  // A huge protected instruction retained by a replaced suffix block stays
+  // raw in every request; savings measured against the raw latest-instruction
+  // scan alone would book it as evicted and accept a rebuild whose accepted
+  // projection is actually LARGER than the served pending request. The
+  // net-benefit check must use the final recorded replacement set.
+  {
+    const seedRetainedHeavySession = (retainedChars) => {
+      const sm = SessionManager.inMemory("/project");
+      const userOne = sm.appendMessage({ role: "user", content: "initial task", timestamp: 1 });
+      const endA = appendReadRound(sm, "q:1", "a.txt", "A".repeat(100), 2);
+      const userTwo = sm.appendMessage({
+        role: "user",
+        content: "RETAINED-REQUIREMENTS " + "R".repeat(retainedChars),
+        timestamp: 4,
+      });
+      const endB = appendReadRound(sm, "q:2", "b.txt", "evidence B " + "b".repeat(300), 5);
+      const blockPrefix = "# Prefix\n\n" + "P".repeat(180);
+      const blockSuffix = "# Suffix\n\n" + "S".repeat(500);
+      sm.appendCustomEntry(MEMORY_STATE_CUSTOM_TYPE, {
+        format: MEMORY_STATE_FORMAT_TAG,
+        blocks: [
+          { endEntryId: endA, markdown: blockPrefix, retainedEntryIds: [userOne] },
+          { endEntryId: endB, markdown: blockSuffix, retainedEntryIds: [userTwo] },
+        ],
+      });
+      appendReadRound(sm, "q:3", "c.txt", "evidence C " + "c".repeat(300), 7);
+      const userThree = sm.appendMessage({ role: "user", content: "latest correction", timestamp: 9 });
+      appendReadRound(sm, "q:4", "d.txt", "working set", 10);
+      return { sm, userOne, userTwo, userThree, blockPrefix, blockSuffix };
+    };
+
+    // The refusal: the oversized candidate's carrier delta outweighs the
+    // genuinely evictable sources, and the retained instructions contribute
+    // nothing — before the fix this call recorded with a large fake saving.
+    {
+      const { sm, userTwo, userThree, blockPrefix } = seedRetainedHeavySession(8000);
+      const session = harness(CONFIG, sm);
+      const ctx = commandContext(sm);
+      await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+      const served = await serveContext(session, sm, ctx);
+      const servedText = requestText(served);
+      assert.ok(servedText.includes(REBUILD_ADVISORY_NEEDLE), "the rebuild request is pinned and served");
+      assert.ok(servedText.includes("RETAINED-REQUIREMENTS"),
+        "the retained instruction is served raw with the complete sources");
+      await noteBatch(session, ctx, [compactCallPart("rh:1", "# Rebuilt\n\n" + "Z".repeat(850))]);
+      assert.match(
+        await refusalMessage(session, ctx, "rh:1", "# Rebuilt\n\n" + "Z".repeat(850)),
+        /^NO_NET_BENEFIT: /,
+        "a rebuild whose real replacement set does not shrink the request refuses",
+      );
+      assert.equal(stateEntriesOf(sm).length, 1, "the refused rebuild records nothing");
+      const snapshot = session.registration.snapshot();
+      assert.equal(snapshot.blocks, 2, "the valid Memory is unchanged");
+      assert.equal(snapshot.maintenance?.operation, "rebuild",
+        "the pending request survives the refusal unsuppressed");
+      assert.equal(snapshot.lastNetSavingsTokens, undefined, "no net savings are reported for a refusal");
+      const after = await serveContext(session, sm, ctx);
+      const afterText = requestText(after);
+      assert.ok(afterText.includes("RETAINED-REQUIREMENTS") && afterText.includes(REBUILD_ADVISORY_NEEDLE),
+        "the pending serving continues: complete sources, retained instruction raw");
+      assert.ok(!afterText.includes("S".repeat(40)), "the suffix summary stays absent");
+      void blockPrefix;
+      void userTwo;
+      void userThree;
+    }
+
+    // The adjacent positive: the same sources and the same retained
+    // instructions accept a candidate the replacement set genuinely affords,
+    // and the reported savings track the replacement set, not the retained
+    // text — two sessions whose only difference is the retained instruction's
+    // length report identical savings.
+    const acceptHeavyRetained = async (retainedChars) => {
+      const { sm, userTwo, userThree, blockPrefix } = seedRetainedHeavySession(retainedChars);
+      const session = harness(CONFIG, sm);
+      const ctx = commandContext(sm);
+      await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+      await serveContext(session, sm, ctx);
+      const candidate = "# Rebuilt\n\n" + "Z".repeat(80);
+      await noteBatch(session, ctx, [compactCallPart("rp:1", candidate)]);
+      const accepted = await compactTool(session).execute("rp:1", { markdown: candidate }, undefined, undefined, ctx);
+      assert.equal(accepted.details.recorded, true);
+      const state = stateEntriesOf(sm).at(-1).data;
+      assert.equal(state.blocks.length, 2);
+      assert.equal(state.blocks[0].markdown, blockPrefix);
+      assert.deepEqual(state.blocks[1].retainedEntryIds, [userTwo, userThree],
+        "the recorded replacement set keeps both retained instructions out of the eviction");
+      return session.registration.snapshot().lastNetSavingsTokens;
+    };
+    const savingsShort = await acceptHeavyRetained(40);
+    const savingsLong = await acceptHeavyRetained(8000);
+    assert.ok(typeof savingsShort === "number" && savingsShort > 0);
+    assert.equal(savingsLong, savingsShort,
+      "a retained instruction's size never changes the reported savings");
+  }
+
   console.log("context-memory suffix rebuild tests: OK");
 } catch (error) {
   console.error(error);
