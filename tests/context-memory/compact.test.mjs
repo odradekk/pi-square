@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, buildContextEntries, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -89,6 +89,20 @@ async function noteBatch(session, ctx, parts) {
   await session.emit("message_end", { type: "message_end", message: { role: "assistant", content: parts } }, ctx);
 }
 
+/**
+ * Serve one provider request through the real context handler before a
+ * compact call (#319): acceptance requires every eviction target to have
+ * reached the model in its native form, exactly like a real run where the
+ * transform always precedes the tool call. `transform` simulates an upstream
+ * extension that runs before pi-square.
+ */
+async function serveContext(session, sm, ctx, transform) {
+  const native = structuredClone(buildContextEntries(sm.getBranch(), sm.getLeafId()).flatMap(sessionEntryToContextMessages));
+  const messages = transform ? transform(native) : native;
+  const result = await session.emit("context", { type: "context", messages }, ctx);
+  return result === undefined ? messages : result.messages;
+}
+
 /** Execute one compact call and return its refusal message, failing if it accepted. */
 async function refusalMessage(session, ctx, toolCallId, markdown) {
   try {
@@ -131,6 +145,7 @@ try {
     sm.appendMessage({ role: "assistant", content: [readCallPart("r:b", "b.txt")], stopReason: "toolUse", timestamp: 4 });
     sm.appendMessage(toolResult("r:b", "read", "EVIDENCE-B " + "b".repeat(900), 5));
     sm.appendMessage({ role: "assistant", content: [compactCallPart("r:c")], stopReason: "toolUse", timestamp: 6 });
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("r:c")]);
     const accepted = await compactTool(session).execute(
       "r:c", { markdown: "# Resident digest\n\n- one read complete" }, undefined, undefined, ctx,
@@ -163,10 +178,12 @@ try {
     );
 
     // A batch the compression call shares with an ordinary call.
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("s:3"), readCallPart("s:9", "c.txt")]);
     assert.match(await refusalMessage(session, ctx, "s:3", "# Shared batch"), /^COMPACT_NOT_SOAL_TOOL: /);
 
     // A sole batch that does not contain the executed call id.
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [readCallPart("s:9", "c.txt")]);
     assert.match(await refusalMessage(session, ctx, "s:3", "# Foreign id"), /^COMPACT_NOT_SOAL_TOOL: /);
 
@@ -184,6 +201,7 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("b:2")]);
 
     for (const [label, body] of [
@@ -212,6 +230,7 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("w:3")]);
 
     const body = "# Task digest\n\n- both workspace reads are summarized";
@@ -240,6 +259,7 @@ try {
       "the block covers the user task, the first read call, and its result");
 
     // A second competing call with no new completed work refuses and records nothing.
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("w:4")]);
     assert.match(
       await refusalMessage(session, ctx, "w:4", "# Competing digest\n\n- same sources"),
@@ -259,6 +279,7 @@ try {
     const bareSession = harness(ENABLED_CONFIG, bare);
     const bareCtx = commandContext(bare);
     await bareSession.emit("session_start", { type: "session_start", reason: "startup" }, bareCtx);
+    await serveContext(bareSession, bare, bareCtx);
     await noteBatch(bareSession, bareCtx, [compactCallPart("n:1")]);
     assert.match(await refusalMessage(bareSession, bareCtx, "n:1", "# Nothing to compress"), /^COMPACT_NOT_DUE: /);
 
@@ -271,6 +292,7 @@ try {
     const anchorSession = harness(ENABLED_CONFIG, anchored);
     const anchorCtx = commandContext(anchored);
     await anchorSession.emit("session_start", { type: "session_start", reason: "startup" }, anchorCtx);
+    await serveContext(anchorSession, anchored, anchorCtx);
     await noteBatch(anchorSession, anchorCtx, [compactCallPart("n:3")]);
     assert.match(await refusalMessage(anchorSession, anchorCtx, "n:3", "# Anchor only"), /^COMPACT_NOT_DUE: /);
 
@@ -287,6 +309,7 @@ try {
     const orphanSession = harness(ENABLED_CONFIG, orphan);
     const orphanCtx = commandContext(orphan);
     await orphanSession.emit("session_start", { type: "session_start", reason: "startup" }, orphanCtx);
+    await serveContext(orphanSession, orphan, orphanCtx);
     await noteBatch(orphanSession, orphanCtx, [compactCallPart("n:6")]);
     assert.match(await refusalMessage(orphanSession, orphanCtx, "n:6", "# Split batch"), /^COMPACT_NOT_DUE: /);
     assert.deepEqual(stateEntriesOf(orphan), [], "the orphan refusal records nothing");
@@ -301,6 +324,7 @@ try {
     const protectedSession = harness(ENABLED_CONFIG, protectedOnly);
     const protectedCtx = commandContext(protectedOnly);
     await protectedSession.emit("session_start", { type: "session_start", reason: "startup" }, protectedCtx);
+    await serveContext(protectedSession, protectedOnly, protectedCtx);
     await noteBatch(protectedSession, protectedCtx, [compactCallPart("n:8")]);
     assert.match(
       await refusalMessage(protectedSession, protectedCtx, "n:8", "# Instruction only\n\n- nothing evictable"),
@@ -327,6 +351,7 @@ try {
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
     assert.equal(session.registration.snapshot().state, "opaque");
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("o:3")]);
     assert.match(await refusalMessage(session, ctx, "o:3", "# Over opaque Memory"), /^MEMORY_CHANGED: /);
     assert.deepEqual(stateEntriesOf(sm), []);
@@ -352,6 +377,7 @@ try {
     const session = harness(BUDGET_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("h:3")]);
     assert.match(await refusalMessage(session, ctx, "h:3", "# Small append"), /^MAINTENANCE_PENDING: /);
     assert.deepEqual(stateEntriesOf(sm), []);
@@ -377,6 +403,7 @@ try {
     const session = harness(BUDGET_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("t:3")]);
     const message = await refusalMessage(session, ctx, "t:3", "y".repeat(15000));
     assert.match(message, /^BOUND_EXCEEDED: /);
@@ -396,6 +423,7 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("g:3")]);
     const body = "# Heavy digest\n\n" + "- padding line that keeps the block large\n".repeat(28);
     const message = await refusalMessage(session, ctx, "g:3", body);
@@ -424,6 +452,7 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("p:3")]);
     const body = "# Task digest\n\n- KEY-FACT-NEEDLE both reads are summarized";
     await compactTool(session).execute("p:3", { markdown: body }, undefined, undefined, ctx);
@@ -496,6 +525,7 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("d:3")]);
     const bodyOne = "# First digest\n\n- workspace reads complete";
     const first = await compactTool(session).execute("d:3", { markdown: bodyOne }, undefined, undefined, ctx);
@@ -507,6 +537,7 @@ try {
     sm.appendMessage({ role: "assistant", content: [readCallPart("d:4", "c.txt")], stopReason: "toolUse", timestamp: 9 });
     sm.appendMessage(toolResult("d:4", "read", "EVIDENCE-C " + "c".repeat(900), 10));
     sm.appendMessage({ role: "assistant", content: [compactCallPart("d:5")], stopReason: "toolUse", timestamp: 11 });
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("d:5")]);
     const bodyTwo = "# Second digest\n\n- round two verified";
     const second = await compactTool(session).execute("d:5", { markdown: bodyTwo }, undefined, undefined, ctx);
@@ -564,6 +595,7 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     const ctx = commandContext(sm);
     await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("v:3")]);
     const bodyTwo = "# Round two\n\n- ship the verified summary";
     const accepted = await compactTool(session).execute("v:3", { markdown: bodyTwo }, undefined, undefined, ctx);
@@ -631,9 +663,234 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     await session.emit("session_start", { type: "session_start", reason: "resume" }, commandContext(sm));
     let snapshot = session.registration.snapshot();
-    assert.equal(snapshot.carrier, "compaction",
-      "a rewritten inherited prefix block invalidates the whole state entry");
-    assert.equal(snapshot.blocks, 1, "derivation degrades to the v1 baseline, strictly less coverage");
+    assert.equal(snapshot.state, "opaque",
+      "a rewritten inherited prefix block invalidates the newest state record explicitly");
+    assert.ok(!session.activeTools().includes("read_memory_source"),
+      "an opaque branch exposes no structured reading surface");
+  }
+
+  // ── #319 fix 1: acceptance requires the covered sources to have been
+  // served to the model in their current native form ──
+
+  {
+    // An upstream transform replaced one covered tool result with a
+    // placeholder before every request the model saw: the raw evidence never
+    // reached the model, and the compression refuses instead of recording a
+    // block over unseen text.
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: "Keep this instruction.", timestamp: 1 });
+    sm.appendMessage(assistantWith([readCallPart("sv:1", "a.txt")], 2));
+    const unseen = sm.appendMessage(toolResult("sv:1", "read", "NEVER_SERVED_EVIDENCE " + "x".repeat(3000), 3));
+    sm.appendMessage(assistantWith([readCallPart("sv:2", "b.txt")], 4));
+    sm.appendMessage(toolResult("sv:2", "read", "current working set", 5));
+    sm.appendMessage(assistantWith([compactCallPart("sv:3")], 6));
+    const session = harness(ENABLED_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx, (native) => native.map((message) =>
+      message.role === "toolResult" && message.toolCallId === "sv:1"
+        ? { ...message, content: [{ type: "text", text: "Filtered upstream" }] }
+        : message));
+    await noteBatch(session, ctx, [compactCallPart("sv:3")]);
+    const refusal = await refusalMessage(session, ctx, "sv:3", "# Digest over unseen evidence");
+    assert.match(refusal, /^SOURCE_NOT_SERVED: /);
+    assert.equal(stateEntriesOf(sm).length, 0, "nothing is recorded over unserved sources");
+    void unseen;
+
+    // Positive control on the identical tree: with the raw evidence actually
+    // served, the same call records.
+    await serveContext(session, sm, ctx);
+    const accepted = await compactTool(session).execute("sv:3", { markdown: "# Digest over served evidence" }, undefined, undefined, ctx);
+    assert.equal(accepted.details.recorded, true);
+    assert.equal(stateEntriesOf(sm).length, 1);
+  }
+
+  // ── #319 fix 2: a refused Memory projection keeps protocol history whole ──
+
+  {
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: "Keep this instruction.", timestamp: 1 });
+    sm.appendMessage(assistantWith([readCallPart("pf:1", "a.txt")], 2));
+    const covered = sm.appendMessage(toolResult("pf:1", "read", "COVERED-RAW " + "y".repeat(3000), 3));
+    sm.appendMessage(assistantWith([readCallPart("pf:2", "b.txt")], 4));
+    sm.appendMessage(toolResult("pf:2", "read", "working set", 5));
+    sm.appendMessage(assistantWith([compactCallPart("pf:3", "# The recorded digest")], 6));
+    const session = harness(ENABLED_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
+    await noteBatch(session, ctx, [compactCallPart("pf:3", "# The recorded digest")]);
+    const accepted = await compactTool(session).execute("pf:3", { markdown: "# The recorded digest" }, undefined, undefined, ctx);
+    assert.equal(accepted.details.recorded, true);
+    sm.appendMessage(toolResult("pf:3", "compact_to_memory_block", RECORDED_SENTENCE, 7));
+    sm.appendMessage(assistantWith([readCallPart("pf:4", "c.txt")], 8));
+    sm.appendMessage(toolResult("pf:4", "read", "further ordinary work", 9));
+
+    // The next request's upstream transform rewrites the covered original,
+    // so the Memory application must refuse — and the refused projection may
+    // not damage protocol history: the accepted compact pair stays whole
+    // (call, full argument body, and result), no orphan result appears, and
+    // no carrier exists without its eviction.
+    const refused = await serveContext(session, sm, ctx, (native) => native.map((message) =>
+      message.role === "toolResult" && message.toolCallId === "pf:1"
+        ? { ...message, content: [{ type: "text", text: "Modified upstream" }] }
+        : message));
+    const text = JSON.stringify(refused);
+    assert.ok(!refused.some((message) => message?.customType === "pi-square.context-memory/blocks"),
+      "no carrier enters a request whose alignment failed");
+    assert.ok(text.includes("# The recorded digest"),
+      "the only request-side copy of the recorded summary survives whole");
+    const calls = new Set(refused.filter((m) => m.role === "assistant").flatMap((m) => m.content.filter((p) => p.type === "toolCall").map((p) => p.id)));
+    const compactResults = refused.filter((m) => m.role === "toolResult" && m.toolName === "compact_to_memory_block");
+    assert.equal(compactResults.length, 1, "the accepted result stays");
+    assert.ok(calls.has(compactResults[0].toolCallId), "its paired call stays too — no orphan result");
+    const compactCall = refused.filter((m) => m.role === "assistant")
+      .flatMap((m) => m.content.filter((p) => p.type === "toolCall" && p.name === "compact_to_memory_block"))[0];
+    assert.equal(compactCall.arguments.markdown, "# The recorded digest",
+      "the unapplied pair keeps its full argument body — no placeholder without a carrier");
+
+    // Once the upstream modification stops, the same branch applies normally:
+    // the carrier enters, the now-duplicated older pair drops whole, and no
+    // orphan result appears.
+    const applied = await serveContext(session, sm, ctx);
+    assert.ok(applied.some((message) => message?.customType === "pi-square.context-memory/blocks"),
+      "an unmodified request applies the recorded Memory");
+    const appliedCalls = new Set(applied.filter((m) => m.role === "assistant")
+      .flatMap((m) => m.content.filter((p) => p.type === "toolCall").map((p) => p.id)));
+    assert.equal(applied.filter((m) => m.role === "toolResult" && m.toolName === "compact_to_memory_block").length, 0,
+      "with the carrier established the older accepted pair drops whole");
+    for (const message of applied) {
+      if (message.role === "toolResult") {
+        assert.ok(appliedCalls.has(message.toolCallId), `every surviving result stays paired (${message.toolCallId})`);
+      }
+    }
+    assert.equal(JSON.stringify(applied).split("# The recorded digest").length - 1, 1,
+      "the body now lives exactly once, inside the carrier");
+    void covered;
+  }
+
+  {
+    // Refused protocol attempts drop as whole pairs even without a carrier,
+    // and a mixed batch's sibling call and text survive untouched.
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: "Keep this instruction.", timestamp: 1 });
+    sm.appendMessage(assistantWith([readCallPart("mx:1", "a.txt")], 2));
+    sm.appendMessage(toolResult("mx:1", "read", "raw evidence " + "z".repeat(2000), 3));
+    sm.appendMessage({
+      role: "assistant",
+      content: [
+        { type: "text", text: "trying two things at once" },
+        readCallPart("mx:2", "b.txt"),
+        compactCallPart("mx:3", "# Refused digest"),
+      ],
+      stopReason: "toolUse", timestamp: 4,
+    });
+    sm.appendMessage(toolResult("mx:2", "read", "sibling result", 5));
+    sm.appendMessage({
+      role: "toolResult", toolCallId: "mx:3", toolName: "compact_to_memory_block",
+      content: [{ type: "text", text: "COMPACT_NOT_SOAL_TOOL: refused" }], isError: true, timestamp: 6,
+    });
+    sm.appendMessage(assistantWith([compactCallPart("mx:4", "# Real digest\n\n- covers the read")], 7));
+    const session = harness(ENABLED_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
+    await noteBatch(session, ctx, [compactCallPart("mx:4", "# Real digest\n\n- covers the read")]);
+    const accepted = await compactTool(session).execute("mx:4", { markdown: "# Real digest\n\n- covers the read" }, undefined, undefined, ctx);
+    assert.equal(accepted.details.recorded, true);
+    sm.appendMessage(toolResult("mx:4", "compact_to_memory_block", RECORDED_SENTENCE, 8));
+
+    const applied = await serveContext(session, sm, ctx);
+    const callIds = new Set(applied.filter((m) => m.role === "assistant").flatMap((m) => m.content.filter((p) => p.type === "toolCall").map((p) => p.id)));
+    for (const message of applied) {
+      if (message.role !== "toolResult") continue;
+      assert.ok(callIds.has(message.toolCallId), `every surviving result stays paired (${message.toolCallId})`);
+    }
+    assert.ok(!JSON.stringify(applied).includes("# Refused digest"),
+      "the refused attempt's argument body drops with its error result");
+    assert.ok(applied.some((m) => m.role === "toolResult" && m.toolCallId === "mx:2"),
+      "the mixed batch's sibling result survives");
+    const mixedText = applied.filter((m) => m.role === "assistant")
+      .flatMap((m) => Array.isArray(m.content) ? m.content.filter((p) => p.type === "text").map((p) => p.text) : []);
+    assert.ok(mixedText.some((t) => t.includes("trying two things at once")),
+      "ordinary assistant text from the mixed batch survives");
+  }
+
+  // ── #319 fix 3: the newest Memory record is the derivation boundary ──
+
+  {
+    // An unknown future format on the newest record degrades explicitly to
+    // opaque; an older valid record never silently takes over.
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: "Keep this instruction.", timestamp: 1 });
+    sm.appendMessage(assistantWith([readCallPart("bd:1", "a.txt")], 2));
+    const firstEnd = sm.appendMessage(toolResult("bd:1", "read", "served evidence " + "q".repeat(2000), 3));
+    sm.appendMessage(assistantWith([readCallPart("bd:1b", "b.txt")], 4));
+    sm.appendMessage(toolResult("bd:1b", "read", "working set anchor", 5));
+    sm.appendMessage(assistantWith([compactCallPart("bd:2", "# First digest")], 6));
+    const session = harness(ENABLED_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
+    await noteBatch(session, ctx, [compactCallPart("bd:2", "# First digest")]);
+    await compactTool(session).execute("bd:2", { markdown: "# First digest" }, undefined, undefined, ctx);
+    assert.equal(stateEntriesOf(sm).length, 1);
+    const validSnapshot = session.registration.snapshot();
+    assert.equal(validSnapshot.carrier, "state");
+
+    sm.appendCustomEntry(MEMORY_STATE_CUSTOM_TYPE, { format: "unsupported-next-version", blocks: [] });
+    await session.emit("session_tree", { type: "session_tree" }, ctx);
+    const degraded = session.registration.snapshot();
+    assert.equal(degraded.state, "opaque",
+      "an unknown newest record degrades explicitly, never a silent fallback to the older coverage");
+    assert.ok(!session.activeTools().includes("read_memory_source"),
+      "an opaque branch has no structured reading surface");
+    void firstEnd;
+  }
+
+  // ── #319 fix 4: net benefit counts the carrier delta, not the whole carrier ──
+
+  {
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: "Keep this instruction.", timestamp: 1 });
+    sm.appendMessage(assistantWith([readCallPart("nb:1", "a.txt")], 2));
+    const firstEnd = sm.appendMessage(toolResult("nb:1", "read", "old ".repeat(3000), 3));
+    const oldMarkdown = "# Existing memory\n" + "Established fact. ".repeat(120);
+    sm.appendCustomEntry(MEMORY_STATE_CUSTOM_TYPE, {
+      format: MEMORY_STATE_FORMAT_TAG,
+      blocks: [{ endEntryId: firstEnd, markdown: oldMarkdown, retainedEntryIds: [] }],
+    });
+    sm.appendMessage(assistantWith([readCallPart("nb:2", "b.txt")], 4));
+    sm.appendMessage(toolResult("nb:2", "read", "new ".repeat(125), 5));
+    sm.appendMessage(assistantWith([readCallPart("nb:3", "c.txt")], 6));
+    sm.appendMessage(toolResult("nb:3", "read", "keep this current work", 7));
+    sm.appendMessage(assistantWith([compactCallPart("nb:4", "# New digest")], 8));
+    const session = harness(ENABLED_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
+    await noteBatch(session, ctx, [compactCallPart("nb:4", "# New digest")]);
+    // Removing >500 characters of newly covered sources while the carrier
+    // grows by only the new block part must be a net benefit.
+    const carrierDelta = MEMORY_BLOCK_SEPARATOR.length + "# New digest".length;
+    assert.ok(carrierDelta < 500);
+    const accepted = await compactTool(session).execute("nb:4", { markdown: "# New digest" }, undefined, undefined, ctx);
+    assert.equal(accepted.details.recorded, true, "the unchanged prefix is never charged again");
+    const recorded = stateEntriesOf(sm).at(-1);
+    assert.equal(recorded.data.blocks.length, 2);
+    assert.equal(recorded.data.blocks[0].markdown, oldMarkdown, "the prefix stays byte-identical");
+
+    // A genuinely benefit-free append still refuses: a large body against
+    // nearly nothing newly covered.
+    sm.appendMessage(assistantWith([readCallPart("nb:5", "d.txt")], 9));
+    sm.appendMessage(toolResult("nb:5", "read", "tiny", 10));
+    sm.appendMessage(assistantWith([compactCallPart("nb:6")], 11));
+    const hugeBody = "# Huge digest\n\n" + "padding fact. ".repeat(400);
+    await serveContext(session, sm, ctx);
+    await noteBatch(session, ctx, [compactCallPart("nb:6")]);
+    const refusal = await refusalMessage(session, ctx, "nb:6", hugeBody);
+    assert.match(refusal, /^NO_NET_BENEFIT: /);
+    assert.equal(stateEntriesOf(sm).length, 2, "the zero-benefit append records nothing");
   }
 
   // ── Default-off: no projection and no compression ──
@@ -654,6 +911,7 @@ try {
       undefined,
       "a disabled configuration installs no request projection",
     );
+    await serveContext(session, sm, ctx);
     await noteBatch(session, ctx, [compactCallPart("f:2")]);
     assert.match(await refusalMessage(session, ctx, "f:2", "# Disabled"), /^COMPACT_NOT_AVAILABLE: /);
     assert.deepEqual(stateEntriesOf(sm), []);

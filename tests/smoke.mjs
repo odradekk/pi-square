@@ -499,6 +499,11 @@ try {
   smokeSession.appendMessage({
     role: "user", content: "smoke: ship the second Memory block", timestamp: 600,
   });
+  // Serve the request the second compression answers: the newly accumulated
+  // round must reach the model before it can become a source (#319).
+  const secondServed = await runner.emitContext(nativeRequest());
+  assert.equal(secondServed.filter((message) => message?.customType === "pi-square.context-memory/advisory").length, 1,
+    "the second due request carries exactly one advisory");
   const smokeSecondBlock = "# Smoke second block\n\n- the second-round exchange covered later filler work";
   smokeSession.appendMessage({
     role: "assistant",

@@ -583,6 +583,12 @@ try {
         "the compression tool is resident from session start");
 
       const body = "# Storage digest\n\n- pi owns every session write";
+      // Serve the request that precedes the compression call: acceptance
+      // requires every eviction target to have reached the model (#319).
+      await ioHarness.emit("context", {
+        type: "context",
+        messages: ioSession.buildSessionContext().messages,
+      }, ioCtx);
       await ioHarness.emit("message_end", {
         type: "message_end",
         message: {

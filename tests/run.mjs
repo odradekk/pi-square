@@ -62,6 +62,7 @@ const suites = [
   "context-memory/blocks-projection.test.mjs",
   "context-memory/append-projection.test.mjs",
   "context-memory/compact.test.mjs",
+  "context-memory/upstream-transform.test.mjs",
   "context-memory/config-guide.test.mjs",
   "context-memory/controller.test.mjs",
   "context-memory/format.test.mjs",

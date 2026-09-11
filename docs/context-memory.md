@@ -80,13 +80,14 @@ stays the only session-file writer:
   the request projection re-applies the eviction deterministically on every
   provider-bound request. Derivation restarts from the branch and derives
   the same replacement set every time.
-- The latest carrier on the current leaf's ancestor path wins: a later state
-  entry supersedes an earlier one, and a **native compaction appended after
-  the state entry establishes a new baseline and supersedes it** — the stale
-  projection is never reapplied on top of a native summary. A branch whose
-  latest carrier is native, unknown, or malformed has no structured Memory:
-  it is reported `opaque`, its native summary is retained unchanged, and
-  structured operations stay off for that branch.
+- The newest Memory state record on the current leaf's ancestor path is the
+  derivation boundary: a later state entry supersedes an earlier one, and a
+  **native compaction appended after the record establishes a new baseline
+  and supersedes it** — the stale projection is never reapplied on top of a
+  native summary. A record that is unknown, malformed, or fails branch
+  derivation degrades the branch **explicitly** to `opaque`: the native
+  summary is retained unchanged, structured operations stay off, and an
+  older valid record never silently takes over the coverage.
 - Sessions recorded before the redesign still work: a valid v1
   compaction-carried Memory (format tag `pi-square.context-memory/1` in the
   compaction's details) keeps deriving as a **read-only baseline**, including
@@ -166,14 +167,20 @@ real-user run, and it takes effect on the next request — not at run end:
    calls and the batch in flight are never covered. Tool batches are
    validated by call id across the whole range: a call whose result falls
    outside the range, or a result without its call, refuses the compression —
-   orphan messages are never dropped to force a fit. The compression tool's
-   own batch must be its sole call; a mixed batch is refused and the sibling
-   tools' real results are preserved untouched. The latest user instruction
-   is protected: if it falls inside a covered range it is recorded as a
-   retained exception, stays raw in every request, and never counts toward
-   the savings. Maintenance protocol calls (`compact_to_memory_block`, the
-   retired `submit_memory`, and `read_memory_source`) are never original
-   sources, so recovered text cannot be recursively re-compressed.
+   orphan messages are never dropped to force a fit. **Serving proof:** every
+   eviction target must have reached the model in its current native form in
+   the most recent observed request — an upstream transform that replaced or
+   removed a source entry removes it from the served boundary, and the call
+   refuses with `SOURCE_NOT_SERVED` instead of compressing text the model
+   never saw (or text the eviction would not actually remove from the
+   current request). The compression tool's own batch must be its sole call;
+   a mixed batch is refused and the sibling tools' real results are preserved
+   untouched. The latest user instruction is protected: if it falls inside a
+   covered range it is recorded as a retained exception, stays raw in every
+   request, and never counts toward the savings. Maintenance protocol calls
+   (`compact_to_memory_block`, the retired `submit_memory`, and
+   `read_memory_source`) are never original sources, so recovered text cannot
+   be recursively re-compressed.
 5. **Recording.** A validated call is recorded immediately: the complete new
    Memory state lands as one Pi custom state entry (see above), the tool
    returns the fixed acknowledgement `Memory block recorded. The next model
@@ -181,9 +188,11 @@ real-user run, and it takes effect on the next request — not at run end:
    `recorded: true` — the acknowledgement states recording, never delivery —
    and the run continues. Acceptance validates the body bounds, the total
    rendered Memory budget, the state serialization cap, and the projected net
-   benefit of the actual final request; an attempt with no provable source,
-   no capacity, or no positive savings is refused with one bounded
-   short-coded message. A repeated or competing submission in the same state
+   benefit of the actual final request — evicted source tokens minus the
+   carrier **delta** the request gains (an append onto existing Memory adds
+   only the new block's part; the unchanged prefix is never charged again);
+   an attempt with no provable source, no capacity, or no positive savings is
+   refused with one bounded short-coded message. A repeated or competing submission in the same state
    finds no uncovered source and records nothing — the recording happens
    exactly once.
 6. **Application.** The next ordinary request — including a tool continuation
@@ -245,9 +254,9 @@ recovered text is never recursively treated as new original evidence.
 The two tools' failure modes each report one safe sentence beginning with a
 stable short code — `MEMORY_NOT_AVAILABLE`, `BLOCK_OUT_OF_RANGE`,
 `PAGE_OUT_OF_RANGE`, `MEMORY_CHANGED`, `COMPACT_NOT_AVAILABLE`,
-`COMPACT_NOT_DUE`, `COMPACT_NOT_SOAL_TOOL`, `MAINTENANCE_PENDING`,
-`BOUND_EXCEEDED`, or `NO_NET_BENEFIT` — and never echo Memory Markdown,
-ranges, or identifiers.
+`COMPACT_NOT_DUE`, `COMPACT_NOT_SOAL_TOOL`, `SOURCE_NOT_SERVED`,
+`MAINTENANCE_PENDING`, `BOUND_EXCEEDED`, or `NO_NET_BENEFIT` — and never
+echo Memory Markdown, ranges, or identifiers.
 
 `compact_to_memory_block` is resident while the feature is enabled on a
 supported host; `read_memory_source` is active only while valid non-empty

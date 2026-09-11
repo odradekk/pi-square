@@ -111,6 +111,18 @@ export function renderedMemoryTokens(markdowns: readonly string[]): number {
   return Math.ceil(chars / 4);
 }
 
+/**
+ * The most recent provider-bound request the controller observed (#319): the
+ * leaf it was served on and the entry ids whose native messages reached the
+ * transform aligned — the only proof that a source entry was actually served
+ * to the model in its current form. Entries an upstream transform replaced or
+ * removed never enter this set.
+ */
+interface ServedBoundary {
+  readonly leafId: string | null;
+  readonly entryIds: ReadonlySet<string>;
+}
+
 /** Structural deep equality for native message projections and request messages. */
 function deepEqual(left: unknown, right: unknown): boolean {
   if (left === right) return true;
@@ -236,18 +248,28 @@ const CARRIED_BLOCK_ARGUMENT_PLACEHOLDER = "(this Memory block is carried in ful
 
 /**
  * Remove compression-tool artifacts from a provider-bound message list (#215,
- * #253, #319), with the trailing-pair exception: paired compression tool
- * results drop, compression tool-call parts drop from their assistant message
- * while ordinary text survives, and an assistant message left without any
- * eligible part drops as a whole — but the current trailing compression
- * call/result pair, accepted or refused, passes through whole, because
- * removing it would end the request on an assistant turn and a refused result
- * must stay visible for the model to correct itself. Older accepted pairs are
- * dropped only while the complete Memory carrier is established in the same
- * request; older refused pairs always drop (their attempt already failed
- * visibly and nothing recorded duplicates them). `read_memory_source`
- * artifacts stay visible. The retired `submit_memory` name filters the same
- * way, so historical protocol calls never re-enter requests.
+ * #253, #319) as whole call/result pairs, never half-pairs:
+ *
+ * - The current trailing compression call/result pair passes through whole,
+ *   accepted or refused: removing it would end the request on an assistant
+ *   turn, and a refused result must stay visible for the model to correct
+ *   itself. Once the complete Memory carrier is established in the same
+ *   request, an accepted trailing call's arguments carry only the bounded
+ *   placeholder — the body survives in full exactly once, inside the carrier.
+ * - Older accepted pairs survive untouched while no carrier is established:
+ *   their arguments are the only request-side copy of the recorded summary,
+ *   so dropping either half would orphan the result or silently lose the
+ *   body. Once the carrier is established the whole pair drops together.
+ * - Refused pairs (error results) always drop together — call part and
+ *   result — whether or not a carrier exists; the model already saw and
+ *   addressed the refusal, and nothing recorded duplicates the attempt.
+ * - A compression call whose result is absent (an aborted batch mid-request)
+ *   drops from its assistant message while ordinary text and sibling calls
+ *   survive: an unanswered call cannot stay in a provider request.
+ *
+ * The retired `submit_memory` name filters the same way, so historical
+ * protocol calls never re-enter requests. `read_memory_source` artifacts stay
+ * visible.
  */
 function filterCompressionArtifacts(
   aligned: readonly AlignedMessage[],
@@ -256,16 +278,26 @@ function filterCompressionArtifacts(
   const messages = aligned.map((item) => item.message);
   const isCompressionResult = (m: unknown): boolean =>
     (m as { role?: unknown; toolName?: unknown } | null)?.role === "toolResult"
-    && ((m as { toolName?: unknown }).toolName === COMPACT_MEMORY_TOOL_NAME
-      || (m as { toolName?: unknown }).toolName === SUBMIT_MEMORY_TOOL_NAME);
+    && isCompressionToolResultName((m as { toolName?: unknown }).toolName);
   const hasCompressionCall = (m: unknown): boolean => {
     const record = m as { role?: unknown; content?: unknown } | null;
     return record?.role === "assistant" && Array.isArray(record.content)
       && record.content.some((part) =>
         (part as { type?: unknown; name?: unknown } | null)?.type === "toolCall"
-        && ((part as { name?: unknown }).name === COMPACT_MEMORY_TOOL_NAME
-          || (part as { name?: unknown }).name === SUBMIT_MEMORY_TOOL_NAME));
+        && isCompressionCallName((part as { name?: unknown }).name));
   };
+  // Refused attempts drop as whole pairs; an accepted call needs its paired
+  // result present to survive without a carrier.
+  const refusedCallIds = new Set<string>();
+  const acceptedCallIds = new Set<string>();
+  for (const message of messages) {
+    if (!isCompressionResult(message)) continue;
+    const record = message as { toolCallId?: unknown; isError?: unknown };
+    if (typeof record.toolCallId !== "string") continue;
+    if (record.isError === true) refusedCallIds.add(record.toolCallId);
+    else acceptedCallIds.add(record.toolCallId);
+  }
+
   let keepFrom = messages.length;
   if (messages.length >= 2 && isCompressionResult(messages[messages.length - 1]) && hasCompressionCall(messages[messages.length - 2])) {
     keepFrom = messages.length - 2;
@@ -273,7 +305,9 @@ function filterCompressionArtifacts(
     keepFrom = messages.length - 1;
   }
 
-  const filtered: unknown[] = [];
+  // The trailing pair's accepted arguments collapse to the bounded
+  // placeholder once the carrier carries the body in full; a refused attempt
+  // keeps its arguments (nothing recorded duplicates them).
   const stubArguments = (message: unknown): unknown => {
     if (!carrierEstablished) return message;
     const record = message as { role?: unknown; content?: unknown } | null;
@@ -282,15 +316,17 @@ function filterCompressionArtifacts(
     return {
       ...record,
       content: record.content.map((part) => {
-        const candidate = part as { type?: unknown; name?: unknown } | null;
-        if (candidate?.type !== "toolCall"
-          || (candidate.name !== COMPACT_MEMORY_TOOL_NAME && candidate.name !== SUBMIT_MEMORY_TOOL_NAME)) {
+        const candidate = part as { type?: unknown; id?: unknown; name?: unknown } | null;
+        if (candidate?.type !== "toolCall" || !isCompressionCallName(candidate.name)) {
           return part;
         }
+        if (typeof candidate.id === "string" && refusedCallIds.has(candidate.id)) return part;
         return { ...(part as object), arguments: { markdown: CARRIED_BLOCK_ARGUMENT_PLACEHOLDER } };
       }),
     };
   };
+
+  const filtered: unknown[] = [];
   aligned.forEach((item, index) => {
     const message = item.message;
     if (index >= keepFrom) {
@@ -299,17 +335,24 @@ function filterCompressionArtifacts(
     }
     const record = message as { role?: unknown; content?: unknown; toolName?: unknown; isError?: unknown } | null;
     if (!record) return;
-    if (record.role === "toolResult"
-      && (record.toolName === COMPACT_MEMORY_TOOL_NAME || record.toolName === SUBMIT_MEMORY_TOOL_NAME)) {
+    if (record.role === "toolResult" && isCompressionToolResultName(record.toolName)) {
       if (carrierEstablished || record.isError === true) return;
+      // Accepted without a carrier: the result survives, and its paired call
+      // part survives below so the pair never splits.
       filtered.push(message);
       return;
     }
     if (record.role === "assistant" && Array.isArray(record.content)) {
-      const kept = record.content.filter((part) =>
-        (part as { type?: unknown; name?: unknown } | null)?.type !== "toolCall"
-        || ((part as { name?: unknown }).name !== COMPACT_MEMORY_TOOL_NAME
-          && (part as { name?: unknown }).name !== SUBMIT_MEMORY_TOOL_NAME));
+      const kept = record.content.filter((part) => {
+        const candidate = part as { type?: unknown; id?: unknown; name?: unknown } | null;
+        if (candidate?.type !== "toolCall" || !isCompressionCallName(candidate.name)) return true;
+        if (typeof candidate.id !== "string") return carrierEstablished;
+        if (refusedCallIds.has(candidate.id)) return false;
+        if (carrierEstablished) return false;
+        // Keep the call only while its accepted result is present in the
+        // same request — a call without its result cannot stay paired.
+        return acceptedCallIds.has(candidate.id);
+      });
       if (kept.length === 0) return;
       if (kept.length !== record.content.length) {
         filtered.push({ ...record, content: kept });
@@ -319,6 +362,14 @@ function filterCompressionArtifacts(
     filtered.push(message);
   });
   return filtered;
+}
+
+function isCompressionToolResultName(name: unknown): boolean {
+  return name === COMPACT_MEMORY_TOOL_NAME || name === SUBMIT_MEMORY_TOOL_NAME;
+}
+
+function isCompressionCallName(name: unknown): boolean {
+  return name === COMPACT_MEMORY_TOOL_NAME || name === SUBMIT_MEMORY_TOOL_NAME;
 }
 
 /**
@@ -546,6 +597,8 @@ export class ContextMemoryController {
   private due = false;
   /** The state entry whose carrier has been applied to at least one request (#319). */
   private appliedStateEntryId: string | undefined;
+  /** The most recent served request boundary: what actually reached the model (#319). */
+  private served: ServedBoundary | undefined;
   /** Tool-call ids of the most recent assistant message (#319 sole-call check). */
   private lastToolBatch: ToolBatch | undefined;
 
@@ -810,13 +863,31 @@ export class ContextMemoryController {
     if (Buffer.byteLength(JSON.stringify(state), "utf8") > MEMORY_DETAILS_MAX_BYTES) {
       fail("BOUND_EXCEEDED", "the Memory state entry exceeds the persisted format bounds");
     }
-    // Net benefit on the projected request (#319): evicted source tokens plus
-    // dropped older protocol artifacts minus the carrier must save a positive
-    // amount; retained protected instructions never count as savings.
+    // Net benefit on the projected request (#319): the evicted source tokens
+    // minus the carrier DELTA the request actually gains. An append onto
+    // existing Memory only adds one new block part to the carrier already in
+    // the request; the unchanged prefix is never charged again. Retained
+    // protected instructions never count as savings.
     const evictable = branch
       .slice(previousEndPosition + 1, source.sourceEndPosition + 1)
       .filter((entry) => isEligibleSourceEntry(entry) && !source.retainedEntryIds.includes(entry.id));
-    let savings = -estimateTextTokens(composeMemorySummary(blocks.map((block) => block.markdown)));
+    // Serving proof (#319): every eviction target must have reached the model
+    // in its current native form in the most recent observed request on this
+    // branch. An upstream transform that replaced or removed a source entry
+    // removes it from the served boundary, and the compression refuses rather
+    // than claiming to replace text the model never saw — or text the
+    // eviction would not actually remove from the current request.
+    const served = this.served;
+    if (served === undefined
+      || served.leafId === null
+      || !branch.some((entry) => entry.id === served.leafId)
+      || evictable.some((entry) => !served.entryIds.has(entry.id))) {
+      fail("SOURCE_NOT_SERVED", "the covered conversation has not reached the model in its current form; cannot prove it as compression source");
+    }
+    const carrierDelta = current.kind === "valid"
+      ? estimateTextTokens(MEMORY_BLOCK_SEPARATOR + markdown)
+      : estimateTextTokens(composeMemorySummary([markdown]));
+    let savings = -carrierDelta;
     for (const entry of evictable) {
       for (const message of sessionEntryToContextMessages(entry)) {
         savings += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
@@ -874,6 +945,14 @@ export class ContextMemoryController {
     try {
       const projection = nativeProjection(session);
       const aligned = alignMessages(original, projection);
+      // The alignment is the served boundary (#319): these native messages
+      // reached the transform in their current form, whatever upstream
+      // transforms did to the rest. Acceptance later refuses to cover a
+      // source entry this boundary never observed.
+      this.served = {
+        leafId: session.getLeafId?.() ?? null,
+        entryIds: new Set(aligned.flatMap((item) => (item.entryId === undefined ? [] : [item.entryId]))),
+      };
       let messages = this.applyMemoryProjection(aligned, projection, deriveCurrentMemory(session), true);
       if (messages === undefined) {
         // Alignment could not map every eviction target to its source entry:

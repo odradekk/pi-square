@@ -25,11 +25,12 @@ import { COMPACT_MEMORY_TOOL_NAME, READ_MEMORY_SOURCE_TOOL_NAME, SUBMIT_MEMORY_T
  * A strictly valid carrier yields the complete ordered block list with each
  * block's original same-branch source entries; a native, unknown, malformed,
  * or over-bound carrier stays opaque Pi context with structured operations
- * disabled. There is no fallback to older Memory entries behind an invalid
- * latest state entry of its own kind, no repair, and no cross-session lookup —
- * every end entry resolves only on the carrying entry's own ancestor path, and
- * an invalid latest state entry degrades to the latest earlier valid one
- * (strictly less coverage: entries only it covered stay raw, never evicted).
+ * disabled. The newest Memory state record on the path is the derivation
+ * boundary: when it is unknown, malformed, or fails branch derivation, the
+ * branch degrades explicitly to `opaque` — never to a guessed repair and
+ * never to a silent fallback onto an older record's coverage. There is no
+ * cross-session lookup, and every end entry resolves only on the carrying
+ * entry's own ancestor path.
  */
 
 /**
@@ -288,18 +289,29 @@ function v1BlocksOfCompaction(branch: readonly SessionEntry[], compactionIndex: 
   return { bodies, ends };
 }
 
-/** The latest valid state entry on the branch and its derived blocks, if any (#319). */
-function deriveStateMemory(
+/**
+ * The newest Memory state record on the branch and what it derives to
+ * (#319): `valid` with the block list, or `invalid` when the record is
+ * unknown, malformed, or fails branch derivation. Older records are never
+ * consulted — the newest record is the boundary and an invalid one degrades
+ * explicitly.
+ */
+type StateRecordDerivation =
+  | { readonly kind: "valid"; readonly stateEntryId: string; readonly statePosition: number; readonly state: MemoryStateData; readonly blocks: readonly DerivedMemoryBlock[] }
+  | { readonly kind: "invalid"; readonly statePosition: number }
+  | undefined;
+
+function deriveStateRecord(
   branch: readonly SessionEntry[],
-): { stateEntryId: string; statePosition: number; state: MemoryStateData; blocks: readonly DerivedMemoryBlock[] } | undefined {
+): StateRecordDerivation {
   for (let i = branch.length - 1; i >= 0; i--) {
     const entry = branch[i]!;
     if (entry.type !== "custom" || (entry as { customType?: unknown }).customType !== MEMORY_STATE_CUSTOM_TYPE) continue;
     const state = parseMemoryState((entry as { data?: unknown }).data);
-    if (state === undefined) continue;
+    if (state === undefined) return { kind: "invalid", statePosition: i };
     const blocks = deriveStateBlocks(branch, state, i);
-    if (blocks === undefined) continue;
-    return { stateEntryId: entry.id, statePosition: i, state, blocks };
+    if (blocks === undefined) return { kind: "invalid", statePosition: i };
+    return { kind: "valid", stateEntryId: entry.id, statePosition: i, state, blocks };
   }
   return undefined;
 }
@@ -308,10 +320,10 @@ function deriveStateMemory(
  * Derive current Memory from the session tree. Structural problems (missing
  * kept boundary, non-resolving or non-increasing directory ends, ends past the
  * kept boundary, malformed wrapper/directory) degrade to `opaque` — the
- * compaction remains usable as an ordinary Pi summary (#217). An invalid state
- * entry degrades to the latest earlier valid state entry or the v1 baseline;
- * only a branch whose latest carrier is structurally broken with no valid
- * earlier carrier reports `opaque`.
+ * compaction remains usable as an ordinary Pi summary (#217). The newest
+ * Memory state record is the boundary: a compaction after it is the newer
+ * native baseline (the record is superseded), an invalid record degrades the
+ * branch explicitly to `opaque`, and only a valid record derives state Memory.
  */
 export function deriveCurrentMemory(session: MemorySessionReader): CurrentMemory {
   const branch = [...session.getBranch(session.getLeafId?.() ?? undefined)];
@@ -326,18 +338,23 @@ export function deriveCurrentMemory(session: MemorySessionReader): CurrentMemory
     }
   }
 
-  const stateMemory = deriveStateMemory(branch);
-  // A native (or v1) compaction after the latest state entry is the newer
-  // baseline: the state entry's coverage was folded into it and applying the
-  // stale state again would resurrect replaced history (#319).
-  if (stateMemory !== undefined && (compaction === undefined || compactionIndex < stateMemory.statePosition)) {
+  const stateRecord = deriveStateRecord(branch);
+  // A native (or v1) compaction after the newest state record is the newer
+  // baseline: the record's coverage was folded into it and applying the stale
+  // state again would resurrect replaced history (#319). The record's own
+  // validity does not matter once superseded.
+  const recordSuperseded = stateRecord !== undefined
+    && compaction !== undefined
+    && compactionIndex > stateRecord.statePosition;
+  if (stateRecord !== undefined && !recordSuperseded) {
+    if (stateRecord.kind === "invalid") return { kind: "opaque" };
     return {
       kind: "valid",
       carrier: "state",
-      stateEntryId: stateMemory.stateEntryId,
-      carrierTimestamp: Date.parse(branch[stateMemory.statePosition]!.timestamp) || 0,
-      compactionId: stateMemory.state.baseCompactionId,
-      blocks: stateMemory.blocks,
+      stateEntryId: stateRecord.stateEntryId,
+      carrierTimestamp: Date.parse(branch[stateRecord.statePosition]!.timestamp) || 0,
+      compactionId: stateRecord.state.baseCompactionId,
+      blocks: stateRecord.blocks,
     };
   }
 
