@@ -223,13 +223,24 @@ claims an interrupted recording did not happen. Repeated submissions in the
 same state find no uncovered source and record nothing, competing
 same-batch submissions are both refused by the sole-call rule, and a write
 failure through the `appendEntry` seam fails the tool call without touching
-the previously recorded Memory. One interruption artifact is exempt from
-batch pairing: a compression or source-reading tool call left unanswered by
-an aborted batch or a native branch cut at the recorded state entry is
-protocol bookkeeping, never conversation evidence, so it never blocks a
-later append — the request-side pair rules already drop it — while an
-unanswered ordinary tool call inside a covered range still refuses the
-compression.
+the previously recorded Memory. Reading and compression protocol artifacts
+have distinct pairing rules, and neither ever blocks a later append:
+
+- An unanswered protocol call — a compression or source-reading call left
+  without its result by an aborted batch or a native branch cut at the
+  recorded state entry — is protocol bookkeeping, never conversation
+  evidence, so it never blocks the append. For compression calls the
+  request-side pair rules drop the unanswered call from provider requests;
+  for reading calls nothing is fabricated and the pair-less call keeps Pi's
+  own rendering of the aborted batch. An unanswered ordinary tool call
+  inside a covered range still refuses the compression.
+- An answered `read_memory_source` pair inside a covered range leaves the
+  request **together with its exchange**: the recovered page is never a
+  Memory source, and the protocol result joins the replacement set so the
+  evicted call never strands an unpaired result providers would reject. A
+  pair that trails directly before the working set instead stays raw and
+  whole — the range end moves below its exchange — because the reading
+  artifacts are deliberately kept visible in their own run.
 
 **Compatibility boundary.** Pi 0.84.2 has no public observer after all
 `context` and `before_provider_request` handlers. pi-square validates sources
@@ -376,11 +387,37 @@ preference, and no origin-file lookup:
 An invalid or stale structure degrades only Context Memory (to `opaque`), never
 a session operation.
 
-The whole lifecycle matrix above is pinned by deterministic tests against
-real Pi sessions — persisted files, native `navigateTree`/`createBranchedSession`
-operations, cross-directory copies, event-coordinated aborts, and
-faux-provider requests as the observation seam — with no timer-based
-coordination anywhere.
+The lifecycle matrix above is pinned by two clearly separated kinds of
+deterministic evidence, both without timer-based coordination:
+
+- **Native request evidence** — real Pi `AgentSession`s over persisted
+  session files, driven through ordinary prompts, native tree operations
+  (`navigateTree`, `createBranchedSession`, cross-directory copies), and
+  event-coordinated aborts, with the faux provider's converted requests as
+  the observation seam. This covers recording with a retained instruction,
+  restart/resume determinism (byte-identical carriers, replacement sets, and
+  source pages), pre-write and post-record cancellations, racing and
+  repeated submissions, sibling isolation both directions, fork and import
+  copies, reading pairs under compression (mid-range and trailing), the v1
+  read-only baseline and one append over it, corrupt or unknown-format
+  records degrading explicitly after reopen without falling back to an
+  older record or rewriting the file, native-compaction supersession,
+  disable → re-enable, running with the extension uninstalled (and deriving
+  the same Memory again after reinstalling), and ephemeral in-memory
+  sessions. Fork and clone share Pi's copied-active-path semantics
+  (`forkFrom` copies the file's active path; `createBranchedSession` copies
+  a chosen path), so one copied-path cell covers both.
+- **Boundary-injected evidence** — manually seeded trees driven through the
+  registrar harness with directly emitted events and direct tool execution.
+  This pins the seams a real session cannot reproduce deterministically: an
+  injected `appendEntry` write failure leaving previously recorded Memory
+  intact, the recorded-versus-applied reset across a restart (re-emitted
+  `session_start`), the `SOURCE_NOT_SERVED` revalidation right after a
+  branch switch (emitted `session_tree`), and the exact projected-request
+  shapes of interrupted reading batches that an abort cannot land between
+  deterministically. These cells are unit evidence for their boundary and
+  are always combined with the native cells above — they are not themselves
+  native request evidence.
 
 ## Storage, concurrency, and deletion
 
