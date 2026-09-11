@@ -79,9 +79,17 @@ _Avoid_: deprecated tool, disabled tool, legacy tool
 ### Context memory
 
 **Context Memory**:
-The planned experimental parent-agent capability that replaces old conversation history on one session branch with compact, source-backed context while retaining recent original conversation.
+The experimental parent-agent capability that replaces old conversation history on one session branch with compact, source-backed context while retaining recent original conversation.
 _Avoid_: project memory, knowledge base, observational memory
 
 **Memory block**:
 The main agent's Markdown compression of one continuous range of original entries on a session branch. It is a non-authoritative continuity aid, not an instruction or truth record.
 _Avoid_: project fact, knowledge node, checkpoint
+
+**Memory append (append)**:
+The addition of one Memory block for newly covered original conversation, leaving existing blocks unchanged. It is a Context Memory operation, not a separate tool.
+_Avoid_: append tool, full Memory rewrite
+
+**Memory rebuild (rebuild)**:
+The replacement of a newest adjacent Memory block suffix with one block authored from its complete original sources and newly covered conversation, leaving the older prefix unchanged. It is a Context Memory operation, not recursive summarization or a separate tool.
+_Avoid_: rebuild tool, summary-of-summary, tier promotion

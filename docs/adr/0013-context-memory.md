@@ -1,8 +1,16 @@
 ---
-status: accepted
+status: superseded by ADR-0017
 ---
 
 # Context Memory: main-agent-authored ordered blocks carried by Pi compaction
+
+Superseded by [ADR-0017 — In-task Context Memory through request projection](./0017-context-memory-request-projection.md)
+under [#317](https://github.com/odradekk/pi-square/issues/317). The maintainer
+accepted the replacement on 2026-09-11. The text below is retained as a
+historical record, not the governing design for new implementation. #319
+implements in-task append recording and next-request projection. ADR-0017
+records the implemented scope and the remaining work in #320–#325; this
+supersession does not claim the complete redesign is implemented.
 
 Context Memory (`odradekk/pi-square#215`, slices #216–#222) adds an
 experimental parent-session capability that represents older conversation
