@@ -110,8 +110,49 @@ status: accepted
 > extension-visible wheel events under Pi 0.84.2. Every view-state transition
 > stays observational only — no lifecycle, delivery, ownership, claim, wait,
 > abort, resume, or persistence effect.
-> The remaining lifecycle/delivery qualification of the parent viewer
-> specification (#302) remains in later slices (#308–#309).
+> Since #308 the roster is also main-task scoped: the controller tracks a
+> session-scoped visibility epoch that advances only where main provably
+> accepted a real prompt — `before_agent_start` for an idle interactive or
+> rpc prompt (Pi emits it after preflight, once the message array is built)
+> and the user `message_start` for a steer or follow-up queued during a
+> streaming run — because the `input` event alone proves nothing: a later
+> extension may return `action: "handled"` from the input chain so
+> `session.prompt` never sends the prompt, a preflight failure never starts
+> a run, slash commands and local `!` shell commands never reach the chain,
+> and extension follow-ups such as the Config Guide carry
+> `source: "extension"` and never advance it. Because Pi 0.84.2 exposes no
+> post-chain streaming-input event, `src/subagents/main-task-input.ts`
+> correlates pre-chain observations with accepted user messages by text hash
+> and the native enqueue timestamp, keeps steer and follow-up order separate,
+> and uses Pi's public pending-message signal to discard observations that a
+> later handler consumed. The input observer remains synchronous because Pi
+> determines the event's streaming behavior before the chain and checks the
+> live streaming state again afterward; streaming observations cross that
+> settle boundary until Pi chooses either an idle start or a queued
+> continuation. Pi 0.84.2 exposes
+> neither a post-chain accepted-input event nor source metadata on queued user
+> messages. Same-text observations sharing one native millisecond timestamp —
+> including inputs that a later asynchronous handler reorders or consumes —
+> are therefore not losslessly distinguishable inside an extension. Ordinary
+> interactive submission is serial, and this unsupported collision resolves
+> deterministically to the latest eligible observation. Session replacement
+> and the next provably empty input reset stale observations, so a handled or
+> aborted input cannot contaminate a later run or replacement session.
+> Ordinary terminal
+> rows of the preceding task expire at that boundary, active children survive
+> it and join the current epoch when they later terminalize, a re-queued
+> public ID becomes visible again immediately, and the epoch is presentation
+> state only: the store's finished-job compaction and pending/claimed
+> delivery exemptions remain the single retention authority and the manager
+> keeps historical inspection. Parent replacement, reload, fork, resume, and
+> shutdown close the overlay, clear widget and view state, unsubscribe every
+> listener, and cancel repaint work, while the established shutdown path
+> keeps sole authority over aborting active children and resetting delivery;
+> opening and using the viewer never claims, takes, releases, confirms,
+> sends, drops, or reorders a result and never changes resume eligibility,
+> and non-interactive contexts create no roster, overlay, key listener,
+> timer, or output change. The release-facing documentation audit of the
+> parent viewer specification (#302) remains a later slice (#309).
 
 pi-square completes the subagent contract change begun with the
 `delegate_subagent`/`resume_subagent` rename: delegation is background-only,

@@ -13,6 +13,7 @@ import { listRetainedSubagentIds } from "./artifacts";
 import { reconcileChildPartitions } from "../anchored-edit/partitions";
 import { discoverSubagents, filterVisibleSubagents } from "./definitions";
 import { registerSubagentManager } from "./manager";
+import { registerMainTaskInputEvents } from "./main-task-input";
 import { createSubagentRosterController } from "./roster";
 import { anchoredEditingEnabled, registerSubagentTool, type SubagentRuntimeState } from "./tool";
 import { decorateSubagentTool } from "./display-adapter";
@@ -84,6 +85,7 @@ export default function registerSubagents(
         display: () => typeof runtime === "function" ? runtime() : runtime,
       },
   );
+  registerMainTaskInputEvents(pi, () => roster.advanceMainTaskEpoch());
 
   registerSubagentTool(
     pi,
@@ -126,6 +128,19 @@ export default function registerSubagents(
     }
   });
 
+  // Main-task visibility epoch (#308): a real prompt submitted to main —
+  // interactive or rpc input, never an extension continuation — expires the
+  // roster's ordinary terminal rows from the preceding task. Pi emits the
+  // `input` event only inside `session.prompt`, after slash-command handling,
+  // and local `!` shell commands never reach it — but the event itself cannot
+  // be the boundary: the extension input chain lets a later handler return
+  // action:"handled" so the prompt never reaches the agent, and a prompt that
+  // fails model/auth preflight never starts a run. The epoch therefore
+  // advances only where main provably accepted the prompt: at
+  // `before_agent_start` for an idle prompt (Pi emits it after preflight, once
+  // the message array is built), and at the user `message_start` for a
+  // steer/follow-up queued during a streaming run — the same commit
+  // discipline the Shadow Minds scheduler uses for its task epochs.
   // Delivery timing. A running parent receives results at a turn boundary; a
   // parent that settled naturally receives them at once; a parent that the
   // user interrupted stays silent until it starts its next turn.
@@ -146,7 +161,8 @@ export default function registerSubagents(
   });
 
   // Delivery confirmation: a result counts as delivered only when Pi injects
-  // the message that carries it into the parent transcript.
+  // the message that carries it into the parent transcript. The same user
+  // message commits a queued streaming input's epoch boundary (#308).
   pi.on("message_start", (event) => {
     delivery.observeMessage(event.message);
   });

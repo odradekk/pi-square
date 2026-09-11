@@ -368,6 +368,13 @@ export interface SubagentRosterController {
   start(ctx: ExtensionContext): void;
   stop(): void;
   refresh(): void;
+  /**
+   * One real prompt was submitted to main (#308): interactive or rpc input,
+   * never an extension continuation. Advances the session-scoped main-task
+   * visibility epoch so the preceding task's ordinary terminal rows expire,
+   * while active rows survive and join the new epoch when they terminalize.
+   */
+  advanceMainTaskEpoch(): void;
 }
 
 export interface SubagentRosterOptions {
@@ -403,6 +410,16 @@ export interface SubagentRosterOptions {
  * title's lifecycle truthful across transitions, and unsubscribes plus cancels
  * the timer on overlay close and session teardown. A subscriber defect is
  * contained as one bounded overlay diagnostic and never reaches the child.
+ *
+ * Since #308 the projection is also main-task scoped: the controller tracks a
+ * session-scoped visibility epoch that advances on each real prompt submitted
+ * to main. Ordinary terminal rows of the preceding task expire from the
+ * roster at that boundary, active rows survive it and join the current epoch
+ * when they later terminalize, and a resumed public ID becomes visible again
+ * the moment it is re-queued. The epoch is presentation state only — the
+ * background store keeps its finished-job compaction and delivery exemptions
+ * as the single retention authority, and the manager still owns historical
+ * inspection.
  */
 export function createSubagentRosterController(
   state: BackgroundState,
@@ -436,6 +453,19 @@ export function createSubagentRosterController(
   let paintTimer: unknown;
   let lastPaintAt = -Infinity;
 
+  /**
+   * Main-task visibility epoch (#308): 1 for the session's first task, one
+   * more for each real prompt submitted to main. Session-scoped presentation
+   * state only — never persisted, and reset by teardown together with the
+   * rest of the controller.
+   */
+  let taskEpoch = 1;
+  /**
+   * Epoch in which each terminal child last terminalized, keyed by public
+   * ID. A row stays visible while its recorded epoch is current; active
+   * children carry no entry and never expire.
+   */
+  const terminalEpochs = new Map<string, number>();
   const cancelLivePaint = () => {
     if (paintTimer !== undefined) {
       timers.clearTimeout(paintTimer);
@@ -538,6 +568,31 @@ export function createSubagentRosterController(
   const rosterJobs = () => listBackgroundJobs(state)
     .filter((job) => parentSessionId !== "" && job.details.lastParentSessionId === parentSessionId);
 
+  /**
+   * Current-task roster membership (#308): every current-parent job that is
+   * still active or terminalized inside the current visibility epoch. The
+   * store's synchronous change notification means each terminalization is
+   * observed inside the epoch it happened in; entries whose job left the
+   * store leave with it, because compaction — not this map — owns retention.
+   * The map is therefore bounded by the store's own retained set.
+   */
+  const visibleRosterJobs = (): BackgroundJobSnapshot[] => {
+    const jobs = rosterJobs();
+    for (const job of jobs) {
+      if (ACTIVE_STATUSES.has(job.status)) {
+        // A re-queued (resumed) public ID is active again; it joins the
+        // current epoch whenever it next terminalizes.
+        terminalEpochs.delete(job.id);
+      } else if (!terminalEpochs.has(job.id)) {
+        terminalEpochs.set(job.id, taskEpoch);
+      }
+    }
+    for (const id of [...terminalEpochs.keys()]) {
+      if (!jobs.some((job) => job.id === id)) terminalEpochs.delete(id);
+    }
+    return jobs.filter((job) => ACTIVE_STATUSES.has(job.status) || terminalEpochs.get(job.id) === taskEpoch);
+  };
+
   // The background store owns immutable creation time for every retained
   // public ID; the full ID only breaks an exact tie.
   const rosterRows = (jobs: readonly BackgroundJobSnapshot[]): RosterRow[] => jobs
@@ -620,8 +675,19 @@ export function createSubagentRosterController(
 
   const refresh = () => {
     if (!context?.hasUI || context.mode !== "tui") return;
+    // The overlay's lifecycle truth tracks the full store: a viewed child
+    // keeps updating even after its roster row expired with a previous main
+    // task (#308).
     const jobs = rosterJobs();
-    const rows = rosterRows(jobs);
+    const rows = rosterRows(visibleRosterJobs());
+
+    // Reading state is retained only for children the roster still shows and
+    // the one still open (#307). The pruning runs in every branch: expiry that
+    // empties the roster (#308) must drop the retained views of children that
+    // left with the preceding task, so a later same-ID row starts fresh.
+    for (const id of childEntries.keys()) {
+      if (id !== openId && !rows.some((row) => row.id === id)) childEntries.delete(id);
+    }
 
     if (rows.length === 0) {
       stopMotion();
@@ -629,12 +695,6 @@ export function createSubagentRosterController(
       syncOverlayCandidate([]);
       context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
       return;
-    }
-
-    // Reading state is retained only for children the roster still shows and
-    // the one still open (#307).
-    for (const id of childEntries.keys()) {
-      if (id !== openId && !rows.some((row) => row.id === id)) childEntries.delete(id);
     }
 
     // Resolve the effective focus before the window moves: a candidate whose
@@ -697,7 +757,7 @@ export function createSubagentRosterController(
    * window and reading position rather than restarting at the tail (#307).
    */
   const buildOverlayModel = (job: BackgroundJobSnapshot, history: ChildHistoryView): ChildOverlayModel => {
-    const rows = rosterRows(rosterJobs());
+    const rows = rosterRows(visibleRosterJobs());
     const prefixes = uniqueRosterIdPrefixes(rows.map((row) => row.id));
     const failureReason = job.status === "failed" || job.status === "aborted"
       ? rosterFailureReason(job)
@@ -796,7 +856,7 @@ export function createSubagentRosterController(
    * child as no change at all.
    */
   const navigateOverlayCandidate = (delta: -1 | 1) => {
-    const rows = rosterRows(rosterJobs());
+    const rows = rosterRows(visibleRosterJobs());
     if (rows.length === 0 || openId === undefined) return;
     const anchor = candidateId !== undefined && rows.some((row) => row.id === candidateId)
       ? candidateId
@@ -888,7 +948,7 @@ export function createSubagentRosterController(
           // three stay read-only projections of the background store.
           onNavigate: navigateOverlayCandidate,
           onConfirm: () => {
-            const rows = rosterRows(rosterJobs());
+            const rows = rosterRows(visibleRosterJobs());
             const candidate = candidateId !== undefined && candidateId !== openId
               && rows.some((row) => row.id === candidateId)
               ? candidateId
@@ -957,7 +1017,7 @@ export function createSubagentRosterController(
     const up = matchesKey(data, "up");
     const down = matchesKey(data, "down");
     if (up || down) {
-      const rows = rosterRows(rosterJobs());
+      const rows = rosterRows(visibleRosterJobs());
       if (editorText() !== "" || rows.length === 0) {
         clearCandidate();
         return undefined;
@@ -966,7 +1026,7 @@ export function createSubagentRosterController(
       return { consume: true };
     }
     if (matchesKey(data, "enter")) {
-      const rows = rosterRows(rosterJobs());
+      const rows = rosterRows(visibleRosterJobs());
       const editorEmpty = editorText() === "";
       const candidate = candidateId !== undefined && editorEmpty && rows.some((row) => row.id === candidateId)
         ? candidateId
@@ -1011,6 +1071,13 @@ export function createSubagentRosterController(
     childEntries.clear();
     viewportStart = 0;
     tuiRef = undefined;
+    // The visibility epoch is session-scoped presentation state: teardown
+    // returns the next session to its first main task with no expiry carried
+    // over (#308). Store retention and the established shutdown path are not
+    // touched here — the viewer never aborts children or resets delivery.
+    taskEpoch = 1;
+    terminalEpochs.clear();
+    lastPaintAt = -Infinity;
     if (context?.hasUI) context.ui.setWidget(SUBAGENT_ROSTER_KEY, undefined);
     context = undefined;
     parentSessionId = "";
@@ -1036,5 +1103,18 @@ export function createSubagentRosterController(
     },
     stop,
     refresh,
+    /**
+     * Visibility-epoch boundary (#308). The registrar calls this only where
+     * main provably accepted a real prompt — `before_agent_start` for an
+     * idle prompt, the user `message_start` for a queued steer/follow-up —
+     * because the `input` event alone cannot prove submission: a later
+     * extension may return action:"handled" from the input chain, and a
+     * preflight failure never starts a run. Slash commands, local `!` shell
+     * commands, drafts, and extension continuations never reach this method.
+     */
+    advanceMainTaskEpoch() {
+      taskEpoch += 1;
+      refresh();
+    },
   };
 }
