@@ -65,6 +65,7 @@ const suites = [
   "context-memory/upstream-transform.test.mjs",
   "context-memory/config-guide.test.mjs",
   "context-memory/controller.test.mjs",
+  "context-memory/lifecycle.test.mjs",
   "context-memory/format.test.mjs",
   "context-memory/session.test.mjs",
   "context-memory/maintenance.test.mjs",

@@ -57,6 +57,16 @@ export interface DerivedMemoryBlock {
    * compaction-carried v1 blocks, whose ranges were removed natively as a whole.
    */
   readonly retainedEntryIds: readonly string[];
+  /**
+   * Protocol tool-result entries inside this block's range whose producing
+   * assistant entry is one of the block's evicted sources (#322). They are
+   * never sources — reading copies never enter the source stream — but they
+   * leave provider requests together with the exchange that carried their
+   * call, because the request-side pair rules keep reading artifacts visible
+   * and an evicted call with a surviving result would be an unpaired message
+   * providers reject. Deterministically re-derived from the branch on restart.
+   */
+  readonly protocolResultEntryIds: readonly string[];
 }
 
 /** The derivation result for the current leaf. */
@@ -178,6 +188,37 @@ function positionOf(branch: readonly SessionEntry[], id: string): number {
 }
 
 /**
+ * Protocol tool-result entries inside one block's range whose producing
+ * assistant entry is among the block's sources (#322). The results never
+ * become sources; they only join the replacement set so the evicted call and
+ * its result leave provider requests together.
+ */
+function coveredProtocolResults(range: readonly SessionEntry[], sourceIds: ReadonlySet<string>): readonly string[] {
+  const producerOfCall = new Map<string, string>();
+  for (const entry of range) {
+    if (!sourceIds.has(entry.id)) continue;
+    const message = messageOf(entry);
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      const candidate = part as { type?: unknown; id?: unknown; name?: unknown } | null;
+      if (candidate?.type === "toolCall" && typeof candidate.id === "string" && isProtocolToolName(candidate.name)) {
+        producerOfCall.set(candidate.id, entry.id);
+      }
+    }
+  }
+  if (producerOfCall.size === 0) return [];
+  const results: string[] = [];
+  for (const entry of range) {
+    if (entry.type !== "message") continue;
+    const message = (entry as { message?: { role?: unknown; toolCallId?: unknown; toolName?: unknown } }).message;
+    if (message?.role !== "toolResult" || !isProtocolToolName(message.toolName)) continue;
+    if (typeof message.toolCallId !== "string") continue;
+    if (producerOfCall.has(message.toolCallId)) results.push(entry.id);
+  }
+  return results;
+}
+
+/**
  * Derive the block list a state entry records against the branch (#319):
  * strictly increasing eligible ends before the state entry, source ranges from
  * the previous end, retained ids resolving as protected user instructions
@@ -227,7 +268,7 @@ function deriveStateBlocks(
       const sourceEntries = branch
         .slice(previousEnd + 1, endPosition + 1)
         .filter(isEligibleSourceEntry);
-      blocks.push({ markdown: item.markdown, endEntryId: item.endEntryId, sourceEntries, retainedEntryIds: [] });
+      blocks.push({ markdown: item.markdown, endEntryId: item.endEntryId, sourceEntries, retainedEntryIds: [], protocolResultEntryIds: [] });
       previousEnd = endPosition;
       continue;
     }
@@ -242,7 +283,12 @@ function deriveStateBlocks(
       const retainedPosition = positionOf(branch, id);
       if (!rangeIds.has(id) || !isUserMessageEntry(branch[retainedPosition]!)) return undefined;
     }
-    blocks.push({ markdown: item.markdown, endEntryId: item.endEntryId, sourceEntries, retainedEntryIds: item.retainedEntryIds });
+    const range = branch.slice(previousEnd + 1, endPosition + 1);
+    const protocolResultEntryIds = coveredProtocolResults(
+      range,
+      new Set(sourceEntries.map((entry) => entry.id)),
+    );
+    blocks.push({ markdown: item.markdown, endEntryId: item.endEntryId, sourceEntries, retainedEntryIds: item.retainedEntryIds, protocolResultEntryIds });
     previousEnd = endPosition;
   }
   if (basePosition !== -1) {
@@ -394,7 +440,7 @@ export function deriveCurrentMemory(session: MemorySessionReader): CurrentMemory
       .slice(previousEnd + 1, endPosition + 1)
       .filter(isEligibleSourceEntry);
     if (sourceEntries.length === 0) return { kind: "opaque" };
-    blocks.push({ markdown: bodies[i]!, endEntryId: item.endEntryId, sourceEntries, retainedEntryIds: [] });
+    blocks.push({ markdown: bodies[i]!, endEntryId: item.endEntryId, sourceEntries, retainedEntryIds: [], protocolResultEntryIds: [] });
     previousEnd = endPosition;
   }
 

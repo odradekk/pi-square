@@ -630,6 +630,74 @@ try {
     assert.equal(session.registration.snapshot({ tokens: 40000, contextWindow: 200000 }).maintenance.lastErrorCode, "COMPACT_NOT_SOAL_TOOL");
   }
 
+  // #320 + #322: a tail reading pair stays outside a fixed pin, then leaves
+  // whole when later served work brings the exchange into a new range.
+  {
+    const sm = SessionManager.inMemory("/project");
+    const task = sm.appendMessage({ role: "user", content: `combined task ${PADDING}`, timestamp: 1 });
+    appendReadRound(sm, "pair:a", "a.txt", `PAIR-A ${PADDING}`, 2);
+    const resultB = appendReadRound(sm, "pair:b", "b.txt", `PAIR-B ${PADDING}`, 4);
+    const session = harness(DUE_CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    await serveContext(session, sm, ctx);
+    const submit = async (id, timestamp) => {
+      const part = compactCallPart(id, `# ${id} digest`);
+      sm.appendMessage(assistantWith([part], timestamp));
+      await noteBatch(session, ctx, [part]);
+      const result = await compactTool(session).execute(id, part.arguments, undefined, undefined, ctx);
+      sm.appendMessage(toolResult(id, "compact_to_memory_block", result.content[0].text, timestamp + 1));
+    };
+    await submit("pair:initial", 6);
+    const firstBlock = structuredClone(stateEntriesOf(sm).at(-1).data.blocks[0]);
+
+    await serveContext(session, sm, ctx);
+    const readingId = "pair:source";
+    sm.appendMessage(assistantWith([
+      { type: "text", text: "checking the first block's original evidence" },
+      { type: "toolCall", id: readingId, name: "read_memory_source", arguments: { block: 1, page: 1 } },
+    ], 8));
+    const page = await session.tools.get("read_memory_source").execute(
+      readingId, { block: 1, page: 1 }, undefined, undefined, ctx,
+    );
+    sm.appendMessage(toolResult(readingId, "read_memory_source", page.content.map((part) => part.text).join("\n"), 9));
+    const resultC = appendReadRound(sm, "pair:c", "c.txt", `PAIR-C ${PADDING}`, 10);
+    const pinned = await serveContext(session, sm, ctx);
+    assert.equal(advisoriesOf(pinned).length, 1, "the tail-safe range establishes a pending request");
+
+    // Growth after that request must not silently expand its pinned source.
+    appendReadRound(sm, "pair:d", "d.txt", `PAIR-D ${PADDING}`, 12);
+    await submit("pair:tail", 14);
+    const tailBlocks = stateEntriesOf(sm).at(-1).data.blocks;
+    assert.equal(tailBlocks.at(-1).endEntryId, resultB,
+      "the pin ends before the reading exchange, even after later ordinary work");
+    assert.deepEqual(tailBlocks[0], firstBlock, "the existing block and retained instruction are unchanged");
+    const tailView = await serveContext(session, sm, ctx);
+    const readingParts = (messages) => ({
+      calls: messages.flatMap((message) => Array.isArray(message.content) ? message.content : [])
+        .filter((part) => part?.type === "toolCall" && part.id === readingId),
+      results: messages.filter((message) => message.role === "toolResult" && message.toolCallId === readingId),
+    });
+    assert.equal(readingParts(tailView).calls.length, 1, "the tail reading call stays raw");
+    assert.equal(readingParts(tailView).results.length, 1, "its matching result stays raw too");
+    assert.equal(advisoriesOf(tailView).length, 1, "served growth establishes the next maintenance request");
+
+    await submit("pair:middle", 16);
+    const middleBlocks = stateEntriesOf(sm).at(-1).data.blocks;
+    assert.equal(middleBlocks.at(-1).endEntryId, resultC, "only the newly served range is accepted");
+    assert.deepEqual(middleBlocks.slice(0, -1), tailBlocks, "the old prefix stays byte-stable");
+    const middleView = await serveContext(session, sm, ctx);
+    assert.deepEqual(readingParts(middleView), { calls: [], results: [] }, "the covered reading pair leaves whole");
+    assert.ok(middleView.some((message) => message.role === "user" && message.content.includes("combined task")),
+      "the original task remains raw after protection and maintenance advance");
+    assert.deepEqual(middleBlocks[0].retainedEntryIds, [task]);
+    // Registrar recovery must derive exactly the same replacement set from
+    // the tree; the native persisted recovery matrix lives in lifecycle.test.
+    await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    const recovered = await serveContext(session, sm, ctx);
+    assert.deepEqual(recovered, middleView, "re-derivation does not resurrect a reading half-pair");
+  }
+
   console.log("context-memory maintenance boundary tests: OK");
 } finally {
   // Nothing persistent is created: every SessionManager is in-memory.

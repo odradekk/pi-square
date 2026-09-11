@@ -68,15 +68,15 @@ import {
  * every ordinary request (never only at user input or settle), one pending
  * maintenance request pins the exact append sources the advisory invites, and
  * later tool work extends coverage only through an explicit re-scope at a
- * request boundary where the new sources are served. Repeated refused or
- * zero-benefit attempts against one pinned scope suppress the advisory
- * (bounded, with the specific refusal kept); real growth or a Memory state
+ * request boundary where the new sources are served. Repeated refused,
+ * invalid, or zero-benefit attempts against one pinned scope suppress the
+ * advisory (bounded, with the specific refusal kept); real growth or a Memory state
  * change re-enables evaluation without waiting for the next user input.
  * Provider usage is bound to the request and Memory version it measured: the
- * deterministic request estimate plus a bounded calibration term (the system
- * prompt, tool definitions, and framing the handler's messages never carry,
- * refreshed from each provider report) is the only pressure input, so a
- * pre-compression report never floors post-compression pressure and an
+ * deterministic request estimate directly counts messages, the system prompt,
+ * and active tool definitions, plus a bounded provider residual for comparable
+ * request compositions. Thus a pre-compression report never floors
+ * post-compression pressure and an
  * accepted compression rebuilds the baseline through the next estimate.
  *
  * Recording never blocks the run: the accepted block lands as a Pi custom
@@ -283,7 +283,12 @@ function alignMessages(
   return items;
 }
 
-/** The entry ids of the replacement set a state-carried Memory records (#319). */
+/**
+ * The entry ids of the replacement set a state-carried Memory records (#319,
+ * #322): every non-retained source entry, plus the protocol tool results
+ * whose producing assistant is among those evicted sources so the call and
+ * its result always leave provider requests together.
+ */
 function replacementEntryIds(memory: StateMemory): ReadonlySet<string> {
   const evict = new Set<string>();
   for (const block of memory.blocks) {
@@ -291,6 +296,7 @@ function replacementEntryIds(memory: StateMemory): ReadonlySet<string> {
     for (const entry of block.sourceEntries) {
       if (!retained.has(entry.id)) evict.add(entry.id);
     }
+    for (const id of block.protocolResultEntryIds) evict.add(id);
   }
   return evict;
 }
@@ -588,9 +594,9 @@ function assistantToolCalls(entry: SessionEntry): readonly { id: string; name: u
  * after it; with no completed ordinary batch it is the latest user
  * instruction and everything after it. The source range ends at the last eligible entry
  * before that boundary, must extend beyond the previous block's end, and must
- * not split a tool batch: every compression tool call inside the range needs
- * its paired result inside the range and vice versa. Returns null when no
- * qualified source exists.
+ * not split an ordinary tool batch. A trailing answered protocol pair keeps
+ * the end below its producer so both halves remain raw (#322). Returns null
+ * when no qualified source exists.
  */
 function selectAppendSource(branch: readonly SessionEntry[], previousEndPosition: number): AppendSource | null {
   const retainedFrom = workingSetAnchor(branch);
@@ -603,6 +609,41 @@ function selectAppendSource(branch: readonly SessionEntry[], previousEndPosition
     }
   }
   if (sourceEndPosition <= previousEndPosition) return null;
+  // A protocol tool result trailing the range while its producing assistant
+  // would be covered must not strand an unpaired result: the request-side
+  // pair rules keep reading artifacts visible (unlike compression pairs), so
+  // evicting the call alone would leave a result no provider accepts (#322).
+  // Move the range end below the producing exchange so the pair stays raw and
+  // whole; results produced before this block's start belong to an earlier
+  // accepted range and are beyond what this append can fix.
+  const assistantCallPosition = new Map<string, number>();
+  for (let i = previousEndPosition + 1; i < retainedFrom; i++) {
+    const calls = assistantToolCalls(branch[i]!);
+    for (const call of calls) assistantCallPosition.set(call.id, i);
+  }
+  for (;;) {
+    let lowestTrailingProducer = -1;
+    for (let i = sourceEndPosition + 1; i < retainedFrom; i++) {
+      const entry = branch[i]!;
+      if (entry.type !== "message") continue;
+      const message = (entry as { message?: { role?: unknown; toolCallId?: unknown; toolName?: unknown } }).message;
+      if (message?.role !== "toolResult" || typeof message.toolCallId !== "string") continue;
+      if (!isProtocolToolName(message.toolName)) continue;
+      const producer = assistantCallPosition.get(message.toolCallId);
+      if (producer === undefined || producer > sourceEndPosition || producer <= previousEndPosition) continue;
+      if (lowestTrailingProducer === -1 || producer < lowestTrailingProducer) lowestTrailingProducer = producer;
+    }
+    if (lowestTrailingProducer === -1) break;
+    let moved = -1;
+    for (let i = lowestTrailingProducer - 1; i > previousEndPosition; i--) {
+      if (isEligibleSourceEntry(branch[i]!)) {
+        moved = i;
+        break;
+      }
+    }
+    if (moved <= previousEndPosition) return null;
+    sourceEndPosition = moved;
+  }
   return buildAppendSource(branch, previousEndPosition, sourceEndPosition);
 }
 
@@ -643,11 +684,11 @@ function workingSetAnchor(branch: readonly SessionEntry[]): number {
 
 /**
  * Validate and build the append source ending at one fixed position (#319,
- * #320). Batch integrity inside the range: every tool call paired inside,
- * every result belonging to a call inside. An orphan in the range refuses the
- * compression rather than dropping messages to force a fit. The same
- * validation backs the natural selection and a pinned maintenance request's
- * fixed end.
+ * #320, #322). Every ordinary tool call and result must pair inside the range;
+ * an ordinary orphan refuses compression rather than dropping messages to
+ * force a fit. Unanswered protocol calls are exempt; answered protocol results
+ * inside the range leave with their evicted producer through derivation.
+ * The same validation backs natural selection and a pinned request's fixed end.
  */
 function buildAppendSource(
   branch: readonly SessionEntry[],
@@ -659,13 +700,17 @@ function buildAppendSource(
   for (let i = previousEndPosition + 1; i <= sourceEndPosition; i++) {
     const entry = branch[i]!;
     if (entry.type !== "message") continue;
-    const message = (entry as { message?: { role?: unknown; content?: unknown; toolCallId?: unknown } }).message;
+    const message = (entry as { message?: { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown } }).message;
     if (message?.role === "assistant" && Array.isArray(message.content)) {
       for (const part of message.content) {
-        const candidate = part as { type?: unknown; id?: unknown } | null;
-        if (candidate?.type === "toolCall" && typeof candidate.id === "string") rangeCalls.set(candidate.id, i);
+        const candidate = part as { type?: unknown; id?: unknown; name?: unknown } | null;
+        if (candidate?.type === "toolCall" && typeof candidate.id === "string"
+          && !isProtocolToolName((candidate as { name?: unknown }).name)) {
+          rangeCalls.set(candidate.id, i);
+        }
       }
-    } else if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+    } else if (message?.role === "toolResult" && typeof message.toolCallId === "string"
+      && !isProtocolToolName(message.toolName)) {
       rangeResults.set(message.toolCallId, i);
     }
   }
