@@ -196,7 +196,12 @@ function alignMessages(
   return items;
 }
 
-/** The entry ids of the replacement set a state-carried Memory records (#319). */
+/**
+ * The entry ids of the replacement set a state-carried Memory records (#319,
+ * #322): every non-retained source entry, plus the protocol tool results
+ * whose producing assistant is among those evicted sources so the call and
+ * its result always leave provider requests together.
+ */
 function replacementEntryIds(memory: StateMemory): ReadonlySet<string> {
   const evict = new Set<string>();
   for (const block of memory.blocks) {
@@ -204,6 +209,7 @@ function replacementEntryIds(memory: StateMemory): ReadonlySet<string> {
     for (const entry of block.sourceEntries) {
       if (!retained.has(entry.id)) evict.add(entry.id);
     }
+    for (const id of block.protocolResultEntryIds) evict.add(id);
   }
   return evict;
 }
@@ -549,21 +555,67 @@ function selectAppendSource(branch: readonly SessionEntry[], previousEndPosition
     }
   }
   if (sourceEndPosition <= previousEndPosition) return null;
-  // Batch integrity inside the range: every tool call paired inside, every
-  // result belonging to a call inside. An orphan in the range refuses the
-  // compression rather than dropping messages to force a fit (#319).
+  // A protocol tool result trailing the range while its producing assistant
+  // would be covered must not strand an unpaired result: the request-side
+  // pair rules keep reading artifacts visible (unlike compression pairs), so
+  // evicting the call alone would leave a result no provider accepts (#322).
+  // Move the range end below the producing exchange so the pair stays raw and
+  // whole; results produced before this block's start belong to an earlier
+  // accepted range and are beyond what this append can fix.
+  const assistantCallPosition = new Map<string, number>();
+  for (let i = previousEndPosition + 1; i < retainedFrom; i++) {
+    const calls = assistantToolCalls(branch[i]!);
+    for (const call of calls) assistantCallPosition.set(call.id, i);
+  }
+  for (;;) {
+    let lowestTrailingProducer = -1;
+    for (let i = sourceEndPosition + 1; i < retainedFrom; i++) {
+      const entry = branch[i]!;
+      if (entry.type !== "message") continue;
+      const message = (entry as { message?: { role?: unknown; toolCallId?: unknown; toolName?: unknown } }).message;
+      if (message?.role !== "toolResult" || typeof message.toolCallId !== "string") continue;
+      if (!isProtocolToolName(message.toolName)) continue;
+      const producer = assistantCallPosition.get(message.toolCallId);
+      if (producer === undefined || producer > sourceEndPosition || producer <= previousEndPosition) continue;
+      if (lowestTrailingProducer === -1 || producer < lowestTrailingProducer) lowestTrailingProducer = producer;
+    }
+    if (lowestTrailingProducer === -1) break;
+    let moved = -1;
+    for (let i = lowestTrailingProducer - 1; i > previousEndPosition; i--) {
+      if (isEligibleSourceEntry(branch[i]!)) {
+        moved = i;
+        break;
+      }
+    }
+    if (moved <= previousEndPosition) return null;
+    sourceEndPosition = moved;
+  }
+  // Batch integrity inside the range: every ordinary tool call paired inside,
+  // every ordinary result belonging to a call inside. An orphan in the range
+  // refuses the compression rather than dropping messages to force a fit
+  // (#319). Protocol artifacts are exempt (#322): a compression or reading
+  // call left unanswered by a native branch cut at the recorded state entry —
+  // or by an aborted batch — is protocol bookkeeping, never conversation
+  // evidence, and no result exists for it to strand; an unanswered ordinary
+  // call still refuses. Answered protocol pairs are handled separately: their
+  // results leave with the evicted exchange (derivation) or the whole pair
+  // stays raw (the trailing rule above).
   const rangeCalls = new Map<string, number>();
   const rangeResults = new Map<string, number>();
   for (let i = previousEndPosition + 1; i <= sourceEndPosition; i++) {
     const entry = branch[i]!;
     if (entry.type !== "message") continue;
-    const message = (entry as { message?: { role?: unknown; content?: unknown; toolCallId?: unknown } }).message;
+    const message = (entry as { message?: { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown } }).message;
     if (message?.role === "assistant" && Array.isArray(message.content)) {
       for (const part of message.content) {
-        const candidate = part as { type?: unknown; id?: unknown } | null;
-        if (candidate?.type === "toolCall" && typeof candidate.id === "string") rangeCalls.set(candidate.id, i);
+        const candidate = part as { type?: unknown; id?: unknown; name?: unknown } | null;
+        if (candidate?.type === "toolCall" && typeof candidate.id === "string"
+          && !isProtocolToolName((candidate as { name?: unknown }).name)) {
+          rangeCalls.set(candidate.id, i);
+        }
       }
-    } else if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+    } else if (message?.role === "toolResult" && typeof message.toolCallId === "string"
+      && !isProtocolToolName(message.toolName)) {
       rangeResults.set(message.toolCallId, i);
     }
   }

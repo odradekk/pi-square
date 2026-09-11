@@ -12,6 +12,7 @@ const allowedFiles = new Set([
   "CHANGELOG.md",
   "docs/adr/0011-shadow-minds.md",
   "docs/adr/0013-context-memory.md",
+  "docs/adr/0017-context-memory-request-projection.md",
   "docs/context-memory.md",
   "docs/shadow-minds.md",
   "LICENSE",

@@ -16,9 +16,17 @@ Accepted on 2026-09-11. Implementation status: #319 implements the resident
 state entries, the next-request projection with strict message-to-entry
 alignment, bounded source recovery, and the recorded-versus-applied
 diagnostics; its deterministic acceptance runs against a real Pi
-`AgentSession` with a faux provider at the provider-request exit. Sustained
-re-triggering and failure recovery (#320), the suffix rebuild (#321), the
-full interruption/branch matrix (#322), cross-provider combination
+`AgentSession` with a faux provider at the provider-request exit. #322 adds
+the interruption and native-branch lifecycle matrix on the same seam:
+event-coordinated cancellations before and after the write, restart recovery
+with byte-identical carriers, replacement sets, and source pages, fork,
+clone, import, tree navigation, and sibling isolation, native-compaction
+supersession, disable/re-enable and uninstall observability, valid-v1
+read-only baseline use, corrupt-record degradation after reopen, and
+ephemeral sessions, plus the protocol-artifact pairing rules below. Native
+request evidence and boundary-injected unit evidence are kept clearly
+separated in the guide. Sustained re-triggering and failure
+recovery (#320), the suffix rebuild (#321), cross-provider combination
 guarantees (#323), native-fallback arbitration (#324), and real-model
 qualification (#325, #227) are still pending — acceptance of this record
 never authorizes claiming them as shipped.
@@ -99,7 +107,23 @@ provider-required fields, including thinking and signatures. Validate against
 the complete relevant batch, not a fixed-distance scan. Reject a compression
 that cannot preserve these contracts; dropping orphan messages is not proof
 that source information was safely summarized. A mixed tool batch must not
-partially apply an unsafe submission or falsify unrelated tool outcomes.
+partially apply an unsafe submission or falsify unrelated tool outcomes. The
+orphan rule covers conversation evidence, split by artifact kind: an
+unanswered ordinary tool call inside a covered range refuses the append; an
+unanswered protocol call (compression or source reading) left by an aborted
+batch or a native branch cut at the recorded state entry is bookkeeping with
+no result to strand — for compression calls the request-side pair rules drop
+the unanswered call, while for reading calls nothing is fabricated — and
+exempting it keeps such branches compressible instead of locking every later
+append behind a call that no result can ever answer. An answered
+`read_memory_source` pair is the mirror case: the request-side pair rules
+deliberately keep reading artifacts visible, so a covered pair's protocol
+result joins the replacement set (never the source stream) and leaves with
+its evicted exchange, while a pair trailing directly before the working set
+keeps the range end below it so the pair stays raw and whole. The
+replacement set stays derivable from the recorded ranges alone: the covered
+protocol results are recomputed from the branch at every derivation, so
+restart derives the same set.
 
 Append adds one block without changing existing blocks. Rebuild retains the
 current half-budget policy: replace the shortest newest adjacent block suffix
