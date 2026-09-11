@@ -15,13 +15,15 @@ The feature is **experimental** and **disabled by default**. Installing or
 upgrading pi-square never creates Context Memory model calls, tools, or files.
 This guide documents what ships today; the architecture decisions live in
 `docs/adr/0017-context-memory-request-projection.md` (ADR-0013 is superseded
-history), and `README.md` carries the summary. Sustained re-triggering and
-failure recovery, the suffix rebuild, the full interruption and branch
-recovery matrix, cross-provider combination guarantees, native-fallback
-arbitration, and real-model qualification are owned by the continuation
-tickets (#320–#325) and are **not implemented yet**; everything this guide
-describes as shipping is covered by deterministic tests against real Pi
-sessions.
+history), and `README.md` carries the summary. Recorded Memory survives
+interruptions and native session branches (see
+[Branches, resume, forks, and copies](#branches-resume-forks-and-copies)).
+Sustained re-triggering and failure recovery, the suffix rebuild,
+cross-provider combination guarantees, native-fallback arbitration, and
+real-model qualification are owned by the continuation tickets
+(#320, #321, #323–#325) and are **not implemented yet**; everything this
+guide describes as shipping is covered by deterministic tests against real
+Pi sessions.
 
 No performance claim is made here. Context Memory has not been qualified with
 the required real-model and provider-cache evidence yet; until that evidence
@@ -213,7 +215,21 @@ real-user run, and it takes effect on the next request — not at run end:
 A failure before recording changes nothing; after recording, the state entry
 is real history and stays recorded even if the tool result is interrupted.
 Unrecorded candidates are never replayed on restart — derivation rebuilds
-from the branch alone.
+from the branch alone. Cancellations follow the same line: aborting the run
+before the compression tool executes records nothing and leaves the session
+able to record later in the same session, while aborting after recording
+keeps the real record with its truthful acknowledgement — the feature never
+claims an interrupted recording did not happen. Repeated submissions in the
+same state find no uncovered source and record nothing, competing
+same-batch submissions are both refused by the sole-call rule, and a write
+failure through the `appendEntry` seam fails the tool call without touching
+the previously recorded Memory. One interruption artifact is exempt from
+batch pairing: a compression or source-reading tool call left unanswered by
+an aborted batch or a native branch cut at the recorded state entry is
+protocol bookkeeping, never conversation evidence, so it never blocks a
+later append — the request-side pair rules already drop it — while an
+unanswered ordinary tool call inside a covered range still refuses the
+compression.
 
 **Compatibility boundary.** Pi 0.84.2 has no public observer after all
 `context` and `before_provider_request` handlers. pi-square validates sources
@@ -318,21 +334,53 @@ session start, after tree navigation, after compaction, and before every
 structural operation. There is no remembered leaf, no stored branch
 preference, and no origin-file lookup:
 
-- **Resume** follows the branch Pi opens, whichever it is.
+- **Resume** follows the branch Pi opens, whichever it is. A restart never
+  fabricates a provider request before your next ordinary prompt, never
+  replays unrecorded candidates or advisories, and re-derives the
+  byte-identical carrier and replacement set — the same recorded state
+  produces the same covered entries, the same retained instructions, and
+  byte-identical source pages. `/context` reports the recovered Memory as
+  `recorded · not yet applied` until the first request of the new session
+  actually carries it; history is never treated as application.
 - **`/tree` navigation** is fully owned by Pi; the feature re-derives from the
-  new leaf and can never block or redirect navigation.
+  new leaf and can never block or redirect navigation. Sibling branches in
+  one file stay isolated in both directions — a branch cut back to a
+  recorded state entry derives that branch's own Memory, a sibling's later
+  recordings and work are invisible, and navigating back restores the main
+  line's own Memory. A compression attempted right after a switch refuses
+  with `SOURCE_NOT_SERVED` until a real request on the new branch
+  re-establishes the source observation.
 - **Fork and clone** inherit Memory naturally through Pi's copied active
-  path: a fork after a Memory compaction carries it, a fork before it does
+  path: a fork after a Memory recording carries it, a fork before it does
   not, and parent and child then evolve independently with no inheritance
-  protocol.
+  protocol — the parent's later work and later Memory never leak into the
+  copy, and source reads resolve from the copied tree alone. A branch cut
+  between a compression call and its result leaves an unanswered protocol
+  call that never blocks later appends (see above).
 - **Imported and cross-directory session copies** are self-contained; nothing
   depends on the origin file, project identity, or another session's entry
   IDs.
+- **A later native compaction** (manual or by threshold) becomes the new
+  baseline: the superseded custom record is never reapplied on top, the
+  native summary is the one summary in the request, replaced history is not
+  resurrected, the structured reading surface closes, and compressing over
+  the baseline refuses with `MEMORY_CHANGED` while nothing new records.
+- **Disabling the feature** leaves existing entries in Pi history untouched —
+  nothing is deleted or rewritten — and the raw conversation, including
+  historical compression tool calls, becomes model-visible again through
+  Pi's native projection. No custom projection is promised without the
+  extension.
 - **Ephemeral in-memory sessions** run the same behavior with an `ephemeral`
   marker and no sidecar.
 
 An invalid or stale structure degrades only Context Memory (to `opaque`), never
 a session operation.
+
+The whole lifecycle matrix above is pinned by deterministic tests against
+real Pi sessions — persisted files, native `navigateTree`/`createBranchedSession`
+operations, cross-directory copies, event-coordinated aborts, and
+faux-provider requests as the observation seam — with no timer-based
+coordination anywhere.
 
 ## Storage, concurrency, and deletion
 
