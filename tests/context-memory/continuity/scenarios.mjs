@@ -137,7 +137,7 @@ export function workloadPrompt(step) {
   return `Checkpoint ${step}: read status.mjs and run node status.mjs ${step}. Report the observed result and retain this operational record: ${operation}, batch ${1000 + step}, validation lane ${step % 3}, state ${step % 2 ? "reviewed" : "verified"}.\n\n${WORKLOAD_FILLER}Do not recap the authoritative brief.`;
 }
 function place(source, variant) {
-  const spans = { early: [2800, 38400], middle: [20400, 20800], late: [38400, 2800] };
+  const spans = { early: [4200, 57600], middle: [30900, 31200], late: [57600, 4200] };
   const [before, after] = spans[variant];
   return `${background(before)}\n\n${source}\n\n${background(after)}\n\nAcknowledge this brief in one sentence, keep its facts in the conversation until the final handoff, and do not save the authoritative handoff facts to workspace files.`;
 }

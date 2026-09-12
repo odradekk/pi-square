@@ -12,7 +12,7 @@ const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG, MEMORY_SUMMARY_WRAPPE
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
   contextWindow: 100_000,
   maxTokens: 4096,
-  compressionThresholdTokens: 17_000,
+  compressionThresholdTokens: 24_000,
   memoryBudgetPercent: 2,
   keepRecentTokens: 200,
   maxCheckpoints: 12,

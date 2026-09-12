@@ -768,7 +768,7 @@ ordinary read and process-execution work without repeating recall questions;
 one final prompt asks the model to complete any invited Context Memory
 maintenance first, then write a structured handoff file, without supplying
 its expected values. The test uses a declared 100k context window,
-17000-token due threshold, 2% Memory budget, and 200-token recent tail, with
+24000-token due threshold, 2% Memory budget, and 200-token recent tail, with
 native automatic compaction and retries disabled.
 
 Compression scheduling is fixture-owned (#325, after #261's precedent on the
