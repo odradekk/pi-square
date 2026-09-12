@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PRIMARY_ARM_VARIANTS, SCENARIOS, buildScript } from "./scenarios.mjs";
 import { evaluateGates } from "./oracles.mjs";
-import { MODEL_LANES, RUN_LIMITS, buildPrivateEvidence, deriveSeed, executeRun, pinEnvironment, planRuns, qualificationStatus, resolveRunModels, runLabel, safeUsage, selectRerunScope } from "./runner.mjs";
+import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveSeed, executeRun, pinEnvironment, planRuns, qualificationStatus, resolveRunModels, runLabel, safeUsage, selectRerunScope } from "./runner.mjs";
 
 // These tests exercise the runner's public boundary with returned native-run
 // shapes. They do not simulate an AgentSession or a provider.
@@ -116,7 +116,8 @@ import { MODEL_LANES, RUN_LIMITS, buildPrivateEvidence, deriveSeed, executeRun, 
     const artifact = { ...script.oracle.expected };
     if (run.scenario === "exact-work" && run.variant === "early") artifact.owner = null;
     records.push(await executeRun({ run, sessionRunner: async () => ({
-      artifactText: JSON.stringify(artifact), integrity: { ok: true, failures: [] }, coverage: { ok: true, failures: [] },
+      artifactText: JSON.stringify(artifact), integrity: { ok: true, failures: [] },
+      coverage: { ok: true, failures: [], appends: 1, rebuilds: 2 },
       sourceReads: [{ ok: true, complete: true, coversSource: true }],
     }) }));
   }
@@ -127,6 +128,27 @@ import { MODEL_LANES, RUN_LIMITS, buildPrivateEvidence, deriveSeed, executeRun, 
   assert.equal(qualificationStatus(records, gates, null).machineStatus, "inconclusive-needs-human-review");
   records[0].coverage.ok = false;
   assert.equal(qualificationStatus(records, gates, { complete: true }).machineStatus, "inconclusive-needs-human-review");
+}
+
+// The seeded schedule is a gate, not a courtesy: a matrix whose runs never
+// reached two suffix rebuilds cannot pass, even with perfect artifacts (#325).
+{
+  assert.equal(SCHEDULE_POLICY.seededRenderedTokens, SCHEDULE_POLICY.halfBudgetTokens, "the seed renders at exactly half the budget");
+  assert.equal(SCHEDULE_POLICY.requiredAppends, 1);
+  assert.equal(SCHEDULE_POLICY.requiredRebuilds, 2);
+  const records = [];
+  for (const run of planRuns()) {
+    const script = buildScript(run.scenario, run.variant);
+    records.push(await executeRun({ run, sessionRunner: async () => ({
+      artifactText: JSON.stringify(script.oracle.expected), integrity: { ok: true, failures: [] },
+      coverage: { ok: true, failures: [], appends: 1, rebuilds: 1 },
+      sourceReads: [{ ok: true, complete: true, coversSource: true }],
+    }) }));
+  }
+  const gates = evaluateGates(records.map((record) => record.score));
+  assert.equal(gates.gates.scheduleOk, false);
+  assert.equal(gates.result, "fail");
+  assert.notEqual(gates.result, "pass", "an incomplete compression schedule blocks the machine pass");
 }
 
 console.log("continuity native runner: all checks passed");

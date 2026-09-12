@@ -82,6 +82,7 @@
     "qualify:context-memory": "node ./tests/context-memory/qualification/qualify.mjs",
     "experiment:provider-cache": "node ./tests/context-memory/cache-experiment/experiment.mjs",
     "qualify:continuity": "node ./tests/context-memory/continuity/qualify.mjs",
+    "qualify:replay-check": "node ./tests/context-memory/continuity/replay-check.mjs",
     "bench:frames": "node ./tests/display/frame-cost.mjs",
     "changeset": "changeset",
     "changeset:status": "changeset status",

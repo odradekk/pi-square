@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { SCENARIOS, PRIMARY_ARM_VARIANTS, buildScript } from "./scenarios.mjs";
 import { scoreRun, evaluateGates } from "./oracles.mjs";
 
-const verified = { ok: true, failures: [] };
-
+const verified = { ok: true, failures: [], appends: 1, rebuilds: 2 };
 function scoreArtifact(scenario = "exact-work", variant = "early", arm = "primary", artifactText) {
   const script = buildScript(scenario, variant);
   return scoreRun({
