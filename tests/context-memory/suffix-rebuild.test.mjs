@@ -84,6 +84,7 @@ function commandContext(sessionManager, contextWindow = CONTEXT_WINDOW) {
     getSystemPrompt: () => "",
     isIdle: () => true,
     hasPendingMessages: () => false,
+    abort() {},
     isProjectTrusted: () => true,
   };
 }

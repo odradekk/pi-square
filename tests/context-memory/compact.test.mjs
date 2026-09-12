@@ -80,6 +80,7 @@ function commandContext(sessionManager) {
     getSystemPrompt: () => "",
     isIdle: () => true,
     hasPendingMessages: () => false,
+    abort() {},
     isProjectTrusted: () => true,
   };
 }

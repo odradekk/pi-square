@@ -201,6 +201,7 @@ export function createHarness(options = {}) {
   const events = new Map();
   let active = [...activeTools];
   const compactCalls = [];
+  const abortCalls = [];
   const notified = [];
   const pi = {
     registerTool(definition) { tools.set(definition.name, definition); },
@@ -235,6 +236,7 @@ export function createHarness(options = {}) {
       getSystemPrompt: () => "",
       isIdle: () => isIdle,
       hasPendingMessages: () => false,
+      abort: () => { abortCalls.push(true); },
       isProjectTrusted: () => true,
       ui: { notify: (text, level) => notified.push({ text, level }) },
       ...overrides,
@@ -248,7 +250,7 @@ export function createHarness(options = {}) {
     return last;
   }
   return {
-    pi, tools, events, registration, emit, compactCalls, notified, baseContext,
+    pi, tools, events, registration, emit, compactCalls, abortCalls, notified, baseContext,
     activeTools: () => [...active],
   };
 }

@@ -71,7 +71,7 @@ function prepareEnvironment() {
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
     packages: [{ source: packageRoot }],
     quietStartup: true,
-    compaction: { enabled: false, keepRecentTokens: 200 },
+    compaction: { enabled: false, keepRecentTokens: 200, reserveTokens: 2_000 },
     retry: { enabled: false, provider: { maxRetries: 0 } },
   }, null, 2) + "\n");
   // A large workspace AGENTS.md rides inside the effective system prompt Pi
