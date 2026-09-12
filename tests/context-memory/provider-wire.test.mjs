@@ -33,21 +33,40 @@ const { isEligibleSourceEntry } = await load("../../src/context-memory/derive.ts
  * - two appends and one suffix rebuild record state-carried Memory from
  *   synthetic summaries over 200 characters whose key facts sit at the very
  *   end of each body;
- * - a mixed compression+ordinary batch is refused while the ordinary
- *   sibling's real result survives;
- * - a mid-stream cancellation aborts one assistant response; the follow-up
- *   prompt continues over the aborted branch entry.
+ * - a mixed compression+ordinary batch is refused inside one assistant
+ *   message while the ordinary sibling keeps its real result;
+ * - two cancellation cells: one response aborts mid-stream (partial thinking
+ *   on the branch, never replayed), and one run is cancelled from a
+ *   completed tool result's boundary — the follow-up prompts continue over
+ *   both branch entries.
  *
- * At every captured payload the test asserts the provider-native pairing
- * contract (call ids ↔ results, both directions), the replay of thinking
- * signatures, the user image attachment, exactly-once complete Memory bodies
- * with byte-stable unselected prefixes, eviction of covered originals, the
- * retained working set, and that no provider cache marker sits outside the
- * placements Pi's own conversion documents — pi-square adds and moves none.
+ * The evidence is anchored to ground truth, not to needle matching alone:
+ *
+ * - the pairing checker proves uniqueness and order (no duplicated call or
+ *   result id, every result after its call, exactly one result per call)
+ *   over both native layouts, and negative self-tests prove it rejects a
+ *   shuffled batch, duplicated halves, and each orphaned half;
+ * - the recorded Memory state entries and the session branch derive every
+ *   eviction target, retained exception, suffix original, and working-window
+ *   exchange: at each applied request the real targets leave, the real
+ *   retained exceptions and newest working batch stay raw and ordered, and
+ *   every pending rebuild request serves the complete suffix originals raw
+ *   in branch order;
+ * - every wire tool result must be a real recorded call with exactly the
+ *   recorded body — nothing fabricated, edited, or silently replaced;
+ * - the aborted run's partial thinking is checked against the raw provider
+ *   thinking/reasoning fields (with a self-test proving a replay inside
+ *   those fields fails the checker), beside exactly-once complete Memory
+ *   bodies with byte-stable unselected prefixes, replayed thinking
+ *   signatures, the user image attachment, and no provider cache marker
+ *   outside the placements Pi's own conversion documents.
  *
  * These runs cover exactly the combinations exercised here. Later context or
  * payload modifiers and other provider flavors remain the accepted
- * compatibility boundary of ADR-0017, not a delivery guarantee.
+ * compatibility boundary of ADR-0017, not a delivery guarantee. The
+ * compact-recording cancellation boundaries (before the write, after the
+ * recorded state entry) stay owned by the lifecycle matrix in
+ * `tests/context-memory/lifecycle.test.mjs`.
  */
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -124,8 +143,13 @@ function planResponse(view, state) {
   };
   const soleCompact = (markdown, thinking) => ({ thinking, toolCalls: [toolCall("compact_to_memory_block", { markdown })] });
 
-  // Runs two and three (verify prompts). The first verify response aborts
-  // mid-stream; the continuation run finishes over the aborted branch entry.
+  // Runs two through four. The first verify response aborts mid-stream; the
+  // second verify response does one ordinary read whose completed result the
+  // subscriber cancels the run from (the tool-boundary cancellation cell);
+  // the finishing prompt then closes the task.
+  if (view.text.includes("WIRE-FINISH-PROMPT")) {
+    return { thinking: "closing the verification", text: `Verify complete. ${FACT_ONE} ${FACT_TWO} ${FACT_THREE}` };
+  }
   if (view.text.includes("WIRE-VERIFY-PROMPT")) {
     if (!state.abortedOnce) {
       state.abortedOnce = true;
@@ -389,37 +413,151 @@ function wireToolExchanges(body, kind) {
   return results;
 }
 
-/** Assert the provider-native pairing contract on one wire payload. */
+/**
+ * Assert the provider-native pairing contract on one wire payload: every
+ * call id and every result id is unique, every result follows the assistant
+ * message that carries its call, every call is answered by exactly one
+ * result, and every result answers exactly one call. A shuffled batch (a
+ * result ahead of its call), a duplicated id on either side, an orphaned
+ * half, or a split batch all fail — while the two legal native layouts
+ * (Anthropic merges consecutive results into one user message; OpenAI keeps
+ * one role:"tool" message per result) both pass.
+ */
 function assertWirePairing(body, kind, label) {
-  const callIds = [];
-  const resultIds = [];
+  const callPosition = new Map();
+  const resultPosition = new Map();
+  const recordCall = (id, position) => {
+    assert.ok(!callPosition.has(id), `${label}: call id is unique (${id})`);
+    callPosition.set(id, position);
+  };
+  const recordResult = (id, position) => {
+    assert.ok(!resultPosition.has(id), `${label}: result id is unique — one result per call (${id})`);
+    const producer = callPosition.get(id);
+    assert.ok(producer !== undefined, `${label}: result follows a call in the payload (${id})`);
+    assert.ok(producer < position, `${label}: result appears after its call, never before (${id})`);
+    resultPosition.set(id, position);
+  };
+  const messages = body.messages ?? [];
   if (kind === "anthropic") {
-    for (const message of body.messages ?? []) {
+    messages.forEach((message, position) => {
       if (message.role === "assistant" && Array.isArray(message.content)) {
         for (const block of message.content) {
-          if (block.type === "tool_use") callIds.push(block.id);
+          if (block.type === "tool_use") recordCall(block.id, position);
         }
       }
       if (message.role === "user" && Array.isArray(message.content)) {
         for (const block of message.content) {
-          if (block.type === "tool_result") resultIds.push(block.tool_use_id);
+          if (block.type === "tool_result") recordResult(block.tool_use_id, position);
         }
+      }
+    });
+  } else {
+    messages.forEach((message, position) => {
+      if (message.role === "assistant") {
+        for (const call of message.tool_calls ?? []) recordCall(call.id, position);
+      }
+      if (message.role === "tool") recordResult(message.tool_call_id, position);
+    });
+  }
+  for (const id of callPosition.keys()) {
+    assert.ok(resultPosition.has(id), `${label}: every call is answered by exactly one result (${id})`);
+  }
+  assert.equal(resultPosition.size, callPosition.size, `${label}: no extra results exist beyond the calls`);
+}
+
+/**
+ * The raw replayed thinking fields of one wire payload: Anthropic thinking
+ * blocks (and redacted-thinking payloads), OpenAI-compatible
+ * `reasoning_content`/`reasoning`/`reasoning_text` strings. `wireText`
+ * deliberately summarizes these, so replay assertions must read the raw
+ * fields instead.
+ */
+function wireThinkingTexts(body, kind) {
+  const texts = [];
+  if (kind === "anthropic") {
+    for (const message of body.messages ?? []) {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (block.type === "thinking" && typeof block.thinking === "string") texts.push(block.thinking);
+        if (block.type === "redacted_thinking" && typeof block.data === "string") texts.push(block.data);
       }
     }
   } else {
     for (const message of body.messages ?? []) {
-      if (message.role === "assistant") {
-        for (const call of message.tool_calls ?? []) callIds.push(call.id);
+      if (message.role !== "assistant") continue;
+      for (const field of ["reasoning_content", "reasoning", "reasoning_text"]) {
+        if (typeof message[field] === "string") texts.push(message[field]);
       }
-      if (message.role === "tool") resultIds.push(message.tool_call_id);
     }
   }
-  for (const id of resultIds) {
-    assert.ok(callIds.includes(id), `${label}: every tool result has its call (${id})`);
+  return texts;
+}
+
+/**
+ * The aborted run's partial thinking must never replay into a later wire
+ * request — checked against the raw provider fields, not the summarized
+ * `wireText` view.
+ */
+function assertNoAbortedReplay(body, kind, label) {
+  for (const text of wireThinkingTexts(body, kind)) {
+    assert.ok(!text.includes(ABORT_NEEDLE), `${label}: the aborted partial thinking is never replayed (raw thinking field)`);
   }
-  for (const id of callIds) {
-    assert.ok(resultIds.includes(id), `${label}: every call has its tool result (${id})`);
-  }
+}
+
+/**
+ * Small negative and positive proofs that the structural checkers reject
+ * what they must and accept the providers' legal layouts. These run before
+ * the sessions so a checker that silently accepts an illegal payload fails
+ * the suite even if every scripted session happens to be well-formed.
+ */
+function runCheckerSelfTests() {
+  const expectRejection = (run, label) => {
+    let rejection = null;
+    try {
+      run();
+    } catch (error) {
+      rejection = error;
+    }
+    assert.ok(rejection instanceof assert.AssertionError, `${label} must fail the checker`);
+  };
+  const anthropicPayload = (messages) => ({ messages, system: [{ type: "text", text: "s" }], tools: [] });
+  const openaiPayload = (messages) => ({ messages, tools: [] });
+  const aCall = (id, extraBlocks = []) => ({ role: "assistant", content: [{ type: "thinking", thinking: "t", signature: "sig" }, { type: "tool_use", id, name: "read", input: {} }, ...extraBlocks] });
+  const aResult = (id) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] });
+  const oCall = (id) => ({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "read", arguments: "{}" } }] });
+  const oResult = (id) => ({ role: "tool", tool_call_id: id, content: "ok" });
+
+  // Legal layouts pass, including a merged Anthropic result batch, separate
+  // OpenAI tool messages, and thinking blocks beside the calls.
+  assertWirePairing(anthropicPayload([aCall("x"), aCall("y"), aResult("x"), aResult("y")]), "anthropic", "legal merged anthropic batch");
+  assertWirePairing(openaiPayload([oCall("x"), oCall("y"), oResult("x"), oResult("y")]), "openai", "legal openai batch");
+  assertWirePairing(openaiPayload([oCall("x"), oResult("x"), { role: "assistant", content: "done", reasoning_content: "t" }]), "openai", "legal openai thinking text");
+  assertCacheMarkers(anthropicPayload([aCall("x"), aResult("x")]), "anthropic", "legal markers absent");
+
+  // A result ahead of its call — the shuffled-batch shape — fails both
+  // dialects (the reviewer's exact OpenAI example among them).
+  expectRejection(() => assertWirePairing(openaiPayload([oResult("x"), oCall("x")]), "openai", "negative"), "an openai result before its call");
+  expectRejection(() => assertWirePairing(anthropicPayload([aResult("x"), aCall("x")]), "anthropic", "negative"), "an anthropic result before its call");
+  // Duplicated halves of a pair fail: two results for one call, two calls
+  // sharing one id, and each orphaned half on its own.
+  expectRejection(() => assertWirePairing(openaiPayload([oCall("x"), oResult("x"), oResult("x")]), "openai", "negative"), "a duplicated openai result id");
+  expectRejection(() => assertWirePairing(anthropicPayload([aCall("x"), aResult("x"), aResult("x")]), "anthropic", "negative"), "a duplicated anthropic result id");
+  expectRejection(() => assertWirePairing(openaiPayload([oCall("x"), oCall("x"), oResult("x")]), "openai", "negative"), "a duplicated call id");
+  expectRejection(() => assertWirePairing(anthropicPayload([aCall("x"), aCall("x"), aResult("x")]), "anthropic", "negative"), "a duplicated anthropic call id");
+  expectRejection(() => assertWirePairing(openaiPayload([oCall("x")]), "openai", "negative"), "a call without its result");
+  expectRejection(() => assertWirePairing(openaiPayload([oResult("x")]), "openai", "negative"), "a result without its call");
+
+  // An aborted-thinking replay inside the raw provider fields is caught —
+  // the summarized wireText view would miss it entirely.
+  expectRejection(() => assertNoAbortedReplay(anthropicPayload([{
+    role: "assistant",
+    content: [{ type: "thinking", thinking: `replaying ${ABORT_NEEDLE}`, signature: "sig" }],
+  }]), "anthropic", "negative"), "an anthropic thinking replay");
+  expectRejection(() => assertNoAbortedReplay(openaiPayload([{
+    role: "assistant",
+    content: null,
+    reasoning_content: `replaying ${ABORT_NEEDLE}`,
+  }]), "openai", "negative"), "an openai reasoning replay");
 }
 
 /** The Memory carrier messages of one wire payload, as their text-part lists. */
@@ -605,6 +743,8 @@ async function runWireSession(kind) {
   const abortedAssistants = [];
   let abortArmed = false;
   let abortFired = false;
+  let toolAbortArmed = false;
+  let toolAbortFired = false;
   try {
     const settingsManager = SettingsManager.create(environment.cwd, environment.agentDir);
     const resourceLoader = new DefaultResourceLoader({
@@ -638,6 +778,10 @@ async function runWireSession(kind) {
         abortFired = true;
         void session.abort();
       }
+      if (event.type === "message_end" && event.message.role === "toolResult" && toolAbortArmed && !toolAbortFired) {
+        toolAbortFired = true;
+        void session.abort();
+      }
     });
 
     const taskPrompt = [
@@ -664,8 +808,17 @@ async function runWireSession(kind) {
       expandPromptTemplates: false,
     });
 
-    // Run three: continue over the aborted branch entry and finish.
-    await session.prompt("WIRE-VERIFY-PROMPT: continue the same verification and answer with every wire archive code.", {
+    // Run three: continue over the aborted branch entry, complete one
+    // ordinary read, then cancel the run from that result's message_end —
+    // the tool-result-boundary cancellation cell.
+    toolAbortArmed = true;
+    await session.prompt("WIRE-VERIFY-PROMPT: continue the same verification with one more read.", {
+      source: "interactive",
+      expandPromptTemplates: false,
+    });
+
+    // Run four: finish over both cancelled runs and answer.
+    await session.prompt("WIRE-FINISH-PROMPT: close the verification and answer with every wire archive code.", {
       source: "interactive",
       expandPromptTemplates: false,
     });
@@ -680,6 +833,161 @@ async function runWireSession(kind) {
   }
 }
 
+
+// ═══════════════════ Branch ground truth ═══════════════════
+
+/** The recorded tool results of a branch, keyed by their call id. */
+function branchToolResults(branch) {
+  const byCallId = new Map();
+  for (const entry of branch) {
+    if (entry.type !== "message" || entry.message?.role !== "toolResult") continue;
+    byCallId.set(entry.message.toolCallId, entry);
+  }
+  return byCallId;
+}
+
+/** The concatenated text of one message's content blocks. */
+function messageTextOf(message) {
+  return (message.content ?? []).map((part) => part.text ?? "").join("\n");
+}
+
+/**
+ * The tool-call ids one assistant entry carries. `excludeCompression` drops
+ * the two compression protocol names, whose call/result pairs the request
+ * rules deliberately remove once the carrier duplicates or refuses them —
+ * their absence stays proven through the replacement-set evidence.
+ */
+function entryCallIds(entry, { excludeCompression = false } = {}) {
+  if (entry.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) return [];
+  return entry.message.content
+    .filter((part) => part.type === "toolCall" && typeof part.id === "string")
+    .filter((part) => !excludeCompression || (part.name !== "compact_to_memory_block" && part.name !== "submit_memory"))
+    .map((part) => part.id);
+}
+
+/**
+ * A needle that identifies one recorded tool result's body uniquely across
+ * the run, when it has one: the `FILE-…-NEEDLE` evidence prefix of a read,
+ * the failing read's path, or a bounded refusal prefix. Fixed acknowledgement
+ * texts are shared by every accepted call, so they get no needle — their
+ * call ids carry their absence proof instead.
+ */
+function resultNeedle(message) {
+  const text = messageTextOf(message);
+  const fileMatch = text.match(/FILE-[A-Z0-9_]+-NEEDLE/);
+  if (fileMatch) return fileMatch[0];
+  if (text.includes("missing-wire-file")) return "missing-wire-file";
+  if (text.includes("COMPACT_NOT_SOAL_TOOL")) return "COMPACT_NOT_SOAL_TOOL";
+  return null;
+}
+
+/**
+ * The replacement evidence one recorded Memory state entry describes,
+ * derived from the branch exactly as the record derives its replacement set:
+ * for every block, the entries between the previous block's end and this
+ * block's end, minus that block's retained exceptions. Every non-retained
+ * message contributes the wire-visible proof of its absence — the call id of
+ * an assistant's tool calls, and the unique needle of a tool result.
+ */
+function stateReplacementEvidence(branch, stateEntry) {
+  const evicted = [];
+  const retained = [];
+  let previousEnd = -1;
+  for (const block of stateEntry.blocks) {
+    const end = branch.findIndex((entry) => entry.id === block.endEntryId);
+    assert.ok(end > previousEnd, "the recorded block ranges are ordered on the branch");
+    const retainedIds = new Set(block.retainedEntryIds);
+    for (let position = previousEnd + 1; position <= end; position += 1) {
+      const entry = branch[position];
+      if (retainedIds.has(entry.id)) {
+        retained.push({ entry, position });
+        continue;
+      }
+      if (entry.type !== "message") continue;
+      const message = entry.message;
+      if (message.role === "toolResult") {
+        evicted.push({ id: message.toolCallId, needle: resultNeedle(message), toolName: message.toolName, isError: message.isError === true });
+      } else if (message.role === "assistant") {
+        for (const callId of entryCallIds(entry)) evicted.push({ id: callId, needle: null, toolName: null, isError: false });
+      }
+    }
+    previousEnd = end;
+  }
+  return { evicted, retained };
+}
+
+/**
+ * Assert that every eviction target one recorded state entry names is gone
+ * from a wire payload — by call id for every half, and by unique needle for
+ * results that have one.
+ */
+function assertEvictedAbsent(body, kind, evidence, label) {
+  const text = wireText(body, kind);
+  for (const target of evidence.evicted) {
+    assert.ok(!text.includes(`CALL:${target.id}:`), `${label}: the evicted call left the request (${target.id})`);
+    assert.ok(!text.includes(`RESULT:${target.id}:`), `${label}: the evicted result left the request (${target.id})`);
+    if (target.needle !== null) {
+      assert.ok(!text.includes(target.needle), `${label}: the evicted result body left the request (${target.needle})`);
+    }
+  }
+}
+
+/**
+ * Assert that every retained exception the record keeps stays raw in a wire
+ * payload, identified by its own branch text rather than a hardcoded marker.
+ */
+function assertRetainedPresent(body, kind, evidence, label) {
+  const text = wireText(body, kind);
+  for (const { entry } of evidence.retained) {
+    if (entry.type !== "message" || entry.message?.role !== "user") continue;
+    const slice = messageTextOf(entry.message).slice(0, 80);
+    assert.ok(slice.length > 0 && text.includes(slice),
+      `${label}: the recorded retained instruction stays raw (${entry.id})`);
+  }
+}
+
+/**
+ * Assert that a wire payload carries the complete ordinary exchanges of one
+ * branch window — every call id present with its result, every result body
+ * present raw, and their CALL lines in branch order.
+ */
+function assertWindowPresent(body, kind, branch, fromPosition, toPosition, label) {
+  const text = wireText(body, kind);
+  const expected = [];
+  for (let position = fromPosition; position <= toPosition; position += 1) {
+    const entry = branch[position];
+    if (entry.type !== "message" || entry.message?.role !== "toolResult") continue;
+    if (entry.message.toolName !== "read") continue;
+    expected.push({ id: entry.message.toolCallId, needle: resultNeedle(entry.message), position });
+  }
+  assert.ok(expected.length > 0, `${label}: the window holds real ordinary work`);
+  let previousIndex = -1;
+  for (const exchange of expected) {
+    const callIndex = text.indexOf(`CALL:${exchange.id}:`);
+    assert.ok(callIndex !== -1, `${label}: the working-set call stays raw (${exchange.id})`);
+    assert.ok(callIndex > previousIndex, `${label}: the working-set calls keep branch order (${exchange.id})`);
+    previousIndex = callIndex;
+    assert.ok(text.includes(`RESULT:${exchange.id}:`), `${label}: the working-set result stays raw (${exchange.id})`);
+    assert.ok(exchange.needle !== null && text.includes(exchange.needle),
+      `${label}: the working-set result body stays raw (${exchange.needle})`);
+  }
+}
+
+/**
+ * Ground-truth the whole tool-result surface of one wire payload against the
+ * session branch: every result id on the wire is a real recorded call, and
+ * its body is exactly the recorded body — no fabricated results, no edited
+ * bodies, nothing silently replaced.
+ */
+function assertExchangesMatchBranch(body, kind, branchResults, label) {
+  for (const exchange of wireToolExchanges(body, kind)) {
+    const recorded = branchResults.get(exchange.id);
+    assert.ok(recorded, `${label}: every wire result id is a recorded call (${exchange.id})`);
+    assert.equal(exchange.resultText, messageTextOf(recorded.message),
+      `${label}: the wire result body is exactly the recorded body (${exchange.id})`);
+  }
+}
+
 // ═══════════════════ Shared wire assertions ═══════════════════
 
 async function assertWireContract(kind, run) {
@@ -690,7 +998,8 @@ async function assertWireContract(kind, run) {
   assert.equal(compactionEvents.length, 0, `${label}: no native compaction occurs`);
   const branch = sessionManager.getBranch();
   const userEntries = branch.filter((entry) => entry.type === "message" && entry.message.role === "user");
-  assert.equal(userEntries.length, 3, `${label}: three real user inputs drive the task, abort probe, and continuation`);
+  assert.equal(userEntries.length, 4,
+    `${label}: four real user inputs drive the task, the mid-stream abort, the tool-boundary cancellation, and the finish`);
   const stateEntries = branch.filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
   assert.equal(stateEntries.length, 3, `${label}: append, append, and rebuild each record one state entry`);
   const [appendOne, appendTwo, rebuildOne] = stateEntries.map((entry) => entry.data);
@@ -723,7 +1032,7 @@ async function assertWireContract(kind, run) {
     assert.deepEqual(tools.filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort(),
       baselineTools, `${label}: no other tool changes around maintenance (${index})`);
     assertCacheMarkers(body, kind, `${label} request ${index}`);
-    assert.ok(!text.includes(ABORT_NEEDLE), `${label}: the aborted partial thinking is never replayed (${index})`);
+    assertNoAbortedReplay(body, kind, `${label} request ${index}`);
     const advisoryMessages = (body.messages ?? [])
       .filter((message) => message.role === "user")
       .map((message) => (typeof message.content === "string" ? message.content
@@ -744,6 +1053,31 @@ async function assertWireContract(kind, run) {
   assert.equal(callRequests.length, 4, `${label}: exactly four compression calls reach the wire (${callRequests.length})`);
   const [appendOneCallAt, mixedCallAt, appendTwoCallAt, rebuildCallAt] = callRequests;
 
+  // The branch is the ground truth for every set assertion below.
+  const branchResults = branchToolResults(branch);
+  const statePosition = (entry) => branch.findIndex((candidate) => candidate.id === entry.id);
+  const evictionsOne = stateReplacementEvidence(branch, appendOne);
+  const evictionsTwo = stateReplacementEvidence(branch, appendTwo);
+  const evictionsRebuild = stateReplacementEvidence(branch, rebuildOne);
+  assert.ok(evictionsOne.evicted.length > 20, `${label}: the first record's replacement set is substantial (${evictionsOne.evicted.length} halves)`);
+
+  // The scripted failing read is a recorded eviction target of the first
+  // block, and its real failure traveled the wire before coverage.
+  const failingRead = [...branchResults.values()].find((entry) => entry.message.toolName === "read" && entry.message.isError === true);
+  assert.ok(failingRead, `${label}: the failing read is recorded on the branch`);
+  assert.ok(evictionsOne.evicted.some((target) => target.id === failingRead.message.toolCallId),
+    `${label}: the failing read is an eviction target of the first block`);
+  const failingSeenAt = requests.findIndex((request) =>
+    wireToolExchanges(request.body, kind).some((exchange) => exchange.id === failingRead.message.toolCallId));
+  assert.ok(failingSeenAt !== -1 && failingSeenAt < appendOneCallAt, `${label}: the failing read reached the wire before coverage`);
+  const failingExchange = wireToolExchanges(requests[failingSeenAt].body, kind)
+    .find((exchange) => exchange.id === failingRead.message.toolCallId);
+  assert.ok(failingExchange.resultText.includes("missing-wire-file"),
+    `${label}: the wire carries the failing read's real error text`);
+  if (kind === "anthropic") {
+    assert.equal(failingExchange.isError, true, `${label}: the failing read is an error tool result at the wire`);
+  }
+
   // (a) Before any acceptance: raw history, no carrier, deferral visible.
   for (const request of requests.slice(0, appendOneCallAt)) {
     assert.ok(!wireText(request.body, kind).includes(MEMORY_SUMMARY_WRAPPER), `${label}: no carrier before the first acceptance`);
@@ -752,19 +1086,18 @@ async function assertWireContract(kind, run) {
     .filter((request) => wireText(request.body, kind).includes(ADVISORY_NEEDLE));
   assert.ok(preAcceptAdvisory.length >= 3, `${label}: the advisory defers across ordinary requests (${preAcceptAdvisory.length})`);
 
-  // (b) The request after the first accepted acknowledgement applies it.
+  // (b) The request after the first accepted acknowledgement applies it:
+  // every recorded eviction target leaves at once, the retained exceptions
+  // stay raw, and the working window after the range end survives whole.
   const appliedOne = requests[appendOneCallAt];
   assert.ok(appliedOne, `${label}: a request follows the first acceptance`);
   const appliedOneText = wireText(appliedOne.body, kind);
-  const coveredByBlockOne = branch.slice(0, blockOneEnd + 1)
-    .filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "read")
-    .map((entry) => (entry.message.content ?? []).map((part) => part.text ?? "").join(""));
-  assert.ok(coveredByBlockOne.length > 8, `${label}: the first block covered many reads (${coveredByBlockOne.length})`);
-  for (const covered of coveredByBlockOne) {
-    const needle = covered.split(":")[0];
-    assert.ok(!appliedOneText.includes(needle), `${label}: the covered original left at once (${needle})`);
-  }
-  assert.ok(appliedOneText.includes(PLANNING_MARKER), `${label}: the protected task instruction stays raw`);
+  assertEvictedAbsent(appliedOne.body, kind, evictionsOne, `${label} applied one`);
+  assertRetainedPresent(appliedOne.body, kind, evictionsOne, `${label} applied one`);
+  const blockOneEndPosition = branch.findIndex((entry) => entry.id === appendOne.blocks[0].endEntryId);
+  assertWindowPresent(appliedOne.body, kind, branch, blockOneEndPosition + 1, statePosition(stateEntries[0]),
+    `${label} applied one working window`);
+  assertExchangesMatchBranch(appliedOne.body, kind, branchResults, `${label} applied one`);
   assert.ok(appliedOneText.includes(FACT_ONE), `${label}: the complete first block body reaches the wire`);
   assert.equal(appliedOneText.split(FACT_ONE).length - 1, 1, `${label}: the first block body appears exactly once`);
   const appliedOneCarriers = carrierParts(appliedOne.body);
@@ -788,7 +1121,9 @@ async function assertWireContract(kind, run) {
       && typeof message.reasoning_content === "string" && message.reasoning_content.length > 0);
   assert.ok(signedThinking, `${label}: retained assistant thinking replays with its signature`);
 
-  // (c) The refused mixed batch: the sibling read result stays real.
+  // (c) The refused mixed batch: exactly one assistant message carries both
+  // calls, the sibling's identity is that message's own read call, and its
+  // wire body is exactly the recorded branch result.
   const mixedContinuation = requests[mixedCallAt];
   assert.ok(mixedContinuation, `${label}: a continuation follows the mixed batch`);
   const mixedExchanges = wireToolExchanges(mixedContinuation.body, kind);
@@ -796,20 +1131,35 @@ async function assertWireContract(kind, run) {
     && exchange.resultText.includes("COMPACT_NOT_SOAL_TOOL"));
   assert.ok(refusedExchange, `${label}: the mixed-batch refusal reaches the model`);
   if (kind === "anthropic") assert.equal(refusedExchange.isError, true, `${label}: the refusal is an error tool result at the wire`);
-  const sibling = mixedExchanges.filter((exchange) => exchange.name === "read").at(-1);
-  assert.ok(sibling && sibling.resultText.includes("NEEDLE"), `${label}: the ordinary sibling's real result survives the refusal`);
+  const callName = (call) => call.name ?? call.function?.name;
+  const mixedMessages = (kind === "anthropic"
+    ? (mixedContinuation.body.messages ?? []).filter((message) => message.role === "assistant" && Array.isArray(message.content))
+      .map((message) => message.content.filter((block) => block.type === "tool_use"))
+    : (mixedContinuation.body.messages ?? []).filter((message) => message.role === "assistant")
+      .map((message) => message.tool_calls ?? []))
+    .filter((calls) => calls.some((call) => callName(call) === "compact_to_memory_block") && calls.some((call) => callName(call) === "read"));
+  assert.equal(mixedMessages.length, 1, `${label}: exactly one assistant message carries the mixed batch`);
+  const mixedReadCall = mixedMessages[0].find((call) => callName(call) === "read");
+  const sibling = mixedExchanges.find((exchange) => exchange.id === mixedReadCall.id);
+  assert.ok(sibling, `${label}: the mixed batch's own read result survives the refusal`);
+  const siblingRecord = branchResults.get(mixedReadCall.id);
+  assert.ok(siblingRecord, `${label}: the sibling maps to a recorded branch call`);
+  assert.equal(sibling.resultText, messageTextOf(siblingRecord.message),
+    `${label}: the sibling's wire body is exactly the recorded result`);
+  const siblingPath = kind === "anthropic"
+    ? mixedReadCall.input?.path
+    : JSON.parse(mixedReadCall.function?.arguments ?? "{}").path;
+  assert.ok(typeof siblingPath === "string" && siblingPath.endsWith(".txt"),
+    `${label}: the mixed batch's read call named a workspace file`);
+  const fileKey = siblingPath.replace(/\.txt$/, "");
+  const expectedNeedle = fileKey.length === 1 ? `FILE-${fileKey.toUpperCase()}-NEEDLE` : `FILE-_${fileKey.toUpperCase()}-NEEDLE`;
+  assert.equal(resultNeedle(siblingRecord.message), expectedNeedle,
+    `${label}: the recorded sibling answer belongs to the file its call named`);
+  assert.ok(sibling.resultText.includes(expectedNeedle),
+    `${label}: the wire sibling body carries that file's evidence`);
   // The refused call keeps its full argument body: no carrier duplicates it yet.
   assert.ok(refusedExchange.argsText.includes("# Wire digest two"),
     `${label}: the refused call keeps the only request-side copy of its body`);
-  // The mixed assistant carried both calls in one message.
-  const mixedAssistantCalls = kind === "anthropic"
-    ? (mixedContinuation.body.messages ?? []).filter((message) => message.role === "assistant")
-      .flatMap((message) => (Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_use") : []))
-    : (mixedContinuation.body.messages ?? []).filter((message) => message.role === "assistant")
-      .flatMap((message) => message.tool_calls ?? []);
-  assert.ok(mixedAssistantCalls.some((call) => (call.name ?? call.function?.name) === "compact_to_memory_block")
-    && mixedAssistantCalls.some((call) => (call.name ?? call.function?.name) === "read"),
-    `${label}: the same-assistant mixed batch stayed in one message`);
 
   // After the batch's continuation the refused pair drops whole.
   const afterRefusal = requests[mixedCallAt + 1];
@@ -819,10 +1169,17 @@ async function assertWireContract(kind, run) {
     && exchange.resultText.includes("COMPACT_NOT_SOAL_TOOL")),
     `${label}: the refused pair drops after the batch's continuation`);
 
-  // (d) The second append applies the same carrier discipline.
+  // (d) The second append: its own replacement set leaves at once while the
+  // retained exceptions and the new working window stay raw.
   const appliedTwo = requests[appendTwoCallAt];
   assert.ok(appliedTwo, `${label}: a request follows the second acceptance`);
   const appliedTwoText = wireText(appliedTwo.body, kind);
+  assertEvictedAbsent(appliedTwo.body, kind, evictionsTwo, `${label} applied two`);
+  assertRetainedPresent(appliedTwo.body, kind, evictionsTwo, `${label} applied two`);
+  const blockTwoEndPosition = branch.findIndex((entry) => entry.id === appendTwo.blocks[1].endEntryId);
+  assertWindowPresent(appliedTwo.body, kind, branch, blockTwoEndPosition + 1, statePosition(stateEntries[1]),
+    `${label} applied two working window`);
+  assertExchangesMatchBranch(appliedTwo.body, kind, branchResults, `${label} applied two`);
   assert.ok(appliedTwoText.includes(FACT_ONE) && appliedTwoText.includes(FACT_TWO), `${label}: both block bodies reach the wire`);
   assert.equal(appliedTwoText.split(FACT_TWO).length - 1, 1, `${label}: the second block body appears exactly once`);
   const appliedTwoCarriers = carrierParts(appliedTwo.body);
@@ -832,8 +1189,38 @@ async function assertWireContract(kind, run) {
     `${label}: the appended carrier keeps the old block byte-exact and appends the new one`);
   assert.equal(appliedTwoCarriers[0][1], appliedOneCarriers[0][1], `${label}: the append keeps the first block part byte-identical`);
 
-  // (e) The rebuild: pending serving keeps the suffix originals raw with a
-  // prefix-only carrier, then acceptance swaps them for one rebuilt block.
+  // (e) The rebuild: while it is pending, every request serves the selected
+  // suffix's complete original sources — derived from the records, not from
+  // hardcoded markers — raw and in branch order, with the replaced summaries
+  // absent and only the prefix carried. Acceptance then removes every
+  // eviction target the rebuild record names, keeps every retained exception
+  // and the newest working batch, and swaps in the rebuilt carrier.
+  const rebuildPrefixEnds = new Set(rebuildOne.blocks.slice(0, -1).map((block) => block.endEntryId));
+  const suffixBlocks = appendTwo.blocks.filter((block) => !rebuildPrefixEnds.has(block.endEntryId));
+  assert.ok(suffixBlocks.length >= 1, `${label}: the rebuild selected a suffix of the previous blocks`);
+  const suffixCallIds = [];
+  const suffixNeedles = [];
+  {
+    let previousEnd = branch.findIndex((entry) => entry.id === rebuildOne.blocks[0].endEntryId);
+    for (const block of suffixBlocks) {
+      const end = branch.findIndex((entry) => entry.id === block.endEntryId);
+      assert.ok(end > previousEnd, `${label}: the suffix range is ordered on the branch`);
+      const retainedIds = new Set(block.retainedEntryIds);
+      for (let position = previousEnd + 1; position <= end; position += 1) {
+        const entry = branch[position];
+        if (retainedIds.has(entry.id)) continue;
+        if (entry.type !== "message") continue;
+        if (entry.message.role === "toolResult" && entry.message.toolName === "read") {
+          suffixNeedles.push(resultNeedle(entry.message));
+        } else if (entry.message.role === "assistant") {
+          for (const callId of entryCallIds(entry, { excludeCompression: true })) suffixCallIds.push(callId);
+        }
+      }
+      previousEnd = end;
+    }
+  }
+  assert.ok(suffixCallIds.length > 4, `${label}: the suffix originals are a substantial serving set (${suffixCallIds.length} calls)`);
+
   const pendingRebuild = requests.slice(appendTwoCallAt + 1, rebuildCallAt)
     .filter((request) => wireText(request.body, kind).includes(REBUILD_ADVISORY_NEEDLE));
   assert.ok(pendingRebuild.length >= 2, `${label}: the rebuild advisory defers across ordinary requests (${pendingRebuild.length})`);
@@ -845,12 +1232,38 @@ async function assertWireContract(kind, run) {
     assert.equal(carriers.length, 1, `${label}: one carrier while the rebuild is pending (${offset})`);
     assert.deepEqual(carriers[0], [MEMORY_SUMMARY_WRAPPER, `${MEMORY_BLOCK_SEPARATOR}${MEMORY_MARKDOWN_ONE}`],
       `${label}: the pending rebuild carries only the unselected prefix (${offset})`);
+    let previousIndex = -1;
+    for (const callId of suffixCallIds) {
+      const callIndex = text.indexOf(`CALL:${callId}:`);
+      assert.ok(callIndex !== -1, `${label}: the suffix original call is served raw (pending ${offset}, ${callId})`);
+      assert.ok(callIndex > previousIndex, `${label}: the suffix originals keep branch order (pending ${offset}, ${callId})`);
+      previousIndex = callIndex;
+    }
+    for (const needle of suffixNeedles) {
+      assert.ok(text.includes(needle),
+        `${label}: the suffix original body is served raw (pending ${offset}, ${needle})`);
+    }
+    assertExchangesMatchBranch(request.body, kind, branchResults, `${label} pending ${offset}`);
   }
 
   const appliedRebuild = requests[rebuildCallAt];
   assert.ok(appliedRebuild, `${label}: a request follows the rebuild acceptance`);
   const appliedRebuildText = wireText(appliedRebuild.body, kind);
   assert.ok(!appliedRebuildText.includes(MEMORY_MARKDOWN_TWO.slice(0, 24)), `${label}: the replaced block body is gone`);
+  for (const callId of suffixCallIds) {
+    assert.ok(!appliedRebuildText.includes(`CALL:${callId}:`),
+      `${label}: the served suffix original left at acceptance (${callId})`);
+  }
+  for (const needle of suffixNeedles) {
+    assert.ok(!appliedRebuildText.includes(needle),
+      `${label}: the served suffix original body left at acceptance (${needle})`);
+  }
+  assertEvictedAbsent(appliedRebuild.body, kind, evictionsRebuild, `${label} applied rebuild`);
+  assertRetainedPresent(appliedRebuild.body, kind, evictionsRebuild, `${label} applied rebuild`);
+  const rebuildEndPosition = branch.findIndex((entry) => entry.id === rebuildOne.blocks.at(-1).endEntryId);
+  assertWindowPresent(appliedRebuild.body, kind, branch, rebuildEndPosition + 1, statePosition(stateEntries[2]),
+    `${label} applied rebuild working window`);
+  assertExchangesMatchBranch(appliedRebuild.body, kind, branchResults, `${label} applied rebuild`);
   assert.ok(appliedRebuildText.includes(FACT_THREE), `${label}: the rebuilt body reaches the wire`);
   assert.equal(appliedRebuildText.split(FACT_THREE).length - 1, 1, `${label}: the rebuilt body appears exactly once`);
   const appliedRebuildCarriers = carrierParts(appliedRebuild.body);
@@ -885,14 +1298,65 @@ async function assertWireContract(kind, run) {
     }
   }
 
-  // ── The abort probe: cancelled mid-stream, never replayed ──
-  assert.equal(run.abortedAssistants.length, 1, `${label}: exactly one assistant response aborted mid-stream`);
-  assert.ok(JSON.stringify(run.abortedAssistants[0] ?? {}).includes(ABORT_NEEDLE),
-    `${label}: the aborted partial thinking stayed on the branch, making the wire assertion meaningful`);
-  const postAbortRequests = requests.filter((request) => wireText(request.body, kind).includes("WIRE-VERIFY-PROMPT"));
-  assert.ok(postAbortRequests.length >= 2, `${label}: the verification prompts reached the wire`);
-  for (const [index, request] of postAbortRequests.entries()) {
-    assertWirePairing(request.body, kind, `${label} post-abort ${index}`);
+  // ── Cancellation cells ──
+  // Cell one (mid-stream): run two's first response aborts while streaming.
+  // Its partial thinking stays on the branch, and no later wire request
+  // replays it — checked against the raw provider thinking fields.
+  // Cell two (tool-result boundary): run three's ordinary read completed and
+  // its result landed; the run was then cancelled from that result's
+  // message_end, ending with a call-less terminal assistant. The complete
+  // pair survives into the finishing requests with its recorded body —
+  // cancellation neither drops nor falsifies a finished tool result through
+  // conversion. (The compact-recording cancellation boundaries — before the
+  // write and after the recorded state entry — are owned by the lifecycle
+  // matrix in `tests/context-memory/lifecycle.test.mjs`, whose cells observe
+  // the real request exit; this wire cell adds the conversion dimension for
+  // the ordinary tool-result boundary.)
+  const toolCancelledRead = [...branchResults.values()]
+    .filter((entry) => entry.message.toolName === "read" && entry.message.isError !== true)
+    .sort((left, right) => branch.indexOf(left) - branch.indexOf(right)).at(-1);
+  assert.ok(toolCancelledRead, `${label}: the tool-boundary cancelled run's read is recorded`);
+  const midStreamAborts = run.abortedAssistants.filter((message) => JSON.stringify(message).includes(ABORT_NEEDLE));
+  assert.equal(midStreamAborts.length, 1, `${label}: one mid-stream abort kept its partial thinking on the branch`);
+  assert.equal(entryCallIds({ type: "message", message: midStreamAborts[0] }).length, 0,
+    `${label}: the mid-stream abort carried no tool calls`);
+  for (const message of run.abortedAssistants) {
+    assert.equal(entryCallIds({ type: "message", message }).length, 0,
+      `${label}: no cancelled run left an unanswered call behind`);
+  }
+  // The tool-boundary cell's terminal assistant is identified structurally —
+  // Pi classifies its stop reason per provider path (the faux-provider
+  // lifecycle cells observe "aborted"; the anthropic wire path reports an
+  // error whose message is the abort). What the contract needs is shape: it
+  // ends the run immediately after the completed read, carries no calls, and
+  // is followed by the finishing user input.
+  const cancelledReadPosition = branch.indexOf(toolCancelledRead);
+  const terminalEntry = branch[cancelledReadPosition + 1];
+  assert.ok(terminalEntry?.type === "message" && terminalEntry.message.role === "assistant",
+    `${label}: the cancelled run ended with a terminal assistant`);
+  assert.equal(entryCallIds(terminalEntry).length, 0,
+    `${label}: the terminal assistant orphaned nothing — no calls were in flight`);
+  const afterTerminal = branch[cancelledReadPosition + 2];
+  assert.ok(afterTerminal?.type === "message" && afterTerminal.message.role === "user",
+    `${label}: the run ended at the boundary — the next branch entry is the finishing user input`);
+  const finishRequests = requests.filter((request) => wireText(request.body, kind).includes("WIRE-FINISH-PROMPT"));
+  assert.ok(finishRequests.length >= 1, `${label}: the finishing prompt reached the wire`);
+  for (const [index, request] of finishRequests.entries()) {
+    const text = wireText(request.body, kind);
+    assert.ok(text.includes(`CALL:${toolCancelledRead.message.toolCallId}:`),
+      `${label}: the cancelled run's completed read call survives (${index})`);
+    assert.ok(text.includes(`RESULT:${toolCancelledRead.message.toolCallId}:`),
+      `${label}: the cancelled run's completed read result survives (${index})`);
+    assert.ok(text.includes(resultNeedle(toolCancelledRead.message)),
+      `${label}: the cancelled run's completed read body survives raw (${index})`);
+    assertWirePairing(request.body, kind, `${label} finish ${index}`);
+    assertNoAbortedReplay(request.body, kind, `${label} finish ${index}`);
+  }
+  const verifyRequests = requests.filter((request) => wireText(request.body, kind).includes("WIRE-VERIFY-PROMPT"));
+  assert.ok(verifyRequests.length >= 2, `${label}: the verification prompts reached the wire`);
+  for (const [index, request] of verifyRequests.entries()) {
+    assertWirePairing(request.body, kind, `${label} verify ${index}`);
+    assertNoAbortedReplay(request.body, kind, `${label} verify ${index}`);
   }
 }
 
@@ -900,6 +1364,8 @@ async function assertWireContract(kind, run) {
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 try {
+  runCheckerSelfTests();
+
   const anthropicRun = await runWireSession("anthropic");
   await assertWireContract("anthropic", anthropicRun);
 
