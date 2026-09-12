@@ -151,30 +151,28 @@ async function recordFirstBlock(session, sm, ctx) {
 
 try {
   // ── A1: no safe view — the abort port fires, nothing is projected ──
-  {
+  for (const [window, reserveTokens, bound] of [[12_000, 1_000, 11_000], [8_000, 16_000, -8_000], [16_000, 16_000, 0]]) {
     const sm = SessionManager.inMemory("/project");
-    // ~15k estimate tokens against a 12k window with a 1k reserve: every
-    // constructible view (there is no Memory yet) sits over the 11k native
-    // bound, so the only honest outcome is the stop.
+    // ~15k estimated tokens exceed the positive bound and both exhausted
+    // budgets. There is no Memory yet, so no alternative view can fit.
     seedDueTree(sm, {
       firstText: `HUGE-EVIDENCE-NEEDLE ${"x".repeat(58_000)}`,
       secondText: "small follow-up evidence",
     });
-    const config = { enabled: true, compressionThreshold: { tokens: 500 }, memoryBudgetPercent: 1, __window: 12_000 };
-    const session = harness(config, sm);
+    const config = { enabled: true, compressionThreshold: { tokens: 500 }, memoryBudgetPercent: 1, __window: window };
+    const session = harness(config, sm, { reserveTokens });
     const ctx = session.context();
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     const { served, result } = await serveContext(session, sm, ctx);
 
     assert.equal(result, undefined, "the stopped request returns no projection");
     assert.equal(session.aborts.length, 1, "the public abort signal fired exactly once");
-    const snapshot = session.registration.snapshot({ tokens: 4_000, contextWindow: 12_000 });
-    assert.equal(snapshot.state, "due");
+    const snapshot = session.registration.snapshot({ tokens: 4_000, contextWindow: window });
     assert.equal(snapshot.maintenance, undefined, "the stop discarded the unrecorded maintenance request");
     assert.ok(snapshot.arbitration && snapshot.arbitration.path === "stopped", "the verdict records the stop");
     assert.equal(snapshot.arbitration.abortSignaled, true, "the verdict records the abort signal");
-    assert.equal(snapshot.arbitration.boundTokens, 11_000, "the verdict names Pi's native compaction boundary");
-    assert.ok(snapshot.arbitration.estimateTokens > 11_000, "the verdict names the estimate that exceeded it");
+    assert.equal(snapshot.arbitration.boundTokens, bound, "the verdict names Pi's native compaction boundary even when nonpositive");
+    assert.ok(snapshot.arbitration.estimateTokens > bound, "the verdict names the estimate that exceeded it");
     assert.ok(!sm.getBranch().some((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE),
       "nothing was recorded by a stopped request");
     assert.ok(served.length > 0, "the handler still saw the incoming messages (it never throws)");
@@ -317,23 +315,36 @@ try {
     assert.equal(session.aborts.length, 0);
   }
 
-  // ── A6: a host without a reachable abort port still records the stop ──
-  {
+  // ── A6: an unavailable or throwing abort port is not a successful stop ──
+  for (const abort of [undefined, () => { throw new Error("PRIVATE-HOST-ERROR"); }]) {
     const sm = SessionManager.inMemory("/project");
     seedDueTree(sm, {
-      firstText: `HUGE-EVIDENCE-NEEDLE ${"x".repeat(58_000)}`,
+      firstText: `EVIDENCE-A-NEEDLE ${"a".repeat(900)}`,
       secondText: "small follow-up evidence",
     });
     const config = { enabled: true, compressionThreshold: { tokens: 500 }, memoryBudgetPercent: 1, __window: 12_000 };
     const session = harness(config, sm);
     const startCtx = session.context();
     await session.emit("session_start", { type: "session_start", reason: "startup" }, startCtx);
-    const { result } = await serveContext(session, sm, session.context({ abort: undefined }));
-    assert.equal(result, undefined, "the stop still declines the projection");
-    assert.equal(session.aborts.length, 0, "no abort port means no signal");
+    await recordFirstBlock(session, sm, startCtx);
+    appendHugeExchange(sm);
+    const records = sm.getBranch().filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
+    const { result } = await serveContext(session, sm, session.context({ abort }));
+    assert.equal(result, undefined, "a failed cancellation still declines the custom projection");
+    assert.equal(session.aborts.length, 0, "no successful abort means no confirmed signal");
     const snapshot = session.registration.snapshot({ tokens: 4_000, contextWindow: 12_000 });
-    assert.equal(snapshot.arbitration.path, "stopped");
+    assert.equal(snapshot.arbitration.path, "stop-failed", "a failed cancellation must never claim the request was stopped");
     assert.equal(snapshot.arbitration.abortSignaled, undefined, "the missing signal is recorded honestly");
+    assert.equal(snapshot.applied, false, "the discarded carrier never counts as applied");
+    assert.equal(snapshot.maintenance, undefined, "unrecorded maintenance is discarded");
+    assert.deepEqual(sm.getBranch().filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE), records,
+      "a failed cancellation does not erase or alter recorded Memory");
+    assert.ok(!JSON.stringify(snapshot).includes("PRIVATE-HOST-ERROR"), "host errors never enter diagnostics");
+
+    const recovered = session.context({ getContextUsage: () => ({ tokens: 4_000, contextWindow: 200_000 }) });
+    const retry = await serveContext(session, sm, recovered);
+    assert.ok(JSON.stringify(retry.result.messages).includes(WRAPPER_NEEDLE), "a later safe request revalidates and applies the recording");
+    assert.equal(session.registration.snapshot().arbitration.path, "memory", "recovery replaces the failed-stop verdict");
   }
 
   // ── A7: recovery — a later fitting request applies the recorded Memory ──
@@ -641,6 +652,20 @@ async function runLoopbackSession(name, options) {
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 try {
+  // A known window with no input budget is not an unknown window. Neither
+  // a zero nor a negative budget may reach the native HTTP transport.
+  for (const window of [8_000, 16_000]) {
+    const result = await runLoopbackSession(`no-input-budget-${window}`, {
+      window,
+      reserveTokens: 16_000,
+      workspaceFiles: {},
+      planStep: () => ({ step: { text: "UNEXPECTED-REQUEST-SERVED" } }),
+      prompts: ["Explain the workspace."],
+    });
+    assert.equal(result.requests.length, 0, "a nonpositive input budget must stop before HTTP");
+    assert.equal(result.stoppedAssistants.length, 1, "the prompt resolves with a cancelled request");
+  }
+
   // ── B1: a hard stop inside a running tool loop never reaches the wire ──
   //
   // The task defers the compression advisory twice, then one oversized read

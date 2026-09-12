@@ -76,22 +76,24 @@ export interface ContextMemoryPressureInfo {
  * that proved no safe view existed. `memory` means the custom projection was
  * constructed (state carrier or v1 blocks re-projection); `native` means no
  * custom application was possible this request, so the complete baseline
- * went out and Pi native compaction owns the boundary; `stopped` means even
- * the smallest validated view exceeded the native compaction boundary, the
- * abort signal was issued, and nothing was projected. Bounded: counts and
- * codes only, never Memory Markdown, sources, or payloads.
+ * went out and Pi native compaction owns the boundary; `stopped` means the
+ * native input budget was exhausted or the smallest validated view exceeded
+ * it, the abort signal was issued, and nothing was projected. `stop-failed` means
+ * that cancellation was required but the host's abort port was missing or
+ * threw: the custom view was discarded, but transport is not guaranteed to
+ * stop. Bounded: counts and codes only, never Memory Markdown, sources, or payloads.
  */
 export interface ContextMemoryArbitrationInfo {
-  readonly path: "memory" | "native" | "stopped";
+  readonly path: "memory" | "native" | "stopped" | "stop-failed";
   /**
    * Why no custom application happened: no valid Memory exists on the
    * branch, a valid Memory could not be applied to this request, or the
-   * branch degraded to `opaque`. Absent on the `memory` and `stopped` paths.
+   * branch degraded to `opaque`. Only present on the `native` path.
    */
   readonly reason?: "no-memory" | "refused" | "opaque";
-  /** `stopped` only: the final view's estimate (messages, system, tools, residual). */
+  /** Stop attempts only: the final view's estimate (messages, system, tools, residual). */
   readonly estimateTokens?: number;
-  /** `stopped` only: the native compaction boundary the estimate exceeded. */
+  /** Stop attempts only: the native compaction boundary, which can be nonpositive. */
   readonly boundTokens?: number;
   /** `stopped` only: the public abort signal was actually issued. */
   readonly abortSignaled?: true;

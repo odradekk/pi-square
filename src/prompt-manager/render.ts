@@ -300,10 +300,13 @@ function maintenanceLabel(maintenance: ContextMemoryMaintenanceInfo): string {
  * only, never Memory or source text.
  */
 function arbitrationLabel(arbitration: ContextMemoryArbitrationInfo): string {
+  if (arbitration.path === "stop-failed") {
+    return "stop failed · abort unavailable · transport may continue · stop run manually";
+  }
   if (arbitration.path === "stopped") {
     const estimate = typeof arbitration.estimateTokens === "number" ? `~${formatShort(arbitration.estimateTokens)} tok est` : "the request";
     const bound = typeof arbitration.boundTokens === "number" ? `~${formatShort(arbitration.boundTokens)} tok native limit` : "the native limit";
-    return `hard stop · ${estimate} exceeds ${bound} · ${arbitration.abortSignaled === true ? "run cancelled by abort" : "no abort signal available"} · nothing sent`;
+    return `hard stop · ${estimate} exceeds ${bound} · run cancelled by abort · nothing sent`;
   }
   if (arbitration.path === "native" && arbitration.reason === "refused") {
     return "native fallback · Memory projection refused this request · native compaction owns the boundary";
@@ -354,12 +357,12 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
       "     " +
       paint(theme, "dim", description),
     ];
-    // #324: a hard stop is the one inactive-state event that earns a second
+    // #324: a stop attempt is the one inactive-state event that earns a second
     // bounded line — the real stop result must stay visible even when no
     // Memory exists yet. Only the three request-bearing inactive states ever
     // carry a verdict; `disabled` and `unsupported` never reach a request.
     const inactiveArbitration = (memory as { readonly arbitration?: ContextMemoryArbitrationInfo }).arbitration;
-    if (inactiveArbitration?.path === "stopped") {
+    if (inactiveArbitration?.path === "stopped" || inactiveArbitration?.path === "stop-failed") {
       inactiveLines.push(
         RAIL_CONT + "     " + paint(theme, "muted", arbitrationLabel(inactiveArbitration)),
       );
@@ -445,6 +448,7 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
   // Memory could not be applied to that request.
   if (memory.arbitration !== undefined
     && (memory.arbitration.path === "stopped"
+      || memory.arbitration.path === "stop-failed"
       || (memory.arbitration.path === "native" && memory.arbitration.reason === "refused"))) {
     lines.push(
       RAIL_CONT + "     " + paint(theme, "muted", arbitrationLabel(memory.arbitration)),

@@ -93,8 +93,10 @@ boundary after a stop — Pi's own threshold compaction succeeding or failing
 auto-continues, including after reopening the session file. This evidence
 covers exactly the exercised host/conversion combination (Pi 0.84.2,
 anthropic-messages); other host paths are not certified and the capability
-gate now requires the public abort interface so no host ships a stop path it
-cannot honor. Real-model qualification (#325, #227) is still pending —
+gate now requires the public abort interface. Interface presence alone
+cannot prove runtime success: if that port disappears or throws, the exit
+reports `stop-failed` and asks for a manual stop, never claiming that unsafe
+transport was prevented. Real-model qualification (#325, #227) is still pending —
 acceptance of this record never authorizes claiming it as shipped.
 
 ## Why the old boundary is insufficient
@@ -306,6 +308,14 @@ Pi's safe idle/native boundary; never await `compact()` inside an executing
 tool or context handler. If no validated view fits, invoke public `ctx.abort()`
 without waiting for the current run to become idle, and verify cancellation
 prevents that transport. Do not automatically continue or retry.
+
+A known window at or below Pi's reserve has no safe input budget and must
+take the same cancellation path; it is not an unknown-window exemption.
+If the abort port is missing or throws, discard the custom view and report a
+failed cancellation with a manual-stop instruction. Returning `undefined`
+alone leaves Pi's original request intact and cannot guarantee stopped
+transport. Do not substitute private host state or a replacement provider to
+manufacture that guarantee.
 
 Fallback and safety stops discard unrecorded candidates and maintenance
 requests, not recorded Memory. A recorded but unapplied operation remains

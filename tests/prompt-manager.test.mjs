@@ -404,8 +404,10 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
       /hard stop · ~195\.0k tok est exceeds ~183\.6k tok native limit · run cancelled by abort · nothing sent/],
     ["fallback", { ...activeBase, arbitration: { path: "native", reason: "refused" } },
       /native fallback · Memory projection refused this request · native compaction owns the boundary/],
-    ["stopped without a signal", { ...activeBase, arbitration: { path: "stopped", estimateTokens: 195_000, boundTokens: 183_616 } },
-      /hard stop · ~195\.0k tok est exceeds ~183\.6k tok native limit · no abort signal available · nothing sent/],
+    ["failed stop", { ...activeBase, arbitration: { path: "stop-failed", estimateTokens: 195_000, boundTokens: 183_616 } },
+      /stop failed.*abort unavailable.*stop run manually/],
+    ["failed stop before any Memory", { state: "no-memory", arbitration: { path: "stop-failed", estimateTokens: 25_000, boundTokens: 11_000 } },
+      /stop failed.*abort unavailable.*stop run manually/],
     ["stopped before any Memory", { state: "no-memory", arbitration: { path: "stopped", estimateTokens: 25_000, boundTokens: 11_000, abortSignaled: true } },
       /hard stop · ~25\.0k tok est exceeds ~11\.0k tok native limit · run cancelled by abort · nothing sent/],
   ]) {
@@ -433,10 +435,13 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
     });
     assert.equal(arbitrationNotified.length, 1);
     const flatArbitration = stripVTControlCharacters(arbitrationNotified[0].text ?? arbitrationNotified[0]);
-    const arbitrationLine = flatArbitration.split("\n").find((line) => /hard stop|native fallback/.test(line));
+    const arbitrationLine = flatArbitration.split("\n").find((line) => /hard stop|stop failed|native fallback/.test(line));
     assert.ok(arbitrationLine, `the ${label} verdict renders its bounded row`);
     assert.match(arbitrationLine, pattern, `the ${label} verdict states the real result`);
     assert.ok(arbitrationLine.length <= 140, `the ${label} row stays bounded`);
+    if (memory.arbitration.path === "stop-failed") {
+      assert.doesNotMatch(flatArbitration, /nothing sent|run cancelled|hard stop/, "a failed abort cannot promise cancellation or delivery prevention");
+    }
   }
 
   // The ordinary projection path renders no arbitration row at all.

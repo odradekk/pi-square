@@ -399,6 +399,8 @@ arbitration at pi-square's `context` handler before anything is sent
    any version-matching provider residual — exceeds Pi's own native
    compaction boundary (window minus Pi's configured reserve, the output and
    tool-growth headroom Pi itself relies on), no validated view exists. A
+   known window at or below the reserve also requires a stop: its input
+   budget is exhausted, not unknown. A
    model that ignores advisories, one oversized tool result, or a
    no-net-benefit scope all end here. The exit then issues the public
    `ctx.abort()` signal synchronously — never a handler throw, which Pi
@@ -408,6 +410,14 @@ arbitration at pi-square's `context` handler before anything is sent
    never reaches the transport; the run ends cancelled with an abort-flavored
    error, `/context` reports the stop with its estimate and bound, and
    nothing is truncated, paged, or deleted to force a fit.
+
+If the abort interface disappears after activation or throws, cancellation
+cannot be guaranteed. The exit still discards the custom view and unrecorded
+maintenance, but reports `stop-failed`, never `stopped` or `nothing sent`.
+The original request may continue through Pi; stop the run manually and
+restore a working host cancellation interface before relying on this safety
+path. pi-square does not patch Pi or substitute a provider to work around a
+failed public abort interface.
 
 The stop never touches recorded Memory or the truthful applied accounting —
 a carrier constructed for a stopped request does not count as applied — and
@@ -516,8 +526,9 @@ while recorded Memory could not be applied to the outgoing request it reads
 `native fallback · Memory projection refused this request · native
 compaction owns the boundary`, and after a hard stop it reads `hard stop ·
 ~N tok est exceeds ~B tok native limit · run cancelled by abort · nothing
-sent` (or `no abort signal available` on a host whose abort port is
-unreachable — a stopped request is never reported as sent).
+sent`. A missing or throwing abort port instead reports `stop failed · abort
+unavailable · transport may continue · stop run manually`, without claiming
+that the request was prevented from reaching the provider.
 No widget, no live tail, and no unbounded metric is added. In-memory (`--no-session`) sessions show
 an `ephemeral session` marker and never write a file or sidecar. No format
 versions, entry IDs, paths, or timestamps appear in the default view.

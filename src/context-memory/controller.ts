@@ -1879,8 +1879,9 @@ export class ContextMemoryController {
 
   /**
    * The ephemeral `context` transform (#215, #218, #297, #319, #324). It never
-   * throws and never blocks the request: any failure leaves the unmodified
-   * context in place with the custom application skipped.
+   * throws or waits for idle. Projection failures leave the unmodified
+   * context in place; a known-unsafe request instead requires cancellation
+   * through the public abort port below.
    *
    * - Recorded state-carried Memory is applied to the request (#319): the
    *   covered, non-retained original messages leave, the one complete Memory
@@ -1906,7 +1907,9 @@ export class ContextMemoryController {
    *   estimate exceeds Pi's native compaction boundary issues `abortRequest`
    *   (the public abort signal), discards the unrecorded candidates, and
    *   returns undefined so the cancelled request carries no custom
-   *   projection. Recorded Memory and the truthful applied accounting never
+   *   projection. A nonpositive native budget also requires cancellation;
+   *   a missing or throwing abort port reports `stop-failed`, not a stopped
+   *   transport. Recorded Memory and the truthful applied accounting never
    *   change on either path.
    */
   transformContext(
@@ -2062,32 +2065,32 @@ export class ContextMemoryController {
       // above without abort, restart, extra models, or native compact().
       if (typeof window === "number" && Number.isFinite(window) && window > 0) {
         const nativeBound = window - this.reserveTokens;
-        if (nativeBound > 0) {
-          const finalEstimate = this.estimateMessages(messages) + systemTokens + toolsTokens
-            + this.activeCalibrationTokens(memoryVersion, systemTokens, toolsTokens);
-          if (finalEstimate > nativeBound) {
-            this.invalidateMaintenanceRequest();
-            // The stopped request never became provider-bound, so a carrier
-            // constructed for it must not count as applied (#324).
-            this.appliedStateEntryId = appliedBeforeStop;
-            let abortSignaled = false;
-            if (typeof abortRequest === "function") {
-              try {
-                abortRequest();
-                abortSignaled = true;
-              } catch {
-                // A host whose abort throws must not break the handler; the
-                // verdict records the missing signal honestly instead.
-              }
+        const finalEstimate = this.estimateMessages(messages) + systemTokens + toolsTokens
+          + this.activeCalibrationTokens(memoryVersion, systemTokens, toolsTokens);
+        // A known window with no input budget is unsafe, not unknown. This
+        // can happen after switching to a model smaller than Pi's reserve.
+        if (nativeBound <= 0 || finalEstimate > nativeBound) {
+          this.invalidateMaintenanceRequest();
+          // This carrier is discarded regardless of whether cancellation
+          // succeeds, so it must not count as applied (#324).
+          this.appliedStateEntryId = appliedBeforeStop;
+          let abortSignaled = false;
+          if (typeof abortRequest === "function") {
+            try {
+              abortRequest();
+              abortSignaled = true;
+            } catch {
+              // Pi catches handler errors, so throwing cannot stop transport.
+              // Publish the failed cancellation without leaking host errors.
             }
-            this.arbitration = {
-              path: "stopped",
-              estimateTokens: finalEstimate,
-              boundTokens: nativeBound,
-              ...(abortSignaled ? { abortSignaled: true } : {}),
-            };
-            return undefined;
           }
+          this.arbitration = {
+            path: abortSignaled ? "stopped" : "stop-failed",
+            estimateTokens: finalEstimate,
+            boundTokens: nativeBound,
+            ...(abortSignaled ? { abortSignaled: true } : {}),
+          };
+          return undefined;
         }
       }
       this.arbitration = customView
