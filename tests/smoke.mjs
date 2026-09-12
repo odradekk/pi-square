@@ -578,8 +578,9 @@ try {
     "the appended block covers only the newly accumulated sources");
   assert.ok(smokeSecondSourceEnd, "the second round accumulated real sources");
 
-  // ── #319: above half the Memory budget the append refuses; the rebuild
-  // operation is owned by a later ticket and must not be faked ──
+  // ── #321: above half the Memory budget the operation is a suffix rebuild,
+  // and a rebuild is accepted only after a request actually served its
+  // complete original sources — a call on an un-served request refuses ──
   session.agent.state.model = { provider: "smoke", id: "smoke-model", contextWindow: 26000 };
   await runner.emit({ type: "agent_settled" });
   smokeSession.appendMessage({
@@ -610,13 +611,13 @@ try {
       undefined,
       runner.createCommandContext(),
     ),
-    /MAINTENANCE_PENDING/,
-    "an append above half the Memory budget refuses instead of degrading",
+    /SOURCE_NOT_SERVED/,
+    "a rebuild above half the Memory budget refuses without served sources",
   );
   assert.equal(
     smokeSession.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "pi-square.context-memory/memory").length,
     2,
-    "the refused append records nothing",
+    "the refused rebuild records nothing",
   );
 
   // The model stub existed only for the Context Memory budget checks; the

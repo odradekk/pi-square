@@ -1,4 +1,4 @@
-import { isEphemeralMemorySnapshot, type ContextMemorySnapshot } from "../context-memory/view";
+import { isEphemeralMemorySnapshot, type ContextMemoryMaintenanceInfo, type ContextMemorySnapshot } from "../context-memory/view";
 import type { PromptManagerSegment } from "./types";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ByRoleChars, CollapsedEntries, MessageEntrySummary } from "./decompose";
@@ -261,17 +261,30 @@ function renderSystemSection(
 }
 
 /**
- * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #218, #220, #221): the
+ * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #218, #219, #221): the
  * selected Variant A inline hierarchy, rendered between the system-prompt
  * section and the message section. Inactive states stay one bounded line;
- * active Memory shows state, Memory/budget estimate, block count, stable
- * prefix, next operation, current usage, and one bounded chronological row
- * per block. No format versions, entry ranges/IDs, paths, timestamps, or
- * storage details ever appear. Never part of the usage bar — Memory
- * accounting leaves the total usage bar unchanged (#215). Ephemeral
- * in-memory sessions are reported as such (#221); active Memory reports the
- * recorded/applied distinction instead of a settle pipeline (#319).
+ * active Memory shows state, Memory/budget estimate, block count, current
+ * usage, and one bounded chronological row per block, with the #321
+ * pending-operation and scale-limit markers riding bounded diagnostic rows.
+ * No format versions, entry ranges/IDs, paths, timestamps, or storage
+ * details ever appear. Never part of the usage bar — Memory accounting
+ * leaves the total usage bar unchanged (#215). Ephemeral in-memory sessions
+ * are reported as such (#221); active Memory reports the recorded/applied
+ * distinction instead of a settle pipeline (#319).
  */
+/** One bounded label for the pending maintenance request (#321 names the operation). */
+function maintenanceLabel(maintenance: ContextMemoryMaintenanceInfo): string {
+  const sources = `${maintenance.sources} ${maintenance.sources === 1 ? "source" : "sources"}`;
+  if (maintenance.operation === "rebuild" && maintenance.suffixBlocks !== null) {
+    return `suffix rebuild of ${maintenance.suffixBlocks} ${maintenance.suffixBlocks === 1 ? "block" : "blocks"} over ${sources}`;
+  }
+  if (maintenance.operation === "rebuild") {
+    return `suffix rebuild over ${sources}`;
+  }
+  return `maintenance over ${sources}`;
+}
+
 function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySnapshot): string[] {
   if (memory.state !== "active") {
     let description: string;
@@ -297,7 +310,7 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
         // same one line — pinned sources, or suppression after repeated
         // identical refusals. Never a second line and never a log.
         description = memory.maintenance !== undefined
-          ? `due · maintenance over ${memory.maintenance.sources} source${memory.maintenance.sources === 1 ? "" : "s"} · ${memory.maintenance.suppressed
+          ? `due · ${maintenanceLabel(memory.maintenance)} · ${memory.maintenance.suppressed
             ? `advisory paused after repeated refusals (${memory.maintenance.lastErrorCode ?? "unknown"})`
             : "compression advisory riding requests"}`
           : "due · threshold reached · compression advisory rides the next request";
@@ -353,14 +366,16 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
     const parts: string[] = [];
     if (memory.maintenance !== undefined) {
       parts.push(
-        `maintenance over ${memory.maintenance.sources} ${memory.maintenance.sources === 1 ? "source" : "sources"}`,
+        maintenanceLabel(memory.maintenance),
         memory.maintenance.suppressed
           ? `advisory paused (${memory.maintenance.lastErrorCode ?? "unknown"})`
           : "advisory riding",
       );
+    } else if (memory.scaleLimit === true) {
+      parts.push("scale-limit · complete rebuild does not fit the window · native compaction owns the boundary");
     }
     if (memory.lastNetSavingsTokens !== undefined) {
-      parts.push(`last append −${formatShort(memory.lastNetSavingsTokens)} tok`);
+      parts.push(`last compression −${formatShort(memory.lastNetSavingsTokens)} tok`);
     }
     if (parts.length > 0) {
       lines.push(
