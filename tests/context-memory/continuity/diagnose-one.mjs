@@ -5,7 +5,9 @@ import { executeRun, planRuns } from "./runner.mjs";
 import { runContinuitySession } from "./session.mjs";
 
 const runtime = await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
-const planned = planRuns().find((run) => run.scenario === "exact-work" && run.variant === "early");
+const want = process.argv[2] ?? "exact-work/early";
+const [scenario, variant] = want.split("/");
+const planned = planRuns().find((run) => run.scenario === scenario && (variant ? run.variant === variant : true));
 const model = runtime.getModel(planned.model.provider, planned.model.id);
 const record = await executeRun({ runtime, model, run: planned, sessionRunner: runContinuitySession });
 console.log("integrity:", JSON.stringify(record.integrity, null, 1));

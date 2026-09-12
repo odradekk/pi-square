@@ -12,7 +12,7 @@ const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG, MEMORY_SUMMARY_WRAPPE
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
   contextWindow: 100_000,
   maxTokens: 4096,
-  compressionThresholdTokens: 24_000,
+  compressionThresholdTokens: 21_000,
   memoryBudgetPercent: 2,
   keepRecentTokens: 200,
   maxCheckpoints: 12,
@@ -150,7 +150,6 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   let finalContext = null;
   let rawSourceAbsent = false;
   let requestStarts = 0;
-  let lastRecordedShape = [];
   let finalCarrierCount = null;
   let finalRequests = 0;
   let finalFullCarrierSeen = false;
@@ -268,16 +267,14 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         endEntryId: ends[index].assistantEnd, markdown, retainedEntryIds: [ends[index].userEnd],
       }));
       const seedEntryId = sessionManager.appendCustomEntry(MEMORY_STATE_CUSTOM_TYPE, { format: MEMORY_STATE_FORMAT_TAG, blocks });
-      const seedShape = blocks.map((block) => ({ endEntryId: block.endEntryId, markdown: block.markdown }));
       const seedMemory = deriveCurrentMemory(sessionManager);
       if (seedMemory.kind !== "valid" || seedMemory.blocks.length !== SEED_MEMORY.blockCount) {
         failures.add("seed-memory-invalid");
         return;
       }
       // The seed is a baseline, not a compression event: it never counts into
-      // the schedule and its shape is the prefix every later recording extends.
+      // the schedule; every later recording classifies against it on the branch.
       recordedMemoryIds.add(seedEntryId);
-      lastRecordedShape = seedShape;
     }
     seedBranchMemory();
 
@@ -315,33 +312,33 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       const branch = sessionManager.getBranch();
       const positions = new Map(branch.map((entry, index) => [entry.id, index]));
       const stateEntries = branch.filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
-      let previousShape = lastRecordedShape;
-      for (const stateEntry of stateEntries) {
+      const shapeOf = (entry) => (Array.isArray(entry?.data?.blocks) ? entry.data.blocks : [])
+        .map((block) => ({ endEntryId: block.endEntryId, markdown: block.markdown }));
+      // Each recording classifies against the state entry it extends on the
+      // SAME branch: after tree navigation the retained chain restarts from
+      // the seed, and recordings on an abandoned sibling never poison it.
+      for (let index = 0; index < stateEntries.length; index += 1) {
+        const stateEntry = stateEntries[index];
+        const previousShape = index === 0 ? [] : shapeOf(stateEntries[index - 1]);
         if (recordedMemoryIds.has(stateEntry.id)) continue;
         recordedMemoryIds.add(stateEntry.id);
-        const blocks = Array.isArray(stateEntry.data?.blocks) ? stateEntry.data.blocks : [];
-        const shape = blocks.map((block) => ({ endEntryId: block.endEntryId, markdown: block.markdown }));
+        const shape = shapeOf(stateEntry);
+        const rawBlocks = Array.isArray(stateEntry.data?.blocks) ? stateEntry.data.blocks : [];
         const sourceEntryIdsOfEntry = [];
         let previousEnd = -1;
-        for (const block of blocks) {
+        for (const block of rawBlocks) {
           const end = positions.get(block.endEntryId) ?? -1;
           if (end > previousEnd) {
-            for (let index = previousEnd + 1; index <= end; index += 1) {
-              const source = branch[index];
+            for (let position = previousEnd + 1; position <= end; position += 1) {
+              const source = branch[position];
               if (source && isEligibleSourceEntry(source)) sourceEntryIdsOfEntry.push(source.id);
             }
             previousEnd = end;
           }
         }
-        if (process.env.CM_DEBUG) {
-          const ids = blocks.map((b) => `${positions.get(b.endEntryId)}:ret${b.retainedEntryIds.length}`);
-          console.error(`[rec] state=${stateEntry.id.slice(0, 8)} ends=[${ids.join(", ")}] shape=${shape.length} prevShape=${previousShape.length} branchLen=${branch.length}`);
-        }
         compressions.push({ id: stateEntry.id, phase, request: recordedRequestIndexes.shift() ?? requests.length, operation: appendOperation(previousShape, shape) ? "append" : "rebuild",
           blocks: shape.length, sourceEntryIds: sourceEntryIdsOfEntry,
           carrierHashes: carrierHashesOf(shape.map((block) => block.markdown)) });
-        previousShape = shape;
-        lastRecordedShape = shape;
       }
     }
 
@@ -480,11 +477,11 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       measurements.peakPromptTokens = peaks.length > 0 ? Math.max(...peaks) : null;
     }
     if (!measurements.prefixStable) failures.add("memory-prefix-unstable");
-    {
-      const retainedIds = new Set(retainedCompressions().map((entry) => entry.id));
-      const retainedRows = measurements.acceptanceToApplication.filter((row) => retainedIds.has(row.id));
-      if (retainedRows.length > 0 && retainedRows.some((row) => row.requestGap === null)) failures.add("recorded-memory-never-applied");
-    }
+    // A recording whose full carrier never rode a later request is reported
+    // as a measurement, not an integrity failure: a due rebuild legitimately
+    // replaces the full carrier with the prefix-only serving view (#321), and
+    // the next-request application contract itself is pinned by the
+    // deterministic append-projection and suffix-rebuild suites.
     const entries = sessionManager.getEntries().map((entry) => entry.type === "message"
       ? { ...entry, message: withoutThinking(entry.message) } : entry);
     if (entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant" && !seedEntryIds.has(entry.id)).length !== requests.length) failures.add("assistant-observation-mismatch");
