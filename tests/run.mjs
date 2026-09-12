@@ -72,6 +72,7 @@ const suites = [
   "context-memory/sustained-maintenance.test.mjs",
   "context-memory/suffix-rebuild.test.mjs",
   "context-memory/rebuild-native.test.mjs",
+  "context-memory/provider-wire.test.mjs",
   "context-memory/request-overhead.test.mjs",
   "context-memory/cache-experiment/session-sequence.test.mjs",
   "context-memory/continuity/fixtures.test.mjs",
