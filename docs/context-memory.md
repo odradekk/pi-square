@@ -337,9 +337,10 @@ drives a real `AgentSession` against those unmodified production modules
 through a loopback capture server and asserts the converted wire payload as
 sent, anchored to the recorded Memory state entries and the session branch
 rather than to marker matching alone: every tool call id pairs with its
-result with uniqueness and order enforced (and negative self-tests prove the
-checker rejects a shuffled batch, duplicated halves, and each orphaned
-half), across multi-tool batches, a failing tool, a refused
+result with uniqueness and complete batch boundaries enforced; actual
+result order is checked against the session branch, not assumed to equal
+parallel call order. Negative cases reject interrupted batches, duplicated
+halves, and each orphaned half. The sessions cover multi-tool batches, a failing tool, a refused
 compression+ordinary mixed batch whose ordinary sibling keeps its real
 recorded result, a mid-stream cancellation whose partial thinking is never
 replayed, and a tool-result-boundary cancellation whose completed pair
@@ -349,8 +350,13 @@ across append and rebuild, while every recorded eviction target leaves and
 the recorded retained exceptions, the complete suffix originals of a pending
 rebuild (raw and in order), the newest working batch, and the user image
 attachment stay; every wire tool result must be a real recorded call
-carrying exactly the recorded body; replayed thinking keeps its signature;
-and no provider cache marker appears outside the placements Pi's own
+carrying exactly the recorded body; each surviving assistant's complete
+thinking text and Anthropic signatures are compared with its recorded
+message, including the thinking left after a compression call is removed.
+Mutations of captured synthetic requests prove that the full wire contract
+rejects inserted messages inside a tool batch, reordered results, missing or
+changed thinking, and changed signatures.
+No provider cache marker appears outside the placements Pi's own
 conversion documents. These runs verify the exercised combinations only — they are not
 a claim about other provider flavors, real-model behavior, or cache
 efficiency (see [Continuity qualification](#continuity-qualification)).

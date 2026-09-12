@@ -417,52 +417,48 @@ function wireToolExchanges(body, kind) {
  * Assert the provider-native pairing contract on one wire payload: every
  * call id and every result id is unique, every result follows the assistant
  * message that carries its call, every call is answered by exactly one
- * result, and every result answers exactly one call. A shuffled batch (a
- * result ahead of its call), a duplicated id on either side, an orphaned
- * half, or a split batch all fail — while the two legal native layouts
+ * result, and every result answers exactly one call. No ordinary message or
+ * new assistant may interrupt an outstanding batch. Results need not follow
+ * call order; preservation of the actual result order is checked separately
+ * against the session branch. Both native layouts are accepted
  * (Anthropic merges consecutive results into one user message; OpenAI keeps
- * one role:"tool" message per result) both pass.
+ * one role:"tool" message per result).
  */
 function assertWirePairing(body, kind, label) {
-  const callPosition = new Map();
-  const resultPosition = new Map();
-  const recordCall = (id, position) => {
-    assert.ok(!callPosition.has(id), `${label}: call id is unique (${id})`);
-    callPosition.set(id, position);
-  };
-  const recordResult = (id, position) => {
-    assert.ok(!resultPosition.has(id), `${label}: result id is unique — one result per call (${id})`);
-    const producer = callPosition.get(id);
-    assert.ok(producer !== undefined, `${label}: result follows a call in the payload (${id})`);
-    assert.ok(producer < position, `${label}: result appears after its call, never before (${id})`);
-    resultPosition.set(id, position);
-  };
-  const messages = body.messages ?? [];
-  if (kind === "anthropic") {
-    messages.forEach((message, position) => {
-      if (message.role === "assistant" && Array.isArray(message.content)) {
-        for (const block of message.content) {
-          if (block.type === "tool_use") recordCall(block.id, position);
-        }
+  const seenCalls = new Set();
+  const pending = new Set();
+  for (const message of body.messages ?? []) {
+    const blocks = Array.isArray(message.content) ? message.content : [];
+    const calls = message.role === "assistant"
+      ? (kind === "anthropic" ? blocks.filter((block) => block.type === "tool_use") : message.tool_calls ?? [])
+      : [];
+    const results = kind === "anthropic"
+      ? (message.role === "user" ? blocks.filter((block) => block.type === "tool_result").map((block) => block.tool_use_id) : [])
+      : (message.role === "tool" ? [message.tool_call_id] : []);
+
+    if (pending.size > 0) {
+      assert.ok(results.length > 0, `${label}: results must immediately follow their assistant batch`);
+    }
+    if (results.length > 0) {
+      if (kind === "anthropic") {
+        assert.ok(blocks.slice(0, results.length).every((block) => block.type === "tool_result"),
+          `${label}: Anthropic results precede ordinary content`);
       }
-      if (message.role === "user" && Array.isArray(message.content)) {
-        for (const block of message.content) {
-          if (block.type === "tool_result") recordResult(block.tool_use_id, position);
-        }
+      for (const id of results) {
+        assert.ok(pending.delete(id), `${label}: result answers one outstanding call, without duplicates (${id})`);
       }
-    });
-  } else {
-    messages.forEach((message, position) => {
-      if (message.role === "assistant") {
-        for (const call of message.tool_calls ?? []) recordCall(call.id, position);
+      if (kind === "anthropic") {
+        assert.equal(pending.size, 0, `${label}: one Anthropic user message completes the entire batch`);
       }
-      if (message.role === "tool") recordResult(message.tool_call_id, position);
-    });
+    }
+    for (const call of calls) {
+      assert.ok(typeof call.id === "string" && call.id.length > 0 && !seenCalls.has(call.id),
+        `${label}: call id is nonempty and unique (${call.id})`);
+      seenCalls.add(call.id);
+      pending.add(call.id);
+    }
   }
-  for (const id of callPosition.keys()) {
-    assert.ok(resultPosition.has(id), `${label}: every call is answered by exactly one result (${id})`);
-  }
-  assert.equal(resultPosition.size, callPosition.size, `${label}: no extra results exist beyond the calls`);
+  assert.equal(pending.size, 0, `${label}: every call has its result before the payload ends`);
 }
 
 /**
@@ -527,10 +523,31 @@ function runCheckerSelfTests() {
   const oCall = (id) => ({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "read", arguments: "{}" } }] });
   const oResult = (id) => ({ role: "tool", tool_call_id: id, content: "ok" });
 
+  for (const [kind, call, result] of [["anthropic", aCall, aResult], ["openai", oCall, oResult]]) {
+    expectRejection(() => assertWirePairing({ messages: [
+      call("x"), { role: "user", content: "intervening input" },
+      { role: "assistant", content: "intervening response" }, result("x"),
+    ] }, kind, "split batch"), `${kind}: ordinary messages cannot split a tool batch`);
+    expectRejection(() => assertWirePairing({ messages: [call("x"), call("y"), result("x"), result("y")] },
+      kind, "overlapping batches"), `${kind}: a new assistant cannot precede the outstanding results`);
+  }
+
   // Legal layouts pass, including a merged Anthropic result batch, separate
   // OpenAI tool messages, and thinking blocks beside the calls.
-  assertWirePairing(anthropicPayload([aCall("x"), aCall("y"), aResult("x"), aResult("y")]), "anthropic", "legal merged anthropic batch");
-  assertWirePairing(openaiPayload([oCall("x"), oCall("y"), oResult("x"), oResult("y")]), "openai", "legal openai batch");
+  const aBatch = aCall("x", [aCall("y").content.at(-1)]);
+  const oBatch = { ...oCall("x"), tool_calls: [...oCall("x").tool_calls, ...oCall("y").tool_calls] };
+  assertWirePairing(anthropicPayload([aBatch, { role: "user", content: [
+    ...aResult("y").content, ...aResult("x").content, { type: "text", text: "continue" },
+  ] }]), "anthropic", "legal merged anthropic batch");
+  assertWirePairing(openaiPayload([oBatch, oResult("y"), oResult("x")]), "openai", "legal openai batch");
+  expectRejection(() => assertWirePairing(anthropicPayload([aBatch, aResult("x"), aResult("y")]),
+    "anthropic", "partial results"), "an Anthropic result batch split across user messages");
+  expectRejection(() => assertWirePairing(anthropicPayload([aCall("x"), {
+    role: "user", content: [{ type: "text", text: "before results" }, ...aResult("x").content],
+  }]), "anthropic", "result prefix"), "text preceding Anthropic tool results");
+  expectRejection(() => assertWirePairing(openaiPayload([oBatch, oResult("x"),
+    { role: "assistant", content: "too early" }, oResult("y")]), "openai", "partial results"),
+  "an assistant interrupting an OpenAI result batch");
   assertWirePairing(openaiPayload([oCall("x"), oResult("x"), { role: "assistant", content: "done", reasoning_content: "t" }]), "openai", "legal openai thinking text");
   assertCacheMarkers(anthropicPayload([aCall("x"), aResult("x")]), "anthropic", "legal markers absent");
 
@@ -980,11 +997,57 @@ function assertWindowPresent(body, kind, branch, fromPosition, toPosition, label
  * bodies, nothing silently replaced.
  */
 function assertExchangesMatchBranch(body, kind, branchResults, label) {
-  for (const exchange of wireToolExchanges(body, kind)) {
+  const exchanges = wireToolExchanges(body, kind);
+  const present = new Set(exchanges.map((exchange) => exchange.id));
+  assert.deepEqual(exchanges.map((exchange) => exchange.id), [...branchResults.keys()].filter((id) => present.has(id)),
+    `${label}: result order matches the actual branch, not necessarily call order`);
+  for (const exchange of exchanges) {
     const recorded = branchResults.get(exchange.id);
     assert.ok(recorded, `${label}: every wire result id is a recorded call (${exchange.id})`);
     assert.equal(exchange.resultText, messageTextOf(recorded.message),
       `${label}: the wire result body is exactly the recorded body (${exchange.id})`);
+  }
+}
+
+/**
+ * Identify each surviving assistant by call ID (or its ordinary answer),
+ * never by thinking itself. A protocol-only assistant can retain thinking
+ * after its calls leave; match that residue to the next protocol-only entry
+ * in branch order. Compare the complete ordered thinking fields
+ * with the recorded message. This fixture uses signed Anthropic thinking
+ * and OpenAI reasoning_content; it is not a replacement provider converter.
+ */
+function assertThinkingMatchesBranch(body, kind, branch, label) {
+  let previousPosition = -1;
+  for (const message of body.messages ?? []) {
+    if (message.role !== "assistant") continue;
+    const blocks = Array.isArray(message.content) ? message.content : [];
+    const calls = kind === "anthropic" ? blocks.filter((block) => block.type === "tool_use") : message.tool_calls ?? [];
+    const answer = kind === "anthropic" ? blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n")
+      : message.content ?? "";
+    const position = branch.findIndex((entry, index) => {
+      if (index <= previousPosition || entry.type !== "message" || entry.message.role !== "assistant") return false;
+      if (calls.length > 0) return entryCallIds(entry).includes(calls[0].id);
+      if (answer.length > 0) {
+        return entry.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n") === answer;
+      }
+      return entryCallIds(entry).length > 0 && entryCallIds(entry, { excludeCompression: true }).length === 0;
+    });
+    assert.ok(position > previousPosition, `${label}: assistant identity and order resolve on the branch`);
+    const recorded = branch[position].message;
+    assert.ok(calls.every((call) => entryCallIds(branch[position]).includes(call.id)),
+      `${label}: the wire assistant keeps one recorded call batch`);
+    const thinking = recorded.content.filter((block) => block.type === "thinking");
+    if (kind === "anthropic") {
+      assert.deepEqual(blocks.filter((block) => block.type === "thinking").map((block) => ({
+        thinking: block.thinking, signature: block.signature,
+      })), thinking.map((block) => ({ thinking: block.thinking, signature: block.thinkingSignature })),
+      `${label}: complete thinking and signatures match the branch`);
+    } else {
+      assert.equal(message.reasoning_content ?? "", thinking.map((block) => block.thinking).join("\n"),
+        `${label}: complete thinking matches the branch`);
+    }
+    previousPosition = position;
   }
 }
 
@@ -1022,10 +1085,13 @@ async function assertWireContract(kind, run) {
   assert.ok(requests.length >= 25, `${label}: a substantial wire request sequence (${requests.length})`);
   const baselineTools = wireToolNames(requests[0].body, kind)
     .filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort();
+  const branchResults = branchToolResults(branch);
   for (const [index, request] of requests.entries()) {
     const body = request.body;
     const text = wireText(body, kind);
     assertWirePairing(body, kind, `${label} request ${index}`);
+    assertExchangesMatchBranch(body, kind, branchResults, `${label} request ${index}`);
+    assertThinkingMatchesBranch(body, kind, branch, `${label} request ${index}`);
     const tools = wireToolNames(body, kind);
     assert.ok(tools.includes("compact_to_memory_block"), `${label}: the resident compression tool stays exposed (${index})`);
     assert.ok(!tools.includes("submit_memory"), `${label}: the retired name never appears (${index})`);
@@ -1054,7 +1120,6 @@ async function assertWireContract(kind, run) {
   const [appendOneCallAt, mixedCallAt, appendTwoCallAt, rebuildCallAt] = callRequests;
 
   // The branch is the ground truth for every set assertion below.
-  const branchResults = branchToolResults(branch);
   const statePosition = (entry) => branch.findIndex((candidate) => candidate.id === entry.id);
   const evictionsOne = stateReplacementEvidence(branch, appendOne);
   const evictionsTwo = stateReplacementEvidence(branch, appendTwo);
@@ -1112,14 +1177,6 @@ async function assertWireContract(kind, run) {
   assert.ok(appliedOneCompact.argsText.includes("(this Memory block is carried in full above)"),
     `${label}: the trailing accepted call carries the bounded placeholder`);
   assert.ok(!appliedOneCompact.argsText.includes(FACT_ONE), `${label}: the body is not duplicated in the arguments`);
-
-  // Thinking with a signature replays in the retained working set.
-  const signedThinking = kind === "anthropic"
-    ? (appliedOne.body.messages ?? []).some((message) => message.role === "assistant" && Array.isArray(message.content)
-      && message.content.some((block) => block.type === "thinking" && typeof block.signature === "string" && block.signature.length > 0))
-    : (appliedOne.body.messages ?? []).some((message) => message.role === "assistant"
-      && typeof message.reasoning_content === "string" && message.reasoning_content.length > 0);
-  assert.ok(signedThinking, `${label}: retained assistant thinking replays with its signature`);
 
   // (c) The refused mixed batch: exactly one assistant message carries both
   // calls, the sibling's identity is that message's own read call, and its
@@ -1362,15 +1419,65 @@ async function assertWireContract(kind, run) {
 
 // ═══════════════════ Execution ═══════════════════
 
+/** Corrupt only captured synthetic requests, then rerun the full contract. */
+async function assertWireMutationsRejected(kind, run) {
+  const mutations = ["split-batch", "result-order", "thinking-text", "missing-thinking"];
+  if (kind === "anthropic") mutations.push("thinking-signature");
+  for (const mutation of mutations) {
+    const corrupted = { ...run, requests: structuredClone(run.requests) };
+    let changed = false;
+    for (const request of corrupted.requests) {
+      const messages = request.body.messages;
+      for (const [index, message] of messages.entries()) {
+        if (message.role !== "assistant") continue;
+        const calls = kind === "anthropic" ? message.content.filter((block) => block.type === "tool_use") : message.tool_calls ?? [];
+        if (mutation === "split-batch") {
+          if (calls.length === 0) continue;
+          messages.splice(index + 1, 0, { role: "user", content: "intervening input" },
+            { role: "assistant", content: "intervening response" });
+        } else if (mutation === "result-order") {
+          if (calls.length < 2) continue;
+          if (kind === "anthropic") {
+            const results = messages[index + 1].content;
+            [results[0], results[1]] = [results[1], results[0]];
+          } else {
+            [messages[index + 1], messages[index + 2]] = [messages[index + 2], messages[index + 1]];
+          }
+        } else if (kind === "anthropic") {
+          const thinking = message.content.find((block) => block.type === "thinking");
+          if (!thinking) continue;
+          if (mutation === "thinking-signature") thinking.signature = "wrong-synthetic-signature";
+          if (mutation === "thinking-text") thinking.thinking = "wrong-synthetic-thinking";
+          if (mutation === "missing-thinking") message.content = message.content.filter((block) => block !== thinking);
+        } else {
+          if (!message.reasoning_content) continue;
+          if (mutation === "thinking-text") message.reasoning_content = "wrong-synthetic-thinking";
+          if (mutation === "missing-thinking") delete message.reasoning_content;
+        }
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
+    assert.ok(changed, `${kind}: the negative fixture changes a real ${mutation} field`);
+    const error = mutation === "split-batch" ? /immediately follow/
+      : mutation === "result-order" ? /result order/ : /thinking.*branch/;
+    await assert.rejects(() => assertWireContract(kind, corrupted), error,
+      `${kind}: the full contract rejects ${mutation}`);
+  }
+}
+
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 try {
   runCheckerSelfTests();
 
   const anthropicRun = await runWireSession("anthropic");
   await assertWireContract("anthropic", anthropicRun);
+  await assertWireMutationsRejected("anthropic", anthropicRun);
 
   const openaiRun = await runWireSession("openai");
   await assertWireContract("openai", openaiRun);
+  await assertWireMutationsRejected("openai", openaiRun);
 
   console.log("context-memory provider wire native sessions: OK");
 } finally {
