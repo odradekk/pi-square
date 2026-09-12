@@ -1,5 +1,5 @@
 /**
- * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #219, #221, #319, #320).
+ * Read-only Context Memory view snapshot (odradekk/pi-square#215, #216, #217, #219, #221, #319, #320, #324).
  *
  * The controller publishes this bounded snapshot through the registrar's
  * view provider; Prompt Manager renders it as the `/context` `memory[]`
@@ -12,7 +12,10 @@
  * already delivered. #320 adds the bounded sustained-maintenance diagnostics
  * (pending request, pressure split, net savings) below. #255 keeps capability
  * detection as the only unsupported cause, with the running host version
- * riding along as informational reporting only.
+ * riding along as informational reporting only. #324 adds the request-exit
+ * arbitration verdict — the selected view (`memory` / `native`) or the hard
+ * stop with its estimate, native bound, and abort signal — so `/context`
+ * states the real stop result without any Memory, source, or payload text.
  */
 
 /** Custom-message type of the one ephemeral due advisory (#218, #319). */
@@ -67,6 +70,33 @@ export interface ContextMemoryPressureInfo {
   readonly reportedForCurrentMemory: boolean;
 }
 
+/**
+ * The request-exit arbitration verdict of the last provider-bound request
+ * (#324): which view the exit selected, and — for a hard stop — the numbers
+ * that proved no safe view existed. `memory` means the custom projection was
+ * constructed (state carrier or v1 blocks re-projection); `native` means no
+ * custom application was possible this request, so the complete baseline
+ * went out and Pi native compaction owns the boundary; `stopped` means even
+ * the smallest validated view exceeded the native compaction boundary, the
+ * abort signal was issued, and nothing was projected. Bounded: counts and
+ * codes only, never Memory Markdown, sources, or payloads.
+ */
+export interface ContextMemoryArbitrationInfo {
+  readonly path: "memory" | "native" | "stopped";
+  /**
+   * Why no custom application happened: no valid Memory exists on the
+   * branch, a valid Memory could not be applied to this request, or the
+   * branch degraded to `opaque`. Absent on the `memory` and `stopped` paths.
+   */
+  readonly reason?: "no-memory" | "refused" | "opaque";
+  /** `stopped` only: the final view's estimate (messages, system, tools, residual). */
+  readonly estimateTokens?: number;
+  /** `stopped` only: the native compaction boundary the estimate exceeded. */
+  readonly boundTokens?: number;
+  /** `stopped` only: the public abort signal was actually issued. */
+  readonly abortSignaled?: true;
+}
+
 export type ContextMemorySnapshot =
   | { readonly state: "disabled" }
   | {
@@ -80,16 +110,23 @@ export type ContextMemorySnapshot =
      */
     readonly hostVersion?: string;
   }
-  | { readonly state: "no-memory"; readonly ephemeral?: true }
+  | {
+    readonly state: "no-memory";
+    /** Request-exit arbitration verdict of the last provider-bound request (#324). */
+    readonly arbitration?: ContextMemoryArbitrationInfo;
+    readonly ephemeral?: true;
+  }
   | {
     readonly state: "due";
     /** The pinned maintenance request riding due requests, when one is pending (#320). */
     readonly maintenance?: ContextMemoryMaintenanceInfo;
     /** Pressure split for the last projected request (#320). */
     readonly pressure?: ContextMemoryPressureInfo;
+    /** Request-exit arbitration verdict of the last provider-bound request (#324). */
+    readonly arbitration?: ContextMemoryArbitrationInfo;
     readonly ephemeral?: true;
   }
-  | { readonly state: "opaque"; readonly ephemeral?: true }
+  | { readonly state: "opaque"; readonly arbitration?: ContextMemoryArbitrationInfo; readonly ephemeral?: true }
   | {
     readonly state: "active";
     /** Which carrier holds the blocks: a #319 state entry or a v1 compaction. */
@@ -129,6 +166,8 @@ export type ContextMemorySnapshot =
      * the boundary.
      */
     readonly scaleLimit?: true;
+    /** Request-exit arbitration verdict of the last provider-bound request (#324). */
+    readonly arbitration?: ContextMemoryArbitrationInfo;
     readonly ephemeral?: true;
   };
 

@@ -1,4 +1,9 @@
-import { isEphemeralMemorySnapshot, type ContextMemoryMaintenanceInfo, type ContextMemorySnapshot } from "../context-memory/view";
+import {
+  isEphemeralMemorySnapshot,
+  type ContextMemoryArbitrationInfo,
+  type ContextMemoryMaintenanceInfo,
+  type ContextMemorySnapshot,
+} from "../context-memory/view";
 import type { PromptManagerSegment } from "./types";
 import { sanitizeDisplayLine } from "../display/sanitize";
 import type { ByRoleChars, CollapsedEntries, MessageEntrySummary } from "./decompose";
@@ -261,17 +266,19 @@ function renderSystemSection(
 }
 
 /**
- * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #218, #219, #221): the
+ * Context Memory `memory[]` section (odradekk/pi-square#215, #216, #217, #218, #219, #221, #324): the
  * selected Variant A inline hierarchy, rendered between the system-prompt
- * section and the message section. Inactive states stay one bounded line;
+ * section and the message section. Inactive states stay one bounded line —
+ * a hard stop is the one exception that earns a second bounded line, because
+ * the real stop result must stay visible even with no Memory yet (#324);
  * active Memory shows state, Memory/budget estimate, block count, current
  * usage, and one bounded chronological row per block, with the #321
- * pending-operation and scale-limit markers riding bounded diagnostic rows.
- * No format versions, entry ranges/IDs, paths, timestamps, or storage
- * details ever appear. Never part of the usage bar — Memory accounting
- * leaves the total usage bar unchanged (#215). Ephemeral in-memory sessions
- * are reported as such (#221); active Memory reports the recorded/applied
- * distinction instead of a settle pipeline (#319).
+ * pending-operation, scale-limit, and #324 arbitration markers riding
+ * bounded diagnostic rows. No format versions, entry ranges/IDs, paths,
+ * timestamps, or storage details ever appear. Never part of the usage bar —
+ * Memory accounting leaves the total usage bar unchanged (#215). Ephemeral
+ * in-memory sessions are reported as such (#221); active Memory reports the
+ * recorded/applied distinction instead of a settle pipeline (#319).
  */
 /** One bounded label for the pending maintenance request (#321 names the operation). */
 function maintenanceLabel(maintenance: ContextMemoryMaintenanceInfo): string {
@@ -283,6 +290,28 @@ function maintenanceLabel(maintenance: ContextMemoryMaintenanceInfo): string {
     return `suffix rebuild over ${sources}`;
   }
   return `maintenance over ${sources}`;
+}
+
+/**
+ * One bounded label for the #324 request-exit arbitration verdict: the hard
+ * stop states the real result — the estimate, the native bound it exceeded,
+ * and whether the public abort signal was issued — and the native fallback
+ * names why the custom projection stayed off this request. Counts and codes
+ * only, never Memory or source text.
+ */
+function arbitrationLabel(arbitration: ContextMemoryArbitrationInfo): string {
+  if (arbitration.path === "stopped") {
+    const estimate = typeof arbitration.estimateTokens === "number" ? `~${formatShort(arbitration.estimateTokens)} tok est` : "the request";
+    const bound = typeof arbitration.boundTokens === "number" ? `~${formatShort(arbitration.boundTokens)} tok native limit` : "the native limit";
+    return `hard stop · ${estimate} exceeds ${bound} · ${arbitration.abortSignaled === true ? "run cancelled by abort" : "no abort signal available"} · nothing sent`;
+  }
+  if (arbitration.path === "native" && arbitration.reason === "refused") {
+    return "native fallback · Memory projection refused this request · native compaction owns the boundary";
+  }
+  if (arbitration.path === "native" && arbitration.reason === "opaque") {
+    return "native fallback · Memory not applicable · native compaction owns the boundary";
+  }
+  return "native view · no Memory to project";
 }
 
 function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySnapshot): string[] {
@@ -319,12 +348,23 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
     if (isEphemeralMemorySnapshot(memory)) {
       description += " · ephemeral session";
     }
-    return [
+    const inactiveLines = [
       RAIL_CONT +
       paint(theme, "text", "memory[]") +
       "     " +
       paint(theme, "dim", description),
     ];
+    // #324: a hard stop is the one inactive-state event that earns a second
+    // bounded line — the real stop result must stay visible even when no
+    // Memory exists yet. Only the three request-bearing inactive states ever
+    // carry a verdict; `disabled` and `unsupported` never reach a request.
+    const inactiveArbitration = (memory as { readonly arbitration?: ContextMemoryArbitrationInfo }).arbitration;
+    if (inactiveArbitration?.path === "stopped") {
+      inactiveLines.push(
+        RAIL_CONT + "     " + paint(theme, "muted", arbitrationLabel(inactiveArbitration)),
+      );
+    }
+    return inactiveLines;
   }
 
   const lines: string[] = [];
@@ -398,6 +438,17 @@ function renderMemorySection(theme: ThemeWrapper | null, memory: ContextMemorySn
         RAIL_CONT + "     " + paint(theme, "dim", `request ${pressureParts.join(" · ")}`),
       );
     }
+  }
+  // #324: the request-exit arbitration verdict rides one bounded row while
+  // it selected something other than the ordinary Memory projection — the
+  // hard stop with its real result, or the native fallback while recorded
+  // Memory could not be applied to that request.
+  if (memory.arbitration !== undefined
+    && (memory.arbitration.path === "stopped"
+      || (memory.arbitration.path === "native" && memory.arbitration.reason === "refused"))) {
+    lines.push(
+      RAIL_CONT + "     " + paint(theme, "muted", arbitrationLabel(memory.arbitration)),
+    );
   }
 
   const previewWidth = Math.min(

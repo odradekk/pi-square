@@ -5,8 +5,8 @@ import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
  * Capability-detection host gate for Context Memory (odradekk/pi-square#215, #216, #255).
  *
  * Activation is decided by interface presence alone: a Pi host that exposes
- * the required public session, compaction, context, tool, active-tool, and
- * message-projection interfaces activates the feature on any version,
+ * the required public session, compaction, context, tool, active-tool,
+ * message-projection, and abort interfaces activates the feature on any version,
  * because every check consumes an interface the host itself provides. A host
  * missing any interface is unsupported and leaves Pi native compaction and
  * the active tool set unchanged. There is deliberately no minimum version
@@ -46,9 +46,13 @@ export function apiInterfacesPresent(pi: {
 }
 
 /**
- * The session-time interface set: the public session, compaction, and context
- * and run-boundary surfaces the feature consumes. Their absence makes the
- * host unsupported without touching Pi behavior.
+ * The session-time interface set: the public session, compaction, context,
+ * run-boundary, and request-stop surfaces the feature consumes. Their
+ * absence makes the host unsupported without touching Pi behavior. #324 adds
+ * `abort`: the request-exit arbitration's hard stop is part of the feature's
+ * contract — no unsafe view may reach the provider — and a host that exposes
+ * no public abort signal cannot honor it, so capability detection keeps the
+ * whole feature off there rather than shipping a half-safe path.
  */
 export function contextInterfacesPresent(ctx: {
   sessionManager?: unknown;
@@ -57,13 +61,15 @@ export function contextInterfacesPresent(ctx: {
   getSystemPrompt?: unknown;
   isIdle?: unknown;
   hasPendingMessages?: unknown;
+  abort?: unknown;
 }): boolean {
   return Boolean(ctx.sessionManager)
     && typeof ctx.compact === "function"
     && typeof ctx.getContextUsage === "function"
     && typeof ctx.getSystemPrompt === "function"
     && typeof ctx.isIdle === "function"
-    && typeof ctx.hasPendingMessages === "function";
+    && typeof ctx.hasPendingMessages === "function"
+    && typeof ctx.abort === "function";
 }
 
 /** The public message projection helper required by the Memory block projection. */
