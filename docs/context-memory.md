@@ -335,16 +335,23 @@ project's providers use — Pi's native `anthropic-messages` and
 `openai-completions` implementations — a deterministic native-session test
 drives a real `AgentSession` against those unmodified production modules
 through a loopback capture server and asserts the converted wire payload as
-sent: every tool call id pairs with its result in both directions across
-multi-tool batches, a failing tool, a refused compression+ordinary mixed
-batch (whose ordinary sibling keeps its real result), and a mid-stream
-cancellation whose partial thinking is never replayed; the complete body of
-every current Memory block arrives exactly once through the carrier with
-byte-stable unselected prefixes across append and rebuild, while covered
-originals leave and the retained working set, the protected instruction, and
-the user image attachment stay; replayed thinking keeps its signature; and
-no provider cache marker appears outside the placements Pi's own conversion
-documents. These runs verify the exercised combinations only — they are not
+sent, anchored to the recorded Memory state entries and the session branch
+rather than to marker matching alone: every tool call id pairs with its
+result with uniqueness and order enforced (and negative self-tests prove the
+checker rejects a shuffled batch, duplicated halves, and each orphaned
+half), across multi-tool batches, a failing tool, a refused
+compression+ordinary mixed batch whose ordinary sibling keeps its real
+recorded result, a mid-stream cancellation whose partial thinking is never
+replayed, and a tool-result-boundary cancellation whose completed pair
+survives whole; the complete body of every current Memory block arrives
+exactly once through the carrier with byte-stable unselected prefixes
+across append and rebuild, while every recorded eviction target leaves and
+the recorded retained exceptions, the complete suffix originals of a pending
+rebuild (raw and in order), the newest working batch, and the user image
+attachment stay; every wire tool result must be a real recorded call
+carrying exactly the recorded body; replayed thinking keeps its signature;
+and no provider cache marker appears outside the placements Pi's own
+conversion documents. These runs verify the exercised combinations only — they are not
 a claim about other provider flavors, real-model behavior, or cache
 efficiency (see [Continuity qualification](#continuity-qualification)).
 
