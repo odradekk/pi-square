@@ -45,6 +45,7 @@ import {
   CONTEXT_MEMORY_ADVISORY_TYPE,
   CONTEXT_MEMORY_BLOCKS_TYPE,
   CONTEXT_MEMORY_MAX_VIEW_ROWS,
+  type ContextMemoryArbitrationInfo,
   type ContextMemoryBlockRow,
   type ContextMemoryMaintenanceInfo,
   type ContextMemoryPressureInfo,
@@ -96,6 +97,22 @@ import {
  * restart, background model, autonomous turn, or native `compact()` call is
  * involved in the normal path; Pi native compaction stays untouched as the
  * fallback owner of the context boundary.
+ *
+ * #324 adds the request-exit arbitration on top of the same transform: every
+ * provider-bound request first tries the latest recorded Memory projection;
+ * when valid Memory cannot be applied this request and the complete
+ * (artifact-filtered) baseline fits, the exit declines the custom
+ * application — the safe native fallback — discards the unrecorded
+ * maintenance candidates, and leaves Pi native compaction owning the
+ * boundary at its own safe idle/native edge, never awaited from inside a
+ * running tool or the context handler; and when no validated view fits
+ * under Pi's own native compaction boundary (window minus reserve — the
+ * output and tool-growth headroom Pi itself relies on), the exit issues the
+ * public abort signal instead of sending anything, so a model that ignores
+ * advisories, one oversized tool result, or a no-net-benefit scope can never
+ * push a known-unsafe view to the provider. The stop never touches recorded
+ * Memory or the truthful applied accounting, never continues or retries on
+ * its own, and is never used for normal compression.
  *
  * #217's reading surface (`read_memory_source`, `/context memory`) is
  * unchanged; #221's branch-private lifecycle rules still hold (derivation
@@ -1011,7 +1028,15 @@ export class ContextMemoryController {
     readonly sourceEndEntryId: string;
     readonly memoryVersion: string;
   } | undefined;
-
+  /**
+   * The request-exit arbitration verdict of the last provider-bound request
+   * (#324): which view the exit selected — the custom Memory projection, the
+   * complete native baseline (custom application unavailable, native
+   * compaction owning the boundary), or the hard stop whose abort signal
+   * cancelled the request. Bounded codes and counts only; recomputed on every
+   * request and never persisted.
+   */
+  private arbitration: ContextMemoryArbitrationInfo | undefined;
   constructor(options: ContextMemoryControllerOptions) {
     this.config = options.config;
     this.support = options.support;
@@ -1041,15 +1066,23 @@ export class ContextMemoryController {
     if (!this.config.enabled) return { state: "disabled" };
     if (!this.support.supported) return { state: "unsupported", reason: this.support.reason };
     if (this.current.kind === "none") {
-      if (!this.due) return this.markEphemeral({ state: "no-memory" });
-      const due: { state: "due"; maintenance?: ContextMemoryMaintenanceInfo; pressure?: ContextMemoryPressureInfo } = { state: "due" };
+      if (!this.due) return this.markEphemeral(this.withArbitration({ state: "no-memory" }));
+      const due: {
+        state: "due";
+        maintenance?: ContextMemoryMaintenanceInfo;
+        pressure?: ContextMemoryPressureInfo;
+        arbitration?: ContextMemoryArbitrationInfo;
+      } = { state: "due" };
       const maintenance = this.maintenanceInfo();
       if (maintenance !== undefined) due.maintenance = maintenance;
       const pressure = this.pressureInfo();
       if (pressure !== undefined) due.pressure = pressure;
+      if (this.arbitration !== undefined) due.arbitration = this.arbitration;
       return this.markEphemeral(due);
     }
-    if (this.current.kind === "opaque") return this.markEphemeral({ state: "opaque" });
+    if (this.current.kind === "opaque") {
+      return this.markEphemeral(this.withArbitration({ state: "opaque" }));
+    }
     return this.markEphemeral(this.activeSnapshot(this.current, usage));
   }
 
@@ -1060,6 +1093,14 @@ export class ContextMemoryController {
    */
   private markEphemeral<T extends { readonly state: string; readonly ephemeral?: true }>(snapshot: T): T {
     return { ...snapshot, ...(this.ephemeralSession ? { ephemeral: true } : {}) };
+  }
+
+  /**
+   * Attach the last request-exit arbitration verdict (#324) to an inactive
+   * snapshot; absent before the first request of the session.
+   */
+  private withArbitration<T extends { readonly state: string }>(snapshot: T): T & { readonly arbitration?: ContextMemoryArbitrationInfo } {
+    return this.arbitration === undefined ? snapshot : { ...snapshot, arbitration: this.arbitration };
   }
 
   /** Re-derive current Memory from the live session tree. */
@@ -1837,9 +1878,10 @@ export class ContextMemoryController {
   }
 
   /**
-   * The ephemeral `context` transform (#215, #218, #297, #319). It never
-   * throws and never blocks the request: any failure leaves the unmodified
-   * context in place with the custom application skipped.
+   * The ephemeral `context` transform (#215, #218, #297, #319, #324). It never
+   * throws or waits for idle. Projection failures leave the unmodified
+   * context in place; a known-unsafe request instead requires cancellation
+   * through the public abort port below.
    *
    * - Recorded state-carried Memory is applied to the request (#319): the
    *   covered, non-retained original messages leave, the one complete Memory
@@ -1857,12 +1899,25 @@ export class ContextMemoryController {
    * - While the projected request sits at or above the due point, one fixed
    *   advisory is inserted after the current user message and never persists
    *   or accumulates (#319).
+   * - #324 arbitration: a request whose valid Memory application refused
+   *   declines the custom view, discards unrecorded maintenance candidates,
+   *   and goes out as the complete artifact-filtered baseline while that
+   *   baseline fits (safe native fallback — Pi native compaction keeps owning
+   *   the boundary); and a final view — whichever was constructed — whose
+   *   estimate exceeds Pi's native compaction boundary issues `abortRequest`
+   *   (the public abort signal), discards the unrecorded candidates, and
+   *   returns undefined so the cancelled request carries no custom
+   *   projection. A nonpositive native budget also requires cancellation;
+   *   a missing or throwing abort port reports `stop-failed`, not a stopped
+   *   transport. Recorded Memory and the truthful applied accounting never
+   *   change on either path.
    */
   transformContext(
     event: { readonly messages: readonly unknown[] },
     session: MemorySessionReader,
     usage?: { tokens: number | null; contextWindow: number } | undefined,
     overhead?: ContextOverheadInput | undefined,
+    abortRequest?: (() => void) | undefined,
   ): { messages: readonly unknown[] } | undefined {
     if (!this.operational()) return undefined;
     const original = event.messages;
@@ -1876,6 +1931,11 @@ export class ContextMemoryController {
         entryIds: new Set(aligned.flatMap((item) => (item.entryId === undefined ? [] : [item.entryId]))),
       };
       const memory = deriveCurrentMemory(session);
+      // A request that ends up hard-stopped below must never count as an
+      // applied projection: its carrier was constructed for a request that
+      // never became provider-bound, so the truthful applied flag keeps its
+      // pre-request value (#324).
+      const appliedBeforeStop = this.appliedStateEntryId;
       let messages = this.applyMemoryProjection(aligned, projection, memory, true);
       const applicationApplied = messages !== undefined;
       if (messages === undefined) {
@@ -1886,7 +1946,8 @@ export class ContextMemoryController {
           v1CarrierPresent(aligned, projection),
         );
       }
-      messages = this.projectV1Blocks(messages, session);
+      const v1Projected = this.projectV1Blocks(messages, session);
+      if (v1Projected !== undefined) messages = v1Projected;
       // Due is judged on the projected request itself, never on a stale
       // pre-compression usage anchor: a recorded compression relieves
       // pressure as soon as it applies (#319). #320 counts the request's
@@ -1909,6 +1970,14 @@ export class ContextMemoryController {
       const duePoint = window === null || window === undefined
         ? null
         : effectiveDuePoint(this.config.compressionThreshold, this.config.memoryBudgetPercent, window, this.reserveTokens);
+      // #324 arbitration classification: `customView` means this request
+      // carries a constructed Memory view — the state-carrier projection or
+      // the v1 blocks re-projection. Valid Memory without one is a refused
+      // application: the custom projection stays off this request and the
+      // complete baseline below becomes the safe-native-fallback candidate.
+      const customView = applicationApplied || v1Projected !== undefined;
+      const applicationRefused = memory.kind === "valid" && !customView;
+      const memoryVersion = memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none";
       if (typeof window === "number" && duePoint !== null) {
         this.modelWindow ??= window;
         // Per-request state (#321): the scale-limit marker and the
@@ -1916,16 +1985,25 @@ export class ContextMemoryController {
         this.scaleLimit = false;
         this.lastServedRebuild = undefined;
         const total = this.estimateMessages(messages);
-        const memoryVersion = memory.kind === "valid" && applicationApplied ? memoryIdentity(memory) : "none";
         this.due = total + systemTokens + toolsTokens
           + this.activeCalibrationTokens(memoryVersion, systemTokens, toolsTokens) >= duePoint;
-        // Maintenance need is evaluated before every ordinary request (#320):
-        // while due, the pending request is established, re-scoped onto real
-        // growth, or cleared; the advisory rides this request only while a
-        // request is pending and not suppressed. #321: a rebuild request
-        // swaps the projection for the serving one — the suffix's complete
-        // originals raw, its summaries gone — in this very request.
-        if (this.due) {
+        if (applicationRefused) {
+          // The #324 native fallback: this request declines the custom
+          // application, so it also discards every unrecorded candidate and
+          // its maintenance request — no advisory rides a request whose
+          // pinned sources cannot be projected, and nothing invites new work
+          // onto a view that just refused. The recorded Memory itself stays
+          // untouched and revalidated at the next request; Pi native
+          // compaction keeps owning the boundary at its own safe idle/native
+          // edge, never awaited from inside this handler or a running tool.
+          this.invalidateMaintenanceRequest();
+        } else if (this.due) {
+          // Maintenance need is evaluated before every ordinary request (#320):
+          // while due, the pending request is established, re-scoped onto real
+          // growth, or cleared; the advisory rides this request only while a
+          // request is pending and not suppressed. #321: a rebuild request
+          // swaps the projection for the serving one — the suffix's complete
+          // originals raw, its summaries gone — in this very request.
           const decision = this.evaluateMaintenance(session, {
             projection,
             aligned,
@@ -1947,7 +2025,7 @@ export class ContextMemoryController {
         } else {
           this.invalidateMaintenanceRequest();
         }
-        if (this.due && this.maintenance !== undefined && !maintenanceSuppressed(this.maintenanceFailures)) {
+        if (!applicationRefused && this.due && this.maintenance !== undefined && !maintenanceSuppressed(this.maintenanceFailures)) {
           const advisoryText = this.maintenance.operation === "rebuild"
             ? DUE_ADVISORY_REBUILD_TEXT
             : DUE_ADVISORY_TEXT;
@@ -1966,6 +2044,61 @@ export class ContextMemoryController {
           }
         }
       }
+      // ── The #324 request-exit arbitration fit check ──
+      //
+      // The final view — projection, rebuild serving, and advisory included,
+      // plus the system prompt, active tool definitions, and the residual a
+      // matching provider report calibrated — must fit under Pi's own native
+      // compaction boundary (window minus Pi's reserve). The reserve is the
+      // output and tool-growth headroom Pi itself relies on, and a request
+      // above it is known-unsafe no matter which view produced it: the
+      // projection already evicted everything it validly could, so the
+      // larger baseline cannot fit either. With no validated view left, the
+      // exit issues the public abort signal instead of sending anything,
+      // discards the unrecorded maintenance candidates, and returns the
+      // unmodified request: the cancellation owns the request, and if a host
+      // still delivers it, it sees exactly the pre-extension view. A model
+      // that ignores advisories, one huge tool result, or a no-net-benefit
+      // scope all end here rather than sending a known-unsafe view. This is
+      // never the normal compression mechanism: below the bound nothing
+      // stops, and normal append/rebuild keep flowing through the projection
+      // above without abort, restart, extra models, or native compact().
+      if (typeof window === "number" && Number.isFinite(window) && window > 0) {
+        const nativeBound = window - this.reserveTokens;
+        const finalEstimate = this.estimateMessages(messages) + systemTokens + toolsTokens
+          + this.activeCalibrationTokens(memoryVersion, systemTokens, toolsTokens);
+        // A known window with no input budget is unsafe, not unknown. This
+        // can happen after switching to a model smaller than Pi's reserve.
+        if (nativeBound <= 0 || finalEstimate > nativeBound) {
+          this.invalidateMaintenanceRequest();
+          // This carrier is discarded regardless of whether cancellation
+          // succeeds, so it must not count as applied (#324).
+          this.appliedStateEntryId = appliedBeforeStop;
+          let abortSignaled = false;
+          if (typeof abortRequest === "function") {
+            try {
+              abortRequest();
+              abortSignaled = true;
+            } catch {
+              // Pi catches handler errors, so throwing cannot stop transport.
+              // Publish the failed cancellation without leaking host errors.
+            }
+          }
+          this.arbitration = {
+            path: abortSignaled ? "stopped" : "stop-failed",
+            estimateTokens: finalEstimate,
+            boundTokens: nativeBound,
+            ...(abortSignaled ? { abortSignaled: true } : {}),
+          };
+          return undefined;
+        }
+      }
+      this.arbitration = customView
+        ? { path: "memory" }
+        : {
+          path: "native",
+          reason: memory.kind === "valid" ? "refused" : memory.kind === "opaque" ? "opaque" : "no-memory",
+        };
       // The estimate of the request actually returned — projection, artifact
       // filtering, rebuild serving, and advisory included — anchors the next
       // usage report's residual and the `/context` pressure split (#320). The
@@ -2055,21 +2188,21 @@ export class ContextMemoryController {
    * The uniform multi-block projection for compaction-carried v1 Memory
    * (#297): when the request carries exactly the composed rendering of its
    * blocks, replace that summary message with one ordered text content block
-   * per block. Any other request shape keeps the ordinary unmodified
-   * compaction summary message. State-carried Memory already replaced any
+   * per block. Returns undefined for any request shape that keeps the
+   * ordinary unmodified compaction summary message, so the caller knows no
+   * custom view was constructed. State-carried Memory already replaced any
    * base summary with its own carrier, so the two carriers never coexist.
    */
-  private projectV1Blocks(messages: readonly unknown[], session: MemorySessionReader): unknown[] {
+  private projectV1Blocks(messages: readonly unknown[], session: MemorySessionReader): unknown[] | undefined {
     let current: CurrentMemory;
     try {
       current = deriveCurrentMemory(session);
     } catch {
-      return [...messages];
+      return undefined;
     }
-    if (current.kind !== "valid" || current.carrier !== "compaction") return [...messages];
+    if (current.kind !== "valid" || current.carrier !== "compaction") return undefined;
     const markdowns = current.blocks.map((block) => block.markdown);
-    const projected = projectMemoryBlocksMessage(messages, [{ summary: composeMemorySummary(markdowns), bodies: markdowns }]);
-    return projected ?? [...messages];
+    return projectMemoryBlocksMessage(messages, [{ summary: composeMemorySummary(markdowns), bodies: markdowns }]) ?? undefined;
   }
 
   // ── #217: source recovery and human inspection (unchanged contract) ──
@@ -2236,6 +2369,7 @@ export class ContextMemoryController {
       pressure?: ContextMemoryPressureInfo;
       lastNetSavingsTokens?: number;
       scaleLimit?: true;
+      arbitration?: ContextMemoryArbitrationInfo;
     };
     const maintenance = this.maintenanceInfo();
     if (maintenance !== undefined) active.maintenance = maintenance;
@@ -2243,6 +2377,7 @@ export class ContextMemoryController {
     if (pressure !== undefined) active.pressure = pressure;
     if (this.lastNetSavingsTokens !== undefined) active.lastNetSavingsTokens = this.lastNetSavingsTokens;
     if (this.scaleLimit) active.scaleLimit = true;
+    if (this.arbitration !== undefined) active.arbitration = this.arbitration;
     return snapshot;
   }
 

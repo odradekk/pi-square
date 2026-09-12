@@ -143,6 +143,7 @@ function commandContext(sessionManager) {
     getSystemPrompt: () => "",
     isIdle: () => true,
     hasPendingMessages: () => false,
+    abort() {},
     isProjectTrusted: () => true,
   };
 }
@@ -394,8 +395,9 @@ try {
     await stateHarness.emit("session_tree", {
       type: "session_tree", newLeafId: retainedUser, oldLeafId: stateSm.getLeafId(),
     }, stateCtx);
-    assert.deepEqual(stateHarness.registration.snapshot(), { state: "no-memory", ephemeral: true },
-      "a path before every state entry carries no Memory");
+    assert.deepEqual(stateHarness.registration.snapshot(),
+      { state: "no-memory", arbitration: { path: "memory" }, ephemeral: true },
+      "a path before every state entry carries no Memory (the last request's verdict rides along)");
     const altEnd = stateSm.appendMessage({
       role: "assistant", content: [{ type: "text", text: "alternate branch work" }], stopReason: "stop", timestamp: 7,
     });

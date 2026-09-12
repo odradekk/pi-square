@@ -71,10 +71,33 @@ tool-result-boundary cancellation whose completed pair survives whole (the
 compact-recording cancellation boundaries stay owned by the #322 lifecycle
 matrix). No pi-square-side combination defect surfaced: the projection and
 pair rules already met the provider contracts, so the ticket's product is
-the verification seam and its documentation rather than a behavior change. Native-fallback
-arbitration (#324) and real-model qualification (#325, #227) are still
-pending — acceptance of this record never authorizes claiming them as
-shipped.
+the verification seam and its documentation rather than a behavior change. #324 implements the request-exit arbitration this record specifies: every
+provider-bound request first tries the latest recorded projection; a refused
+application with a fitting complete baseline declines the custom
+application, discards the unrecorded maintenance candidates, and leaves
+native fallback to Pi's safe idle/pre-prompt boundary; and a final view
+whose estimate exceeds Pi's native compaction boundary (window minus Pi's
+reserve) issues the public `ctx.abort()` synchronously — never a handler
+throw, which Pi catches — and returns the unmodified request, without
+counting the stopped request's carrier as applied. Its native acceptance
+(`tests/context-memory/exit-arbitration.test.mjs`) runs real
+`AgentSession`s over the unmodified production `anthropic-messages`
+implementation against a loopback capture server and proves the supported
+host path end to end: a stop inside an existing tool loop never connects to
+the transport (Pi 0.84.2's model runtime refuses the request while the run's
+abort signal is set, surfacing the cancelled turn as an abort-flavored error
+assistant), the prompt resolves without a self-wait deadlock, a fitting
+refused application is still delivered whole without the carrier, and the
+boundary after a stop — Pi's own threshold compaction succeeding or failing
+— neither erases the recorded Memory nor authorizes an over-budget send nor
+auto-continues, including after reopening the session file. This evidence
+covers exactly the exercised host/conversion combination (Pi 0.84.2,
+anthropic-messages); other host paths are not certified and the capability
+gate now requires the public abort interface. Interface presence alone
+cannot prove runtime success: if that port disappears or throws, the exit
+reports `stop-failed` and asks for a manual stop, never claiming that unsafe
+transport was prevented. Real-model qualification (#325, #227) is still pending —
+acceptance of this record never authorizes claiming it as shipped.
 
 ## Why the old boundary is insufficient
 
@@ -285,6 +308,14 @@ Pi's safe idle/native boundary; never await `compact()` inside an executing
 tool or context handler. If no validated view fits, invoke public `ctx.abort()`
 without waiting for the current run to become idle, and verify cancellation
 prevents that transport. Do not automatically continue or retry.
+
+A known window at or below Pi's reserve has no safe input budget and must
+take the same cancellation path; it is not an unknown-window exemption.
+If the abort port is missing or throws, discard the custom view and report a
+failed cancellation with a manual-stop instruction. Returning `undefined`
+alone leaves Pi's original request intact and cannot guarantee stopped
+transport. Do not substitute private host state or a replacement provider to
+manufacture that guarantee.
 
 Fallback and safety stops discard unrecorded candidates and maintenance
 requests, not recorded Memory. A recorded but unapplied operation remains

@@ -118,7 +118,7 @@ function harness(branch, config = CONFIG) {
   const ctx = {
     cwd: "/project", hasUI: true, mode: "tui", sessionManager: session, compact() {},
     getContextUsage: () => ({ tokens: 100, contextWindow: 200000 }), getSystemPrompt: () => "",
-    isIdle: () => true, hasPendingMessages: () => false, isProjectTrusted: () => true,
+    isIdle: () => true, hasPendingMessages: () => false, abort() {}, isProjectTrusted: () => true,
     ui: { notify() {} },
   };
   const emit = async (name, event) => {

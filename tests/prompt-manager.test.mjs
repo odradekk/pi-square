@@ -386,6 +386,91 @@ assert.doesNotMatch(rendered, /tool-secret|label-secret|detail-secret|error-secr
     assert.ok(ephemeralLine, `the ${label} state keeps the memory[] section`);
     assert.match(ephemeralLine, /ephemeral session/, `the ${label} state reports the ephemeral session`);
   }
+
+  // ─── #324: the arbitration verdict rides bounded rows in every state ───
+  const activeBase = {
+    state: "active",
+    blocks: 1,
+    rows: [{ preview: "Ledger digest", tokens: 12, sources: 3 }],
+    carrier: "state",
+    applied: false,
+    memoryTokens: 24,
+    budgetTokens: 2_000,
+    currentTokens: 190_000,
+    contextWindow: 200_000,
+  };
+  for (const [label, memory, pattern] of [
+    ["stopped", { ...activeBase, arbitration: { path: "stopped", estimateTokens: 195_000, boundTokens: 183_616, abortSignaled: true } },
+      /hard stop · ~195\.0k tok est exceeds ~183\.6k tok native limit · run cancelled by abort · nothing sent/],
+    ["fallback", { ...activeBase, arbitration: { path: "native", reason: "refused" } },
+      /native fallback · Memory projection refused this request · native compaction owns the boundary/],
+    ["failed stop", { ...activeBase, arbitration: { path: "stop-failed", estimateTokens: 195_000, boundTokens: 183_616 } },
+      /stop failed.*abort unavailable.*stop run manually/],
+    ["failed stop before any Memory", { state: "no-memory", arbitration: { path: "stop-failed", estimateTokens: 25_000, boundTokens: 11_000 } },
+      /stop failed.*abort unavailable.*stop run manually/],
+    ["stopped before any Memory", { state: "no-memory", arbitration: { path: "stopped", estimateTokens: 25_000, boundTokens: 11_000, abortSignaled: true } },
+      /hard stop · ~25\.0k tok est exceeds ~11\.0k tok native limit · run cancelled by abort · nothing sent/],
+  ]) {
+    const loadArbitration = jiti(import.meta.url, { moduleCache: false });
+    const registerArbitration = (await loadArbitration("../src/prompt-manager/index.ts")).default;
+    const arbitrationCommands = new Map();
+    const arbitrationPi = {
+      registerCommand(name, options) { arbitrationCommands.set(name, options); },
+      registerShortcut() {},
+      on() {},
+      getAllTools() { return []; },
+    };
+    registerArbitration(arbitrationPi, {
+      buildSubagentCatalog: () => ({ id: "subagents", label: "subagent catalog", category: "catalog", phase: "dynamic-suffix", text: "", turnSeq: 1 }),
+      setInheritedSystemCore() {},
+      contextMemory: { snapshot: () => memory },
+    });
+    const { notified: arbitrationNotified } = notifyCapture();
+    await arbitrationCommands.get("context").handler("", {
+      hasUI: true,
+      sessionManager,
+      getContextUsage: () => ({ tokens: 74223, contextWindow: 200000, percent: 37 }),
+      getSystemPrompt: () => "",
+      ui: { notify: (text) => arbitrationNotified.push(text), theme: null },
+    });
+    assert.equal(arbitrationNotified.length, 1);
+    const flatArbitration = stripVTControlCharacters(arbitrationNotified[0].text ?? arbitrationNotified[0]);
+    const arbitrationLine = flatArbitration.split("\n").find((line) => /hard stop|stop failed|native fallback/.test(line));
+    assert.ok(arbitrationLine, `the ${label} verdict renders its bounded row`);
+    assert.match(arbitrationLine, pattern, `the ${label} verdict states the real result`);
+    assert.ok(arbitrationLine.length <= 140, `the ${label} row stays bounded`);
+    if (memory.arbitration.path === "stop-failed") {
+      assert.doesNotMatch(flatArbitration, /nothing sent|run cancelled|hard stop/, "a failed abort cannot promise cancellation or delivery prevention");
+    }
+  }
+
+  // The ordinary projection path renders no arbitration row at all.
+  {
+    const loadPlain = jiti(import.meta.url, { moduleCache: false });
+    const registerPlain = (await loadPlain("../src/prompt-manager/index.ts")).default;
+    const plainCommands = new Map();
+    registerPlain({
+      registerCommand(name, options) { plainCommands.set(name, options); },
+      registerShortcut() {},
+      on() {},
+      getAllTools() { return []; },
+    }, {
+      buildSubagentCatalog: () => ({ id: "subagents", label: "subagent catalog", category: "catalog", phase: "dynamic-suffix", text: "", turnSeq: 1 }),
+      setInheritedSystemCore() {},
+      contextMemory: { snapshot: () => ({ ...activeBase, applied: true, arbitration: { path: "memory" } }) },
+    });
+    const { notified: plainNotified } = notifyCapture();
+    await plainCommands.get("context").handler("", {
+      hasUI: true,
+      sessionManager,
+      getContextUsage: () => ({ tokens: 74223, contextWindow: 200000, percent: 37 }),
+      getSystemPrompt: () => "",
+      ui: { notify: (text) => plainNotified.push(text), theme: null },
+    });
+    const flatPlain = stripVTControlCharacters(plainNotified[0].text ?? plainNotified[0]);
+    assert.ok(!/hard stop|native fallback/.test(flatPlain), "the ordinary projection path renders no arbitration row");
+    assert.match(flatPlain, /applied to requests/, "the ordinary path keeps its applied distinction");
+  }
 }
 
 console.log("prompt manager tests: OK");

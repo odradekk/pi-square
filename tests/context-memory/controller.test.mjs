@@ -33,6 +33,7 @@ function fullSessionContext() {
     getSystemPrompt: () => "",
     isIdle: () => true,
     hasPendingMessages: () => false,
+    abort() {},
     isProjectTrusted: () => true,
   };
 }

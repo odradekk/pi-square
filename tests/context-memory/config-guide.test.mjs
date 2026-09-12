@@ -310,6 +310,7 @@ try {
       getSystemPrompt: () => "",
       isIdle: () => true,
       hasPendingMessages: () => false,
+      abort() {},
       isProjectTrusted: () => true,
     };
     await emit("session_start", { type: "session_start", reason: "startup" }, ctx);

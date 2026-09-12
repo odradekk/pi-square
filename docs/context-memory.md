@@ -22,8 +22,11 @@ Sustained in-task maintenance, bounded failure recovery, and the suffix
 rebuild from complete original sources are implemented, and the complete
 Memory body plus the tool protocol are verified through Pi's native
 Anthropic and OpenAI-compatible conversions at the real transport boundary
-(#323). Native-fallback arbitration and real-model qualification are owned
-by the continuation tickets (#324, #325) and are **not implemented yet**.
+(#323). Request-exit arbitration — the recorded projection, the safe native
+fallback, and the hard stop with the public abort signal — is implemented
+and verified at the same transport boundary (#324). Real-model
+qualification remains owned by the continuation tickets (#325, #227) and is
+**not implemented yet**.
 The implemented contracts are covered by deterministic native Pi requests
 and the explicitly identified boundary-injected tests described below.
 
@@ -56,8 +59,11 @@ values are never normalized, clamped, or silently defaulted.
 
 Activation is decided by capability detection, not by a Pi version: Context
 Memory runs on any host that exposes the required public session, compaction,
-context, tool, active-tool, and message-projection interfaces, whatever
-version string that host reports. A host missing any required interface keeps
+context, tool, active-tool, message-projection, and abort interfaces,
+whatever version string that host reports. The abort interface is required
+because the hard stop below is part of the feature's contract: a host that
+exposes no public abort signal cannot honor it, so capability detection
+keeps the whole feature off there rather than shipping a half-safe path. A host missing any required interface keeps
 both tools inactive, installs no advisory or request projection, and leaves
 Pi native compaction and the active tool set untouched; `/context` reports
 `unsupported` there and
@@ -368,6 +374,63 @@ state entries; if it does not run, the custom projection keeps owning the
 in-task boundary. With the feature disabled, native compaction behaves
 exactly as without pi-square.
 
+## Request-exit arbitration
+
+Every provider-bound request — user prompt or tool continuation — passes one
+arbitration at pi-square's `context` handler before anything is sent
+(#324):
+
+1. **The recorded Memory projection** applies whenever it validates. This is
+   the ordinary path: covered sources leave, the one complete carrier
+   enters, and the run continues with no abort, restart, extra model, or
+   native `compact()` anywhere in it.
+2. **The safe native fallback** covers a request whose valid Memory
+   application refuses (an upstream transform broke the message-to-source
+   mapping): the complete artifact-filtered baseline goes out unchanged as
+   long as it fits, the unrecorded maintenance candidates and their advisory
+   are discarded, and Pi native compaction keeps owning the boundary at its
+   own safe idle/pre-prompt edge. Nothing in pi-square ever awaits `compact()`
+   or idle from inside a running tool or the context handler, and the
+   recorded Memory itself is untouched — it stays `recorded · not yet
+   applied`, stays checkable through `read_memory_source`, and is retried at
+   the next request.
+3. **The hard stop** is the last resort: when the final view — whichever was
+   constructed, including the system prompt, active tool definitions, and
+   any version-matching provider residual — exceeds Pi's own native
+   compaction boundary (window minus Pi's configured reserve, the output and
+   tool-growth headroom Pi itself relies on), no validated view exists. A
+   known window at or below the reserve also requires a stop: its input
+   budget is exhausted, not unknown. A
+   model that ignores advisories, one oversized tool result, or a
+   no-net-benefit scope all end here. The exit then issues the public
+   `ctx.abort()` signal synchronously — never a handler throw, which Pi
+   catches — and returns the unmodified request. On the supported host the
+   cancellation takes effect before any provider call (Pi's model runtime
+   refuses the request while the abort signal is set), so the unsafe request
+   never reaches the transport; the run ends cancelled with an abort-flavored
+   error, `/context` reports the stop with its estimate and bound, and
+   nothing is truncated, paged, or deleted to force a fit.
+
+If the abort interface disappears after activation or throws, cancellation
+cannot be guaranteed. The exit still discards the custom view and unrecorded
+maintenance, but reports `stop-failed`, never `stopped` or `nothing sent`.
+The original request may continue through Pi; stop the run manually and
+restore a working host cancellation interface before relying on this safety
+path. pi-square does not patch Pi or substitute a provider to work around a
+failed public abort interface.
+
+The stop never touches recorded Memory or the truthful applied accounting —
+a carrier constructed for a stopped request does not count as applied — and
+it never continues or retries on its own. Recovery is ordinary Pi work: the
+next prompt runs Pi's own threshold compaction at its safe boundary (which
+becomes the new baseline and supersedes the old record without stacking or
+resurrecting), a larger-window model reopens the projection on its next
+request, and a failed native compaction leaves everything as it was — the
+record intact, the boundary still owned by compaction, and the next unsafe
+request stopped again rather than sent over budget. The stop is never used
+for normal compression: below the boundary nothing stops, and append/rebuild
+keep flowing through the projection above.
+
 ## The scale endpoint
 
 When rendered Memory is above half its budget, a rebuild is due, and the
@@ -458,6 +521,14 @@ does not fit the window · native compaction owns the boundary`,
 and the pressure split that keeps estimates and provider reports
 distinguishable (`request ~N tok est · N tok reported` — a report that
 predates the current Memory version is labeled `before current Memory`).
+The last request's arbitration verdict rides one more bounded row (#324):
+while recorded Memory could not be applied to the outgoing request it reads
+`native fallback · Memory projection refused this request · native
+compaction owns the boundary`, and after a hard stop it reads `hard stop ·
+~N tok est exceeds ~B tok native limit · run cancelled by abort · nothing
+sent`. A missing or throwing abort port instead reports `stop failed · abort
+unavailable · transport may continue · stop run manually`, without claiming
+that the request was prevented from reaching the provider.
 No widget, no live tail, and no unbounded metric is added. In-memory (`--no-session`) sessions show
 an `ephemeral session` marker and never write a file or sidecar. No format
 versions, entry IDs, paths, or timestamps appear in the default view.

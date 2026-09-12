@@ -26,7 +26,7 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
 
 /**
  * Context Memory registrar (odradekk/pi-square#215, #216, #217, #219, #221, #319,
- * #320) — the module's single external interface.
+ * #320, #324) — the module's single external interface.
  *
  * One call installs the feature's event handlers and the two parent-only
  * tool definitions (decorated through the shared display adapter) and
@@ -48,14 +48,17 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
  * usage reports calibrate the pressure accounting at `message_end`, and
  * model, tree, and compaction boundaries invalidate the pending maintenance
  * request so the next due request re-establishes it from the live branch.
- * The registrar subscribes none of Pi's cancellable
+ * #324 adds the request-exit arbitration to the same `context` handler: the
+ * public `ctx.abort()` signal is issued when no validated view fits, a
+ * refused application falls back to the safe native baseline, and the host
+ * gate now requires the abort interface so no host ships a stop path it
+ * cannot honor. The registrar subscribes none of Pi's cancellable
  * `session_before_switch`/`session_before_fork`/`session_before_tree`
  * events, so Context Memory can never block resume, tree navigation, fork,
  * clone, import, or session replacement, and every session boundary
  * re-derives from Pi's actual current leaf on the live session the new
  * runtime owns.
  */
-
 /** The owned tool names other pi-square modules must let this module synchronize. */
 export { OWNED_TOOL_NAMES as CONTEXT_MEMORY_OWNED_TOOL_NAMES } from "./controller";
 export { CONTEXT_MEMORY_CONFIG_GUIDE_TYPE };
@@ -196,7 +199,12 @@ export default function registerContextMemory(
 
   // The request projection: recorded Memory replaces its covered originals
   // in every provider-bound request, and the due advisory rides the next
-  // ordinary request instead of waking the agent (#319).
+  // ordinary request instead of waking the agent (#319). #324 wires the
+  // public abort signal into the same exit: when no validated view fits the
+  // window's native compaction boundary, the arbitration cancels the current
+  // run from inside this handler — synchronously, never awaiting idle or a
+  // native compact() — so the cancelled request never reaches the provider
+  // transport on the supported host.
   pi.on("context", async (event, ctx) => {
     // A host without a selected model can report no usage at all; the
     // projection then runs on the last captured window instead of failing.
@@ -209,7 +217,18 @@ export default function registerContextMemory(
     // The request's system prompt and active tool definitions ride along so
     // pressure counts what the model is actually sent beside the messages
     // (#320) — with or without any usage report.
-    const transformed = controller?.transformContext(event, sessionReaderOf(ctx), usage, currentRequestOverhead(ctx));
+    const abortRequest = typeof ctx.abort === "function"
+      ? () => {
+          ctx.abort();
+        }
+      : undefined;
+    const transformed = controller?.transformContext(
+      event,
+      sessionReaderOf(ctx),
+      usage,
+      currentRequestOverhead(ctx),
+      abortRequest,
+    );
     return transformed === undefined ? undefined : { messages: transformed.messages as ContextEvent["messages"] };
   });
 
