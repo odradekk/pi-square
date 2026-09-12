@@ -48,10 +48,33 @@ supersession, disable/re-enable and uninstall observability, valid-v1
 read-only baseline use, corrupt-record degradation after reopen, and
 ephemeral sessions, plus the protocol-artifact pairing rules below. Native
 request evidence and boundary-injected unit evidence are kept clearly
-separated in the guide. Cross-provider combination guarantees (#323),
-native-fallback arbitration (#324), and real-model qualification (#325,
-#227) are still pending — acceptance of this record never authorizes
-claiming them as shipped.
+separated in the guide. #323 adds the cross-provider verification seam: a
+real Pi `AgentSession` runs against the unmodified production
+`anthropic-messages` and `openai-completions` implementations from
+`@earendil-works/pi-ai`, pointed at a loopback capture server that returns
+deterministic synthetic SSE, so the post-conversion transport payload is
+observed as sent. Over one long scripted task per dialect — multi-tool
+batches, a failing tool, history far beyond the old fixed-neighborhood
+scale, a refused compression+ordinary mixed batch, two appends and one
+suffix rebuild from summaries whose key facts sit at the end of bodies over
+200 characters, and a mid-stream cancellation continued by a follow-up
+prompt — the wire payloads prove call/result pairing with uniqueness and
+order (negative self-tests prove the checker rejects a shuffled batch,
+duplicated halves, and each orphaned half), exactly-once complete block
+bodies with byte-stable unselected prefixes, and eviction, retention,
+suffix-serving, and working-set sets derived from the recorded state
+entries and the session branch rather than from hardcoded markers: every
+wire tool result must be a real recorded call carrying exactly the recorded
+body, the aborted run's partial thinking is checked against the raw
+provider thinking fields, and the mid-stream cancellation is paired with a
+tool-result-boundary cancellation whose completed pair survives whole (the
+compact-recording cancellation boundaries stay owned by the #322 lifecycle
+matrix). No pi-square-side combination defect surfaced: the projection and
+pair rules already met the provider contracts, so the ticket's product is
+the verification seam and its documentation rather than a behavior change. Native-fallback
+arbitration (#324) and real-model qualification (#325, #227) are still
+pending — acceptance of this record never authorizes claiming them as
+shipped.
 
 ## Why the old boundary is insufficient
 

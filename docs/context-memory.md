@@ -19,12 +19,13 @@ history), and `README.md` carries the summary. Recorded Memory survives
 interruptions and native session branches (see
 [Branches, resume, forks, and copies](#branches-resume-forks-and-copies)).
 Sustained in-task maintenance, bounded failure recovery, and the suffix
-rebuild from complete original sources are implemented. Cross-provider
-combination guarantees, native-fallback arbitration, and real-model
-qualification are owned by the continuation tickets (#323–#325) and are
-**not implemented yet**. The implemented contracts are covered by
-deterministic native Pi requests and the explicitly identified
-boundary-injected tests described below.
+rebuild from complete original sources are implemented, and the complete
+Memory body plus the tool protocol are verified through Pi's native
+Anthropic and OpenAI-compatible conversions at the real transport boundary
+(#323). Native-fallback arbitration and real-model qualification are owned
+by the continuation tickets (#324, #325) and are **not implemented yet**.
+The implemented contracts are covered by deterministic native Pi requests
+and the explicitly identified boundary-injected tests described below.
 
 No performance claim is made here. Context Memory has not been qualified with
 the required real-model and provider-cache evidence yet; until that evidence
@@ -328,6 +329,37 @@ Native-session tests inspect actual provider requests for the combinations
 they exercise; they do not certify arbitrary extension chains. The package
 continues to use unmodified Pi and does not replace providers to gain control
 of their requests.
+
+**Provider conversion evidence (#323).** For the two conversion paths this
+project's providers use — Pi's native `anthropic-messages` and
+`openai-completions` implementations — a deterministic native-session test
+drives a real `AgentSession` against those unmodified production modules
+through a loopback capture server and asserts the converted wire payload as
+sent, anchored to the recorded Memory state entries and the session branch
+rather than to marker matching alone: every tool call id pairs with its
+result with uniqueness and complete batch boundaries enforced; actual
+result order is checked against the session branch, not assumed to equal
+parallel call order. Negative cases reject interrupted batches, duplicated
+halves, and each orphaned half. The sessions cover multi-tool batches, a failing tool, a refused
+compression+ordinary mixed batch whose ordinary sibling keeps its real
+recorded result, a mid-stream cancellation whose partial thinking is never
+replayed, and a tool-result-boundary cancellation whose completed pair
+survives whole; the complete body of every current Memory block arrives
+exactly once through the carrier with byte-stable unselected prefixes
+across append and rebuild, while every recorded eviction target leaves and
+the recorded retained exceptions, the complete suffix originals of a pending
+rebuild (raw and in order), the newest working batch, and the user image
+attachment stay; every wire tool result must be a real recorded call
+carrying exactly the recorded body; each surviving assistant's complete
+thinking text and Anthropic signatures are compared with its recorded
+message, including the thinking left after a compression call is removed.
+Mutations of captured synthetic requests prove that the full wire contract
+rejects inserted messages inside a tool batch, reordered results, missing or
+changed thinking, and changed signatures.
+No provider cache marker appears outside the placements Pi's own
+conversion documents. These runs verify the exercised combinations only — they are not
+a claim about other provider flavors, real-model behavior, or cache
+efficiency (see [Continuity qualification](#continuity-qualification)).
 
 **Relation to Pi native compaction.** The feature never cancels or takes over
 Pi's own compaction. If Pi's native compaction runs (manually or by
