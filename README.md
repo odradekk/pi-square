@@ -613,12 +613,22 @@ npm run package:check
 npm run changeset:status
 ```
 
-Context Memory continuity qualification is a separate, credentialed command:
+Context Memory qualification is split across three commands. The deterministic
+corpus, `npm run qualify:context-memory`, runs every deterministic
+context-memory suite (controller seam, native AgentSession request exit,
+projection, wire, arbitration, lifecycle, and the offline instruments) as one
+zero-tolerance sweep; the pre-#319 corpus retired with its protocol.
+Real-model continuity qualification is a separate, credentialed command:
 `npm run qualify:continuity -- --real`. It requires a clean checkout and uses
-native Pi sessions with Sonnet 5 (12 runs) and GLM 5.3 (4 runs). A single final
-handoff file is scored after verified compression coverage; missing coverage
-is inconclusive and a machine pass still requires human review. See the
+native Pi sessions with Sonnet 5 (12 runs) and GLM 5.3 (4 runs); every run is
+seeded with fixture-authored Memory at exactly half the budget so the required
+schedule — at least one append and two suffix rebuilds — is fixture-owned. A
+single final handoff file is scored after verified compression coverage;
+missing coverage is inconclusive and a machine pass still requires human
+review. See the
 [qualification workflow](docs/context-memory.md#continuity-qualification).
+After a real matrix, `npm run qualify:replay-check` records one bounded
+local-resource artifact (replay time, heap, persisted-write size).
 `npm test` exercises the same Pi session boundary with an offline provider,
 not real-model quality.
 

@@ -765,16 +765,44 @@ single tool continuation.
 
 Authoritative facts occur before compression. Subsequent checkpoints perform
 ordinary read and process-execution work without repeating recall questions;
-one final prompt asks the model to write a structured handoff file, without
-supplying its expected values. The test uses a declared 100k context window,
-3500-token due threshold, 1% Memory budget, and 200-token recent tail, with
-native automatic compaction and retries disabled. Up to twelve checkpoints
-must naturally produce at least one append and two rebuilds. The driver
-checks that original facts are covered by the retained Memory, that the first
-final request does not carry raw source answers outside Memory, and that the
-workspace has not been used to store answers before the final task. Source
-recovery additionally requires all pages of a block covering the original
-brief. Missing coverage is **inconclusive**, not evidence of memory failure.
+one final prompt asks the model to complete any invited Context Memory
+maintenance first, then write a structured handoff file, without supplying
+its expected values. The test uses a declared 100k context window,
+17000-token due threshold, 2% Memory budget, and 200-token recent tail, with
+native automatic compaction and retries disabled.
+
+Compression scheduling is fixture-owned (#325, after #261's precedent on the
+retired protocol): every run starts from a branch seeded, through the public
+`SessionManager` seams and before the session is created, with two
+fixture-authored exchanges summarized by one recorded Memory state entry that
+renders at exactly half the Memory budget. The first due maintenance
+therefore appends and every later one rebuilds the newest suffix, whatever
+block size the model writes; the required schedule — at least one append and
+two suffix rebuilds within twelve checkpoints — cannot flip on model
+verbosity. The seed carries no fact any oracle scores, and every later block
+is still model-authored. Because a pending suffix rebuild deliberately serves
+its originals raw, the final prompt's first step completes the invited
+maintenance; the recall probe is then the first final request whose carrier
+carries the complete current Memory with the covered originals actually
+evicted. A run that never leaves rebuild serving is recorded as the explicit
+coverage failure it is.
+
+The driver checks that original facts are covered by the retained Memory,
+that the probe request does not carry raw source answers outside Memory,
+that exactly one Memory carrier rides the probe, that the unselected carrier
+prefix stays byte-stable across appends and rebuilds, and that the workspace
+has not been used to store answers before the final task. Source recovery
+additionally requires all pages of a block covering the original brief.
+Each run also reports bounded measurements — the request gap between every
+recording and its application, per-request usage rows, net input change
+across applications, peak prompt tokens, refused-compression counts by short
+code, and per-phase wall-clock latency. Missing coverage is
+**inconclusive**, not evidence of memory failure. After a real matrix,
+`npm run qualify:replay-check` records one bounded local-resource artifact —
+replay time and heap cost of re-reading the retained evidence and the
+persisted-write footprint of the attempt's report set — distinguishing the
+model-context reduction the feature measures from the qualification's own
+local log growth.
 
 The oracle validates exact JSON fields, primitive types, unknown values,
 superseded decisions, and the complete unique 16-cell matrix. It does not use
