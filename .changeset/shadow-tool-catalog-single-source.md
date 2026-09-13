@@ -1,0 +1,7 @@
+---
+"@odradekk/pi-square": patch
+---
+
+Derive the Shadow-safe tool catalog from its one constant so a catalog change can no longer leave the shipped documentation behind. The catalog was spelled out by hand in four places — the runtime-boundary line of the `/shadow` Config Guide, the assertion that checked that line, the runtime-boundary prose of the packaged `shadow-minds/schema-reference.md`, and the tool comment in the packaged `shadow-minds/example.md` — so adding or removing a tool turned exactly one assertion red while three documents went stale in silence. The Config Guide now interpolates the catalog and the default local evidence set from the resolver's constants, and its test derives the expected text from the same constants instead of repeating them. The schema reference publishes the catalog in its machine-checked contract block as a new top-level `toolCatalog` section holding the built-ins, the optional remote evidence tools, and the set an omitted `tools` field selects; the contract generator reads the constants, and the contract test compares the published section against them. Its prose keeps the division between the default local built-ins and the optional remote evidence tools without repeating the names, and the annotated example's comment points at the contract block. The catalog stays a separate top-level section rather than a `fields` entry because it is a run boundary, not a definition field: it says what a definition may request at all.
+
+Tool resolution, the parser, and every value the contract already published are unchanged.

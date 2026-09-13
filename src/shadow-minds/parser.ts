@@ -33,7 +33,11 @@ export const SHADOW_FILE_MAX_BYTES = 64 * 1024;
 export const SHADOW_BODY_MAX_CHARS = 24_000;
 /** One trigger-specific instruction bound. */
 export const SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS = 8_000;
-/** The default local evidence set an omitted `tools` field resolves to. */
+/**
+ * The default local evidence set an omitted `tools` field resolves to. This is
+ * a selection, not the catalog: `SHADOW_BUILTIN_BASE_ORDER` in `./tools` holds
+ * the catalog's built-ins and may grow without widening this default (#345).
+ */
 export const SHADOW_DEFAULT_TOOLS: readonly string[] = Object.freeze(["read", "grep", "find", "ls"]);
 
 /** Entries allowed in `tools` and `requiredTools`. */

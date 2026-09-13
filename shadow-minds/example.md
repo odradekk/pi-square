@@ -79,11 +79,12 @@ timeoutSeconds: 300
 maxTurns: 8
 maxToolCalls: 24
 
-# Evidence tools. Omitted selects the default local read-only set
-# (read, grep, find, ls); [] selects no tools. Names are lowercase
-# snake_case, at most 16 entries. Project text can never expand the fixed
-# Shadow-safe catalog; unavailable optional tools drop with a visible
-# warning at run start.
+# Evidence tools. Omitted selects the default local read-only set; []
+# selects no tools. Names are lowercase snake_case, at most 16 entries.
+# Project text can never expand the fixed Shadow-safe catalog; unavailable
+# optional tools drop with a visible warning at run start. The catalog and
+# the default set are named in the schema reference's contract block, under
+# toolCatalog, which contract tests check against the code.
 tools: [read, grep, ls]
 
 # Required tools must be a subset of the final tool set above. A required
