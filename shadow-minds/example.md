@@ -6,8 +6,9 @@
 #
 # The frontmatter is a strict YAML subset: plain or quoted scalars, one-line
 # flow lists, nested maps with exactly two-space indentation. Whole-line
-# comments (like these) are allowed; a '#' inside or after a plain scalar is
-# not, while a quoted scalar keeps a literal '#'.
+# comments (like these) are allowed; a '#' inside a plain scalar is not,
+# while a quoted scalar keeps a literal '#'. A trailing '# comment' after a
+# value is rejected in either form.
 promptVersion: 1
 
 # The id must equal the Markdown filename stem: this file must be example.md.

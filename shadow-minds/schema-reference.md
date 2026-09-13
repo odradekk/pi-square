@@ -18,8 +18,10 @@ strict YAML subset:
   is rejected and fails the whole file;
 - nested maps indent by exactly two spaces;
 - whole-line `#` comments are author documentation and are skipped;
-- `#` inside or after a plain scalar is rejected, while a single- or
-  double-quoted scalar keeps a literal `#`;
+- `#` inside a plain scalar is rejected, while a single- or double-quoted
+  scalar keeps a literal `#`; a trailing `# comment` after a value is
+  rejected in both forms, so quote the `#` into the value or move the
+  comment to its own line;
 - tabs, anchors, aliases, tags, merge keys, block scalars, and duplicate keys
   are rejected;
 - unknown fields are rejected.
@@ -224,6 +226,19 @@ Whole-line comments are skipped, but `#` after a plain scalar is rejected:
 promptVersion: 1
 id: trailing-comment
 name: Trailing comment # rejected
+---
+Body.
+```
+
+A trailing comment after a quoted value is rejected as well: the closing
+quote never ends the scalar, so the error names the unterminated quote
+rather than the comment.
+
+```yaml shadow-invalid
+---
+promptVersion: 1
+id: quoted-trailing-comment
+name: "Quoted" # rejected
 ---
 Body.
 ```
