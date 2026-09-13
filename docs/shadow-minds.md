@@ -212,7 +212,11 @@ The Shadow-safe tool catalog is exactly: `read`, `grep`, `find`, `ls`,
 `ls`); `tools: []` is the no-tool trial. Shell, file writes, SSH, and
 delegation are excluded capabilities — a
 requested-but-excluded tool drops with a run-start warning, while a
-`requiredTools` miss fails before prompting. The remote evidence tools are
+`requiredTools` miss fails before prompting. The warning is kept on the run
+record and shown in the manager run details; it is also notified — every
+manual trial reports it, and an automatic run reports the first time a
+shadow starts with that warning set, so a repeated trigger does not repeat
+the line. The remote evidence tools are
 explicit opt-ins outside the default local evidence set; a definition lists
 them in `tools` when a task needs web or library evidence.
 

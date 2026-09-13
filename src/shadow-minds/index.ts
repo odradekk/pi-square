@@ -214,6 +214,11 @@ function notifyText(message: string): string {
   return sanitized.length <= MAX_NOTIFY_CHARS ? sanitized : `${sanitized.slice(0, MAX_NOTIFY_CHARS - 1)}…`;
 }
 
+/** One notification line for a run that starts with a reduced tool set. */
+function toolWarningNotice(shadowId: string, warnings: string[]): string {
+  return `shadow-minds: ${shadowId} starts with ${warnings.length} tool warning${warnings.length === 1 ? "" : "s"} — ${warnings.join(" ")}`;
+}
+
 /**
  * Composes and starts one run from an effective definition against a live
  * context. Manual trials and scheduler dispatch share every guard: registry
@@ -234,8 +239,10 @@ function composeShadowRun(input: {
   /** Frozen automatic snapshot; manual trials capture fresh per run. */
   snapshot?: ShadowTaskSnapshot;
   trajectory?: ReturnType<typeof captureTrajectory>;
-  /** Surfaces bounded pre-start warnings (unavailable optional tools). */
+  /** Surfaces the pre-start reason that refused the run. */
   onWarning?: (message: string) => void;
+  /** Surfaces the bounded tool warnings once per run start. */
+  onToolWarnings?: (warnings: string[]) => void;
 }): { started: boolean; reason?: string; kind?: "busy" | "failed" } {
   const { state, ctx } = input;
   const runtime = state.runtime;
@@ -283,8 +290,8 @@ function composeShadowRun(input: {
       input.onWarning?.(resolution.error);
       return { started: false, kind: "failed", reason: resolution.error };
     }
-    for (const warning of resolution.envelope.warnings) {
-      input.onWarning?.(warning);
+    if (resolution.envelope.warnings.length > 0) {
+      input.onToolWarnings?.(resolution.envelope.warnings);
     }
     const modelResolution = resolveShadowModel(definition.model, ctx);
     if (modelResolution.error) {
@@ -401,6 +408,7 @@ function makeServices(
             taskEpoch: state.scheduler.snapshot().taskEpoch,
             sourceRun: state.currentParentRun(),
             onWarning: (message) => ctx.ui.notify(`shadow-minds: ${notifyText(message)}`, "warning"),
+            onToolWarnings: (warnings) => ctx.ui.notify(notifyText(toolWarningNotice(definition.id, warnings)), "warning"),
           });
           if (!outcome.started) {
             return { ok: false, message: outcome.reason ?? "The run did not start." };
@@ -481,6 +489,12 @@ export default function registerShadowMinds(
     });
   };
 
+  // Automatic runs start while nobody is watching the manager, so a reduced
+  // tool set is notified too — but once per shadow and warning set, not on
+  // every automatic trigger. A later definition edit changes the key and
+  // reports again; an unchanged reduction stays quiet for the session.
+  const announcedToolWarnings = new Set<string>();
+
   const makeScheduler = (): ShadowScheduler => {
     const scheduler = createShadowScheduler({
       now: () => Date.now(),
@@ -508,6 +522,13 @@ export default function registerShadowMinds(
           triggerReasons: activation.reasons,
           snapshot: taskSnapshot,
           trajectory: activation.checkpoint as ReturnType<typeof captureTrajectory> | undefined,
+          onToolWarnings: (warnings) => {
+            if (!sessionCtx.hasUI) return;
+            const key = `${activation.definition.id}\n${warnings.join("\n")}`;
+            if (announcedToolWarnings.has(key)) return;
+            announcedToolWarnings.add(key);
+            sessionCtx.ui.notify(notifyText(toolWarningNotice(activation.definition.id, warnings)), "warning");
+          },
         });
         if (outcome.started) return { outcome: "started" };
         if (outcome.kind === "busy") return { outcome: "busy" };
