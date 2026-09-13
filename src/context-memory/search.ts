@@ -175,19 +175,6 @@ function pagesForRange(starts: readonly number[], byteStart: number, byteEnd: nu
   return touched;
 }
 
-/** Non-overlapping folded-space occurrences of one term. */
-function foldedOccurrences(folded: string, term: string): readonly number[] {
-  const at: number[] = [];
-  let from = 0;
-  for (;;) {
-    const found = folded.indexOf(term, from);
-    if (found === -1) break;
-    at.push(found);
-    from = found + term.length;
-  }
-  return at;
-}
-
 /** First boundary position at or after `from`, or -1 (#339 review). */
 function boundaryAtOrAfter(boundaries: readonly number[], from: number): number {
   let low = 0;
@@ -226,12 +213,13 @@ function excerptAround(
     }
   }
   for (let right = 0; right < MEMORY_SEARCH_EXCERPT_RADIUS_CODE_POINTS && to < text.length; right++) {
+    // Test before consuming: when the match (or the window so far) ends
+    // exactly at a separator, the unit at `to` is that separator and the
+    // excerpt must stop in front of it — incrementing first would step over
+    // the boundary and join both sides into one apparent excerpt.
+    if (boundaryAtOrAfter(boundaries, to) === to) break;
     to += 1;
     if (to < text.length && (text.charCodeAt(to) & 0xfc00) === 0xdc00) to += 1;
-    // The walk stops the moment the next unit is a separator itself; any
-    // further boundary lies beyond the segment and must not pull the window
-    // forward to it.
-    if (boundaryAtOrAfter(boundaries, to) === to) break;
   }
   return `${from > 0 ? "…" : ""}${text.slice(from, to)}${to < text.length ? "…" : ""}`;
 }
@@ -329,16 +317,26 @@ export function searchMemorySources(input: {
     const starts = pageStartsByBlock.get(blockIndex)!;
     const boundaries = boundariesByBlock.get(blockIndex)!;
     for (let termIndex = 0; termIndex < terms.length; termIndex++) {
-      for (const at of foldedOccurrences(source.folded, terms[termIndex]!.folded)) {
+      const foldedTerm = terms[termIndex]!.folded;
+      let from = 0;
+      for (;;) {
+        const at = source.folded.indexOf(foldedTerm, from);
+        if (at === -1) break;
         const startUnit = source.origin[at]!;
-        const lastUnit = source.origin[at + terms[termIndex]!.folded.length - 1]!;
+        const lastUnit = source.origin[at + foldedTerm.length - 1]!;
         const lastPoint = source.text.codePointAt(lastUnit)!;
         const endUnit = lastUnit + (lastPoint > 0xffff ? 2 : 1);
         // A match may not include a non-crossable separator: that would
         // manufacture a phrase over an entry join or an omitted protocol
-        // artifact (#339).
+        // artifact (#339). A rejected occurrence advances by one unit, not
+        // by the term length, so a valid overlapping candidate that starts
+        // inside the rejected occurrence is still found — refusing the
+        // cross-boundary copy never hides the within-segment copy.
         const blocking = boundaryAtOrAfter(boundaries, startUnit);
-        if (blocking !== -1 && blocking < endUnit) continue;
+        if (blocking !== -1 && blocking < endUnit) {
+          from = at + 1;
+          continue;
+        }
         const byteStart = source.byteOf[startUnit]!;
         const byteEnd = source.byteOf[endUnit]!;
         matches.push({
@@ -348,6 +346,7 @@ export function searchMemorySources(input: {
           end: endUnit,
           pages: pagesForRange(starts, byteStart, byteEnd),
         });
+        from = at + foldedTerm.length;
         if (matches.length >= MEMORY_SEARCH_MATCH_CAP) {
           complete = false;
           break scan;

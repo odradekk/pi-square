@@ -8,6 +8,7 @@ import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
+const { MEMORY_SUMMARY_WRAPPER } = await load("../../src/context-memory/format.ts");
 
 /**
  * #339 native acceptance: one real Pi `AgentSession` with a deterministic
@@ -38,6 +39,7 @@ const SNIPPET_MARKER = "SNIPPET-SUFFICIENT-RUN";
 const STALE_MARKER = "STALE-VIEW-RUN";
 const INTERRUPTED_MARKER = "INTERRUPTED-SEARCH-RUN";
 const CONTINUE_MARKER = "CONTINUE-AFTER-INTERRUPTION-RUN";
+const REOPEN_MARKER = "REOPENED-VERIFICATION-RUN";
 
 /** The codes exist only in the raw source files, never in any Memory body. */
 const FACT_ONE = "The first archive code is MARS-ROVER-77.";
@@ -154,6 +156,7 @@ try {
     // every phase at once.
     const markerOf = (candidate) => [
       INITIAL_MARKER, SEARCH_MARKER, SNIPPET_MARKER, STALE_MARKER, INTERRUPTED_MARKER, CONTINUE_MARKER,
+      REOPEN_MARKER,
     ].find((marker) => candidate.includes(marker));
     const currentUser = [...context.messages].reverse().find((message) => message.role === "user"
       && markerOf(messageText(message)));
@@ -260,15 +263,22 @@ try {
       );
     }
 
-    // ── Run six: continue ordinary work, compress over the interrupted
-    // exchange, then prove retrieval copies never become original evidence.
+    // ── Run six: continue ordinary work and compress over the interrupted
+    // exchange; the run ends at the acknowledgement so the reopen below is
+    // the first request after the compression.
     if (currentPrompt.includes(CONTINUE_MARKER)) {
       if (lastToolName === "read") {
         return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: MEMORY_THREE }), { stopReason: "toolUse" });
       }
       if (lastToolName === "compact_to_memory_block") {
-        return fauxAssistantMessage(fauxToolCall("search_memory_source", { terms: ["MARS-ROVER"] }), { stopReason: "toolUse" });
+        return fauxAssistantMessage("Recorded the post-interruption compression.", { stopReason: "stop" });
       }
+      return fauxAssistantMessage(fauxToolCall("read", { path: "file-f.txt" }), { stopReason: "toolUse" });
+    }
+
+    // ── Run seven (reopened session): verification searches under the
+    // applied Memory carrier.
+    if (currentPrompt.includes(REOPEN_MARKER)) {
       if (lastToolName === "search_memory_source") {
         continueSearches += 1;
         if (continueSearches === 1) {
@@ -276,12 +286,12 @@ try {
         }
         return fauxAssistantMessage(
           lastText.includes("no matches")
-            ? `Evidence-copy check complete: the retrieval framing finds no original evidence. ${FACT_FOUR}`
-            : "Evidence-copy check failed: retrieval framing matched original sources.",
+            ? `Reopen verification complete: original facts recoverable, retrieval copies are not evidence. ${FACT_ONE}`
+            : "Reopen verification failed: retrieval framing matched original sources.",
           { stopReason: "stop" },
         );
       }
-      return fauxAssistantMessage(fauxToolCall("read", { path: "file-f.txt" }), { stopReason: "toolUse" });
+      return fauxAssistantMessage(fauxToolCall("search_memory_source", { terms: ["MARS-ROVER"] }), { stopReason: "toolUse" });
     }
 
     return fauxAssistantMessage("Unexpected phase.", { stopReason: "stop" });
@@ -369,9 +379,52 @@ try {
   assert.equal(abortedStops.length, 0, "no run ends through a user-interruption aborted stop");
 
   // Run six: ordinary work and compression continue over the interrupted
-  // exchange, then the evidence-copy check.
+  // exchange, ending at the compression acknowledgement.
   await session.prompt(
-    `${CONTINUE_MARKER}: read file-f.txt, compress the covered history once, verify the first archive code is still recoverable, check that retrieval copies are not original evidence, and answer.`,
+    `${CONTINUE_MARKER}: read file-f.txt, then compress the covered history once and stop at the acknowledgement.`,
+    { source: "interactive", expandPromptTemplates: false },
+  );
+
+  // Restart through Pi's public seam: reopen the persisted session file so
+  // the request state and the extension's expectation model agree again, and
+  // the Memory carrier applies to the next real request.
+  const sessionFile = sessionManager.getSessionFile();
+  await session.dispose();
+  unsubscribe();
+  const reopenedManager = SessionManager.open(sessionFile, environment.root);
+  // A fresh resource loader binds fresh extension instances to the reopened
+  // session's pi context; reusing the first loader would emit through the
+  // stale context of the disposed session.
+  const reopenedSettings = SettingsManager.create(environment.cwd, environment.agentDir);
+  const reopenedLoader = new DefaultResourceLoader({
+    cwd: environment.cwd, agentDir: environment.agentDir, settingsManager: reopenedSettings, noSkills: true,
+  });
+  await reopenedLoader.reload();
+  ({ session } = await createAgentSession({
+    cwd: environment.cwd,
+    agentDir: environment.agentDir,
+    settingsManager: reopenedSettings,
+    resourceLoader: reopenedLoader,
+    sessionManager: reopenedManager,
+    modelRuntime: runtime,
+    model: faux.getModel(),
+    thinkingLevel: "off",
+    initialActiveToolNames: ["read", "bash"],
+    sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile: sessionFile },
+  }));
+  assert.equal(reopenedLoader.getExtensions().errors.length, 0, "pi-square reloads without extension errors");
+  await session.bindExtensions({ mode: "print", onError: (error) => { throw error; } });
+  unsubscribe = session.subscribe((event) => {
+    if (event.type === "compaction_start" || event.type === "compaction_end") compactionEvents.push(event.type);
+    if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "aborted") {
+      abortedStops.push(event.message);
+    }
+  });
+
+  // Run seven: verification searches in the reopened session, observed under
+  // the applied carrier.
+  await session.prompt(
+    `${REOPEN_MARKER}: verify the first archive code is still recoverable from the Memory sources, check that retrieval copies are not original evidence, and answer.`,
     { source: "interactive", expandPromptTemplates: false },
   );
 
@@ -380,11 +433,11 @@ try {
   assert.equal(abortedStops.length, 0,
     "the deterministic interruption surfaces as Pi's abort-flavored error, never as a user-interruption aborted stop");
 
-  const branch = sessionManager.getBranch();
+  const branch = reopenedManager.getBranch();
   const userTexts = branch
     .filter((entry) => entry.type === "message" && entry.message.role === "user")
     .map((entry) => (typeof entry.message.content === "string" ? entry.message.content : ""));
-  assert.equal(userTexts.length, 6, "six user prompts ran");
+  assert.equal(userTexts.length, 7, "seven user prompts ran across the original and reopened sessions");
   const answers = branch
     .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
     .map((entry) => (Array.isArray(entry.message.content)
@@ -482,20 +535,51 @@ try {
     assert.ok(callPresent && resultPresent,
       "the first continuation request carries the interrupted call and its result as a whole pair");
   }
-  // After the continuation's compression, the interrupted pair is never
-  // stranded: every later request carries both halves or neither. (When the
-  // request exit declines the projection — the abort leaves Pi's request
-  // without the run's empty error assistant, so the strict alignment refuses
-  // and the #324 native fallback sends the complete baseline — the pair
-  // stays whole and visible; when the projection applies, both halves leave
-  // with the covered exchange together.)
+  // ── Reopened-session proof: the covered interrupted pair leaves a
+  // projected request together. Restarting through Pi's public reopen seam
+  // restores the alignment (the request state and the extension's
+  // expectation model agree again), so the Memory carrier applies — and
+  // under the applied carrier BOTH halves of the covered interrupted search
+  // exchange are gone, never a stranded half. This is the strong assertion;
+  // the fallback-shaped invariant below stays only as a global safety net.
+  const reopenedRequests = requests.filter((request) =>
+    requestText(request.messages).includes(REOPEN_MARKER));
+
+  assert.ok(reopenedRequests.length > 0, "the reopened session reached the provider");
+  {
+    const first = reopenedRequests[0];
+    const serialized = JSON.stringify(first.messages);
+    // Provider-converted requests carry the carrier as its composed wrapper
+    // text; the projection seam itself is covered by the deterministic suite.
+    const carriers = first.messages.filter((message) => messageText(message).includes(MEMORY_SUMMARY_WRAPPER));
+    assert.equal(carriers.length, 1, "the reopened request applies exactly one Memory carrier");
+    assert.equal(
+      carriers[0].content.filter((part) => part?.type === "text").length,
+      4,
+      "the carrier carries the wrapper plus one part per recorded block",
+    );
+    assert.ok(!serialized.includes(interruptedSearch.id),
+      "the covered interrupted search call left the projected request");
+    assert.ok(!first.messages.some((message) =>
+      message.role === "toolResult" && message.toolCallId === interruptedSearch.id),
+      "the covered interrupted search result left the projected request together with its call");
+    assert.ok(!serialized.includes("narrating the interrupted source search"),
+      "the covered interrupted narration left with its exchange");
+    for (const request of reopenedRequests) {
+      const later = JSON.stringify(request.messages);
+      assert.ok(!later.includes(interruptedSearch.id) || later.includes(`"toolCallId":"${interruptedSearch.id}"`),
+        "no reopened request strands half of the interrupted pair");
+    }
+  }
+  // Global safety net: the interrupted pair is never split across halves in
+  // any captured request (pre-restart requests keep it whole and visible
+  // under the documented fallback; reopened requests carry neither half).
   for (const [index, request] of requests.entries()) {
     const serialized = JSON.stringify(request.messages);
     const callPresent = serialized.includes(interruptedSearch.id);
-    const narrationPresent = serialized.includes("narrating the interrupted source search");
     const resultPresent = request.messages.some((message) =>
       message.role === "toolResult" && message.toolCallId === interruptedSearch.id);
-    if (callPresent || resultPresent || narrationPresent) {
+    if (callPresent || resultPresent) {
       assert.ok(callPresent && resultPresent,
         `request ${index}: the interrupted search call and result stay a whole pair (never a stranded half)`);
     }
@@ -604,7 +688,7 @@ try {
   const stateEntries = branch.filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
   assert.equal(stateEntries.length, 3, "three accepted Memory state entries were recorded through the public seam");
   const { deriveCurrentMemory } = await load("../../src/context-memory/derive.ts");
-  const finalMemory = deriveCurrentMemory(sessionManager);
+  const finalMemory = deriveCurrentMemory(reopenedManager);
   assert.equal(finalMemory.kind, "valid");
   assert.equal(finalMemory.blocks.length, 3, "each append preserved the existing blocks and added one");
 
@@ -625,8 +709,10 @@ try {
     assert.equal(marsControl.result.isError, false);
     assert.ok(marsControl.result.text.includes(FACT_ONE),
       "the original fact stays recoverable from the Memory sources");
-    assert.ok(answers.some((answer) => answer.includes(FACT_FOUR) && answer.includes("Evidence-copy check complete")),
-      "run six answers from fresh original evidence after the interruption");
+    assert.ok(answers.some((answer) => answer.includes(FACT_ONE) && answer.includes("Reopen verification complete")),
+      "the reopened run answers with the original fact recovered under the applied carrier");
+    assert.ok(answers.some((answer) => answer.includes("Recorded the post-interruption compression")),
+      "run six ends at the compression acknowledgement");
   }
 
   console.log("context-memory source-search-native: all assertions passed");

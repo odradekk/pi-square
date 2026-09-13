@@ -782,6 +782,99 @@ try {
       "an unchanged Memory carrier is not altered by a search");
   }
 
+  // ── Review regression: a rejected cross-boundary match never hides a valid
+  //    overlapping candidate, and excerpts clip exactly at the boundary ──
+
+  {
+    // [text 'A', omitted search call, text 'A\nA'] renders 'A\nA\nA': the
+    // first 'A\nA' occurrence crosses the omission boundary and is refused,
+    // but the second text part itself contains the exact term and must hit.
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({ role: "user", content: "explore the overlapping batch", timestamp: 1 });
+    const covered = sm.appendMessage({
+      role: "assistant",
+      content: [
+        { type: "text", text: "A" },
+        { type: "toolCall", id: "overlapping-interrupted-search", name: "search_memory_source", arguments: { terms: ["clue"] } },
+        { type: "text", text: "A\nA" },
+      ],
+      stopReason: "aborted", timestamp: 2,
+    });
+    sm.appendMessage({ role: "user", content: "current request", timestamp: 3 });
+    seedMemoryState(sm, [{ endEntryId: covered, markdown: "# Overlap digest", retainedEntryIds: [] }]);
+    const session = harness();
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    const search = session.tools.get("search_memory_source");
+    const overlap = await search.execute("s:overlap", { terms: ["A\nA"] }, undefined, undefined, ctx);
+    assert.equal(overlap.details.complete, true);
+    assert.equal(overlap.details.totalMatches, 1,
+      "the valid within-segment occurrence inside the second text part is found although the overlapping cross-boundary occurrence is refused");
+    const overlapText = resultText(overlap);
+    assert.ok(overlapText.includes("A\nA"), "the within-segment match renders its verbatim excerpt");
+    assert.ok(!overlapText.includes("A\nA\nA"),
+      "the excerpt never shows the cross-boundary run as one apparent phrase");
+  }
+
+  {
+    // The excerpt right boundary: a match ending exactly at the omission
+    // separator must clip in front of it — never join both sides. Excerpts
+    // are multi-line, so the assertions read the full body, not one line.
+    const buildSides = async (left, right) => {
+      const sm = SessionManager.inMemory("/project");
+      sm.appendMessage({ role: "user", content: "explore the excerpt boundary", timestamp: 1 });
+      const covered = sm.appendMessage({
+        role: "assistant",
+        content: [
+          { type: "text", text: left },
+          { type: "toolCall", id: "excerpt-boundary-search", name: "search_memory_source", arguments: { terms: ["clue"] } },
+          { type: "text", text: right },
+        ],
+        stopReason: "aborted", timestamp: 2,
+      });
+      sm.appendMessage({ role: "user", content: "current request", timestamp: 3 });
+      seedMemoryState(sm, [{ endEntryId: covered, markdown: "# Excerpt digest", retainedEntryIds: [] }]);
+      const session = harness();
+      const ctx = commandContext(sm);
+      await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+      return { search: session.tools.get("search_memory_source"), ctx };
+    };
+
+    // ASCII sides: exact-end right boundary and exact-start left boundary.
+    {
+      const { search, ctx } = await buildSides("LEFT-NEEDLE", "RIGHT-NEEDLE");
+      const leftHit = await search.execute("s:left", { terms: ["LEFT-NEEDLE"] }, undefined, undefined, ctx);
+      const leftText = resultText(leftHit);
+      assert.ok(leftText.includes("LEFT-NEEDLE"), "the left side stays discoverable");
+      assert.ok(!leftText.includes("RIGHT-NEEDLE"),
+        "the left excerpt never includes the other side of the omission");
+      assert.ok(/LEFT-NEEDLE…(\n|$)/.test(leftText),
+        "the left excerpt ends with the visible clip marker exactly at the boundary");
+      const rightHit = await search.execute("s:right", { terms: ["RIGHT-NEEDLE"] }, undefined, undefined, ctx);
+      const rightText = resultText(rightHit);
+      assert.ok(rightText.includes("RIGHT-NEEDLE"), "the right side stays discoverable");
+      assert.ok(!rightText.includes("LEFT-NEEDLE"),
+        "the right excerpt never includes the other side of the omission");
+      assert.ok(/…(\n|\[assistant\]\n)?RIGHT-NEEDLE/.test(rightText),
+        "the right excerpt opens with the visible clip marker exactly at the boundary");
+    }
+
+    // Unicode sides: the same clipping with multi-byte text.
+    {
+      const { search, ctx } = await buildSides("左针标记", "右针标记");
+      const leftHit = await search.execute("s:zh-left", { terms: ["左针标记"] }, undefined, undefined, ctx);
+      const leftText = resultText(leftHit);
+      assert.ok(leftText.includes("左针标记"));
+      assert.ok(!leftText.includes("右针标记"), "the Unicode left excerpt excludes the other side");
+      assert.ok(/左针标记…(\n|$)/.test(leftText), "the Unicode left excerpt clips visibly at the boundary");
+      const rightHit = await search.execute("s:zh-right", { terms: ["右针标记"] }, undefined, undefined, ctx);
+      const rightText = resultText(rightHit);
+      assert.ok(rightText.includes("右针标记"));
+      assert.ok(!rightText.includes("左针标记"), "the Unicode right excerpt excludes the other side");
+      assert.ok(rightText.includes("…右针标记"), "the Unicode right excerpt opens at the boundary");
+    }
+  }
+
   // ── Review regression: the complete response honors the 8 KiB hard cap ──
 
   {
