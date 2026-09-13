@@ -122,6 +122,89 @@ test("V2 rejects legacy and unknown fields without admitting the layer", () => {
   assert.ok(parsed.errors.some((item) => item.includes("unknown field 'prompt'")));
 });
 
+test("block scalar chomping indicators are rejected instead of stored as literal strings", () => {
+  for (const indicator of ["|-", ">+", "|2"]) {
+    const parsed = __testables.parseYamlDefinition(
+      `promptVersion: 2\nname: t\ndescription: ${indicator}\n  hello\n`,
+      "/agent/subagents/t.yaml",
+      "agent",
+    );
+    assert.equal(parsed.layer, undefined, `${indicator} must not admit the layer`);
+    assert.ok(parsed.errors.some((item) => item.includes(indicator) && item.includes("chomping")), `${indicator}: ${parsed.errors.join(" | ")}`);
+  }
+});
+
+test("inline comments are rejected instead of mixing into values", () => {
+  for (const [label, text] of [
+    ["scalar", `promptVersion: 2\nname: t\ndescription: hello # note\n`],
+    ["leading", `promptVersion: 2\nname: t\ndescription: # note\n`],
+    ["inline array", `promptVersion: 2\nname: t\ndescription: d\ntools: [read, grep] # note\n`],
+    ["list item", `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read # first\n`],
+  ]) {
+    const parsed = __testables.parseYamlDefinition(text, "/agent/subagents/t.yaml", "agent");
+    assert.equal(parsed.layer, undefined, `${label} must not admit the layer`);
+    assert.ok(parsed.errors.some((item) => item.includes("inline comments")), `${label}: ${parsed.errors.join(" | ")}`);
+  }
+  // Quoted values keep a literal #; only unquoted comments are rejected.
+  const quoted = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: "hello # not a comment"\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.equal(quoted.layer?.patch.description, "hello # not a comment");
+});
+
+test("uppercase null and tilde spellings are rejected instead of becoming literal strings", () => {
+  for (const spelling of ["NULL", "Null", "～"]) {
+    const parsed = __testables.parseYamlDefinition(
+      `promptVersion: 2\nname: t\ndescription: d\nmodel: ${spelling}\n`,
+      "/agent/subagents/t.yaml",
+      "agent",
+    );
+    assert.equal(parsed.layer, undefined, `${spelling} must not admit the layer`);
+    assert.ok(parsed.errors.some((item) => item.includes(spelling) && item.includes("null")), `${spelling}: ${parsed.errors.join(" | ")}`);
+  }
+  // Exact lowercase null, ASCII tilde, and quoted strings stay valid.
+  for (const value of ["null", "~", '"NULL"']) {
+    const parsed = __testables.parseYamlDefinition(
+      `promptVersion: 2\nname: t\ndescription: d\nmodel: ${value}\n`,
+      "/agent/subagents/t.yaml",
+      "agent",
+    );
+    assert.equal(parsed.errors.length, 0, value);
+  }
+});
+
+test("blank lines inside a block list are rejected instead of truncating it", () => {
+  for (const [label, text] of [
+    ["mid-list", `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read\n\n  - grep\n`],
+    ["before first item", `promptVersion: 2\nname: t\ndescription: d\ntools:\n\n  - read\n`],
+  ]) {
+    const parsed = __testables.parseYamlDefinition(text, "/agent/subagents/t.yaml", "agent");
+    assert.equal(parsed.layer, undefined, `${label} must not admit the layer`);
+    assert.ok(parsed.errors.some((item) => item.includes("blank line inside the block list")), `${label}: ${parsed.errors.join(" | ")}`);
+    assert.equal(parsed.errors.filter((item) => item.includes("blank line inside the block list")).length, 1, `${label} reports the blank once`);
+  }
+  // A blank line after a finished list, before the next field, stays valid.
+  const trailing = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools:\n  - read\n\nskills: []\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.deepEqual(trailing.errors, []);
+  assert.deepEqual(trailing.layer?.patch.tools, ["read"]);
+});
+
+test("column-zero list items report the indentation rule directly", () => {
+  const parsed = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools:\n- read\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.equal(parsed.layer, undefined);
+  assert.ok(parsed.errors.some((item) => item.includes("list items must be indented")), parsed.errors.join(" | "));
+});
+
 test("new definitions must resolve a description after overlays", async () => {
   await withRoot((dir) => {
     write(join(dir, "repo", ".pi", "subagents", "new-agent.yaml"), `promptVersion: 2\nname: new-agent\nvisible: false\n`);
@@ -186,6 +269,46 @@ test("editing and deleting an existing noncanonical filename stays on its valida
 test("definition hashes are stable and source-sensitive", () => {
   assert.equal(__testables.hashContent("a"), __testables.hashContent("a"));
   assert.notEqual(__testables.hashContent("a"), __testables.hashContent("b"));
+});
+
+test("rejected definition files return as invalid entries beside valid definitions", async () => {
+  await withRoot((dir) => {
+    const cwd = join(dir, "repo");
+    const brokenPath = join(cwd, ".pi", "subagents", "broken.yaml");
+    const stemPath = join(cwd, ".pi", "subagents", "no-name.yaml");
+    write(join(cwd, ".pi", "subagents", "good.yaml"), `promptVersion: 2\nname: good\ndescription: Works.\n`);
+    write(brokenPath, `promptVersion: 2\nname: broken\ndescription: hello # comment\nmodel: NULL\n`);
+    write(stemPath, `promptVersion: 2\ndescription: no name at all\n`);
+    const registry = discoverSubagents(cwd);
+
+    assert.ok(registry.definitions.some((item) => item.name === "good"), "the valid definition stays effective");
+    assert.equal(registry.definitions.some((item) => item.name === "broken"), false);
+
+    const broken = registry.invalid.find((item) => item.id === "broken");
+    assert.ok(broken, `invalid ids: ${registry.invalid.map((item) => item.id).join(", ")}`);
+    assert.deepEqual(broken.sources, [brokenPath]);
+    assert.equal(broken.errors.length, 2, "every error of the file is carried");
+    assert.ok(broken.errors.every((item) => item.includes(brokenPath)));
+
+    const stem = registry.invalid.find((item) => item.id === "no-name");
+    assert.ok(stem, "an unusable name falls back to the file stem for the id");
+  });
+});
+
+test("overlay merge failures surface as invalid entries with their contributing layers", async () => {
+  await withRoot((dir) => {
+    const cwd = join(dir, "repo");
+    const overlay = join(cwd, ".pi", "subagents", "generalist.yaml");
+    write(overlay, `promptVersion: 2\nname: generalist\ndescription: null\n`);
+    const registry = discoverSubagents(cwd);
+
+    assert.equal(registry.definitions.some((item) => item.name === "generalist"), false);
+    const invalid = registry.invalid.find((item) => item.id === "generalist");
+    assert.ok(invalid, `invalid ids: ${registry.invalid.map((item) => item.id).join(", ")}`);
+    assert.ok(invalid.sources.includes(overlay));
+    assert.ok(invalid.sources.some((source) => source.endsWith(join("subagents", "generalist.yaml")) && !source.includes(".pi")), "the package layer is listed too");
+    assert.ok(invalid.errors.some((item) => item.includes("description")));
+  });
 });
 
 await run();

@@ -50,7 +50,7 @@ export default function registerSubagents(
   config?: () => PiSquareConfig,
 ): SubagentFeature {
   const state: SubagentRuntimeState = {
-    registry: { definitions: [], errors: [], projectDir: null },
+    registry: { definitions: [], invalid: [], errors: [], projectDir: null },
     background: createBackgroundState(),
     sessionCtx: undefined,
     inheritedSystemCore: undefined,
