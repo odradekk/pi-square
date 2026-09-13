@@ -42,6 +42,21 @@ writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
   // extension takeover.
   compaction: { keepRecentTokens: 200 },
 }, null, 2) + "\n");
+// The package layer ships no delegatable roles (#334), so the catalog section
+// is exercised through an agent-layer definition the smoke session owns.
+mkdirSync(join(agentDir, "subagents"), { recursive: true });
+writeFileSync(join(agentDir, "subagents", "smoke-role.yaml"), [
+  "promptVersion: 2",
+  "name: smoke-role",
+  "description: >",
+  "  Smoke-test role proving agent-layer definitions reach the parent catalog.",
+  "tools:",
+  "  - read",
+  "  - grep",
+  "skills:",
+  "  - none",
+  "",
+].join("\n"), "utf8");
 
 const settingsManager = SettingsManager.create(cwd, agentDir);
 // noSkills suppresses the host's default skill discovery (Pi 0.84.2 always
@@ -109,6 +124,7 @@ try {
   const systemPrompt = promptPatch?.systemPrompt ?? "";
   assert.equal(systemPrompt.slice(0, nativePrompt.length), nativePrompt);
   assert.match(systemPrompt.slice(nativePrompt.length), /## Available YAML-defined subagents/);
+  assert.match(systemPrompt.slice(nativePrompt.length), /- smoke-role: Smoke-test role/);
   assert.equal(systemPrompt.includes("System environment:"), false);
 
   const toolByName = (name) => {

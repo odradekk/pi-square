@@ -30,10 +30,8 @@ const requiredFiles = [
   "src/display-api.ts",
   "shadow-minds/example.md",
   "shadow-minds/schema-reference.md",
-  "subagents/crawler.yaml",
   "subagents/example_profile.yaml",
-  "subagents/explorer.yaml",
-  "subagents/generalist.yaml",
+  "subagents/schema-reference.md",
 ];
 const paths = new Set(pack.files.map((file) => file.path));
 

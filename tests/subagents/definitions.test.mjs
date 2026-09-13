@@ -44,70 +44,66 @@ async function withRoot(fn) {
   }
 }
 
-test("package V2 definitions expose the three inherited-model roles without diagnostics", async () => {
+test("the package layer ships no delegatable roles; only the hidden reference remains", async () => {
   await withRoot((dir) => {
     const registry = discoverSubagents(join(dir, "repo"));
     assert.deepEqual(registry.errors, []);
     assert.deepEqual(
       filterVisibleSubagents(registry).definitions.map((item) => item.name),
-      ["crawler", "explorer", "generalist"],
+      [],
+      "the package layer's visible set is empty",
     );
-    assert.equal(registry.definitions.find((item) => item.name === "example_profile").visible, false);
-    for (const definition of registry.definitions) {
-      assert.equal(definition.layers[0]?.filePath, join(packageRoot, "subagents", `${definition.name}.yaml`));
-    }
-    for (const definition of filterVisibleSubagents(registry).definitions) {
-      assert.equal(definition.model, undefined, `${definition.name} model must inherit`);
-      assert.equal(definition.effort, undefined, `${definition.name} effort must inherit`);
-      assert.equal(definition.inheritParentSystem, true, `${definition.name} must inherit the parent system`);
-      assert.ok(definition.policy?.length > 40, `${definition.name} needs a clear policy`);
-      assert.ok(definition.instructions?.includes("## Objective"), `${definition.name} needs structured instructions`);
-      assert.ok(definition.output?.includes("### Confidence") || definition.name === "generalist", `${definition.name} needs a bounded output contract`);
-      assert.ok((definition.instructions?.length ?? 0) < 2_000, `${definition.name} instructions should stay concise`);
-    }
+    assert.deepEqual(registry.definitions.map((item) => item.name), ["example_profile"]);
+    const reference = registry.definitions[0];
+    assert.equal(reference.visible, false, "the packaged reference definition stays hidden");
+    assert.equal(reference.layers[0]?.filePath, join(packageRoot, "subagents", "example_profile.yaml"));
   });
 });
 
 test("project and user overlays merge per field with project precedence", () => {
-  const base = discoverSubagents(packageRoot).definitions.find((item) => item.name === "generalist").layers[0];
-  const userFile = "/agent/subagents/generalist.yaml";
-  const projectFile = "/repo/.pi/subagents/generalist.yaml";
+  const base = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: worker\ndescription: >\n  Self-made package-free base layer.\npolicy: |\n  BASE POLICY\ninstructions: |\n  Base instructions.\noutput: |\n  ### Changes\ntools:\n  - read\n  - ls\n`,
+    "/pkg/subagents/worker.yaml",
+    "package",
+  ).layer;
+  const userFile = "/agent/subagents/worker.yaml";
+  const projectFile = "/repo/.pi/subagents/worker.yaml";
   const user = __testables.parseYamlDefinition(
-    `promptVersion: 2\nname: generalist\npolicy: |\n  USER POLICY\nvisible: false\n`,
+    `promptVersion: 2\nname: worker\npolicy: |\n  USER POLICY\nvisible: false\n`,
     userFile,
     "agent",
   ).layer;
   const project = __testables.parseYamlDefinition(
-    `promptVersion: 2\nname: generalist\ninstructions: null\nvisible: true\n`,
+    `promptVersion: 2\nname: worker\ninstructions: null\nvisible: true\n`,
     projectFile,
     "project",
   ).layer;
-  const { definition: generalist, errors } = __testables.mergeDefinitionLayers("generalist", [base, user, project]);
+  const { definition: worker, errors } = __testables.mergeDefinitionLayers("worker", [base, user, project]);
 
   assert.deepEqual(errors, []);
-  assert.equal(generalist.layers.length, 3);
-  assert.equal(generalist.policy, "USER POLICY");
-  assert.equal(generalist.instructions, undefined);
-  assert.match(generalist.output, /### Changes/);
-  assert.equal(generalist.visible, true);
-  assert.equal(generalist.fieldSources.policy.source, "agent");
-  assert.equal(generalist.fieldSources.instructions.source, "project");
-  assert.equal(generalist.fieldSources.output.source, "package");
-  assert.equal(generalist.source, "project");
-  assert.equal(generalist.filePath, projectFile);
+  assert.equal(worker.layers.length, 3);
+  assert.equal(worker.policy, "USER POLICY");
+  assert.equal(worker.instructions, undefined);
+  assert.match(worker.output, /### Changes/);
+  assert.equal(worker.visible, true);
+  assert.equal(worker.fieldSources.policy.source, "agent");
+  assert.equal(worker.fieldSources.instructions.source, "project");
+  assert.equal(worker.fieldSources.output.source, "package");
+  assert.equal(worker.source, "project");
+  assert.equal(worker.filePath, projectFile);
 });
 
-test("a minimal visibility overlay can hide and reveal a package definition", async () => {
+test("a project overlay can reveal and re-hide the packaged reference definition", async () => {
   await withRoot((dir) => {
-    const file = join(dir, "repo", ".pi", "subagents", "explorer.yaml");
-    write(file, `promptVersion: 2\nname: explorer\nvisible: false\n`);
-    const hidden = discoverSubagents(join(dir, "repo"));
-    assert.equal(hidden.definitions.find((item) => item.name === "explorer").visible, false);
-    assert.equal(filterVisibleSubagents(hidden).definitions.some((item) => item.name === "explorer"), false);
-
-    write(file, `promptVersion: 2\nname: explorer\nvisible: null\n`);
+    const file = join(dir, "repo", ".pi", "subagents", "example_profile.yaml");
+    write(file, `promptVersion: 2\nname: example_profile\nvisible: true\n`);
     const revealed = discoverSubagents(join(dir, "repo"));
-    assert.equal(revealed.definitions.find((item) => item.name === "explorer").visible, true);
+    assert.equal(revealed.definitions.find((item) => item.name === "example_profile").visible, true);
+    assert.equal(filterVisibleSubagents(revealed).definitions.some((item) => item.name === "example_profile"), true);
+
+    write(file, `promptVersion: 2\nname: example_profile\nvisible: false\n`);
+    const hidden = discoverSubagents(join(dir, "repo"));
+    assert.equal(filterVisibleSubagents(hidden).definitions.some((item) => item.name === "example_profile"), false);
   });
 });
 
@@ -283,34 +279,35 @@ test("preview and atomic project writes preserve lower fields and delete cleanly
   await withRoot((dir) => {
     const cwd = join(dir, "repo");
     mkdirSync(cwd, { recursive: true });
+    write(join(dir, "agent", "subagents", "worker.yaml"), `promptVersion: 2\nname: worker\ndescription: >\n  Self-made agent-layer base for overlay tests.\ntools:\n  - read\n  - ls\n`);
     const registry = discoverSubagents(cwd);
-    const patch = { promptVersion: 2, name: "generalist", visible: false };
+    const patch = { promptVersion: 2, name: "worker", visible: false };
     const preview = previewDefinitionPatch({ registry, cwd, scope: "project", patch });
     assert.deepEqual(preview.errors, []);
     assert.equal(preview.definition.visible, false);
-    assert.match(preview.definition.description, /General-purpose implementation agent/);
+    assert.match(preview.definition.description, /Self-made agent-layer base/);
     assert.doesNotMatch(preview.content, /description:/);
 
     const written = writeDefinitionPatch({ cwd, scope: "project", patch });
-    assert.equal(written.filePath, join(cwd, ".pi", "subagents", "generalist.yaml"));
-    assert.equal(discoverSubagents(cwd).definitions.find((item) => item.name === "generalist").visible, false);
-    assert.equal(deleteDefinitionOverlay({ cwd, scope: "project", name: "generalist" }), true);
-    assert.equal(discoverSubagents(cwd).definitions.find((item) => item.name === "generalist").visible, true);
+    assert.equal(written.filePath, join(cwd, ".pi", "subagents", "worker.yaml"));
+    assert.equal(discoverSubagents(cwd).definitions.find((item) => item.name === "worker").visible, false);
+    assert.equal(deleteDefinitionOverlay({ cwd, scope: "project", name: "worker" }), true);
+    assert.equal(discoverSubagents(cwd).definitions.find((item) => item.name === "worker").visible, true);
   });
 });
 
 test("editing and deleting an existing noncanonical filename stays on its validated layer path", async () => {
   await withRoot((dir) => {
     const cwd = join(dir, "repo");
-    const filePath = join(cwd, ".pi", "subagents", "custom-generalist.yml");
-    write(filePath, `promptVersion: 2\nname: generalist\nvisible: false\n`);
+    const filePath = join(cwd, ".pi", "subagents", "custom-worker.yml");
+    write(filePath, `promptVersion: 2\nname: worker\ndescription: Noncanonical path fixture.\nvisible: false\n`);
     const registry = discoverSubagents(cwd);
-    const patch = { promptVersion: 2, name: "generalist", visible: true };
+    const patch = { promptVersion: 2, name: "worker", visible: true };
     const preview = previewDefinitionPatch({ registry, cwd, scope: "project", patch });
     assert.equal(preview.filePath, filePath);
     writeDefinitionPatch({ cwd, scope: "project", patch, filePath: preview.filePath });
-    assert.equal(existsSync(join(cwd, ".pi", "subagents", "generalist.yaml")), false);
-    assert.equal(deleteDefinitionOverlay({ cwd, scope: "project", name: "generalist", filePath }), true);
+    assert.equal(existsSync(join(cwd, ".pi", "subagents", "worker.yaml")), false);
+    assert.equal(deleteDefinitionOverlay({ cwd, scope: "project", name: "worker", filePath }), true);
     assert.equal(existsSync(filePath), false);
   });
 });

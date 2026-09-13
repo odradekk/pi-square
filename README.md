@@ -125,40 +125,13 @@ The shared allowlisted activity formatter keeps the existing bounded target and 
 
 Subagent definitions now require `promptVersion: 2`. Discovery composes package, user, and project definitions in that order, so the nearest project `.pi/subagents/*.yaml` has the highest precedence, followed by `~/.pi/agent/subagents/*.yaml`, then package definitions. Same-name files are field overlays rather than whole-definition replacements: omitted fields inherit, `null` clears a scalar override, and an empty array clears an inherited list. Every effective field retains its source scope, path, and SHA-256 for manager display and prompt drift checks. `visible: false` removes an effective definition from the parent catalog and tool lookup without modifying the read-only package file.
 
-V2 separates prompt authority explicitly:
-
-```yaml
-promptVersion: 2
-name: explorer
-description: Read-only repository evidence gathering.
-inheritParentSystem: true
-policy: |
-  Keep the workspace unchanged.
-instructions: |
-  Verify paths and distinguish observation from inference.
-output: |
-  Return findings, relevant files, gaps, and confidence.
-tools: [read, ls]
-extensionTools: [web_search]
-skills: [none]
-visible: true
-```
+V2 separates prompt authority explicitly: `policy` is an optional SYSTEM-layer constraint, `instructions` replay before every fresh or resumed task, and `output` replays after every task as the delivery contract; `inheritParentSystem` (default `true`) controls whether the parent system core joins the child SYSTEM beside the immutable subagent governance. The packaged `example_profile` definition and the normative `subagents/schema-reference.md` (overlay semantics, validation stages, and executable examples) ship as the authoring reference.
 
 Definitions are written in a small YAML subset, not full YAML: what the subset does not support is rejected with a named error instead of silently storing a wrong value. Four forms fail outright — block scalar chomping or indentation indicators (`|-`, `>+`, `|2`), inline comments (quote the value to keep a literal `#` such as an issue number, or move the comment to its own line), non-lowercase `null` spellings and tilde lookalikes, and blank lines inside a block list. List items must be indented under their field, and one field error excludes the whole file: there is no warning level, value fallback, or partial effect.
 
-Package profiles omit `model` and `effort`. A fresh run inherits the parent session's current values and freezes the resolved values for deterministic same-ID resume; an explicit call override still takes precedence, and following a newly selected parent model requires a fresh ID. Omitted or empty `tools` selects the runtime built-in defaults, while the exclusive `tools: [none]` sentinel disables every built-in tool. Extension tools remain explicit opt-ins. Omitted or empty `skills` loads all discovered skills; `skills: [none]` disables them.
+Definitions may omit `model` and `effort`. A fresh run inherits the parent session's current values and freezes the resolved values for deterministic same-ID resume; an explicit call override still takes precedence, and following a newly selected parent model requires a fresh ID. Omitted or empty `tools` selects the runtime built-in defaults, while the exclusive `tools: [none]` sentinel disables every built-in tool. Extension tools remain explicit opt-ins. Omitted or empty `skills` loads all discovered skills; `skills: [none]` disables them.
 
-The three visible package roles are intentionally complementary. Reach for `crawler` when the task is focused external research, for `explorer` when it needs local repository evidence, and for `generalist` when it needs scoped writable work.
-
-| Role | Responsibility | Default capabilities |
-| --- | --- | --- |
-| `explorer` | Locate files, trace local behavior, and collect repository evidence | `read`, `ls`, `grep`, `find`; no skills |
-| `crawler` | Research general web sources, official docs, papers, and versioned APIs | `read`, `web_search`, `web_fetch`, `library_search`, `library_docs`; no skills |
-| `generalist` | Complete scoped implementation and mixed tasks | Local write/shell, read, search, web, Context7, and all discovered skills |
-
-Agent and project overlays remain free to define roles with any name, including the retired `oracle` and `librarian` names. Existing agent/project overlays are trusted local definitions and are not renamed automatically, so migrate those filenames and `name` fields explicitly when the new package roles should apply.
-
-Anchored editing follows the same capability boundary. Only `generalist`, the one bundled writable role, declares `read`, `write`, and `edit`, so while anchored editing is on it receives the anchored read, replace, insert, and write tools. The read-only roles (`explorer`, `crawler`) declare no editing capability and receive no anchored tools. See [Hash-anchored editing](#hash-anchored-editing).
+The package layer ships no roles: role division varies by project and workflow, and every delegatable definition lives in the agent or project layer (see [ADR 0017](docs/adr/0017-clear-subagent-package-layer-and-layer-config-guide.md)). Agent and project overlays may define roles with any name, including the retired `oracle` and `librarian` names and the former package roles `explorer`, `crawler`, and `generalist` — a removed bundled name is neither reserved nor occupied. Anchored editing follows the capability boundary, not role names: a definition that declares `read`, `write`, and `edit` receives the anchored read, replace, insert, and write tools while anchored editing is on (see [Hash-anchored editing](#hash-anchored-editing)).
 
 The child SYSTEM is assembled as immutable subagent governance, optional parent system core, and YAML `policy`; Pi then adds child-cwd project context, selected skills, and a volatile working-directory suffix. That suffix is frozen out of the persisted snapshot (together with the former date-plus-working-directory form written by earlier Pi versions), so an unchanged policy resumes to byte-identical effective SYSTEM prompts instead of appending another suffix per resume. The delegated user message is assembled as replayed `instructions`, reference-only parent history, the current task, and replayed `output`. Parent history may provide facts and confirmed decisions but is not task authorization. Fresh runs persist a frozen effective SYSTEM plus instructions/output and a hash/provenance manifest. Resume replays those snapshots under the same ID; applying a changed definition starts a fresh ID instead.
 
@@ -168,7 +141,7 @@ The activity view and manager summarize a child's `read`, `replace`, `insert`, a
 
 `/subagent` with no arguments temporarily replaces the editor with a non-overlay Pi-native three-tab manager and restores the original editor text when closed. Its adaptive 72–104-column workbench is single-column on narrow terminals and splits into list/detail columns when space permits. `RUNNING` shows current-session queued/background work and can cancel it through a real `cancelling` transition while retaining resumable artifacts. `SESSION` shows V4 children created or resumed by the current parent session and supports `Resume original`, `Start fresh with current definition`, and confirmed history deletion. Resume availability follows the activity lease rather than the persisted phase: an inactive `completed`, `failed`, `aborted`, or stale record remains recoverable, while a live lease disables the Manager action and direct resume returns an `isError: true` `SUBAGENT_ACTIVE` result without modifying session history. `DEFINITIONS` shows effective values and field sources, with project-default or explicitly agent-scoped create/edit/hide/delete actions. Rejected definition files stay listed as selectable entries beside valid ones — an error-colored `!` marks an invalid definition, while the neutral dim `◦` marks a hidden definition that overlays can reveal — and selecting an invalid entry shows its source file, every error, and a repair hint; Enter on one explains that it is invalid instead of opening the overlay editor. Task editors, scope/field choices, `inherit`/`set`/`clear` controls, YAML/effective-diff review, and destructive confirmations remain inside one focus-preserving manager workflow. Manager-started resume/fresh actions enter the session-owned background lifecycle, remain visible and cancellable, and return completion notifications. Package definitions are never edited in place.
 
-`/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses the same unframed operational status rail and label-led rule as other pi-square surfaces; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands.
+`/subagent <request>` first appends a bounded, collapsible `Subagent Config Guide` custom message containing the layered V2 contract and effective-definition metadata, then sends the unchanged request in a separate native user message. The guide's field table, built-in tool names, and effort values are generated from the parser's and resolver's code constants, it states that `extensionTools` and skills have no static list and are discovered at runtime, it carries the YAML-subset constraints and the three validation stages (a saved file is not yet a working configuration), and it names the packaged `subagents/schema-reference.md` path. Both use follow-up delivery, preserve guide-before-request ordering during streaming, and trigger only the user turn. The guide uses the same unframed operational status rail and label-led rule as other pi-square surfaces; its collapsed summary shows definition count and effective scopes, while prompt bodies remain excluded. The command does not directly parse mutation subcommands.
 
 ## Shadow Minds (experimental, disabled by default)
 

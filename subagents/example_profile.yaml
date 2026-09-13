@@ -8,6 +8,7 @@
 # Higher layers replace only declared fields. Omit a field to inherit it, use null
 # to clear a scalar, and use [] to clear an inherited list. Package files are
 # read-only at runtime; create agent or project overlays for customization.
+# The full normative field reference with executable examples is subagents/schema-reference.md.
 
 promptVersion: 2
 name: example_profile
