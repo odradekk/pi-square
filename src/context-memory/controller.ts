@@ -145,6 +145,8 @@ export interface ContextMemoryUsageInput {
 export interface ContextMemoryControllerOptions {
   readonly config: ContextMemoryConfig;
   readonly support: HostSupport;
+  /** Qualification-only capability selection; omitted in normal product use. */
+  readonly searchMemorySourceEnabled?: boolean;
 }
 
 function fail(code: string, sentence: string): never {
@@ -966,6 +968,7 @@ function netRebuildSavings(
 export class ContextMemoryController {
   private readonly config: ContextMemoryConfig;
   private readonly support: HostSupport;
+  private readonly searchMemorySourceEnabled: boolean;
   private current: CurrentMemory;
   /** Whether the current session is ephemeral (in-memory, unpersisted) (#221). */
   private ephemeralSession = false;
@@ -1045,6 +1048,7 @@ export class ContextMemoryController {
   constructor(options: ContextMemoryControllerOptions) {
     this.config = options.config;
     this.support = options.support;
+    this.searchMemorySourceEnabled = options.searchMemorySourceEnabled ?? true;
     this.current = { kind: "none" };
   }
 
@@ -1141,7 +1145,7 @@ export class ContextMemoryController {
     if (compactActive) desired.push(COMPACT_MEMORY_TOOL_NAME);
     if (readActive) {
       desired.push(READ_MEMORY_SOURCE_TOOL_NAME);
-      desired.push(SEARCH_MEMORY_SOURCE_TOOL_NAME);
+      if (this.searchMemorySourceEnabled) desired.push(SEARCH_MEMORY_SOURCE_TOOL_NAME);
     }
     this.activeMemoryId = readActive && this.current.kind === "valid"
       ? memoryIdentity(this.current)

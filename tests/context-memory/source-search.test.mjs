@@ -41,7 +41,7 @@ const ENABLED_CONFIG = { enabled: true, compressionThreshold: { percent: 30 }, m
  * observational no-mutation contract.
  */
 
-function harness(config = ENABLED_CONFIG) {
+function harness(config = ENABLED_CONFIG, dependencies = {}) {
   const tools = new Map();
   const events = new Map();
   let active = ["read", "bash"];
@@ -65,6 +65,7 @@ function harness(config = ENABLED_CONFIG) {
       throw new Error("display runtime is not needed for in-memory session derivation");
     },
     reserveTokens: () => 16384,
+    ...dependencies,
   });
   return {
     tools, events, registration, activeTools: () => [...active],
@@ -158,6 +159,21 @@ try {
     assert.deepEqual(read.parameters.required, ["block", "page"]);
     assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["block", "page", "view"],
       "the optional view parameter extends the read schema compatibly (#339)");
+  }
+
+  // #340's qualification-only capability arm keeps the definition registered
+  // but never exposes search to the model, across every synchronization.
+  {
+    const { sm } = seedTwoBlockSession();
+    const session = harness(ENABLED_CONFIG, { searchMemorySourceEnabled: false });
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    assert.ok(session.tools.has("search_memory_source"));
+    for (const event of ["agent_settled", "model_select", "session_tree", "session_compact"]) {
+      await session.emit(event, { type: event }, ctx);
+      assert.ok(session.activeTools().includes("read_memory_source"), `${event} retains source reading`);
+      assert.ok(!session.activeTools().includes("search_memory_source"), `${event} cannot resurrect source search`);
+    }
   }
 
   // ── Activation follows valid source reading ──

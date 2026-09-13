@@ -84,6 +84,11 @@ export interface ContextMemoryDependencies {
   readonly messageProjectionInterface?: () => boolean;
   /** Injectable Pi compaction-reserve source for deterministic tests. */
   readonly reserveTokens?: (cwd: string, projectTrusted: boolean) => number;
+  /**
+   * Internal qualification seam for the read-only recovery arm (#340).
+   * Search remains registered; normal product registration omits this flag.
+   */
+  readonly searchMemorySourceEnabled?: boolean;
 }
 
 /** The read-only view provider consumed by Prompt Manager. */
@@ -203,6 +208,9 @@ export default function registerContextMemory(
     controller = new ContextMemoryController({
       config: dependencies.configProvider().contextMemory,
       support: evaluateHostSupport(apiInterfaces(pi), contextInterfacesPresent(ctx), messageProjectionInterface()),
+      ...(dependencies.searchMemorySourceEnabled !== undefined
+        ? { searchMemorySourceEnabled: dependencies.searchMemorySourceEnabled }
+        : {}),
     });
     sessionReserveTokens = reserveTokensOf(ctx.cwd, ctx.isProjectTrusted());
     controller.adoptRuntime(sessionReserveTokens);

@@ -399,7 +399,18 @@ fixture-owned while every scored block stays model-authored — and its final
 probe completes the invited maintenance first so the recall check runs
 against the complete carrier with covered originals actually evicted. Real
 continuity qualification remains Sonnet 5 and GLM 5.3 under #227's
-coverage and human rubric. The real Pi cache sequence runs Sonnet 5, GLM 5.3,
+coverage and human rubric. #340 supersedes the historical asymmetric v2
+instrument with one 12-case corpus per model (four scenarios at early, middle,
+and late placement): two concurrently started model queues, sequential cases
+and requests within each queue, 24 isolated cells, and 12 matched pairs. Its v3
+report reader identifies old 16-cell evidence as historical and never regrades
+it as current. Original recovery evidence qualifies only when the exact
+successful search/read result reaches a later native request before handoff;
+tool execution, summaries, clipped or filtered results, same-batch writes,
+wrong views, and post-handoff observations remain insufficient. A separate
+both-model search-enabled/read-only recovery comparison uses a runner-only
+registrar dependency seam that changes the actual model-visible tool set, not
+public configuration, and never substitutes for the 24 cells. The real Pi cache sequence runs Sonnet 5, GLM 5.3,
 and GPT-5.6 Luna concurrently, with sequential requests within each session.
 Report token-weighted cache reads, input volume, request latency where
 available, compression boundaries, actual coverage, and task outcomes; missing

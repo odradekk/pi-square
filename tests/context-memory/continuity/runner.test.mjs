@@ -1,24 +1,24 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { PRIMARY_ARM_VARIANTS, SCENARIOS, buildScript } from "./scenarios.mjs";
+import { PLACEMENTS, SCENARIOS, buildScript } from "./scenarios.mjs";
 import { evaluateGates } from "./oracles.mjs";
-import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveSeed, executeRun, pinEnvironment, planRuns, qualificationStatus, resolveRunModels, runLabel, safeUsage, selectRerunScope } from "./runner.mjs";
+import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveSeed, executeRun, pinEnvironment, planRuns, qualificationStatus, resolveRunModels, runLabel, safeRetrieval, safeUsage, selectRerunScope } from "./runner.mjs";
 
 // These tests exercise the runner's public boundary with returned native-run
 // shapes. They do not simulate an AgentSession or a provider.
 {
   const runs = planRuns();
-  assert.equal(runs.length, 16);
-  assert.equal(runs.filter((run) => run.arm === "primary").length, 12);
-  assert.equal(runs.filter((run) => run.arm === "secondary").length, 4);
+  assert.equal(runs.length, 24);
+  assert.equal(runs.filter((run) => run.lane === "sonnet").length, 12);
+  assert.equal(runs.filter((run) => run.lane === "glm").length, 12);
   for (const scenario of SCENARIOS) {
-    assert.deepEqual(runs.filter((run) => run.scenario === scenario.id && run.arm === "primary").map((run) => run.variant), PRIMARY_ARM_VARIANTS);
-    assert.deepEqual(runs.filter((run) => run.scenario === scenario.id && run.arm === "secondary").map((run) => run.variant), ["canonical"]);
+    assert.deepEqual(runs.filter((run) => run.scenario === scenario.id && run.lane === "sonnet").map((run) => run.placement), PLACEMENTS);
+    assert.deepEqual(runs.filter((run) => run.scenario === scenario.id && run.lane === "glm").map((run) => run.placement), PLACEMENTS);
   }
   assert.deepEqual(runs.map((run) => run.seed), planRuns().map((run) => run.seed));
-  assert.equal(new Set(runs.map((run) => run.seed)).size, 16);
-  assert.deepEqual(runs[0].model, MODEL_LANES.primary);
-  assert.deepEqual(runs.at(-1).model, MODEL_LANES.secondary);
+  assert.equal(new Set(runs.map((run) => run.seed)).size, 12);
+  assert.deepEqual(runs[0].model, MODEL_LANES.sonnet);
+  assert.deepEqual(runs.at(-1).model, MODEL_LANES.glm);
   assert.equal(RUN_LIMITS.requests, 80);
 }
 
@@ -39,7 +39,24 @@ import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveS
   const result = await executeRun({ run, runtime: null, sessionRunner: async () => { throw new Error("Pi request deadline exceeded"); } });
   assert.equal(result.score.result, "inconclusive");
   assert.match(result.error, /deadline/);
+  assert.equal(result.terminal, "timeout");
   assert.equal(result.integrity.ok, false);
+}
+
+{
+  const run = planRuns()[0];
+  const result = await executeRun({ run, runtime: null, sessionRunner: async () => ({
+    timedOut: true, integrity: { ok: false, failures: ["prompt-timeout"] }, coverage: { ok: false, failures: ["incomplete"] },
+  }) });
+  assert.equal(result.terminal, "timeout", "native prompt deadline remains a distinct terminal category");
+}
+
+{
+  const run = planRuns()[0];
+  const result = await executeRun({ run, runtime: null, sessionRunner: async () => ({
+    providerError: true, integrity: { ok: false, failures: ["provider-response-error"] }, coverage: { ok: false, failures: ["incomplete"] },
+  }) });
+  assert.equal(result.terminal, "error", "native provider error responses remain a distinct terminal category");
 }
 
 {
@@ -51,14 +68,23 @@ import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveS
   };
   const resolved = await resolveRunModels(runtime);
   assert.equal(resolved.modelRuntime, runtime);
-  assert.equal(resolved.models.get("primary").api, "primary-native-api");
+  assert.equal(resolved.models.get("sonnet").api, "sonnet-native-api");
   assert.ok(resolved.exactSecrets.includes("ccr-claude-key"));
   assert.ok(resolved.exactSecrets.includes("cpa-header"));
   await assert.rejects(() => resolveRunModels({ ...runtime, getModel: () => undefined }), /does not define/);
 }
 
 {
-  assert.deepEqual(safeUsage([{ phase: "final", request: 3, stopReason: "toolUse", input: 7, output: 8, cacheRead: 9, cacheWrite: 10, tools: ["read", "write"] }]), [{ phase: "final", request: 3, stopReason: "toolUse", input: 7, output: 8, cacheRead: 9, cacheWrite: 10, tools: ["read", "write"] }]);
+  assert.deepEqual(safeUsage([{ phase: "final", request: 3, stopReason: "toolUse", input: 7, output: 8, cacheRead: 9, cacheWrite: 10, tools: ["read", "write"], activeTools: ["read_memory_source"] }]), [{ phase: "final", request: 3, stopReason: "toolUse", input: 7, output: 8, cacheRead: 9, cacheWrite: 10, tools: ["read", "write"], activeTools: ["read_memory_source"], errorPresent: false }]);
+  assert.equal(safeUsage(Array.from({ length: 81 }, (_, request) => ({ request }))).length, RUN_LIMITS.requests);
+  const retrieval = safeRetrieval({ qualified: true, code: "qualified-search-snippet", rawView: "sv1-secret", sourceId: "native-source-id", proof: [{
+    kind: "search", resultSha256: "a".repeat(64), viewSha256: "b".repeat(64), observedAtRequest: 81,
+    returnedBytes: 123, coveredFields: ["recovery-token"], rawSnippet: "SOURCE-EMBER-47", callId: "native-call-id",
+  }] });
+  const publicJson = JSON.stringify({ requests: safeUsage(Array.from({ length: 81 }, (_, request) => ({ request }))), retrieval });
+  assert.equal(retrieval.proof.length, 1, "positive proof remains outside the clipped request list");
+  assert.ok(!publicJson.includes("SOURCE-EMBER-47") && !publicJson.includes("native-call-id")
+    && !publicJson.includes("native-source-id") && !publicJson.includes("sv1-secret"), "normal report metadata omits source bodies and native identities");
 }
 
 {
@@ -100,10 +126,10 @@ import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveS
 {
   assert.equal(selectRerunScope({ kind: "ui" }).runs.length, 0);
   assert.equal(selectRerunScope({ kind: "documentation" }).runs.length, 0);
-  assert.equal(selectRerunScope({ kind: "provider", arms: ["primary"] }).runs.length, 12);
-  assert.equal(selectRerunScope({ kind: "defect", scenarios: [SCENARIOS[0].id] }).runs.length, 4);
-  assert.equal(selectRerunScope({ kind: "unknown" }).runs.length, 16);
-  assert.equal(runLabel(planRuns()[0]), `${SCENARIOS[0].id}/early/primary`);
+  assert.equal(selectRerunScope({ kind: "provider", lanes: ["sonnet"] }).runs.length, 12);
+  assert.equal(selectRerunScope({ kind: "defect", scenarios: [SCENARIOS[0].id] }).runs.length, 6);
+  assert.equal(selectRerunScope({ kind: "unknown" }).runs.length, 24);
+  assert.equal(runLabel(planRuns()[0]), `${SCENARIOS[0].id}/early/sonnet/search-enabled`);
   assert.equal(deriveSeed(planRuns()[0]).length, 16);
 }
 
@@ -112,13 +138,13 @@ import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveS
 {
   const records = [];
   for (const run of planRuns()) {
-    const script = buildScript(run.scenario, run.variant);
+    const script = buildScript(run.scenario, run.placement);
     const artifact = { ...script.oracle.expected };
-    if (run.scenario === "exact-work" && run.variant === "early") artifact.owner = null;
+    if (run.scenario === "exact-work" && run.placement === "early" && run.lane === "sonnet") artifact.owner = null;
     records.push(await executeRun({ run, sessionRunner: async () => ({
       artifactText: JSON.stringify(artifact), integrity: { ok: true, failures: [] },
       coverage: { ok: true, failures: [], appends: 1, rebuilds: 2 },
-      sourceReads: [{ ok: true, complete: true, coversSource: true }],
+      retrievalQualification: { qualified: true, code: "qualified-search-snippet" },
     }) }));
   }
   const gates = evaluateGates(records.map((record) => record.score));
@@ -138,11 +164,11 @@ import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveS
   assert.equal(SCHEDULE_POLICY.requiredRebuilds, 2);
   const records = [];
   for (const run of planRuns()) {
-    const script = buildScript(run.scenario, run.variant);
+    const script = buildScript(run.scenario, run.placement);
     records.push(await executeRun({ run, sessionRunner: async () => ({
       artifactText: JSON.stringify(script.oracle.expected), integrity: { ok: true, failures: [] },
       coverage: { ok: true, failures: [], appends: 1, rebuilds: 1 },
-      sourceReads: [{ ok: true, complete: true, coversSource: true }],
+      retrievalQualification: { qualified: true, code: "qualified-search-snippet" },
     }) }));
   }
   const gates = evaluateGates(records.map((record) => record.score));

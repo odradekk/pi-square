@@ -11,7 +11,7 @@ export const SEVERE_CLASSES = Object.freeze([
   "branch-contamination",
   "recursive-drift",
 ]);
-import { PRIMARY_ARM_VARIANTS, SCENARIOS } from "./scenarios.mjs";
+import { PLACEMENTS, SCENARIOS } from "./scenarios.mjs";
 
 // These six counters are bounded machine-detected signals, not an exhaustive
 // semantic judge. In particular, no counter is inferred from free prose.
@@ -38,9 +38,11 @@ function hasDuplicateTopLevelKey(text) {
   return false;
 }
 
-export function scoreRun({ run, script, artifactText, integrity, coverage, sourceReads = [] }) {
+export function scoreRun({ run, script, artifactText, integrity, coverage, retrievalQualification }) {
   const severe = emptySevere(); const failures = []; const fields = [];
-  const prerequisitesPresent = prerequisite(integrity) && prerequisite(coverage);
+  const retrievalPresent = !script.oracle.requireOriginalEvidence
+    || (retrievalQualification && typeof retrievalQualification.qualified === "boolean" && typeof retrievalQualification.code === "string");
+  const prerequisitesPresent = prerequisite(integrity) && prerequisite(coverage) && retrievalPresent;
   let artifact; let malformed = false;
   try {
     if (typeof artifactText !== "string" || hasDuplicateTopLevelKey(artifactText)) throw new Error();
@@ -69,8 +71,8 @@ export function scoreRun({ run, script, artifactText, integrity, coverage, sourc
     }
     for (const value of script.oracle.abandonedValues) if (Object.values(artifact).some((actual) => Object.is(actual, value))) { severe["branch-contamination"] += 1; failures.push({ code: "abandoned-value" }); }
   }
-  const sourceVerified = !script.oracle.requireSourceRead || sourceReads.some((read) => read.ok === true && read.complete === true && read.coversSource === true);
-  if (!sourceVerified) failures.push({ code: "source-read-missing" });
+  const sourceVerified = !script.oracle.requireOriginalEvidence || retrievalQualification?.qualified === true;
+  if (!sourceVerified) failures.push({ code: retrievalQualification?.code ?? "original-evidence-observation-missing" });
   if (prerequisite(integrity) && !integrity.ok) failures.push(...integrity.failures.map(() => ({ code: "integrity" })));
   if (prerequisite(coverage) && !coverage.ok) failures.push(...coverage.failures.map(() => ({ code: "coverage" })));
   const artifactFailure = failures.some(({ code }) => !["integrity", "coverage"].includes(code));
@@ -83,12 +85,10 @@ export function evaluateGates(scores) {
   const severe = emptySevere(); for (const score of scores) for (const name of SEVERE_CLASSES) severe[name] += score.severe?.[name] ?? 0;
   const aggregate = (items, family) => { const total = items.reduce((n, s) => n + s[family].total, 0); const matched = items.reduce((n, s) => n + s[family].matched, 0); return { matched, total, rate: total ? matched / total : 0 }; };
   const group = (property) => Object.fromEntries([...new Set(scores.map((s) => s.run[property]))].map((value) => { const cells = scores.filter((s) => s.run[property] === value); return [value, { critical: aggregate(cells, "critical"), continuity: aggregate(cells, "continuity"), finalTasks: cells.filter((s) => s.finalTask).length, total: cells.length }]; }));
-  const byArm = group("arm"); const byScenario = group("scenario"); const critical = aggregate(scores, "critical"); const continuity = aggregate(scores, "continuity");
-  const expectedCells = new Set(SCENARIOS.flatMap((scenario) => [
-    ...PRIMARY_ARM_VARIANTS.map((variant) => `${scenario.id}\0primary\0${variant}`),
-    `${scenario.id}\0secondary\0canonical`,
-  ]));
-  const actualCells = scores.map((score) => `${score.run.scenario}\0${score.run.arm}\0${score.run.variant}`);
+  const byModel = group("lane"); const byScenario = group("scenario"); const critical = aggregate(scores, "critical"); const continuity = aggregate(scores, "continuity");
+  const expectedCells = new Set(["sonnet", "glm"].flatMap((lane) => SCENARIOS.flatMap((scenario) =>
+    PLACEMENTS.map((placement) => `${scenario.id}\0${lane}\0${placement}`))));
+  const actualCells = scores.map((score) => `${score.run.scenario}\0${score.run.lane}\0${score.run.placement}`);
   const complete = actualCells.length === expectedCells.size
     && new Set(actualCells).size === actualCells.length
     && actualCells.every((cell) => expectedCells.has(cell));
@@ -101,10 +101,10 @@ export function evaluateGates(scores) {
     && Number.isFinite(score.coverage?.rebuilds) && score.coverage.rebuilds >= 2);
   const prerequisites = scores.every((score) => {
     const scenario = SCENARIOS.find((entry) => entry.id === score.run.scenario);
-    const canonical = score.run.variant === "canonical" || score.run.variant === scenario?.canonicalVariant;
+    const canonical = score.run.placement === scenario?.canonicalVariant;
     return score.integrity?.ok && score.coverage?.ok && score.artifactValid && score.sourceVerified && (!canonical || score.finalTask);
   });
   const thresholds = critical.rate === 1 && continuity.rate >= .85 && Object.values(byScenario).every((x) => x.continuity.rate >= .75);
   const severeClear = Object.values(severe).every((count) => count === 0);
-  return { result: complete && prerequisites && scheduleOk && thresholds && severeClear ? "pass" : !complete || scores.some((s) => s.result === "inconclusive") ? "inconclusive" : "fail", gates: { complete, prerequisites, scheduleOk, critical, continuity, byArm, byScenario, severe, severeClear } };
+  return { result: complete && prerequisites && scheduleOk && thresholds && severeClear ? "pass" : !complete || scores.some((s) => s.result === "inconclusive") ? "inconclusive" : "fail", gates: { complete, prerequisites, scheduleOk, critical, continuity, byModel, byScenario, severe, severeClear } };
 }

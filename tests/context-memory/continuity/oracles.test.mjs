@@ -1,22 +1,20 @@
 import assert from "node:assert/strict";
-import { SCENARIOS, PRIMARY_ARM_VARIANTS, buildScript } from "./scenarios.mjs";
+import { PLACEMENTS, SCENARIOS, buildScript } from "./scenarios.mjs";
 import { scoreRun, evaluateGates } from "./oracles.mjs";
 
 const verified = { ok: true, failures: [], appends: 1, rebuilds: 2 };
-function scoreArtifact(scenario = "exact-work", variant = "early", arm = "primary", artifactText) {
-  const script = buildScript(scenario, variant);
+function scoreArtifact(scenario = "exact-work", placement = "early", lane = "sonnet", artifactText) {
+  const script = buildScript(scenario, placement);
   return scoreRun({
-    run: { scenario, variant, arm }, script,
+    run: { scenario, placement, lane }, script,
     artifactText: artifactText ?? JSON.stringify(script.oracle.expected),
     integrity: verified, coverage: verified,
-    sourceReads: script.oracle.requireSourceRead ? [{ ok: true, complete: true, coversSource: true }] : [],
+    retrievalQualification: { qualified: true, code: "qualified-search-snippet" },
   });
 }
 
-const passingMatrix = SCENARIOS.flatMap(({ id }) => [
-  ...PRIMARY_ARM_VARIANTS.map((variant) => scoreArtifact(id, variant)),
-  scoreArtifact(id, "canonical", "secondary"),
-]);
+const passingMatrix = ["sonnet", "glm"].flatMap((lane) =>
+  SCENARIOS.flatMap(({ id }) => PLACEMENTS.map((placement) => scoreArtifact(id, placement, lane))));
 assert.equal(evaluateGates(passingMatrix).result, "pass");
 
 // Exact types and values, not substrings or a valid fragment in invalid JSON.
@@ -30,7 +28,7 @@ assert.equal(evaluateGates(passingMatrix).result, "pass");
     JSON.stringify({ ...script.oracle.expected, deployment_region: "guessed-region" }),
     JSON.stringify({ ...script.oracle.expected, extra: true }),
   ]) {
-    assert.equal(scoreArtifact("exact-work", "early", "primary", artifact).result, "fail");
+    assert.equal(scoreArtifact("exact-work", "early", "sonnet", artifact).result, "fail");
   }
   const absent = scoreRun({ run: {}, script, artifactText: JSON.stringify(script.oracle.expected) });
   assert.equal(absent.result, "inconclusive", "correct answers without coverage cannot pass");
@@ -52,16 +50,17 @@ assert.equal(evaluateGates(passingMatrix).result, "pass");
 {
   const expected = buildScript("exact-work", "early").oracle.expected;
   const tolerated = [...passingMatrix];
-  tolerated[0] = scoreArtifact("exact-work", "early", "primary", JSON.stringify({ ...expected, owner: null }));
+  tolerated[0] = scoreArtifact("exact-work", "early", "sonnet", JSON.stringify({ ...expected, owner: null }));
   assert.equal(tolerated[0].finalTask, false);
   assert.equal(evaluateGates(tolerated).result, "pass");
 
   const canonicalMiss = [...passingMatrix];
-  canonicalMiss[1] = scoreArtifact("exact-work", "middle", "primary", JSON.stringify({ ...expected, owner: null }));
+  canonicalMiss[1] = scoreArtifact("exact-work", "middle", "sonnet", JSON.stringify({ ...expected, owner: null }));
   assert.equal(evaluateGates(canonicalMiss).result, "fail");
 
   const belowScenarioFloor = [...tolerated];
-  belowScenarioFloor[2] = scoreArtifact("exact-work", "late", "primary", JSON.stringify({ ...expected, owner: null, mode: null }));
+  belowScenarioFloor[2] = scoreArtifact("exact-work", "late", "sonnet", JSON.stringify({ ...expected, owner: null, mode: null }));
+  belowScenarioFloor[12] = scoreArtifact("exact-work", "early", "glm", JSON.stringify({ ...expected, mode: null }));
   assert.equal(evaluateGates(belowScenarioFloor).result, "fail");
 }
 
@@ -69,9 +68,9 @@ assert.equal(evaluateGates(passingMatrix).result, "pass");
 {
   const script = buildScript("source-recovery", "early");
   const incomplete = scoreRun({
-    run: { scenario: script.id, variant: "early", arm: "primary" }, script,
+    run: { scenario: script.id, placement: "early", lane: "sonnet" }, script,
     artifactText: JSON.stringify(script.oracle.expected), integrity: verified, coverage: verified,
-    sourceReads: [{ ok: true, complete: false, coversSource: true }],
+    retrievalQualification: { qualified: false, code: "source-evidence-incomplete" },
   });
   assert.equal(incomplete.result, "fail");
   const severe = [...passingMatrix];

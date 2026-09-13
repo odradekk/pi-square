@@ -79,6 +79,8 @@ const suites = [
   "context-memory/exit-arbitration.test.mjs",
   "context-memory/cache-experiment/session-sequence.test.mjs",
   "context-memory/continuity/fixtures.test.mjs",
+  "context-memory/continuity/concurrency.test.mjs",
+  "context-memory/continuity/retrieval-evidence.test.mjs",
   "context-memory/continuity/runner.test.mjs",
   "context-memory/continuity/oracles.test.mjs",
   "context-memory/continuity/session.test.mjs",
