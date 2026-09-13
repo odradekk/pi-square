@@ -415,8 +415,27 @@ try {
     "the covered interrupted search result leaves together with its call");
     assert.ok(!serialized.includes("narrating the interrupted source search"),
       "the covered interrupted narration leaves the same-session projected request");
-    assert.ok(serialized.includes(CONTINUE_MARKER) && serialized.includes("file-f.txt"),
-      "the retained working set remains in the same-session projected request");
+    const retainedReadResult = request.messages.find((message) =>
+      message.role === "toolResult" && message.toolName === "read" && messageText(message).includes(FACT_FOUR));
+    assert.ok(retainedReadResult, "the retained read result remains in the same-session projected request");
+    const retainedReadCall = request.messages
+      .filter((message) => message.role === "assistant" && Array.isArray(message.content))
+      .flatMap((message) => message.content)
+      .find((part) => part?.type === "toolCall" && part.name === "read" && part.id === retainedReadResult.toolCallId);
+    assert.ok(retainedReadCall, "the retained read result remains paired with its producing call");
+    const coveredOriginalReadIds = sessionManager.getBranch()
+      .filter((entry) => entry.type === "message" && entry.message.role === "toolResult"
+        && entry.message.toolName === "read" && [FACT_ONE, FACT_TWO, FACT_THREE].some((fact) => messageText(entry.message).includes(fact)))
+      .map((entry) => entry.message.toolCallId);
+    assert.deepEqual(coveredOriginalReadIds.length, 3, "the fixture records three covered original reads");
+    for (const id of coveredOriginalReadIds) {
+      const callPresent = request.messages.some((message) => message.role === "assistant" && Array.isArray(message.content)
+        && message.content.some((part) => part?.type === "toolCall" && part.id === id));
+      const resultPresent = request.messages.some((message) =>
+        message.role === "toolResult" && message.toolCallId === id);
+      assert.ok(!callPresent && !resultPresent,
+        "each covered original read call and result leaves the same-session projected request");
+    }
   }
 
   // Reopen through Pi's public seam to independently prove persisted
