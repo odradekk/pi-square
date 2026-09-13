@@ -42,9 +42,12 @@ an inherited list; a provided non-empty body replaces the lower body while an
 omitted or empty body inherits; `outputSchema` is replaced atomically (never
 field-merged) and `null` restores the default summary schema. An effective
 definition must be complete (name and non-empty body among layers,
-`completionGate` only with a `completion` subscription, `requiredTools`
+`completionGate` only with a `completion` subscription, every surviving
+`triggerInstructions` key among the declared `triggers`, `requiredTools`
 within the final tool set) or the whole ID fails closed with diagnostics
-while unrelated IDs stay active.
+while unrelated IDs stay active. Because those rules read the merged
+definition, a lower layer may declare the `triggers` that a higher layer only
+writes instructions for.
 
 ## Runtime boundary
 
@@ -95,7 +98,7 @@ through the production parser.
       "default": []
     },
     "triggerInstructions": {
-      "keysFromTriggers": true,
+      "keysSubsetOfDeclaredTriggers": true,
       "valueMaxLength": 8000,
       "nullClearsKey": true,
       "merge": "per-key across layers"
@@ -288,6 +291,22 @@ promptVersion: 1
 id: gateless
 name: Gateless
 completionGate: true
+---
+Body.
+```
+
+A trigger instruction the definition never subscribes to fails closed in the
+same validation: the instruction could never reach a run, so the whole ID is
+excluded rather than the key being ignored.
+
+```yaml shadow-invalid
+---
+promptVersion: 1
+id: stray-instruction
+name: Stray instruction
+triggers: [failure]
+triggerInstructions:
+  completion: Compare the settled answer against its evidence.
 ---
 Body.
 ```

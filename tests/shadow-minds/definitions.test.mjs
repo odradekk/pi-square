@@ -378,17 +378,81 @@ await withRoot(async (dir, project) => {
   write(join(agent, "gated.md"), definitionFile({ id: "gated", name: "Gated", completionGate: true }));
   // requiredTools outside the final tool set.
   write(join(agent, "required.md"), definitionFile({ id: "required", name: "Required", tools: ["read"], requiredTools: ["grep"] }));
+  // A trigger instruction the definition never subscribes to (#346).
+  write(join(agent, "stray.md"), definitionFile({
+    id: "stray",
+    name: "Stray",
+    triggers: ["failure"],
+    triggerInstructions: { completion: "Compare the settled answer against its evidence." },
+  }));
   // Empty effective body.
   write(join(agent, "bodiless.md"), definitionFile({ id: "bodiless", name: "Bodiless" }, ""));
   const registry = discoverShadowDefinitions(project);
   assert.equal(registry.definitions.length, 0);
   const ids = registry.invalid.map((entry) => entry.id).sort();
-  assert.deepEqual(ids, ["bodiless", "gated", "nameless", "required"]);
+  assert.deepEqual(ids, ["bodiless", "gated", "nameless", "required", "stray"]);
   const byId = new Map(registry.invalid.map((entry) => [entry.id, entry]));
   assert.ok(byId.get("nameless").errors.some((message) => message.includes("effective name is missing")));
   assert.ok(byId.get("gated").errors.some((message) => message.includes("completionGate requires a completion trigger")));
   assert.ok(byId.get("required").errors.some((message) => message.includes("required tool 'grep' is outside the final tool set")));
   assert.ok(byId.get("bodiless").errors.some((message) => message.includes("effective body is explicitly empty")));
+  assert.ok(
+    byId.get("stray").errors.some((message) =>
+      message.includes("triggerInstructions.completion has no 'completion' trigger subscription")
+      && message.includes("add 'completion' to triggers")
+      && message.includes("clear the instruction with 'completion: null'")),
+    JSON.stringify(byId.get("stray").errors),
+  );
+});
+
+// ── Instruction keys are checked against the merged triggers (#346) ──
+
+await withRoot(async (dir, project) => {
+  const agent = join(dir, "agent", "shadow-minds");
+  const overlay = join(project, ".pi", "shadow-minds");
+  // The base declares the triggers; the overlay only adds an instruction.
+  write(join(agent, "split.md"), definitionFile({ id: "split", name: "Split", triggers: ["failure", "completion"] }));
+  write(join(overlay, "split.md"), definitionFile({
+    id: "split",
+    triggerInstructions: { completion: "Compare the settled answer against its evidence." },
+  }, ""));
+  // The overlay narrows the triggers and clears the instruction it drops.
+  write(join(agent, "narrowed.md"), definitionFile({
+    id: "narrowed",
+    name: "Narrowed",
+    triggers: ["failure"],
+    triggerInstructions: { failure: "Name the failing target." },
+  }));
+  write(join(overlay, "narrowed.md"), definitionFile({
+    id: "narrowed",
+    triggers: ["completion"],
+    triggerInstructions: { failure: null },
+  }, ""));
+  // The same narrowing without the clearing strands the base instruction.
+  write(join(agent, "stranded.md"), definitionFile({
+    id: "stranded",
+    name: "Stranded",
+    triggers: ["failure"],
+    triggerInstructions: { failure: "Name the failing target." },
+  }));
+  write(join(overlay, "stranded.md"), definitionFile({ id: "stranded", triggers: ["completion"] }, ""));
+
+  const registry = discoverShadowDefinitions(project);
+  assert.deepEqual(
+    registry.definitions.map((definition) => definition.id),
+    ["narrowed", "split"],
+    "a cross-layer definition stays valid, and one invalid id never excludes the others",
+  );
+  assert.deepEqual(
+    registry.definitions.find((definition) => definition.id === "split").triggerInstructions,
+    { completion: "Compare the settled answer against its evidence." },
+    "the overlay instruction reaches the trigger the base layer declared",
+  );
+  assert.deepEqual(registry.invalid.map((entry) => entry.id), ["stranded"]);
+  assert.ok(
+    registry.invalid[0].errors.some((message) => message.includes("triggerInstructions.failure has no 'failure' trigger subscription")),
+    JSON.stringify(registry.invalid[0].errors),
+  );
 });
 
 // ── Uppercase .MD files are discovered like lowercase ones ───────────
