@@ -13,11 +13,15 @@ One definition is one Markdown file: a YAML frontmatter block between two
 strict YAML subset:
 
 - plain, single-quoted, and double-quoted scalars only;
-- one-line flow lists (`[a, b]`) and block lists (`- item`);
+- one-line flow lists (`[a, b]`) and block lists whose `- item` lines indent
+  exactly two spaces under their field; a block list written at column zero
+  is rejected and fails the whole file;
 - nested maps indent by exactly two spaces;
 - whole-line `#` comments are author documentation and are skipped;
-- `#` inside or after a value, tabs, anchors, aliases, tags, merge keys,
-  block scalars, and duplicate keys are rejected;
+- `#` inside or after a plain scalar is rejected, while a single- or
+  double-quoted scalar keeps a literal `#`;
+- tabs, anchors, aliases, tags, merge keys, block scalars, and duplicate keys
+  are rejected;
 - unknown fields are rejected.
 
 The file name stem must equal the `id` (`<id>.md`). One file is one layer;
@@ -198,7 +202,22 @@ outputSchema:
 Name the failing target in one line.
 ```
 
-Whole-line comments are skipped, but `#` after a value is rejected:
+A quoted scalar keeps a literal `#`, and a block list indents two spaces
+under its field:
+
+```yaml shadow-valid
+---
+promptVersion: 1
+id: quoted-hash
+name: "Quoted hash # stays literal"
+tools:
+  - read
+  - grep
+---
+Quote the evidence you cite before drawing a conclusion.
+```
+
+Whole-line comments are skipped, but `#` after a plain scalar is rejected:
 
 ```yaml shadow-invalid
 ---
@@ -221,6 +240,21 @@ outputSchema:
   properties:
     summary:
       type: string
+---
+Body.
+```
+
+A block list written at column zero instead of two spaces under its field
+is rejected:
+
+```yaml shadow-invalid
+---
+promptVersion: 1
+id: flush-list
+name: Flush list
+tools:
+- read
+- grep
 ---
 Body.
 ```

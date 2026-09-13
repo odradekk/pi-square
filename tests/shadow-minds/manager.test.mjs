@@ -104,6 +104,30 @@ function render(manager, width = 100) {
     assert.ok(narrowed.every((line) => line.replace(PLAIN, "").length <= width), `every line stays inside width ${width}`);
   }
 }
+// ── Hidden definitions stay listed in the manager ────────────────────
+
+{
+  // #343: hidden withholds automatic triggering, not visibility. The entry
+  // keeps its place in the list and the state line says so.
+  const base = discoverShadowDefinitions(fixtureProject).definitions
+    .find((entry) => entry.id === "research-scout");
+  assert.ok(base, "sanity: the manual-only fixture is discovered");
+  const manager = new ShadowManager(
+    {
+      definitions: [{ ...base, enabled: true, hidden: true }],
+      invalid: [],
+      diagnostics: [],
+    },
+    makeTui(),
+    makeTheme(),
+    makeKeybindings(),
+    () => {},
+  );
+  const lines = render(manager);
+  assert.ok(lines.some((line) => line.includes("◦ Research scout")), "a hidden definition stays in the manager list under its own badge");
+  assert.ok(lines.some((line) => line.includes("STATE: enabled · hidden")), "the detail state line marks it hidden");
+}
+
 // ── The effective configuration is inspectable in the view ───────────
 
 {
