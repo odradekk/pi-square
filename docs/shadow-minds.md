@@ -130,25 +130,20 @@ debug: false
 Summarize the project conventions the current answer should respect...
 ```
 
-Fields:
+Definitions start disabled and are enabled one at a time; `hidden: true` keeps
+a definition listed in `/shadow` and manually startable while removing it from
+every automatic candidate set.
 
-| Field | Meaning | Default |
-| --- | --- | --- |
-| `enabled` | Definitions start disabled; you opt in per definition | `false` |
-| `hidden` | Stays listed in the manager but never triggers automatically; manual starts still work | `false` |
-| `priority` | Dispatch tie-break among same-trigger candidates | `0` |
-| `triggers` | Automatic triggers: `tool_turn`, `mutation`, `failure`, `completion` | `[]` |
-| `triggerInstructions` | Per-trigger instruction map; `null` removes a key | `{}` |
-| `delivery` | Result delivery policy: `steer`, `wake`, or `notify` | `steer` |
-| `completionGate` | Answer-after-review window; requires `completion` | `false` |
-| `tools` | Shadow-safe tool list; omitted selects the default local set, `[]` selects none | default set |
-| `requiredTools` | Must be a subset of the final tool set | `[]` |
-| `model` | Explicit `provider/model-id` with configured auth; omit to inherit the parent model | inherit |
-| `parentModels` | Exact `provider/model-id` or `*` filter on the activating parent model | any |
-| `thinking` | `off`…`max`; omit to fall back to configuration default, then the parent's level | inherit |
-| `timeoutSeconds`, `maxTurns`, `maxToolCalls` | Per-run bounds under package caps | config defaults |
-| `debug` | Persist a sanitized child-session JSONL per run (see below) | `false` |
-| `outputSchema` | Bounded JSON object schema for the result payload; replaced atomically, `null` restores the default `{ summary: string }` | default schema |
+The normative field reference is the packaged
+`shadow-minds/schema-reference.md` (see **Layers** below): every field, bound,
+enum, default, and consistency rule, in a contract block generated from the
+parser constants and compared against them by a contract test. This guide no
+longer restates that table — the restatement was the copy that went stale — and
+describes behavior instead: `triggers`, `priority`, and `completionGate` under
+**Triggers and scheduling**; `tools`, `requiredTools`, `model`, `parentModels`,
+and `thinking` under **Tool and model boundaries**; `delivery` and
+`outputSchema` under **Runs, results, and delivery**; `debug` under **Debug
+data**.
 
 ### Layers
 
@@ -206,10 +201,11 @@ replaying paused events. Manual trials always stay available.
 
 ## Tool and model boundaries
 
-The Shadow-safe tool catalog is exactly: `read`, `grep`, `find`, `ls`,
-`web_search`, `web_fetch`, `library_search`, `library_docs`. Omitted
-`tools` select the default local evidence set (`read`, `grep`, `find`,
-`ls`); `tools: []` is the no-tool trial. Shell, file writes, SSH, and
+The Shadow-safe tool catalog is fixed: the default local evidence built-ins
+plus the optional remote evidence tools, both named in the `toolCatalog`
+section of the contract block in the packaged
+`shadow-minds/schema-reference.md`. Omitted `tools` select the default local
+evidence set; `tools: []` is the no-tool trial. Shell, file writes, SSH, and
 delegation are excluded capabilities — a
 requested-but-excluded tool drops with a run-start warning, while a
 `requiredTools` miss fails before prompting. The warning is kept on the run
