@@ -27,6 +27,7 @@ import {
   DEFAULT_OUTPUT_SCHEMA,
   parseShadowDefinitionFile,
   SHADOW_DEFAULT_TOOLS,
+  SHADOW_FRONTMATTER_FIELDS,
   type ParsedShadowDefinition,
   type ShadowDefinitionFields,
   type ShadowDelivery,
@@ -184,24 +185,11 @@ function mergeLayers(
   const fieldSources: Record<string, ShadowDefinitionSource> = {};
   const fields: ShadowDefinitionFields = { id };
 
-  const scalarKeys: (keyof ShadowDefinitionFields)[] = [
-    "name",
-    "enabled",
-    "hidden",
-    "priority",
-    "triggers",
-    "delivery",
-    "completionGate",
-    "parentModels",
-    "model",
-    "thinking",
-    "timeoutSeconds",
-    "maxTurns",
-    "maxToolCalls",
-    "tools",
-    "requiredTools",
-    "debug",
-  ];
+  // Every field that overlays as one whole value. The layer identity field and
+  // the three fields with their own merge rules are handled separately below.
+  const scalarKeys = SHADOW_FRONTMATTER_FIELDS.filter(
+    (key) => key !== "id" && key !== "triggerInstructions" && key !== "outputSchema",
+  );
   for (const key of scalarKeys) {
     for (const layer of layers) {
       const value = layer.parsed.fields[key];

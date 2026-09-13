@@ -12,6 +12,7 @@
 
 import {
   SHADOW_BODY_MAX_CHARS,
+  SHADOW_FRONTMATTER_FIELDS,
   SHADOW_ID_PATTERN,
   SHADOW_NAME_MAX_CHARS,
   SHADOW_PRIORITY_MAX,
@@ -20,33 +21,12 @@ import {
   SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS,
   SHADOW_TOOLS_MAX,
   SHADOW_PARENT_MODELS_MAX,
+  SHADOW_PROMPT_VERSION,
   validateOutputSchema,
   type ShadowDefinitionFields,
   type ShadowOutputSchema,
   type ShadowTrigger,
 } from "./parser";
-
-/** Fixed canonical field order for serialized layers. */
-const FIELD_ORDER = [
-  "name",
-  "enabled",
-  "hidden",
-  "priority",
-  "triggers",
-  "triggerInstructions",
-  "delivery",
-  "completionGate",
-  "parentModels",
-  "model",
-  "thinking",
-  "timeoutSeconds",
-  "maxTurns",
-  "maxToolCalls",
-  "tools",
-  "requiredTools",
-  "debug",
-  "outputSchema",
-] as const;
 
 /**
  * The default candidate for a newly created definition (#154): disabled, no
@@ -161,22 +141,18 @@ function assertValid(fields: ShadowDefinitionFields): void {
 /** Serializes one definition layer into the canonical Markdown form. */
 export function serializeShadowDefinition(fields: ShadowDefinitionFields): string {
   assertValid(fields);
-  const lines = ["promptVersion: 1", `id: ${quoted(fields.id)}`];
-  for (const field of FIELD_ORDER) {
+  // The parser's canonical field order is the serialized order.
+  const lines = [`promptVersion: ${SHADOW_PROMPT_VERSION}`];
+  for (const field of SHADOW_FRONTMATTER_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(fields, field)) continue;
     const value = fields[field];
     switch (field) {
+      case "id":
       case "name":
-        lines.push(`name: ${quoted(value as string)}`);
-        break;
       case "model":
-        lines.push(`model: ${quoted(value as string)}`);
-        break;
       case "thinking":
-        lines.push(`thinking: ${quoted(value as string)}`);
-        break;
       case "delivery":
-        lines.push(`delivery: ${quoted(value as string)}`);
+        lines.push(`${field}: ${quoted(value as string)}`);
         break;
       case "priority":
       case "timeoutSeconds":
