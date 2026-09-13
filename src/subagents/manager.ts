@@ -38,6 +38,7 @@ import {
 import {
   deleteDefinitionOverlay,
   previewDefinitionPatch,
+  type InvalidSubagentDefinition,
   type SubagentDefinition,
   type SubagentDefinitionField,
   type SubagentDefinitionPatch,
@@ -62,11 +63,17 @@ interface ManagerSnapshot {
   /** Runs whose result an explicit wait_subagent call currently owns. */
   claimedIds?: string[];
   definitions: SubagentDefinition[];
+  /** Rejected definition files, listed beside valid definitions with their errors. */
+  invalid: InvalidSubagentDefinition[];
   errors: string[];
 }
 
 type DefinitionPreview = ReturnType<typeof previewDefinitionPatch>;
 
+/** One definitions-tab row: a working definition or a rejected definition file. */
+type DefinitionEntry =
+  | { kind: "valid"; definition: SubagentDefinition }
+  | { kind: "invalid"; invalid: InvalidSubagentDefinition };
 interface OperationResult {
   ok: boolean;
   message: string;
@@ -230,6 +237,7 @@ function snapshot(state: SubagentRuntimeState, parentSessionId: string): Manager
     undeliveredIds: state.background.delivery?.pendingIds() ?? [],
     claimedIds: state.background.delivery?.pendingIds().filter((id) => state.background.delivery?.isClaimed(id)) ?? [],
     definitions: [...state.registry.definitions].sort((a, b) => a.name.localeCompare(b.name)),
+    invalid: [...(state.registry.invalid ?? [])].sort((a, b) => a.id.localeCompare(b.id)),
     errors: [...state.registry.errors],
   };
 }
@@ -477,7 +485,7 @@ export class SubagentManager implements Component, Focusable {
   private count(tab = this.tab()): number {
     if (tab === "running") return this.data.running.length;
     if (tab === "session") return this.data.session.length;
-    return this.data.definitions.length;
+    return this.definitionEntries().length;
   }
 
   private selectedIndex(): number {
@@ -495,8 +503,21 @@ export class SubagentManager implements Component, Focusable {
     return Boolean(run && this.data.activeSessionIds?.includes(run.id));
   }
 
+  /** Valid definitions first, then rejected files — both selectable rows. */
+  private definitionEntries(): DefinitionEntry[] {
+    return [
+      ...this.data.definitions.map((definition) => ({ kind: "valid" as const, definition })),
+      ...(this.data.invalid ?? []).map((invalid) => ({ kind: "invalid" as const, invalid })),
+    ];
+  }
+
   private selectedDefinition(): SubagentDefinition | undefined {
     return this.data.definitions[this.selectedIndex()];
+  }
+
+  private selectedInvalid(): InvalidSubagentDefinition | undefined {
+    const entry = this.definitionEntries()[this.selectedIndex()];
+    return entry?.kind === "invalid" ? entry.invalid : undefined;
   }
 
   private move(delta: number): void {
@@ -935,6 +956,12 @@ export class SubagentManager implements Component, Focusable {
       this.openTask("resume", run);
       return;
     }
+    const invalid = this.selectedInvalid();
+    if (invalid) {
+      this.flash = { kind: "error", text: `Definition '${invalid.id}' is invalid — repair the source file to delegate to it.` };
+      this.tui.requestRender();
+      return;
+    }
     const definition = this.selectedDefinition();
     if (definition) this.editDefinition(definition);
   }
@@ -961,11 +988,21 @@ export class SubagentManager implements Component, Focusable {
         return `${marker} ${this.theme.fg("text", this.theme.bold(name))} ${this.theme.fg("dim", shortId(run.id))}  ${sessionPhasePresentation(active, run.phase, this.theme)}${undelivered}`;
       });
     }
-    if (this.data.definitions.length === 0) return [this.theme.fg("dim", "No valid V2 definitions")];
-    return this.data.definitions.map((definition, index) => {
+    const entries = this.definitionEntries();
+    if (entries.length === 0) return [this.theme.fg("dim", "No valid V2 definitions")];
+    return entries.map((entry, index) => {
       const marker = index === selected ? this.theme.fg("accent", "›") : " ";
+      if (entry.kind === "invalid") {
+        // The error-hue marker follows the Shadow Minds invalid-entry grammar.
+        const badge = this.theme.fg("error", "!");
+        return `${marker} ${badge} ${this.theme.fg("error", entry.invalid.id)}  ${this.theme.fg("dim", "invalid")}`;
+      }
+      const definition = entry.definition;
+      // Visibility is not operational state or identity, so it never takes
+      // hue: hidden rows carry a neutral dim marker only.
+      const badge = definition.visible ? "●" : this.theme.fg("dim", "◦");
       const visibility = definition.visible ? "visible" : "hidden";
-      return `${marker} ${this.theme.fg("text", this.theme.bold(definition.name))}  ${this.theme.fg("dim", `${definition.source} · ${visibility}`)}`;
+      return `${marker} ${badge} ${this.theme.fg("text", this.theme.bold(definition.name))}  ${this.theme.fg("dim", `${definition.source} · ${visibility}`)}`;
     });
   }
 
@@ -997,6 +1034,18 @@ export class SubagentManager implements Component, Focusable {
         `Prompt: V${run.promptSnapshot.version} · ${drift}`,
         `Hash: ${(originalHash ?? run.promptSnapshot.manifest.effectiveSystemHash).slice(0, 16)}`,
       ];
+    }
+    const invalid = this.selectedInvalid();
+    if (invalid) {
+      const rows = [
+        `State: invalid — excluded from delegation`,
+        "Sources:",
+      ];
+      for (const source of invalid.sources) rows.push(`  ${source}`);
+      rows.push("Errors:");
+      for (const error of invalid.errors) rows.push(`  ${error}`);
+      rows.push("Repair: fix the file directly or /subagent <request>");
+      return rows;
     }
     const definition = this.selectedDefinition();
     if (!definition) return this.data.errors.slice(0, 4).concat("Create a project or agent definition with N.");
