@@ -568,6 +568,78 @@ try {
       "the retained working set stays raw");
   }
 
+  // ── Post-abort alignment: only zero-content terminal assistants may be
+  //      absent; non-empty and partial failures remain strict ──
+
+  {
+    const runTerminalShape = async ({ label, stopReason, content, omittedApplies }) => {
+      const sm = SessionManager.inMemory("/project");
+      sm.appendMessage({ role: "user", content: "research task", timestamp: 1 });
+      sm.appendMessage(assistantWith([readCallPart(`${label}:a`, "a.txt")], 2));
+      sm.appendMessage(toolResult(`${label}:a`, "read", "EVIDENCE-A " + "a".repeat(900), 3));
+      sm.appendMessage(assistantWith([readCallPart(`${label}:b`, "b.txt")], 4));
+      sm.appendMessage(toolResult(`${label}:b`, "read", "EVIDENCE-B " + "b".repeat(900), 5));
+      sm.appendMessage(assistantWith([compactCallPart(`${label}:c1`)], 6));
+      const session = harness(ENABLED_CONFIG, sm);
+      const ctx = commandContext(sm);
+      await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      await serveContext(session, sm, ctx);
+      await noteBatch(session, ctx, [compactCallPart(`${label}:c1`)]);
+      const first = await compactTool(session).execute(
+        `${label}:c1`, { markdown: `# ${label} first digest` }, undefined, undefined, ctx,
+      );
+      sm.appendMessage(toolResult(`${label}:c1`, "compact_to_memory_block", first.content[0].text, 7));
+      const terminal = sm.appendMessage({
+        role: "assistant",
+        content,
+        api: "test",
+        provider: "test",
+        model: "test",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason,
+        errorMessage: "This operation was aborted",
+        timestamp: 8,
+      });
+      sm.appendMessage({ role: "user", content: "continue after interruption", timestamp: 9 });
+      sm.appendMessage(assistantWith([readCallPart(`${label}:c`, "c.txt")], 10));
+      sm.appendMessage(toolResult(`${label}:c`, "read", "EVIDENCE-C " + "c".repeat(900), 11));
+      sm.appendMessage(assistantWith([readCallPart(`${label}:d`, "d.txt")], 12));
+      sm.appendMessage(toolResult(`${label}:d`, "read", "EVIDENCE-D " + "d".repeat(900), 13));
+      sm.appendMessage(assistantWith([compactCallPart(`${label}:c2`)], 14));
+      await serveContext(session, sm, ctx);
+      await noteBatch(session, ctx, [compactCallPart(`${label}:c2`)]);
+      const second = await compactTool(session).execute(
+        `${label}:c2`, { markdown: `# ${label} second digest` }, undefined, undefined, ctx,
+      );
+      sm.appendMessage(toolResult(`${label}:c2`, "compact_to_memory_block", second.content[0].text, 15));
+
+      const withoutTerminal = buildContextEntries(sm.getBranch(), sm.getLeafId())
+        .flatMap((entry) => entry.id === terminal ? [] : sessionEntryToContextMessages(entry));
+      const projected = await session.emit("context", { type: "context", messages: withoutTerminal }, ctx);
+      const serialized = JSON.stringify(projected.messages);
+      const carriers = projected.messages.filter((message) => message?.customType === "pi-square.context-memory/blocks");
+      assert.equal(carriers.length, omittedApplies ? 1 : 0, `${label}: carrier decision matches the terminal shape`);
+      assert.equal(serialized.includes("EVIDENCE-C"), !omittedApplies,
+        `${label}: post-interruption covered evidence leaves only under a valid application`);
+      assert.ok(serialized.includes("EVIDENCE-D"), `${label}: the retained working set stays raw`);
+    };
+
+    await runTerminalShape({ label: "empty-error", stopReason: "error", content: [], omittedApplies: true });
+    await runTerminalShape({ label: "empty-aborted", stopReason: "aborted", content: [], omittedApplies: true });
+    await runTerminalShape({
+      label: "nonempty-error",
+      stopReason: "error",
+      content: [{ type: "text", text: "partial provider detail" }],
+      omittedApplies: false,
+    });
+    await runTerminalShape({
+      label: "partial-aborted",
+      stopReason: "aborted",
+      content: [{ type: "thinking", thinking: "partial reasoning", thinkingSignature: "sig" }],
+      omittedApplies: false,
+    });
+  }
+
   // ── Append over a v1 compaction-carried Memory ──
   // The state entry records baseCompactionId and both blocks. Note: the
   // recorded entry does not itself derive as a valid state carrier — the v1

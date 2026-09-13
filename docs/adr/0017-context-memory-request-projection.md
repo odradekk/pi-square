@@ -266,7 +266,14 @@ entire summary enters it exactly once.
 Respect upstream `context` transformations. Do not rebuild the request blindly
 from the raw log and thereby bypass another extension's filtering. If source
 identity cannot be matched safely, refuse the application rather than
-guessing, partially projecting, or silently restoring raw history.
+guessing, partially projecting, or silently restoring raw history. One native
+normalization is safe to model explicitly: Pi may omit a terminal `error` or
+`aborted` assistant whose content array is empty after an interrupted run.
+That entry carries no source evidence, so exclude it from the expected
+alignment sequence and resume strict equality at the next message. Do not
+extend this exception to non-empty or partial failed assistants; their text,
+thinking, and tool-call shapes remain evidence whose omission refuses the
+whole application.
 
 Keep stable tool definitions, instructions, block text, and ordering between
 maintenance boundaries. Do not add provider-specific breakpoints or cache
