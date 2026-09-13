@@ -25,6 +25,8 @@ import {
 
 // ── Bounds ───────────────────────────────────────────────────────────
 
+/** The only accepted `promptVersion` of a Shadow definition. */
+export const SHADOW_PROMPT_VERSION = 1;
 /** Whole definition file bound. */
 export const SHADOW_FILE_MAX_BYTES = 64 * 1024;
 /** Markdown responsibility body bound. */
@@ -44,6 +46,8 @@ export const SHADOW_ID_MAX_CHARS = 64;
 export const SHADOW_NAME_MAX_CHARS = 120;
 export const SHADOW_PRIORITY_MIN = -1_000;
 export const SHADOW_PRIORITY_MAX = 1_000;
+/** Lower bound shared by the three per-run budget fields. */
+export const SHADOW_RUN_BUDGET_MIN = 1;
 /** Maximum nesting of one output schema. */
 export const SHADOW_SCHEMA_MAX_DEPTH = 6;
 /** Total properties across one output schema. */
@@ -425,6 +429,42 @@ export interface ShadowDefinitionFields {
   body?: string;
 }
 
+/**
+ * Every frontmatter field a definition layer may declare, in canonical order.
+ * The parser's accepted-key set, the serializer's field order, and the
+ * discovery merge all derive from this constant (#342), so the repository
+ * holds one field-name list instead of four that can drift apart.
+ */
+export const SHADOW_FRONTMATTER_FIELDS = [
+  "id",
+  "name",
+  "enabled",
+  "hidden",
+  "priority",
+  "triggers",
+  "triggerInstructions",
+  "delivery",
+  "completionGate",
+  "parentModels",
+  "model",
+  "thinking",
+  "timeoutSeconds",
+  "maxTurns",
+  "maxToolCalls",
+  "tools",
+  "requiredTools",
+  "debug",
+  "outputSchema",
+] as const satisfies readonly (keyof ShadowDefinitionFields)[];
+
+/**
+ * Every documented definition field: the frontmatter fields plus the Markdown
+ * responsibility body, which carries no frontmatter key of its own.
+ */
+export const SHADOW_DEFINITION_FIELDS = [...SHADOW_FRONTMATTER_FIELDS, "body"] as const;
+
+export type ShadowDefinitionField = (typeof SHADOW_DEFINITION_FIELDS)[number];
+
 export interface ParsedShadowDefinition {
   fields: ShadowDefinitionFields;
   contentHash: string;
@@ -750,28 +790,7 @@ function parseScalar(text: string): YamlValue {
 
 // ── Field normalization ──────────────────────────────────────────────
 
-const KNOWN_FIELDS = new Set([
-  "promptVersion",
-  "id",
-  "name",
-  "enabled",
-  "hidden",
-  "priority",
-  "triggers",
-  "triggerInstructions",
-  "delivery",
-  "completionGate",
-  "parentModels",
-  "model",
-  "thinking",
-  "timeoutSeconds",
-  "maxTurns",
-  "maxToolCalls",
-  "tools",
-  "requiredTools",
-  "debug",
-  "outputSchema",
-]);
+const KNOWN_FIELDS = new Set<string>(["promptVersion", ...SHADOW_FRONTMATTER_FIELDS]);
 
 function plainSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((entry) => plainSchema(entry));
@@ -796,8 +815,8 @@ function normalizeDefinitionFields(
   for (const key of Object.keys(frontmatter)) {
     if (!KNOWN_FIELDS.has(key)) return fail(`unknown field '${key}'`);
   }
-  if (frontmatter.promptVersion !== 1) {
-    return fail(`promptVersion must be 1 (got ${JSON.stringify(frontmatter.promptVersion) ?? "null"})`);
+  if (frontmatter.promptVersion !== SHADOW_PROMPT_VERSION) {
+    return fail(`promptVersion must be ${SHADOW_PROMPT_VERSION} (got ${JSON.stringify(frontmatter.promptVersion) ?? "null"})`);
   }
   const id = expectString(source, frontmatter, "id", errors, 1, SHADOW_ID_MAX_CHARS);
   const name = frontmatter.name === undefined
@@ -917,24 +936,24 @@ function normalizeDefinitionFields(
 
   const timeoutSeconds = frontmatter.timeoutSeconds;
   if (timeoutSeconds !== undefined) {
-    if (typeof timeoutSeconds !== "number" || !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS) {
-      errors.push(`${source}: timeoutSeconds must be an integer between 1 and ${SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS}`);
+    if (typeof timeoutSeconds !== "number" || !Number.isInteger(timeoutSeconds) || timeoutSeconds < SHADOW_RUN_BUDGET_MIN || timeoutSeconds > SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS) {
+      errors.push(`${source}: timeoutSeconds must be an integer between ${SHADOW_RUN_BUDGET_MIN} and ${SHADOW_MINDS_RUN_TIMEOUT_HARD_MAX_SECONDS}`);
     } else {
       fields.timeoutSeconds = timeoutSeconds;
     }
   }
   const maxTurns = frontmatter.maxTurns;
   if (maxTurns !== undefined) {
-    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > SHADOW_MINDS_MODEL_TURNS_HARD_MAX) {
-      errors.push(`${source}: maxTurns must be an integer between 1 and ${SHADOW_MINDS_MODEL_TURNS_HARD_MAX}`);
+    if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < SHADOW_RUN_BUDGET_MIN || maxTurns > SHADOW_MINDS_MODEL_TURNS_HARD_MAX) {
+      errors.push(`${source}: maxTurns must be an integer between ${SHADOW_RUN_BUDGET_MIN} and ${SHADOW_MINDS_MODEL_TURNS_HARD_MAX}`);
     } else {
       fields.maxTurns = maxTurns;
     }
   }
   const maxToolCalls = frontmatter.maxToolCalls;
   if (maxToolCalls !== undefined) {
-    if (typeof maxToolCalls !== "number" || !Number.isInteger(maxToolCalls) || maxToolCalls < 1 || maxToolCalls > SHADOW_MINDS_TOOL_CALLS_HARD_MAX) {
-      errors.push(`${source}: maxToolCalls must be an integer between 1 and ${SHADOW_MINDS_TOOL_CALLS_HARD_MAX}`);
+    if (typeof maxToolCalls !== "number" || !Number.isInteger(maxToolCalls) || maxToolCalls < SHADOW_RUN_BUDGET_MIN || maxToolCalls > SHADOW_MINDS_TOOL_CALLS_HARD_MAX) {
+      errors.push(`${source}: maxToolCalls must be an integer between ${SHADOW_RUN_BUDGET_MIN} and ${SHADOW_MINDS_TOOL_CALLS_HARD_MAX}`);
     } else {
       fields.maxToolCalls = maxToolCalls;
     }
