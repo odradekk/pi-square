@@ -82,7 +82,7 @@ export interface SubagentDefinition {
  */
 export interface InvalidSubagentDefinition {
   id: string;
-  /** Every file that claimed the ID; more than one means a cross-file conflict. */
+  /** The rejected file, or — for an overlay merge failure — every contributing layer. */
   sources: string[];
   errors: string[];
 }
@@ -148,7 +148,8 @@ function stripQuotes(value: string): string {
   return trimmed;
 }
 
-function splitInlineArray(body: string): string[] {
+/** Quote-aware split of an inline array body into raw trimmed items, quotes kept. */
+function splitInlineArrayItems(body: string): string[] {
   const items: string[] = [];
   let current = "";
   let quote: string | null = null;
@@ -164,16 +165,20 @@ function splitInlineArray(body: string): string[] {
       continue;
     }
     if (ch === ",") {
-      const value = stripQuotes(current).trim();
+      const value = current.trim();
       if (value) items.push(value);
       current = "";
       continue;
     }
     current += ch;
   }
-  const tail = stripQuotes(current).trim();
+  const tail = current.trim();
   if (tail) items.push(tail);
   return items;
+}
+
+function splitInlineArray(body: string): string[] {
+  return splitInlineArrayItems(body).map((item) => stripQuotes(item)).filter(Boolean);
 }
 
 function parseYamlScalar(value: string): string | null {
@@ -184,6 +189,13 @@ function parseYamlScalar(value: string): string | null {
 
 /** Bare block scalar indicators with a chomping or indentation marker (`|-`, `>+`, `|2`). */
 const CHOMPING_INDICATOR_PATTERN = /^[|>][-+0-9]*$/;
+
+/**
+ * One shared message for every inline-comment rejection. Quoting is the way to
+ * keep a literal '#' such as an issue number in the value; moving the comment
+ * to its own line is the way to actually have a comment.
+ */
+const INLINE_COMMENT_MESSAGE = "inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line";
 
 /**
  * Index where an inline comment starts inside one YAML-subset value, or -1.
@@ -284,7 +296,7 @@ function parseYamlDefinition(
     const rest = (match[2] ?? "").trim();
 
     if (findInlineComment(rest) >= 0) {
-      errors.push(`${filePath}: line ${i + 1}: inline comments are not supported — move the comment to its own line`);
+      errors.push(`${filePath}: line ${i + 1}: ${INLINE_COMMENT_MESSAGE}`);
       data[key] = null;
       i += 1;
       continue;
@@ -328,6 +340,16 @@ function parseYamlDefinition(
     }
 
     if (rest.startsWith("[") && rest.endsWith("]")) {
+      // Inline arrays get the same item checks as block lists, so one spelling
+      // of the same value cannot silently diverge between the two forms.
+      const rawItems = splitInlineArrayItems(rest.slice(1, -1));
+      const misspelled = rawItems.find((item) => nullSpellingProblem(item) !== undefined);
+      if (misspelled !== undefined) {
+        errors.push(`${filePath}: line ${i + 1}: '${misspelled}' — ${nullSpellingProblem(misspelled)}`);
+        data[key] = null;
+        i += 1;
+        continue;
+      }
       data[key] = splitInlineArray(rest.slice(1, -1));
       i += 1;
       continue;
@@ -367,7 +389,7 @@ function parseYamlDefinition(
           }
           const itemText = (itemMatch[1] ?? "").trim();
           if (findInlineComment(itemText) >= 0) {
-            errors.push(`${filePath}: line ${i + 1}: inline comments are not supported — move the comment to its own line`);
+            errors.push(`${filePath}: line ${i + 1}: ${INLINE_COMMENT_MESSAGE}`);
           } else {
             const itemNullProblem = nullSpellingProblem(itemText);
             if (itemNullProblem) {

@@ -173,6 +173,21 @@ test("uppercase null and tilde spellings are rejected instead of becoming litera
     );
     assert.equal(parsed.errors.length, 0, value);
   }
+  // Inline array items follow the same spelling rules as block list items.
+  const arrayMisspelled = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools: [read, NULL]\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.equal(arrayMisspelled.layer, undefined);
+  assert.ok(arrayMisspelled.errors.some((item) => item.includes("NULL")));
+  const arrayQuoted = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools: [read, "NULL"]\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.deepEqual(arrayQuoted.errors, []);
+  assert.deepEqual(arrayQuoted.layer?.patch.tools, ["read", "NULL"]);
 });
 
 test("blank lines inside a block list are rejected instead of truncating it", () => {
@@ -287,8 +302,9 @@ test("rejected definition files return as invalid entries beside valid definitio
     const broken = registry.invalid.find((item) => item.id === "broken");
     assert.ok(broken, `invalid ids: ${registry.invalid.map((item) => item.id).join(", ")}`);
     assert.deepEqual(broken.sources, [brokenPath]);
-    assert.equal(broken.errors.length, 2, "every error of the file is carried");
-    assert.ok(broken.errors.every((item) => item.includes(brokenPath)));
+    assert.ok(broken.errors.every((item) => item.includes(brokenPath)), "every error names the file");
+    assert.ok(broken.errors.some((item) => item.includes("inline comments")), "the comment error is carried");
+    assert.ok(broken.errors.some((item) => item.includes("null spellings")), "the null spelling error is carried");
 
     const stem = registry.invalid.find((item) => item.id === "no-name");
     assert.ok(stem, "an unusable name falls back to the file stem for the id");
@@ -298,15 +314,16 @@ test("rejected definition files return as invalid entries beside valid definitio
 test("overlay merge failures surface as invalid entries with their contributing layers", async () => {
   await withRoot((dir) => {
     const cwd = join(dir, "repo");
-    const overlay = join(cwd, ".pi", "subagents", "generalist.yaml");
-    write(overlay, `promptVersion: 2\nname: generalist\ndescription: null\n`);
+    const agentFile = join(dir, "agent", "subagents", "worker.yaml");
+    const projectFile = join(cwd, ".pi", "subagents", "worker.yaml");
+    write(agentFile, `promptVersion: 2\nname: worker\ndescription: Works.\n`);
+    write(projectFile, `promptVersion: 2\nname: worker\ndescription: null\n`);
     const registry = discoverSubagents(cwd);
 
-    assert.equal(registry.definitions.some((item) => item.name === "generalist"), false);
-    const invalid = registry.invalid.find((item) => item.id === "generalist");
+    assert.equal(registry.definitions.some((item) => item.name === "worker"), false);
+    const invalid = registry.invalid.find((item) => item.id === "worker");
     assert.ok(invalid, `invalid ids: ${registry.invalid.map((item) => item.id).join(", ")}`);
-    assert.ok(invalid.sources.includes(overlay));
-    assert.ok(invalid.sources.some((source) => source.endsWith(join("subagents", "generalist.yaml")) && !source.includes(".pi")), "the package layer is listed too");
+    assert.deepEqual([...invalid.sources].sort(), [agentFile, projectFile].sort());
     assert.ok(invalid.errors.some((item) => item.includes("description")));
   });
 });

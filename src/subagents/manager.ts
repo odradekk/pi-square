@@ -512,7 +512,8 @@ export class SubagentManager implements Component, Focusable {
   }
 
   private selectedDefinition(): SubagentDefinition | undefined {
-    return this.data.definitions[this.selectedIndex()];
+    const entry = this.definitionEntries()[this.selectedIndex()];
+    return entry?.kind === "valid" ? entry.definition : undefined;
   }
 
   private selectedInvalid(): InvalidSubagentDefinition | undefined {
