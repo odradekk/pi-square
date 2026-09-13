@@ -7,8 +7,12 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import { SEED_EXCHANGE, SEED_MEMORY, workloadPrompt } from "./scenarios.mjs";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { deriveCurrentMemory, isEligibleSourceEntry } = await load("../../../src/context-memory/derive.ts");
+const { deriveCurrentMemory, isEligibleSourceEntry, sourceViewIdentity } = await load("../../../src/context-memory/derive.ts");
+const { toCwd } = await load("../../../src/anchored-edit/paths.ts");
+const registerContextMemory = (await load("../../../src/context-memory/index.ts")).default;
 const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG, MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
+const { paginateTranscript, renderSourceTranscript, renderSourceTranscriptWithBoundaries } = await load("../../../src/context-memory/transcript.ts");
+const { createRetrievalEvidenceCollector } = await import("./retrieval-evidence.mjs");
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
   contextWindow: 100_000,
   maxTokens: 4096,
@@ -31,10 +35,69 @@ function workspacePath(cwd, path) {
   return target;
 }
 
-/** input + cacheRead + cacheWrite, Pi-normalized; output tokens stay out. */
-function promptTokensOf(row) {
-  if (!row || [row.input, row.cacheRead, row.cacheWrite].some((count) => count === null)) return null;
-  return row.input + row.cacheRead + row.cacheWrite;
+export function matchesArtifactPath(candidate, cwd, artifactPath) {
+  return typeof candidate === "string" && toCwd(candidate, cwd) === toCwd(artifactPath, cwd);
+}
+
+/** Provider-reported input stays separate from provider-specific cache fields. */
+function reportedInputOf(row) {
+  return Number.isSafeInteger(row?.input) ? row.input : null;
+}
+
+export function originalEvidenceLocations(memory, sourceEntryIds, requirements) {
+  if (memory?.kind !== "valid") return [];
+  const targetIds = new Set(sourceEntryIds);
+  return memory.blocks.flatMap((block, blockIndex) => {
+    const entries = block.sourceEntries;
+    if (!entries.some((entry) => targetIds.has(entry.id))) return [];
+    // The fallback keeps this bounded provenance seam independently probeable;
+    // production and repository tests always use the boundary-aware renderer.
+    const rendered = typeof renderSourceTranscriptWithBoundaries === "function"
+      ? renderSourceTranscriptWithBoundaries(entries)
+      : { text: renderSourceTranscript(entries), boundaries: [] };
+    const transcript = rendered.text;
+    const pages = paginateTranscript(transcript);
+    const pageEnds = [];
+    let pageEnd = 0;
+    for (const page of pages) { pageEnd += page.length; pageEnds.push(pageEnd); }
+    const targetRanges = entries.flatMap((entry, entryIndex) => targetIds.has(entry.id) ? [{
+      start: renderSourceTranscript(entries.slice(0, entryIndex)).length,
+      end: renderSourceTranscript(entries.slice(0, entryIndex + 1)).length,
+    }] : []);
+    const targetTexts = entries.filter((entry) => targetIds.has(entry.id)).map((entry) => renderSourceTranscript([entry]));
+    const otherTexts = entries.filter((entry) => !targetIds.has(entry.id)).map((entry) => renderSourceTranscript([entry]));
+    const pagesFor = (start, end) => {
+      const result = [];
+      let cursor = start;
+      while (cursor < end) {
+        const page = pageEnds.findIndex((pageEnd) => cursor < pageEnd);
+        if (page < 0) break;
+        result.push(page + 1);
+        cursor = pageEnds[page];
+      }
+      return result;
+    };
+    const folded = transcript.toLocaleLowerCase();
+    const pageStarts = pageEnds.map((end, index) => index === 0 ? 0 : pageEnds[index - 1]);
+    const witnesses = Object.fromEntries(requirements.map((requirement) => {
+      const targetPages = new Set();
+      const completeTargetPages = new Set();
+      const otherPages = new Set();
+      const needle = requirement.exact.toLocaleLowerCase();
+      for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + 1)) {
+        if (rendered.boundaries.some((boundary) => boundary >= at && boundary < at + needle.length)) continue;
+        const target = targetRanges.some((range) => at >= range.start && at + needle.length <= range.end);
+        const occurrencePages = pagesFor(at, at + needle.length);
+        for (const page of occurrencePages) (target ? targetPages : otherPages).add(page);
+        if (target && occurrencePages.length === 1) {
+          const page = occurrencePages[0];
+          if (at >= pageStarts[page - 1] && at + needle.length <= pageEnds[page - 1]) completeTargetPages.add(page);
+        }
+      }
+      return [requirement.id, { targetPages: [...targetPages], completeTargetPages: [...completeTargetPages], otherPages: [...otherPages] }];
+    }));
+    return [{ block: blockIndex + 1, witnesses, targetTexts, otherTexts }];
+  });
 }
 
 function createEnvironment(packageRoot, script) {
@@ -50,7 +113,7 @@ function createEnvironment(packageRoot, script) {
       contextMemory: { enabled: true, compressionThreshold: { tokens: CONTINUITY_SESSION_CONFIG.compressionThresholdTokens }, memoryBudgetPercent: CONTINUITY_SESSION_CONFIG.memoryBudgetPercent },
     }));
     writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
-      packages: [{ source: packageRoot }], quietStartup: true,
+      packages: [], quietStartup: true,
       compaction: { enabled: false, keepRecentTokens: CONTINUITY_SESSION_CONFIG.keepRecentTokens },
       retry: { enabled: false, provider: { maxRetries: 0 } },
     }));
@@ -105,13 +168,19 @@ function workspaceChanged(cwd, script) {
   return visit(cwd);
 }
 
-function responseUsage(message, phase, request) {
+export function responseUsage(message, phase, request, activeTools) {
   const usage = message.usage ?? {};
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  // Pi 0.84.2 normalizes absent raw provider cache fields to zero. A positive
+  // value proves reporting; a normalized zero alone cannot distinguish an
+  // explicit provider zero from absence, so preserve that uncertainty.
+  const reportedCache = (value) => Number.isSafeInteger(value) && value > 0 ? value : null;
   return {
     phase, request, stopReason: message.stopReason,
-    input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite),
+    input: count(usage.input), output: count(usage.output), cacheRead: reportedCache(usage.cacheRead), cacheWrite: reportedCache(usage.cacheWrite),
     tools: (message.content ?? []).filter((part) => part.type === "toolCall").map((part) => part.name),
+    activeTools: Array.isArray(activeTools) ? [...activeTools] : [],
+    errorPresent: message.stopReason === "error" || typeof message.errorMessage === "string",
   };
 }
 
@@ -126,13 +195,12 @@ function appendOperation(previous, current) {
     block.endEntryId === current[index].endEntryId && block.markdown === current[index].markdown);
 }
 
-/** Sequential caller only: Pi extensions resolve their agent configuration via a process-wide path. */
-export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run }) {
+export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run, signal, contextModifierFactory }) {
   const environment = createEnvironment(packageRoot, script);
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = environment.agentDir;
   let session;
   let unsubscribe;
+  let abortListener;
+  let cancelled = signal?.aborted === true;
   const failures = new Set();
   const coverageFailures = new Set();
   const requests = [];
@@ -141,6 +209,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   const abandonedEntryIds = [];
   const compressions = [];
   const carrierObservations = [];
+  const contextToolSets = [];
   const refusals = new Map();
   const recordedRequestIndexes = [];
   const phaseLatency = [];
@@ -156,9 +225,19 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   const sessionManager = SessionManager.inMemory(environment.cwd);
   const recordedMemoryIds = new Set();
   const pendingSourceReads = new Map();
+  const retrieval = createRetrievalEvidenceCollector({
+    script,
+    sourceEntryIds,
+    deriveMemory: deriveCurrentMemory,
+    sourceViewOf: sourceViewIdentity,
+    originalLocationsOf: originalEvidenceLocations,
+    artifactPathMatches: (candidate) => matchesArtifactPath(candidate, environment.cwd, script.artifactPath),
+  });
   try {
     const observer = (pi) => {
       pi.on("context", (event) => {
+        contextToolSets.push(pi.getActiveTools());
+        retrieval.context(event.messages, sessionManager);
         // Every provider-bound request is observed, not only the final one:
         // the Memory carrier's block parts are hashed per request so the
         // report can show acceptance→application gaps, byte-stable unselected
@@ -196,6 +275,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         }
       });
       pi.on("tool_execution_start", (event) => {
+        retrieval.toolStart(event, sessionManager);
         if (event.toolName !== "read_memory_source" || phase !== "final") return;
         const memory = deriveCurrentMemory(sessionManager);
         const block = memory.kind === "valid" ? memory.blocks[event.args.block - 1] : undefined;
@@ -206,6 +286,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         });
       });
       pi.on("tool_execution_end", (event) => {
+        retrieval.toolEnd(event);
         const read = pendingSourceReads.get(event.toolCallId);
         if (read) {
           pendingSourceReads.delete(event.toolCallId);
@@ -230,8 +311,24 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       });
     };
     const settingsManager = SettingsManager.create(environment.cwd, environment.agentDir);
+    const contextMemoryFactory = (pi) => registerContextMemory(pi, {
+      configProvider: () => ({ contextMemory: {
+        enabled: true,
+        compressionThreshold: { tokens: CONTINUITY_SESSION_CONFIG.compressionThresholdTokens },
+        memoryBudgetPercent: CONTINUITY_SESSION_CONFIG.memoryBudgetPercent,
+      } }),
+      displayRuntimeProvider: () => { throw new Error("display runtime is not used by continuity qualification"); },
+      reserveTokens: () => settingsManager.getCompactionSettings().reserveTokens,
+      searchMemorySourceEnabled: run.retrievalArm !== "read-only",
+    });
     const resourceLoader = new DefaultResourceLoader({ cwd: environment.cwd, agentDir: environment.agentDir, settingsManager, noSkills: true,
-      extensionFactories: [{ name: "continuity-observer", factory: observer }] });
+      noExtensions: true,
+      extensionFactories: [
+        { name: "context-memory-qualification", factory: contextMemoryFactory },
+        ...(typeof contextModifierFactory === "function" ? [{ name: "continuity-test-context-modifier",
+          factory: (pi) => contextModifierFactory(pi, { sessionManager }) }] : []),
+        { name: "continuity-observer", factory: observer },
+      ] });
     await resourceLoader.reload();
 
     /** The carrier part hashes a state entry's blocks render to (#297 shape). */
@@ -280,16 +377,21 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
 
     const measuredModel = { ...model, contextWindow: CONTINUITY_SESSION_CONFIG.contextWindow, maxTokens: Math.min(model.maxTokens ?? 4096, 4096) };
     ({ session } = await createAgentSession({ cwd: environment.cwd, agentDir: environment.agentDir, settingsManager, resourceLoader, sessionManager,
-      modelRuntime, model: measuredModel, thinkingLevel: "off" }));
+      modelRuntime, model: measuredModel, thinkingLevel: "off",
+      tools: ["read", "bash", "write", "compact_to_memory_block", "read_memory_source", "search_memory_source"] }));
     await session.bindExtensions({ mode: "print", onError: () => failures.add("extension-error") });
     if (resourceLoader.getExtensions().errors.length > 0) failures.add("extension-load-error");
-    if (!session.extensionRunner.getExtensionPaths().some((path) => path === join(packageRoot, "src", "index.ts"))) failures.add("pi-square-not-loaded");
+    if (!["compact_to_memory_block", "read_memory_source", "search_memory_source"].every((name) =>
+      session.getAllTools().some((tool) => tool.name === name))) failures.add("context-memory-not-loaded");
+    abortListener = () => { cancelled = true; void session.abort(); };
+    signal?.addEventListener("abort", abortListener, { once: true });
+    if (signal?.aborted) abortListener();
     unsubscribe = session.subscribe((event) => {
       if (event.type === "turn_start" && ++requestStarts > CONTINUITY_SESSION_CONFIG.maxRequests) {
         failures.add("request-limit");
         void session.abort();
       }
-      if (event.type === "message_end" && event.message.role === "assistant") requests.push(responseUsage(event.message, phase, requests.length + 1));
+      if (event.type === "message_end" && event.message.role === "assistant") requests.push(responseUsage(event.message, phase, requests.length + 1, contextToolSets[requests.length]));
       // Native compaction is disabled in this harness and the feature never
       // takes it over (#319): any compaction entry is an integrity failure.
       if (event.type === "compaction_start" || event.type === "compaction_end") failures.add("native-compaction-occurred");
@@ -343,8 +445,9 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     }
 
     async function prompt(text, nextPhase) {
-      if (failures.size > 0) return;
+      if (failures.size > 0 || cancelled) return;
       phase = nextPhase;
+      retrieval.setPhase(nextPhase);
       const firstRequest = requests.length;
       const beforeIds = new Set(sessionManager.getEntries().map((entry) => entry.id));
       const startedAt = Date.now();
@@ -354,6 +457,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       } finally { clearTimeout(timer); }
       phaseLatency.push({ phase: nextPhase, ms: Date.now() - startedAt });
       if (requests.length === firstRequest) failures.add("missing-assistant-response");
+      if (requests.slice(firstRequest).some((row) => row.errorPresent)) failures.add("provider-response-error");
       if (requests.slice(firstRequest).some((row) => !["stop", "toolUse"].includes(row.stopReason))) failures.add("unfinished-response");
       if (nextPhase === "intro" || nextPhase === "revision") {
         const user = sessionManager.getBranch().find((entry) => !beforeIds.has(entry.id) && entry.type === "message" && entry.message.role === "user");
@@ -411,6 +515,10 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       try { lstatSync(workspacePath(environment.cwd, script.artifactPath)); coverageFailures.add("artifact-created-before-final"); }
       catch (error) { if (error.code !== "ENOENT") throw error; }
     } catch { coverageFailures.add("workspace-could-not-be-inspected"); }
+    // Earlier work keeps the normal shell, but the final artifact has one
+    // observable mutation route. Retrieval must reach a later request before
+    // the native write begins, so an unobserved shell write cannot be scored.
+    session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "bash"));
     await prompt(script.finalPrompt, "final");
     let artifactText = null;
     try {
@@ -419,13 +527,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > FILE_MAX_BYTES) failures.add("artifact-not-bounded-regular-file");
       else artifactText = readFileSync(path, "utf8");
     } catch (error) { if (error.code !== "ENOENT") failures.add("artifact-read-error"); }
-    for (const read of sourceReads) {
-      const pages = sourceReads.filter((other) => other.memoryId === read.memoryId && other.block === read.block && other.ok && other.totalPages === read.totalPages);
-      const seen = new Set(pages.map((page) => page.page));
-      read.complete = read.ok && Number.isSafeInteger(read.totalPages) && read.totalPages > 0 && read.totalPages <= 100
-        && Array.from({ length: read.totalPages }, (_, index) => index + 1).every((page) => seen.has(page))
-        && pages.some((page) => page.page === read.totalPages && page.hasMore === false);
-    }
+    const retrievalResult = retrieval.finalize(artifactText);
     if (!preFinalSourceCovered) coverageFailures.add("source-not-covered-by-final-memory");
     if (!finalContextSeen || !rawSourceAbsent) coverageFailures.add("final-context-has-raw-answer-or-was-not-observed");
     if (finalRequests > 0 && !finalFullCarrierSeen) coverageFailures.add("final-phase-never-left-rebuild-serving");
@@ -433,8 +535,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     if (!coverageEvents.some((entry) => entry.operation === "append")) coverageFailures.add("append-not-observed");
     if (coverageEvents.filter((entry) => entry.operation === "rebuild").length < CONTINUITY_SESSION_CONFIG.requiredRebuilds) coverageFailures.add("rebuilds-not-observed");
     if (!coverageEvents.some((entry) => entry.blocks >= 2)) coverageFailures.add("multi-block-memory-not-observed");
-    if (script.oracle.requireSourceRead && !sourceReads.some((read) => read.complete && read.coversSource)) coverageFailures.add("original-source-not-read-completely");
-    if (requests.some((row) => [row.input, row.output, row.cacheRead, row.cacheWrite].some((count) => count === null))) failures.add("missing-native-usage");
+    if (requests.some((row) => [row.input, row.output].some((count) => count === null))) failures.add("missing-native-usage");
 
     // Bounded acceptance→application and prefix-stability measurements over
     // the observed requests and carriers — counts, indexes, and hashes only.
@@ -465,15 +566,15 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
           requestGap: appliedAt ? appliedAt.request - compression.request : null,
         });
         if (compression.phase === "work" && appliedAt && appliedAt.request >= 2) {
-          const before = promptTokensOf(requests[appliedAt.request - 2]);
-          const after = promptTokensOf(requests[appliedAt.request - 1]);
+          const before = reportedInputOf(requests[appliedAt.request - 2]);
+          const after = reportedInputOf(requests[appliedAt.request - 1]);
           if (before !== null && after !== null) {
             const change = after - before;
             measurements.netInputChange = measurements.netInputChange === null ? change : measurements.netInputChange + change;
           }
         }
       }
-      const peaks = requests.map((row) => promptTokensOf(row)).filter((tokens) => tokens !== null);
+      const peaks = requests.map((row) => reportedInputOf(row)).filter((tokens) => tokens !== null);
       measurements.peakPromptTokens = peaks.length > 0 ? Math.max(...peaks) : null;
     }
     if (!measurements.prefixStable) failures.add("memory-prefix-unstable");
@@ -485,10 +586,21 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     const entries = sessionManager.getEntries().map((entry) => entry.type === "message"
       ? { ...entry, message: withoutThinking(entry.message) } : entry);
     if (entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant" && !seedEntryIds.has(entry.id)).length !== requests.length) failures.add("assistant-observation-mismatch");
-    let evidence = { entries, finalContext, artifactText, sourceEntryIds, abandonedEntryIds, compressions };
+    let evidence = { entries, finalContext, artifactText, sourceEntryIds, abandonedEntryIds, compressions,
+      retrieval: retrievalResult.privateEvidence };
     if (Buffer.byteLength(JSON.stringify(evidence)) > EVIDENCE_MAX_BYTES) { failures.add("evidence-bound-exceeded"); evidence = null; }
     return {
-      run, model: { provider: model.provider, id: model.id, api: model.api }, artifactText, requests, sourceReads, measurements, phaseLatency, evidence,
+      run, model: { provider: model.provider, id: model.id, api: model.api }, artifactText, requests, sourceReads,
+      retrievalQualification: retrievalResult.report, measurements, phaseLatency, evidence, cancelled,
+      timedOut: failures.has("prompt-timeout"),
+      providerError: requests.some((request) => request.errorPresent),
+      isolation: {
+        root: createHash("sha256").update(`root\0${environment.root}`).digest("hex"),
+        agentConfig: createHash("sha256").update(`agent-config\0${join(environment.agentDir, "config", "pi-square.json")}\0${readFileSync(join(environment.agentDir, "config", "pi-square.json"))}`).digest("hex"),
+        workspace: createHash("sha256").update(`workspace\0${environment.cwd}`).digest("hex"),
+        session: createHash("sha256").update(`session\0${sessionManager.getSessionId()}`).digest("hex"),
+        capture: createHash("sha256").update(`capture\0${sessionManager.getSessionId()}\0${JSON.stringify({ requests, contextToolSets })}`).digest("hex"),
+      },
       integrity: { ok: failures.size === 0, failures: [...failures] },
       coverage: { ok: coverageFailures.size === 0, failures: [...coverageFailures], memoryStates: coverageEvents.length,
         appends: coverageEvents.filter((entry) => entry.operation === "append").length,
@@ -498,9 +610,8 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     };
   } finally {
     unsubscribe?.();
+    if (abortListener) signal?.removeEventListener("abort", abortListener);
     session?.dispose();
-    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(environment.root, { recursive: true, force: true });
   }
 }

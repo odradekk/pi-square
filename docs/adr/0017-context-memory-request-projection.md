@@ -399,9 +399,29 @@ fixture-owned while every scored block stays model-authored — and its final
 probe completes the invited maintenance first so the recall check runs
 against the complete carrier with covered originals actually evicted. Real
 continuity qualification remains Sonnet 5 and GLM 5.3 under #227's
-coverage and human rubric. The real Pi cache sequence runs Sonnet 5, GLM 5.3,
+coverage and human rubric. #340 supersedes the historical asymmetric v2
+instrument with one 12-case corpus per model (four scenarios at early, middle,
+and late placement): two concurrently started model queues, sequential cases
+and requests within each queue, 24 isolated cells, and 12 matched pairs. Its v3
+report reader identifies old 16-cell evidence as historical and never regrades
+it as current. Original recovery evidence qualifies only when the exact
+successful search/read result reaches a later native request before handoff;
+each fact and its target provenance must share one returned evidence unit, and
+direct reads require a complete original witness on the observed page. Tool
+execution, summaries, clipped or filtered results, same-batch writes,
+wrong views, and post-handoff observations remain insufficient. A separate
+both-model search-enabled/read-only recovery comparison uses a runner-only
+registrar dependency seam that changes the actual model-visible tool set, not
+public configuration, and never substitutes for the 24 cells. The real Pi cache sequence runs Sonnet 5, GLM 5.3,
 and GPT-5.6 Luna concurrently, with sequential requests within each session.
-Report token-weighted cache reads, input volume, request latency where
+The qualification keeps shell access during ordinary work but removes it for
+the final phase, requires the observable native write route, and normalizes
+equivalent native file paths. Its deterministic concurrency proof holds two
+real AgentSessions simultaneously at the provider boundary. Pair reports carry
+nullable directional differences for cache, retrieval, append, and rebuild
+measures; Pi-normalized cache zeroes remain unknown because the public 0.84.2
+session seam cannot distinguish a raw omitted field from a reported zero.
+Report token-weighted positive cache reads, input volume, request latency where
 available, compression boundaries, actual coverage, and task outcomes; missing
 coverage is inconclusive. No LLM judge, synthetic cache counterfactual, favorable
 rerun selection, universal cache guarantee, or automatic release authorization

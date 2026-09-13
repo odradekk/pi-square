@@ -613,22 +613,33 @@ npm run package:check
 npm run changeset:status
 ```
 
-Context Memory qualification is split across three commands. The deterministic
+Context Memory qualification is split across four commands. The deterministic
 corpus, `npm run qualify:context-memory`, runs every deterministic
 context-memory suite (controller seam, native AgentSession request exit,
 projection, wire, arbitration, lifecycle, and the offline instruments) as one
 zero-tolerance sweep; the pre-#319 corpus retired with its protocol.
 Real-model continuity qualification is a separate, credentialed command:
 `npm run qualify:continuity -- --real`. It requires a clean checkout and uses
-native Pi sessions with Sonnet 5 (12 runs) and GLM 5.3 (4 runs); every run is
+native Pi sessions with two concurrently started model queues: Sonnet 5 and
+GLM 5.3 each run the same four scenarios at early, middle, and late placement
+(24 cells and 12 corresponding pairs), while cases and requests stay sequential
+inside each model queue. Every run is
 seeded with fixture-authored Memory at exactly half the budget so the required
 schedule — at least one append and two suffix rebuilds — is fixture-owned. A
 single final handoff file is scored after verified compression coverage;
+the final phase permits only Pi's observable native write route (with
+equivalent path spellings normalized) while earlier work retains its shell;
 missing coverage is inconclusive and a machine pass still requires human
 review. See the
 [qualification workflow](docs/context-memory.md#continuity-qualification).
+`npm run qualify:continuity -- --real --recovery-ab` separately runs the
+both-model source-recovery comparison with equivalent search-enabled and
+read-only cells; those 12 A/B cells never replace or count toward the main 24.
 After a real matrix, `npm run qualify:replay-check` records one bounded
 local-resource artifact (replay time, heap, persisted-write size).
+The existing three-model cache command is
+`npm run experiment:provider-cache`. All credentialed commands require an
+explicit opt-in and are maintainer-run experiments, not normal validation.
 `npm test` exercises the same Pi session boundary with an offline provider,
 not real-model quality.
 

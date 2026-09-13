@@ -24,16 +24,13 @@ Memory body plus the tool protocol are verified through Pi's native
 Anthropic and OpenAI-compatible conversions at the real transport boundary
 (#323). Request-exit arbitration — the recorded projection, the safe native
 fallback, and the hard stop with the public abort signal — is implemented
-and verified at the same transport boundary (#324). The real-model
-qualification instruments were executed by #325 on the in-task architecture:
-the deterministic corpus sweep passes, the three-lane provider-cache
-sequence passed integrity on every lane, and the 16-run continuity matrix
-produced eleven valid runs with complete critical and continuity recall and
-zero machine severe signals, alongside honestly classified inconclusive runs
-(two transport-voided, three from model behavior). No single attempt has
-produced sixteen valid runs yet, so the machine continuity gate has not
-passed; the human rubric review and the final release verdict remain open in
-#227.
+and verified at the same transport boundary (#324). Historical #325 evidence
+uses the retired asymmetric 16-cell report schema. Its reader remains available
+only to identify that evidence as historical; it is never regraded as the
+current symmetric 24-cell qualification. #340 prepares the current instrument,
+and the maintainer-owned #341 run remains required before any current evidence
+or release conclusion exists. The human rubric review and final release verdict
+remain open in #227.
 The implemented contracts are covered by deterministic native Pi requests
 and the explicitly identified boundary-injected tests described below.
 
@@ -804,26 +801,43 @@ rewrite existing Memory blocks.
 
 ### Continuity qualification
 
-`npm run qualify:continuity -- --real` runs the fixed 16-session matrix on a
-clean checkout: Sonnet 5 (`ccr-claude/claude-sonnet-5`) runs three source
-positions for each of four scenarios; GLM 5.3 (`cpa/glm-5.3`) runs each
-scenario's canonical position. Models and authentication resolve through
-Pi's configured runtime. The scenarios cover exact work facts, revised
-constraints, an abandoned sibling branch, and original-source recovery.
+`npm run qualify:continuity -- --real` runs the fixed 24-session matrix on a
+clean checkout. Sonnet 5 (`ccr-claude/claude-sonnet-5`) and GLM 5.3
+(`cpa/glm-5.3`) each run the same four scenarios at early, middle, and late
+source placement: 12 cases per model and 12 corresponding pairs. The two model
+queues start concurrently, while cases and native requests remain sequential
+inside each queue. Every cell has its own workspace, agent directory, native
+session, Memory, artifacts, and request capture state. A cell failure or
+timeout does not stop either queue; explicit cancellation preserves every
+terminal cell as failed, inconclusive, cancelled, or not attempted. Models and
+authentication resolve through Pi's configured runtime. The scenarios cover
+exact work facts, revised constraints, an abandoned sibling branch, and
+original-source recovery.
 
-The driver loads pi-square into real Pi `AgentSession`s and calls public
-`prompt()` and tree-navigation APIs. Pi owns message history, tool execution,
-provider conversion, usage, and compaction. The session journal is native but
-in-memory; this suite does not qualify on-disk resume. Offline tests replace
-only the provider boundary, not Pi or the plugin. There is no hand-built
-wire payload, fake read/bash, injected summary, fixed token usage, or forced
-single tool continuation.
+The driver registers the production Context Memory registrar into real Pi
+`AgentSession`s through explicit per-cell loader, settings, and agent-directory
+dependencies, then calls public `prompt()` and tree-navigation APIs. It omits
+unrelated pi-square extensions so two agent directories can never race through
+process-global discovery; the production registrar, controller, tools, system
+prompt contribution, and terminal `context` transform remain unchanged. Pi owns
+message history, tool execution, provider conversion, usage, and compaction.
+The session journal is native but in-memory; this suite does not qualify
+on-disk resume or unrelated extension composition. Offline tests replace only
+the provider boundary of this explicitly scoped pipeline. There is no
+hand-built wire payload, fake read/bash, injected summary, fixed token usage,
+or forced single tool continuation. A deterministic two-cell test holds two
+real `AgentSession` requests concurrently at that boundary and verifies their
+actual configuration files, workspaces, session IDs, capture state, source
+canaries, and retrieval capabilities remain isolated.
 
 Authoritative facts occur before compression. Subsequent checkpoints perform
 ordinary read and process-execution work without repeating recall questions;
 one final prompt asks the model to complete any invited Context Memory
-maintenance first, then write a structured handoff file, without supplying
-its expected values. The test uses a declared 100k context window,
+maintenance first, then use Pi's native `write` tool for the structured
+handoff file, without supplying its expected values. The shell remains
+available for ordinary earlier work but is removed from final-phase requests,
+so every permitted final-artifact mutation crosses the observable write seam;
+native-equivalent path spellings resolve to the same handoff. The test uses a declared 100k context window,
 21000-token due threshold, 2% Memory budget, and 200-token recent tail, with
 native automatic compaction and retries disabled.
 
@@ -848,11 +862,31 @@ that the probe request does not carry raw source answers outside Memory,
 that exactly one Memory carrier rides the probe, that the unselected carrier
 prefix stays byte-stable across appends and rebuilds, and that the workspace
 has not been used to store answers before the final task. Source recovery
-additionally requires all pages of a block covering the original brief.
+credits only exact original evidence in a successful source-search or
+source-read result that enters a later native model request before the handoff
+write begins. A sufficient search excerpt needs no redundant page read; an
+insufficient excerpt can be supplemented only by valid contiguous original
+evidence. Every credited search fact must occur in the same individual excerpt
+that establishes target-source provenance. A page read counts a fact only when
+one complete original occurrence is present on that returned page; separate
+pages, excerpts, entries, or clipped units are never joined. Search hits, summaries, failed or stale results, same-batch
+search-and-write, filtered results, clipped qualifiers, wrong-branch results,
+and post-handoff observations do not qualify.
+
 Each run also reports bounded measurements — the request gap between every
 recording and its application, per-request usage rows, net input change
 across applications, peak prompt tokens, refused-compression counts by short
-code, and per-phase wall-clock latency. Missing coverage is
+code, retrieval search/read/page counts and returned evidence bytes, and
+per-phase wall-clock latency. Main-model and recovery A/B pairs include
+directional nullable differences for cache, retrieval, evidence, append, and
+rebuild measures as well as input and elapsed time. The normal report contains hashes and counts,
+never source text, snippets, native IDs, session bodies, or credentials; the
+existing owner-only evidence artifact retains bounded review material. Pi
+0.84.2 normalizes absent raw provider cache fields to zero and exposes no raw
+presence flag at this public session seam, so zero-only cache fields are
+reported as unknown; positive cache values remain reported. Missing provider
+usage or cache values stay missing rather than becoming zero, and
+returned bytes are not billed tokens. Missing coverage is
 **inconclusive**, not evidence of memory failure. After a real matrix,
 `npm run qualify:replay-check` records one bounded local-resource artifact —
 replay time and heap cost of re-reading the retained evidence and the
@@ -861,7 +895,7 @@ model-context reduction the feature measures from the qualification's own
 local log growth.
 
 The oracle validates exact JSON fields, primitive types, unknown values,
-superseded decisions, and the complete unique 16-cell matrix. It does not use
+superseded decisions, and the complete unique 24-cell matrix. It does not use
 substring matching or an LLM judge. Critical recall must be 100%; supporting
 continuity recall must reach 85% overall and 75% per scenario. Canonical final
 tasks must succeed on both models; noncanonical supporting-field misses are
@@ -872,6 +906,35 @@ requires human review, including semantic failures that field checks cannot
 detect. Reports remain gitignored and outside the npm package. The new
 offline regressions prove the harness, not real-model continuity quality.
 
+The maintainer-run commands and expected local, gitignored artifacts are:
+
+```bash
+# Main symmetric 24-cell qualification.
+npm run qualify:continuity -- --real
+# tests/context-memory/continuity/report/continuity-qualification-*.{json,md}
+# plus continuity-evidence-*.json and attempts.jsonl
+
+# Separate 12-cell source-recovery capability comparison.
+npm run qualify:continuity -- --real --recovery-ab
+# tests/context-memory/continuity/report/recovery-comparison-*.{json,md}
+# plus continuity-evidence-*.json and attempts.jsonl
+
+# Existing concurrent Sonnet 5 / GLM 5.3 / GPT-5.6 Luna cache experiment.
+npm run experiment:provider-cache
+# tests/context-memory/cache-experiment/report/pi-session-cache-*.{txt,json}
+
+# Bounded local replay diagnostics after continuity artifacts exist.
+npm run qualify:replay-check
+```
+
+The continuity command makes no provider request without explicit `--real`.
+The recovery A/B uses a qualification-only internal registrar dependency to
+remove `search_memory_source` from the read-only arm's actual model-visible
+tool set while keeping `read_memory_source` active; default product availability
+and public configuration are unchanged. It uses the same facts, placements,
+seeds, filler, instructions, compression settings, and evaluation rules in both
+arms, and its results never contribute to the main 24-cell completeness gate.
+
 ### Runtime and evidence limits
 
 - Experimental: the wrapper format, advisories, tool contracts, and
@@ -879,8 +942,9 @@ offline regressions prove the harness, not real-model continuity quality.
   format change invalidates existing Memory compactions (they become opaque
   native summaries; nothing is migrated or guessed).
 - Branch-private v1: there is deliberately no project, cross-session,
-  worktree, or global Memory, no semantic search over Memory, and no model
-  tool that lists or searches blocks.
+  worktree, or global Memory and no semantic search or list operation over
+  summaries. Literal source search stays bounded to the current branch's
+  recoverable original transcript.
 - The maintenance projection is one request by design: if a supported model
   cannot author the final block after its multi-turn task work, that is a
   qualification finding, not a reason to add hidden worker turns or

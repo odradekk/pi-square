@@ -3,7 +3,8 @@ import jiti from "jiti";
 const load = jiti(import.meta.url, { moduleCache: false });
 const { MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
 
-export const PRIMARY_ARM_VARIANTS = ["early", "middle", "late"];
+/** The one shared placement corpus used by both current model lanes (#340). */
+export const PLACEMENTS = Object.freeze(["early", "middle", "late"]);
 
 const FILLER = "Background workload requires inspecting and running the local status program. This text carries no authoritative handoff value. ";
 const background = (length) => FILLER.repeat(Math.ceil(length / FILLER.length)).slice(0, length);
@@ -123,6 +124,13 @@ const DEFINITIONS = {
     constraints: [],
     abandonedValues: [],
     requireSourceRead: true,
+    evidenceRequirements: [
+      { id: "recovery_token", exact: "recovery token is SOURCE-EMBER-47" },
+      { id: "schema_epoch", exact: "schema epoch is 203" },
+      { id: "custodian", exact: "custodian is Inez Ward" },
+      { id: "restore_policy", exact: "restore policy is verify-first" },
+      { id: "legacy_checksum", exact: "legacy checksum is unknown" },
+    ],
     files: { "schema.json": "{\"type\":\"object\",\"description\":\"exercise schema only\"}\n", "status.mjs": "const step = process.argv[2] ?? 'none'; console.log(JSON.stringify({ step, ok: true }));\n" },
   },
 };
@@ -136,9 +144,9 @@ export function workloadPrompt(step) {
   const operation = operations[step - 1] ?? `extended check ${step}`;
   return `Checkpoint ${step}: read status.mjs and run node status.mjs ${step}. Report the observed result and retain this operational record: ${operation}, batch ${1000 + step}, validation lane ${step % 3}, state ${step % 2 ? "reviewed" : "verified"}.\n\n${WORKLOAD_FILLER}Do not recap the authoritative brief.`;
 }
-function place(source, variant) {
+function place(source, placement) {
   const spans = { early: [2800, 38400], middle: [20400, 20800], late: [38400, 2800] };
-  const [before, after] = spans[variant];
+  const [before, after] = spans[placement];
   return `${background(before)}\n\n${source}\n\n${background(after)}\n\nAcknowledge this brief in one sentence, keep its facts in the conversation until the final handoff, and do not save the authoritative handoff facts to workspace files.`;
 }
 
@@ -148,12 +156,11 @@ export function scenarioById(id) {
   return value;
 }
 
-export function buildScript(scenario, variant) {
+export function buildScript(scenario, placement) {
   const selected = typeof scenario === "string" ? scenarioById(scenario) : scenario;
   const definition = selected && DEFINITIONS[selected.id];
   if (!definition) throw new Error("unknown continuity scenario");
-  if (![...PRIMARY_ARM_VARIANTS, "canonical"].includes(variant)) throw new Error(`unknown continuity variant: ${variant}`);
-  const effective = variant === "canonical" ? selected.canonicalVariant : variant;
+  if (!PLACEMENTS.includes(placement)) throw new Error(`unknown continuity placement: ${placement}`);
   const keys = Object.keys(definition.expected);
   const types = keys.map((key) => `${key}: ${definition.expected[key] === null ? "string|null" : `${typeof definition.expected[key]}|null`}`).join(", ");
   // The final prompt's first step completes any invited maintenance: a
@@ -161,5 +168,8 @@ export function buildScript(scenario, variant) {
   // model must close that window before the recall probe runs against the
   // complete carrier with the covered originals evicted.
   const maintenanceStep = "If Context Memory maintenance is due, first complete it: submit the invited summary with compact_to_memory_block as the sole call of its batch, then continue.";
-  return { id: selected.id, variant, setupFiles: { ...definition.files }, introPrompt: place(definition.source, effective), ...(definition.revision ? { revisionPrompt: definition.revision } : {}), ...(definition.abandoned ? { abandonedPrompt: definition.abandoned } : {}), finalPrompt: `Complete the handoff now. ${maintenanceStep}${definition.requireSourceRead ? " Use read_memory_source to read the block covering the original authoritative brief completely: start at its first page and follow each Next page hint until hasMore is false, then verify its facts against the original text." : ""} Write handoff.json as one JSON object with exactly these keys and primitive types (${types}). Use null for unknown facts. Add no keys, arrays, nested objects, commentary, or guesses.`, artifactPath: "handoff.json", oracle: { expected: { ...definition.expected }, critical: [...definition.critical], continuity: [...definition.continuity], unknown: [...definition.unknown], constraints: [...definition.constraints], abandonedValues: [...definition.abandonedValues], requireSourceRead: definition.requireSourceRead === true }, evidenceTokens: Object.values(definition.expected).filter((value) => typeof value === "string") };
+  const recoveryStep = definition.requireSourceRead
+    ? " Recover the authoritative facts from original Memory-source evidence using the available retrieval tools. A complete original snippet is sufficient; read a referenced page when a snippet omits a value, qualifier, scope, or neighboring context."
+    : "";
+  return { id: selected.id, placement, setupFiles: { ...definition.files }, introPrompt: place(definition.source, placement), ...(definition.revision ? { revisionPrompt: definition.revision } : {}), ...(definition.abandoned ? { abandonedPrompt: definition.abandoned } : {}), finalPrompt: `Complete the handoff now. ${maintenanceStep}${recoveryStep} Use the native write tool with path handoff.json to write one JSON object with exactly these keys and primitive types (${types}). Use null for unknown facts. Add no keys, arrays, nested objects, commentary, or guesses.`, artifactPath: "handoff.json", oracle: { expected: { ...definition.expected }, critical: [...definition.critical], continuity: [...definition.continuity], unknown: [...definition.unknown], constraints: [...definition.constraints], abandonedValues: [...definition.abandonedValues], requireOriginalEvidence: definition.requireSourceRead === true, evidenceRequirements: (definition.evidenceRequirements ?? []).map((item) => ({ ...item })) }, evidenceTokens: Object.values(definition.expected).filter((value) => typeof value === "string") };
 }

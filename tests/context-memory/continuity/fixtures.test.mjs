@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { SCENARIOS, PRIMARY_ARM_VARIANTS, SEED_EXCHANGE, SEED_MEMORY, SEED_SESSION_CONFIG, buildScript, renderedMemoryTokensOf, workloadPrompt } from "./scenarios.mjs";
+import { PLACEMENTS, SCENARIOS, SEED_EXCHANGE, SEED_MEMORY, SEED_SESSION_CONFIG, buildScript, renderedMemoryTokensOf, workloadPrompt } from "./scenarios.mjs";
 import { CONTINUITY_SESSION_CONFIG } from "./session.mjs";
 assert.deepEqual(SCENARIOS.map((x) => x.id), ["exact-work", "constraint-reversal", "branch-isolation", "source-recovery"]);
-assert.deepEqual(PRIMARY_ARM_VARIANTS, ["early", "middle", "late"]);
+assert.deepEqual(PLACEMENTS, ["early", "middle", "late"]);
 assert.equal(new Set(Array.from({ length: 12 }, (_, index) => workloadPrompt(index + 1))).size, 12);
 assert.match(workloadPrompt(12), /handoff readiness/);
 for (const scenario of SCENARIOS) {
-  const scripts = PRIMARY_ARM_VARIANTS.map((v) => buildScript(scenario.id, v));
-  for (const script of [...scripts, buildScript(scenario, "canonical")]) {
+  const scripts = PLACEMENTS.map((v) => buildScript(scenario.id, v));
+  for (const script of scripts) {
     assert.ok(script.introPrompt.length >= 40_000); assert.equal(script.artifactPath, "handoff.json");
     assert.ok(Object.hasOwn(script.setupFiles, "status.mjs"));
     assert.ok(Object.values(script.setupFiles).every((text) => !script.evidenceTokens.some((token) => text.includes(token))));
@@ -20,6 +20,8 @@ for (const scenario of SCENARIOS) {
   const positions = scripts.map((s) => Math.max(s.introPrompt.indexOf("Authoritative brief:"), s.introPrompt.indexOf("Authoritative main-branch brief:"), s.introPrompt.indexOf("Original authoritative source:"), s.introPrompt.indexOf("Initial authoritative brief:")) / s.introPrompt.length);
   assert.ok(positions[0] < .2 && positions[1] > .35 && positions[1] < .65 && positions[2] > .8);
 }
+assert.throws(() => buildScript("exact-work", "canonical"), /unknown continuity placement/,
+  "canonical remains historical v2 metadata, not a current placement");
 // The seeded pre-run Memory owns the append-versus-rebuild schedule (#325):
 // it must render at exactly half the budget with a code-point total that is
 // an exact multiple of four, so any non-empty model block strictly exceeds

@@ -18,10 +18,15 @@ judge, summarize, or resolve this review.
 
 ## Required checks
 
-1. Confirm all 16 rows are present: `ccr-claude/claude-sonnet-5` runs early,
-   middle, and late for every scenario; `cpa/glm-5.3` runs the canonical
-   variant. The primary middle position is canonical too. The introductory
-   positions must precede the first compaction.
+1. Confirm all 24 rows and 12 corresponding pairs are present:
+   `ccr-claude/claude-sonnet-5` and `cpa/glm-5.3` each run early, middle, and
+   late for every scenario from the same 12-case corpus. Seeds, script and
+   evaluation digests must match within every pair. Both model queues must
+   have started concurrently, cases and requests must be sequential inside
+   each queue, and every cell must carry distinct isolation hashes. The
+   introductory positions must precede the first compaction. A historical v2
+   16-cell report is readable only as historical evidence and cannot satisfy
+   this check.
 2. Confirm every row has integrity and coverage success: original brief and
    revision entries are covered by current Memory, the pre-final workspace
    is unchanged, and no raw answer remains outside Memory in the recorded
@@ -36,6 +41,15 @@ judge, summarize, or resolve this review.
    machine signals against that evidence. Zero machine counters do not prove
    absence of semantic failures. Ambiguity requires a
    second human and remains blocked until resolved.
+   For source recovery, confirm each credited exact witness came from a
+   successful search/read call-result pair visible in a later native request
+   before handoff. A sufficient search excerpt requires no page read; any
+   supplement must remain contiguous and source/view-bound. Each credited fact
+   must share one excerpt or returned page with its complete original witness;
+   never borrow provenance from a separate unit. Reject internal
+   hit counts, summary copies, failed/stale/wrong-branch results, same-batch
+   search-and-write, filtered results, clipped qualifiers, fabricated joins,
+   and post-handoff observations.
 4. Confirm the deterministic gate results: zero severe failures, complete
    critical recall, required continuity recall, canonical final-task success,
    and required compaction schedule. The reviewer may block a machine pass but
@@ -48,6 +62,15 @@ judge, summarize, or resolve this review.
    with the report's unique attempt ID. The log preserves attempts but does not
    itself enforce selection policy; reviewers must disclose prior failed
    attempts with the same pins rather than select a later favorable rerun.
+6. Review the per-cell, paired, and per-model measurements and their declared
+   directional cache, retrieval, evidence, append, rebuild, input, and elapsed
+   differences without converting missing values to zero. Pi 0.84.2 normalizes
+   omitted raw cache fields to zero at this public seam, so zero-only cache
+   values must remain unknown; only positive cache counts establish reporting.
+   Provider input/cache fields and returned evidence bytes are distinct units. If the separate recovery A/B was run,
+   verify both arms used identical fixture/script/evaluation digests and that
+   read-only requests actually omitted `search_memory_source`; those 12 cells
+   never satisfy or replace the main 24-cell completeness requirement.
 
 ## Sign-off
 

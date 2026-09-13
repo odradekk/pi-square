@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { parseQualificationReport } from "./runner.mjs";
 
 /**
  * One bounded local-resource check over the actual continuity qualification
@@ -55,6 +56,7 @@ async function main() {
   }
 
   const report = JSON.parse(readFileSync(files.report, "utf8"));
+  const classification = parseQualificationReport(report);
   // Model-context effect versus local-log growth, both bounded: the report's
   // request rows carry per-request prompt tokens; the artifact bytes are the
   // local cost of retaining the evidence for human review.
@@ -71,6 +73,7 @@ async function main() {
     attemptId: report.attemptId ?? attemptId,
     generatedAt: new Date().toISOString(),
     commit: report.pins?.commit ?? null,
+    sourceReport: { schema: report.schema, classification: classification.kind, currentQualification: classification.currentQualification },
     artifacts: {
       reportBytes: sizes.report,
       evidenceBytes: sizes.evidence,
@@ -80,10 +83,10 @@ async function main() {
     replay,
     heapAfterReplayMb: heapUsedMb(),
     runs,
-    interpretation: "replay times and heap deltas describe one parse of the retained bounded artifacts; request-token figures describe the model context the feature measured — local log growth does not offset model-context reduction",
+    interpretation: "replay times and heap deltas describe one parse of the retained bounded artifacts; provider-reported request fields describe the model context while local artifact bytes describe storage only — bytes are never billed tokens, and historical v2 evidence never satisfies current v3 completeness",
   };
   const outPath = join(REPORT_DIR, `continuity-replay-check-${attemptId.slice(0, 19)}.json`);
-  writeFileSync(outPath, `${JSON.stringify(summary, null, 2)}\n`);
+  writeFileSync(outPath, `${JSON.stringify(summary, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   console.log(JSON.stringify(summary, null, 2));
   console.error(`report: ${outPath}`);
 }
