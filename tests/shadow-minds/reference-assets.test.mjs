@@ -15,6 +15,7 @@ const { discoverShadowDefinitions } = await load(join(packageRoot, "src", "shado
 const { serializeShadowDefinition } = await load(join(packageRoot, "src", "shadow-minds", "serialize.ts"));
 const { buildShadowConfigGuide } = await load(join(packageRoot, "src", "shadow-minds", "config-guide.ts"));
 const { buildShadowDefinitionContract } = await load(join(packageRoot, "src", "shadow-minds", "contract.ts"));
+const { SHADOW_DEFAULT_TOOLS, SHADOW_SAFE_TOOLS } = await load(join(packageRoot, "src", "shadow-minds", "tools.ts"));
 
 const assetsDir = join(packageRoot, "shadow-minds");
 
@@ -135,6 +136,20 @@ let minimalDefinition;
     [...SHADOW_DEFINITION_FIELDS].sort(),
     "the contract block documents exactly the parser's definition fields",
   );
+  // The published catalog is the resolver's own catalog, in catalog order:
+  // the generator reads the same constants, so this holds the document
+  // against the source of truth rather than against the generator (#345).
+  assert.deepEqual(
+    [...documented.toolCatalog.builtIns, ...documented.toolCatalog.remoteEvidence],
+    [...SHADOW_SAFE_TOOLS],
+    "the contract block publishes the whole Shadow-safe catalog in catalog order",
+  );
+  assert.deepEqual(
+    documented.toolCatalog.defaultSelection,
+    [...SHADOW_DEFAULT_TOOLS],
+    "the contract block publishes the set an omitted tools field selects",
+  );
+
   // One whole-object comparison: every bound, enum, pattern, and default in
   // the block comes from production code, so drift prints as one full diff
   // instead of stopping at the first mismatched key.

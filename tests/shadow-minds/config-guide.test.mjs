@@ -23,6 +23,7 @@ let __testables;
 const { discoverShadowDefinitions, shadowDefinitionContextFingerprint } = await load(join(packageRoot, "src", "shadow-minds", "definitions.ts"));
 const { ShadowManager } = await load(join(packageRoot, "src", "shadow-minds", "manager.ts"));
 const { DEFAULT_CONFIG, DEFAULT_SHADOW_MINDS } = await load(join(packageRoot, "src", "core", "config.ts"));
+const { SHADOW_DEFAULT_TOOLS, SHADOW_SAFE_TOOLS } = await load(join(packageRoot, "src", "shadow-minds", "tools.ts"));
 
 // File-scope agent base with the six fixture definitions (#188): the former
 // package templates live on as test data so discovery is fully controlled by
@@ -91,7 +92,11 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.match(guide.content, /maxToolCalls/, "budgets are documented");
   assert.doesNotMatch(guide.content, /never write definition files directly/, "the manager-only write instruction is gone");
   assert.doesNotMatch(guide.content, /review and confirmation/, "no Shadow-specific confirmation remains");
-  assert.ok(guide.content.includes("read, grep, find, ls, web_search, web_fetch, library_search, library_docs"), "the read-only catalog is documented");
+  assert.ok(guide.content.includes(SHADOW_SAFE_TOOLS.join(", ")), "the guide lists the whole Shadow-safe catalog in catalog order");
+  assert.ok(
+    guide.content.includes(`default local read-only set (${SHADOW_DEFAULT_TOOLS.join(", ")})`),
+    "the guide names the default local evidence set from the constant",
+  );
   assert.ok(JSON.stringify(guide.content).length < 60_000, "the guide stays bounded");
   assert.equal(guide.details.version, 1);
   assert.equal(guide.details.definitionCount, registry.definitions.length);

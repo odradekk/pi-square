@@ -13,6 +13,11 @@
  * cross-field rules — are written out here, in one table the compiler keys by
  * the parser's own field union, so a new definition field can neither be
  * documented by accident nor silently left undocumented.
+ *
+ * The tool catalog is a run boundary rather than a definition field — it says
+ * what a definition may request at all, not how one field is parsed — so it
+ * gets its own top-level section instead of a row in `fields`, whose compiler
+ * check holds exactly one entry per parser field (#345).
  */
 
 import {
@@ -50,13 +55,25 @@ import {
   SHADOW_TRIGGERS_MAX,
   type ShadowDefinitionField,
 } from "./parser";
+import { SHADOW_BUILTIN_BASE_ORDER, SHADOW_EXTENSION_BASE_ORDER } from "./tools";
 
 /** One field's documented claims: bounds, enum, pattern, default, and semantics. */
 export type ShadowContractField = Record<string, unknown>;
 
+/** The fixed read-only catalog every run's tool envelope is drawn from. */
+export interface ShadowToolCatalogContract {
+  /** Local evidence built-ins, in catalog order. */
+  builtIns: string[];
+  /** Optional opt-in remote evidence tools, in catalog order. */
+  remoteEvidence: string[];
+  /** The set an omitted `tools` field selects. */
+  defaultSelection: string[];
+}
+
 export interface ShadowDefinitionContract {
   promptVersion: number;
   file: { maxBytes: number; commentPolicy: string };
+  toolCatalog: ShadowToolCatalogContract;
   fields: Record<ShadowDefinitionField, ShadowContractField>;
   payload: { maxEncodedChars: number; maxFieldErrors: number };
 }
@@ -159,6 +176,11 @@ export function buildShadowDefinitionContract(minimal: EffectiveShadowDefinition
     file: {
       maxBytes: SHADOW_FILE_MAX_BYTES,
       commentPolicy: "whole-line-only",
+    },
+    toolCatalog: {
+      builtIns: [...SHADOW_BUILTIN_BASE_ORDER],
+      remoteEvidence: [...SHADOW_EXTENSION_BASE_ORDER],
+      defaultSelection: [...SHADOW_DEFAULT_TOOLS],
     },
     fields,
     payload: {
