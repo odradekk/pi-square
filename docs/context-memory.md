@@ -24,9 +24,16 @@ Memory body plus the tool protocol are verified through Pi's native
 Anthropic and OpenAI-compatible conversions at the real transport boundary
 (#323). Request-exit arbitration — the recorded projection, the safe native
 fallback, and the hard stop with the public abort signal — is implemented
-and verified at the same transport boundary (#324). Real-model
-qualification remains owned by the continuation tickets (#325, #227) and is
-**not implemented yet**.
+and verified at the same transport boundary (#324). The real-model
+qualification instruments were executed by #325 on the in-task architecture:
+the deterministic corpus sweep passes, the three-lane provider-cache
+sequence passed integrity on every lane, and the 16-run continuity matrix
+produced eleven valid runs with complete critical and continuity recall and
+zero machine severe signals, alongside honestly classified inconclusive runs
+(two transport-voided, three from model behavior). No single attempt has
+produced sixteen valid runs yet, so the machine continuity gate has not
+passed; the human rubric review and the final release verdict remain open in
+#227.
 The implemented contracts are covered by deterministic native Pi requests
 and the explicitly identified boundary-injected tests described below.
 

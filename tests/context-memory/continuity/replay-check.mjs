@@ -44,7 +44,11 @@ async function main() {
     if (path === null) continue;
     const before = heapUsedMb();
     const startedAt = performance.now();
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    const text = readFileSync(path, "utf8");
+    // The attempts log is JSONL; reports and evidence are single documents.
+    const parsed = name === "attempts"
+      ? text.split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line)).at(-1)
+      : JSON.parse(text);
     const elapsedMs = Math.round((performance.now() - startedAt) * 10) / 10;
     const entries = Array.isArray(parsed?.runs) ? parsed.runs.length : null;
     replay[name] = { elapsedMs, heapDeltaMb: Math.round((heapUsedMb() - before) * 10) / 10, entries };
