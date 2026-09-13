@@ -463,21 +463,27 @@ hint names the exact follow-up call.
 
 The `search_memory_source` tool shares the reading surface's availability
 and its transcript definition: it accepts 1–8 non-empty literal terms (each
-at most 120 characters, whitespace-only refused) combined with
-case-insensitive OR semantics — never regular expressions, fuzzy matching, an
+at most 120 characters, counted as Unicode code points so an astral-plane
+term is bounded by its real character count; whitespace-only refused)
+combined with case-insensitive OR semantics — never regular expressions, fuzzy matching, an
 external service, or an extra model call — plus an optional 1-based `block`
 selector that narrows the scope from all current blocks to one. Matching runs
 over each searched block's complete rendered transcript first — through a
 per-code-point case fold that maps every hit back onto the exact original
 text — and only then maps the hit's UTF-8 byte range onto the same fixed
 16 KiB pages, so a phrase crossing a page boundary stays discoverable and its
-row names both pages; no match is ever manufactured across block boundaries,
-omitted protocol artifacts, or clipped excerpt gaps, and Memory summaries,
-prior read/search result copies, and sibling or abandoned branches are never
-searched. Results are bounded and truthful: at most 12 grouped block/page
+row names both pages. No match is ever manufactured across a block boundary,
+an entry join, an omitted protocol part (an interrupted or answered
+read/search call filtered from the transcript), or a clipped excerpt gap:
+the renderer reports those joins as non-crossable source boundaries, matches
+may not include them, and excerpts stop at them — the joined surviving text
+around an omitted call is never treated as continuous original text. Memory
+summaries, prior read/search result copies, and sibling or abandoned
+branches are never searched. Results are bounded and truthful: at most 12 grouped block/page
 rows render, each with at most 2 verbatim excerpts (clipped ends visibly
-marked) and an overflow count, under an 8 KiB response cap; omitted rows are
-reported, a scan that stops at the 4096-match bound reports an incomplete
+marked, never spanning a source boundary) and an overflow count, and the
+complete response — header, rows, and the footer with its counts and view
+hint — stays under a hard 8 KiB cap; omitted rows are reported, a scan that stops at the 4096-match bound reports an incomplete
 search rather than a zero-hit result, and a complete zero-hit search
 means only that the literal terms did not occur in the searched sources —
 never that a fact is absent. Snippets that already carry the needed evidence

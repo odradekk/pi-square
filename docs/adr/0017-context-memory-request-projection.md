@@ -216,7 +216,13 @@ fixed pages — so a phrase crossing a page boundary names both pages and no
 match is manufactured across blocks, omitted artifacts, or excerpt gaps —
 and returns grouped block/page rows with verbatim snippets under published
 output bounds that report truncation, omission, and scan incompleteness
-truthfully. Returned locations bind to an opaque digest of the current
+truthfully — the complete response, footer and view hint included, stays
+under the published byte cap, and the term bound counts Unicode code points.
+The renderer reports non-crossable source boundaries — every entry join and
+every join where a protocol part was omitted, interrupted calls included —
+and matches and excerpts may not cross them, so no phrase is manufactured
+over removed content while the reading surface's page contract stays
+byte-identical. Returned locations bind to an opaque digest of the current
 Memory derivation (`sourceViewIdentity`): one-way, session-path-free, and
 derived on demand; `read_memory_source` accepts it as an optional `view`
 argument and rejects a stale token with `VIEW_STALE` before serving any
