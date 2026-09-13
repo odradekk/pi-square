@@ -12,6 +12,7 @@ const {
   compareActivations,
   formatTriggerReason,
   createShadowScheduler,
+  subscribedDefinitions,
 } = schedulerModule;
 
 // ── Pure boundaries ────────────────────────────────────────────────
@@ -61,6 +62,22 @@ const {
   const long = mergeTriggerReason([], { trigger: "mutation", at: 1, detail: "x".repeat(500) });
   assert.ok(long[0].detail.length <= 160, "details are bounded");
   assert.equal(formatTriggerReason({ trigger: "tool_turn", firstObservedAt: 1, lastObservedAt: 2, generation: 7 }), "tool_turn: generation 7");
+}
+
+{
+  // Hidden takes an otherwise eligible definition out of the automatic
+  // candidate set (#343); only a manual start can reach it.
+  const config = { enabled: true };
+  const definition = (over) => ({ enabled: true, hidden: false, triggers: ["completion", "failure"], ...over });
+  const visible = definition({ id: "visible" });
+  const hidden = definition({ id: "hidden", hidden: true });
+  for (const trigger of ["completion", "failure"]) {
+    assert.deepEqual(
+      subscribedDefinitions([visible, hidden], trigger, config).map((entry) => entry.id),
+      ["visible"],
+      `an enabled, subscribed, hidden definition is never a '${trigger}' candidate`,
+    );
+  }
 }
 
 {

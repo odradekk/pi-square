@@ -135,7 +135,7 @@ Fields:
 | Field | Meaning | Default |
 | --- | --- | --- |
 | `enabled` | Definitions start disabled; you opt in per definition | `false` |
-| `hidden` | Hide from the browse list without deleting | `false` |
+| `hidden` | Stays listed in the manager but never triggers automatically; manual starts still work | `false` |
 | `priority` | Dispatch tie-break among same-trigger candidates | `0` |
 | `triggers` | Automatic triggers: `tool_turn`, `mutation`, `failure`, `completion` | `[]` |
 | `triggerInstructions` | Per-trigger instruction map; `null` removes a key | `{}` |

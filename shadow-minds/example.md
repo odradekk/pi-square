@@ -6,7 +6,9 @@
 #
 # The frontmatter is a strict YAML subset: plain or quoted scalars, one-line
 # flow lists, nested maps with exactly two-space indentation. Whole-line
-# comments (like these) are allowed; '#' inside or after a value is not.
+# comments (like these) are allowed; a '#' inside a plain scalar is not,
+# while a quoted scalar keeps a literal '#'. A trailing '# comment' after a
+# value is rejected in either form.
 promptVersion: 1
 
 # The id must equal the Markdown filename stem: this file must be example.md.
@@ -24,10 +26,11 @@ name: Annotated example
 # on; enabling here only arms this definition once the switch is on.
 enabled: false
 
-# hidden: true removes the definition from the manager list while keeping it
-# schedulable. Omitted fields inherit from the lower layer (agent base under
-# the project overlay); explicit null clears inherited instructions; an
-# explicit empty list replaces an inherited list.
+# hidden: true keeps the definition listed in the manager but takes it out of
+# automatic triggering; you can still start it manually. Omitted fields
+# inherit from the lower layer (agent base under the project overlay);
+# explicit null clears inherited instructions; an explicit empty list
+# replaces an inherited list.
 hidden: false
 
 # priority breaks trigger ties: higher runs first. Integer, -1000..1000.
@@ -42,7 +45,7 @@ triggers: [completion, failure]
 
 # Per-trigger guidance merged by key across layers; null removes one key.
 triggerInstructions:
-  # Keep instructions below 8000 characters each.
+  # Keep each instruction at 8000 characters or fewer.
   completion: Compare the settled answer against the evidence it cites.
   failure: Name the failing target and the first error line only.
 
@@ -119,7 +122,9 @@ finding in entries you can quote; when the evidence is missing, say so in a
 finding instead of guessing.
 
 - Report at most a handful of findings; the payload bound is 24000 encoded
-  characters and longer payloads are rejected with field-level errors.
+  characters, and a longer payload is rejected with a single error naming
+  that bound rather than with field-level errors. Field-level errors report
+  schema violations, at most 32 of them.
 - Never claim a capability the tool list does not give you: there is no
   shell, no write, no SSH, no upload, and no delegation in a Shadow run.
 - The verdict is your single-word judgment; findings are its evidence.
