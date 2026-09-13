@@ -126,6 +126,21 @@ const STRING_FIELDS = new Set<SubagentDefinitionField>([
 const ARRAY_FIELDS = new Set<SubagentDefinitionField>(["tools", "extensionTools", "skills"]);
 const BOOLEAN_FIELDS = new Set<SubagentDefinitionField>(["inheritParentSystem", "visible"]);
 const KNOWN_FIELDS = new Set(["promptVersion", "name", ...DEFINITION_FIELDS]);
+
+/** How the parser types a field's value, in the configuration guide's wording. */
+export type SubagentFieldValueType = "string" | "string list" | "boolean";
+
+/**
+ * The value type the parser enforces for one overlay field. The configuration
+ * guide renders its type column from this (#334) instead of restating the sets
+ * above, so the table cannot disagree with what the parser actually accepts.
+ * The branch order matches the parse loop's own.
+ */
+export function subagentFieldValueType(field: SubagentDefinitionField): SubagentFieldValueType {
+  if (ARRAY_FIELDS.has(field)) return "string list";
+  if (BOOLEAN_FIELDS.has(field)) return "boolean";
+  return "string";
+}
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function isDirectory(path: string): boolean {

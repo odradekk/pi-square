@@ -6,7 +6,13 @@ import {
 import { Container, Markdown, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { getPackagePath } from "../core/paths";
 import { ALLOWED_EFFORTS } from "./efforts";
-import { DEFINITION_FIELDS, type SubagentDefinitionField, type SubagentRegistry } from "./definitions";
+import {
+  DEFINITION_FIELDS,
+  subagentFieldValueType,
+  type SubagentDefinitionField,
+  type SubagentFieldValueType,
+  type SubagentRegistry,
+} from "./definitions";
 import { sanitizeSubagentDisplay } from "./display";
 import { BUILT_IN_TOOL_NAMES } from "./tool-policy";
 
@@ -63,35 +69,43 @@ function boundedMetadata(registry: SubagentRegistry): Array<Record<string, unkno
 }
 
 /**
- * Field-table rows generated from the parser's field constants (#334): the
- * field list and order come from `DEFINITION_FIELDS`, and the compile-time
- * `Record` keyed by `SubagentDefinitionField` keeps type, requiredness, and
- * default text present for exactly those fields. The schema reference ships
- * the same rows in its machine-checked contract block.
+ * Field-table rows generated from the parser (#334): the field list and order
+ * come from `DEFINITION_FIELDS` and each row's type from
+ * `subagentFieldValueType`, so neither can drift from what the parser accepts.
+ * Only requiredness and the inheritance note are authored here — semantics the
+ * parser does not classify — and the compile-time `Record` keyed by
+ * `SubagentDefinitionField` keeps them present for exactly those fields. The
+ * schema reference ships the same rows in its machine-checked contract block.
  */
 export interface SubagentFieldTableRow {
   field: SubagentDefinitionField;
-  type: "string" | "string list" | "boolean";
+  type: SubagentFieldValueType;
   required: "no" | "after merge";
   default: string;
 }
 
-const FIELD_TABLE: Record<SubagentDefinitionField, SubagentFieldTableRow> = {
-  description: { field: "description", type: "string", required: "after merge", default: "none — must survive the overlay merge" },
-  model: { field: "model", type: "string", required: "no", default: "inherit parent at fresh-run startup" },
-  effort: { field: "effort", type: "string", required: "no", default: "inherit parent at fresh-run startup" },
-  policy: { field: "policy", type: "string", required: "no", default: "none" },
-  instructions: { field: "instructions", type: "string", required: "no", default: "none" },
-  output: { field: "output", type: "string", required: "no", default: "none" },
-  inheritParentSystem: { field: "inheritParentSystem", type: "boolean", required: "no", default: "true" },
-  tools: { field: "tools", type: "string list", required: "no", default: "omitted or [] selects the runtime defaults; [none] disables every built-in tool" },
-  extensionTools: { field: "extensionTools", type: "string list", required: "no", default: "omitted or [] requests none" },
-  skills: { field: "skills", type: "string list", required: "no", default: "omitted or [] loads all discovered skills; [none] disables them" },
-  visible: { field: "visible", type: "boolean", required: "no", default: "true" },
+type FieldSemantics = Pick<SubagentFieldTableRow, "required" | "default">;
+
+const FIELD_SEMANTICS: Record<SubagentDefinitionField, FieldSemantics> = {
+  description: { required: "after merge", default: "none — must survive the overlay merge" },
+  model: { required: "no", default: "inherit parent at fresh-run startup" },
+  effort: { required: "no", default: "inherit parent at fresh-run startup" },
+  policy: { required: "no", default: "none" },
+  instructions: { required: "no", default: "none" },
+  output: { required: "no", default: "none" },
+  inheritParentSystem: { required: "no", default: "true" },
+  tools: { required: "no", default: "omitted or [] selects the runtime defaults; [none] disables every built-in tool" },
+  extensionTools: { required: "no", default: "omitted or [] requests none" },
+  skills: { required: "no", default: "omitted or [] loads all discovered skills; [none] disables them" },
+  visible: { required: "no", default: "true" },
 };
 
 export function subagentFieldTableRows(): SubagentFieldTableRow[] {
-  return DEFINITION_FIELDS.map((field) => FIELD_TABLE[field]);
+  return DEFINITION_FIELDS.map((field) => ({
+    field,
+    type: subagentFieldValueType(field),
+    ...FIELD_SEMANTICS[field],
+  }));
 }
 
 function renderFieldTable(): string {

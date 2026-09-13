@@ -105,6 +105,40 @@ test("the guide's field table and value lists are generated from the code consta
   assert.ok(guide.content.includes(join("subagents", "schema-reference.md")), "the guide names the packaged schema reference path");
 });
 
+test("every field-table type matches the shape the parser actually accepts", async () => {
+  const { __testables, subagentFieldValueType } = await load(join(packageRoot, "src", "subagents", "definitions.ts"));
+  const { subagentFieldTableRows } = await load(join(packageRoot, "src", "subagents", "config-guide.ts"));
+
+  // A row's type is a claim about what the parser takes. Feed each field a
+  // value of the wrong shape and require the parser's own rejection for that
+  // type, so the table cannot outlive a change to the field's value type.
+  const wrongShape = {
+    "string": { value: "[a, b]", error: "must be a string or null" },
+    "string list": { value: "plain", error: "must be an array or null" },
+    "boolean": { value: "[a]", error: "must be true, false, or null" },
+  };
+
+  for (const row of subagentFieldTableRows()) {
+    assert.equal(row.type, subagentFieldValueType(row.field), `${row.field} renders the parser's own value type`);
+    const probe = wrongShape[row.type];
+    assert.ok(probe, `${row.field}: unhandled table type '${row.type}'`);
+    // Declaring the field once keeps a duplicate-field error from masking the
+    // type error when the field under test is description itself.
+    const lines = ["promptVersion: 2", "name: t"];
+    if (row.field !== "description") lines.push("description: d");
+    lines.push(`${row.field}: ${probe.value}`);
+    const parsed = __testables.parseYamlDefinition(
+      `${lines.join("\n")}\n`,
+      "/agent/subagents/t.yaml",
+      "agent",
+    );
+    assert.ok(
+      parsed.errors.some((item) => item.includes(`field '${row.field}'`) && item.includes(probe.error)),
+      `${row.field} is typed '${row.type}' but the parser did not reject a mismatched value: ${parsed.errors.join(" | ")}`,
+    );
+  }
+});
+
 test("collapsed guide is one native-style summary and expanded guide reveals bounded metadata", () => {
   const registry = withPackageRoot(discoverSubagents(cleanCwd), syntheticGuideRoot);
   const guide = buildSubagentConfigGuide(registry, syntheticGuideRoot);
