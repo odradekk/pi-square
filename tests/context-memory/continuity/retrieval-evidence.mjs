@@ -56,39 +56,40 @@ function pairPresent(messages, candidate) {
   return calls === 1 && results === 1 && callIndex < resultIndex;
 }
 
-function witnessesIn(units, requirements) {
-  return requirements.filter((requirement) => units.some((unit) =>
-    unit.toLocaleLowerCase().includes(requirement.exact.toLocaleLowerCase()))).map((requirement) => requirement.id);
-}
-
 /** Tool results qualify only after the exact pair reaches a later terminal context exit. */
 function intersects(left, right) {
   return left.some((value) => right.includes(value));
 }
 
 function originalWitnessesIn(row, requirements) {
-  const present = witnessesIn(row.units, requirements);
   const pages = row.locations.flatMap((location) => location.pages);
   const location = row.candidate.originalLocations.find((candidate) =>
     row.locations.some((returned) => returned.block === candidate.block));
   if (!location) return [];
-  return present.filter((requirementId) => {
-    const witness = location.witnesses[requirementId];
+  return requirements.filter((requirement) => {
+    const witness = location.witnesses[requirement.id];
     if (!witness || !intersects(witness.targetPages, pages)) return false;
-    // A page read carries the complete original page. A bounded search excerpt
-    // is creditable only when its returned page cannot refer solely to a copy
-    // of the same words from another entry in that block.
-    if (row.candidate.kind === "read") return true;
+    if (row.candidate.kind === "read") {
+      // Page results are separate evidence units. Credit only a page that
+      // contains one complete witness from the target entry; another entry's
+      // copy on that page cannot complete an original spanning the boundary.
+      return intersects(witness.completeTargetPages ?? [], pages)
+        && row.units.some((unit) => unit.toLocaleLowerCase().includes(requirement.exact.toLocaleLowerCase()));
+    }
+    // A search witness and its original-source provenance must come from the
+    // same individual excerpt. A different target-unique excerpt in the row
+    // cannot authorize a fact-bearing excerpt copied from another entry.
     return row.units.some((unit) => {
+      if (!unit.toLocaleLowerCase().includes(requirement.exact.toLocaleLowerCase())) return false;
       const core = unit.replace(/^…/, "").replace(/…$/, "");
       return core.length > 0
         && location.targetTexts.some((text) => text.toLocaleLowerCase().includes(core.toLocaleLowerCase()))
         && !location.otherTexts.some((text) => text.toLocaleLowerCase().includes(core.toLocaleLowerCase()));
     });
-  });
+  }).map((requirement) => requirement.id);
 }
 
-export function createRetrievalEvidenceCollector({ script, sourceEntryIds, deriveMemory, sourceViewOf, originalLocationsOf }) {
+export function createRetrievalEvidenceCollector({ script, sourceEntryIds, deriveMemory, sourceViewOf, originalLocationsOf, artifactPathMatches }) {
   const pending = new Map();
   const candidates = [];
   let lifecycle = 0;
@@ -104,7 +105,10 @@ export function createRetrievalEvidenceCollector({ script, sourceEntryIds, deriv
     lifecycle += 1;
     const memory = deriveMemory(session);
     const view = memory?.kind === "valid" ? sourceViewOf(memory) : null;
-    if (event.toolName === "write" && event.args?.path === script.artifactPath) {
+    const isArtifact = typeof artifactPathMatches === "function"
+      ? artifactPathMatches(event.args?.path)
+      : event.args?.path === script.artifactPath;
+    if (event.toolName === "write" && isArtifact) {
       if (handoffs.length < 2) handoffs.push({ lifecycle, callId: event.toolCallId, content: event.args?.content, completed: false, view });
       else handoffOverflow = true;
     }

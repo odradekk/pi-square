@@ -72,6 +72,11 @@ try {
           if (last?.toolName === "write") return fauxAssistantMessage("The handoff file is ready.");
           return beginSearch();
         }
+        if (retrievalMode === "equivalent-path") {
+          if (last?.toolName === "search_memory_source") return fauxAssistantMessage(fauxToolCall("write", { path: "./handoff.json", content: HANDOFF }), { stopReason: "toolUse" });
+          if (last?.toolName === "write") return fauxAssistantMessage("The handoff file is ready.");
+          return beginSearch();
+        }
         if (retrievalMode === "filtered") {
           if (finalStep++ === 0) return beginSearch();
           if (last?.toolName === "write") return fauxAssistantMessage("The handoff file is ready.");
@@ -190,9 +195,21 @@ try {
     "the enabled arm exposes search to the real model request");
   assert.ok(providerToolSets.every((tools) => tools.includes("read_memory_source") && tools.includes("search_memory_source")),
     "the enabled arm exposes read and search at the actual provider boundary throughout the native lifecycle");
+  const searchedFinalIndexes = contexts.map((context, index) => requestText(context).includes("FINAL_ARTIFACT") ? index : -1).filter((index) => index >= 0);
+  assert.ok(searchedFinalIndexes.length > 0);
+  assert.ok(searchedFinalIndexes.every((index) => providerToolSets[index].includes("write") && !providerToolSets[index].includes("bash")),
+    "the native handoff phase exposes write but prevents the unobservable shell mutation route");
+  assert.ok(contexts.some((context, index) => !requestText(context).includes("FINAL_ARTIFACT") && providerToolSets[index].includes("bash")),
+    "ordinary work retains the shell before the final handoff phase");
   for (const identity of ["root", "agentConfig", "workspace", "session", "capture"]) {
     assert.notEqual(searched.isolation[identity], result.isolation[identity], `${identity} is isolated for every native cell`);
   }
+
+  setResponses({ retrievalMode: "equivalent-path" });
+  const equivalentPath = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
+    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+  assert.equal(equivalentPath.retrievalQualification.code, "qualified-search-snippet",
+    "a native write through ./handoff.json is observed as the canonical handoff target");
 
   const targetedScript = {
     ...script,
@@ -270,6 +287,9 @@ try {
     "the read-only arm omits search from every provider-visible tool list");
   assert.ok(providerToolSets.every((tools) => tools.includes("read_memory_source") && !tools.includes("search_memory_source")),
     "the read-only arm omits search from every actual provider request while keeping read active");
+  const readOnlyFinalIndexes = contexts.map((context, index) => requestText(context).includes("FINAL_ARTIFACT") ? index : -1).filter((index) => index >= 0);
+  assert.ok(readOnlyFinalIndexes.every((index) => providerToolSets[index].includes("write") && !providerToolSets[index].includes("bash")),
+    "the read-only arm uses the same observable write-only final mutation policy");
 
   for (const [retrievalMode, expected] of [
     ["same-batch", "observed-post-handoff"],

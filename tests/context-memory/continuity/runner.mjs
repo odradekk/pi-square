@@ -136,6 +136,7 @@ export function pinEnvironment() {
       retry: { enabled: false, providerMaxRetries: 0 },
       thinkingLevel: "off",
       requestedTools: ["read", "bash", "write", "compact_to_memory_block", "read_memory_source", "search_memory_source"],
+      finalDisabledTools: ["bash"],
     },
     fixtureDigest: digest(planCases().map(({ caseKey: key, seed, scriptDigest, evaluationDigest }) => ({ key, seed, scriptDigest, evaluationDigest }))),
   };
@@ -176,10 +177,11 @@ function redactText(value, exactSecrets = []) {
 }
 function errorText(error, exactSecrets) { return redactText(error instanceof Error ? error.message : String(error), exactSecrets).slice(0, 1000); }
 function compactCoverage(value = {}) {
+  const count = (field) => Number.isSafeInteger(value[field]) && value[field] >= 0 ? value[field] : null;
   return {
     ok: value.ok === true,
     failures: Array.isArray(value.failures) ? value.failures.slice(0, 32).map(String) : ["missing coverage"],
-    memoryStates: Number(value.memoryStates ?? 0), appends: Number(value.appends ?? 0), rebuilds: Number(value.rebuilds ?? 0),
+    memoryStates: count("memoryStates"), appends: count("appends"), rebuilds: count("rebuilds"),
     multiBlockMemory: value.multiBlockMemory === true,
     sourceCovered: value.sourceCovered === true, rawSourceAbsent: value.rawSourceAbsent === true,
   };
@@ -403,8 +405,15 @@ export function buildPairs(records) {
       differences: {
         direction: "glm-minus-sonnet",
         inputTokens: difference(glm?.usage.input.total, sonnet?.usage.input.total),
+        cacheReadTokens: difference(glm?.usage.cacheRead.total, sonnet?.usage.cacheRead.total),
+        cacheWriteTokens: difference(glm?.usage.cacheWrite.total, sonnet?.usage.cacheWrite.total),
+        searches: difference(glm?.retrieval.searches, sonnet?.retrieval.searches),
+        targetedReads: difference(glm?.retrieval.targetedReads, sonnet?.retrieval.targetedReads),
+        pageReads: difference(glm?.retrieval.pageReads, sonnet?.retrieval.pageReads),
         elapsedMs: difference(glm?.elapsedMs, sonnet?.elapsedMs),
         returnedEvidenceBytes: difference(glm?.retrieval.returnedEvidenceBytes, sonnet?.retrieval.returnedEvidenceBytes),
+        appends: difference(glm?.compressionCoverage.appends, sonnet?.compressionCoverage.appends),
+        rebuilds: difference(glm?.compressionCoverage.rebuilds, sonnet?.compressionCoverage.rebuilds),
       },
     };
   });
@@ -432,8 +441,15 @@ export function buildRecoveryPairs(records) {
       differences: {
         direction: "search-enabled-minus-read-only",
         inputTokens: difference(searchEnabled?.usage.input.total, readOnly?.usage.input.total),
+        cacheReadTokens: difference(searchEnabled?.usage.cacheRead.total, readOnly?.usage.cacheRead.total),
+        cacheWriteTokens: difference(searchEnabled?.usage.cacheWrite.total, readOnly?.usage.cacheWrite.total),
+        searches: difference(searchEnabled?.retrieval.searches, readOnly?.retrieval.searches),
+        targetedReads: difference(searchEnabled?.retrieval.targetedReads, readOnly?.retrieval.targetedReads),
+        pageReads: difference(searchEnabled?.retrieval.pageReads, readOnly?.retrieval.pageReads),
         elapsedMs: difference(searchEnabled?.elapsedMs, readOnly?.elapsedMs),
         returnedEvidenceBytes: difference(searchEnabled?.retrieval.returnedEvidenceBytes, readOnly?.retrieval.returnedEvidenceBytes),
+        appends: difference(searchEnabled?.compressionCoverage.appends, readOnly?.compressionCoverage.appends),
+        rebuilds: difference(searchEnabled?.compressionCoverage.rebuilds, readOnly?.compressionCoverage.rebuilds),
       },
     };
   }));
@@ -452,20 +468,20 @@ function markdown(report) {
     const input = run.requests.length > 0 && run.requests.every((request) => Number.isFinite(request.input)) ? run.requests.reduce((total, request) => total + request.input, 0) : null;
     const cacheRead = run.requests.length > 0 && run.requests.every((request) => Number.isFinite(request.cacheRead)) ? run.requests.reduce((total, request) => total + request.cacheRead, 0) : null;
     const cacheWrite = run.requests.length > 0 && run.requests.every((request) => Number.isFinite(request.cacheWrite)) ? run.requests.reduce((total, request) => total + request.cacheWrite, 0) : null;
-    lines.push(`| ${run.run} | ${run.status} | ${run.integrity.ok ? "ok" : "inconclusive"} | ${run.coverage.ok ? "ok" : "inconclusive"} | ${run.coverage.appends ?? 0}/${run.coverage.rebuilds ?? 0} | ${run.score.artifactValid ? "valid" : "invalid"} | ${unknownStatus} | ${run.retrieval.code} | ${display(run.retrieval.searches)}/${display(run.retrieval.targetedReads)}/${display(run.retrieval.pageReads)}/${display(run.retrieval.returnedEvidenceBytes)} | ${display(input)}/${display(cacheRead)}/${display(cacheWrite)} | ${display(run.elapsedMs)} |`);
+    lines.push(`| ${run.run} | ${run.status} | ${run.integrity.ok ? "ok" : "inconclusive"} | ${run.coverage.ok ? "ok" : "inconclusive"} | ${display(run.coverage.appends)}/${display(run.coverage.rebuilds)} | ${run.score.artifactValid ? "valid" : "invalid"} | ${unknownStatus} | ${run.retrieval.code} | ${display(run.retrieval.searches)}/${display(run.retrieval.targetedReads)}/${display(run.retrieval.pageReads)}/${display(run.retrieval.returnedEvidenceBytes)} | ${display(input)}/${display(cacheRead)}/${display(cacheWrite)} | ${display(run.elapsedMs)} |`);
   }
   lines.push("", "## Corresponding model pairs", "",
     "Valid numeric differences are GLM minus Sonnet; missing provider measurements remain missing.", "",
-    "| case | Sonnet | GLM | input-token difference | evidence-byte difference | elapsed-ms difference |",
-    "| --- | --- | --- | --- | --- | --- |");
-  for (const pair of report.pairs) lines.push(`| ${pair.caseKey} | ${pair.sonnet?.terminal ?? "missing"} | ${pair.glm?.terminal ?? "missing"} | ${display(pair.differences.inputTokens)} | ${display(pair.differences.returnedEvidenceBytes)} | ${display(pair.differences.elapsedMs)} |`);
+    "| case | Sonnet | GLM | input/cache R/cache W difference | search/targeted read/page read/evidence byte difference | append/rebuild difference | elapsed-ms difference |",
+    "| --- | --- | --- | --- | --- | --- | --- |");
+  for (const pair of report.pairs) lines.push(`| ${pair.caseKey} | ${pair.sonnet?.terminal ?? "missing"} | ${pair.glm?.terminal ?? "missing"} | ${display(pair.differences.inputTokens)}/${display(pair.differences.cacheReadTokens)}/${display(pair.differences.cacheWriteTokens)} | ${display(pair.differences.searches)}/${display(pair.differences.targetedReads)}/${display(pair.differences.pageReads)}/${display(pair.differences.returnedEvidenceBytes)} | ${display(pair.differences.appends)}/${display(pair.differences.rebuilds)} | ${display(pair.differences.elapsedMs)} |`);
   lines.push("", "## Per-model totals", "",
     "Bytes are returned evidence bytes, not billed tokens.", "",
-    "| model | completed / failed / inconclusive / error / timeout / cancelled / not attempted | requests | input | cache read present | cache write present | search/read/pages/bytes | elapsed ms |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |");
+    "| model | completed / failed / inconclusive / error / timeout / cancelled / not attempted | requests | input | cache read status/total | cache write status/total | search/read/pages/bytes | states/append/rebuild | elapsed ms |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const [lane, totals] of Object.entries(report.modelTotals)) {
     const terminal = totals.terminal;
-    lines.push(`| ${lane} | ${terminal.completed}/${terminal.failed}/${terminal.inconclusive}/${terminal.errors}/${terminal.timeouts}/${terminal.cancelled}/${terminal.notAttempted} | ${totals.usage.requests} | ${display(totals.usage.input.total)} | ${totals.cachePresence.read ? "present" : "missing"} | ${totals.cachePresence.write ? "present" : "missing"} | ${display(totals.retrieval.searches)}/${display(totals.retrieval.targetedReads)}/${display(totals.retrieval.pageReads)}/${display(totals.retrieval.returnedEvidenceBytes)} | ${display(totals.elapsedMs)} |`);
+    lines.push(`| ${lane} | ${terminal.completed}/${terminal.failed}/${terminal.inconclusive}/${terminal.errors}/${terminal.timeouts}/${terminal.cancelled}/${terminal.notAttempted} | ${totals.usage.requests} | ${display(totals.usage.input.total)} | ${totals.cachePresence.read}/${display(totals.usage.cacheRead.total)} | ${totals.cachePresence.write}/${display(totals.usage.cacheWrite.total)} | ${display(totals.retrieval.searches)}/${display(totals.retrieval.targetedReads)}/${display(totals.retrieval.pageReads)}/${display(totals.retrieval.returnedEvidenceBytes)} | ${display(totals.compression.memoryStates)}/${display(totals.compression.appends)}/${display(totals.compression.rebuilds)} | ${display(totals.elapsedMs)} |`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -510,18 +526,26 @@ function modelTotals(records) {
     const retrievalTotal = (field) => retrievals.every((value) => Number.isFinite(value[field]))
       ? retrievals.reduce((total, value) => total + value[field], 0)
       : null;
+    const compressionTotal = (field) => cells.every((record) => Number.isFinite(record.coverage?.[field]))
+      ? cells.reduce((total, record) => total + record.coverage[field], 0)
+      : null;
     return [lane, {
       terminal: countsFor(cells),
       usage: usageSummary({ result: { requests } }),
       cachePresence: {
-        read: requests.some((row) => Number.isFinite(row?.cacheRead)),
-        write: requests.some((row) => Number.isFinite(row?.cacheWrite)),
+        read: requests.some((row) => Number.isFinite(row?.cacheRead)) ? "positive-observed" : "unknown",
+        write: requests.some((row) => Number.isFinite(row?.cacheWrite)) ? "positive-observed" : "unknown",
       },
       retrieval: {
         searches: retrievalTotal("searches"),
         targetedReads: retrievalTotal("targetedReads"),
         pageReads: retrievalTotal("pageReads"),
         returnedEvidenceBytes: retrievalTotal("returnedEvidenceBytes"),
+      },
+      compression: {
+        memoryStates: compressionTotal("memoryStates"),
+        appends: compressionTotal("appends"),
+        rebuilds: compressionTotal("rebuilds"),
       },
       elapsedMs: cells.every((record) => totalIfComplete(record.result?.phaseLatency, "ms") !== null)
         ? cells.reduce((total, record) => total + totalIfComplete(record.result?.phaseLatency, "ms"), 0)
@@ -598,11 +622,14 @@ function recoveryMarkdown(report) {
     "",
     "This separate A/B report does not contribute cells to the 24-cell continuity qualification and requires human review.",
     "",
-    "| model | case | search-enabled | read-only | input delta | evidence-byte delta |",
-    "| --- | --- | --- | --- | --- | --- |",
+    "Differences are search-enabled minus read-only; any measure missing on either side stays missing.",
+    "",
+    "| model | case | search-enabled | read-only | input/cache R/cache W delta | search/targeted read/page read/evidence byte delta | append/rebuild delta | elapsed-ms delta |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
   ];
   for (const pair of report.recoveryComparison.pairs) {
-    lines.push(`| ${pair.lane} | ${pair.caseKey} | ${pair.searchEnabled?.terminal ?? "missing"} | ${pair.readOnly?.terminal ?? "missing"} | ${pair.differences.inputTokens ?? "missing"} | ${pair.differences.returnedEvidenceBytes ?? "missing"} |`);
+    const value = (item) => item ?? "missing";
+    lines.push(`| ${pair.lane} | ${pair.caseKey} | ${pair.searchEnabled?.terminal ?? "missing"} | ${pair.readOnly?.terminal ?? "missing"} | ${value(pair.differences.inputTokens)}/${value(pair.differences.cacheReadTokens)}/${value(pair.differences.cacheWriteTokens)} | ${value(pair.differences.searches)}/${value(pair.differences.targetedReads)}/${value(pair.differences.pageReads)}/${value(pair.differences.returnedEvidenceBytes)} | ${value(pair.differences.appends)}/${value(pair.differences.rebuilds)} | ${value(pair.differences.elapsedMs)} |`);
   }
   return `${lines.join("\n")}\n`;
 }

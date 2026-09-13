@@ -15,6 +15,8 @@ function usage() {
     "the separate both-model search-enabled/read-only recovery comparison; it never",
     "changes or substitutes the 24-cell qualification. Both modes refuse a dirty checkout",
     "before any request. Offline regression belongs in the test suite's faux provider.",
+    "Final handoffs expose only Pi's native write tool; equivalent workspace paths are",
+    "normalized. Cache zeros normalized by Pi without raw presence report as unknown.",
     "Artifacts: continuity-qualification-*.{json,md} or recovery-comparison-*.{json,md},",
     "owner-only continuity-evidence-*.json, and the shared append-only attempts.jsonl.",
   ].join("\n");

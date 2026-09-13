@@ -627,6 +627,8 @@ inside each model queue. Every run is
 seeded with fixture-authored Memory at exactly half the budget so the required
 schedule — at least one append and two suffix rebuilds — is fixture-owned. A
 single final handoff file is scored after verified compression coverage;
+the final phase permits only Pi's observable native write route (with
+equivalent path spellings normalized) while earlier work retains its shell;
 missing coverage is inconclusive and a machine pass still requires human
 review. See the
 [qualification workflow](docs/context-memory.md#continuity-qualification).

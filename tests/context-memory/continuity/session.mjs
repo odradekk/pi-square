@@ -8,9 +8,10 @@ import { SEED_EXCHANGE, SEED_MEMORY, workloadPrompt } from "./scenarios.mjs";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const { deriveCurrentMemory, isEligibleSourceEntry, sourceViewIdentity } = await load("../../../src/context-memory/derive.ts");
+const { toCwd } = await load("../../../src/anchored-edit/paths.ts");
 const registerContextMemory = (await load("../../../src/context-memory/index.ts")).default;
 const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG, MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
-const { paginateTranscript, renderSourceTranscript } = await load("../../../src/context-memory/transcript.ts");
+const { paginateTranscript, renderSourceTranscript, renderSourceTranscriptWithBoundaries } = await load("../../../src/context-memory/transcript.ts");
 const { createRetrievalEvidenceCollector } = await import("./retrieval-evidence.mjs");
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
   contextWindow: 100_000,
@@ -34,18 +35,27 @@ function workspacePath(cwd, path) {
   return target;
 }
 
+export function matchesArtifactPath(candidate, cwd, artifactPath) {
+  return typeof candidate === "string" && toCwd(candidate, cwd) === toCwd(artifactPath, cwd);
+}
+
 /** Provider-reported input stays separate from provider-specific cache fields. */
 function reportedInputOf(row) {
   return Number.isSafeInteger(row?.input) ? row.input : null;
 }
 
-function originalEvidenceLocations(memory, sourceEntryIds, requirements) {
+export function originalEvidenceLocations(memory, sourceEntryIds, requirements) {
   if (memory?.kind !== "valid") return [];
   const targetIds = new Set(sourceEntryIds);
   return memory.blocks.flatMap((block, blockIndex) => {
     const entries = block.sourceEntries;
     if (!entries.some((entry) => targetIds.has(entry.id))) return [];
-    const transcript = renderSourceTranscript(entries);
+    // The fallback keeps this bounded provenance seam independently probeable;
+    // production and repository tests always use the boundary-aware renderer.
+    const rendered = typeof renderSourceTranscriptWithBoundaries === "function"
+      ? renderSourceTranscriptWithBoundaries(entries)
+      : { text: renderSourceTranscript(entries), boundaries: [] };
+    const transcript = rendered.text;
     const pages = paginateTranscript(transcript);
     const pageEnds = [];
     let pageEnd = 0;
@@ -68,16 +78,23 @@ function originalEvidenceLocations(memory, sourceEntryIds, requirements) {
       return result;
     };
     const folded = transcript.toLocaleLowerCase();
+    const pageStarts = pageEnds.map((end, index) => index === 0 ? 0 : pageEnds[index - 1]);
     const witnesses = Object.fromEntries(requirements.map((requirement) => {
       const targetPages = new Set();
+      const completeTargetPages = new Set();
       const otherPages = new Set();
       const needle = requirement.exact.toLocaleLowerCase();
       for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + 1)) {
-        const destination = targetRanges.some((range) => at >= range.start && at + needle.length <= range.end)
-          ? targetPages : otherPages;
-        for (const page of pagesFor(at, at + needle.length)) destination.add(page);
+        if (rendered.boundaries.some((boundary) => boundary >= at && boundary < at + needle.length)) continue;
+        const target = targetRanges.some((range) => at >= range.start && at + needle.length <= range.end);
+        const occurrencePages = pagesFor(at, at + needle.length);
+        for (const page of occurrencePages) (target ? targetPages : otherPages).add(page);
+        if (target && occurrencePages.length === 1) {
+          const page = occurrencePages[0];
+          if (at >= pageStarts[page - 1] && at + needle.length <= pageEnds[page - 1]) completeTargetPages.add(page);
+        }
       }
-      return [requirement.id, { targetPages: [...targetPages], otherPages: [...otherPages] }];
+      return [requirement.id, { targetPages: [...targetPages], completeTargetPages: [...completeTargetPages], otherPages: [...otherPages] }];
     }));
     return [{ block: blockIndex + 1, witnesses, targetTexts, otherTexts }];
   });
@@ -151,12 +168,16 @@ function workspaceChanged(cwd, script) {
   return visit(cwd);
 }
 
-function responseUsage(message, phase, request, activeTools) {
+export function responseUsage(message, phase, request, activeTools) {
   const usage = message.usage ?? {};
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  // Pi 0.84.2 normalizes absent raw provider cache fields to zero. A positive
+  // value proves reporting; a normalized zero alone cannot distinguish an
+  // explicit provider zero from absence, so preserve that uncertainty.
+  const reportedCache = (value) => Number.isSafeInteger(value) && value > 0 ? value : null;
   return {
     phase, request, stopReason: message.stopReason,
-    input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite),
+    input: count(usage.input), output: count(usage.output), cacheRead: reportedCache(usage.cacheRead), cacheWrite: reportedCache(usage.cacheWrite),
     tools: (message.content ?? []).filter((part) => part.type === "toolCall").map((part) => part.name),
     activeTools: Array.isArray(activeTools) ? [...activeTools] : [],
     errorPresent: message.stopReason === "error" || typeof message.errorMessage === "string",
@@ -210,6 +231,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     deriveMemory: deriveCurrentMemory,
     sourceViewOf: sourceViewIdentity,
     originalLocationsOf: originalEvidenceLocations,
+    artifactPathMatches: (candidate) => matchesArtifactPath(candidate, environment.cwd, script.artifactPath),
   });
   try {
     const observer = (pi) => {
@@ -493,6 +515,10 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       try { lstatSync(workspacePath(environment.cwd, script.artifactPath)); coverageFailures.add("artifact-created-before-final"); }
       catch (error) { if (error.code !== "ENOENT") throw error; }
     } catch { coverageFailures.add("workspace-could-not-be-inspected"); }
+    // Earlier work keeps the normal shell, but the final artifact has one
+    // observable mutation route. Retrieval must reach a later request before
+    // the native write begins, so an unobserved shell write cannot be scored.
+    session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "bash"));
     await prompt(script.finalPrompt, "final");
     let artifactText = null;
     try {
@@ -509,7 +535,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
     if (!coverageEvents.some((entry) => entry.operation === "append")) coverageFailures.add("append-not-observed");
     if (coverageEvents.filter((entry) => entry.operation === "rebuild").length < CONTINUITY_SESSION_CONFIG.requiredRebuilds) coverageFailures.add("rebuilds-not-observed");
     if (!coverageEvents.some((entry) => entry.blocks >= 2)) coverageFailures.add("multi-block-memory-not-observed");
-    if (requests.some((row) => [row.input, row.output, row.cacheRead, row.cacheWrite].some((count) => count === null))) failures.add("missing-native-usage");
+    if (requests.some((row) => [row.input, row.output].some((count) => count === null))) failures.add("missing-native-usage");
 
     // Bounded acceptance→application and prefix-stability measurements over
     // the observed requests and carriers — counts, indexes, and hashes only.
@@ -570,10 +596,10 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       providerError: requests.some((request) => request.errorPresent),
       isolation: {
         root: createHash("sha256").update(`root\0${environment.root}`).digest("hex"),
-        agentConfig: createHash("sha256").update(`agent\0${environment.agentDir}`).digest("hex"),
+        agentConfig: createHash("sha256").update(`agent-config\0${join(environment.agentDir, "config", "pi-square.json")}\0${readFileSync(join(environment.agentDir, "config", "pi-square.json"))}`).digest("hex"),
         workspace: createHash("sha256").update(`workspace\0${environment.cwd}`).digest("hex"),
-        session: createHash("sha256").update(`session\0${environment.root}`).digest("hex"),
-        capture: createHash("sha256").update(`capture\0${environment.root}`).digest("hex"),
+        session: createHash("sha256").update(`session\0${sessionManager.getSessionId()}`).digest("hex"),
+        capture: createHash("sha256").update(`capture\0${sessionManager.getSessionId()}\0${JSON.stringify({ requests, contextToolSets })}`).digest("hex"),
       },
       integrity: { ok: failures.size === 0, failures: [...failures] },
       coverage: { ok: coverageFailures.size === 0, failures: [...coverageFailures], memoryStates: coverageEvents.length,

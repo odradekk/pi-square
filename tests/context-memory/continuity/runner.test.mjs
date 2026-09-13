@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { PLACEMENTS, SCENARIOS, buildScript } from "./scenarios.mjs";
 import { evaluateGates } from "./oracles.mjs";
 import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveSeed, executeRun, pinEnvironment, planRuns, qualificationStatus, resolveRunModels, runLabel, safeRetrieval, safeUsage, selectRerunScope } from "./runner.mjs";
+import { responseUsage } from "./session.mjs";
 
 // These tests exercise the runner's public boundary with returned native-run
 // shapes. They do not simulate an AgentSession or a provider.
@@ -88,6 +89,65 @@ import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveS
 }
 
 {
+  const anthropic = await import("@earendil-works/pi-ai/api/anthropic-messages");
+  const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  async function adaptedUsage(rawUsage) {
+    const body = [
+      sse("message_start", { type: "message_start", message: { id: "native-cache-test", usage: { input_tokens: 12, output_tokens: 1, ...rawUsage } } }),
+      sse("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } }),
+      sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+      sse("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } }),
+      sse("message_stop", { type: "message_stop" }),
+    ].join("");
+    const client = { messages: { create: () => ({ asResponse: async () => new Response(body, {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    }) }) } };
+    const model = { id: "cache-test", provider: "anthropic", api: "anthropic-messages", maxTokens: 100,
+      contextWindow: 10_000, input: ["text"], baseUrl: "http://unused.invalid",
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: {}, headers: {} };
+    let message;
+    for await (const event of anthropic.stream(model, {
+      systemPrompt: "system", tools: [], messages: [{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 }],
+    }, { client, maxTokens: 10 })) if (event.type === "done") message = event.message;
+    return message;
+  }
+  const omitted = await adaptedUsage({});
+  assert.deepEqual({ cacheRead: omitted.usage.cacheRead, cacheWrite: omitted.usage.cacheWrite }, { cacheRead: 0, cacheWrite: 0 },
+    "the pinned native adapter normalizes omitted raw cache fields to zero");
+  assert.deepEqual(responseUsage(omitted, "final", 1, []).cacheRead, null,
+    "an adapter-normalized zero remains unknown in continuity reports");
+  assert.equal(responseUsage(omitted, "final", 1, []).cacheWrite, null);
+  const positive = await adaptedUsage({ cache_read_input_tokens: 7, cache_creation_input_tokens: 3 });
+  assert.deepEqual({ cacheRead: responseUsage(positive, "final", 1, []).cacheRead,
+    cacheWrite: responseUsage(positive, "final", 1, []).cacheWrite }, { cacheRead: 7, cacheWrite: 3 },
+  "positive native cache measurements remain distinct from unknown normalized zeroes");
+
+  const openai = await import("@earendil-works/pi-ai/api/openai-completions");
+  const chunks = [
+    { id: "native-cache-test", object: "chat.completion.chunk", created: 1, model: "cache-test",
+      choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] },
+    { id: "native-cache-test", object: "chat.completion.chunk", created: 1, model: "cache-test",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 2, total_tokens: 14 } },
+  ];
+  const fetch = async () => new Response(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200, headers: { "content-type": "text/event-stream" },
+  });
+  const openaiModel = { id: "cache-test", provider: "openai", api: "openai-completions", maxTokens: 100,
+    contextWindow: 10_000, input: ["text"], baseUrl: "http://unused.invalid",
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: {}, headers: {} };
+  let openaiMessage;
+  for await (const event of openai.stream(openaiModel, {
+    systemPrompt: "system", tools: [], messages: [{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 }],
+  }, { apiKey: "synthetic-key", fetch, maxTokens: 10 })) if (event.type === "done") openaiMessage = event.message;
+  assert.deepEqual({ cacheRead: openaiMessage.usage.cacheRead, cacheWrite: openaiMessage.usage.cacheWrite }, { cacheRead: 0, cacheWrite: 0 },
+    "the pinned OpenAI-compatible adapter also normalizes omitted raw cache fields to zero");
+  assert.deepEqual({ cacheRead: responseUsage(openaiMessage, "final", 1, []).cacheRead,
+    cacheWrite: responseUsage(openaiMessage, "final", 1, []).cacheWrite }, { cacheRead: null, cacheWrite: null },
+  "independent provider conventions remain unknown when their raw cache fields are absent");
+}
+
+{
   const run = planRuns()[0];
   const evidence = buildPrivateEvidence([
     { run, result: { evidence: { entries: [{ type: "message", text: "safe" }] }, integrity: { failures: [] } }, integrity: { failures: [] } },
@@ -121,6 +181,7 @@ import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveS
   assert.equal(pins.sessionConfig.maxTokens, 4_096);
   assert.equal(pins.sessionConfig.keepRecentTokens, 200);
   assert.equal(pins.sessionConfig.maxRequests, 80);
+  assert.deepEqual(pins.executionConfig.finalDisabledTools, ["bash"]);
 }
 
 {

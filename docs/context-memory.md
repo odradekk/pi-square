@@ -825,13 +825,19 @@ The session journal is native but in-memory; this suite does not qualify
 on-disk resume or unrelated extension composition. Offline tests replace only
 the provider boundary of this explicitly scoped pipeline. There is no
 hand-built wire payload, fake read/bash, injected summary, fixed token usage,
-or forced single tool continuation.
+or forced single tool continuation. A deterministic two-cell test holds two
+real `AgentSession` requests concurrently at that boundary and verifies their
+actual configuration files, workspaces, session IDs, capture state, source
+canaries, and retrieval capabilities remain isolated.
 
 Authoritative facts occur before compression. Subsequent checkpoints perform
 ordinary read and process-execution work without repeating recall questions;
 one final prompt asks the model to complete any invited Context Memory
-maintenance first, then write a structured handoff file, without supplying
-its expected values. The test uses a declared 100k context window,
+maintenance first, then use Pi's native `write` tool for the structured
+handoff file, without supplying its expected values. The shell remains
+available for ordinary earlier work but is removed from final-phase requests,
+so every permitted final-artifact mutation crosses the observable write seam;
+native-equivalent path spellings resolve to the same handoff. The test uses a declared 100k context window,
 21000-token due threshold, 2% Memory budget, and 200-token recent tail, with
 native automatic compaction and retries disabled.
 
@@ -860,7 +866,10 @@ credits only exact original evidence in a successful source-search or
 source-read result that enters a later native model request before the handoff
 write begins. A sufficient search excerpt needs no redundant page read; an
 insufficient excerpt can be supplemented only by valid contiguous original
-evidence. Search hits, summaries, failed or stale results, same-batch
+evidence. Every credited search fact must occur in the same individual excerpt
+that establishes target-source provenance. A page read counts a fact only when
+one complete original occurrence is present on that returned page; separate
+pages, excerpts, entries, or clipped units are never joined. Search hits, summaries, failed or stale results, same-batch
 search-and-write, filtered results, clipped qualifiers, wrong-branch results,
 and post-handoff observations do not qualify.
 
@@ -868,10 +877,15 @@ Each run also reports bounded measurements — the request gap between every
 recording and its application, per-request usage rows, net input change
 across applications, peak prompt tokens, refused-compression counts by short
 code, retrieval search/read/page counts and returned evidence bytes, and
-per-phase wall-clock latency. The normal report contains hashes and counts,
+per-phase wall-clock latency. Main-model and recovery A/B pairs include
+directional nullable differences for cache, retrieval, evidence, append, and
+rebuild measures as well as input and elapsed time. The normal report contains hashes and counts,
 never source text, snippets, native IDs, session bodies, or credentials; the
-existing owner-only evidence artifact retains bounded review material. Missing
-provider usage or cache values stay missing rather than becoming zero, and
+existing owner-only evidence artifact retains bounded review material. Pi
+0.84.2 normalizes absent raw provider cache fields to zero and exposes no raw
+presence flag at this public session seam, so zero-only cache fields are
+reported as unknown; positive cache values remain reported. Missing provider
+usage or cache values stay missing rather than becoming zero, and
 returned bytes are not billed tokens. Missing coverage is
 **inconclusive**, not evidence of memory failure. After a real matrix,
 `npm run qualify:replay-check` records one bounded local-resource artifact —

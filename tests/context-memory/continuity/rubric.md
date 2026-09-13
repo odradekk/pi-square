@@ -44,7 +44,9 @@ judge, summarize, or resolve this review.
    For source recovery, confirm each credited exact witness came from a
    successful search/read call-result pair visible in a later native request
    before handoff. A sufficient search excerpt requires no page read; any
-   supplement must remain contiguous and source/view-bound. Reject internal
+   supplement must remain contiguous and source/view-bound. Each credited fact
+   must share one excerpt or returned page with its complete original witness;
+   never borrow provenance from a separate unit. Reject internal
    hit counts, summary copies, failed/stale/wrong-branch results, same-batch
    search-and-write, filtered results, clipped qualifiers, fabricated joins,
    and post-handoff observations.
@@ -60,9 +62,12 @@ judge, summarize, or resolve this review.
    with the report's unique attempt ID. The log preserves attempts but does not
    itself enforce selection policy; reviewers must disclose prior failed
    attempts with the same pins rather than select a later favorable rerun.
-6. Review the per-cell, paired, and per-model measurements without converting
-   missing values to zero. Provider-reported input/cache fields and returned
-   evidence bytes are distinct units. If the separate recovery A/B was run,
+6. Review the per-cell, paired, and per-model measurements and their declared
+   directional cache, retrieval, evidence, append, rebuild, input, and elapsed
+   differences without converting missing values to zero. Pi 0.84.2 normalizes
+   omitted raw cache fields to zero at this public seam, so zero-only cache
+   values must remain unknown; only positive cache counts establish reporting.
+   Provider input/cache fields and returned evidence bytes are distinct units. If the separate recovery A/B was run,
    verify both arms used identical fixture/script/evaluation digests and that
    read-only requests actually omitted `search_memory_source`; those 12 cells
    never satisfy or replace the main 24-cell completeness requirement.
