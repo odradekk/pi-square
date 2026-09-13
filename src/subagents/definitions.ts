@@ -75,9 +75,23 @@ export interface SubagentDefinition {
   layers: SubagentDefinitionLayer[];
 }
 
-/** Discovered effective definitions plus parser and overlay diagnostics for one cwd. */
+/**
+ * A definition file that was rejected whole — a parse failure or an overlay
+ * merge failure. Carried beside valid definitions so management surfaces can
+ * show which file is broken and why, following the Shadow Minds registry shape.
+ */
+export interface InvalidSubagentDefinition {
+  /** The parsed definition name when one survived; otherwise the rejected file's stem. */
+  id: string;
+  /** The rejected file, or — for an overlay merge failure — every contributing layer. */
+  sources: string[];
+  errors: string[];
+}
+
+/** Discovered effective definitions plus invalid entries and diagnostics for one cwd. */
 export interface SubagentRegistry {
   definitions: SubagentDefinition[];
+  invalid: InvalidSubagentDefinition[];
   errors: string[];
   projectDir: string | null;
 }
@@ -135,7 +149,8 @@ function stripQuotes(value: string): string {
   return trimmed;
 }
 
-function splitInlineArray(body: string): string[] {
+/** Quote-aware split of an inline array body into raw trimmed items, quotes kept. */
+function splitInlineArrayItems(body: string): string[] {
   const items: string[] = [];
   let current = "";
   let quote: string | null = null;
@@ -151,15 +166,29 @@ function splitInlineArray(body: string): string[] {
       continue;
     }
     if (ch === ",") {
-      const value = stripQuotes(current).trim();
+      const value = current.trim();
       if (value) items.push(value);
       current = "";
       continue;
     }
     current += ch;
   }
-  const tail = stripQuotes(current).trim();
+  const tail = current.trim();
   if (tail) items.push(tail);
+  return items;
+}
+
+/**
+ * Inline array items get the same scalar treatment as block list items:
+ * quoted strings lose their quotes, exact `null` and `~` spellings clear the
+ * item, and escapes resolve — one spelling never diverges between the forms.
+ */
+function splitInlineArray(body: string): string[] {
+  const items: string[] = [];
+  for (const raw of splitInlineArrayItems(body)) {
+    const parsed = parseYamlScalar(raw);
+    if (typeof parsed === "string" && parsed.trim()) items.push(parsed.trim());
+  }
   return items;
 }
 
@@ -167,6 +196,68 @@ function parseYamlScalar(value: string): string | null {
   const trimmed = value.trim();
   if (trimmed === "null" || trimmed === "~") return null;
   return stripQuotes(trimmed).replace(/\\n/g, "\n");
+}
+
+/** Bare block scalar indicators with a chomping or indentation marker (`|-`, `>+`, `|2`). */
+const CHOMPING_INDICATOR_PATTERN = /^[|>][-+0-9]*$/;
+
+/**
+ * One shared message for every inline-comment rejection. Quoting is the way to
+ * keep a literal '#' such as an issue number in the value; moving the comment
+ * to its own line is the way to actually have a comment.
+ */
+const INLINE_COMMENT_MESSAGE = "inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line";
+
+/** One shared message for every blank line that breaks a block list open. */
+function blankLineInListMessage(filePath: string, line: number, key: string): string {
+  return `${filePath}: line ${line}: blank line inside the block list for '${key}' — remove blank lines between or before list items`;
+}
+
+/**
+ * Index where an inline comment starts inside one YAML-subset value, or -1.
+ * A `#` starts a comment when it begins the value or follows a space or tab,
+ * matching standard YAML; quoted strings never contain a comment. Inline
+ * comments are not supported by this subset, so callers reject the line instead
+ * of storing the comment text in the field value.
+ */
+function findInlineComment(value: string): number {
+  let quote: string | null = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const ch = value[index] ?? "";
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === `"` || ch === `'`) {
+      quote = ch;
+      continue;
+    }
+    if (ch === "#" && (index === 0 || value[index - 1] === " " || value[index - 1] === "\t")) return index;
+  }
+  return -1;
+}
+
+function isQuotedScalar(value: string): boolean {
+  const trimmed = value.trim();
+  return (trimmed.startsWith(`"`) && trimmed.endsWith(`"`)) || (trimmed.startsWith(`'`) && trimmed.endsWith(`'`));
+}
+
+/**
+ * Rejects misspelled null spellings — every casing of `null` other than the
+ * exact lowercase word and tilde lookalikes such as `～` — instead of silently
+ * storing them as literal strings. `null` and `~` are case-sensitive in this
+ * subset; quoted strings are literal by design and stay untouched.
+ */
+function nullSpellingProblem(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (isQuotedScalar(trimmed)) return undefined;
+  if (trimmed !== "null" && trimmed.toLowerCase() === "null") {
+    return `null spellings are case-sensitive; write lowercase null or ~`;
+  }
+  if (trimmed === "〜" || trimmed === "～") {
+    return `tilde null must be the ASCII ~ character`;
+  }
+  return undefined;
 }
 
 function parseBoolean(value: unknown, fieldName: string, filePath: string): { value?: boolean | null; error?: string } {
@@ -186,7 +277,7 @@ function parseYamlDefinition(
   text: string,
   filePath: string,
   source: SubagentDefinitionSource,
-): { layer?: SubagentDefinitionLayer; errors: string[] } {
+): { layer?: SubagentDefinitionLayer; errors: string[]; name?: string } {
   const errors: string[] = [];
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const data: Record<string, string | string[] | null> = {};
@@ -203,7 +294,13 @@ function parseYamlDefinition(
 
     const match = rawLine.match(/^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/);
     if (!match) {
-      errors.push(`${filePath}: unsupported YAML line ${i + 1}: ${trimmed}`);
+      if (/^-\s?/.test(rawLine)) {
+        // Column-zero list items never attach to a field; the message states
+        // the indentation rule instead of a generic unsupported-line error.
+        errors.push(`${filePath}: line ${i + 1}: list items must be indented under their field — write '  - ${trimmed.replace(/^-\s*/, "")}'`);
+      } else {
+        errors.push(`${filePath}: unsupported YAML line ${i + 1}: ${trimmed}`);
+      }
       i += 1;
       continue;
     }
@@ -214,7 +311,15 @@ function parseYamlDefinition(
     seen.add(key);
     const rest = (match[2] ?? "").trim();
 
-    if (rest === "|" || rest === ">") {
+    if (findInlineComment(rest) >= 0) {
+      errors.push(`${filePath}: line ${i + 1}: ${INLINE_COMMENT_MESSAGE}`);
+      data[key] = null;
+      i += 1;
+      continue;
+    }
+
+    if (rest === "|" || rest === ">" || CHOMPING_INDICATOR_PATTERN.test(rest)) {
+      const fieldLine = i + 1;
       const currentIndent = rawLine.match(/^(\s*)/)?.[1]?.length ?? 0;
       let probe = i + 1;
       let blockIndent = currentIndent + 1;
@@ -229,12 +334,25 @@ function parseYamlDefinition(
       }
       const blockLines: string[] = [];
       i += 1;
-      while (i < lines.length) {
-        const nextLine = lines[i] ?? "";
-        const indent = nextLine.match(/^(\s*)/)?.[1]?.length ?? 0;
-        if (nextLine.trim() && indent < blockIndent) break;
-        blockLines.push(nextLine.trim() ? nextLine.slice(blockIndent) : "");
-        i += 1;
+      // Only lines indented past the field carry block content. Without this
+      // guard a following field at the same indent reads as the body and is
+      // swallowed, taking its own value and the file's identity with it.
+      if (blockIndent > currentIndent) {
+        while (i < lines.length) {
+          const nextLine = lines[i] ?? "";
+          const indent = nextLine.match(/^(\s*)/)?.[1]?.length ?? 0;
+          if (nextLine.trim() && indent < blockIndent) break;
+          blockLines.push(nextLine.trim() ? nextLine.slice(blockIndent) : "");
+          i += 1;
+        }
+      }
+      if (rest !== "|" && rest !== ">") {
+        // Chomping and indentation indicators (`|-`, `>+`, `|2`) are not part
+        // of this subset. A real body is consumed along with the rejection so
+        // it cannot pile orphaned-line errors on top of the named cause.
+        errors.push(`${filePath}: line ${fieldLine}: block scalar '${rest}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
+        data[key] = null;
+        continue;
       }
       const value = rest === ">"
         ? blockLines.join(" ").replace(/\s+/g, " ").trim()
@@ -244,27 +362,84 @@ function parseYamlDefinition(
     }
 
     if (rest.startsWith("[") && rest.endsWith("]")) {
+      // Inline arrays get the same item checks as block lists, so one spelling
+      // of the same value cannot silently diverge between the two forms.
+      let misspelling: { item: string; problem: string } | undefined;
+      for (const item of splitInlineArrayItems(rest.slice(1, -1))) {
+        const problem = nullSpellingProblem(item);
+        if (problem !== undefined) {
+          misspelling = { item, problem };
+          break;
+        }
+      }
+      if (misspelling) {
+        errors.push(`${filePath}: line ${i + 1}: '${misspelling.item}' — ${misspelling.problem}`);
+        data[key] = null;
+        i += 1;
+        continue;
+      }
       data[key] = splitInlineArray(rest.slice(1, -1));
       i += 1;
       continue;
     }
 
     if (!rest) {
-      const nextIndent = lines[i + 1]?.match(/^(\s*)/)?.[1]?.length ?? 0;
-      const nextTrimmed = lines[i + 1]?.trim() ?? "";
-      if (nextTrimmed.startsWith("- ") && nextIndent > 0) {
+      // Probe past blank lines: a blank between the field line and its first
+      // item would silently detach the list, so it is an explicit error
+      // instead of a null value plus an orphaned-item complaint.
+      let probe = i + 1;
+      while (probe < lines.length && !(lines[probe] ?? "").trim()) probe += 1;
+      const probeLine = lines[probe] ?? "";
+      const probeIndent = probeLine.match(/^(\s*)/)?.[1]?.length ?? 0;
+      const isBlockList = probeLine.trim().startsWith("- ") && probeIndent > 0;
+      if (isBlockList && probe > i + 1) {
+        errors.push(blankLineInListMessage(filePath, i + 2, key));
+      }
+      if (isBlockList) {
         const items: string[] = [];
-        i += 1;
+        i = probe;
         while (i < lines.length) {
-          const itemMatch = (lines[i] ?? "").match(/^\s*-\s*(.*)$/);
-          if (!itemMatch) break;
-          const parsed = parseYamlScalar(itemMatch[1] ?? "");
-          if (typeof parsed === "string" && parsed.trim()) items.push(parsed.trim());
+          const itemLine = lines[i] ?? "";
+          const itemMatch = itemLine.match(/^\s*-\s*(.*)$/);
+          if (!itemMatch) {
+            if (!itemLine.trim()) {
+              // A blank line followed by more items would silently truncate
+              // the list; report it by name and resume at the continuation.
+              let afterBlanks = i;
+              while (afterBlanks < lines.length && !(lines[afterBlanks] ?? "").trim()) afterBlanks += 1;
+              if ((lines[afterBlanks] ?? "").match(/^\s*-\s/)) {
+                errors.push(blankLineInListMessage(filePath, i + 1, key));
+                i = afterBlanks;
+                continue;
+              }
+            }
+            break;
+          }
+          const itemText = (itemMatch[1] ?? "").trim();
+          if (findInlineComment(itemText) >= 0) {
+            errors.push(`${filePath}: line ${i + 1}: ${INLINE_COMMENT_MESSAGE}`);
+          } else {
+            const itemNullProblem = nullSpellingProblem(itemText);
+            if (itemNullProblem) {
+              errors.push(`${filePath}: line ${i + 1}: '${itemText}' — ${itemNullProblem}`);
+            } else {
+              const parsed = parseYamlScalar(itemMatch[1] ?? "");
+              if (typeof parsed === "string" && parsed.trim()) items.push(parsed.trim());
+            }
+          }
           i += 1;
         }
         data[key] = items;
         continue;
       }
+      data[key] = null;
+      i += 1;
+      continue;
+    }
+
+    const nullProblem = nullSpellingProblem(rest);
+    if (nullProblem) {
+      errors.push(`${filePath}: line ${i + 1}: '${rest}' — ${nullProblem}`);
       data[key] = null;
       i += 1;
       continue;
@@ -309,7 +484,11 @@ function parseYamlDefinition(
     }
   }
 
-  if (errors.length > 0) return { errors };
+  if (errors.length > 0) {
+    // The candidate name keys the invalid entry the discovery layer surfaces;
+    // it is undefined when the file never produced a usable name.
+    return { errors, ...(name && NAME_PATTERN.test(name) ? { name } : {}) };
+  }
   return {
     layer: {
       source,
@@ -321,19 +500,24 @@ function parseYamlDefinition(
   };
 }
 
+function fileStem(entry: string): string {
+  return entry.replace(/\.ya?ml$/i, "");
+}
+
 function loadDefinitionsFromDir(
   dir: string,
   source: SubagentDefinitionSource,
-): { layers: SubagentDefinitionLayer[]; errors: string[] } {
+): { layers: SubagentDefinitionLayer[]; errors: string[]; invalid: InvalidSubagentDefinition[] } {
   const layers: SubagentDefinitionLayer[] = [];
   const errors: string[] = [];
-  if (!isDirectory(dir)) return { layers, errors };
+  const invalid: InvalidSubagentDefinition[] = [];
+  if (!isDirectory(dir)) return { layers, errors, invalid };
 
   let entries: string[];
   try {
     entries = readdirSync(dir).sort();
   } catch (error) {
-    return { layers, errors: [`${dir}: unable to read directory (${error instanceof Error ? error.message : String(error)})`] };
+    return { layers, errors: [`${dir}: unable to read directory (${error instanceof Error ? error.message : String(error)})`], invalid };
   }
 
   const seenNames = new Map<string, string>();
@@ -343,7 +527,12 @@ function loadDefinitionsFromDir(
     try {
       const parsed = parseYamlDefinition(readFileSync(filePath, "utf8"), filePath, source);
       errors.push(...parsed.errors);
-      if (!parsed.layer) continue;
+      if (!parsed.layer) {
+        // Rejected files stay inspectable: identity from the parsed name when
+        // one survived, otherwise the file stem.
+        invalid.push({ id: parsed.name ?? fileStem(entry), sources: [filePath], errors: [...parsed.errors] });
+        continue;
+      }
       const previous = seenNames.get(parsed.layer.patch.name);
       if (previous) {
         errors.push(`Duplicate subagent name '${parsed.layer.patch.name}' in ${filePath} and ${previous}. Names must be unique within a discovery layer.`);
@@ -352,10 +541,12 @@ function loadDefinitionsFromDir(
       seenNames.set(parsed.layer.patch.name, filePath);
       layers.push(parsed.layer);
     } catch (error) {
-      errors.push(`${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+      const message = `${filePath}: ${error instanceof Error ? error.message : String(error)}`;
+      errors.push(message);
+      invalid.push({ id: fileStem(entry), sources: [filePath], errors: [message] });
     }
   }
-  return { layers, errors };
+  return { layers, errors, invalid };
 }
 
 function sourceRef(layer: SubagentDefinitionLayer): SubagentDefinitionSourceRef {
@@ -411,7 +602,7 @@ export function discoverSubagents(cwd: string): SubagentRegistry {
   const loaded = [
     loadDefinitionsFromDir(getPackagePath("subagents"), "package"),
     loadDefinitionsFromDir(join(getAgentDir(), "subagents"), "agent"),
-    projectDir ? loadDefinitionsFromDir(projectDir, "project") : { layers: [], errors: [] },
+    projectDir ? loadDefinitionsFromDir(projectDir, "project") : { layers: [], errors: [], invalid: [] },
   ];
   const errors = loaded.flatMap((layer) => layer.errors);
   const grouped = new Map<string, SubagentDefinitionLayer[]>();
@@ -421,15 +612,36 @@ export function discoverSubagents(cwd: string): SubagentRegistry {
     grouped.set(layer.patch.name, current);
   }
 
+  const invalidById = new Map<string, InvalidSubagentDefinition>();
+  const recordInvalid = (entry: InvalidSubagentDefinition): void => {
+    const existing = invalidById.get(entry.id);
+    if (existing) {
+      existing.sources.push(...entry.sources.filter((source) => !existing.sources.includes(source)));
+      existing.errors.push(...entry.errors);
+      return;
+    }
+    invalidById.set(entry.id, entry);
+  };
+  for (const failure of loaded.flatMap((item) => item.invalid)) recordInvalid(failure);
+
   const definitions: SubagentDefinition[] = [];
   for (const [name, layers] of grouped) {
     const merged = mergeDefinitionLayers(name, layers);
     errors.push(...merged.errors);
-    if (merged.definition) definitions.push(merged.definition);
+    if (merged.definition) {
+      definitions.push(merged.definition);
+    } else {
+      // Overlay merge failures would otherwise make the definition vanish with
+      // only a startup warning; keep them inspectable with every contributing
+      // layer as the source set.
+      recordInvalid({ id: name, sources: layers.map((layer) => layer.filePath), errors: merged.errors });
+    }
   }
 
+  const invalid = [...invalidById.values()].sort((a, b) => a.id.localeCompare(b.id));
   return {
     definitions: definitions.sort((a, b) => a.name.localeCompare(b.name)),
+    invalid,
     errors,
     projectDir,
   };

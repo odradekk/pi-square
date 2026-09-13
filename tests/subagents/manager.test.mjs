@@ -102,6 +102,7 @@ function data(overrides = {}) {
     session: [{ ...details, phase: "completed", finalText: "done" }],
     activeSessionIds: [],
     definitions: discoverSubagents(packageRoot).definitions,
+    invalid: [],
     errors: [],
     ...overrides,
   };
@@ -521,7 +522,7 @@ test("the manager lists and cancels only current-parent-session active jobs", ()
   const currentId = "subagent_11111111-1111-4111-8111-111111111111";
   const foreignId = "subagent_22222222-2222-4222-8222-222222222222";
   const state = {
-    registry: { definitions: [], errors: [], projectDir: null },
+    registry: { definitions: [], invalid: [], errors: [], projectDir: null },
     background: createBackgroundState(),
   };
   createQueuedJob({
@@ -563,7 +564,7 @@ test("the manager lists and cancels only current-parent-session active jobs", ()
 test("manager cancel re-reads the live job and refuses a finished one", () => {
   const currentId = "subagent_33333333-3333-4333-8333-333333333333";
   const state = {
-    registry: { definitions: [], errors: [], projectDir: null },
+    registry: { definitions: [], invalid: [], errors: [], projectDir: null },
     background: createBackgroundState(),
   };
   const job = createQueuedJob({
@@ -581,6 +582,112 @@ test("manager cancel re-reads the live job and refuses a finished one", () => {
   const result = services.cancel(currentId);
   assert.equal(result.ok, false);
   assert.match(result.message, /already finished as completed/);
+});
+
+// ─── Invalid and hidden definitions in the definitions list (#333) ──
+
+function invalidEntry() {
+  return {
+    id: "broken",
+    sources: ["/repo/.pi/subagents/broken.yaml"],
+    errors: [
+      "/repo/.pi/subagents/broken.yaml: line 3: inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line",
+      "/repo/.pi/subagents/broken.yaml: line 4: 'NULL' — null spellings are case-sensitive; write lowercase null or ~",
+    ],
+  };
+}
+
+// Self-made definitions keep these tests independent of the package layer's
+// bundled roles, which #334 removes.
+function validDefinition(name, overrides = {}) {
+  const filePath = `/repo/.pi/subagents/${name}.yaml`;
+  return {
+    promptVersion: 2,
+    name,
+    description: `The ${name} role.`,
+    inheritParentSystem: true,
+    visible: true,
+    source: "project",
+    filePath,
+    fieldSources: {},
+    layers: [{ source: "project", filePath, contentHash: "0".repeat(64), patch: { promptVersion: 2, name } }],
+    ...overrides,
+  };
+}
+
+test("invalid definitions stay listed with an error marker beside valid definitions", () => {
+  const initial = data({ running: [], session: [], definitions: [validDefinition("worker")], invalid: [invalidEntry()] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  const text = render(manager, 120);
+
+  assert.match(text, /! broken/, "the invalid entry is listed and marked");
+  assert.match(text, /● worker/, "valid definitions stay listed beside it");
+
+  const markingTheme = {
+    fg(color, text_) { return `⟦${color}⟧${String(text_)}⟦/${color}⟧`; },
+    bold(text_) { return String(text_); },
+  };
+  const marked = new SubagentManager(initial, tui(), markingTheme, keybindings, () => {});
+  marked.handleInput("\x1b[C");
+  marked.handleInput("\x1b[C");
+  const markedInvalid = marked.render(120).filter((line) => line.includes("broken"));
+  assert.equal(markedInvalid.length, 1);
+  assert.match(markedInvalid[0], /⟦error⟧!⟦\/error⟧/, "the marker carries the error color");
+  marked.dispose();
+
+  // Enter explains the invalid selection instead of opening the overlay editor.
+  manager.handleInput("\x1b[B");
+  manager.handleInput("\r");
+  assert.match(render(manager, 120), /'broken' is invalid/);
+  assert.doesNotMatch(render(manager, 120), /DEFINITIONS \/ SCOPE/);
+  manager.dispose();
+});
+
+test("selecting an invalid definition shows its source, every error, and a repair hint", () => {
+  const initial = data({ running: [], session: [], definitions: [validDefinition("worker")], invalid: [invalidEntry()] });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[B");
+  const text = render(manager, 120);
+  assert.match(text, /State: invalid — excluded from delegation/);
+  assert.match(text, /Sources:/);
+  assert.match(text, /\/repo\/\.pi\/subagents\/broken\.yaml/);
+  assert.match(text, /Errors:/);
+  assert.match(text, /comments are not supported/, "every error is shown");
+  assert.match(text, /spellings are case-sensitive/);
+  assert.match(text, /Repair:/);
+  manager.dispose();
+});
+
+test("hidden definitions keep a neutral dim marker and stay listed", () => {
+  const initial = data({
+    running: [],
+    session: [],
+    definitions: [validDefinition("worker"), validDefinition("archived-role", { visible: false })],
+  });
+  const manager = new SubagentManager(initial, tui(), theme, keybindings, () => {});
+  manager.handleInput("\x1b[C");
+  manager.handleInput("\x1b[C");
+  const text = render(manager, 120);
+  assert.match(text, /◦ archived-role/, "hidden definitions remain listed");
+  assert.match(text, /● worker/, "visible definitions use the solid marker");
+  manager.dispose();
+
+  const markingTheme = {
+    fg(color, text_) { return `⟦${color}⟧${String(text_)}⟦/${color}⟧`; },
+    bold(text_) { return String(text_); },
+  };
+  const marked = new SubagentManager(initial, tui(), markingTheme, keybindings, () => {});
+  marked.handleInput("\x1b[C");
+  marked.handleInput("\x1b[C");
+  const hiddenLines = marked.render(120).filter((line) => line.includes("archived-role"));
+  assert.equal(hiddenLines.length, 1);
+  assert.doesNotMatch(hiddenLines[0], /⟦error⟧/, "the hidden marker carries no hue");
+  assert.match(hiddenLines[0], /⟦dim⟧◦⟦\/dim⟧/, "the hidden marker is dim");
+  marked.dispose();
 });
 
 await run();
