@@ -27,6 +27,7 @@ function makeData(overrides = {}) {
     running: [],
     session: [],
     definitions: [],
+    invalid: [],
     errors: [],
     cwd: "/tmp",
     parentSessionId: "parent-1234",

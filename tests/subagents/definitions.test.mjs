@@ -132,6 +132,18 @@ test("block scalar chomping indicators are rejected instead of stored as literal
     assert.equal(parsed.layer, undefined, `${indicator} must not admit the layer`);
     assert.ok(parsed.errors.some((item) => item.includes(indicator) && item.includes("chomping")), `${indicator}: ${parsed.errors.join(" | ")}`);
   }
+  // Rejecting the indicator must not consume what follows: the next field line
+  // still parses, so no spurious missing-name error and the invalid entry
+  // keeps the parsed name as its identity.
+  const noBody = __testables.parseYamlDefinition(
+    `promptVersion: 2\ndescription: |-\nname: t\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.equal(noBody.layer, undefined);
+  assert.ok(noBody.errors.some((item) => item.includes("chomping")));
+  assert.ok(!noBody.errors.some((item) => item.includes("missing required field 'name'")), noBody.errors.join(" | "));
+  assert.equal(noBody.name, "t");
 });
 
 test("inline comments are rejected instead of mixing into values", () => {
@@ -188,6 +200,14 @@ test("uppercase null and tilde spellings are rejected instead of becoming litera
   );
   assert.deepEqual(arrayQuoted.errors, []);
   assert.deepEqual(arrayQuoted.layer?.patch.tools, ["read", "NULL"]);
+  // Exact lowercase null inside an inline array clears the item like a block list item.
+  const arrayNullItem = __testables.parseYamlDefinition(
+    `promptVersion: 2\nname: t\ndescription: d\ntools: [read, null]\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.deepEqual(arrayNullItem.errors, []);
+  assert.deepEqual(arrayNullItem.layer?.patch.tools, ["read"]);
 });
 
 test("blank lines inside a block list are rejected instead of truncating it", () => {

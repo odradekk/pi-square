@@ -229,7 +229,7 @@ function lifecycleHarness({ columns = 80, rows = 30, tuiMode = "regular", idle =
   };
 
   const state = {
-    registry: { definitions: [], errors: [], projectDir: null },
+    registry: { definitions: [], invalid: [], errors: [], projectDir: null },
     background: createBackgroundState(),
     sessionCtx: undefined,
     inheritedSystemCore: undefined,

@@ -74,6 +74,7 @@ type DefinitionPreview = ReturnType<typeof previewDefinitionPatch>;
 type DefinitionEntry =
   | { kind: "valid"; definition: SubagentDefinition }
   | { kind: "invalid"; invalid: InvalidSubagentDefinition };
+
 interface OperationResult {
   ok: boolean;
   message: string;
@@ -237,7 +238,7 @@ function snapshot(state: SubagentRuntimeState, parentSessionId: string): Manager
     undeliveredIds: state.background.delivery?.pendingIds() ?? [],
     claimedIds: state.background.delivery?.pendingIds().filter((id) => state.background.delivery?.isClaimed(id)) ?? [],
     definitions: [...state.registry.definitions].sort((a, b) => a.name.localeCompare(b.name)),
-    invalid: [...(state.registry.invalid ?? [])].sort((a, b) => a.id.localeCompare(b.id)),
+    invalid: [...state.registry.invalid].sort((a, b) => a.id.localeCompare(b.id)),
     errors: [...state.registry.errors],
   };
 }
@@ -507,7 +508,7 @@ export class SubagentManager implements Component, Focusable {
   private definitionEntries(): DefinitionEntry[] {
     return [
       ...this.data.definitions.map((definition) => ({ kind: "valid" as const, definition })),
-      ...(this.data.invalid ?? []).map((invalid) => ({ kind: "invalid" as const, invalid })),
+      ...this.data.invalid.map((invalid) => ({ kind: "invalid" as const, invalid })),
     ];
   }
 

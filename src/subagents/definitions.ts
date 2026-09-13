@@ -81,6 +81,7 @@ export interface SubagentDefinition {
  * show which file is broken and why, following the Shadow Minds registry shape.
  */
 export interface InvalidSubagentDefinition {
+  /** The parsed definition name when one survived; otherwise the rejected file's stem. */
   id: string;
   /** The rejected file, or — for an overlay merge failure — every contributing layer. */
   sources: string[];
@@ -177,8 +178,18 @@ function splitInlineArrayItems(body: string): string[] {
   return items;
 }
 
+/**
+ * Inline array items get the same scalar treatment as block list items:
+ * quoted strings lose their quotes, exact `null` and `~` spellings clear the
+ * item, and escapes resolve — one spelling never diverges between the forms.
+ */
 function splitInlineArray(body: string): string[] {
-  return splitInlineArrayItems(body).map((item) => stripQuotes(item)).filter(Boolean);
+  const items: string[] = [];
+  for (const raw of splitInlineArrayItems(body)) {
+    const parsed = parseYamlScalar(raw);
+    if (typeof parsed === "string" && parsed.trim()) items.push(parsed.trim());
+  }
+  return items;
 }
 
 function parseYamlScalar(value: string): string | null {
@@ -196,6 +207,11 @@ const CHOMPING_INDICATOR_PATTERN = /^[|>][-+0-9]*$/;
  * to its own line is the way to actually have a comment.
  */
 const INLINE_COMMENT_MESSAGE = "inline comments are not supported — quote the value to keep a literal '#' or move the comment to its own line";
+
+/** One shared message for every blank line that breaks a block list open. */
+function blankLineInListMessage(filePath: string, line: number, key: string): string {
+  return `${filePath}: line ${line}: blank line inside the block list for '${key}' — remove blank lines between or before list items`;
+}
 
 /**
  * Index where an inline comment starts inside one YAML-subset value, or -1.
@@ -302,7 +318,18 @@ function parseYamlDefinition(
       continue;
     }
 
-    if (rest === "|" || rest === ">" || CHOMPING_INDICATOR_PATTERN.test(rest)) {
+    if (CHOMPING_INDICATOR_PATTERN.test(rest) && rest !== "|" && rest !== ">") {
+      // Chomping and indentation indicators (`|-`, `>+`, `|2`) are not part of
+      // this subset. The line is rejected without consuming what follows: an
+      // indented body is real block content that dies with the file, but a
+      // following field line must still parse so it cannot go missing too.
+      errors.push(`${filePath}: line ${i + 1}: block scalar '${rest}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
+      data[key] = null;
+      i += 1;
+      continue;
+    }
+
+    if (rest === "|" || rest === ">") {
       const currentIndent = rawLine.match(/^(\s*)/)?.[1]?.length ?? 0;
       let probe = i + 1;
       let blockIndent = currentIndent + 1;
@@ -324,14 +351,6 @@ function parseYamlDefinition(
         blockLines.push(nextLine.trim() ? nextLine.slice(blockIndent) : "");
         i += 1;
       }
-      if (rest !== "|" && rest !== ">") {
-        // Chomping and indentation indicators (`|-`, `>+`, `|2`) are not part
-        // of this subset; the block content is consumed so it cannot surface
-        // as misleading orphaned-line errors.
-        errors.push(`${filePath}: line ${i - blockLines.length}: block scalar '${rest}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
-        data[key] = null;
-        continue;
-      }
       const value = rest === ">"
         ? blockLines.join(" ").replace(/\s+/g, " ").trim()
         : blockLines.join("\n").trim();
@@ -342,10 +361,16 @@ function parseYamlDefinition(
     if (rest.startsWith("[") && rest.endsWith("]")) {
       // Inline arrays get the same item checks as block lists, so one spelling
       // of the same value cannot silently diverge between the two forms.
-      const rawItems = splitInlineArrayItems(rest.slice(1, -1));
-      const misspelled = rawItems.find((item) => nullSpellingProblem(item) !== undefined);
-      if (misspelled !== undefined) {
-        errors.push(`${filePath}: line ${i + 1}: '${misspelled}' — ${nullSpellingProblem(misspelled)}`);
+      let misspelling: { item: string; problem: string } | undefined;
+      for (const item of splitInlineArrayItems(rest.slice(1, -1))) {
+        const problem = nullSpellingProblem(item);
+        if (problem !== undefined) {
+          misspelling = { item, problem };
+          break;
+        }
+      }
+      if (misspelling) {
+        errors.push(`${filePath}: line ${i + 1}: '${misspelling.item}' — ${misspelling.problem}`);
         data[key] = null;
         i += 1;
         continue;
@@ -365,7 +390,7 @@ function parseYamlDefinition(
       const probeIndent = probeLine.match(/^(\s*)/)?.[1]?.length ?? 0;
       const isBlockList = probeLine.trim().startsWith("- ") && probeIndent > 0;
       if (isBlockList && probe > i + 1) {
-        errors.push(`${filePath}: line ${i + 2}: blank line inside the block list for '${key}' — remove blank lines between or before list items`);
+        errors.push(blankLineInListMessage(filePath, i + 2, key));
       }
       if (isBlockList) {
         const items: string[] = [];
@@ -380,7 +405,7 @@ function parseYamlDefinition(
               let afterBlanks = i;
               while (afterBlanks < lines.length && !(lines[afterBlanks] ?? "").trim()) afterBlanks += 1;
               if ((lines[afterBlanks] ?? "").match(/^\s*-\s/)) {
-                errors.push(`${filePath}: line ${i + 1}: blank line inside the block list for '${key}' — remove blank lines between or before list items`);
+                errors.push(blankLineInListMessage(filePath, i + 1, key));
                 i = afterBlanks;
                 continue;
               }
@@ -408,7 +433,6 @@ function parseYamlDefinition(
       i += 1;
       continue;
     }
-
 
     const nullProblem = nullSpellingProblem(rest);
     if (nullProblem) {
