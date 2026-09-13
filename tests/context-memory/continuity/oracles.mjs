@@ -1,4 +1,16 @@
-import { SEVERE_CLASSES } from "../qualification/harness.mjs";
+/**
+ * The severe semantic failure vocabulary of #215's testing decisions. The six
+ * machine counters are bounded signals; the semantic review belongs to the
+ * human rubric (#227), never to an LLM judge.
+ */
+export const SEVERE_CLASSES = Object.freeze([
+  "fabrication",
+  "uncertainty-promotion",
+  "exact-detail-corruption",
+  "negative-constraint",
+  "branch-contamination",
+  "recursive-drift",
+]);
 import { PRIMARY_ARM_VARIANTS, SCENARIOS } from "./scenarios.mjs";
 
 // These six counters are bounded machine-detected signals, not an exhaustive
@@ -82,6 +94,11 @@ export function evaluateGates(scores) {
     && actualCells.every((cell) => expectedCells.has(cell));
   // Supporting-field misses in noncanonical positions are governed by recall
   // thresholds. Requiring all finalTask flags would silently demand 100%.
+  // The fixed compression schedule (#227 amendment, #325): every valid run
+  // must record at least one append and two suffix rebuilds. A run without it
+  // is incomplete evidence, not a scoring miss.
+  const scheduleOk = scores.every((score) => Number.isFinite(score.coverage?.appends) && score.coverage.appends >= 1
+    && Number.isFinite(score.coverage?.rebuilds) && score.coverage.rebuilds >= 2);
   const prerequisites = scores.every((score) => {
     const scenario = SCENARIOS.find((entry) => entry.id === score.run.scenario);
     const canonical = score.run.variant === "canonical" || score.run.variant === scenario?.canonicalVariant;
@@ -89,5 +106,5 @@ export function evaluateGates(scores) {
   });
   const thresholds = critical.rate === 1 && continuity.rate >= .85 && Object.values(byScenario).every((x) => x.continuity.rate >= .75);
   const severeClear = Object.values(severe).every((count) => count === 0);
-  return { result: complete && prerequisites && thresholds && severeClear ? "pass" : !complete || scores.some((s) => s.result === "inconclusive") ? "inconclusive" : "fail", gates: { complete, prerequisites, critical, continuity, byArm, byScenario, severe, severeClear } };
+  return { result: complete && prerequisites && scheduleOk && thresholds && severeClear ? "pass" : !complete || scores.some((s) => s.result === "inconclusive") ? "inconclusive" : "fail", gates: { complete, prerequisites, scheduleOk, critical, continuity, byArm, byScenario, severe, severeClear } };
 }

@@ -7,6 +7,7 @@ import { SCENARIOS, PRIMARY_ARM_VARIANTS, buildScript } from "./scenarios.mjs";
 import { createJiti } from "jiti";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { CONTINUITY_SESSION_CONFIG } from "./session.mjs";
+import { SEED_MEMORY } from "./scenarios.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(HERE, "..", "..", "..");
@@ -15,6 +16,15 @@ export const EVIDENCE_SCHEMA = "pi-square.context-memory/continuity-evidence/2";
 export const MEASURED_WINDOW = CONTINUITY_SESSION_CONFIG.contextWindow;
 export const MAX_OUTPUT_TOKENS = CONTINUITY_SESSION_CONFIG.maxTokens;
 export const RUN_LIMITS = Object.freeze({ checkpoints: CONTINUITY_SESSION_CONFIG.maxCheckpoints, promptDeadlineMs: CONTINUITY_SESSION_CONFIG.promptTimeoutMs, requests: CONTINUITY_SESSION_CONFIG.maxRequests });
+/** The fixture-owned compression schedule every valid run must show (#227 amendment, #325). */
+export const SCHEDULE_POLICY = Object.freeze({
+  seededRenderedTokens: SEED_MEMORY.renderedTokens,
+  seededBlocks: SEED_MEMORY.blockCount,
+  halfBudgetTokens: SEED_MEMORY.halfBudgetTokens,
+  requiredAppends: CONTINUITY_SESSION_CONFIG.requiredAppends,
+  requiredRebuilds: CONTINUITY_SESSION_CONFIG.requiredRebuilds,
+  note: "the seed renders at exactly half the Memory budget, so the first due maintenance appends and every later one rebuilds, for any model-authored block size",
+});
 export const MODEL_LANES = Object.freeze({
   primary: Object.freeze({ provider: "ccr-claude", id: "claude-sonnet-5" }),
   secondary: Object.freeze({ provider: "cpa", id: "glm-5.3" }),
@@ -182,11 +192,36 @@ function summary(record) {
     },
     requests: safeUsage(result?.requests),
     sourceReads: safeSourceReads(result?.sourceReads),
+    measurements: safeMeasurements(result?.measurements),
+    phaseLatency: safeLatency(result?.phaseLatency),
   };
 }
+
+/** Bounded per-run measurements: indexes, counts, and hashes only, never bodies. */
+function safeMeasurements(value = {}) {
+  return {
+    acceptanceToApplication: (Array.isArray(value.acceptanceToApplication) ? value.acceptanceToApplication : []).slice(0, 16)
+      .map((row) => ({ id: typeof row.id === "string" ? row.id.slice(0, 16) : null, operation: row.operation ?? null, phase: row.phase ?? null,
+        recordedAtRequest: Number.isInteger(row.recordedAtRequest) ? row.recordedAtRequest : null,
+        appliedAtRequest: Number.isInteger(row.appliedAtRequest) ? row.appliedAtRequest : null,
+        requestGap: Number.isInteger(row.requestGap) ? row.requestGap : null })),
+    prefixStable: value.prefixStable === true,
+    refusals: value.refusals && typeof value.refusals === "object" ? Object.fromEntries(Object.entries(value.refusals).slice(0, 8).map(([code, count]) => [sanitizeDisplayText(String(code)).slice(0, 48), Number(count) || 0])) : {},
+    peakPromptTokens: Number.isFinite(value.peakPromptTokens) ? value.peakPromptTokens : null,
+    netInputChange: Number.isInteger(value.netInputChange) ? value.netInputChange : null,
+  };
+}
+
+function safeLatency(rows) {
+  return (Array.isArray(rows) ? rows : []).slice(0, 32).map((row) => ({ phase: typeof row.phase === "string" ? row.phase : null, ms: Number.isFinite(row.ms) ? row.ms : null }));
+}
 function markdown(report) {
-  const lines = ["# Context Memory continuity qualification", "", `machine status: **${report.machineStatus}**`, "", "This report requires human review; it is not a release pass.", "", "| run | status | integrity | coverage |", "| --- | --- | --- | --- |"];
-  for (const run of report.runs) lines.push(`| ${run.run} | ${run.status} | ${run.integrity.ok ? "ok" : "inconclusive"} | ${run.coverage.ok ? "ok" : "inconclusive"} |`);
+  const lines = ["# Context Memory continuity qualification", "", `machine status: **${report.machineStatus}**`, "",
+    "This report requires human review; it is not a release pass.", "",
+    `schedule: seeded Memory renders at exactly ${report.schedulePolicy.seededRenderedTokens} tokens (half budget ${report.schedulePolicy.halfBudgetTokens}); every valid run needs ≥${report.schedulePolicy.requiredAppends} append and ≥${report.schedulePolicy.requiredRebuilds} suffix rebuilds`, "",
+    "| run | status | integrity | coverage | ops (append/rebuild) | prefix |",
+    "| --- | --- | --- | --- | --- | --- |"];
+  for (const run of report.runs) lines.push(`| ${run.run} | ${run.status} | ${run.integrity.ok ? "ok" : "inconclusive"} | ${run.coverage.ok ? "ok" : "inconclusive"} | ${run.coverage.appends ?? 0}/${run.coverage.rebuilds ?? 0} | ${run.measurements?.prefixStable ? "stable" : "unstable"} |`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -232,6 +267,7 @@ export async function runQualification({ runtime, reportDir, mode = "real", sess
       pins,
       machineStatus: status.machineStatus,
       releasePass: false,
+      schedulePolicy: SCHEDULE_POLICY,
       gates,
       runs: records.map(summary),
       completeness: { expected: 16, completed: records.length, ok: status.complete },

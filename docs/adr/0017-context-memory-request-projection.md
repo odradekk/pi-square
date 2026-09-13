@@ -361,7 +361,17 @@ storage and local module assertions therefore do not establish delivery.
 The [spec's research notes](https://github.com/odradekk/pi-square/issues/317)
 record fixed source versions and the limits of that reproduction.
 
-Real continuity qualification remains Sonnet 5 and GLM 5.3 under #227's
+The qualification instruments were migrated to this architecture by #325:
+the deterministic corpus is now the zero-tolerance sweep over the
+deterministic context-memory suites (the pre-#319 submit-memory corpus
+retired with its protocol), and the real-model continuity instrument seeds
+each branch, before session creation through the public session-manager
+seams, with fixture-authored Memory rendering at exactly half the budget —
+so the required schedule of one append and two suffix rebuilds is
+fixture-owned while every scored block stays model-authored — and its final
+probe completes the invited maintenance first so the recall check runs
+against the complete carrier with covered originals actually evicted. Real
+continuity qualification remains Sonnet 5 and GLM 5.3 under #227's
 coverage and human rubric. The real Pi cache sequence runs Sonnet 5, GLM 5.3,
 and GPT-5.6 Luna concurrently, with sequential requests within each session.
 Report token-weighted cache reads, input volume, request latency where

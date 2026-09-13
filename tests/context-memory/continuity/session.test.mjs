@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { runContinuitySession } from "./session.mjs";
+import { SEED_EXCHANGE } from "./scenarios.mjs";
 
 const runtimeDir = mkdtempSync(join(tmpdir(), "continuity-provider-test-"));
 writeFileSync(join(runtimeDir, "auth.json"), "{}\n");
@@ -33,17 +34,18 @@ try {
   const contexts = [];
 
   /**
-   * The #319 faux model: ordinary read work first, the resident
+   * The #319/#321 faux model: ordinary read work first, the resident
    * compact_to_memory_block tool as the sole call of its batch whenever the
    * due advisory rides a checkpoint request, more ordinary work after every
-   * recording, and read_memory_source plus the bounded write in the final
-   * phase. Compression never happens on the intro, revision, abandoned, or
-   * final prompts: those instructions are the protected latest-user content
-   * of a recording and must not become the retained raw exceptions.
+   * recording, and — in the final phase — the invited maintenance first
+   * (closing the rebuild-serving window), then read_memory_source plus the
+   * bounded write. Work compressions never happen on the intro, revision,
+   * or abandoned prompts: those instructions are the protected latest-user
+   * content of a recording and must not become the retained raw exceptions.
    */
   function setResponses({ summaryLines = 4, leak = false, readAll = false } = {}) {
     let records = 0;
-    provider.setResponses(Array.from({ length: 120 }, () => (context) => {
+    provider.setResponses(Array.from({ length: 160 }, () => (context) => {
       contexts.push(structuredClone(context.messages));
       const last = context.messages.at(-1);
       // The due advisory projects into the request as a user-role message
@@ -54,9 +56,15 @@ try {
       const userText = lastUser ? messageText(lastUser) : "";
       const readTarget = userText.startsWith("Checkpoint") ? "reference.txt" : "README.md";
       if (userText.includes("FINAL_ARTIFACT")) {
-        if (last?.role !== "toolResult") return fauxAssistantMessage(fauxToolCall("read_memory_source", { block: 1, page: 1 }), { stopReason: "toolUse" });
+        if (requestText(context.messages).includes("compression is due") && last?.role !== "toolResult") {
+          return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", {
+            markdown: `# Final record\n\nThe required project identifier is PROJECT-ZEBRA-71.\n${"Final operational notes close the run. ".repeat(summaryLines)}`,
+          }), { stopReason: "toolUse" });
+        }
+        if (last?.role !== "toolResult") return fauxAssistantMessage(fauxToolCall("read_memory_source", { block: 3, page: 1 }), { stopReason: "toolUse" });
+        if (last.toolName === "compact_to_memory_block") return fauxAssistantMessage(fauxToolCall("read_memory_source", { block: 3, page: 1 }), { stopReason: "toolUse" });
         if (last.toolName === "read_memory_source") {
-          if (readAll && last.details?.hasMore) return fauxAssistantMessage(fauxToolCall("read_memory_source", { block: 1, page: last.details.page + 1 }), { stopReason: "toolUse" });
+          if (readAll && last.details?.hasMore) return fauxAssistantMessage(fauxToolCall("read_memory_source", { block: 3, page: last.details.page + 1 }), { stopReason: "toolUse" });
           return fauxAssistantMessage(fauxToolCall("write", { path: "handoff.json", content: HANDOFF }), { stopReason: "toolUse" });
         }
         return fauxAssistantMessage("The handoff file is ready.");
@@ -79,7 +87,7 @@ try {
       return fauxAssistantMessage(fauxToolCall("read", { path: readTarget }), { stopReason: "toolUse" });
     }));
   }
-  setResponses();
+  setResponses({ readAll: true });
   const script = {
     id: "source-recovery", variant: "early",
     setupFiles: { "README.md": "This workspace has no answer values.\n", "status.mjs": 'console.log("ready");\n', "reference.txt": REFERENCE },
@@ -91,7 +99,14 @@ try {
   const result = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script, run: { scenario: script.id, variant: "early", arm: "primary" } });
   assert.equal(result.integrity.ok, true, JSON.stringify({ integrity: result.integrity, requests: result.requests, errors: result.evidence?.entries.filter((entry) => entry.message?.stopReason === "error") }));
   assert.equal(result.coverage.ok, true, JSON.stringify(result.coverage));
-  assert.ok(result.coverage.appends >= 1 && result.coverage.memoryStates >= 2, "the recording cycle runs repeatedly in the native tool loop");
+  // #325: the seeded half-budget Memory makes the schedule fixture-owned —
+  // exactly one append then rebuilds, whatever the faux model writes.
+  assert.ok(result.coverage.appends >= 1 && result.coverage.rebuilds >= 2, "the recording cycle runs repeatedly in the native tool loop");
+  assert.equal(result.coverage.appends, 1, "with the seed at exactly half budget the first maintenance appends once");
+  assert.equal(result.measurements.prefixStable, true, "the unselected carrier prefix stays byte-stable across append and rebuilds");
+  assert.ok(result.measurements.acceptanceToApplication.length >= 3);
+  assert.ok(result.measurements.acceptanceToApplication.every((row) => row.requestGap >= 1), "every recorded Memory applies at the next request or later");
+  assert.equal(result.measurements.refusals.NO_NET_BENEFIT ?? 0, 0);
   assert.equal(result.coverage.multiBlockMemory, true, "a later state entry appends onto the recorded Memory prefix");
   assert.equal(result.coverage.sourceCovered, true);
   assert.equal(result.coverage.rawSourceAbsent, true);
@@ -100,9 +115,11 @@ try {
   assert.equal(result.requests.length, contexts.length, "every provider request is observed through the native Pi session");
   const finalResponses = result.requests.filter((request) => request.phase === "final");
   assert.ok(finalResponses.length >= 3, "source read, artifact write, and final response all finish in the native tool loop");
-  assert.equal(result.evidence.entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant").length, result.requests.length);
+  assert.equal(result.evidence.entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant"
+    && !SEED_EXCHANGE.some((exchange) => JSON.stringify(entry.message.content).includes(exchange.assistant))).length, result.requests.length,
+  "only the fixture seed's assistant entries sit outside the observed request count");
 
-  setResponses();
+  setResponses({ readAll: true });
   const branch = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(),
     script: { ...script, revisionPrompt: "Authoritative revision: PROJECT-ZEBRA-71 is still the project identifier. Retention is still unknown.", abandonedPrompt: "This abandoned branch uses SIBLING-ONLY-93. Acknowledge briefly." }, run: { scenario: "branch-isolation", variant: "early", arm: "primary" } });
   assert.equal(branch.integrity.ok, true, JSON.stringify(branch.integrity));
