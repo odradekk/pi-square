@@ -44,6 +44,8 @@ priority: 0
 triggers: [completion, failure]
 
 # Per-trigger guidance merged by key across layers; null removes one key.
+# Every key must be one of the triggers declared above, or across the layers
+# of this id; an instruction without its trigger excludes the definition.
 triggerInstructions:
   # Keep each instruction at 8000 characters or fewer.
   completion: Compare the settled answer against the evidence it cites.

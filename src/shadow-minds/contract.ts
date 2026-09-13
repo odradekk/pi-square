@@ -113,7 +113,7 @@ export function buildShadowDefinitionContract(minimal: EffectiveShadowDefinition
       default: minimal.triggers,
     },
     triggerInstructions: {
-      keysFromTriggers: true,
+      keysSubsetOfDeclaredTriggers: true,
       valueMaxLength: SHADOW_TRIGGER_INSTRUCTION_MAX_CHARS,
       nullClearsKey: true,
       merge: "per-key across layers",
