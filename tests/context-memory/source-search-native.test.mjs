@@ -8,7 +8,7 @@ import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager
 import jiti from "jiti";
 
 const load = jiti(import.meta.url, { moduleCache: false });
-const { MEMORY_SUMMARY_WRAPPER } = await load("../../src/context-memory/format.ts");
+const { MEMORY_BLOCK_SEPARATOR, MEMORY_SUMMARY_WRAPPER } = await load("../../src/context-memory/format.ts");
 
 /**
  * #339 native acceptance: one real Pi `AgentSession` with a deterministic
@@ -264,8 +264,7 @@ try {
     }
 
     // ── Run six: continue ordinary work and compress over the interrupted
-    // exchange; the run ends at the acknowledgement so the reopen below is
-    // the first request after the compression.
+    // exchange; the acknowledgement request proves same-session projection.
     if (currentPrompt.includes(CONTINUE_MARKER)) {
       if (lastToolName === "read") {
         return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: MEMORY_THREE }), { stopReason: "toolUse" });
@@ -377,6 +376,12 @@ try {
   assert.ok(interruptError && /abort/i.test(interruptError.errorMessage ?? ""),
     "the interrupted run surfaces Pi's abort-flavored error assistant");
   assert.equal(abortedStops.length, 0, "no run ends through a user-interruption aborted stop");
+  const interruptedSearchId = sessionManager.getBranch()
+    .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
+    .flatMap((entry) => (Array.isArray(entry.message.content) ? entry.message.content : []))
+    .find((part) => part?.type === "toolCall" && part.name === "search_memory_source"
+      && part.arguments?.terms?.[0] === "LUNA")?.id;
+  assert.ok(interruptedSearchId, "run five recorded the interrupted search call before the abort");
 
   // Run six: ordinary work and compression continue over the interrupted
   // exchange, ending at the compression acknowledgement.
@@ -385,9 +390,37 @@ try {
     { source: "interactive", expandPromptTemplates: false },
   );
 
-  // Restart through Pi's public seam: reopen the persisted session file so
-  // the request state and the extension's expectation model agree again, and
-  // the Memory carrier applies to the next real request.
+  // The compression applies to its acknowledgement request in this same
+  // session; reopening below independently proves persisted re-derivation.
+  const sameSessionApplied = requests.filter((request) => requestText(request.messages).includes(CONTINUE_MARKER)
+    && request.messages.some((message) => messageText(message).includes(MEMORY_THREE)));
+  assert.equal(sameSessionApplied.length, 1,
+    "run six has exactly one post-compression provider request carrying the third Memory block");
+  {
+    const request = sameSessionApplied[0];
+    const serialized = JSON.stringify(request.messages);
+    const carriers = request.messages.filter((message) => messageText(message).includes(MEMORY_SUMMARY_WRAPPER));
+    assert.equal(carriers.length, 1, "the same-session request applies exactly one Memory carrier");
+    const carrierParts = carriers[0].content.filter((part) => part?.type === "text").map((part) => part.text);
+    assert.deepEqual(carrierParts, [
+      MEMORY_SUMMARY_WRAPPER,
+      `${MEMORY_BLOCK_SEPARATOR}${MEMORY_ONE}`,
+      `${MEMORY_BLOCK_SEPARATOR}${MEMORY_TWO}`,
+      `${MEMORY_BLOCK_SEPARATOR}${MEMORY_THREE}`,
+    ], "the same-session carrier preserves every recorded block in order");
+    assert.ok(!serialized.includes(interruptedSearchId),
+      "the covered interrupted search call leaves the same-session projected request");
+    assert.ok(!request.messages.some((message) =>
+      message.role === "toolResult" && message.toolCallId === interruptedSearchId),
+    "the covered interrupted search result leaves together with its call");
+    assert.ok(!serialized.includes("narrating the interrupted source search"),
+      "the covered interrupted narration leaves the same-session projected request");
+    assert.ok(serialized.includes(CONTINUE_MARKER) && serialized.includes("file-f.txt"),
+      "the retained working set remains in the same-session projected request");
+  }
+
+  // Reopen through Pi's public seam to independently prove persisted
+  // re-derivation after the same-session assertion above.
   const sessionFile = sessionManager.getSessionFile();
   await session.dispose();
   unsubscribe();
@@ -535,13 +568,8 @@ try {
     assert.ok(callPresent && resultPresent,
       "the first continuation request carries the interrupted call and its result as a whole pair");
   }
-  // ── Reopened-session proof: the covered interrupted pair leaves a
-  // projected request together. Restarting through Pi's public reopen seam
-  // restores the alignment (the request state and the extension's
-  // expectation model agree again), so the Memory carrier applies — and
-  // under the applied carrier BOTH halves of the covered interrupted search
-  // exchange are gone, never a stranded half. This is the strong assertion;
-  // the fallback-shaped invariant below stays only as a global safety net.
+  // ── Reopened-session proof: the recorded carrier re-derives and the
+  // covered interrupted pair remains absent together after reopening.
   const reopenedRequests = requests.filter((request) =>
     requestText(request.messages).includes(REOPEN_MARKER));
 
@@ -572,8 +600,7 @@ try {
     }
   }
   // Global safety net: the interrupted pair is never split across halves in
-  // any captured request (pre-restart requests keep it whole and visible
-  // under the documented fallback; reopened requests carry neither half).
+  // any captured request; a request either carries both or neither.
   for (const [index, request] of requests.entries()) {
     const serialized = JSON.stringify(request.messages);
     const callPresent = serialized.includes(interruptedSearch.id);
@@ -699,13 +726,13 @@ try {
   {
     const evidenceCopySearch = searchCalls.find((call) => call.arguments.terms
       && call.arguments.terms[0] === "Memory source search");
-    assert.ok(evidenceCopySearch, "run six issued the evidence-copy search");
+    assert.ok(evidenceCopySearch, "the reopened run issued the evidence-copy search");
     assert.equal(evidenceCopySearch.result.isError, false);
     assert.equal(evidenceCopySearch.result.text.includes("no matches"), true,
       "the retrieval framing matches no original source");
     const marsControl = searchCalls.find((call) => call.arguments.terms
       && call.arguments.terms[0] === "MARS-ROVER");
-    assert.ok(marsControl, "run six issued the original-evidence control search");
+    assert.ok(marsControl, "the reopened run issued the original-evidence control search");
     assert.equal(marsControl.result.isError, false);
     assert.ok(marsControl.result.text.includes(FACT_ONE),
       "the original fact stays recoverable from the Memory sources");
