@@ -6,7 +6,7 @@ import {
   estimateTokens as estimateMessageTokens,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import { deriveCurrentMemory, isEligibleSourceEntry, isProtocolToolName, isUserMessageEntry, type CurrentMemory, type DerivedMemoryBlock, type MemorySessionReader, type ValidMemory } from "./derive";
+import { deriveCurrentMemory, isEligibleSourceEntry, isProtocolToolName, isUserMessageEntry, sourceViewIdentity, type CurrentMemory, type DerivedMemoryBlock, type MemorySessionReader, type ValidMemory } from "./derive";
 import {
   MEMORY_BLOCK_SEPARATOR,
   MEMORY_DETAILS_MAX_BYTES,
@@ -32,14 +32,18 @@ import {
   renderSourceTranscript,
 } from "./transcript";
 import type { HostSupport } from "./host";
+import { searchMemorySources } from "./search";
 import {
   COMPACT_MEMORY_TOOL_NAME,
   READ_MEMORY_SOURCE_TOOL_NAME,
+  SEARCH_MEMORY_SOURCE_TOOL_NAME,
   SUBMIT_MEMORY_TOOL_NAME,
   type CompactMemoryDetails,
   type MemoryRecordingContext,
   type ReadMemorySourceDetails,
   type ReadMemorySourceRequest,
+  type SearchMemorySourceDetails,
+  type SearchMemorySourceRequest,
 } from "./tools";
 import {
   CONTEXT_MEMORY_ADVISORY_TYPE,
@@ -125,6 +129,7 @@ import {
 export const OWNED_TOOL_NAMES: readonly string[] = Object.freeze([
   COMPACT_MEMORY_TOOL_NAME,
   READ_MEMORY_SOURCE_TOOL_NAME,
+  SEARCH_MEMORY_SOURCE_TOOL_NAME,
 ]);
 
 const OWNED_TOOL_NAME_SET: ReadonlySet<string> = new Set(OWNED_TOOL_NAMES);
@@ -1114,9 +1119,11 @@ export class ContextMemoryController {
    * active tool selected by Pi or another pi-square module. Since #319,
    * `compact_to_memory_block` is resident: active exactly while the feature is
    * enabled on a supported host — thresholds and previous submissions never
-   * change the tool set. `read_memory_source` stays active exactly while
-   * enabled on a supported host with strictly valid non-empty current Memory
-   * (#217). Returns the owned names removed from the active list.
+   * change the tool set. `read_memory_source` and `search_memory_source` stay
+   * active exactly while enabled on a supported host with strictly valid
+   * non-empty current Memory (#217, #339): search shares the reading
+   * surface's availability because it reads the same sources. Returns the
+   * owned names removed from the active list.
    */
   synchronizeActiveTools(
     pi: Pick<ExtensionAPIForTools, "getActiveTools" | "setActiveTools">,
@@ -1132,7 +1139,10 @@ export class ContextMemoryController {
       && this.current.kind === "valid"
       && this.current.blocks.length > 0;
     if (compactActive) desired.push(COMPACT_MEMORY_TOOL_NAME);
-    if (readActive) desired.push(READ_MEMORY_SOURCE_TOOL_NAME);
+    if (readActive) {
+      desired.push(READ_MEMORY_SOURCE_TOOL_NAME);
+      desired.push(SEARCH_MEMORY_SOURCE_TOOL_NAME);
+    }
     this.activeMemoryId = readActive && this.current.kind === "valid"
       ? memoryIdentity(this.current)
       : undefined;
@@ -2210,8 +2220,13 @@ export class ContextMemoryController {
   /**
    * Execute one `read_memory_source` call: re-derive and revalidate current
    * Memory against the live session, then return one fixed 16 KiB page of the
-   * block's source transcript. Throws one safe sentence beginning with a
-   * stable short code; never echoes Memory Markdown, ranges, or identifiers.
+   * block's source transcript. A call carrying a search-derived source view
+   * (#339) is revalidated against the current derivation first: a changed
+   * Memory view fails with `VIEW_STALE` before any page content is served, so
+   * a stale search location can never silently read an unrelated page, while
+   * ordinary direct block/page reads stay exactly as before. Throws one safe
+   * sentence beginning with a stable short code; never echoes Memory Markdown,
+   * ranges, or identifiers.
    */
   async readSource(
     request: ReadMemorySourceRequest,
@@ -2228,6 +2243,13 @@ export class ContextMemoryController {
         fail("MEMORY_CHANGED", "current Memory changed since the tool became active; re-read the current block list");
       }
       fail("MEMORY_NOT_AVAILABLE", NO_MEMORY_SENTENCE);
+    }
+    if (request.view !== undefined && request.view.trim().length > 0
+      && request.view !== sourceViewIdentity(memory)) {
+      fail(
+        "VIEW_STALE",
+        "the search view no longer matches the current Memory; search_memory_source again and use the new view, or omit it to read the current block and page directly",
+      );
     }
     const resolution = this.resolvePage(memory, request);
     if (resolution.kind !== "ok") {
@@ -2252,6 +2274,44 @@ export class ContextMemoryController {
       });
     }
     return { content, details: resolved.details };
+  }
+
+  /**
+   * Execute one `search_memory_source` call (#339): re-derive and revalidate
+   * current Memory exactly like a read, then run the bounded literal search
+   * over the same rendered, paginated source transcripts the reading surface
+   * serves. Searching is observational: it touches no Memory state, no
+   * maintenance authorization, no observed-context bookkeeping, and no
+   * persistence — it never invites compression, satisfies a maintenance
+   * request's source-serving gate, or alters a Memory carrier. Throws one
+   * safe sentence beginning with a stable short code.
+   */
+  async searchSources(
+    request: SearchMemorySourceRequest,
+    session: MemorySessionReader,
+  ): Promise<AgentToolResult<SearchMemorySourceDetails>> {
+    if (!this.config.enabled || !this.support.supported) {
+      fail("MEMORY_NOT_AVAILABLE", NO_MEMORY_SENTENCE);
+    }
+    const memory = deriveCurrentMemory(session);
+    if (memory.kind !== "valid") fail("MEMORY_NOT_AVAILABLE", NO_MEMORY_SENTENCE);
+    const identity = memoryIdentity(memory);
+    if (this.activeMemoryId === undefined || identity !== this.activeMemoryId) {
+      if (this.activeMemoryId !== undefined) {
+        fail("MEMORY_CHANGED", "current Memory changed since the tool became active; re-read the current block list");
+      }
+      fail("MEMORY_NOT_AVAILABLE", NO_MEMORY_SENTENCE);
+    }
+    const result = searchMemorySources({
+      view: sourceViewIdentity(memory),
+      blocks: memory.blocks,
+      terms: request.terms,
+      ...(request.block !== undefined ? { block: request.block } : {}),
+    });
+    return {
+      content: result.content.map((part) => ({ type: "text" as const, text: part.text })),
+      details: result.details,
+    };
   }
 
   /**

@@ -184,6 +184,13 @@ export const DISPLAY_CATALOG: readonly DisplayToolCatalogEntry[] = Object.freeze
     child: false,
     description: "Read one Memory block's original conversation page",
   },
+  {
+    name: "search_memory_source",
+    family: "workflow",
+    parent: true,
+    child: false,
+    description: "Search Memory blocks' original conversation for literal terms",
+  },
   // ── agent ───────────────────────────────────────────────────────
   {
     name: "delegate",

@@ -117,6 +117,7 @@ const EXPECTED_TITLES = {
   ask: "Questions",
   compact_to_memory_block: "Memory compact",
   read_memory_source: "Memory source",
+  search_memory_source: "Memory search",
   delegate: "Subagent",
   resume: "Resume",
 };

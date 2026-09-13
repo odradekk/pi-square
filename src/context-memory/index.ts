@@ -21,6 +21,7 @@ import {
 import {
   createCompactMemoryToolDefinition,
   createReadMemorySourceToolDefinition,
+  createSearchMemorySourceToolDefinition,
 } from "./tools";
 import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./view";
 
@@ -28,12 +29,16 @@ import { CONTEXT_MEMORY_DISABLED_SNAPSHOT, type ContextMemorySnapshot } from "./
  * Context Memory registrar (odradekk/pi-square#215, #216, #217, #219, #221, #319,
  * #320, #324) — the module's single external interface.
  *
- * One call installs the feature's event handlers and the two parent-only
+ * One call installs the feature's event handlers and the three parent-only
  * tool definitions (decorated through the shared display adapter) and
  * returns the read-only view provider Prompt Manager consumes for the
  * `/context` `memory[]` section and `/context memory <block> [page]`
  * inspection. Callers never assemble parsing, source ranges, budgets,
- * recording, or projections themselves.
+ * recording, or projections themselves. #339 adds the bounded literal
+ * source search: `search_memory_source` locates terms in the same rendered,
+ * paginated source transcripts the reading surface serves and returns
+ * verbatim snippets with block/page locations bound to an opaque source-view
+ * token that `read_memory_source` validates.
  *
  * Default-off: with no `contextMemory` agent configuration the feature
  * installs no context transform, no active model tool, no persistent file,
@@ -141,9 +146,19 @@ export default function registerContextMemory(
     }
     return controller.readSource(request, session);
   });
+  // #339: the bounded literal source search shares the reading surface's
+  // executor seam — same controller revalidation, same display decoration —
+  // and stays purely observational.
+  const searchMemorySource = createSearchMemorySourceToolDefinition((request, session) => {
+    if (!controller) {
+      throw new Error("MEMORY_NOT_AVAILABLE: no valid Context Memory is available on the current branch");
+    }
+    return controller.searchSources(request, session);
+  });
   pi.registerTool(decorateInternalTool(compactMemory, dependencies.displayRuntimeProvider));
   pi.registerMessageRenderer(CONTEXT_MEMORY_CONFIG_GUIDE_TYPE, renderContextMemoryConfigGuide);
   pi.registerTool(decorateInternalTool(readMemorySource, dependencies.displayRuntimeProvider));
+  pi.registerTool(decorateInternalTool(searchMemorySource, dependencies.displayRuntimeProvider));
 
   function sessionReaderOf(ctx: { sessionManager?: unknown }): MemorySessionReader {
     return ctx.sessionManager as MemorySessionReader;

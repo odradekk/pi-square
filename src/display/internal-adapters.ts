@@ -21,10 +21,12 @@ const ARG_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   parse: ["path", "pages", "mode", "max_tokens", "timeout"],
   replace: ["path", "remove_from", "remove_to", "replacement_text"],
   // github uses per-operation GITHUB_ARG_FIELDS below, not this flat map.
-  // Context Memory tools (odradekk/pi-square#215): submitted Memory Markdown
-  // and transcript pages must never reach display metadata or previews.
+  // Context Memory tools (odradekk/pi-square#215, #339): submitted Memory
+  // Markdown, transcript pages, and search snippets must never reach display
+  // metadata or previews.
   compact_to_memory_block: [],
   read_memory_source: [],
+  search_memory_source: [],
   ask: ["questions"],
   todo: ["action", "id", "ids", "advance"],
   delegate: ["agent", "mode", "task", "cwd", "model", "thinkingLevel", "context"],
@@ -51,6 +53,7 @@ const TITLES: Readonly<Record<string, string>> = Object.freeze({
   docs: "Documentation", parse: "PDF parse", replace: "Replace", github: "GitHub",
   ask: "Questions", todo: "Tasks",
   compact_to_memory_block: "Memory compact", read_memory_source: "Memory source",
+  search_memory_source: "Memory search",
   delegate: "Subagent", resume: "Resume subagent",
 });
 
@@ -302,6 +305,7 @@ export function decorateInternalTool<T extends ToolDefinition<any, any, any>>(
           || definition.name === "todo"
           || definition.name === "compact_to_memory_block"
           || definition.name === "read_memory_source"
+          || definition.name === "search_memory_source"
           ? createWorkflowAdapter(definition.name, base)
           : base;
   return decorateToolDefinition(definition, runtime, adapter) as T;

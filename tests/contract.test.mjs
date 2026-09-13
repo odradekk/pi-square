@@ -59,7 +59,7 @@ try {
   assert.deepEqual([...tools.keys()].sort(), [
     "ask", "codegraph", "compact_to_memory_block", "delegate", "docs", "fetch", "github",
     "libs", "parse", "pdf_search", "read_memory_source", "resume", "search",
-    "ssh", "todo",
+    "search_memory_source", "ssh", "todo",
   ]);
   assert.ok(childToolNames.includes("codegraph"));
   assert.ok(childToolNames.includes("pdf_search"), "pdf_search must be available through explicit child opt-in");
@@ -182,10 +182,12 @@ try {
   // ── Context Memory (#215, #216, #319): two parent-only tools, strict schemas ──
   const compactMemoryTool = tools.get("compact_to_memory_block");
   const readMemorySourceTool = tools.get("read_memory_source");
+  const searchMemorySourceTool = tools.get("search_memory_source");
   assert.ok(compactMemoryTool, "compact_to_memory_block registers through the extension entrypoint");
   assert.equal(tools.get("submit_memory"), undefined, "the retired submit_memory name has no active alias");
   assert.ok(readMemorySourceTool, "read_memory_source registers through the extension entrypoint");
-  for (const memoryTool of [compactMemoryTool, readMemorySourceTool]) {
+  assert.ok(searchMemorySourceTool, "search_memory_source registers through the extension entrypoint (#339)");
+  for (const memoryTool of [compactMemoryTool, readMemorySourceTool, searchMemorySourceTool]) {
     assert.equal(memoryTool.renderShell, "self", `${memoryTool.name} must use the shared display shell`);
     assert.equal(typeof memoryTool.renderCall, "function", `${memoryTool.name} must render calls`);
     assert.equal(typeof memoryTool.renderResult, "function", `${memoryTool.name} must render results`);
@@ -198,14 +200,18 @@ try {
   assert.deepEqual(compactMemoryTool.parameters.required, ["markdown"]);
   assert.deepEqual(Object.keys(compactMemoryTool.parameters.properties), ["markdown"]);
   assert.deepEqual(readMemorySourceTool.parameters.required, ["block", "page"]);
-  assert.deepEqual(Object.keys(readMemorySourceTool.parameters.properties).sort(), ["block", "page"]);
+  assert.deepEqual(Object.keys(readMemorySourceTool.parameters.properties).sort(), ["block", "page", "view"]);
+  assert.deepEqual(searchMemorySourceTool.parameters.required, ["terms"]);
+  assert.deepEqual(Object.keys(searchMemorySourceTool.parameters.properties).sort(), ["block", "terms"]);
+  assert.equal(searchMemorySourceTool.parameters.properties.terms.type, "array");
 
   for (const name of [
     "pdf_search", "codegraph", "ssh", "bash",
     "read", "grep", "find", "ls", "edit", "write",
     "search", "fetch", "parse", "libs", "docs",
     "github",
-    "ask", "todo", "compact_to_memory_block", "read_memory_source", "delegate", "resume",
+    "ask", "todo", "compact_to_memory_block", "read_memory_source", "search_memory_source",
+    "delegate", "resume",
   ]) {
     const tool = tools.get(name);
     assert.equal(tool?.renderShell, "self", `${name} parent tool must use the shared display shell`);

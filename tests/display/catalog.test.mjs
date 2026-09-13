@@ -81,8 +81,8 @@ const expectedTools = [
   "ssh",
   // pi-square workflow
   "todo", "ask",
-  // pi-square workflow: Context Memory (#215, #216), parent-only
-  "compact_to_memory_block", "read_memory_source",
+  // pi-square workflow: Context Memory (#215, #216, #339), parent-only
+  "compact_to_memory_block", "read_memory_source", "search_memory_source",
   // pi-square agent
   "delegate", "resume",
 ];
@@ -107,7 +107,7 @@ assert.ok(parentOnly.includes("delegate"), "delegate must be parent-only");
 assert.ok(parentOnly.includes("resume"), "resume must be parent-only");
 assert.ok(parentOnly.includes("compact_to_memory_block"), "compact_to_memory_block must be parent-only");
 assert.ok(parentOnly.includes("read_memory_source"), "read_memory_source must be parent-only");
-assert.equal(parentOnly.length, 9, `expected 9 parent-only tools, got ${parentOnly.length}`);
+assert.equal(parentOnly.length, 10, `expected 10 parent-only tools, got ${parentOnly.length}`);
 
 // ── Platform shell ownership ─────────────────────────────────────────
 
