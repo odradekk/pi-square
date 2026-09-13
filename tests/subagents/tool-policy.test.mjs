@@ -40,33 +40,6 @@ function loadYaml(name) {
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
-const matrix = {
-  "explorer.yaml": {
-    tools: ["read", "ls", "grep", "find"],
-    extensionTools: [],
-    skills: ["none"],
-  },
-  "crawler.yaml": {
-    tools: ["read"],
-    extensionTools: ["web_search", "web_fetch", "library_search", "library_docs"],
-    skills: ["none"],
-  },
-  "generalist.yaml": {
-    tools: ["read", "write", "edit", "shell", "ls", "grep", "find"],
-    extensionTools: ["web_search", "web_fetch", "library_search", "library_docs"],
-    skills: [],
-  },
-};
-
-test("bundled role tool and skill capabilities match the least-privilege matrix", () => {
-  for (const [file, expected] of Object.entries(matrix)) {
-    const yaml = loadYaml(file);
-    assert.deepEqual(parseList(yaml, "tools"), expected.tools, `${file} built-in tools`);
-    assert.deepEqual(parseList(yaml, "extensionTools"), expected.extensionTools, `${file} extension tools`);
-    assert.deepEqual(parseList(yaml, "skills"), expected.skills, `${file} skills`);
-  }
-});
-
 test("none disables every built-in while preserving explicit extension tools", () => {
   const resolved = resolveSubagentTools({
     tools: ["none"],
@@ -98,9 +71,9 @@ test("omitted tools retain portable runtime defaults", () => {
   assert.ok(windows.persistedTools.includes("shell"));
 });
 
-test("every bundled subagent resolves to supported tools on every platform", () => {
+test("the packaged reference definition resolves to supported tools on every platform", () => {
   const files = readdirSync(subagentsDir).filter((file) => file.endsWith(".yaml"));
-  assert.ok(files.length > 0, "expected bundled subagent definitions to exist");
+  assert.ok(files.length > 0, "expected the packaged reference definition to exist");
   for (const file of files) {
     const yaml = loadYaml(file);
     const tools = parseList(yaml, "tools");

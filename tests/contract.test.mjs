@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,19 @@ import jiti from "jiti";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const agentDir = mkdtempSync(join(tmpdir(), "pi-square-contract-agent-"));
+// The package layer ships no delegatable roles (#334), so the catalog segment
+// is exercised through an agent-layer definition this test owns.
+mkdirSync(join(agentDir, "subagents"), { recursive: true });
+writeFileSync(join(agentDir, "subagents", "contract-role.yaml"), [
+  "promptVersion: 2",
+  "name: contract-role",
+  "description: Contract-test role proving agent-layer definitions reach the parent catalog.",
+  "tools:",
+  "  - read",
+  "skills:",
+  "  - none",
+  "",
+].join("\n"), "utf8");
 const previous = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
