@@ -96,7 +96,13 @@ export interface SubagentRegistry {
   projectDir: string | null;
 }
 
-const DEFINITION_FIELDS = [
+/**
+ * Every overlay-definable V2 field in canonical order. The configuration guide
+ * renders its field table from this constant (#334), so the table can never
+ * drift from the parser's field set. `promptVersion` and `name` are layer
+ * identity fields, not overlay fields, and stay outside the table.
+ */
+export const DEFINITION_FIELDS = [
   "description",
   "model",
   "effort",

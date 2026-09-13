@@ -1,6 +1,11 @@
 import { isWindowsPlatform } from "../shell/platform";
 
-const BUILT_IN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+/**
+ * Every built-in tool name a subagent definition may list under `tools`, in
+ * canonical order. The configuration guide renders its built-in tool list from
+ * this constant (#334) so the guide cannot drift from tool resolution.
+ */
+export const BUILT_IN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const NON_SHELL_BUILT_INS = BUILT_IN_TOOL_NAMES.filter((name) => name !== "bash");
 const NO_BUILT_IN_TOOLS = "none";
 
