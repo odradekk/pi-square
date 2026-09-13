@@ -32,6 +32,9 @@ export const MEMORY_BLOCK_MAX_BYTES = 16 * 1024;
  * bytes, and a block within the byte cap can never hold more characters than
  * bytes, so this rejects nothing the byte rule accepts while keeping the
  * schema finite. The canonical byte check is enforced at execution (#218).
+ * The search-term and view bounds below share this character semantics: both
+ * the schema and the runtime execution check count Unicode code points, so an
+ * astral-plane term is bounded by its real character count (#339).
  */
 const MEMORY_BLOCK_MAX_CHARS = MEMORY_BLOCK_MAX_BYTES;
 
@@ -91,7 +94,8 @@ export const ReadMemorySourceParamsSchema = Type.Object({
 
 export const SearchMemorySourceParamsSchema = Type.Object({
   terms: Type.Array(Type.String({
-    description: "Literal term; matched case-insensitively, never as a regular expression",
+    description: "Literal term; matched case-insensitively, never as a regular expression; "
+      + "bounded by Unicode characters (code points)",
     minLength: 1,
     maxLength: MEMORY_SEARCH_TERM_MAX_CHARS,
   }), {

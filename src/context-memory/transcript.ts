@@ -3,17 +3,24 @@ import { isEligibleContentPart } from "./derive";
 
 /**
  * The versioned source transcript renderer and fixed paging contract
- * (odradekk/pi-square#215, #217).
+ * (odradekk/pi-square#215, #217, #339).
  *
- * The same renderer and paging serve the model tool (`read_memory_source`)
- * and the human `/context memory <block> [page]` inspection. The transcript
- * preserves source chronology and roles — user, assistant, assistant
- * thinking, tool call, tool result, custom message, and branch summary — with
- * exact textual content, tool name/call pairing, and error state. It never
- * contains storage paths, session/header data, entry or parent IDs,
- * timestamps, provider usage or metadata, extension details, hashes, raw JSON
- * envelopes, or binary payloads; image parts become deterministic
- * type/MIME/size placeholders.
+ * The same renderer and paging serve the model tools (`read_memory_source`,
+ * `search_memory_source`) and the human `/context memory <block> [page]`
+ * inspection. The transcript preserves source chronology and roles — user,
+ * assistant, assistant thinking, tool call, tool result, custom message, and
+ * branch summary — with exact textual content, tool name/call pairing, and
+ * error state. It never contains storage paths, session/header data, entry or
+ * parent IDs, timestamps, provider usage or metadata, extension details,
+ * hashes, raw JSON envelopes, or binary payloads; image parts become
+ * deterministic type/MIME/size placeholders.
+ *
+ * Since #339 the renderer also reports non-crossable source boundaries for
+ * literal search: every entry join, and every join where an ineligible
+ * (protocol) part was omitted between two rendered pieces, is a boundary no
+ * search match may span, so no phrase is manufactured over removed content or
+ * across renderer framing. The rendered text itself is byte-identical to the
+ * pre-#339 renderer; `read_memory_source` keeps consuming only the text.
  */
 
 /** Fixed source page size: at most 16 KiB UTF-8 per page (#215). */
@@ -82,13 +89,30 @@ function partByteNote(part: ContentPart): string {
 }
 
 /**
- * Render one entry's eligible content parts under role labels. Protocol
- * artifacts (`submit_memory`, `read_memory_source` tool calls and paired
- * results) never enter the transcript; ordinary parts in the same message are
- * preserved (#215).
+ * One rendered transcript line plus the search-boundary flag (#339):
+ * `cutBefore` marks that at least one ineligible (protocol) part was omitted
+ * between this line's rendering and the previous rendered piece, so literal
+ * search must never manufacture a match across that join.
  */
-function renderEntryLines(entry: SessionEntry): string[] {
-  const lines: string[] = [];
+interface RenderedPiece {
+  line: string;
+  cutBefore: boolean;
+}
+
+function piece(line: string, cutBefore: boolean): RenderedPiece {
+  return { line, cutBefore };
+}
+
+/**
+ * Render one entry's eligible content parts under role labels. Protocol
+ * artifacts (`submit_memory`, `compact_to_memory_block`, `read_memory_source`,
+ * and `search_memory_source` tool calls and paired results) never enter the
+ * transcript; ordinary parts in the same message are preserved (#215). Where
+ * such a part was omitted between two rendered pieces, the following piece is
+ * marked as a non-crossable join (#339).
+ */
+function renderEntryPieces(entry: SessionEntry): RenderedPiece[] {
+  const pieces: RenderedPiece[] = [];
   switch (entry.type) {
     case "message": {
       const message = (entry as { message: { role?: unknown; content?: unknown } }).message;
@@ -96,100 +120,178 @@ function renderEntryLines(entry: SessionEntry): string[] {
         const toolName = (message as { toolName?: unknown }).toolName;
         const name = typeof toolName === "string" && toolName ? toolName : "tool";
         const error = (message as { isError?: unknown }).isError === true;
-        lines.push(`[tool result] ${name}${error ? " · error" : " · ok"}`);
+        pieces.push(piece(`[tool result] ${name}${error ? " · error" : " · ok"}`, false));
         const content = message.content;
         if (typeof content === "string") {
-          lines.push(textPart(content));
+          pieces.push(piece(textPart(content), false));
         } else if (Array.isArray(content)) {
-          const rendered = content.filter(isEligibleContentPart).map((part) => {
-            const candidate = part as ContentPart;
-            if (candidate.type === "image") return imagePlaceholder(candidate.mimeType, partByteNote(candidate));
-            return textPart(typeof candidate.text === "string" ? candidate.text : "");
-          });
-          lines.push(...(rendered.length > 0 ? rendered : ["(empty)"]));
+          let omitted = false;
+          let renderedAny = false;
+          for (const raw of content) {
+            if (!isEligibleContentPart(raw)) {
+              omitted = true;
+              continue;
+            }
+            const candidate = raw as ContentPart;
+            if (candidate.type === "image") {
+              pieces.push(piece(imagePlaceholder(candidate.mimeType, partByteNote(candidate)), omitted && renderedAny));
+            } else {
+              pieces.push(piece(textPart(typeof candidate.text === "string" ? candidate.text : ""), omitted && renderedAny));
+            }
+            omitted = false;
+            renderedAny = true;
+          }
+          if (!renderedAny) pieces.push(piece("(empty)", false));
         } else {
-          lines.push("(empty)");
+          pieces.push(piece("(empty)", false));
         }
         break;
       }
       const label = message.role === "assistant" ? "assistant" : "user";
       if (typeof message.content === "string") {
-        lines.push(`[${label}]`);
-        lines.push(textPart(message.content));
+        pieces.push(piece(`[${label}]`, false));
+        pieces.push(piece(textPart(message.content), false));
         break;
       }
-      const parts = (Array.isArray(message.content) ? message.content : []).filter(isEligibleContentPart);
-      const groups: string[] = [];
-      let plain: string[] | null = null;
-      for (const part of parts) {
-        const candidate = part as ContentPart;
+      const parts = Array.isArray(message.content) ? message.content : [];
+      let plain: RenderedPiece[] | null = null;
+      let pendingOmission = false;
+      // The next rendered line consumes a pending omission as a cut whenever
+      // rendered content already precedes it inside this entry.
+      const takeCut = () => {
+        const cut = pendingOmission && (pieces.length > 0 || (plain !== null && plain.length > 0));
+        pendingOmission = false;
+        return cut;
+      };
+      const flushPlain = () => {
+        if (!plain) return;
+        // A cut pending on the plain run's first piece belongs on the label
+        // line that introduces it.
+        const cut = plain[0].cutBefore;
+        if (cut) plain[0].cutBefore = false;
+        pieces.push(piece(`[${label}]`, cut), ...plain);
+        plain = null;
+      };
+      for (const raw of parts) {
+        if (!isEligibleContentPart(raw)) {
+          pendingOmission = true;
+          continue;
+        }
+        const candidate = raw as ContentPart;
         if (candidate.type === "text") {
           plain ??= [];
-          plain.push(textPart(typeof candidate.text === "string" ? candidate.text : ""));
+          plain.push(piece(textPart(typeof candidate.text === "string" ? candidate.text : ""), takeCut()));
         } else {
-          if (plain) {
-            groups.push(`[${label}]`, ...plain);
-            plain = null;
-          }
+          flushPlain();
+          const cut = takeCut();
           if (candidate.type === "thinking") {
-            groups.push(`[${label} · thinking]`);
-            groups.push(candidate.redacted === true
+            pieces.push(piece(`[${label} · thinking]`, cut));
+            pieces.push(piece(candidate.redacted === true
               ? "(redacted thinking)"
-              : textPart(typeof candidate.thinking === "string" ? candidate.thinking : ""));
+              : textPart(typeof candidate.thinking === "string" ? candidate.thinking : ""), false));
           } else if (candidate.type === "image") {
-            groups.push(`[${label} · image] ${imagePlaceholder(candidate.mimeType, partByteNote(candidate))}`);
+            pieces.push(piece(`[${label} · image] ${imagePlaceholder(candidate.mimeType, partByteNote(candidate))}`, cut));
           } else if (candidate.type === "toolCall") {
             const name = typeof candidate.name === "string" && candidate.name ? candidate.name : "tool";
-            groups.push(`[${label} · tool call] ${name}`);
-            groups.push(safeText(partArguments(candidate)));
+            pieces.push(piece(`[${label} · tool call] ${name}`, cut));
+            pieces.push(piece(safeText(partArguments(candidate)), false));
           }
         }
       }
-      if (plain) groups.push(`[${label}]`, ...plain);
-      lines.push(...(groups.length > 0 ? groups : [`[${label}]`, "(empty)"]));
+      flushPlain();
+      if (pieces.length === 0) {
+        pieces.push(piece(`[${label}]`, false), piece("(empty)", false));
+      }
       break;
     }
     case "custom_message": {
-      lines.push("[custom message]");
+      pieces.push(piece("[custom message]", false));
       const content = (entry as { content?: unknown }).content;
       if (typeof content === "string") {
-        lines.push(textPart(content));
+        pieces.push(piece(textPart(content), false));
       } else if (Array.isArray(content)) {
-        const rendered = content.filter(isEligibleContentPart).map((part) => {
-          const candidate = part as ContentPart;
-          if (candidate.type === "image") {
-            return imagePlaceholder(candidate.mimeType, partByteNote(candidate));
+        let omitted = false;
+        let renderedAny = false;
+        for (const raw of content) {
+          if (!isEligibleContentPart(raw)) {
+            omitted = true;
+            continue;
           }
-          return textPart(typeof candidate.text === "string" ? candidate.text : "");
-        });
-        lines.push(...(rendered.length > 0 ? rendered : ["(empty)"]));
+          const candidate = raw as ContentPart;
+          if (candidate.type === "image") {
+            pieces.push(piece(imagePlaceholder(candidate.mimeType, partByteNote(candidate)), omitted && renderedAny));
+          } else {
+            pieces.push(piece(textPart(typeof candidate.text === "string" ? candidate.text : ""), omitted && renderedAny));
+          }
+          omitted = false;
+          renderedAny = true;
+        }
+        if (!renderedAny) pieces.push(piece("(empty)", false));
       } else {
-        lines.push("(empty)");
+        pieces.push(piece("(empty)", false));
       }
       break;
     }
     case "branch_summary": {
-      lines.push("[branch summary]");
-      lines.push(textPart((entry as { summary?: unknown }).summary as string));
+      pieces.push(piece("[branch summary]", false));
+      pieces.push(piece(textPart((entry as { summary?: unknown }).summary as string), false));
       break;
     }
     default:
       break;
   }
-  return lines;
+  return pieces;
+}
+
+/** The rendered transcript plus its non-crossable search boundaries (#339). */
+export interface SourceTranscriptRender {
+  /** Byte-identical to the pre-#339 `renderSourceTranscript` output. */
+  readonly text: string;
+  /**
+   * Sorted code-unit offsets of separator newlines that join two rendered
+   * pieces across an entry boundary or an omitted protocol part. A literal
+   * search match may not include any of these units, and an excerpt may not
+   * extend across one, so no phrase is manufactured over removed content.
+   */
+  readonly boundaries: readonly number[];
 }
 
 /**
  * Deterministically render one block's complete eligible source range into
- * the versioned readable transcript, in source chronology.
+ * the versioned readable transcript, in source chronology, together with the
+ * non-crossable source boundaries literal search must respect (#339).
+ */
+export function renderSourceTranscriptWithBoundaries(entries: readonly SessionEntry[]): SourceTranscriptRender {
+  const lines: string[] = [MEMORY_TRANSCRIPT_HEADER];
+  const cutLines = new Set<number>();
+  for (const entry of entries) {
+    // Every entry join is a boundary: original conversation text never spans
+    // entries, and an ineligible protocol exchange between two eligible
+    // entries is invisible here, so join points are never treated as
+    // continuous original text.
+    cutLines.add(lines.length);
+    lines.push("");
+    for (const rendered of renderEntryPieces(entry)) {
+      if (rendered.cutBefore) cutLines.add(lines.length);
+      lines.push(rendered.line);
+    }
+  }
+  const boundaries: number[] = [];
+  let cursor = 0;
+  for (let index = 0; index < lines.length; index++) {
+    if (index > 0 && cutLines.has(index)) boundaries.push(cursor - 1);
+    cursor += lines[index]!.length + 1;
+  }
+  return { text: `${lines.join("\n")}\n`, boundaries };
+}
+
+/**
+ * Deterministically render one block's complete eligible source range into
+ * the versioned readable transcript, in source chronology. The reading
+ * surface's fixed contract (#215, #217): text only, no boundaries.
  */
 export function renderSourceTranscript(entries: readonly SessionEntry[]): string {
-  const lines: string[] = [MEMORY_TRANSCRIPT_HEADER];
-  for (const entry of entries) {
-    lines.push("");
-    lines.push(...renderEntryLines(entry));
-  }
-  return lines.join("\n") + "\n";
+  return renderSourceTranscriptWithBoundaries(entries).text;
 }
 
 /**

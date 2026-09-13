@@ -410,8 +410,8 @@ try {
     assert.equal(capped.details.omittedLocations, capped.details.pageLocations - MEMORY_SEARCH_MAX_PAGE_ROWS);
     const cappedText = resultText(capped);
     assert.match(cappedText, /omitted by the response bound/, "omitted results are reported truthfully");
-    assert.ok(Buffer.byteLength(cappedText, "utf8") <= MEMORY_SEARCH_RESPONSE_MAX_BYTES + 1024,
-      "the rendered response stays bounded (header and footer overhead included)");
+    assert.ok(Buffer.byteLength(cappedText, "utf8") <= MEMORY_SEARCH_RESPONSE_MAX_BYTES,
+      "the complete response — header, rows, and footer — stays within the hard cap");
     const shownRows = cappedText.split("\n").filter((line) => /^block \d+ · /.test(line));
     assert.equal(shownRows.length, MEMORY_SEARCH_MAX_PAGE_ROWS);
 
@@ -780,6 +780,183 @@ try {
     const second = await session.emit("context", { type: "context", messages: sm.buildSessionContext().messages }, ctx);
     assert.equal(JSON.stringify(first.messages), JSON.stringify(second.messages),
       "an unchanged Memory carrier is not altered by a search");
+  }
+
+  // ── Review regression: the complete response honors the 8 KiB hard cap ──
+
+  {
+    // The reviewer's reproduction: 18 dense CJK messages with two needle
+    // occurrences each, all covered by one Memory block. The footer's status
+    // and view lines, the newlines between content parts, and every count
+    // must fit inside the published cap with truthful truncation counts.
+    const sm = SessionManager.inMemory("/project");
+    for (let i = 0; i < 18; i++) {
+      sm.appendMessage({
+        role: "user",
+        content: "汉".repeat(5700) + " needle " + "字".repeat(100) + " needle " + "文".repeat(80),
+        timestamp: i + 1,
+      });
+    }
+    const covered = sm.getBranch().at(-1).id;
+    sm.appendMessage({ role: "user", content: "current request", timestamp: 99 });
+    seedMemoryState(sm, [{ endEntryId: covered, markdown: "# Dense digest", retainedEntryIds: [] }]);
+    const session = harness();
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    const search = session.tools.get("search_memory_source");
+    const dense = await search.execute("s:dense", { terms: ["needle"] }, undefined, undefined, ctx);
+    const denseText = dense.content.map((part) => part.text).join("\n");
+    assert.ok(Buffer.byteLength(denseText, "utf8") <= MEMORY_SEARCH_RESPONSE_MAX_BYTES,
+      `the joined content parts stay within ${MEMORY_SEARCH_RESPONSE_MAX_BYTES} bytes `
+      + `(got ${Buffer.byteLength(denseText, "utf8")})`);
+    assert.equal(dense.details.complete, true);
+    assert.equal(dense.details.totalMatches, 36, "every match in the scanned scope is counted");
+    assert.ok(dense.details.omittedLocations > 0, "rows dropped by the bound are reported as omitted");
+    assert.equal(dense.details.pageLocations, dense.details.returnedLocations + dense.details.omittedLocations,
+      "the location counts stay additive and truthful");
+  }
+
+  // ── Review regression: the term bound counts Unicode code points ──
+
+  {
+    const sm = SessionManager.inMemory("/project");
+    sm.appendMessage({
+      role: "user",
+      content: "astral evidence 𐐀𐐀-MARKER and 😀😀-GLYPHS inside one message",
+      timestamp: 1,
+    });
+    const covered = sm.getBranch().at(-1).id;
+    sm.appendMessage({ role: "user", content: "current request", timestamp: 2 });
+    seedMemoryState(sm, [{ endEntryId: covered, markdown: "# Astral digest", retainedEntryIds: [] }]);
+    const session = harness();
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    const search = session.tools.get("search_memory_source");
+
+    // 61 astral code points are 122 UTF-16 units but a legal 61-character term.
+    const astral = await search.execute("s:astral", { terms: ["😀".repeat(61)] }, undefined, undefined, ctx);
+    assert.equal(astral.details.terms, 1, "astral terms are bounded by code points, not UTF-16 units");
+
+    // The exact boundaries: 120 code points pass on both planes, 121 refuse.
+    const bmpAtBound = await search.execute("s:bmp-bound", { terms: ["漢".repeat(120)] }, undefined, undefined, ctx);
+    assert.equal(bmpAtBound.details.complete, true, "120 BMP code points are a valid term");
+    const astralAtBound = await search.execute("s:astral-bound", { terms: ["😀".repeat(120)] }, undefined, undefined, ctx);
+    assert.equal(astralAtBound.details.complete, true, "120 astral code points are a valid term");
+    await assert.rejects(
+      () => search.execute("s:bmp-over", { terms: ["漢".repeat(121)] }, undefined, undefined, ctx),
+      (error) => /^SEARCH_INVALID_TERMS: /.test(error.message),
+    );
+    await assert.rejects(
+      () => search.execute("s:astral-over", { terms: ["😀".repeat(121)] }, undefined, undefined, ctx),
+      (error) => /^SEARCH_INVALID_TERMS: /.test(error.message),
+    );
+
+    // Astral case folding still maps back onto the exact original text.
+    const deseret = await search.execute("s:deseret", { terms: ["𐐨𐐨-marker"] }, undefined, undefined, ctx);
+    assert.equal(deseret.details.totalMatches, 1, "case-insensitive matching folds astral code points");
+    const deseretText = resultText(deseret);
+    assert.ok(deseretText.includes("𐐀𐐀-MARKER"), "the snippet preserves the original astral casing");
+    assert.ok(!deseretText.includes("𐐨𐐨-MARKER"), "the folded term never replaces the original text");
+  }
+
+  // ── Review regression: no match across omitted protocol content ──
+
+  {
+    // The reviewer's reproduction: an interrupted search call between two
+    // text parts of one covered assistant message. The renderer joins the
+    // surviving texts on adjacent lines; search must not treat that join as
+    // continuous original text.
+    const buildInterrupted = async (protocolName) => {
+      const sm = SessionManager.inMemory("/project");
+      sm.appendMessage({ role: "user", content: "explore the interrupted batch", timestamp: 1 });
+      const carrier = sm.appendMessage({
+        role: "assistant",
+        content: [
+          { type: "text", text: "LEFT-NEEDLE" },
+          { type: "toolCall", id: `synthetic-interrupted-${protocolName}`, name: protocolName, arguments: { terms: ["clue"] } },
+          { type: "text", text: "RIGHT-NEEDLE" },
+        ],
+        stopReason: "aborted", timestamp: 2,
+      });
+      sm.appendMessage({ role: "user", content: "current request", timestamp: 3 });
+      seedMemoryState(sm, [{ endEntryId: carrier, markdown: "# Interrupted digest", retainedEntryIds: [] }]);
+      const session = harness();
+      const ctx = commandContext(sm);
+      await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+      return { session, ctx };
+    };
+
+    for (const protocolName of ["search_memory_source", "read_memory_source", "compact_to_memory_block"]) {
+      const { session, ctx } = await buildInterrupted(protocolName);
+      const search = session.tools.get("search_memory_source");
+      const joined = await search.execute(`s:join-${protocolName}`, { terms: ["LEFT-NEEDLE\nRIGHT-NEEDLE"] }, undefined, undefined, ctx);
+      assert.equal(joined.details.totalMatches, 0,
+        `${protocolName}: no match is manufactured across the omitted call (including the interrupted, unanswered shape)`);
+      assert.equal(joined.details.complete, true, "the refusal is a complete zero-hit search, not an error");
+      for (const side of ["LEFT-NEEDLE", "RIGHT-NEEDLE"]) {
+        const alone = await search.execute(`s:${side}`, { terms: [side] }, undefined, undefined, ctx);
+        assert.equal(alone.details.totalMatches, 1, `${protocolName}: ${side} alone stays discoverable`);
+        const excerpt = resultText(alone).split("\n").find((line) => line.startsWith("  · "));
+        assert.ok(excerpt, `${protocolName}: ${side} renders an excerpt`);
+        assert.ok(!excerpt.includes("LEFT-NEEDLE\nRIGHT-NEEDLE"),
+          `${protocolName}: the excerpt never spans the omission join`);
+        const other = side === "LEFT-NEEDLE" ? "RIGHT-NEEDLE" : "LEFT-NEEDLE";
+        assert.ok(!excerpt.includes(other), `${protocolName}: the ${side} excerpt stays on its own side`);
+      }
+    }
+
+    // Entry joins are never crossable either: an entire omitted protocol
+    // exchange between two eligible entries must not become continuity.
+    {
+      const sm = SessionManager.inMemory("/project");
+      sm.appendMessage({ role: "user", content: "ALPHA-ENTRY", timestamp: 1 });
+      const protocolCall = sm.appendMessage({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "whole-exchange-search", name: "search_memory_source", arguments: { terms: ["x"] } }],
+        stopReason: "toolUse", timestamp: 2,
+      });
+      sm.appendMessage({
+        role: "toolResult", toolCallId: "whole-exchange-search", toolName: "search_memory_source",
+        content: [{ type: "text", text: "WHOLE-EXCHANGE-RESULT" }], isError: false, timestamp: 3,
+      });
+      const covered = sm.appendMessage({ role: "user", content: "BETA-ENTRY", timestamp: 4 });
+      sm.appendMessage({ role: "user", content: "current request", timestamp: 5 });
+      seedMemoryState(sm, [{ endEntryId: covered, markdown: "# Entry-join digest", retainedEntryIds: [] }]);
+      const session = harness();
+      const ctx = commandContext(sm);
+      await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+      const search = session.tools.get("search_memory_source");
+
+      // The omitted exchange is ineligible as a whole; ALPHA and BETA derive
+      // as adjacent sources whose rendered join carries the role framing.
+      const spanning = await search.execute("s:entry-span", {
+        terms: ["ALPHA-ENTRY\n\n[user]\nBETA-ENTRY"],
+      }, undefined, undefined, ctx);
+      assert.equal(spanning.details.totalMatches, 0,
+        "no match spans the entry join that hides an omitted protocol exchange");
+      const alpha = await search.execute("s:alpha", { terms: ["ALPHA-ENTRY"] }, undefined, undefined, ctx);
+      assert.equal(alpha.details.totalMatches, 1);
+      const alphaExcerpt = resultText(alpha).split("\n").find((line) => line.startsWith("  · "));
+      assert.ok(!alphaExcerpt.includes("BETA-ENTRY"), "the excerpt stays inside one entry's rendering");
+
+      // The retrieval copy itself is never original evidence.
+      const ghost = await search.execute("s:entry-ghost", { terms: ["WHOLE-EXCHANGE-RESULT"] }, undefined, undefined, ctx);
+      assert.equal(ghost.details.totalMatches, 0);
+
+      // Within one entry, genuinely continuous multi-line text stays matchable.
+      const sm2 = SessionManager.inMemory("/project");
+      sm2.appendMessage({ role: "user", content: "first line of a continuous quote\nsecond line of the same message", timestamp: 1 });
+      const covered2 = sm2.getBranch().at(-1).id;
+      sm2.appendMessage({ role: "user", content: "current request", timestamp: 2 });
+      seedMemoryState(sm2, [{ endEntryId: covered2, markdown: "# Multiline digest", retainedEntryIds: [] }]);
+      const session2 = harness();
+      const ctx2 = commandContext(sm2);
+      await session2.emit("session_start", { type: "session_start", reason: "resume" }, ctx2);
+      const multiline = await session2.tools.get("search_memory_source")
+        .execute("s:multiline", { terms: ["continuous quote\nsecond line"] }, undefined, undefined, ctx2);
+      assert.equal(multiline.details.totalMatches, 1,
+        "a multi-line term inside one continuous source segment still matches");
+    }
   }
 
   console.log("context-memory source-search: all assertions passed");

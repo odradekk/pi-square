@@ -36,14 +36,18 @@ const INITIAL_MARKER = "INITIAL-RESEARCH-RUN";
 const SEARCH_MARKER = "SEARCH-AND-READ-RUN";
 const SNIPPET_MARKER = "SNIPPET-SUFFICIENT-RUN";
 const STALE_MARKER = "STALE-VIEW-RUN";
+const INTERRUPTED_MARKER = "INTERRUPTED-SEARCH-RUN";
+const CONTINUE_MARKER = "CONTINUE-AFTER-INTERRUPTION-RUN";
 
 /** The codes exist only in the raw source files, never in any Memory body. */
 const FACT_ONE = "The first archive code is MARS-ROVER-77.";
 const FACT_TWO = "The second archive code is ORION-ECHO-31.";
 const FACT_THREE = "The third archive code is LUNA-TANGO-42.";
+const FACT_FOUR = "The fourth archive code is VEGA-SIGNAL-90.";
 
 const MEMORY_ONE = "# Research digest one\n\n- the workspace archive round was surveyed";
 const MEMORY_TWO = "# Follow-up digest\n\n- the later evidence round was surveyed";
+const MEMORY_THREE = "# Post-interruption digest\n\n- the interrupted run and its continuation were surveyed";
 
 const FILLER = "Operational history and module boundary notes that make each read a substantial evidence payload. ".repeat(6);
 /** Two deep rounds: the covered block spans three 16 KiB source pages. */
@@ -59,6 +63,7 @@ const FILES = {
   "file-e.txt": deepFile(51),
   "file-c.txt": `small closing round\n${FILLER}\n`,
   "file-d.txt": `${FILLER.repeat(3)}\n${FACT_THREE}\n`,
+  "file-f.txt": `${FILLER}\n${FACT_FOUR}\n`,
 };
 
 function messageText(message) {
@@ -126,11 +131,14 @@ try {
   const compactionEvents = [];
   const abortedStops = [];
 
-  // Scripted model state across the four runs.
+  // Scripted model state across the six runs.
   let initialReads = 0;
   let staleView = null;
   let staleTarget = { block: 1, page: 1 };
   let searchedAfterStale = false;
+  let interruptArmed = false;
+  let interruptFired = false;
+  let continueSearches = 0;
 
   faux.setResponses(Array.from({ length: 80 }, () => (context) => {
     requests.push({
@@ -144,8 +152,9 @@ try {
     // Phase detection keys on the LATEST user message: earlier runs' prompts
     // stay in context, so a plain includes() on the whole text would match
     // every phase at once.
-    const markerOf = (candidate) => [INITIAL_MARKER, SEARCH_MARKER, SNIPPET_MARKER, STALE_MARKER]
-      .find((marker) => candidate.includes(marker));
+    const markerOf = (candidate) => [
+      INITIAL_MARKER, SEARCH_MARKER, SNIPPET_MARKER, STALE_MARKER, INTERRUPTED_MARKER, CONTINUE_MARKER,
+    ].find((marker) => candidate.includes(marker));
     const currentUser = [...context.messages].reverse().find((message) => message.role === "user"
       && markerOf(messageText(message)));
     const currentPrompt = messageText(currentUser);
@@ -239,6 +248,42 @@ try {
       return fauxAssistantMessage(fauxToolCall("read", { path: "file-d.txt" }), { stopReason: "toolUse" });
     }
 
+    // ── Run five: a narrated search batch is interrupted right after its
+    // result lands; the run aborts before the next model request.
+    if (currentPrompt.includes(INTERRUPTED_MARKER)) {
+      return fauxAssistantMessage(
+        [
+          { type: "text", text: "narrating the interrupted source search before it answers" },
+          fauxToolCall("search_memory_source", { terms: ["LUNA"] }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
+
+    // ── Run six: continue ordinary work, compress over the interrupted
+    // exchange, then prove retrieval copies never become original evidence.
+    if (currentPrompt.includes(CONTINUE_MARKER)) {
+      if (lastToolName === "read") {
+        return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: MEMORY_THREE }), { stopReason: "toolUse" });
+      }
+      if (lastToolName === "compact_to_memory_block") {
+        return fauxAssistantMessage(fauxToolCall("search_memory_source", { terms: ["MARS-ROVER"] }), { stopReason: "toolUse" });
+      }
+      if (lastToolName === "search_memory_source") {
+        continueSearches += 1;
+        if (continueSearches === 1) {
+          return fauxAssistantMessage(fauxToolCall("search_memory_source", { terms: ["Memory source search"] }), { stopReason: "toolUse" });
+        }
+        return fauxAssistantMessage(
+          lastText.includes("no matches")
+            ? `Evidence-copy check complete: the retrieval framing finds no original evidence. ${FACT_FOUR}`
+            : "Evidence-copy check failed: retrieval framing matched original sources.",
+          { stopReason: "stop" },
+        );
+      }
+      return fauxAssistantMessage(fauxToolCall("read", { path: "file-f.txt" }), { stopReason: "toolUse" });
+    }
+
     return fauxAssistantMessage("Unexpected phase.", { stopReason: "stop" });
   }));
 
@@ -268,6 +313,15 @@ try {
     if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "aborted") {
       abortedStops.push(event.message);
     }
+    // Deterministic interruption (#339 review): the abort fires from the
+    // interrupted search's tool-result message_end, so the completed pair is
+    // real history and the continuation request is the next model request.
+    if (interruptArmed && event.type === "message_end" && event.message.role === "toolResult"
+      && event.message.toolName === "search_memory_source") {
+      interruptArmed = false;
+      interruptFired = true;
+      void session.abort();
+    }
   });
 
   // Run one: record real Memory over the deep evidence round.
@@ -294,15 +348,43 @@ try {
     { source: "interactive", expandPromptTemplates: false },
   );
 
-  // ── Ordinary runs only: no native compaction, no aborts ──
+  // Runs one through four are ordinary: no aborts before the intentional one.
+  const abortsBeforeInterruption = abortedStops.length;
+  assert.equal(abortsBeforeInterruption, 0, "no run before the interruption scenario aborts");
+
+  // Run five: the interrupted search batch — the abort fires from the search
+  // tool-result event, after the completed pair became real history.
+  interruptArmed = true;
+  await session.prompt(
+    `${INTERRUPTED_MARKER}: search the Memory sources for the third archive code, then keep working.`,
+    { source: "interactive", expandPromptTemplates: false },
+  );
+  assert.ok(interruptFired, "the deterministic abort fired from the interrupted search's result event");
+  const interruptError = sessionManager.getBranch()
+    .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
+    .map((entry) => entry.message)
+    .find((message) => message.stopReason === "error");
+  assert.ok(interruptError && /abort/i.test(interruptError.errorMessage ?? ""),
+    "the interrupted run surfaces Pi's abort-flavored error assistant");
+  assert.equal(abortedStops.length, 0, "no run ends through a user-interruption aborted stop");
+
+  // Run six: ordinary work and compression continue over the interrupted
+  // exchange, then the evidence-copy check.
+  await session.prompt(
+    `${CONTINUE_MARKER}: read file-f.txt, compress the covered history once, verify the first archive code is still recoverable, check that retrieval copies are not original evidence, and answer.`,
+    { source: "interactive", expandPromptTemplates: false },
+  );
+
+  // ── No native compaction anywhere; no user-interruption aborted stops ──
   assert.equal(compactionEvents.length, 0, "no run triggers native compaction");
-  assert.equal(abortedStops.length, 0, "no run aborts");
+  assert.equal(abortedStops.length, 0,
+    "the deterministic interruption surfaces as Pi's abort-flavored error, never as a user-interruption aborted stop");
 
   const branch = sessionManager.getBranch();
   const userTexts = branch
     .filter((entry) => entry.type === "message" && entry.message.role === "user")
     .map((entry) => (typeof entry.message.content === "string" ? entry.message.content : ""));
-  assert.equal(userTexts.length, 4, "four user prompts ran");
+  assert.equal(userTexts.length, 6, "six user prompts ran");
   const answers = branch
     .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
     .map((entry) => (Array.isArray(entry.message.content)
@@ -358,7 +440,66 @@ try {
 
   const searchCalls = calls.filter((call) => !call.reader);
   const readCalls = calls.filter((call) => call.reader);
-  assert.equal(searchCalls.length, 3, "three searches ran: located, snippet-only, and post-stale");
+  assert.equal(searchCalls.length, 6,
+    "six searches ran: located, snippet-only, post-stale fresh, interrupted, and the two evidence-copy checks");
+
+  // ── Native protocol pairing across every captured request, interrupted
+  // batches included: no result without its producing call ever reaches the
+  // provider, and the interrupted pair stays whole (#339 review).
+  for (const [index, request] of requests.entries()) {
+    const callIds = new Set();
+    for (const message of request.messages) {
+      if (message.role === "assistant" && Array.isArray(message.content)) {
+        for (const part of message.content) {
+          if (part?.type === "toolCall" && (part.name === "search_memory_source" || part.name === "read_memory_source")) {
+            callIds.add(part.id);
+          }
+        }
+      }
+    }
+    for (const message of request.messages) {
+      if (message.role === "toolResult" && (message.toolName === "search_memory_source" || message.toolName === "read_memory_source")) {
+        assert.ok(callIds.has(message.toolCallId),
+          `request ${index}: every retrieval result rides with its producing call (no orphaned result)`);
+      }
+    }
+  }
+
+  // The interrupted search pair is real history: narration call plus result.
+  const interruptedSearch = searchCalls.find((call) => call.arguments.terms
+    && call.arguments.terms[0] === "LUNA");
+  assert.ok(interruptedSearch, "run five issued the interrupted search");
+  assert.equal(interruptedSearch.result.isError, false, "the interrupted search completed before the abort");
+  const continuationRequests = requests.filter((request) =>
+    requestText(request.messages).includes(CONTINUE_MARKER));
+  assert.ok(continuationRequests.length > 0, "the continuation run reached the provider");
+  {
+    const callPresent = continuationRequests[0].messages.some((message) =>
+      message.role === "assistant" && Array.isArray(message.content)
+      && message.content.some((part) => part?.type === "toolCall" && part.id === interruptedSearch.id));
+    const resultPresent = continuationRequests[0].messages.some((message) =>
+      message.role === "toolResult" && message.toolCallId === interruptedSearch.id);
+    assert.ok(callPresent && resultPresent,
+      "the first continuation request carries the interrupted call and its result as a whole pair");
+  }
+  // After the continuation's compression, the interrupted pair is never
+  // stranded: every later request carries both halves or neither. (When the
+  // request exit declines the projection — the abort leaves Pi's request
+  // without the run's empty error assistant, so the strict alignment refuses
+  // and the #324 native fallback sends the complete baseline — the pair
+  // stays whole and visible; when the projection applies, both halves leave
+  // with the covered exchange together.)
+  for (const [index, request] of requests.entries()) {
+    const serialized = JSON.stringify(request.messages);
+    const callPresent = serialized.includes(interruptedSearch.id);
+    const narrationPresent = serialized.includes("narrating the interrupted source search");
+    const resultPresent = request.messages.some((message) =>
+      message.role === "toolResult" && message.toolCallId === interruptedSearch.id);
+    if (callPresent || resultPresent || narrationPresent) {
+      assert.ok(callPresent && resultPresent,
+        `request ${index}: the interrupted search call and result stay a whole pair (never a stranded half)`);
+    }
+  }
 
   // ── Run two: exact snippets/pages reach the next model request ──
   const firstSearch = searchCalls[0];
@@ -456,16 +597,37 @@ try {
     .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
     .flatMap((entry) => (Array.isArray(entry.message.content) ? entry.message.content : []))
     .filter((part) => part?.type === "toolCall" && part.name === "compact_to_memory_block");
-  assert.equal(compactCalls.length, 2, "exactly two compressions were recorded across the session");
+  assert.equal(compactCalls.length, 3, "exactly three compressions were recorded across the session");
 
   // ── The Memory derivation is intact and multi-block at the end ──
   const { MEMORY_STATE_CUSTOM_TYPE } = await load("../../src/context-memory/format.ts");
   const stateEntries = branch.filter((entry) => entry.type === "custom" && entry.customType === MEMORY_STATE_CUSTOM_TYPE);
-  assert.equal(stateEntries.length, 2, "two accepted Memory state entries were recorded through the public seam");
+  assert.equal(stateEntries.length, 3, "three accepted Memory state entries were recorded through the public seam");
   const { deriveCurrentMemory } = await load("../../src/context-memory/derive.ts");
   const finalMemory = deriveCurrentMemory(sessionManager);
   assert.equal(finalMemory.kind, "valid");
-  assert.equal(finalMemory.blocks.length, 2, "append preserved the first block and added one");
+  assert.equal(finalMemory.blocks.length, 3, "each append preserved the existing blocks and added one");
+
+  // ── Retrieval copies never become original evidence at the native seam:
+  // after the continuation's compression, the retrieval framing that exists
+  // only inside search result bodies finds nothing, while the original fact
+  // stays recoverable from the Memory sources.
+  {
+    const evidenceCopySearch = searchCalls.find((call) => call.arguments.terms
+      && call.arguments.terms[0] === "Memory source search");
+    assert.ok(evidenceCopySearch, "run six issued the evidence-copy search");
+    assert.equal(evidenceCopySearch.result.isError, false);
+    assert.equal(evidenceCopySearch.result.text.includes("no matches"), true,
+      "the retrieval framing matches no original source");
+    const marsControl = searchCalls.find((call) => call.arguments.terms
+      && call.arguments.terms[0] === "MARS-ROVER");
+    assert.ok(marsControl, "run six issued the original-evidence control search");
+    assert.equal(marsControl.result.isError, false);
+    assert.ok(marsControl.result.text.includes(FACT_ONE),
+      "the original fact stays recoverable from the Memory sources");
+    assert.ok(answers.some((answer) => answer.includes(FACT_FOUR) && answer.includes("Evidence-copy check complete")),
+      "run six answers from fresh original evidence after the interruption");
+  }
 
   console.log("context-memory source-search-native: all assertions passed");
 } catch (error) {
