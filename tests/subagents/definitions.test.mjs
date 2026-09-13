@@ -131,6 +131,9 @@ test("block scalar chomping indicators are rejected instead of stored as literal
     );
     assert.equal(parsed.layer, undefined, `${indicator} must not admit the layer`);
     assert.ok(parsed.errors.some((item) => item.includes(indicator) && item.includes("chomping")), `${indicator}: ${parsed.errors.join(" | ")}`);
+    // An indented body belongs to the rejected block, so it must not pile
+    // orphaned-line errors on top of the named cause.
+    assert.ok(!parsed.errors.some((item) => item.includes("unsupported YAML line")), `${indicator}: ${parsed.errors.join(" | ")}`);
   }
   // Rejecting the indicator must not consume what follows: the next field line
   // still parses, so no spurious missing-name error and the invalid entry
@@ -144,6 +147,17 @@ test("block scalar chomping indicators are rejected instead of stored as literal
   assert.ok(noBody.errors.some((item) => item.includes("chomping")));
   assert.ok(!noBody.errors.some((item) => item.includes("missing required field 'name'")), noBody.errors.join(" | "));
   assert.equal(noBody.name, "t");
+
+  // The same indentation rule governs the supported indicators: a following
+  // field at the field's own indent is never block content.
+  const emptyBlock = __testables.parseYamlDefinition(
+    `promptVersion: 2\ndescription: |\nname: t\n`,
+    "/agent/subagents/t.yaml",
+    "agent",
+  );
+  assert.deepEqual(emptyBlock.errors, []);
+  assert.equal(emptyBlock.layer?.patch.name, "t");
+  assert.equal(emptyBlock.layer?.patch.description, null);
 });
 
 test("inline comments are rejected instead of mixing into values", () => {

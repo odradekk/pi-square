@@ -318,18 +318,8 @@ function parseYamlDefinition(
       continue;
     }
 
-    if (CHOMPING_INDICATOR_PATTERN.test(rest) && rest !== "|" && rest !== ">") {
-      // Chomping and indentation indicators (`|-`, `>+`, `|2`) are not part of
-      // this subset. The line is rejected without consuming what follows: an
-      // indented body is real block content that dies with the file, but a
-      // following field line must still parse so it cannot go missing too.
-      errors.push(`${filePath}: line ${i + 1}: block scalar '${rest}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
-      data[key] = null;
-      i += 1;
-      continue;
-    }
-
-    if (rest === "|" || rest === ">") {
+    if (rest === "|" || rest === ">" || CHOMPING_INDICATOR_PATTERN.test(rest)) {
+      const fieldLine = i + 1;
       const currentIndent = rawLine.match(/^(\s*)/)?.[1]?.length ?? 0;
       let probe = i + 1;
       let blockIndent = currentIndent + 1;
@@ -344,12 +334,25 @@ function parseYamlDefinition(
       }
       const blockLines: string[] = [];
       i += 1;
-      while (i < lines.length) {
-        const nextLine = lines[i] ?? "";
-        const indent = nextLine.match(/^(\s*)/)?.[1]?.length ?? 0;
-        if (nextLine.trim() && indent < blockIndent) break;
-        blockLines.push(nextLine.trim() ? nextLine.slice(blockIndent) : "");
-        i += 1;
+      // Only lines indented past the field carry block content. Without this
+      // guard a following field at the same indent reads as the body and is
+      // swallowed, taking its own value and the file's identity with it.
+      if (blockIndent > currentIndent) {
+        while (i < lines.length) {
+          const nextLine = lines[i] ?? "";
+          const indent = nextLine.match(/^(\s*)/)?.[1]?.length ?? 0;
+          if (nextLine.trim() && indent < blockIndent) break;
+          blockLines.push(nextLine.trim() ? nextLine.slice(blockIndent) : "");
+          i += 1;
+        }
+      }
+      if (rest !== "|" && rest !== ">") {
+        // Chomping and indentation indicators (`|-`, `>+`, `|2`) are not part
+        // of this subset. A real body is consumed along with the rejection so
+        // it cannot pile orphaned-line errors on top of the named cause.
+        errors.push(`${filePath}: line ${fieldLine}: block scalar '${rest}' carries an unsupported chomping or indentation indicator — use '|' or '>' alone`);
+        data[key] = null;
+        continue;
       }
       const value = rest === ">"
         ? blockLines.join(" ").replace(/\s+/g, " ").trim()
