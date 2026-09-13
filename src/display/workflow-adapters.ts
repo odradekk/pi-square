@@ -149,6 +149,15 @@ function memorySourceTarget(block: unknown, page: unknown): string | undefined {
     : undefined;
 }
 
+/** Bounded `N terms [· block B]` target for the source-search tool (#339). */
+function memorySearchTarget(terms: unknown, block: unknown): string | undefined {
+  const count = Array.isArray(terms) ? terms.length : undefined;
+  const blockNumber = numberOf(block);
+  if (count === undefined) return undefined;
+  const base = `${count} term${count === 1 ? "" : "s"}`;
+  return blockNumber !== undefined ? `${base} · block ${blockNumber}` : base;
+}
+
 /** The transcript page body: result content item 1 (between header and hint). */
 function memoryPageTexts(result: AgentToolResult<unknown>): string[] {
   return Array.isArray(result.content)
@@ -226,6 +235,17 @@ export function createWorkflowAdapter(
           lifecycle: context.executionStarted ? "running" : context.argsComplete ? "pending" : "queued",
           title: "Memory source",
           target: memorySourceTarget(source.block, source.page),
+          metadata: [],
+          sections: [],
+        });
+      }
+
+      // ── search_memory_source ──: composed `N terms [· block B]` target.
+      if (name === "search_memory_source") {
+        return baseDescription(description, {
+          lifecycle: context.executionStarted ? "running" : context.argsComplete ? "pending" : "queued",
+          title: "Memory search",
+          target: memorySearchTarget(source.terms, source.block),
           metadata: [],
           sections: [],
         });
@@ -405,6 +425,50 @@ export function createWorkflowAdapter(
           rows: [],
           summary,
           truncated: hasMore,
+        });
+      }
+
+      // ── search_memory_source ──
+      if (name === "search_memory_source") {
+        const argsRecord = asRecord(context.args);
+        const target = memorySearchTarget(argsRecord.terms, argsRecord.block);
+        if (isError) {
+          const sentence = memoryErrorSentence(text);
+          return baseDescription(description, {
+            lifecycle: "failed",
+            title: "Memory search",
+            target,
+            metadata: [],
+            sections: [],
+            rows: [],
+            summary: sentence,
+            error: sentence,
+            errorRaw: text,
+          });
+        }
+        const locations = numberOf(details.pageLocations) ?? 0;
+        const matches = numberOf(details.totalMatches) ?? 0;
+        const truncated = numberOf(details.omittedLocations) ?? 0;
+        const incomplete = details.complete === false;
+        const summary = incomplete
+          ? "stopped at the match bound"
+          : locations === 0
+            ? "no matches"
+            : `${locations} page location${locations === 1 ? "" : "s"} · ${matches} match${matches === 1 ? "" : "es"}`;
+        const texts = memoryPageTexts(result);
+        // The snippets are evidence: visible only in the expanded entry.
+        const sections: DisplaySection[] = options.expanded && texts.length > 1
+          ? [{ title: "Matches", blocks: [{ kind: "text", text: texts[1]! }] }]
+          : [];
+        return baseDescription(description, {
+          lifecycle: "completed",
+          title: "Memory search",
+          target,
+          metadata: [],
+          sections,
+          rows: [],
+          summary,
+          ...(truncated > 0 || incomplete ? { truncated: true } : {}),
         });
       }
 

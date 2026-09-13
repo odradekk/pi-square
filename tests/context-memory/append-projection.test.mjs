@@ -252,12 +252,14 @@ try {
 
   // ── Tool set regression: resident tool, no alias, others untouched ──
   assert.ok(requests.length >= 6, `the run produced several provider requests (got ${requests.length})`);
-  const baselineTools = requests[0].toolNames.filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort();
+  const baselineTools = requests[0].toolNames.filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source"
+    && name !== "search_memory_source").sort();
   for (const [index, request] of requests.entries()) {
     assert.ok(request.toolNames.includes("compact_to_memory_block"),
       `the resident compression tool is exposed in request ${index}`);
     assert.ok(!request.toolNames.includes("submit_memory"), "the retired name never appears");
-    const others = request.toolNames.filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort();
+    const others = request.toolNames.filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source"
+      && name !== "search_memory_source").sort();
     assert.deepEqual(others, baselineTools,
       `no other tool is removed or added around the compression (request ${index})`);
   }

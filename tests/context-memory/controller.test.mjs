@@ -219,7 +219,8 @@ try {
   // ── Registration: two decorated parent-only tools, registered once ──
 
   const harness = createHarness();
-  assert.deepEqual([...harness.tools.keys()].sort(), ["compact_to_memory_block", "read_memory_source"]);
+  assert.deepEqual([...harness.tools.keys()].sort(),
+    ["compact_to_memory_block", "read_memory_source", "search_memory_source"]);
   for (const name of OWNED_TOOL_NAMES) {
     const tool = harness.tools.get(name);
     assert.equal(tool.name, name);
@@ -243,7 +244,17 @@ try {
   assert.equal(read.parameters.oneOf, undefined);
   assert.equal(read.parameters.additionalProperties, false);
   assert.deepEqual(read.parameters.required, ["block", "page"]);
-  assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["block", "page"]);
+  assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["block", "page", "view"],
+    "the optional search-view token extends the read schema compatibly (#339)");
+  const search = harness.tools.get("search_memory_source");
+  assert.equal(search.parameters.type, "object");
+  assert.equal(search.parameters.anyOf, undefined);
+  assert.equal(search.parameters.oneOf, undefined);
+  assert.equal(search.parameters.additionalProperties, false);
+  assert.deepEqual(search.parameters.required, ["terms"]);
+  assert.equal(search.parameters.properties.terms.type, "array");
+  assert.equal(search.parameters.properties.terms.minItems, 1);
+  assert.equal(search.parameters.properties.block.type, "integer");
 
   // ── Lifecycle: default-off controller keeps both tools inactive ──
 
@@ -435,7 +446,8 @@ try {
   assert.ok(memoryHarness.activeToolsRef().includes("read_memory_source"),
     "valid non-empty Memory activates read_memory_source");
   assert.deepEqual(
-    memoryHarness.activeToolsRef().filter((name) => name !== "read_memory_source" && name !== "compact_to_memory_block"),
+    memoryHarness.activeToolsRef().filter((name) => name !== "read_memory_source" && name !== "compact_to_memory_block"
+      && name !== "search_memory_source"),
     ["read", "bash"],
     "unrelated active tools keep their order and identity",
   );

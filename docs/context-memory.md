@@ -468,6 +468,36 @@ represents image and binary parts by safe type/MIME/size placeholders. There
 is no cursor, no configurable limit, and no cached read state; the next-page
 hint names the exact follow-up call.
 
+The `search_memory_source` tool shares the reading surface's availability
+and its transcript definition: it accepts 1–8 non-empty literal terms (each
+at most 120 characters, counted as Unicode code points so an astral-plane
+term is bounded by its real character count; whitespace-only refused)
+combined with case-insensitive OR semantics — never regular expressions, fuzzy matching, an
+external service, or an extra model call — plus an optional 1-based `block`
+selector that narrows the scope from all current blocks to one. Matching runs
+over each searched block's complete rendered transcript first — through a
+per-code-point case fold that maps every hit back onto the exact original
+text — and only then maps the hit's UTF-8 byte range onto the same fixed
+16 KiB pages, so a phrase crossing a page boundary stays discoverable and its
+row names both pages. No match is ever manufactured across a block boundary,
+an entry join, an omitted protocol part (an interrupted or answered
+read/search call filtered from the transcript), or a clipped excerpt gap:
+the renderer reports those joins as non-crossable source boundaries, matches
+may not include them, and excerpts stop at them — the joined surviving text
+around an omitted call is never treated as continuous original text. Memory
+summaries, prior read/search result copies, and sibling or abandoned
+branches are never searched. Results are bounded and truthful: at most 12 grouped block/page
+rows render, each with at most 2 verbatim excerpts (clipped ends visibly
+marked, never spanning a source boundary) and an overflow count, and the
+complete response — header, rows, and the footer with its counts and view
+hint — stays under a hard 8 KiB cap; omitted rows are reported, a scan that stops at the 4096-match bound reports an incomplete
+search rather than a zero-hit result, and a complete zero-hit search
+means only that the literal terms did not occur in the searched sources —
+never that a fact is absent. Snippets that already carry the needed evidence
+need no page read; read the indicated page when qualifiers, scope, or
+neighboring context are missing, and try field names or alternative terms
+when a search is unhelpful.
+
 A suffix rebuild merges its covered blocks into one: the merged block's
 source transcript pages over the complete original conversation behind all
 of them, so every replaced block's originals stay checkable after the merge —
@@ -478,9 +508,28 @@ stale position. A `read_memory_source` call and its result stay visible in
 their own run but are excluded from every future Memory source stream, so
 recovered text is never recursively treated as new original evidence.
 
-The two tools' failure modes each report one safe sentence beginning with a
+Every search result carries an opaque source-view token: a one-way digest of
+the current Memory derivation (carrier identity plus the ordered block ends
+and bodies) that exposes no native entry id or session path and is derived on
+demand, never persisted. A read may pass it as the optional `view` argument
+to pin itself to exactly that source view; after an append, rebuild, branch
+change, native compaction, or session change the token no longer matches and
+the read fails with `VIEW_STALE` before any page content is served, so a
+stale search location can never silently read an unrelated page. Ordinary
+direct block/page reads without `view` keep working at all times, and a
+fresh search on the new valid Memory mints the new token. Search call/result
+pairs are retrieval protocol artifacts exactly like reads: visible in their
+own run, excluded from every future Memory source stream, and preserved as
+whole native call/result pairs through later compression and projection.
+Searching itself is observational — it mutates no Memory state, invites no
+compression, satisfies no maintenance source-serving authorization, and
+leaves an unchanged Memory carrier byte-identical — and it introduces no
+index, cursor, cache, sidecar, or lifetime ledger.
+
+Every tool's failure mode reports one safe sentence beginning with a
 stable short code — `MEMORY_NOT_AVAILABLE`, `BLOCK_OUT_OF_RANGE`,
-`PAGE_OUT_OF_RANGE`, `MEMORY_CHANGED`, `COMPACT_NOT_AVAILABLE`,
+`PAGE_OUT_OF_RANGE`, `MEMORY_CHANGED`, `VIEW_STALE`,
+`SEARCH_INVALID_TERMS`, `COMPACT_NOT_AVAILABLE`,
 `COMPACT_NOT_DUE`, `COMPACT_NOT_SOAL_TOOL`, `SOURCE_NOT_SERVED`,
 `BOUND_EXCEEDED`, or `NO_NET_BENEFIT` — and never echo Memory Markdown,
 ranges, or identifiers. A rebuild above half budget that was never served its
@@ -488,10 +537,10 @@ complete original sources (for example at a scale limit) refuses with
 `SOURCE_NOT_SERVED`.
 
 `compact_to_memory_block` is resident while the feature is enabled on a
-supported host; `read_memory_source` is active only while valid non-empty
-Memory exists. Neither ever appears in a child, Shadow, or subagent catalog,
-and pi-square removes and re-adds only these two owned names, preserving
-every other active tool. The retired `submit_memory` name is not registered
+supported host; `read_memory_source` and `search_memory_source` are active
+only while valid non-empty Memory exists. None of them ever appears in a
+child, Shadow, or subagent catalog, and pi-square removes and re-adds only
+these three owned names, preserving every other active tool. The retired `submit_memory` name is not registered
 anywhere; historical calls in existing sessions are recognized as protocol
 history and keep filtering out of provider-bound requests.
 

@@ -68,6 +68,8 @@ const suites = [
   "context-memory/lifecycle.test.mjs",
   "context-memory/format.test.mjs",
   "context-memory/session.test.mjs",
+  "context-memory/source-search.test.mjs",
+  "context-memory/source-search-native.test.mjs",
   "context-memory/maintenance.test.mjs",
   "context-memory/sustained-maintenance.test.mjs",
   "context-memory/suffix-rebuild.test.mjs",

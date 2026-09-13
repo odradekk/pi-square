@@ -581,13 +581,15 @@ try {
     assert.ok(carriers.length <= 1, `no request ever carries more than one carrier (${index})`);
   }
   const baselineTools = requests[0].toolNames
-    .filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort();
+    .filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source"
+      && name !== "search_memory_source").sort();
   for (const [index, request] of requests.entries()) {
     assert.ok(request.toolNames.includes("compact_to_memory_block"),
       `the resident compression tool stays exposed (${index})`);
     assert.ok(!request.toolNames.includes("submit_memory"), "the retired name never appears");
     const others = request.toolNames
-      .filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort();
+      .filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source"
+      && name !== "search_memory_source").sort();
     assert.deepEqual(others, baselineTools, `no other tool changes around any maintenance (${index})`);
   }
 

@@ -128,8 +128,9 @@ try {
     const session = harness(ENABLED_CONFIG, sm);
     const ctx = commandContext(sm);
 
-    assert.deepEqual([...session.tools.keys()].sort(), ["compact_to_memory_block", "read_memory_source"],
-      "the registrar registers exactly the resident compression tool and the reading tool");
+    assert.deepEqual([...session.tools.keys()].sort(),
+      ["compact_to_memory_block", "read_memory_source", "search_memory_source"],
+      "the registrar registers exactly the resident compression, reading, and search tools");
     assert.ok(!session.tools.has("submit_memory"), "the retired submission name has no alias");
 
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);

@@ -207,6 +207,33 @@ evidence appends only the requested page to current work; it does not expand
 the old context prefix. Protocol artifacts and source-read copies are not new
 original evidence for later Memory blocks.
 
+#339 extends the same recovery boundary with bounded literal source search:
+a parent-only `search_memory_source` tool shares the reading surface's
+availability and its transcript and paging definition, matches case-folded
+literal terms (OR, optional block scope, hard input bounds) against each
+block's complete rendered transcript before mapping byte ranges onto the
+fixed pages — so a phrase crossing a page boundary names both pages and no
+match is manufactured across blocks, omitted artifacts, or excerpt gaps —
+and returns grouped block/page rows with verbatim snippets under published
+output bounds that report truncation, omission, and scan incompleteness
+truthfully — the complete response, footer and view hint included, stays
+under the published byte cap, and the term bound counts Unicode code points.
+The renderer reports non-crossable source boundaries — every entry join and
+every join where a protocol part was omitted, interrupted calls included —
+and matches and excerpts may not cross them, so no phrase is manufactured
+over removed content while the reading surface's page contract stays
+byte-identical. Returned locations bind to an opaque digest of the current
+Memory derivation (`sourceViewIdentity`): one-way, session-path-free, and
+derived on demand; `read_memory_source` accepts it as an optional `view`
+argument and rejects a stale token with `VIEW_STALE` before serving any
+page, while direct block/page reads stay unchanged. Search call/result pairs
+receive the identical retrieval-protocol treatment as reads — visible in
+their own run, never new original evidence, pair-safe under later
+compression and projection — and searching is observational: it mutates no
+Memory state, invites no compression, satisfies no source-serving
+authorization, and persists nothing. This extends, and does not reopen,
+the persistence, host, and compression decisions of this record.
+
 ### Pi session entries are the only durable store
 
 Record accepted Memory in versioned Pi custom state entries through the public

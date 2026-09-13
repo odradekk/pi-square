@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   MEMORY_STATE_CUSTOM_TYPE,
@@ -6,7 +7,12 @@ import {
   parseMemorySummary,
   type MemoryStateData,
 } from "./format";
-import { COMPACT_MEMORY_TOOL_NAME, READ_MEMORY_SOURCE_TOOL_NAME, SUBMIT_MEMORY_TOOL_NAME } from "./tools";
+import {
+  COMPACT_MEMORY_TOOL_NAME,
+  READ_MEMORY_SOURCE_TOOL_NAME,
+  SEARCH_MEMORY_SOURCE_TOOL_NAME,
+  SUBMIT_MEMORY_TOOL_NAME,
+} from "./tools";
 
 /**
  * Current-Memory derivation from the live session tree (odradekk/pi-square#215, #217, #319).
@@ -104,14 +110,17 @@ export type CurrentMemory =
 
 /**
  * Context Memory protocol artifacts never participate in source streams (#215,
- * #319): both the retired `submit_memory` name — historical calls in older
- * sessions stay protocol history — and the active `compact_to_memory_block`
- * name, plus `read_memory_source`.
+ * #319, #339): both the retired `submit_memory` name — historical calls in
+ * older sessions stay protocol history — and the active
+ * `compact_to_memory_block` name, plus `read_memory_source` and
+ * `search_memory_source`: reading and search results are recovery views over
+ * originals, never new original evidence themselves.
  */
 export const PROTOCOL_TOOL_NAMES: ReadonlySet<string> = new Set([
   SUBMIT_MEMORY_TOOL_NAME,
   COMPACT_MEMORY_TOOL_NAME,
   READ_MEMORY_SOURCE_TOOL_NAME,
+  SEARCH_MEMORY_SOURCE_TOOL_NAME,
 ]);
 
 /** Whether a tool name belongs to the Context Memory protocol tools. */
@@ -452,4 +461,23 @@ export function deriveCurrentMemory(session: MemorySessionReader): CurrentMemory
     compactionId: compaction.id,
     blocks,
   };
+}
+
+/**
+ * The opaque source-view identity of one valid Memory derivation (#339): a
+ * versioned SHA-256 digest over the carrier identity plus the complete ordered
+ * block list — each block's range end and exact Markdown bytes — so any
+ * accepted append, rebuild, or new baseline changes the token while unchanged
+ * Memory keeps it stable. The digest is one-way: no native entry id, session
+ * path, or Markdown content can be recovered from it, and it is derived on
+ * demand rather than persisted anywhere.
+ */
+export function sourceViewIdentity(memory: ValidMemory): string {
+  const digest = createHash("sha256");
+  digest.update(`v1|${memory.carrier}|${memory.stateEntryId}|${memory.compactionId ?? ""}`);
+  for (const block of memory.blocks) {
+    digest.update(`|${block.endEntryId}|${Buffer.byteLength(block.markdown, "utf8")}|`);
+    digest.update(block.markdown, "utf8");
+  }
+  return `sv1-${digest.digest("hex").slice(0, 24)}`;
 }

@@ -1084,7 +1084,8 @@ async function assertWireContract(kind, run) {
   // ── Every captured wire payload: pairing, tools, no cache fields ──
   assert.ok(requests.length >= 25, `${label}: a substantial wire request sequence (${requests.length})`);
   const baselineTools = wireToolNames(requests[0].body, kind)
-    .filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort();
+    .filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source"
+      && name !== "search_memory_source").sort();
   const branchResults = branchToolResults(branch);
   for (const [index, request] of requests.entries()) {
     const body = request.body;
@@ -1095,7 +1096,8 @@ async function assertWireContract(kind, run) {
     const tools = wireToolNames(body, kind);
     assert.ok(tools.includes("compact_to_memory_block"), `${label}: the resident compression tool stays exposed (${index})`);
     assert.ok(!tools.includes("submit_memory"), `${label}: the retired name never appears (${index})`);
-    assert.deepEqual(tools.filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source").sort(),
+    assert.deepEqual(tools.filter((name) => name !== "compact_to_memory_block" && name !== "read_memory_source"
+      && name !== "search_memory_source").sort(),
       baselineTools, `${label}: no other tool changes around maintenance (${index})`);
     assertCacheMarkers(body, kind, `${label} request ${index}`);
     assertNoAbortedReplay(body, kind, `${label} request ${index}`);

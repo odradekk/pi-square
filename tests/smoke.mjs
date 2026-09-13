@@ -255,12 +255,14 @@ try {
   const allToolsAfterStart = extensionsResult.runtime.getAllTools().map((tool) => tool.name);
   assert.ok(allToolsAfterStart.includes("compact_to_memory_block"), "compact_to_memory_block is registered");
   assert.ok(allToolsAfterStart.includes("read_memory_source"), "read_memory_source is registered");
+  assert.ok(allToolsAfterStart.includes("search_memory_source"), "search_memory_source is registered (#339)");
   assert.ok(!allToolsAfterStart.includes("submit_memory"), "the retired submit_memory name is not registered");
   for (const definition of ["compact_to_memory_block", "read_memory_source"]) {
     assert.equal(typeof session.getToolDefinition(definition)?.renderCall, "function", `${definition} renders calls through pi-square`);
     assert.equal(session.getToolDefinition(definition)?.renderShell, "self", `${definition} owns its display shell`);
   }
-  const inactiveMemoryTools = (name) => name === "compact_to_memory_block" || name === "read_memory_source";
+  const inactiveMemoryTools = (name) => name === "compact_to_memory_block" || name === "read_memory_source"
+    || name === "search_memory_source";
   assert.ok(
     !session.agent.state.tools.some((tool) => inactiveMemoryTools(tool.name)),
     "default-off configuration leaves both Context Memory tools inactive",
