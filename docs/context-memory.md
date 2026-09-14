@@ -138,6 +138,25 @@ the retained working set that includes your current request.
 
 ## The compression cycle
 
+The model-facing guidance distinguishes conversation state from ordinary file
+output: a Memory block should preserve goals, task-relevant exact facts,
+decisions, constraints, uncertainty, and open work. A ban on writing workspace
+files is not, by itself, a ban on retaining those facts in Context Memory;
+explicit restrictions on retention still apply, and secrets must never be
+copied. Known facts must not become unknown merely through summarization, nor
+may the summary invent values or new rules. This is authoring guidance, not
+runtime semantic validation or a guarantee of lossless recall.
+
+For normal maintenance, the tools instruct the model to follow the **current
+maintenance advisory**, not infer permission from tool availability, context
+size, or an older instruction mentioning compression. Without an invitation,
+or after a successful recording, it continues the user task. A
+`SOURCE_NOT_SERVED` refusal directs it to continue the task and wait for a new
+advisory before retrying: reading source pages verifies facts but does not
+authorize compression. These are model usage instructions; registration,
+runtime acceptance conditions, source selection, and budgets are unchanged.
+The fixed persisted Memory wrapper is also unchanged for historical parsing.
+
 Context Memory never wakes the agent, never starts a run of its own, never
 aborts or restarts the current run, and never calls Pi's native `compact()`
 for a normal compression. Every compression happens inside an ordinary
@@ -183,9 +202,10 @@ real-user run, and it takes effect on the next request — not at run end:
    inserted after your message at the same safe position every time. The
    advisory instructs the agent to call `compact_to_memory_block` as the
    **sole tool call of its batch** carrying the new block, then continue the
-   same run and deliver its answer, notes that the covered range is fixed
-   once the advisory appears, and asks the model not to copy credentials,
-   private keys, access tokens, or other secrets into the block. The advisory
+   same run and deliver its answer, preserve exact task facts and uncertainty,
+   and wait for a new invitation before further maintenance; it notes that the
+   covered range is fixed once the advisory appears, and asks the model not to
+   copy credentials, private keys, access tokens, or other secrets into the block. The advisory
    exists only inside due requests: it is never persisted, never accumulates
    (at most one instance per request), and disappears as soon as the
    projection relieves the pressure — ordinary tool work in between never
@@ -242,6 +262,13 @@ real-user run, and it takes effect on the next request — not at run end:
    boundary can never re-enter a request, so such blocks stay in the prefix
    and a v1 compaction-carried baseline above half budget never rebuilds —
    summarizing old summaries is never an option.
+   A completed rebuild is not invited again until the eligible range contains
+   newly replaceable original evidence. Pressure from protected work or fixed
+   prompt overhead alone keeps the full Memory view, rather than repeatedly
+   expanding the same sources. This decision is derived from the current
+   branch, including after reopening; ordinary tool progress can reopen
+   maintenance without another user prompt. The hard-limit safety check still
+   applies when no further compression can help.
 5. **Sources, batches, and the working set.** The runtime — never the model —
    selects the source range. The retained working set is the most recent
    completed ordinary tool batch and everything after it on the branch; the
@@ -254,7 +281,9 @@ real-user run, and it takes effect on the next request — not at run end:
    pi-square's `context` handler. An earlier transform that replaced or removed
    a source invalidates that observation, and the call refuses with
    `SOURCE_NOT_SERVED`. This validates the handler's input, not final model
-   delivery. The compression tool's own batch must be its sole call;
+   delivery. Its feedback explicitly says to continue the task, wait for a new
+   advisory, and not use `read_memory_source` as a way to authorize a retry.
+   The compression tool's own batch must be its sole call;
    a mixed batch is refused and the sibling tools' real results are preserved
    untouched. The latest user instruction is protected: if it falls inside a
    covered range it is recorded as a retained exception, stays raw in every
@@ -274,7 +303,10 @@ real-user run, and it takes effect on the next request — not at run end:
    replacement set (an append onto existing Memory adds only the new block's
    part; the unchanged prefix is never charged again; a rebuild never books a
    retained exception as savings — instructions that stay raw in every
-   request are not savings);
+   request are not savings). A rebuild must shrink both the pending request
+   with its expanded originals and the existing normal Memory projection;
+   the reported estimate is the smaller reduction. Sources already replaced
+   by Memory cannot be booked again as fresh savings;
    an attempt with no provable source, no capacity, or no positive savings is
    refused with one bounded short-coded message — the covered source total is
    never mistaken for savings. A refusal counts against the pending
@@ -728,7 +760,7 @@ deterministic evidence, both without timer-based coordination:
   messages by hand. Reports contain every assistant response's Pi-normalized
   usage and compute the same hit rate as Pi's footer:
   `cacheRead / (input + cacheRead + cacheWrite)`; the warm aggregate excludes
-  only the first cold request. The bounded experiment disables native
+  only the first request, which is not necessarily cold. The bounded experiment disables native
   auto-compaction so multiple Context Memory recordings occur without an
   oversized paid run. Integrity requires the real tool loop, multiple
   recorded state entries, and a final Memory carrying multiple blocks. This
@@ -821,9 +853,13 @@ unrelated pi-square extensions so two agent directories can never race through
 process-global discovery; the production registrar, controller, tools, system
 prompt contribution, and terminal `context` transform remain unchanged. Pi owns
 message history, tool execution, provider conversion, usage, and compaction.
-The session journal is native but in-memory; this suite does not qualify
-on-disk resume or unrelated extension composition. Offline tests replace only
-the provider boundary of this explicitly scoped pipeline. There is no
+Each real run persists its native session journal in its isolated temporary
+directory. The replay measurement reopens that journal and re-derives the
+selected branch's Memory; parsing a qualification artifact JSON is not native
+session replay. Existing #341 report artifacts cannot acquire `nativeReplay`
+evidence after the fact. This suite does not qualify unrelated extension
+composition. Offline tests replace only the provider boundary of this
+explicitly scoped pipeline. There is no
 hand-built wire payload, fake read/bash, injected summary, fixed token usage,
 or forced single tool continuation. A deterministic two-cell test holds two
 real `AgentSession` requests concurrently at that boundary and verifies their
@@ -881,18 +917,23 @@ per-phase wall-clock latency. Main-model and recovery A/B pairs include
 directional nullable differences for cache, retrieval, evidence, append, and
 rebuild measures as well as input and elapsed time. The normal report contains hashes and counts,
 never source text, snippets, native IDs, session bodies, or credentials; the
-existing owner-only evidence artifact retains bounded review material. Pi
+existing owner-only evidence artifact retains bounded review material. Its
+closed diagnostics carry only kind, code, hash, and repository-local frames,
+never arbitrary error bodies. Pi
 0.84.2 normalizes absent raw provider cache fields to zero and exposes no raw
 presence flag at this public session seam, so zero-only cache fields are
 reported as unknown; positive cache values remain reported. Missing provider
 usage or cache values stay missing rather than becoming zero, and
 returned bytes are not billed tokens. Missing coverage is
 **inconclusive**, not evidence of memory failure. After a real matrix,
-`npm run qualify:replay-check` records one bounded local-resource artifact —
-replay time and heap cost of re-reading the retained evidence and the
-persisted-write footprint of the attempt's report set — distinguishing the
-model-context reduction the feature measures from the qualification's own
-local log growth.
+`npm run qualify:replay-check` summarizes the bounded `nativeReplay` measurements
+recorded during each run, before its temporary journal is removed: replay and
+Memory-derivation time, heap change, and final journal bytes. The run report
+also records journal bytes at seed, peak, and final state, and appended bytes.
+Replay compares the full JSON-persisted branch and derived Memory in memory; the public
+report retains only hashes and equivalence results, the journal-content check,
+and whether the directory's file-name list stayed unchanged. Artifact-JSON
+parsing and the qualification report's own storage remain separate measurements.
 
 The oracle validates exact JSON fields, primitive types, unknown values,
 superseded decisions, and the complete unique 24-cell matrix. It does not use

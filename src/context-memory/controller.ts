@@ -360,14 +360,22 @@ function memoryCarrierMessage(blocks: readonly { readonly markdown: string }[], 
  * after the acknowledgement.
  */
 const ADVISORY_CONTINUATION_SENTENCE =
-  "After the acknowledgement, continue the same run and deliver your answer to the user.";
+  "After the acknowledgement, continue the same run and deliver your answer to the user; wait for a new maintenance advisory before compacting again.";
+
+const MEMORY_AUTHORING_GUIDANCE =
+  "Preserve goals, task-relevant exact facts (names, identifiers, numbers), decisions, constraints, uncertainty, and open work; keep known facts known and unknowns unknown, and do not invent rules or values. "
+  + "Memory is conversation state, not a workspace file; a restriction on ordinary file output does not itself prohibit retaining facts here, but explicit restrictions on retention still apply.";
+
+const SOURCE_NOT_SERVED_NEXT_STEP =
+  "; continue the task and wait for a new Context Memory maintenance advisory before retrying; read_memory_source does not authorize compression";
 
 /** The fixed due advisory body (#319: resident tool, source scope; #320: fixed range). */
 const DUE_ADVISORY_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
-  `Call compact_to_memory_block as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from the older conversation it covers — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
-  "The next request after the acknowledgement will carry that block in place of the covered older conversation; your current request and everything you do for it stay uncompressed.",
+  `Call compact_to_memory_block as the sole tool call of its batch, carrying one concise Markdown Memory block from the covered older conversation. ${ADVISORY_CONTINUATION_SENTENCE}`,
+  MEMORY_AUTHORING_GUIDANCE,
+  "The next request after the acknowledgement will carry that block in place of the covered older conversation; content outside this recording's range stays uncompressed by it.",
   "The covered range is fixed once this advisory appears: work you finish afterwards stays uncompressed until the next maintenance request.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
@@ -382,8 +390,9 @@ const DUE_ADVISORY_REBUILD_TEXT = [
   "Context Memory: compression is due for this conversation.",
   "",
   "Rendered Memory is above half its budget, so this maintenance rebuilds the newest Memory suffix. The complete original conversation behind the replaced blocks is present again in this request, in order, ahead of your current work, and their summaries are gone.",
-  `Call compact_to_memory_block as the sole tool call of its batch, carrying one concise Markdown Memory block that preserves what matters from that complete original conversation — goals, decisions, and open work. ${ADVISORY_CONTINUATION_SENTENCE}`,
-  "The next request after the acknowledgement will carry the rebuilt block — and every older block unchanged — in place of the covered original conversation; your current request and everything you do for it stay uncompressed.",
+  `Call compact_to_memory_block as the sole tool call of its batch, carrying one concise Markdown Memory block from that complete original conversation, not from old summaries or source-read copies. ${ADVISORY_CONTINUATION_SENTENCE}`,
+  MEMORY_AUTHORING_GUIDANCE,
+  "The next request after the acknowledgement will carry the rebuilt block — and every older block unchanged — in place of the covered original conversation; content outside this recording's range stays uncompressed by it.",
   "The covered range is fixed once this advisory appears: work you finish afterwards stays uncompressed until the next maintenance request.",
   "Do not copy credential values, private keys, access tokens, or other secrets into the Memory block.",
 ].join("\n");
@@ -944,25 +953,40 @@ function rebuildRetainedEntryIds(
 
 /**
  * Deterministic projected net request savings of one rebuild (#321), measured
- * against the served pending request the model actually saw: the evicted
- * source tokens minus the carrier delta from the prefix-only carrier the
- * served request carried to the rebuilt carrier — the suffix summaries were
- * already absent during the pending request and are never charged again.
+ * against both the served pending request and the existing normal Memory
+ * projection. Expanding old sources for maintenance is not new savings:
+ * already-replaced sources contribute only to the serving comparison.
  */
 function netRebuildSavings(
   evictable: readonly SessionEntry[],
   prefixMarkdowns: readonly string[],
   markdown: string,
+  replacedBlocks: readonly DerivedMemoryBlock[],
 ): number {
   const carrierDelta = renderedMemoryTokens([...prefixMarkdowns, markdown])
     - renderedMemoryTokens(prefixMarkdowns);
   let savings = -carrierDelta;
+  const alreadyReplaced = replacementEntryIdsOf(replacedBlocks);
+  const nextReplaced = new Set(evictable.map((entry) => entry.id));
+  let progress = renderedMemoryTokens([...prefixMarkdowns, ...replacedBlocks.map((block) => block.markdown)])
+    - renderedMemoryTokens([...prefixMarkdowns, markdown]);
   for (const entry of evictable) {
     for (const message of sessionEntryToContextMessages(entry)) {
-      savings += estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+      const tokens = estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+      savings += tokens;
+      if (!alreadyReplaced.has(entry.id)) progress += tokens;
     }
   }
-  return savings;
+  // A newly protected entry may return raw; that is a cost, not progress.
+  for (const block of replacedBlocks) {
+    for (const entry of block.sourceEntries) {
+      if (!alreadyReplaced.has(entry.id) || nextReplaced.has(entry.id)) continue;
+      for (const message of sessionEntryToContextMessages(entry)) {
+        progress -= estimateFilteredMessageTokens(message as { role?: unknown; content?: unknown; toolName?: unknown });
+      }
+    }
+  }
+  return Math.min(savings, progress);
 }
 
 export class ContextMemoryController {
@@ -1507,7 +1531,7 @@ export class ContextMemoryController {
       || observed.leafId === null
       || !branch.some((entry) => entry.id === observed.leafId)
       || evictable.some((entry) => !observed.entryIds.has(entry.id))) {
-      fail("SOURCE_NOT_SERVED", "the covered conversation was not observed in its native form by the Context Memory context handler");
+      fail("SOURCE_NOT_SERVED", `the covered conversation was not observed in its native form by the Context Memory context handler${SOURCE_NOT_SERVED_NEXT_STEP}`);
     }
     const savings = netAppendSavings(evictable, current, markdown);
     if (savings <= 0) {
@@ -1540,7 +1564,7 @@ export class ContextMemoryController {
     const markdowns = current.blocks.map((block) => block.markdown);
     const planned = planRebuild(branch, current.blocks, halfBudget);
     if (planned.kind === "none") {
-      fail("SOURCE_NOT_SERVED", "the Memory suffix's complete original sources cannot be served on this branch; compression stays available again below half the Memory budget");
+      fail("SOURCE_NOT_SERVED", `the Memory suffix's complete original sources cannot be served on this branch${SOURCE_NOT_SERVED_NEXT_STEP}`);
     }
     if (planned.kind === "unresolved") {
       fail("MEMORY_CHANGED", "the existing Memory blocks no longer resolve on the current branch");
@@ -1572,7 +1596,7 @@ export class ContextMemoryController {
         || served.memoryVersion !== memoryVersion
         || served.prefixEndEntryId !== prefixEndEntryId
         || served.sourceEndEntryId !== branch[live.sourceEndPosition]!.id) {
-        fail("SOURCE_NOT_SERVED", "the complete original sources for this rebuild were not served in their native form by the Context Memory context handler");
+        fail("SOURCE_NOT_SERVED", `the complete original sources for this rebuild were not served in their native form by the Context Memory context handler${SOURCE_NOT_SERVED_NEXT_STEP}`);
       }
       source = live;
       this.maintenance = {
@@ -1625,17 +1649,13 @@ export class ContextMemoryController {
       || observed.leafId === null
       || !branch.some((entry) => entry.id === observed.leafId)
       || observable.some((entry) => !observed.entryIds.has(entry.id))) {
-      fail("SOURCE_NOT_SERVED", "the covered conversation was not observed in its native form by the Context Memory context handler");
+      fail("SOURCE_NOT_SERVED", `the covered conversation was not observed in its native form by the Context Memory context handler${SOURCE_NOT_SERVED_NEXT_STEP}`);
     }
-    // Net benefit is measured against the served pending request the model
-    // actually saw and against the replacement set that actually evicts: the
-    // recorded retained union — including the replaced blocks' protected
-    // instructions — stays raw in every request and never counts as savings,
-    // while the suffix summaries were already absent during the pending
-    // request, so only the carrier delta from the prefix-only carrier is
-    // charged (#321).
+    // Both the pending serving and the normal Memory view must shrink.
+    // Retained exceptions stay raw and already-covered originals cannot be
+    // counted again merely because maintenance temporarily expanded them.
     const evictable = evictableEntries(branch, prefixEndPosition, source, retainedEntryIds);
-    const savings = netRebuildSavings(evictable, markdowns.slice(0, prefixCount), markdown);
+    const savings = netRebuildSavings(evictable, markdowns.slice(0, prefixCount), markdown, current.blocks.slice(prefixCount));
     if (savings <= 0) {
       fail("NO_NET_BENEFIT", "the Memory block would not reduce the next model request; wait for more eligible conversation or a changed source");
     }
@@ -1795,7 +1815,13 @@ export class ContextMemoryController {
     const observable = evictableEntries(branch, prefixEndPosition, source);
     if (observable.some((entry) => !observed.entryIds.has(entry.id))) return clear();
     const evictable = evictableEntries(branch, prefixEndPosition, source, retainedEntryIds);
-    if (netRebuildSavings(evictable, markdowns.slice(0, prefixCount), MINIMAL_BLOCK_BODY) <= 0) return clear();
+    // Reopening the same covered originals cannot relieve pressure from
+    // retained work or fixed prompt overhead. Keep the complete Memory view
+    // until ordinary progress adds replaceable evidence; deriving this from
+    // the branch also prevents a restart from repeating completed maintenance.
+    const alreadyReplaced = replacementEntryIdsOf(current.blocks);
+    if (!evictable.some((entry) => !alreadyReplaced.has(entry.id))) return clear();
+    if (netRebuildSavings(evictable, markdowns.slice(0, prefixCount), MINIMAL_BLOCK_BODY, current.blocks.slice(prefixCount)) <= 0) return clear();
     // This very request must serve the complete sources it invites: the
     // prefix carrier plus the suffix's originals, raw and in order. If the
     // serving projection cannot be constructed, no request is pinned — an

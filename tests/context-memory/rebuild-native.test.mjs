@@ -400,7 +400,15 @@ try {
 
   // First pending phase: the suffix's complete originals raw, its summary
   // nowhere, the prefix-only carrier byte-exact, one advisory.
-  const pendingOne = requests.slice(secondAppendAt, firstRebuildAt);
+  // Crossing half the Memory budget does not itself create fresh evidence:
+  // the append-result continuation must expose both complete recorded blocks
+  // before ordinary tool growth can reopen maintenance over this suffix.
+  const afterSecondAppend = requestText(requests[secondAppendAt].messages);
+  assert.ok(!afterSecondAppend.includes(REBUILD_ADVISORY_NEEDLE),
+    "an accepted append above half budget must not immediately reopen its covered sources");
+  assert.ok(afterSecondAppend.includes(MEMORY_MARKDOWN_ONE) && afterSecondAppend.includes(MEMORY_MARKDOWN_TWO),
+    "both complete recorded blocks reach the append-result continuation");
+  const pendingOne = requests.slice(secondAppendAt + 1, firstRebuildAt);
   assert.ok(pendingOne.length >= 4, `the first rebuild submission is deferred across ordinary requests (${pendingOne.length})`);
   for (const [offset, request] of pendingOne.entries()) {
     const text = requestText(request.messages);
@@ -422,6 +430,9 @@ try {
     .flatMap((request) => request.messages.filter((m) => messageText(m).includes(REBUILD_ADVISORY_NEEDLE)).map(messageText));
   assert.ok(advisoryTexts.length > 0 && advisoryTexts.every((text) => text === advisoryTexts[0]),
     "the rebuild advisory content stays fixed across the pending requests");
+  assert.match(advisoryTexts[0], /exact.*(?:facts|values)/i, "native rebuild requests carry exact-fact preservation guidance");
+  assert.match(advisoryTexts[0], /unknown.*unknown/i);
+  assert.match(advisoryTexts[0], /conversation state.*workspace file/i);
 
   // The first rebuild's acceptance applies at the very next request.
   const appliedOne = requests[firstRebuildAt + 1];
@@ -435,6 +446,16 @@ try {
   assert.ok(appliedOneText.includes(PLANNING_MARKER), "the protected task instruction stays raw");
   assert.ok(appliedOneText.includes(FACT_ONE) && appliedOneText.includes(FACT_THREE),
     "both tail facts of the applied carrier reach the provider");
+  // The compact result adds no original evidence. Even though the protected
+  // task, system prompt, and resident tools still leave this normal request
+  // above the maintenance threshold, it must carry the completed Memory
+  // exactly once rather than serve the same originals and invite the same
+  // rebuild again. Later ordinary read growth below proves maintenance can
+  // re-open without another user prompt.
+  assert.ok(estimateTokens(appliedOne.messages) > COMPRESSION_THRESHOLD_TOKENS,
+    "the post-rebuild normal projection remains above the maintenance threshold");
+  assert.ok(!appliedOneText.includes(REBUILD_ADVISORY_NEEDLE),
+    "an unchanged protected workload does not immediately re-invite the accepted rebuild");
   const appliedOneCarriers = appliedOne.messages.filter((m) => messageText(m).includes(MEMORY_SUMMARY_WRAPPER));
   assert.equal(appliedOneCarriers.length, 1, "no duplicate carrier after the rebuild");
   const appliedOneParts = appliedOneCarriers[0].content.filter((p) => p?.type === "text").map((p) => p.text);
@@ -468,7 +489,7 @@ try {
 
   // Second pending phase inside the same run: the third block's originals
   // return raw while its summary is absent and the kept prefix stays carried.
-  const pendingTwo = requests.slice(thirdAppendAt, secondRebuildAt);
+  const pendingTwo = requests.slice(thirdAppendAt + 1, secondRebuildAt);
   assert.ok(pendingTwo.length >= 3, `the second rebuild is deferred across ordinary requests (${pendingTwo.length})`);
   for (const [offset, request] of pendingTwo.entries()) {
     const text = requestText(request.messages);
@@ -521,7 +542,7 @@ try {
 
   // Follow-up run: the third rebuild's sources cross the protected
   // instruction until the next submission.
-  const pendingThree = requests.slice(fourthAppendAt, thirdRebuildAt)
+  const pendingThree = requests.slice(fourthAppendAt + 1, thirdRebuildAt)
     .filter((request) => requestText(request.messages).includes(FOLLOWUP_MARKER));
   assert.ok(pendingThree.length >= 3, `the third rebuild is deferred across the follow-up requests (${pendingThree.length})`);
   for (const [offset, request] of pendingThree.entries()) {

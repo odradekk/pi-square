@@ -39,7 +39,9 @@ task's final answer, plus a follow-up user instruction crossing a third
 rebuild's covered range and post-completion source recovery, observed at the
 provider request exit. Rebuild net benefit is measured against the final
 replacement set — retained exceptions that stay raw in every request never
-count as savings. #322 adds the interruption and native-branch
+count as savings. It must also improve on the existing normal Memory view:
+temporarily expanding previously covered originals does not make their
+compression fresh progress. #322 adds the interruption and native-branch
 lifecycle matrix on the same seam:
 event-coordinated cancellations before and after the write, restart recovery
 with byte-identical carriers, replacement sets, and source pages, fork,
@@ -133,6 +135,27 @@ source range. Check pressure before ordinary requests and carry any due
 maintenance instruction with the next user/tool continuation. Do not start
 an autonomous turn, background summarizer, or separate model request.
 
+The model-facing contract must make that division understandable: tool
+availability is not a maintenance invitation. Follow the current advisory,
+continue the user task after recording, and after `SOURCE_NOT_SERVED` wait for
+a new invitation rather than reading pages to retry compression. Source
+recovery verifies history but never grants rebuild authority. This guidance
+does not introduce a new runtime advisory-presence gate or alter the existing
+source, budget, and net-benefit checks.
+
+Authoring guidance explicitly preserves goals, task-relevant exact facts,
+decisions, constraints, uncertainty, and open work without inventing values
+or rules. Memory is conversation state, not an ordinary workspace file;
+file-output restrictions do not automatically prohibit retaining facts in
+Memory, while explicit retention restrictions and the prohibition on secrets
+still apply. The fixed persisted wrapper stays byte-identical for historical
+parsing. Continuity fixture instructions use the same distinction, limit
+no-recap to ordinary user-facing replies, and refer to a separate current
+advisory rather than quoting its trigger in a user prompt. Oracle facts,
+placement, scoring, and required compression coverage stay unchanged. Prompt
+clarification is not evidence of improved recall or liveness: real-model and
+cache requalification remain required for the changed revision before release.
+
 An unfinished maintenance request keeps the same instruction and complete
 required sources in subsequent projections. It does not append a new message
 to durable history on each request. Bind it to the source view observed at
@@ -146,6 +169,15 @@ model request, after the current tool batch has completed. Then clear the
 maintenance request, recompute pressure, and allow further compressions in the
 same user task. Normal compression neither waits for `agent_settled` nor uses
 abort/restart or native `compact()` to simulate immediate application.
+
+Completed rebuilds are not automatically reopened without newly replaceable
+original evidence. Derive this from the current branch's replacement set, not
+a cooldown or a new persisted counter, so reopening cannot restart an
+unchanged maintenance loop. Protected work and fixed prompt overhead may keep
+pressure high; they do not authorize repeatedly expanding the same sources.
+The normal Memory projection stays complete and the existing hard-limit
+arbitration remains authoritative. A candidate rebuild must reduce both the
+pending serving and the normal Memory view; report the smaller estimate.
 
 ### Source-backed blocks and a protected working set
 
@@ -421,6 +453,13 @@ real AgentSessions simultaneously at the provider boundary. Pair reports carry
 nullable directional differences for cache, retrieval, append, and rebuild
 measures; Pi-normalized cache zeroes remain unknown because the public 0.84.2
 session seam cannot distinguish a raw omitted field from a reported zero.
+The long-log replay acceptance remains a native-session measurement: parsing a
+qualification artifact JSON is not replay. A future real run records
+`nativeReplay` only from reopening its persisted native journal and deriving
+the selected branch's Memory; existing #341 report artifacts cannot acquire
+that evidence after the fact. Qualification diagnostics remain closed metadata
+— kind, code, hash, and repository-local frames — rather than arbitrary error
+bodies. This leaves the existing private #340 human-review material unchanged.
 Report token-weighted positive cache reads, input volume, request latency where
 available, compression boundaries, actual coverage, and task outcomes; missing
 coverage is inconclusive. No LLM judge, synthetic cache counterfactual, favorable

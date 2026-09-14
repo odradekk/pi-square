@@ -393,9 +393,12 @@ try {
     assert.equal(snapshot.scaleLimit, true, "/context reports the honest scale limit");
     assert.equal(snapshot.maintenance, undefined, "nothing is pinned at the scale limit");
     await noteBatch(session, smallCtx, [compactCallPart("sl:1")]);
-    assert.match(await refusalMessage(session, smallCtx, "sl:1", "# Scale attempt"),
+    const notServed = await refusalMessage(session, smallCtx, "sl:1", "# Scale attempt");
+    assert.match(notServed,
       /^SOURCE_NOT_SERVED: /,
       "an un-served request never authorizes a rebuild");
+    assert.match(notServed, /continue.*task.*new.*advisory/i, "a source refusal gives a task-preserving next step");
+    assert.match(notServed, /read_memory_source does not authorize/i, "reading pages is not a recovery loop for source authorization");
     assert.equal(stateEntriesOf(sm).length, 1, "nothing is truncated, paged, or deleted to force a fit");
 
     // A larger window recovers the maintenance path on the very next request.
@@ -504,6 +507,71 @@ try {
     assert.ok(typeof savingsShort === "number" && savingsShort > 0);
     assert.equal(savingsLong, savingsShort,
       "a retained instruction's size never changes the reported savings");
+  }
+
+  // Recording must end maintenance when no new replaceable evidence exists,
+  // even if protected work keeps the request above the pressure threshold.
+  {
+    const seed = (growth) => {
+      const sm = SessionManager.inMemory("/project");
+      const user = sm.appendMessage({ role: "user", content: "task", timestamp: 1 });
+      const a = appendReadRound(sm, "np:1", "a.txt", "A".repeat(1000), 2);
+      const b = appendReadRound(sm, "np:2", "b.txt", "B".repeat(2000), 4);
+      const prefix = "# Prefix\n" + "one".repeat(60);
+      const suffix = "# Suffix\n" + "two".repeat(160);
+      sm.appendCustomEntry(MEMORY_STATE_CUSTOM_TYPE, {
+        format: MEMORY_STATE_FORMAT_TAG,
+        blocks: [
+          { endEntryId: a, markdown: prefix, retainedEntryIds: [user] },
+          { endEntryId: b, markdown: suffix, retainedEntryIds: [] },
+        ],
+      });
+      appendReadRound(sm, "np:3", "c.txt", growth, 6);
+      sm.appendMessage({ role: "user", content: "protected task " + "Z".repeat(4000), timestamp: 8 });
+      appendReadRound(sm, "np:4", "d.txt", "working set", 9);
+      return { sm, suffix };
+    };
+    const { sm, suffix } = seed("C".repeat(1000));
+    const session = harness(CONFIG, sm);
+    const ctx = commandContext(sm);
+    await session.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    assert.ok(requestText(await serveContext(session, sm, ctx)).includes(REBUILD_ADVISORY_NEEDLE));
+    const parts = [compactCallPart("np:compact", suffix)];
+    sm.appendMessage(assistantWith(parts, 20));
+    await noteBatch(session, ctx, parts);
+    const accepted = await compactTool(session).execute("np:compact", { markdown: suffix }, undefined, undefined, ctx);
+    assert.equal(accepted.details.recorded, true);
+    sm.appendMessage(toolResult("np:compact", "compact_to_memory_block", RECORDED_SENTENCE, 21));
+    const recorded = stateEntriesOf(sm).length;
+    for (let i = 0; i < 4; i++) {
+      const view = await serveContext(session, sm, ctx);
+      assert.ok(!requestText(view).includes(REBUILD_ADVISORY_NEEDLE), "unchanged coverage must not re-open rebuild");
+      assert.ok(carrierMessages(view).some((message) => messageText(message).includes(suffix)),
+        "the complete accepted Memory reaches the next request while pressure stays high");
+      await noteBatch(session, ctx, [compactCallPart(`np:duplicate:${i}`, suffix)]);
+      assert.match(await refusalMessage(session, ctx, `np:duplicate:${i}`, suffix), /^SOURCE_NOT_SERVED: /);
+    }
+    assert.equal(stateEntriesOf(sm).length, recorded, "duplicate attempts do not append state entries");
+    // A restart derives the same no-growth decision, with no in-memory cooldown.
+    const restarted = harness(CONFIG, sm);
+    await restarted.emit("session_start", { type: "session_start", reason: "resume" }, ctx);
+    assert.ok(!requestText(await serveContext(restarted, sm, ctx)).includes(REBUILD_ADVISORY_NEEDLE));
+    appendReadRound(sm, "np:5", "e.txt", "new ordinary work", 30);
+    assert.ok(requestText(await serveContext(restarted, sm, ctx)).includes(REBUILD_ADVISORY_NEEDLE),
+      "ordinary tool progress reopens maintenance without a new user prompt");
+
+    // Savings against temporarily expanded originals cannot authorize an
+    // increase over the already compressed, normal Memory projection.
+    const small = seed("tiny new evidence");
+    const smallSession = harness(CONFIG, small.sm);
+    const smallCtx = commandContext(small.sm);
+    await smallSession.emit("session_start", { type: "session_start", reason: "resume" }, smallCtx);
+    assert.ok(requestText(await serveContext(smallSession, small.sm, smallCtx)).includes(REBUILD_ADVISORY_NEEDLE));
+    const larger = small.suffix + "W".repeat(320);
+    await noteBatch(smallSession, smallCtx, [compactCallPart("np:larger", larger)]);
+    assert.match(await refusalMessage(smallSession, smallCtx, "np:larger", larger), /^NO_NET_BENEFIT: /,
+      "old sources already replaced by Memory cannot be counted again as new savings");
+    assert.equal(stateEntriesOf(small.sm).length, 1);
   }
 
   console.log("context-memory suffix rebuild tests: OK");

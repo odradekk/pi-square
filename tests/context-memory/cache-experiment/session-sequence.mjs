@@ -342,6 +342,6 @@ export function renderPiSessionMatrix(report) {
     const model = `${row.provider}/${row.model}`.slice(0, 34).padEnd(34);
     lines.push(`${model} ${percent(row.allHitRate).padEnd(10)} ${percent(row.warmHitRate).padEnd(10)} ${String(row.requests).padEnd(9)} ${String(row.memoryStateEntries).padEnd(13)} ${String(row.maximumMemoryBlocks).padEnd(7)} ${row.integrityOk ? "ok" : "FAILED"}`);
   }
-  lines.push("rate = cacheRead / (input + cacheRead + cacheWrite); warm excludes only the first cold request");
+  lines.push("rate = cacheRead / (input + cacheRead + cacheWrite); warm excludes only the first request, which is not necessarily cold");
   return lines.join("\n");
 }
