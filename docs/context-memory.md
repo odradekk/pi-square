@@ -27,7 +27,14 @@ fallback, and the hard stop with the public abort signal — is implemented
 and verified at the same transport boundary (#324). Historical #325 evidence
 uses the retired asymmetric 16-cell report schema. Its reader remains available
 only to identify that evidence as historical; it is never regraded as the
-current symmetric 24-cell qualification. #340 prepares the current instrument,
+current symmetric 24-cell qualification. Version 3's symmetric reports also
+remain historical: they recorded requested thinking without verifying Pi's
+effective setting. Current continuity/evidence reports use version 4 and
+recovery-comparison reports use version 2; old attempts are never relabeled.
+The reader accepts incomplete current reports for diagnosis, but only marks
+them as current qualification evidence when all 24 expected cells record an
+actual session thinking setting consistent with their model's verified pins.
+#340 prepares the symmetric instrument,
 and the maintainer-owned #341 run remains required before any current evidence
 or release conclusion exists. The human rubric review and final release verdict
 remain open in #227.
@@ -522,10 +529,13 @@ complete response — header, rows, and the footer with its counts and view
 hint — stays under a hard 8 KiB cap; omitted rows are reported, a scan that stops at the 4096-match bound reports an incomplete
 search rather than a zero-hit result, and a complete zero-hit search
 means only that the literal terms did not occur in the searched sources —
-never that a fact is absent. Snippets that already carry the needed evidence
+never that a fact is absent. A completed scan does not mean its bounded
+excerpts show every matched value or qualifier. Snippets that already carry the needed evidence
 need no page read; read the indicated page when qualifiers, scope, or
 neighboring context are missing, and try field names or alternative terms
-when a search is unhelpful.
+when a search is unhelpful. When the task requests original-source verification,
+verify that evidence even if the Memory summary already contains the answer;
+an assistant's copy of a fact is not a substitute for its original source.
 
 A suffix rebuild merges its covered blocks into one: the merged block's
 source transcript pages over the complete original conversation behind all
@@ -760,7 +770,11 @@ deterministic evidence, both without timer-based coordination:
   messages by hand. Reports contain every assistant response's Pi-normalized
   usage and compute the same hit rate as Pi's footer:
   `cacheRead / (input + cacheRead + cacheWrite)`; the warm aggregate excludes
-  only the first request, which is not necessarily cold. The bounded experiment disables native
+  only the first request, which is not necessarily cold. These are normalized
+  ratios, not exact raw-provider cache rates: normalized zero cannot distinguish
+  an explicitly reported zero from an absent cache field. Version 3 cache
+  reports label that basis and include verified thinking settings.
+  The bounded experiment disables native
   auto-compaction so multiple Context Memory recordings occur without an
   oversized paid run. Integrity requires the real tool loop, multiple
   recorded state entries, and a final Memory carrying multiple blocks. This
@@ -846,6 +860,17 @@ authentication resolve through Pi's configured runtime. The scenarios cover
 exact work facts, revised constraints, an abandoned sibling branch, and
 original-source recovery.
 
+Both continuity modes and the cache matrix request thinking `off`. Before
+starting any model queue, every model must support that exact level: Pi's
+automatic adjustment (for example, `off` to `low` when `thinkingLevelMap.off`
+is null) rejects the experiment configuration instead of silently running it.
+After session creation, the driver also checks Pi's actual session setting
+before prompting. Reports pin requested/effective levels, supported levels,
+a hash of the provider-specific thinking map, and the observed session level.
+This does not guarantee an upstream provider obeys the request. Selecting a
+different comparison setting requires an explicit experiment revision and new
+evidence; changing the report label cannot repair an old attempt.
+
 The driver registers the production Context Memory registrar into real Pi
 `AgentSession`s through explicit per-cell loader, settings, and agent-directory
 dependencies, then calls public `prompt()` and tree-navigation APIs. It omits
@@ -912,7 +937,7 @@ and post-handoff observations do not qualify.
 Each run also reports bounded measurements — the request gap between every
 recording and its application, per-request usage rows, net input change
 across applications, peak prompt tokens, refused-compression counts by short
-code, retrieval search/read/page counts and returned evidence bytes, and
+code, retrieval search/read/page and failed-call counts and returned evidence bytes, and
 per-phase wall-clock latency. Main-model and recovery A/B pairs include
 directional nullable differences for cache, retrieval, evidence, append, and
 rebuild measures as well as input and elapsed time. The normal report contains hashes and counts,
@@ -934,6 +959,18 @@ Replay compares the full JSON-persisted branch and derived Memory in memory; the
 report retains only hashes and equivalence results, the journal-content check,
 and whether the directory's file-name list stayed unchanged. Artifact-JSON
 parsing and the qualification report's own storage remain separate measurements.
+
+The raw-source isolation check still includes thinking even though private
+artifacts omit thinking bodies. It records whether the final context was
+observed and a bounded first-match diagnostic (detector, message index when
+locatable, part type, structural field), without the matched value or body.
+A successful search that lacks required original evidence reports that gap;
+an earlier failed call remains counted separately. `peakPromptTokens` and
+`netInputChange` use only Pi's native input field, excluding cache read/write;
+they do not measure the full input context or billed cost. The standalone
+replay CLI also accepts `--report-dir <directory>` for explicitly selected
+local artifacts and shares native replay code without importing its own CLI
+through the session runner.
 
 The oracle validates exact JSON fields, primitive types, unknown values,
 superseded decisions, and the complete unique 24-cell matrix. It does not use

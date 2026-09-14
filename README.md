@@ -625,7 +625,11 @@ Real-model continuity qualification is a separate, credentialed command:
 native Pi sessions with two concurrently started model queues: Sonnet 5 and
 GLM 5.3 each run the same four scenarios at early, middle, and late placement
 (24 cells and 12 corresponding pairs), while cases and requests stay sequential
-inside each model queue. Every run is
+inside each model queue. Continuity and cache runs verify that every model
+supports the requested thinking `off` and that Pi's session preserves it;
+an automatic adjustment to another level stops the experiment before its
+model queues start. Reports record both requested and effective settings.
+Every run is
 seeded with fixture-authored Memory at exactly half the budget so the required
 schedule — at least one append and two suffix rebuilds — is fixture-owned. A
 single final handoff file is scored after verified compression coverage;

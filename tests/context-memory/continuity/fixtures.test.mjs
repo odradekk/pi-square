@@ -14,15 +14,23 @@ for (const scenario of SCENARIOS) {
     assert.match(script.introPrompt, /Context Memory is conversation state[\s\S]*preserve the non-secret brief facts in Memory/);
     assert.match(script.introPrompt, /do not write these facts to ordinary workspace files.*before the explicit final handoff/);
     assert.match(script.finalPrompt, /separate current Context Memory maintenance advisory explicitly requests compaction/);
-    assert.match(script.finalPrompt, /do not initiate or retry compression[\s\S]*SOURCE_NOT_SERVED[\s\S]*wait for a new advisory/);
+    assert.match(script.finalPrompt, /Without that advisory, do not initiate or retry compression[\s\S]*SOURCE_NOT_SERVED[\s\S]*wait for a new advisory/);
+    assert.doesNotMatch(script.finalPrompt, /Otherwise proceed with the handoff/);
     assert.doesNotMatch(script.finalPrompt, /Context Memory: compression is due/);
-    if (script.oracle.requireOriginalEvidence) assert.match(script.finalPrompt, /Reading Memory verifies facts[\s\S]*not permission.*compression/);
+    if (script.oracle.requireOriginalEvidence) {
+      assert.match(script.finalPrompt, /Independently, before serializing the handoff, verify every requested fact[\s\S]*including whether any fact remains unknown/);
+      assert.match(script.finalPrompt, /summary or assistant copy never authorizes a fact/);
+      assert.match(script.finalPrompt, /complete search means only that its bounded term scan finished[\s\S]*not that a shown excerpt is a complete page or source/);
+      assert.match(script.finalPrompt, /no exhaustive paging is required/);
+      assert.match(script.finalPrompt, /Reading Memory verifies facts[\s\S]*not permission.*compression/);
+    }
     assert.ok(Object.hasOwn(script.setupFiles, "status.mjs"));
     assert.ok(Object.values(script.setupFiles).every((text) => !script.evidenceTokens.some((token) => text.includes(token))));
     for (const value of Object.values(script.oracle.expected)) {
       if (value !== null) assert.ok(!script.finalPrompt.includes(String(value)), "final prompt does not disclose expected values");
     }
     assert.equal((script.finalPrompt.match(/\|null/g) ?? []).length, Object.keys(script.oracle.expected).length, "every domain field is independently nullable");
+    assert.match(script.finalPrompt, /unknown means missing knowledge, never the literal string "unknown"/);
     assert.deepEqual(new Set(Object.keys(script.oracle.expected)), new Set([...script.oracle.critical, ...script.oracle.continuity, ...script.oracle.unknown, ...script.oracle.constraints]));
   }
   const positions = scripts.map((s) => Math.max(s.introPrompt.indexOf("Authoritative brief:"), s.introPrompt.indexOf("Authoritative main-branch brief:"), s.introPrompt.indexOf("Original authoritative source:"), s.introPrompt.indexOf("Initial authoritative brief:")) / s.introPrompt.length);

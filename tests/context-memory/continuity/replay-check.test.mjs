@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createJiti } from "jiti";
-import { MAX_NATIVE_SESSION_BYTES, NATIVE_REPLAY_SCHEMA, measureNativeSessionReplay, safeNativeReplay } from "./replay-check.mjs";
+import { fileURLToPath } from "node:url";
+import { MAX_NATIVE_SESSION_BYTES, NATIVE_REPLAY_SCHEMA, measureNativeSessionReplay, safeNativeReplay } from "./native-replay.mjs";
 
 const jiti = createJiti(import.meta.url);
 const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG } = jiti("../../../src/context-memory/format.ts");
@@ -50,5 +52,23 @@ try {
   assert.equal(readFileSync(current.getSessionFile(), "utf8"), journal);
   const oversized = join(root, "oversized.jsonl"); writeFileSync(oversized, Buffer.alloc(MAX_NATIVE_SESSION_BYTES + 1));
   assert.throws(() => measureNativeSessionReplay({ sessionPath: oversized }), /exceeds 8388608 bytes/); assert.equal(readFileSync(oversized).byteLength, MAX_NATIVE_SESSION_BYTES + 1);
+
+  // A standalone summary must not re-enter its own module through runner →
+  // session. This synthetic current report exercises the actual CLI without
+  // reading or altering retained paid-run artifacts.
+  const reportDir = join(root, "report"); mkdirSync(reportDir);
+  const attemptId = "synthetic-cli";
+  writeFileSync(join(reportDir, `continuity-qualification-${attemptId}.json`), JSON.stringify({
+    schema: "pi-square.context-memory/continuity-qualification/4", attemptId,
+    completeness: { expected: 24 }, pins: { commit: "synthetic", modelThinking: Object.fromEntries(["sonnet", "glm"].map((lane) => [lane, {
+      requested: "off", effective: "off", supported: ["off"], mappingSha256: "a".repeat(64),
+    }])) }, runs: [],
+  }));
+  writeFileSync(join(reportDir, "attempts.jsonl"), "{}\n");
+  const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./replay-check.mjs", import.meta.url)), "--report-dir", reportDir], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  const replayReport = readdirSync(reportDir).find((name) => name.startsWith("continuity-replay-check-synthetic-cli") && name.endsWith(".json"));
+  assert.ok(replayReport, cli.stdout);
+  assert.equal(JSON.parse(readFileSync(join(reportDir, replayReport), "utf8")).sourceReport.currentQualification, false);
 } finally { rmSync(root, { recursive: true, force: true }); }
 console.log("context-memory native replay checks passed");

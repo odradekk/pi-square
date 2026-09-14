@@ -226,7 +226,7 @@ export function createRetrievalEvidenceCollector({ script, sourceEntryIds, deriv
     else if (!validHandoff) code = "handoff-unobserved";
     else if (successful.some((candidate) => candidate.observedAtLifecycle !== null && candidate.observedAtLifecycle >= handoff.lifecycle)) code = "observed-post-handoff";
     else if (successful.some((candidate) => candidate.observedAtRequest === null)) code = "result-not-observed";
-    else if (candidates.some((candidate) => !candidate.success)) code = "result-failed";
+    else if (successful.length === 0 && candidates.some((candidate) => !candidate.success)) code = "result-failed";
 
     const proof = selected.slice(0, requirements.length).map(({ row, covered }) => ({
       kind: row.candidate.kind,
@@ -252,6 +252,7 @@ export function createRetrievalEvidenceCollector({ script, sourceEntryIds, deriv
         qualified,
         code,
         searches: candidates.filter((candidate) => candidate.kind === "search").length,
+        failedCalls: candidates.filter((candidate) => !candidate.success).length,
         targetedReads: candidates.filter((candidate) => candidate.kind === "read" && typeof candidate.args?.view === "string").length,
         pageReads: candidates.filter((candidate) => candidate.kind === "read").length,
         returnedEvidenceBytes: successful.reduce((total, candidate) => total + candidate.bytes, 0),

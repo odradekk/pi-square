@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { runRealPiCacheExperiment } from "./experiment.mjs";
-import { runPiSessionSequence } from "./session-sequence.mjs";
+import { runPiSessionSequence, runPiSessionMatrix } from "./session-sequence.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const runtimeDir = mkdtempSync(join(tmpdir(), "pi-square-cache-runtime-"));
@@ -76,6 +76,16 @@ try {
   });
   runtime.registerNativeProvider(faux.provider);
 
+  let unexpectedRequests = 0;
+  const unsupported = { ...faux.getModel(), reasoning: true,
+    thinkingLevelMap: { off: null, minimal: null, low: "low" } };
+  await assert.rejects(() => runPiSessionMatrix({ packageRoot,
+    modelRuntime: { streamSimple() { unexpectedRequests += 1; throw new Error("unexpected request"); } },
+    models: [faux.getModel(), unsupported], prompts: ["one", "two"],
+  }), /requested thinking off, but Pi selects low/);
+  assert.equal(unexpectedRequests, 0, "all lanes validate before the supported sibling can request a model");
+  await assert.rejects(() => runPiSessionSequence({ packageRoot, model: unsupported }), /requested thinking off/);
+
   const observedContexts = [];
   const worker = memoryWorker({
     onContext: (context) => observedContexts.push({
@@ -101,7 +111,11 @@ try {
     ],
   });
 
-  assert.equal(result.schema, "pi-square.context-memory/pi-session-cache-sequence/2");
+  assert.equal(result.schema, "pi-square.context-memory/pi-session-cache-sequence/3");
+  assert.equal(result.configuration.thinking.requested, "off");
+  assert.equal(result.configuration.thinking.effective, "off");
+  assert.equal(result.configuration.thinking.session, "off", "actual SDK state is recorded, not only the caller's setting");
+  assert.equal(result.cache.zeroFieldPresence, "unknown");
   assert.equal(result.execution.driver, "AgentSession.prompt");
   assert.equal(result.execution.promptCount, 7);
   assert.ok(result.session.memoryStateEntries >= 2, "the real Pi prompt loop should record at least two Memory state entries");
@@ -151,7 +165,7 @@ try {
     runtime,
     generatedAt: "2026-09-09T00:00:00.000Z",
   });
-  assert.equal(matrix.schema, "pi-square.context-memory/pi-session-cache-matrix/2");
+  assert.equal(matrix.schema, "pi-square.context-memory/pi-session-cache-matrix/3");
   assert.equal(matrix.execution.modelLanes, 3);
   assert.equal(matrix.execution.laneConcurrency, "parallel");
   assert.deepEqual(matrix.comparison.map((row) => `${row.provider}/${row.model}`), [

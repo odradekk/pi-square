@@ -268,7 +268,7 @@ try {
     const scopedMiss = await search.execute("s:scoped-miss", { terms: ["sk-Alpha"], block: 2 }, undefined, undefined, ctx);
     assert.equal(scopedMiss.details.totalMatches, 0, "the block selector keeps block 1 out of scope");
     assert.equal(scopedMiss.details.complete, true);
-    assert.match(resultText(scopedMiss), /no matches · search complete/,
+    assert.match(resultText(scopedMiss), /no matches · scan complete/,
       "a complete zero-hit search states exactly that");
     await assert.rejects(
       () => search.execute("s:oor", { terms: ["x"], block: 3 }, undefined, undefined, ctx),

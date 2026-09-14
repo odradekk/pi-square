@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { thinkingConfiguration } from "../thinking.mjs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -270,7 +271,22 @@ for (const entry of cases) {
   const historical = parseQualificationReport({ schema: HISTORICAL_REPORT_SCHEMA, runs: Array.from({ length: 16 }, () => ({})) });
   assert.equal(historical.kind, "historical-16-cell-asymmetric");
   assert.equal(historical.currentQualification, false);
-  assert.equal(parseQualificationReport({ schema: REPORT_SCHEMA, completeness: { expected: 24 } }).currentQualification, true);
+  const old24 = parseQualificationReport({ schema: "pi-square.context-memory/continuity-qualification/3", completeness: { expected: 24 } });
+  assert.equal(old24.currentQualification, false, "old requested-only thinking pins never qualify as verified settings");
+  assert.throws(() => parseQualificationReport({ schema: REPORT_SCHEMA, completeness: { expected: 24 } }), /verified thinking pins/);
+  const pins = { modelThinking: { sonnet: thinkingConfiguration({ reasoning: false }), glm: thinkingConfiguration({ reasoning: false }) } };
+  const report = { schema: REPORT_SCHEMA, completeness: { expected: 24 }, pins,
+    runs: planRuns().map((run) => ({ run: `${run.scenario}/${run.placement}/${run.lane}/${run.retrievalArm}`, lane: run.lane,
+      thinking: { ...pins.modelThinking[run.lane], session: "off" } })) };
+  assert.equal(parseQualificationReport(report).currentQualification, true);
+  for (const runs of [[], report.runs.slice(1), [...report.runs.slice(1), report.runs[1]]]) {
+    assert.equal(parseQualificationReport({ ...report, runs }).currentQualification, false, "every expected cell needs observed settings");
+  }
+  for (const thinking of [null, { ...report.runs[0].thinking, session: undefined },
+    { ...report.runs[0].thinking, session: "low" }, { ...report.runs[0].thinking, mappingSha256: "b".repeat(64) }]) {
+    const runs = [{ ...report.runs[0], thinking }, ...report.runs.slice(1)];
+    assert.equal(parseQualificationReport({ ...report, runs }).currentQualification, false, "actual session settings must match their model pin");
+  }
   assert.throws(() => parseQualificationReport({ schema: "unknown" }), /unsupported continuity report schema/);
 }
 

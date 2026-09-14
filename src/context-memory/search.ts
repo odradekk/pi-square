@@ -260,12 +260,12 @@ function statusLine(input: {
   readonly shown: number;
 }): string {
   if (!input.complete) {
-    return `search incomplete · stopped at the ${MEMORY_SEARCH_MATCH_CAP}-match bound · counts cover only what was scanned · narrow with a block selector or more specific terms`;
+    return `search incomplete · stopped at the ${MEMORY_SEARCH_MATCH_CAP}-match bound · counts cover only what was scanned · excerpts may omit values or qualifiers · narrow with a block selector or more specific terms`;
   }
   if (input.totalMatches === 0) {
-    return "no matches · search complete · zero hits prove only that these literal terms do not occur in the searched sources, not that a fact is absent — try field names or alternative terms, then read nearby pages if needed";
+    return "no matches · scan complete · zero hits prove only that these literal terms do not occur in the searched sources, not that a fact is absent — try field names or alternative terms, then read nearby pages if needed";
   }
-  const base = `${input.totalMatches} match${input.totalMatches === 1 ? "" : "es"} across ${input.rows} page location${input.rows === 1 ? "" : "s"} · search complete`;
+  const base = `${input.totalMatches} match${input.totalMatches === 1 ? "" : "es"} across ${input.rows} page location${input.rows === 1 ? "" : "s"} · scan complete · excerpts may omit values or qualifiers`;
   const omitted = input.rows - input.shown;
   return omitted > 0
     ? `${base} · ${input.shown} shown · ${omitted} omitted by the response bound · narrow with a block selector or more specific terms`

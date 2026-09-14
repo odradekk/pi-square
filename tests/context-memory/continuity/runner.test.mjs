@@ -37,6 +37,20 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
 
 {
   const run = planRuns()[0];
+  const result = await executeRun({ run, runtime: null, sessionRunner: async () => ({
+    integrity: { ok: false, failures: ["fixture"] }, coverage: {
+      ok: false, failures: ["raw source appeared"], memoryStates: 0, appends: 0, rebuilds: 0,
+      finalContextObserved: true, rawSourceAbsent: false,
+      rawSourceDiagnostic: { detector: "evidence-token", messageIndex: 2, partType: "thinking", field: "thinking", body: "PROJECT-ZEBRA-71" },
+    },
+  }) });
+  assert.deepEqual(result.coverage.rawSourceDiagnostic, { detector: "evidence-token", messageIndex: 2, partType: "thinking", field: "thinking" });
+  assert.equal(JSON.stringify(result.coverage).includes("PROJECT-ZEBRA-71"), false,
+    "runner reports only the closed structural diagnostic projection");
+}
+
+{
+  const run = planRuns()[0];
   const result = await executeRun({ run, runtime: null, sessionRunner: async () => { throw new Error("Pi request deadline exceeded"); } });
   assert.equal(result.score.result, "inconclusive");
   assert.equal(result.error, "native-session-timeout");
@@ -88,6 +102,14 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
   assert.equal(resolved.models.get("sonnet").api, "sonnet-native-api");
   assert.ok(resolved.exactSecrets.includes("ccr-claude-key"));
   assert.ok(resolved.exactSecrets.includes("cpa-header"));
+  assert.equal(resolved.thinking.glm.requested, "off");
+  assert.equal(resolved.thinking.glm.effective, "off");
+  assert.match(resolved.thinking.glm.mappingSha256, /^[a-f0-9]{64}$/);
+  await assert.rejects(() => resolveRunModels({ ...runtime,
+    getModel(provider, id) { return { ...runtime.getModel(provider, id), reasoning: true,
+      thinkingLevelMap: { off: null, minimal: null, low: "low" } }; },
+  }), /requested thinking off, but Pi selects low/,
+  "a requested off level must not silently become paid reasoning low");
   await assert.rejects(() => resolveRunModels({ ...runtime, getModel: () => undefined }), /does not define/);
 }
 

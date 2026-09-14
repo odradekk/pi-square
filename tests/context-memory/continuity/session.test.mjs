@@ -6,6 +6,15 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { runContinuitySession } from "./session.mjs";
 import { SEED_EXCHANGE } from "./scenarios.mjs";
+import { inspectRawSource } from "./raw-source-diagnostic.mjs";
+
+{
+  const script = { evidenceTokens: ["private-canary"], oracle: { expected: {} } };
+  const result = inspectRawSource([{ role: "assistant", content: [{ type: "thinking", optional: undefined, thinking: "private-canary" }] }], script, []);
+  assert.equal(result.absent, false);
+  assert.deepEqual(result.diagnostic, { detector: "evidence-token", messageIndex: 0, partType: "thinking", field: "thinking" });
+  assert.ok(!JSON.stringify(result).includes("private-canary"));
+}
 
 const runtimeDir = mkdtempSync(join(tmpdir(), "continuity-provider-test-"));
 writeFileSync(join(runtimeDir, "auth.json"), "{}\n");
@@ -334,6 +343,30 @@ try {
   assert.equal(leaked.integrity.ok, true, JSON.stringify(leaked.integrity));
   assert.equal(leaked.coverage.ok, false);
   assert.ok(leaked.coverage.failures.includes("workspace-changed-before-final"), "on-disk notes cannot masquerade as Memory recall");
+
+  // The native context observer retains an archived display-safe final view,
+  // but qualification scans the actual provider-bound thinking blocks too.
+  setResponses({ readAll: true });
+  const thinkingLeaked = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script, run: {},
+    contextModifierFactory(pi) {
+      pi.on("context", (event) => {
+        if (!event.messages.some((message) => message.role === "user" && messageText(message).includes("FINAL_ARTIFACT"))) return;
+        const messages = structuredClone(event.messages);
+        const assistant = messages.find((message) => message.role === "assistant" && message.customType !== "pi-square.context-memory/blocks");
+        if (!assistant || !Array.isArray(assistant.content)) return;
+        assistant.content.push({ type: "thinking", thinking: "PROJECT-ZEBRA-71" });
+        return { messages };
+      });
+    },
+  });
+  assert.equal(thinkingLeaked.coverage.finalContextObserved, true);
+  assert.equal(thinkingLeaked.coverage.rawSourceAbsent, false);
+  assert.deepEqual(thinkingLeaked.coverage.rawSourceDiagnostic, {
+    detector: "evidence-token", messageIndex: thinkingLeaked.coverage.rawSourceDiagnostic.messageIndex,
+    partType: "thinking", field: "thinking",
+  });
+  assert.equal(JSON.stringify(thinkingLeaked.evidence.finalContext).includes("thinking"), false,
+    "the retained evidence remains thinking-free while the fail-closed raw detector observes it");
 
   setResponses();
   const partial = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(),
