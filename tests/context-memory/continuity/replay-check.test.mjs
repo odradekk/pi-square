@@ -59,9 +59,9 @@ try {
   const reportDir = join(root, "report"); mkdirSync(reportDir);
   const attemptId = "synthetic-cli";
   writeFileSync(join(reportDir, `continuity-qualification-${attemptId}.json`), JSON.stringify({
-    schema: "pi-square.context-memory/continuity-qualification/4", attemptId,
+    schema: "pi-square.context-memory/continuity-qualification/5", attemptId,
     completeness: { expected: 24 }, pins: { commit: "synthetic", modelThinking: Object.fromEntries(["sonnet", "glm"].map((lane) => [lane, {
-      requested: "off", effective: "off", supported: ["off"], mappingSha256: "a".repeat(64),
+      requested: "low", effective: "low", supported: ["low"], mappingSha256: "a".repeat(64),
     }])) }, runs: [],
   }));
   writeFileSync(join(reportDir, "attempts.jsonl"), "{}\n");

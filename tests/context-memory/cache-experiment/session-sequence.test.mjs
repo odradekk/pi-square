@@ -26,6 +26,13 @@ function requestText(messages) {
   return messages.map(messageText).join("\n");
 }
 
+function enableLowThinking(provider) {
+  for (const model of provider.models) {
+    Object.assign(model, { reasoning: true,
+      thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: null } });
+  }
+}
+
 /**
  * The #319 faux model: ordinary read work first, the resident
  * `compact_to_memory_block` tool as the sole call of its batch whenever the
@@ -74,17 +81,18 @@ try {
     api: "cache-sequence-test",
     models: [{ id: "cache-sequence", contextWindow: 100_000, maxTokens: 1_024 }],
   });
+  enableLowThinking(faux);
   runtime.registerNativeProvider(faux.provider);
 
   let unexpectedRequests = 0;
-  const unsupported = { ...faux.getModel(), reasoning: true,
-    thinkingLevelMap: { off: null, minimal: null, low: "low" } };
+  const unsupportedLow = { ...faux.getModel(),
+    thinkingLevelMap: { off: null, minimal: "minimal", low: null, medium: null, high: null } };
   await assert.rejects(() => runPiSessionMatrix({ packageRoot,
     modelRuntime: { streamSimple() { unexpectedRequests += 1; throw new Error("unexpected request"); } },
-    models: [faux.getModel(), unsupported], prompts: ["one", "two"],
-  }), /requested thinking off, but Pi selects low/);
+    models: [faux.getModel(), unsupportedLow], prompts: ["one", "two"],
+  }), /requested thinking low, but Pi selects minimal/);
   assert.equal(unexpectedRequests, 0, "all lanes validate before the supported sibling can request a model");
-  await assert.rejects(() => runPiSessionSequence({ packageRoot, model: unsupported }), /requested thinking off/);
+  await assert.rejects(() => runPiSessionSequence({ packageRoot, model: unsupportedLow }), /requested thinking low/);
 
   const observedContexts = [];
   const worker = memoryWorker({
@@ -112,9 +120,9 @@ try {
   });
 
   assert.equal(result.schema, "pi-square.context-memory/pi-session-cache-sequence/3");
-  assert.equal(result.configuration.thinking.requested, "off");
-  assert.equal(result.configuration.thinking.effective, "off");
-  assert.equal(result.configuration.thinking.session, "off", "actual SDK state is recorded, not only the caller's setting");
+  assert.equal(result.configuration.thinking.requested, "low");
+  assert.equal(result.configuration.thinking.effective, "low");
+  assert.equal(result.configuration.thinking.session, "low", "actual SDK state is recorded, not only the caller's setting");
   assert.equal(result.cache.zeroFieldPresence, "unknown");
   assert.equal(result.execution.driver, "AgentSession.prompt");
   assert.equal(result.execution.promptCount, 7);
@@ -146,6 +154,7 @@ try {
     api: "cache-matrix-anthropic",
     models: [{ id: "claude-sonnet-5", contextWindow: 100_000, maxTokens: 1_024 }],
   });
+  enableLowThinking(anthropic);
   const openai = fauxProvider({
     provider: "cpa",
     api: "cache-matrix-openai",
@@ -154,6 +163,7 @@ try {
       { id: "gpt-5.6-luna", contextWindow: 100_000, maxTokens: 1_024 },
     ],
   });
+  enableLowThinking(openai);
   runtime.registerNativeProvider(anthropic.provider);
   runtime.registerNativeProvider(openai.provider);
   const laneState = new Map();

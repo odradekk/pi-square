@@ -39,6 +39,8 @@ function requestText(messages) {
 try {
   const runtime = await ModelRuntime.create({ authPath: join(runtimeDir, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const provider = fauxProvider({ provider: "continuity-test", api: "continuity-test", models: [{ id: "native", contextWindow: 100_000, maxTokens: 4096 }] });
+  Object.assign(provider.getModel(), { reasoning: true,
+    thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: null } });
   runtime.registerNativeProvider(provider.provider);
   const contexts = [];
   const providerToolSets = [];
@@ -169,6 +171,7 @@ try {
     oracle: { requireOriginalEvidence: true, evidenceRequirements: [{ id: "project", exact: "project identifier PROJECT-ZEBRA-71" }] },
   };
   const result = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script, run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+  assert.equal(result.thinking.session, "low", "the native session preserves the requested low thinking setting");
   assert.equal(result.integrity.ok, true, JSON.stringify({ integrity: result.integrity, requests: result.requests, errors: result.evidence?.entries.filter((entry) => entry.message?.stopReason === "error") }));
   assert.equal(result.coverage.ok, true, JSON.stringify(result.coverage));
   // #325: the seeded half-budget Memory makes the schedule fixture-owned —

@@ -29,7 +29,9 @@ uses the retired asymmetric 16-cell report schema. Its reader remains available
 only to identify that evidence as historical; it is never regraded as the
 current symmetric 24-cell qualification. Version 3's symmetric reports also
 remain historical: they recorded requested thinking without verifying Pi's
-effective setting. Current continuity/evidence reports use version 4 and
+effective setting. Version 4's verified `off` reports also remain historical;
+they are never relabeled as the current low-thinking experiment. Current
+continuity reports use version 5, their evidence reports use version 4, and
 recovery-comparison reports use version 2; old attempts are never relabeled.
 The reader accepts incomplete current reports for diagnosis, but only marks
 them as current qualification evidence when all 24 expected cells record an
@@ -860,9 +862,9 @@ authentication resolve through Pi's configured runtime. The scenarios cover
 exact work facts, revised constraints, an abandoned sibling branch, and
 original-source recovery.
 
-Both continuity modes and the cache matrix request thinking `off`. Before
+Both continuity modes and the cache matrix request thinking `low`. Before
 starting any model queue, every model must support that exact level: Pi's
-automatic adjustment (for example, `off` to `low` when `thinkingLevelMap.off`
+automatic adjustment (for example, `low` to `minimal` when `thinkingLevelMap.low`
 is null) rejects the experiment configuration instead of silently running it.
 After session creation, the driver also checks Pi's actual session setting
 before prompting. Reports pin requested/effective levels, supported levels,

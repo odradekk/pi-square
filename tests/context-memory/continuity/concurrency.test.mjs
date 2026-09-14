@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { HISTORICAL_REPORT_SCHEMA, MODEL_LANES, REPORT_SCHEMA, buildPairs, buildRecoveryPairs, parseQualificationReport, planCases, planRecoveryRuns, planRuns, qualificationStatus, runModelQueues } from "./runner.mjs";
+import { HISTORICAL_REPORT_SCHEMA, MODEL_LANES, REPORT_SCHEMA, VERIFIED_OFF_THINKING_REPORT_SCHEMA, buildPairs, buildRecoveryPairs, parseQualificationReport, planCases, planRecoveryRuns, planRuns, qualificationStatus, runModelQueues } from "./runner.mjs";
 import { buildScript } from "./scenarios.mjs";
 import { runContinuitySession } from "./session.mjs";
 
@@ -151,6 +151,8 @@ for (const entry of cases) {
     function providerFor(lane) {
       const provider = fauxProvider({ provider: `continuity-overlap-${lane}`, api: `continuity-overlap-${lane}`,
         models: [{ id: `native-${lane}`, contextWindow: 100_000, maxTokens: 4096 }] });
+      Object.assign(provider.getModel(), { reasoning: true,
+        thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: null } });
       provider.setResponses([async (context, options) => {
         providerCaptures.set(lane, { messages: structuredClone(context.messages),
           tools: context.tools.map((tool) => tool.name), sessionId: options?.sessionId ?? null });
@@ -273,17 +275,21 @@ for (const entry of cases) {
   assert.equal(historical.currentQualification, false);
   const old24 = parseQualificationReport({ schema: "pi-square.context-memory/continuity-qualification/3", completeness: { expected: 24 } });
   assert.equal(old24.currentQualification, false, "old requested-only thinking pins never qualify as verified settings");
+  const verifiedOff = parseQualificationReport({ schema: VERIFIED_OFF_THINKING_REPORT_SCHEMA, completeness: { expected: 24 } });
+  assert.equal(verifiedOff.kind, "historical-24-cell-off-thinking");
+  assert.equal(verifiedOff.currentQualification, false, "the prior off experiment is never relabeled as the low experiment");
   assert.throws(() => parseQualificationReport({ schema: REPORT_SCHEMA, completeness: { expected: 24 } }), /verified thinking pins/);
-  const pins = { modelThinking: { sonnet: thinkingConfiguration({ reasoning: false }), glm: thinkingConfiguration({ reasoning: false }) } };
+  const model = { reasoning: true, thinkingLevelMap: { off: "off", minimal: "minimal", low: "low" } };
+  const pins = { modelThinking: { sonnet: thinkingConfiguration(model), glm: thinkingConfiguration(model) } };
   const report = { schema: REPORT_SCHEMA, completeness: { expected: 24 }, pins,
     runs: planRuns().map((run) => ({ run: `${run.scenario}/${run.placement}/${run.lane}/${run.retrievalArm}`, lane: run.lane,
-      thinking: { ...pins.modelThinking[run.lane], session: "off" } })) };
+      thinking: { ...pins.modelThinking[run.lane], session: "low" } })) };
   assert.equal(parseQualificationReport(report).currentQualification, true);
   for (const runs of [[], report.runs.slice(1), [...report.runs.slice(1), report.runs[1]]]) {
     assert.equal(parseQualificationReport({ ...report, runs }).currentQualification, false, "every expected cell needs observed settings");
   }
   for (const thinking of [null, { ...report.runs[0].thinking, session: undefined },
-    { ...report.runs[0].thinking, session: "low" }, { ...report.runs[0].thinking, mappingSha256: "b".repeat(64) }]) {
+    { ...report.runs[0].thinking, session: "off" }, { ...report.runs[0].thinking, mappingSha256: "b".repeat(64) }]) {
     const runs = [{ ...report.runs[0], thinking }, ...report.runs.slice(1)];
     assert.equal(parseQualificationReport({ ...report, runs }).currentQualification, false, "actual session settings must match their model pin");
   }

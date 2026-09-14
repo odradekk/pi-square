@@ -91,7 +91,8 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
 }
 
 {
-  const actual = new Map(Object.entries(MODEL_LANES).map(([arm, pin]) => [arm, { ...pin, api: `${arm}-native-api` }]));
+  const actual = new Map(Object.entries(MODEL_LANES).map(([arm, pin]) => [arm, { ...pin, api: `${arm}-native-api`, reasoning: true,
+    thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: null } }]));
   const runtime = {
     getModel(provider, id) { return [...actual.values()].find((model) => model.provider === provider && model.id === id); },
     hasConfiguredAuth() { return false; },
@@ -102,14 +103,14 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
   assert.equal(resolved.models.get("sonnet").api, "sonnet-native-api");
   assert.ok(resolved.exactSecrets.includes("ccr-claude-key"));
   assert.ok(resolved.exactSecrets.includes("cpa-header"));
-  assert.equal(resolved.thinking.glm.requested, "off");
-  assert.equal(resolved.thinking.glm.effective, "off");
+  assert.equal(resolved.thinking.glm.requested, "low");
+  assert.equal(resolved.thinking.glm.effective, "low");
   assert.match(resolved.thinking.glm.mappingSha256, /^[a-f0-9]{64}$/);
   await assert.rejects(() => resolveRunModels({ ...runtime,
     getModel(provider, id) { return { ...runtime.getModel(provider, id), reasoning: true,
-      thinkingLevelMap: { off: null, minimal: null, low: "low" } }; },
-  }), /requested thinking off, but Pi selects low/,
-  "a requested off level must not silently become paid reasoning low");
+      thinkingLevelMap: { off: null, minimal: "minimal", low: null, medium: null, high: null } }; },
+  }), /requested thinking low, but Pi selects minimal/,
+  "an unsupported requested low level must not silently become minimal");
   await assert.rejects(() => resolveRunModels({ ...runtime, getModel: () => undefined }), /does not define/);
 }
 

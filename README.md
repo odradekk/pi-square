@@ -626,7 +626,7 @@ native Pi sessions with two concurrently started model queues: Sonnet 5 and
 GLM 5.3 each run the same four scenarios at early, middle, and late placement
 (24 cells and 12 corresponding pairs), while cases and requests stay sequential
 inside each model queue. Continuity and cache runs verify that every model
-supports the requested thinking `off` and that Pi's session preserves it;
+supports the requested thinking `low` and that Pi's session preserves it;
 an automatic adjustment to another level stops the experiment before its
 model queues start. Reports record both requested and effective settings.
 Every run is

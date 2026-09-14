@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 
-export const REQUESTED_THINKING_LEVEL = "off";
+export const REQUESTED_THINKING_LEVEL = "low";
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** Safe reproducibility pins: provider-specific mapping values remain hash-only. */

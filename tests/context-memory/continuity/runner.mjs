@@ -15,7 +15,8 @@ import { REQUESTED_THINKING_LEVEL, requireThinkingConfiguration } from "../think
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(HERE, "..", "..", "..");
-export const REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/4";
+export const REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/5";
+export const VERIFIED_OFF_THINKING_REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/4";
 export const HISTORICAL_REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/2";
 export const UNVERIFIED_THINKING_REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/3";
 export const EVIDENCE_SCHEMA = "pi-square.context-memory/continuity-evidence/4";
@@ -47,6 +48,9 @@ export function parseQualificationReport(value) {
   }
   if (value.schema === UNVERIFIED_THINKING_REPORT_SCHEMA) {
     return { kind: "historical-24-cell-unverified-thinking", currentQualification: false, report: value };
+  }
+  if (value.schema === VERIFIED_OFF_THINKING_REPORT_SCHEMA) {
+    return { kind: "historical-24-cell-off-thinking", currentQualification: false, report: value };
   }
   if (value.schema === REPORT_SCHEMA) {
     if (value.completeness?.expected !== 24) throw new Error("current continuity report must declare 24 expected cells");
