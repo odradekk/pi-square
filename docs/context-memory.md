@@ -855,7 +855,11 @@ rewrite existing Memory blocks.
 with Bubblewrap installed. The configured model must be exactly
 `cpa/deepseek-v4.1-flash` with thinking `max`; both arms use 500,000 tokens.
 The Memory arm disables native auto-compaction and uses a 2% (10,000-token)
-Memory budget. The native arm enables ordinary Pi auto-compaction and never
+Memory budget. Its maintenance threshold is 10,001 tokens, immediately above
+that budget, so production source serving can prepare rebuilds at mandatory stage
+gates before normal interactive pressure would trigger maintenance. This changes
+the experiment configuration, not production source or compaction rules.
+The native arm enables ordinary Pi auto-compaction and never
 receives Memory tools. Each arm has one independent 3,600-second total deadline,
 including all stages, verification, compaction and final recall; there are no
 experiment request, verifier-call, compaction-attempt or per-prompt limits.

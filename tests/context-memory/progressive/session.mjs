@@ -16,7 +16,7 @@ const { deriveCurrentMemory } = await load("../../../src/context-memory/derive.t
 const { MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
 const MEMORY_TOOLS = ["compact_to_memory_block", "read_memory_source", "search_memory_source"];
 
-export const CONFIG = Object.freeze({ contextWindow: 500_000, thinkingLevel: "max", memoryBudgetPercent: 2, timeoutMs: 3_600_000 });
+export const CONFIG = Object.freeze({ contextWindow: 500_000, thinkingLevel: "max", memoryBudgetPercent: 2, memoryCompressionThreshold: Object.freeze({ tokens: 10_001 }), timeoutMs: 3_600_000 });
 const textOf = message => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter(p => p.type === "text").map(p => p.text).join("\n");
 const resultOf = (data, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(data) }], details: data, ...(isError ? { isError } : {}) });
 
@@ -56,8 +56,9 @@ const TOOL_CATEGORIES = Object.freeze({
   search_memory_source: "retrieval",
 });
 
-export async function runProgressiveSession({ directory, arm, task, model, modelRuntime, signal, clock, onEvent = () => {}, memoryCompressionThreshold = { percent: 30 }, contextModifierFactory }) {
+export async function runProgressiveSession({ directory, arm, task, model, modelRuntime, signal, clock, onEvent = () => {}, contextModifierFactory }) {
   if (!["native", "memory"].includes(arm)) throw new Error("unknown experiment arm");
+  const { memoryCompressionThreshold } = CONFIG;
   const deadline = armDeadline(clock);
   const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   const monotonicNow = typeof clock?.performance?.now === "function" ? () => clock.performance.now() : () => performance.now();
@@ -68,7 +69,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   let phase = "work";
   let providerFailed = false;
   let infrastructureError;
-  let recall = { correct: 0, complete: false, matches: [] };
+  let recall = null;
   const stages = [];
   const metrics = { requests: 0, tools: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheReadReportedRequests: 0, cacheWriteReportedRequests: 0, usageReportedRequests: 0, nativeCompactions: 0, toolBytes: 0, toolCounts: {}, toolCategories: {}, costReportedRequests: 0, reportedCost: 0 };
   const usagePending = [];
@@ -299,7 +300,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
   }
   let manifest;
   try { manifest = evidence?.close(); } catch (error) { infrastructureError = error; }
-  const status = deadline.signal.aborted ? "timeout" : signal?.aborted ? "cancelled" : providerFailed ? "provider-error" : infrastructureError ? "infrastructure-error" : !recall.complete ? "recall-error" : arm === "memory" && (coverage.stageGates !== 8 || coverage.appends < 1 || coverage.rebuilds < 2) ? "coverage-incomplete" : "passed";
+  const status = deadline.signal.aborted ? "timeout" : signal?.aborted ? "cancelled" : providerFailed ? "provider-error" : infrastructureError ? "infrastructure-error" : !recall?.complete ? "recall-error" : arm === "memory" && (coverage.stageGates !== 8 || coverage.appends < 1 || coverage.rebuilds < 2) ? "coverage-incomplete" : "passed";
   return { arm, status, stages, recall, coverage, metrics, problems, nativeReplay, terminal: { stage: Math.min(stage, 8), phase }, elapsedMs: armElapsedMs(), evidence: manifest,
     ...(infrastructureError ? { diagnostic: safeErrorDiagnostic(infrastructureError, { repoRoot: directory }) } : {}) };
 }

@@ -41,8 +41,8 @@ try {
 } finally { rmSync(root, { recursive: true, force: true }); }
 
 // A real Memory tool recording must replace each issued flag before the next prompt.
-// The second deterministic case lowers only the advisory threshold to exercise
-// production suffix serving with a compact fixture; paid runs keep the pinned default.
+// The second deterministic case retains implementation facts to exercise rebuild
+// coverage. Both cases use the same configuration as the paid runner.
 for (const retainImplementation of [false, true]) {
 const memoryRoot = mkdtempSync(join(tmpdir(), "progressive-memory-test-"));
 try {
@@ -112,7 +112,7 @@ try {
   }));
   const task = createTask({ flags });
   const result = await runProgressiveSession({ directory: join(memoryRoot, "arm"), arm: "memory", task, model, modelRuntime: runtime, onEvent: event => events.push(event),
-    ...(retainImplementation ? { memoryCompressionThreshold: { tokens: 10_001 } } : { contextModifierFactory: pi => pi.on("context", event => {
+    ...(retainImplementation ? {} : { contextModifierFactory: pi => pi.on("context", event => {
       if (!removedCarrier && event.messages.some(message => message.customType === "pi-square.context-memory/blocks")) {
         removedCarrier = true;
         return { messages: event.messages.filter(message => message.customType !== "pi-square.context-memory/blocks") };
@@ -169,6 +169,7 @@ try {
   cancelSlow();
   const cancelled = await slow;
   assert.equal(cancelled.status, "timeout");
+  assert.equal(cancelled.recall, null, "an unfinished task has no final recall score");
   assert.equal(cancelled.terminal.stage, 1);
   assert.equal(cancelled.terminal.phase, "work");
   assert.equal(cancelled.metrics.requests, 1);
