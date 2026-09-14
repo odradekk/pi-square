@@ -848,7 +848,56 @@ rewrite existing Memory blocks.
 
 ## Limitations
 
+### Progressive qualification
+
+#359 replaces continuity as the routine real-model experiment. Run
+`npm run qualify:progressive -- --real --pilot` from a clean checkout on Linux
+with Bubblewrap installed. The configured model must be exactly
+`cpa/deepseek-v4.1-flash` with thinking `max`; both arms use 500,000 tokens.
+The Memory arm disables native auto-compaction and uses a 2% (10,000-token)
+Memory budget. The native arm enables ordinary Pi auto-compaction and never
+receives Memory tools. Each arm has one independent 3,600-second total deadline,
+including all stages, verification, compaction and final recall; there are no
+experiment request, verifier-call, compaction-attempt or per-prompt limits.
+
+The model develops a data-processing CLI in eight linearly dependent stages.
+Only the current stage is revealed. A trusted verifier runs cumulative tests
+outside the model's OS-isolated workspace, releases one random project-fact flag
+on the first pass, and never reissues it. Later stages use those constants.
+Ordinary diagnostics identify repairable behavior; expected flags are withheld.
+Model shell commands and the tested program run inside the same restricted
+workspace boundary, with no access to the verifier, future prompts, host sessions,
+credentials or the other arm. Final recall disables workspace and verification
+tools: Memory may use source search/reading or answer directly from injected
+blocks, while native has no tools.
+
+Memory compaction is unavailable during stage work. A pass opens compact and
+asks for a real closing snapshot before compression. Production eligibility,
+source serving, pairing, protected working sets, net benefit and capacity checks
+remain intact. Recording alone cannot advance the task: a subsequent provider-bound
+request must carry the complete Memory and actually replace the original flag
+message before the next stage is revealed. This also applies after stage eight.
+Full Memory qualification requires every stage gate, exact recall of all eight
+flags, and at least one append and two rebuilds actually applied. Natural recent
+copies do not invalidate an otherwise correct answer. Insufficient rebuild coverage
+is reported separately from forgetting; a stage blocked by a production refusal
+retains its diagnostics and remains subject to the same total deadline.
+
+Arms run concurrently and independently; formal pairs run sequentially. Native
+failure does not prevent Memory success. Review the pilot before using the offline
+freeze command, then run three pairs with fresh private seeds. The freeze binds
+the implementation, fixtures, effective model/settings and runtime identity.
+See `tests/context-memory/progressive/README.md` in the source checkout for commands.
+Private streamed evidence includes request/tool events and native-session replay
+checks without discarding whole artifacts over 2 MiB. Public reports contain safe
+metrics and hashes. These instruments do not by themselves establish accuracy or
+cost improvements, and historical results retain their original classifications.
+
 ### Continuity qualification
+
+This is the historical #341 workflow, superseded by #359. The commands and
+report contracts below are retained for interpreting earlier results; closing
+#341 did not establish a qualification pass.
 
 `npm run qualify:continuity -- --real` runs the fixed 24-session matrix on a
 clean checkout. Grok 4.6 (`cpa/grok-4.6`) and GLM 5.3 Flash

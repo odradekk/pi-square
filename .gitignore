@@ -38,3 +38,6 @@ tests/context-memory/continuity/report/
 # Provider-cache experiment report (generated build artifact, #225)
 tests/context-memory/cache-experiment/report/
 .tmp/
+
+# Private progressive experiment sessions, seeds and reports (#359)
+tests/context-memory/progressive/private-runs/
