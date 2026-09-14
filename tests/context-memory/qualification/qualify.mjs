@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import jiti from "jiti";
+import { safeProcessDiagnostic } from "./diagnostics.mjs";
 
 /**
  * The Context Memory qualification command (#223, migrated by #325).
@@ -20,8 +21,8 @@ import jiti from "jiti";
  *
  * A maintainer runs this before authorizing a release; any failed check
  * blocks. There is no retry-to-green and no waiver path. The report carries
- * only bounded mechanical metadata — suite names, exit codes, and sanitized
- * failure tails — never Memory bodies, source bodies, or credentials.
+ * only bounded mechanical metadata and diagnostic projections — never suite
+ * output, Memory bodies, source bodies, or credentials.
  */
 
 const load = jiti(import.meta.url, { moduleCache: false });
@@ -33,7 +34,6 @@ const TESTS_DIR = join(REPO_ROOT, "tests", "context-memory");
 const REPORT_DIR = join(HERE, "report");
 const FAILURE_LIST_CAP = 32;
 const SUITE_TIMEOUT_MS = 15 * 60_000;
-const TAIL_LIMIT = 600;
 
 /** Every deterministic context-memory suite, discovered the way `npm test` finds them. */
 function suitePaths() {
@@ -96,11 +96,11 @@ function runSuite(path) {
     timeout: SUITE_TIMEOUT_MS,
     env: { ...process.env, PI_QUALIFICATION_SWEEP: "1" },
   });
-  const tail = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
   return {
     ok: result.status === 0,
+    exitCode: Number.isInteger(result.status) ? result.status : null,
     signal: result.signal ?? null,
-    tail: tail.length > 0 ? tail.slice(-TAIL_LIMIT).replace(/(.)\1{15,}/g, (match, char) => `${char}<×${match.length}>`) : null,
+    diagnostic: result.status === 0 ? null : safeProcessDiagnostic(result, { repoRoot: REPO_ROOT }),
   };
 }
 
@@ -116,35 +116,18 @@ function areaSummaries(runs) {
   return [...byArea.values()];
 }
 
-/** The report must never contain Memory or source bodies, or credentials. */
-function findReportLeaks(json) {
-  const leaks = [];
-  const repeated = json.match(/(.)\1{63}/);
-  if (repeated) leaks.push("a 64+ character repeated run (fixture padding)");
-  return leaks;
-}
-
-async function main() {
-  const suites = suitePaths();
-  const runs = [];
-  for (const path of suites) {
-    const relativeDir = relative(TESTS_DIR, dirname(path)).split(sep).join("/");
-    const area = relativeDir === "" || relativeDir === "." ? "protocol" : relativeDir;
-    const outcome = runSuite(path);
-    runs.push({ suite: relative(REPO_ROOT, path).split(sep).join("/"), area, ...outcome });
-  }
-
+export function createQualificationReport({ suites, runs, provenanceData, generatedAt }) {
   const failed = runs.filter((run) => !run.ok);
-  const provenanceData = provenance(suites);
   const failures = failed.slice(0, FAILURE_LIST_CAP).map((run) => ({
     area: run.area,
     suite: run.suite,
-    message: run.tail ?? (run.signal ? `terminated by signal ${run.signal}` : "no output"),
+    exitCode: run.exitCode,
+    signal: run.signal,
+    diagnostic: run.diagnostic,
   }));
-
-  const report = {
-    schema: "pi-square.context-memory/qualification/2",
-    generatedAt: new Date().toISOString(),
+  return {
+    schema: "pi-square.context-memory/qualification/3",
+    generatedAt,
     result: failed.length === 0 ? "pass" : "fail",
     zeroTolerance: { failures: failed.length, waivers: 0, retries: 0 },
     git: provenanceData,
@@ -163,17 +146,19 @@ async function main() {
     failuresTruncated: failed.length > FAILURE_LIST_CAP,
     totals: { areas: areaSummaries(runs).length, suites: runs.length, failed: failed.length },
   };
+}
 
-  // Privacy self-check: the emitted artifact itself must stay body-free.
-  let json = JSON.stringify(report, null, 2);
-  const leaks = findReportLeaks(json);
-  if (leaks.length > 0) {
-    report.failures.push({ area: "qualification-report", suite: "report-privacy", message: `the report contained ${leaks.join("; ")}` });
-    report.result = "fail";
-    report.zeroTolerance.failures += 1;
-    report.totals.failed += 1;
-    json = JSON.stringify(report, null, 2);
+async function main() {
+  const suites = suitePaths();
+  const runs = [];
+  for (const path of suites) {
+    const relativeDir = relative(TESTS_DIR, dirname(path)).split(sep).join("/");
+    const area = relativeDir === "" || relativeDir === "." ? "protocol" : relativeDir;
+    runs.push({ suite: relative(REPO_ROOT, path).split(sep).join("/"), area, ...runSuite(path) });
   }
+  const provenanceData = provenance(suites);
+  const report = createQualificationReport({ suites, runs, provenanceData, generatedAt: new Date().toISOString() });
+  const json = JSON.stringify(report, null, 2);
 
   mkdirSync(REPORT_DIR, { recursive: true });
   const jsonPath = join(REPORT_DIR, "context-memory-qualification.json");
@@ -193,14 +178,17 @@ async function main() {
   for (const summary of report.areas) {
     lines.push(`  ${summary.area.padEnd(22)} ${String(summary.suites).padStart(3)} suites  ${summary.failed} failed`);
   }
-  if (failed.length === 0) {
+  if (report.totals.failed === 0) {
     lines.push("failures: none");
   } else {
     lines.push("failures:");
     for (const failure of report.failures) {
-      lines.push(`  [${failure.area}] ${failure.suite}: ${(failure.message ?? "no detail").slice(0, 200)}`);
+      const termination = failure.signal === null ? `exit ${failure.exitCode ?? "unknown"}` : `signal ${failure.signal}`;
+      const diagnostic = failure.diagnostic;
+      const detail = diagnostic === null ? "" : ` (${diagnostic.kind}/${diagnostic.name}${diagnostic.code === null ? "" : `/${diagnostic.code}`} ${diagnostic.fingerprint.slice(0, 12)}${diagnostic.locations.length === 0 ? "" : ` ${diagnostic.locations.join(",")}`})`;
+      lines.push(`  [${failure.area}] ${failure.suite}: ${termination}${detail}`);
     }
-    if (report.failuresTruncated) lines.push(`  … ${failed.length - FAILURE_LIST_CAP} more (see the JSON report fields, capped at ${FAILURE_LIST_CAP})`);
+    if (report.failuresTruncated) lines.push(`  … ${report.totals.failed - FAILURE_LIST_CAP} more (see the JSON report fields, capped at ${FAILURE_LIST_CAP})`);
   }
   lines.push(`report: ${jsonPath}`);
   const human = lines.join("\n");
@@ -210,4 +198,4 @@ async function main() {
   process.exitCode = report.result === "pass" ? 0 : 1;
 }
 
-await main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main();

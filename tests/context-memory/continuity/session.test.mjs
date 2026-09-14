@@ -169,6 +169,11 @@ try {
   assert.equal(result.measurements.prefixStable, true, "the unselected carrier prefix stays byte-stable across append and rebuilds");
   assert.ok(result.measurements.acceptanceToApplication.length >= 3);
   assert.ok(result.measurements.acceptanceToApplication.every((row) => row.requestGap >= 1), "every recorded Memory applies at the next request or later");
+  assert.ok(result.measurements.acceptanceToApplication.every((row) => row.appliedAtRequest === null || row.appliedAtRequest > row.recordedAtRequest),
+    "a matching carrier is never credited before its exact recorded state exists");
+  assert.ok(result.measurements.persistence.finalBytes >= result.measurements.persistence.seedBytes);
+  assert.equal(result.measurements.nativeReplay.branchEquivalent, true);
+  assert.equal(result.measurements.nativeReplay.memoryEquivalent, true);
   assert.equal(result.measurements.refusals.NO_NET_BENEFIT ?? 0, 0);
   assert.equal(result.coverage.multiBlockMemory, true, "a later state entry appends onto the recorded Memory prefix");
   assert.equal(result.coverage.sourceCovered, true);

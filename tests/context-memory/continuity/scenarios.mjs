@@ -142,12 +142,12 @@ const WORKLOAD_FILLER = "Operational background for this checkpoint: intermediat
 export function workloadPrompt(step) {
   const operations = ["parse inventory", "module graph", "syntax boundary", "runtime launch", "output envelope", "determinism check", "error channel", "repeat execution", "file inventory", "schema shape", "completion audit", "handoff readiness"];
   const operation = operations[step - 1] ?? `extended check ${step}`;
-  return `Checkpoint ${step}: read status.mjs and run node status.mjs ${step}. Report the observed result and retain this operational record: ${operation}, batch ${1000 + step}, validation lane ${step % 3}, state ${step % 2 ? "reviewed" : "verified"}.\n\n${WORKLOAD_FILLER}Do not recap the authoritative brief.`;
+  return `Checkpoint ${step}: read status.mjs and run node status.mjs ${step}. Report the observed result and retain this operational record: ${operation}, batch ${1000 + step}, validation lane ${step % 3}, state ${step % 2 ? "reviewed" : "verified"}.\n\n${WORKLOAD_FILLER}Do not recap the authoritative brief in the normal user-facing reply. This does not prohibit requested Context Memory maintenance.`;
 }
 function place(source, placement) {
   const spans = { early: [2800, 38400], middle: [20400, 20800], late: [38400, 2800] };
   const [before, after] = spans[placement];
-  return `${background(before)}\n\n${source}\n\n${background(after)}\n\nAcknowledge this brief in one sentence, keep its facts in the conversation until the final handoff, and do not save the authoritative handoff facts to workspace files.`;
+  return `${background(before)}\n\n${source}\n\n${background(after)}\n\nAcknowledge this brief in one sentence. Context Memory is conversation state: when its maintenance is requested, preserve the non-secret brief facts in Memory. Keep its facts in the conversation until the final handoff, and do not write these facts to ordinary workspace files, including notes, before the explicit final handoff.`;
 }
 
 export function scenarioById(id) {
@@ -163,13 +163,11 @@ export function buildScript(scenario, placement) {
   if (!PLACEMENTS.includes(placement)) throw new Error(`unknown continuity placement: ${placement}`);
   const keys = Object.keys(definition.expected);
   const types = keys.map((key) => `${key}: ${definition.expected[key] === null ? "string|null" : `${typeof definition.expected[key]}|null`}`).join(", ");
-  // The final prompt's first step completes any invited maintenance: a
-  // pending suffix rebuild serves the suffix originals raw (#321), so the
-  // model must close that window before the recall probe runs against the
-  // complete carrier with the covered originals evicted.
-  const maintenanceStep = "If Context Memory maintenance is due, first complete it: submit the invited summary with compact_to_memory_block as the sole call of its batch, then continue.";
+  // A separate current advisory invites its maintenance. A stale
+  // due state or source read never authorizes a new or retrying compaction.
+  const maintenanceStep = "Only if a separate current Context Memory maintenance advisory explicitly requests compaction, complete its invited maintenance with compact_to_memory_block as the sole call of its batch, then continue. Otherwise proceed with the handoff and do not initiate or retry compression. If it returns SOURCE_NOT_SERVED, do not retry: continue the task and wait for a new advisory.";
   const recoveryStep = definition.requireSourceRead
-    ? " Recover the authoritative facts from original Memory-source evidence using the available retrieval tools. A complete original snippet is sufficient; read a referenced page when a snippet omits a value, qualifier, scope, or neighboring context."
+    ? " Recover the authoritative facts from original Memory-source evidence using the available retrieval tools. A complete original snippet is sufficient; read a referenced page when a snippet omits a value, qualifier, scope, or neighboring context. Reading Memory verifies facts; it is not permission to initiate or retry compression."
     : "";
   return { id: selected.id, placement, setupFiles: { ...definition.files }, introPrompt: place(definition.source, placement), ...(definition.revision ? { revisionPrompt: definition.revision } : {}), ...(definition.abandoned ? { abandonedPrompt: definition.abandoned } : {}), finalPrompt: `Complete the handoff now. ${maintenanceStep}${recoveryStep} Use the native write tool with path handoff.json to write one JSON object with exactly these keys and primitive types (${types}). Use null for unknown facts. Add no keys, arrays, nested objects, commentary, or guesses.`, artifactPath: "handoff.json", oracle: { expected: { ...definition.expected }, critical: [...definition.critical], continuity: [...definition.continuity], unknown: [...definition.unknown], constraints: [...definition.constraints], abandonedValues: [...definition.abandonedValues], requireOriginalEvidence: definition.requireSourceRead === true, evidenceRequirements: (definition.evidenceRequirements ?? []).map((item) => ({ ...item })) }, evidenceTokens: Object.values(definition.expected).filter((value) => typeof value === "string") };
 }

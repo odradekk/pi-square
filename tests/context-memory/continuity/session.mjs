@@ -13,6 +13,8 @@ const registerContextMemory = (await load("../../../src/context-memory/index.ts"
 const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG, MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
 const { paginateTranscript, renderSourceTranscript, renderSourceTranscriptWithBoundaries } = await load("../../../src/context-memory/transcript.ts");
 const { createRetrievalEvidenceCollector } = await import("./retrieval-evidence.mjs");
+const { MAX_NATIVE_SESSION_BYTES, measureNativeSessionReplay } = await import("./replay-check.mjs");
+const { safeResponseDiagnostic } = await import("../qualification/diagnostics.mjs");
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
   contextWindow: 100_000,
   maxTokens: 4096,
@@ -175,12 +177,14 @@ export function responseUsage(message, phase, request, activeTools) {
   // value proves reporting; a normalized zero alone cannot distinguish an
   // explicit provider zero from absence, so preserve that uncertainty.
   const reportedCache = (value) => Number.isSafeInteger(value) && value > 0 ? value : null;
+  const diagnostic = safeResponseDiagnostic(message);
   return {
     phase, request, stopReason: message.stopReason,
     input: count(usage.input), output: count(usage.output), cacheRead: reportedCache(usage.cacheRead), cacheWrite: reportedCache(usage.cacheWrite),
     tools: (message.content ?? []).filter((part) => part.type === "toolCall").map((part) => part.name),
     activeTools: Array.isArray(activeTools) ? [...activeTools] : [],
     errorPresent: message.stopReason === "error" || typeof message.errorMessage === "string",
+    ...(diagnostic ? { diagnostic } : {}),
   };
 }
 
@@ -193,6 +197,22 @@ function memoryIdOf(memory) {
 function appendOperation(previous, current) {
   return current.length === previous.length + 1 && previous.every((block, index) =>
     block.endEntryId === current[index].endEntryId && block.markdown === current[index].markdown);
+}
+
+export function netInputChangeOf(compressions, carrierObservations, requests) {
+  let total = null;
+  for (const compression of compressions) {
+    if (compression.phase !== "work") continue;
+    const appliedAt = carrierObservations.find((observation) => observation.memoryId === compression.id
+      && observation.request > compression.request && observation.carriers === 1
+      && observation.parts.length === compression.carrierHashes.length
+      && observation.parts.every((part, index) => part === compression.carrierHashes[index]));
+    if (!appliedAt || appliedAt.request < 2) continue;
+    const before = reportedInputOf(requests[appliedAt.request - 2]);
+    const after = reportedInputOf(requests[appliedAt.request - 1]);
+    if (before !== null && after !== null) total = (total ?? 0) + after - before;
+  }
+  return total;
 }
 
 export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run, signal, contextModifierFactory }) {
@@ -222,7 +242,8 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   let finalCarrierCount = null;
   let finalRequests = 0;
   let finalFullCarrierSeen = false;
-  const sessionManager = SessionManager.inMemory(environment.cwd);
+  const sessionManager = SessionManager.create(environment.cwd, join(environment.root, "sessions"));
+  const persistence = { seedBytes: 0, finalBytes: 0, peakBytes: 0, appendedBytes: 0 };
   const recordedMemoryIds = new Set();
   const pendingSourceReads = new Map();
   const retrieval = createRetrievalEvidenceCollector({
@@ -247,7 +268,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
           ? carriers[0].content.filter((part) => part?.type === "text").map((part) => createHash("sha256").update(part.text ?? "").digest("hex"))
           : [];
         if (carriers.length > 0 && carrierObservations.length < CONTINUITY_SESSION_CONFIG.maxRequests) {
-          carrierObservations.push({ request: requests.length + 1, phase, carriers: carriers.length, parts });
+          carrierObservations.push({ request: requests.length + 1, memoryId: memoryIdOf(deriveCurrentMemory(sessionManager)), phase, carriers: carriers.length, parts });
         }
         if (phase !== "final") return;
         finalRequests += 1;
@@ -257,7 +278,9 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         // the probe is the first final request whose carrier carries the
         // complete current Memory with the covered originals evicted.
         const memory = deriveCurrentMemory(sessionManager);
-        const fullCarrier = memory.kind === "valid" && carriers.length === 1 && parts.length === memory.blocks.length + 1;
+        const expectedParts = memory.kind === "valid" ? carrierHashesOf(memory.blocks.map((block) => block.markdown)) : [];
+        const fullCarrier = memory.kind === "valid" && carriers.length === 1 && parts.length === expectedParts.length
+          && parts.every((part, index) => part === expectedParts[index]);
         if (fullCarrier) finalFullCarrierSeen = true;
         if (fullCarrier && !finalContextSeen) {
           finalContextSeen = true;
@@ -374,6 +397,17 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       recordedMemoryIds.add(seedEntryId);
     }
     seedBranchMemory();
+    function observePersistence() {
+      const bytes = lstatSync(sessionManager.getSessionFile()).size;
+      if (bytes < persistence.finalBytes) failures.add("native-session-shrank");
+      persistence.appendedBytes += Math.max(0, bytes - persistence.finalBytes);
+      persistence.finalBytes = bytes;
+      persistence.peakBytes = Math.max(persistence.peakBytes, bytes);
+      if (bytes > MAX_NATIVE_SESSION_BYTES) failures.add("native-session-byte-limit");
+    }
+    observePersistence();
+    persistence.seedBytes = persistence.finalBytes;
+    persistence.appendedBytes = 0;
 
     const measuredModel = { ...model, contextWindow: CONTINUITY_SESSION_CONFIG.contextWindow, maxTokens: Math.min(model.maxTokens ?? 4096, 4096) };
     ({ session } = await createAgentSession({ cwd: environment.cwd, agentDir: environment.agentDir, settingsManager, resourceLoader, sessionManager,
@@ -465,6 +499,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         else failures.add("source-entry-missing");
       }
       collectMemoryState();
+      observePersistence();
     }
 
     await prompt(script.introPrompt, "intro");
@@ -558,26 +593,29 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       }
       for (const compression of compressions) {
         const appliedAt = carrierObservations.find((observation) =>
-          observation.parts.length === compression.carrierHashes.length
+          observation.memoryId === compression.id && observation.request > compression.request
+          && observation.carriers === 1 && observation.parts.length === compression.carrierHashes.length
           && observation.parts.every((part, index) => part === compression.carrierHashes[index]));
         measurements.acceptanceToApplication.push({
           id: compression.id, operation: compression.operation, phase: compression.phase,
           recordedAtRequest: compression.request, appliedAtRequest: appliedAt?.request ?? null,
           requestGap: appliedAt ? appliedAt.request - compression.request : null,
         });
-        if (compression.phase === "work" && appliedAt && appliedAt.request >= 2) {
-          const before = reportedInputOf(requests[appliedAt.request - 2]);
-          const after = reportedInputOf(requests[appliedAt.request - 1]);
-          if (before !== null && after !== null) {
-            const change = after - before;
-            measurements.netInputChange = measurements.netInputChange === null ? change : measurements.netInputChange + change;
-          }
-        }
       }
+      measurements.netInputChange = netInputChangeOf(compressions, carrierObservations, requests);
       const peaks = requests.map((row) => reportedInputOf(row)).filter((tokens) => tokens !== null);
       measurements.peakPromptTokens = peaks.length > 0 ? Math.max(...peaks) : null;
     }
     if (!measurements.prefixStable) failures.add("memory-prefix-unstable");
+    measurements.persistence = persistence;
+    try {
+      measurements.nativeReplay = measureNativeSessionReplay({ sessionPath: sessionManager.getSessionFile(), currentSessionManager: sessionManager });
+      if (!measurements.nativeReplay.branchEquivalent || !measurements.nativeReplay.memoryEquivalent
+        || !measurements.nativeReplay.diskUnchanged || !measurements.nativeReplay.directoryEntriesUnchanged) failures.add("native-replay-mismatch");
+    } catch {
+      measurements.nativeReplay = null;
+      failures.add("native-replay-unavailable");
+    }
     // A recording whose full carrier never rode a later request is reported
     // as a measurement, not an integrity failure: a due rebuild legitimately
     // replaces the full carrier with the prefix-only serving view (#321), and

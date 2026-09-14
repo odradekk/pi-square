@@ -5,10 +5,18 @@ assert.deepEqual(SCENARIOS.map((x) => x.id), ["exact-work", "constraint-reversal
 assert.deepEqual(PLACEMENTS, ["early", "middle", "late"]);
 assert.equal(new Set(Array.from({ length: 12 }, (_, index) => workloadPrompt(index + 1))).size, 12);
 assert.match(workloadPrompt(12), /handoff readiness/);
+assert.match(workloadPrompt(1), /normal user-facing reply/);
+assert.match(workloadPrompt(1), /does not prohibit requested Context Memory maintenance/);
 for (const scenario of SCENARIOS) {
   const scripts = PLACEMENTS.map((v) => buildScript(scenario.id, v));
   for (const script of scripts) {
     assert.ok(script.introPrompt.length >= 40_000); assert.equal(script.artifactPath, "handoff.json");
+    assert.match(script.introPrompt, /Context Memory is conversation state[\s\S]*preserve the non-secret brief facts in Memory/);
+    assert.match(script.introPrompt, /do not write these facts to ordinary workspace files.*before the explicit final handoff/);
+    assert.match(script.finalPrompt, /separate current Context Memory maintenance advisory explicitly requests compaction/);
+    assert.match(script.finalPrompt, /do not initiate or retry compression[\s\S]*SOURCE_NOT_SERVED[\s\S]*wait for a new advisory/);
+    assert.doesNotMatch(script.finalPrompt, /Context Memory: compression is due/);
+    if (script.oracle.requireOriginalEvidence) assert.match(script.finalPrompt, /Reading Memory verifies facts[\s\S]*not permission.*compression/);
     assert.ok(Object.hasOwn(script.setupFiles, "status.mjs"));
     assert.ok(Object.values(script.setupFiles).every((text) => !script.evidenceTokens.some((token) => text.includes(token))));
     for (const value of Object.values(script.oracle.expected)) {

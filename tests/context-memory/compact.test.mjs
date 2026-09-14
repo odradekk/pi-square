@@ -132,6 +132,11 @@ try {
       ["compact_to_memory_block", "read_memory_source", "search_memory_source"],
       "the registrar registers exactly the resident compression, reading, and search tools");
     assert.ok(!session.tools.has("submit_memory"), "the retired submission name has no alias");
+    const guidance = compactTool(session).description;
+    assert.match(guidance, /current.*advisory/i, "the registered tool explains the maintenance invitation");
+    assert.match(guidance, /conversation state.*workspace file/i, "Memory is distinguished from ordinary file output");
+    assert.match(session.tools.get("read_memory_source").description, /does not authorize.*(?:compression|rebuild)/i,
+      "source recovery must not suggest that pages grant compression authority");
 
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     assert.ok(session.activeTools().includes("compact_to_memory_block"),

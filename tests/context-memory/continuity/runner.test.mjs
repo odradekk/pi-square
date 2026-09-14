@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { PLACEMENTS, SCENARIOS, buildScript } from "./scenarios.mjs";
 import { evaluateGates } from "./oracles.mjs";
 import { MODEL_LANES, RUN_LIMITS, SCHEDULE_POLICY, buildPrivateEvidence, deriveSeed, executeRun, pinEnvironment, planRuns, qualificationStatus, resolveRunModels, runLabel, safeRetrieval, safeUsage, selectRerunScope } from "./runner.mjs";
-import { responseUsage } from "./session.mjs";
+import { netInputChangeOf, responseUsage } from "./session.mjs";
 
 // These tests exercise the runner's public boundary with returned native-run
 // shapes. They do not simulate an AgentSession or a provider.
@@ -39,9 +39,25 @@ import { responseUsage } from "./session.mjs";
   const run = planRuns()[0];
   const result = await executeRun({ run, runtime: null, sessionRunner: async () => { throw new Error("Pi request deadline exceeded"); } });
   assert.equal(result.score.result, "inconclusive");
-  assert.match(result.error, /deadline/);
+  assert.equal(result.error, "native-session-timeout");
+  assert.equal(result.diagnostic.kind, "error");
   assert.equal(result.terminal, "timeout");
   assert.equal(result.integrity.ok, false);
+}
+
+{
+  const hashes = ["a", "b"];
+  const compressions = [{ id: "state-new", phase: "work", request: 2, carrierHashes: hashes }];
+  const requests = [{ input: 100 }, { input: 80 }, { input: 70 }, { input: 50 }];
+  const observations = [
+    { memoryId: "state-old", request: 1, carriers: 1, parts: hashes },
+    { memoryId: "state-new", request: 2, carriers: 1, parts: hashes },
+    { memoryId: "state-new", request: 3, carriers: 2, parts: hashes },
+    { memoryId: "state-new", request: 3, carriers: 1, parts: ["wrong", "hashes"] },
+    { memoryId: "state-new", request: 4, carriers: 1, parts: hashes },
+  ];
+  assert.equal(netInputChangeOf(compressions, observations, requests), -20,
+    "input change uses the first later unique carrier with the recorded state identity");
 }
 
 {
@@ -122,6 +138,9 @@ import { responseUsage } from "./session.mjs";
   assert.deepEqual({ cacheRead: responseUsage(positive, "final", 1, []).cacheRead,
     cacheWrite: responseUsage(positive, "final", 1, []).cacheWrite }, { cacheRead: 7, cacheWrite: 3 },
   "positive native cache measurements remain distinct from unknown normalized zeroes");
+  const failed = responseUsage({ ...omitted, api: "openai-completions", stopReason: "error", errorMessage: "429 private provider body" }, "final", 2, []);
+  assert.deepEqual([failed.diagnostic.kind, failed.diagnostic.status, failed.diagnostic.reason], ["provider-http", 429, "rate-limited"]);
+  assert.equal(JSON.stringify(safeUsage([failed])).includes("private provider body"), false);
 
   const openai = await import("@earendil-works/pi-ai/api/openai-completions");
   const chunks = [
@@ -169,7 +188,8 @@ import { responseUsage } from "./session.mjs";
 {
   const result = await executeRun({ run: planRuns()[0], runtime: null, sessionRunner: async () => { throw new Error("Authorization: Bearer secret-value"); } });
   assert.equal(result.score.result, "inconclusive");
-  assert.ok(!result.error.includes("secret-value"), "public errors pass through the shared credential cleaner");
+  assert.equal(result.error, "native-session-error");
+  assert.ok(!JSON.stringify(result.diagnostic).includes("secret-value"), "public diagnostics never retain exception bodies");
 }
 
 {

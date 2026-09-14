@@ -8,6 +8,8 @@ import { createJiti } from "jiti";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { CONTINUITY_SESSION_CONFIG } from "./session.mjs";
 import { SEED_MEMORY } from "./scenarios.mjs";
+import { safeNativeReplay } from "./replay-check.mjs";
+import { safeDiagnosticProjection, safeErrorDiagnostic } from "../qualification/diagnostics.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(HERE, "..", "..", "..");
@@ -190,18 +192,22 @@ function compactIntegrity(value = {}) {
   return { ok: value.ok === true, failures: Array.isArray(value.failures) ? value.failures.slice(0, 32).map(String) : ["missing integrity"] };
 }
 export function safeUsage(requests) {
-  return (Array.isArray(requests) ? requests : []).slice(0, RUN_LIMITS.requests).map(({ phase, request, stopReason, input, output, cacheRead, cacheWrite, tools, activeTools, errorPresent }) => ({
-    phase: typeof phase === "string" ? phase : null,
-    request: Number.isInteger(request) ? request : null,
-    stopReason: typeof stopReason === "string" ? stopReason : null,
-    input: Number.isFinite(input) ? input : null,
-    output: Number.isFinite(output) ? output : null,
-    cacheRead: Number.isFinite(cacheRead) ? cacheRead : null,
-    cacheWrite: Number.isFinite(cacheWrite) ? cacheWrite : null,
-    tools: Array.isArray(tools) ? tools.slice(0, 16).filter((tool) => typeof tool === "string").map((tool) => sanitizeDisplayText(tool).slice(0, 128)) : [],
-    activeTools: Array.isArray(activeTools) ? activeTools.slice(0, 32).filter((tool) => typeof tool === "string").map((tool) => sanitizeDisplayText(tool).slice(0, 128)) : [],
-    errorPresent: errorPresent === true,
-  }));
+  return (Array.isArray(requests) ? requests : []).slice(0, RUN_LIMITS.requests).map(({ phase, request, stopReason, input, output, cacheRead, cacheWrite, tools, activeTools, errorPresent, diagnostic }) => {
+    const projectedDiagnostic = safeDiagnosticProjection(diagnostic);
+    return {
+      phase: typeof phase === "string" ? phase : null,
+      request: Number.isInteger(request) ? request : null,
+      stopReason: typeof stopReason === "string" ? stopReason : null,
+      input: Number.isFinite(input) ? input : null,
+      output: Number.isFinite(output) ? output : null,
+      cacheRead: Number.isFinite(cacheRead) ? cacheRead : null,
+      cacheWrite: Number.isFinite(cacheWrite) ? cacheWrite : null,
+      tools: Array.isArray(tools) ? tools.slice(0, 16).filter((tool) => typeof tool === "string").map((tool) => sanitizeDisplayText(tool).slice(0, 128)) : [],
+      activeTools: Array.isArray(activeTools) ? activeTools.slice(0, 32).filter((tool) => typeof tool === "string").map((tool) => sanitizeDisplayText(tool).slice(0, 128)) : [],
+      errorPresent: errorPresent === true,
+      ...(projectedDiagnostic ? { diagnostic: projectedDiagnostic } : {}),
+    };
+  });
 }
 export function safeRetrieval(value = {}) {
   const proof = (Array.isArray(value.proof) ? value.proof : []).slice(0, 16).map((row) => ({
@@ -277,7 +283,9 @@ export async function executeRun({ runtime, model, sessionRunner, run, exactSecr
     if (signal?.aborted) return cancelledRecord(run, "cancelled", script);
     const message = errorText(error, exactSecrets);
     const terminal = /\b(?:deadline|timed?\s*out|timeout)\b/i.test(message) ? "timeout" : "error";
-    return { run, script, result: null, integrity: { ok: false, failures: [message] }, coverage: compactCoverage(), score: inconclusiveScore(run, message), terminal, error: message };
+    const publicMessage = terminal === "timeout" ? "native-session-timeout" : "native-session-error";
+    return { run, script, result: null, integrity: { ok: false, failures: [publicMessage] }, coverage: compactCoverage(), score: inconclusiveScore(run, publicMessage), terminal, error: publicMessage,
+      diagnostic: safeErrorDiagnostic(error, { repoRoot: PACKAGE_ROOT }) };
   }
 }
 
@@ -316,6 +324,7 @@ function summary(record) {
     retrievalArm: run.retrievalArm, seed: run.seed, scriptDigest: run.scriptDigest, evaluationDigest: run.evaluationDigest, model: run.model,
     retrievalCapabilityDigest: run.retrievalCapabilityDigest,
     status: record.terminal, ok: score.result === "pass", integrity, coverage, error,
+    diagnostic: safeDiagnosticProjection(record.diagnostic),
     score: {
       result: score.result, severe: score.severe, critical: score.critical, continuity: score.continuity,
       artifactValid: score.artifactValid === true, sourceVerified: score.sourceVerified === true, finalTask: score.finalTask,
@@ -345,6 +354,9 @@ function safeMeasurements(value = {}) {
     refusals: value.refusals && typeof value.refusals === "object" ? Object.fromEntries(Object.entries(value.refusals).slice(0, 8).map(([code, count]) => [sanitizeDisplayText(String(code)).slice(0, 48), Number(count) || 0])) : {},
     peakPromptTokens: Number.isFinite(value.peakPromptTokens) ? value.peakPromptTokens : null,
     netInputChange: Number.isInteger(value.netInputChange) ? value.netInputChange : null,
+    nativeReplay: safeNativeReplay(value.nativeReplay),
+    persistence: value.persistence ? Object.fromEntries(["seedBytes", "finalBytes", "peakBytes", "appendedBytes"]
+      .map((key) => [key, Number.isSafeInteger(value.persistence[key]) && value.persistence[key] >= 0 ? value.persistence[key] : null])) : null,
   };
 }
 
@@ -608,7 +620,8 @@ export async function runQualification({ runtime, reportDir, mode = "real", sess
     return { report, json, markdown: md, files: { reportJson: paths.report, reportMarkdown: paths.markdown, evidence: report.rawEvidence.retained ? paths.evidence : null, attempts: paths.attempts } };
   } catch (error) {
     const message = errorText(error, exactSecrets);
-    appendAttempt(paths.attempts, { at: new Date().toISOString(), attemptId: paths.attemptId, status: "failed", pins: pins.digest, error: message });
+    appendAttempt(paths.attempts, { at: new Date().toISOString(), attemptId: paths.attemptId, status: "failed", pins: pins.digest, error: "continuity-qualification-error",
+      diagnostic: safeErrorDiagnostic(error, { repoRoot: PACKAGE_ROOT }) });
     throw new Error(message);
   }
 }
@@ -686,7 +699,8 @@ export async function runRecoveryComparison({ runtime, reportDir, mode = "real",
     return { report, json, markdown: md, files: { reportJson: paths.report, reportMarkdown: paths.markdown, evidence: report.rawEvidence.retained ? paths.evidence : null, attempts: paths.attempts } };
   } catch (error) {
     const message = errorText(error, exactSecrets);
-    appendAttempt(paths.attempts, { at: new Date().toISOString(), attemptId: paths.attemptId, status: "failed", pins: pins.digest, error: message });
+    appendAttempt(paths.attempts, { at: new Date().toISOString(), attemptId: paths.attemptId, status: "failed", pins: pins.digest, error: "continuity-comparison-error",
+      diagnostic: safeErrorDiagnostic(error, { repoRoot: PACKAGE_ROOT }) });
     throw new Error(message);
   }
 }

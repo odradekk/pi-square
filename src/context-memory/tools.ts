@@ -226,9 +226,14 @@ export function createCompactMemoryToolDefinition(
     label: "Memory compact",
     description:
       "Compact the covered older conversation into one Markdown Memory block. "
-      + "Resident while Context Memory is enabled; must be the sole tool call of its batch. "
+      + "Follow the current Context Memory maintenance advisory; being available does not mean maintenance is due. "
+      + "Without a current advisory, continue the task instead of starting or repeating maintenance. "
+      + "The runtime selects the covered range and append or rebuild; submit as the sole tool call of its batch. "
+      + "Memory is conversation state, not a workspace file: preserve goals, exact task facts, decisions, constraints, uncertainty, and open work, "
+      + "while respecting explicit restrictions on retention and never including secrets. "
       + "On acceptance the next model request carries the block in place of the covered conversation; "
-      + "the run continues after the acknowledgement.",
+      + "continue the task after the acknowledgement. "
+      + "After SOURCE_NOT_SERVED, wait for a new advisory rather than retrying; reading source pages does not authorize compression.",
     parameters: CompactMemoryParamsSchema,
     executionMode: "sequential",
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
@@ -249,7 +254,9 @@ export function createReadMemorySourceToolDefinition(
     label: "Memory source",
     description:
       "Read one bounded page of the original conversation behind a Memory block. "
-      + "Available only while valid Context Memory exists on the current branch.",
+      + "Available only while valid Context Memory exists on the current branch. "
+      + "Use it to recover or verify facts missing or uncertain in a summary; follow page hints only as needed for that evidence. "
+      + "Reading pages does not authorize compression or satisfy SOURCE_NOT_SERVED; do not read or re-read blocks merely to retry a rejected rebuild.",
     parameters: ReadMemorySourceParamsSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const session = (ctx as { sessionManager?: MemorySessionReader }).sessionManager;

@@ -72,7 +72,10 @@ const { isEligibleSourceEntry } = await load("../../src/context-memory/derive.ts
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const CONTEXT_WINDOW = 40_000;
-const COMPRESSION_THRESHOLD_TOKENS = 10_500;
+// Leave room for the resident maintenance guidance after the scripted rebuild
+// so later cancellation/verification work tests the complete carrier, while
+// the earlier ordinary workload still invites both appends and the rebuild.
+const COMPRESSION_THRESHOLD_TOKENS = 11_000;
 const MEMORY_BUDGET_PERCENT = 1;
 
 const ADVISORY_NEEDLE = "compression is due";

@@ -157,6 +157,10 @@ try {
     await session.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     const dueRequest = await serveContext(session, sm, ctx);
     assert.equal(advisoriesOf(dueRequest).length, 1, "the due request carries the advisory");
+    const authoring = advisoriesOf(dueRequest)[0].content;
+    assert.match(authoring, /exact.*(?:facts|values)/i, "the served authoring instruction preserves exact task details");
+    assert.match(authoring, /unknown.*unknown/i, "uncertainty must survive compression");
+    assert.match(authoring, /conversation state.*workspace file/i, "file-output restrictions are not silently broadened to Memory");
     const dueSnapshot = session.registration.snapshot({ tokens: 40000, contextWindow: 200000 });
     assert.equal(dueSnapshot.state, "due");
     assert.equal(dueSnapshot.maintenance.sources, 3,
