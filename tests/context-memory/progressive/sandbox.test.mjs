@@ -36,6 +36,9 @@ try {
   assert.doesNotMatch(basic.stdout, /ENVIRONMENT-SECRET|PROGRESSIVE_COORDINATOR_SECRET/);
   assert.match(basic.stdout, /fds=[0-4]\n$/, "only standard streams and the directory scan descriptor are visible");
 
+  const earlyExit = await sandbox.run("exit 23", { input: "x".repeat(1024 * 1024) });
+  assert.equal(earlyExit.exitCode, 23, "a program may exit before consuming verifier input without crashing the coordinator");
+
   const denied = await sandbox.run(`for p in ${JSON.stringify(join(root, "host-secret"))} ${JSON.stringify(join(otherArm, "future-flag"))} ${JSON.stringify(join(hidden, "expected"))}; do cat "$p" 2>/dev/null || printf 'DENIED\\n'; done; cat escape 2>/dev/null || printf 'DENIED\\n'`);
   assert.equal(denied.stdout, "DENIED\nDENIED\nDENIED\nDENIED\n");
   assert.doesNotMatch(denied.stdout + denied.stderr, /SECRET/);

@@ -56,13 +56,34 @@ try {
   let probes = 0;
   let removedCarrier = false;
   let refusedAdvance = false;
+  let finalSearches = 0;
+  let finalReads = 0;
   const events = [];
   faux.setResponses(Array.from({ length: 100 }, () => context => {
     const tools = context.tools?.map(t => t.name) ?? [];
     const last = context.messages.at(-1);
     const body = typeof last.content === "string" ? last.content : last.content.map(p => p.text ?? "").join("");
-    if (body.includes("FINAL RECALL")) {
+    const finalRecall = context.messages.some(message => message.role === "user"
+      && (typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("")).includes("FINAL RECALL"));
+    if (finalRecall) {
       assert.equal(tools.includes("bash"), false); assert.equal(tools.includes("compact_to_memory_block"), false);
+      if (retainImplementation) {
+        assert.equal(tools.includes("search_memory_source"), true);
+        assert.equal(tools.includes("read_memory_source"), true);
+        if (last.role === "toolResult" && last.toolName === "search_memory_source") {
+          finalSearches++;
+          const row = /block (\d+) · page (\d+) of/.exec(body);
+          const view = /view (sv1-[0-9a-f]+)/.exec(body);
+          assert.ok(row && view, `search did not return a readable source location: ${body}`);
+          return fauxAssistantMessage(fauxToolCall("read_memory_source", { block: Number(row[1]), page: Number(row[2]), view: view[1] }), { stopReason: "toolUse" });
+        }
+        if (last.role === "toolResult" && last.toolName === "read_memory_source") {
+          finalReads++;
+          assert.ok(body.includes(known[1]), "the referenced Memory page carries the searched final identifier");
+          return fauxAssistantMessage(JSON.stringify(known));
+        }
+        return fauxAssistantMessage(fauxToolCall("search_memory_source", { terms: [known[1]] }), { stopReason: "toolUse" });
+      }
       return fauxAssistantMessage(JSON.stringify(known));
     }
     if (last.role === "toolResult" && last.toolName === "verify_stage") {
@@ -109,6 +130,8 @@ try {
   assert.equal(result.coverage.stageGates, 8);
   if (retainImplementation) assert.ok(result.coverage.rebuilds >= 2);
   else assert.equal(result.coverage.appends, 8);
+  assert.equal(finalSearches, retainImplementation ? 1 : 0);
+  assert.equal(finalReads, retainImplementation ? 1 : 0);
   console.log("progressive real Memory gates and direct-block final recall passed");
 } finally { rmSync(memoryRoot, { recursive: true, force: true }); }
 

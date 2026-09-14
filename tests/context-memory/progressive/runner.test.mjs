@@ -5,12 +5,19 @@ import { join } from "node:path";
 import { createAttempt, freezePilot, requireFreeze, runFormal, runPair, taskDigest } from "./runner.mjs";
 import { createProgressiveReport, reportMarkdown } from "./qualify.mjs";
 import { readEvidence } from "./evidence.mjs";
+import { cacheUsageObservation } from "./session.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "progressive-runner-"));
+assert.deepEqual(cacheUsageObservation({ cacheRead: 0, cacheWrite: 0 }), { readReported: false, writeReported: false, cacheRead: null, cacheWrite: null });
+assert.deepEqual(cacheUsageObservation({ cacheRead: 0, cacheWrite: 0, cacheReported: true }), { readReported: true, writeReported: true, cacheRead: 0, cacheWrite: 0 });
+assert.deepEqual(cacheUsageObservation({ cacheRead: 7, cacheWrite: 0 }), { readReported: true, writeReported: false, cacheRead: 7, cacheWrite: null });
+assert.deepEqual(cacheUsageObservation({ cacheRead: 0, cacheWrite: 3 }), { readReported: false, writeReported: true, cacheRead: null, cacheWrite: 3 });
+assert.deepEqual(cacheUsageObservation({ cacheRead: 7, cacheWrite: 3, cacheReported: false }), { readReported: false, writeReported: false, cacheRead: null, cacheWrite: null });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-const completed = arm => ({ arm, status: "passed", stages: Array.from({ length: 8 }, (_, index) => ({ stage: index + 1, passed: true })),
+const completed = arm => ({ arm, status: "passed", stages: Array.from({ length: 8 }, (_, index) => ({ stage: index + 1, passed: true, startedAtMs: index * 100, passedAtMs: index * 100 + 50, ...(arm === "memory" ? { appliedAtMs: index * 100 + 75 } : {}) })),
   recall: { correct: 8, complete: true }, coverage: { stageGates: 8, appends: 1, rebuilds: 2 },
-  metrics: { requests: 9, tools: 16, input: 100, output: 20, cacheRead: 5, cacheWrite: 2, toolBytes: 400 },
+  metrics: { requests: 9, tools: 16, input: 100, output: 20, usageReportedRequests: 9, cacheRead: 5, cacheWrite: 2, cacheReadReportedRequests: 9, cacheWriteReportedRequests: 9, toolBytes: 400,
+    toolCategories: { compaction: { count: 3, bytes: 120, elapsedMs: 30 }, retrieval: { count: 2, bytes: 80, elapsedMs: 20 } } },
   elapsedMs: 1234, evidence: { sha256: `${arm}-sha`, bytes: 200, records: 10, file: `/private/${arm}` } });
 try {
   const entered = new Set(), bothEntered = deferred(), release = deferred();
@@ -60,12 +67,21 @@ try {
 
   const report = createProgressiveReport({ kind: "formal", pairs: formal, manifest, pins });
   assert.equal(report.totals.result, "pass"); assert.equal(report.totals.memoryQualified, 3); assert.equal(report.totals.requests, 54);
+  assert.equal(report.totals.cacheReadTokens, 30); assert.deepEqual(report.totals.cacheCoverage, { readReportedRequests: 54, writeReportedRequests: 54, requests: 54 });
   assert.deepEqual(report.pairs[0].arms.memory.evidence, { sha256: "memory-sha", bytes: 200, records: 10 });
   assert.equal("file" in report.pairs[0].arms.memory.evidence, false); assert.equal(report.pairs[0].arms.memory.stagesPassed, 8);
+  assert.deepEqual(report.pairs[0].arms.memory.stages[0], { stage: 1, passed: true, startedAtMs: 0, passedAtMs: 50, appliedAtMs: 75 });
+  assert.deepEqual(report.pairs[0].arms.memory.metrics.toolCategories.retrieval, { count: 2, bytes: 80, elapsedMs: 20 });
   assert.doesNotMatch(JSON.stringify(report), /\/private\/|flags|independent-test-project-fact/);
   assert.match(reportMarkdown(report), /native failures: 0/);
   const failedStage = completed("memory"); failedStage.stages[7] = { stage: 8, passed: false };
   const bad = createProgressiveReport({ kind: "formal", pairs: formal.map((value, index) => index ? value : { ...value, arms: { ...value.arms, memory: failedStage } }), manifest, pins });
   assert.equal(bad.totals.result, "incomplete");
+  const missingCache = completed("memory"); missingCache.metrics.cacheWriteReportedRequests = 8;
+  const incompleteUsage = createProgressiveReport({ kind: "pilot", pairs: [{ ...pair, arms: { memory: missingCache, native: completed("native") } }], pins });
+  assert.equal(incompleteUsage.totals.cacheReadTokens, 10, "complete read coverage retains its total");
+  assert.equal(incompleteUsage.totals.cacheWriteTokens, null, "partial write coverage never becomes a zero or partial total");
+  assert.equal(incompleteUsage.pairs[0].arms.memory.metrics.cacheWrite, null, "the affected arm also exposes a nullable total");
+  assert.deepEqual(incompleteUsage.totals.cacheCoverage, { readReportedRequests: 18, writeReportedRequests: 17, requests: 18 });
   console.log("context-memory progressive runner: all assertions passed");
 } finally { rmSync(root, { recursive: true, force: true }); }

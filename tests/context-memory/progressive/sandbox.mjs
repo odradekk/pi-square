@@ -122,6 +122,11 @@ export function createSandbox({ workspace, maxOutputBytes = DEFAULT_OUTPUT_BYTES
         };
         const onAbort = () => stop(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
         signal?.addEventListener("abort", onAbort, { once: true });
+        // A tested program may reject input and exit before consuming stdin.
+        // Preserve its exit status; other pipe failures are infrastructure errors.
+        child.stdin.on("error", error => {
+          if (error.code !== "EPIPE") stop(new SandboxError("SANDBOX_INPUT_FAILED", error.message));
+        });
         child.stdout.on("data", capture(stdout));
         child.stderr.on("data", capture(stderr));
         child.on("error", (error) => stop(new SandboxError("SANDBOX_START_FAILED", error.message)));
