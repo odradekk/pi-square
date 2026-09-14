@@ -57,6 +57,17 @@ const wrongNamespace = await task.verify(2, async (input) => input.command === "
 assert.deepEqual(wrongNamespace.failures, [{ stage: 2, case: 1, behavior: "validation", sourceStage: 1, fieldPath: "output.namespace", expected: "project constant from the named source stage" }]);
 assert.equal(JSON.stringify(wrongNamespace).includes(flags[0]), false, "wrong flag diagnostics mask expected values");
 
+const extraRouteRecord = await task.verify(4, async (input) => {
+  const result = await execute(input);
+  if (input.command !== "route" || result.exitCode !== 0) return result;
+  const output = JSON.parse(result.stdout);
+  output.partitions.primary.push({ id: "extra" });
+  return { ...result, stdout: JSON.stringify(output) };
+});
+assert.deepEqual(extraRouteRecord.failures.at(-1), { stage: 4, case: 1, behavior: "routing", sourceStage: null,
+  fieldPath: "output.partitions.primary", expectedLength: 2, actualLength: 3, firstExtraIndex: 2 });
+for (const flag of flags) assert.equal(JSON.stringify(extraRouteRecord.failures).includes(flag), false, "array-size diagnostics never disclose flags or element values");
+
 const malformedObject = await task.verify(8, async () => ({ stdout: "null", stderr: "", exitCode: 0 }));
 for (const flag of flags) assert.equal(JSON.stringify(malformedObject).includes(flag), false, "a wrong-shaped answer must not disclose an entire expected object containing flags");
 

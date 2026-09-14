@@ -24,13 +24,13 @@ const STAGES = Object.freeze([
     name: "Partition routing",
     fact: "routing version identifier",
     command: "route",
-    prompt: `Implement \`route\`. Use the validation profile and deduplication policy identifiers released by the preceding stages as project constants. Given \`{ records }\`, partition records by the first lowercase character of \`id\`: \`a-m\` goes to \`primary\`, \`n-z\` to \`secondary\`, and every other id to \`quarantine\`. Return \`{ profile, policy, partitions }\`, where each partition preserves input order. Keep every earlier command working.`,
+    prompt: `Implement \`route\`. Use the validation profile and deduplication policy identifiers released by the preceding stages as project constants. Given \`{ records }\`, inspect the first character of each \`id\` exactly as supplied, without case normalization: ASCII lowercase \`a-m\` goes to \`primary\`, ASCII lowercase \`n-z\` to \`secondary\`, and every other id, including an uppercase first character, goes to \`quarantine\`. Return \`{ profile, policy, partitions }\`, where each partition preserves input order. Keep every earlier command working.`,
   },
   {
     name: "Incremental processing and checkpoints",
     fact: "checkpoint namespace identifier",
     command: "checkpoint",
-    prompt: `Implement \`checkpoint\`. Use the original data namespace identifier and the routing version identifier released after Partition routing as project constants. Given \`{ cursor, records }\`, return \`{ namespace, routingVersion, nextCursor, records }\`. \`cursor\` is a non-negative integer; return records after that zero-based cursor, at most two records, and set \`nextCursor\` to \`cursor + returned records.length\`. Keep every earlier command working.`,
+    prompt: `Implement \`checkpoint\`. Use the original data namespace identifier and the routing version identifier released after Partition routing as project constants. Given \`{ cursor, records }\`, return \`{ namespace, routingVersion, nextCursor, records }\`. \`cursor\` is a non-negative integer; starting at that zero-based cursor inclusively, return at most two records, and set \`nextCursor\` to \`cursor + returned records.length\`. Keep every earlier command working.`,
   },
   {
     name: "Failure recovery",
@@ -80,6 +80,10 @@ function difference(actual, expected, flags, path = "output") {
   if (expected === null || typeof expected !== "object") return { fieldPath: path, expected: expected === undefined ? "field absent" : expected };
   if (actual === null || typeof actual !== "object" || Array.isArray(actual) !== Array.isArray(expected)) {
     return { fieldPath: path, expected: Array.isArray(expected) ? "array" : "object" };
+  }
+  if (Array.isArray(expected) && actual.length !== expected.length) {
+    return { fieldPath: path, expectedLength: expected.length, actualLength: actual.length,
+      ...(actual.length > expected.length ? { firstExtraIndex: expected.length } : {}) };
   }
   for (const key of Object.keys(expected)) {
     const found = difference(actual[key], expected[key], flags, `${path}.${key}`);
