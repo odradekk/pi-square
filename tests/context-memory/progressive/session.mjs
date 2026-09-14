@@ -86,8 +86,18 @@ export async function runProgressiveSession({ directory, arm, task, model, model
     const reading = arm === "memory" && memoryAvailable ? MEMORY_TOOLS.slice(1) : [];
     if (phase === "work") return ["bash", "verify_stage", ...reading];
     if (phase === "closing") return ["close_stage", "compact_to_memory_block", ...reading];
+    if (pendingApplication) return reading;
     if (phase === "compact") return ["compact_to_memory_block", ...reading];
     return reading;
+  };
+  const maintenanceContinuation = () => {
+    if (phase === "closing") {
+      return "Use the actual registered close_stage tool interface now. Writing a tool name or XML/JSON/prose that describes a call does not execute it. Only a real successful tool result advances this stage.";
+    }
+    if (pendingApplication) {
+      return "A real compaction call was recorded and is awaiting application. Do not call it again; stop and wait. Only a later request carrying the applied Memory and replacing the flag's original message advances this stage.";
+    }
+    return "No successful compaction call has been recorded. Use the actual registered compact_to_memory_block tool interface now, as the sole tool call in its batch. Writing XML, JSON, or prose that describes a call does not execute it. Only a real recorded call and its later application advance this stage.";
   };
   const abort = () => { void session?.abort(); };
   const runSandbox = async (command, options = {}) => {
@@ -188,7 +198,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
       });
     };
     const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      systemPrompt: "You are developing a local data-processing project. Use only the supplied tools and current-stage instructions. Work in /workspace. Hidden tests are authoritative. Preserve every released project identifier for final recall. Do not attempt to access hidden verifier code or unrevealed stages.",
+      systemPrompt: "You are developing a local data-processing project. Use only the supplied tools and current-stage instructions. Invoke tools through their actual registered tool interface; writing XML, JSON, or prose that describes a tool call does not execute it. Work in /workspace. Hidden tests are authoritative. Preserve every released project identifier for final recall. Do not attempt to access hidden verifier code or unrevealed stages.",
       extensionFactories: [{ name: "progressive-coordinator", factory }, ...(contextModifierFactory ? [{ name: "progressive-test-observer", factory: pi => contextModifierFactory(pi, { sessionManager }) }] : [])] });
     await resourceLoader.reload();
     ({ session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader, sessionManager, modelRuntime,
@@ -259,7 +269,7 @@ export async function runProgressiveSession({ directory, arm, task, model, model
       await prompt(`${stage === 1 ? task.openingPrompt + "\n\n" : ""}STAGE ${stage}\n${task.prompt(stage)}`);
       while (phase !== "passed") await prompt(phase === "work"
         ? "Continue implementing the current stage and call verify_stage. The next stage remains unavailable until verification passes."
-        : "Complete this stage's closing operation and compaction. Preserve all flags. The next stage remains unavailable until the flag's original message is replaced in an applied Memory request.");
+        : maintenanceContinuation());
       stage++;
     }
     phase = "final";

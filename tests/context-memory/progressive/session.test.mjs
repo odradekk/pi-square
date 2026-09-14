@@ -58,6 +58,9 @@ try {
   let refusedAdvance = false;
   let finalSearches = 0;
   let finalReads = 0;
+  let plainMarkupAttempts = 0;
+  let markupFeedbackSeen = 0;
+  let pendingFeedbackSeen = 0;
   const events = [];
   faux.setResponses(Array.from({ length: 100 }, () => context => {
     const tools = context.tools?.map(t => t.name) ?? [];
@@ -86,14 +89,30 @@ try {
       }
       return fauxAssistantMessage(JSON.stringify(known));
     }
+    if (body.includes("Writing XML, JSON, or prose that describes a call does not execute it")) {
+      markupFeedbackSeen++;
+      assert.equal(events.some(event => event.kind === "memory-recorded"), false, "plain markup did not record Memory");
+      assert.equal(events.some(event => event.kind === "memory-applied"), false, "plain markup did not apply Memory");
+      assert.equal(events.some(event => event.kind === "stage-start" && event.stage === 2), false, "plain markup did not reveal the next stage");
+      assert.equal(tools.includes("compact_to_memory_block"), true);
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: `Completed project stage facts: ${JSON.stringify(known)}${retainImplementation ? "\nCurrent implementation reference:\n" + referenceCliSource(flags.map((_, i) => known[i+1] ?? "not-yet-issued")) : ""}` }), { stopReason: "toolUse" });
+    }
+    if (body.includes("A real compaction call was recorded and is awaiting application")) {
+      pendingFeedbackSeen++;
+      assert.equal(tools.includes("compact_to_memory_block"), false, "recorded maintenance is not offered for repetition while application is pending");
+      return fauxAssistantMessage("Waiting for the recorded Memory application.");
+    }
     if (last.role === "toolResult" && last.toolName === "verify_stage") {
       const result = JSON.parse(body); known[result.stage] = result.flag;
       assert.equal(tools.includes("compact_to_memory_block"), true);
       return fauxAssistantMessage(fauxToolCall("close_stage", {}), { stopReason: "toolUse" });
     }
-    if (last.role === "toolResult" && last.toolName === "close_stage") return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: `Completed project stage facts: ${JSON.stringify(known)}${retainImplementation ? "\nCurrent implementation reference:\n" + referenceCliSource(flags.map((_, i) => known[i+1] ?? "not-yet-issued")) : ""}` }), { stopReason: "toolUse" });
+    if (last.role === "toolResult" && last.toolName === "close_stage") {
+      if (plainMarkupAttempts++ === 0) return fauxAssistantMessage(`<invoke name="compact_to_memory_block">${JSON.stringify({ markdown: "described but not executed" })}</invoke>`);
+      return fauxAssistantMessage(fauxToolCall("compact_to_memory_block", { markdown: `Completed project stage facts: ${JSON.stringify(known)}${retainImplementation ? "\nCurrent implementation reference:\n" + referenceCliSource(flags.map((_, i) => known[i+1] ?? "not-yet-issued")) : ""}` }), { stopReason: "toolUse" });
+    }
     if (last.role === "toolResult" && last.toolName === "compact_to_memory_block") {
-      if (tools.includes("compact_to_memory_block") && !retainImplementation && removedCarrier && !refusedAdvance) {
+      if (!retainImplementation && removedCarrier && !refusedAdvance) {
         refusedAdvance = true;
         return fauxAssistantMessage("Recording acknowledged; await an actual applied request.");
       }
@@ -132,6 +151,9 @@ try {
   else assert.equal(result.coverage.appends, 8);
   assert.equal(finalSearches, retainImplementation ? 1 : 0);
   assert.equal(finalReads, retainImplementation ? 1 : 0);
+  assert.equal(plainMarkupAttempts, 8);
+  assert.equal(markupFeedbackSeen, 1);
+  assert.equal(pendingFeedbackSeen, retainImplementation ? 0 : 1);
   console.log("progressive real Memory gates and direct-block final recall passed");
 } finally { rmSync(memoryRoot, { recursive: true, force: true }); }
 
