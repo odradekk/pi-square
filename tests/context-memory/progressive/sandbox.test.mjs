@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, mkdirSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { createSandbox, SandboxError } from "./sandbox.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "progressive-sandbox-"));
@@ -14,7 +15,28 @@ mkdirSync(hidden);
 writeFileSync(join(otherArm, "future-flag"), "OTHER-ARM-SECRET\n");
 writeFileSync(join(hidden, "expected"), "HIDDEN-EXPECTED-SECRET\n");
 writeFileSync(join(root, "host-secret"), "HOST-SESSION-SECRET\n");
+const fdCanary = join(root, "host-fd-secret");
+writeFileSync(fdCanary, "HOST-FD-CANARY\n");
+const canaryFd = openSync(fdCanary, "r");
 symlinkSync(join(root, "host-secret"), join(workspace, "escape"));
+writeFileSync(join(workspace, "fd-probe.mjs"), `
+  import { fstatSync, readSync, readlinkSync, readdirSync } from "node:fs";
+  const descriptors = [];
+  for (const name of readdirSync("/proc/self/fd")) {
+    const fd = Number(name);
+    try {
+      const target = readlinkSync(\`/proc/self/fd/\${name}\`);
+      const descriptor = { target };
+      descriptors.push(descriptor);
+      if (fstatSync(fd).isFile()) {
+        const bytes = Buffer.alloc(64);
+        const count = readSync(fd, bytes, 0, bytes.length, 0);
+        descriptor.prefix = bytes.subarray(0, count).toString("utf8");
+      }
+    } catch {}
+  }
+  console.log(JSON.stringify(descriptors));
+`);
 writeFileSync(join(workspace, "malicious.mjs"), `
   import { readFileSync, writeFileSync } from "node:fs";
   const targets = ${JSON.stringify([join(root, "host-secret"), join(otherArm, "future-flag"), join(hidden, "expected"), "/workspace/escape"])};
@@ -29,12 +51,15 @@ process.env.PROGRESSIVE_COORDINATOR_SECRET = "ENVIRONMENT-SECRET";
 try {
   const sandbox = createSandbox({ workspace, maxOutputBytes: 64 * 1024 });
 
-  const basic = await sandbox.run("node --version; pwd; printf '%s' \"$PROGRESSIVE_COORDINATOR_SECRET\"; cat /proc/1/environ | tr '\\0' '\\n'; printf 'fds='; ls /proc/self/fd | wc -l", { input: "unused" });
+  const inheritedProbe = spawnSync(process.execPath, [join(workspace, "fd-probe.mjs")], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe", canaryFd] });
+  assert.match(inheritedProbe.stdout, /HOST-FD-CANARY/, "the descriptor probe detects an explicitly inherited host file");
+
+  const basic = await sandbox.run("node --version; pwd; printf '%s' \"$PROGRESSIVE_COORDINATOR_SECRET\"; cat /proc/1/environ | tr '\\0' '\\n'; node fd-probe.mjs", { input: "unused" });
   assert.equal(basic.exitCode, 0);
   assert.match(basic.stdout, /^v24\./);
   assert.match(basic.stdout, /\/workspace/);
   assert.doesNotMatch(basic.stdout, /ENVIRONMENT-SECRET|PROGRESSIVE_COORDINATOR_SECRET/);
-  assert.match(basic.stdout, /fds=[0-4]\n$/, "only standard streams and the directory scan descriptor are visible");
+  assert.doesNotMatch(basic.stdout, /HOST-FD-CANARY|host-fd-secret/, "no readable host file descriptor reaches the sandbox");
 
   const earlyExit = await sandbox.run("exit 23", { input: "x".repeat(1024 * 1024) });
   assert.equal(earlyExit.exitCode, 23, "a program may exit before consuming verifier input without crashing the coordinator");
@@ -70,6 +95,7 @@ try {
 
   console.log("context-memory progressive sandbox: all assertions passed");
 } finally {
+  closeSync(canaryFd);
   if (previousSecret === undefined) delete process.env.PROGRESSIVE_COORDINATOR_SECRET;
   else process.env.PROGRESSIVE_COORDINATOR_SECRET = previousSecret;
   rmSync(root, { recursive: true, force: true });
