@@ -86,7 +86,7 @@ export function evaluateGates(scores) {
   const aggregate = (items, family) => { const total = items.reduce((n, s) => n + s[family].total, 0); const matched = items.reduce((n, s) => n + s[family].matched, 0); return { matched, total, rate: total ? matched / total : 0 }; };
   const group = (property) => Object.fromEntries([...new Set(scores.map((s) => s.run[property]))].map((value) => { const cells = scores.filter((s) => s.run[property] === value); return [value, { critical: aggregate(cells, "critical"), continuity: aggregate(cells, "continuity"), finalTasks: cells.filter((s) => s.finalTask).length, total: cells.length }]; }));
   const byModel = group("lane"); const byScenario = group("scenario"); const critical = aggregate(scores, "critical"); const continuity = aggregate(scores, "continuity");
-  const expectedCells = new Set(["sonnet", "glm"].flatMap((lane) => SCENARIOS.flatMap((scenario) =>
+  const expectedCells = new Set(["grok", "glm"].flatMap((lane) => SCENARIOS.flatMap((scenario) =>
     PLACEMENTS.map((placement) => `${scenario.id}\0${lane}\0${placement}`))));
   const actualCells = scores.map((score) => `${score.run.scenario}\0${score.run.lane}\0${score.run.placement}`);
   const complete = actualCells.length === expectedCells.size

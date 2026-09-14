@@ -19,7 +19,7 @@ judge, summarize, or resolve this review.
 ## Required checks
 
 1. Confirm all 24 rows and 12 corresponding pairs are present:
-   `ccr-claude/claude-sonnet-5` and `cpa/glm-5.3` each run early, middle, and
+   `cpa/grok-4.6` (thinking `high`) and `cpa/glm-5.3-flash` (thinking `max`) each run early, middle, and
    late for every scenario from the same 12-case corpus. Seeds, script and
    evaluation digests must match within every pair. Both model queues must
    have started concurrently, cases and requests must be sequential inside

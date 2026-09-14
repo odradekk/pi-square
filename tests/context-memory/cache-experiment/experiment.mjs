@@ -3,6 +3,7 @@ import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ThinkingConfigurationError } from "../thinking.mjs";
 import {
   piSessionCachePrompts,
   renderPiSessionMatrix,
@@ -127,7 +128,7 @@ async function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    const detail = error instanceof CacheExperimentError
+    const detail = error instanceof CacheExperimentError || error instanceof ThinkingConfigurationError
       ? error.message
       : "Pi session or provider request failed; no report was written";
     console.error(`provider-cache experiment failed: ${detail}`);

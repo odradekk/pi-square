@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { thinkingConfiguration } from "../thinking.mjs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { HISTORICAL_REPORT_SCHEMA, MODEL_LANES, REPORT_SCHEMA, buildPairs, buildRecoveryPairs, parseQualificationReport, planCases, planRecoveryRuns, planRuns, qualificationStatus, runModelQueues } from "./runner.mjs";
+import { HISTORICAL_REPORT_SCHEMA, MODEL_LANES, REPORT_SCHEMA, VERIFIED_OFF_THINKING_REPORT_SCHEMA, buildPairs, buildRecoveryPairs, parseQualificationReport, planCases, planRecoveryRuns, planRuns, qualificationStatus, runModelQueues } from "./runner.mjs";
 import { buildScript } from "./scenarios.mjs";
 import { runContinuitySession } from "./session.mjs";
 
@@ -93,13 +94,13 @@ for (const entry of cases) {
     runtime: null,
     sessionRunner: async ({ run }) => {
       seen.push(`${run.lane}:${run.caseKey}`);
-      if (run.lane === "sonnet" && run.caseKey === cases[1].caseKey) throw new Error("isolated timeout");
+      if (run.lane === "grok" && run.caseKey === cases[1].caseKey) throw new Error("isolated timeout");
       return { artifactText: "{}", integrity: { ok: false, failures: ["fixture"] }, coverage: { ok: false, failures: ["fixture"] } };
     },
   });
   assert.equal(records.length, 24);
-  assert.equal(records.find((record) => record.run.lane === "sonnet" && record.run.caseKey === cases[1].caseKey)?.terminal, "timeout");
-  assert.ok(seen.includes(`sonnet:${cases.at(-1).caseKey}`), "a failed cell does not stop later cells in its lane");
+  assert.equal(records.find((record) => record.run.lane === "grok" && record.run.caseKey === cases[1].caseKey)?.terminal, "timeout");
+  assert.ok(seen.includes(`grok:${cases.at(-1).caseKey}`), "a failed cell does not stop later cells in its lane");
   assert.ok(seen.includes(`glm:${cases.at(-1).caseKey}`), "a failed cell does not stop the other lane");
 }
 
@@ -143,13 +144,15 @@ for (const entry of cases) {
     const providerCaptures = new Map();
     const nativeCaptures = new Map();
     const configPaths = new Map();
-    const controllers = new Map([["sonnet", new AbortController()], ["glm", new AbortController()]]);
-    const canaries = { sonnet: "NATIVE-SONNET-CANARY", glm: "NATIVE-GLM-CANARY" };
+    const controllers = new Map([["grok", new AbortController()], ["glm", new AbortController()]]);
+    const canaries = { grok: "NATIVE-GROK-CANARY", glm: "NATIVE-GLM-CANARY" };
     const requestText = (messages) => JSON.stringify(messages);
 
     function providerFor(lane) {
       const provider = fauxProvider({ provider: `continuity-overlap-${lane}`, api: `continuity-overlap-${lane}`,
         models: [{ id: `native-${lane}`, contextWindow: 100_000, maxTokens: 4096 }] });
+      Object.assign(provider.getModel(), { reasoning: true,
+        thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" } });
       provider.setResponses([async (context, options) => {
         providerCaptures.set(lane, { messages: structuredClone(context.messages),
           tools: context.tools.map((tool) => tool.name), sessionId: options?.sessionId ?? null });
@@ -161,9 +164,9 @@ for (const entry of cases) {
       return provider;
     }
 
-    const providers = { sonnet: providerFor("sonnet"), glm: providerFor("glm") };
+    const providers = { grok: providerFor("grok"), glm: providerFor("glm") };
     const runs = {
-      sonnet: { scenario: "source-recovery", placement: "early", lane: "sonnet", retrievalArm: "search-enabled" },
+      grok: { scenario: "source-recovery", placement: "early", lane: "grok", retrievalArm: "search-enabled" },
       glm: { scenario: "source-recovery", placement: "early", lane: "glm", retrievalArm: "read-only" },
     };
     const executions = Object.keys(runs).map((lane) => {
@@ -188,19 +191,19 @@ for (const entry of cases) {
       Promise.allSettled(executions).then((settled) => { throw new Error(`native sessions settled before overlap: ${JSON.stringify(settled)}`); }),
     ]);
     assert.equal(providerCaptures.size, 2, "both real AgentSession requests reach the provider before either is released");
-    const sonnetNative = nativeCaptures.get("sonnet");
+    const grokNative = nativeCaptures.get("grok");
     const glmNative = nativeCaptures.get("glm");
-    assert.notEqual(sonnetNative.sessionManager, glmNative.sessionManager, "native session managers are distinct objects");
-    assert.notEqual(sonnetNative.bucket, glmNative.bucket, "mutable context capture buckets are not shared");
-    const sonnetView = sonnetNative.bucket[0];
+    assert.notEqual(grokNative.sessionManager, glmNative.sessionManager, "native session managers are distinct objects");
+    assert.notEqual(grokNative.bucket, glmNative.bucket, "mutable context capture buckets are not shared");
+    const grokView = grokNative.bucket[0];
     const glmView = glmNative.bucket[0];
-    assert.notEqual(sonnetView.cwd, glmView.cwd);
-    assert.notEqual(sonnetView.sessionId, glmView.sessionId);
-    assert.equal(providerCaptures.get("sonnet").sessionId, sonnetView.sessionId);
+    assert.notEqual(grokView.cwd, glmView.cwd);
+    assert.notEqual(grokView.sessionId, glmView.sessionId);
+    assert.equal(providerCaptures.get("grok").sessionId, grokView.sessionId);
     assert.equal(providerCaptures.get("glm").sessionId, glmView.sessionId);
     for (const lane of Object.keys(runs)) {
       const own = nativeCaptures.get(lane).bucket[0];
-      const other = lane === "sonnet" ? "glm" : "sonnet";
+      const other = lane === "grok" ? "glm" : "grok";
       assert.equal(readFileSync(join(own.cwd, "lane-canary.txt"), "utf8"), `${canaries[lane]}\n`);
       assert.ok(requestText(providerCaptures.get(lane).messages).includes(canaries[lane]));
       assert.ok(!requestText(providerCaptures.get(lane).messages).includes(canaries[other]), "provider evidence never crosses cells");
@@ -209,9 +212,9 @@ for (const entry of cases) {
       assert.equal(JSON.parse(readFileSync(configPath, "utf8")).contextMemory.enabled, true);
       const tools = providerCaptures.get(lane).tools;
       for (const name of ["bash", "write", "compact_to_memory_block", "read_memory_source"]) assert.ok(tools.includes(name), `${lane} has ${name}`);
-      assert.equal(tools.includes("search_memory_source"), lane === "sonnet", "retrieval capability stays cell-local");
+      assert.equal(tools.includes("search_memory_source"), lane === "grok", "retrieval capability stays cell-local");
     }
-    assert.notEqual(configPaths.get("sonnet"), configPaths.get("glm"), "native agent configuration files are distinct");
+    assert.notEqual(configPaths.get("grok"), configPaths.get("glm"), "native agent configuration files are distinct");
     for (const controller of controllers.values()) controller.abort();
     release.resolve();
     const results = await Promise.all(executions);
@@ -226,7 +229,7 @@ for (const entry of cases) {
 
 {
   const runs = planRuns();
-  const left = { run: runs.find((run) => run.lane === "sonnet"), terminal: "success",
+  const left = { run: runs.find((run) => run.lane === "grok"), terminal: "success",
     result: { requests: [{ input: 100, cacheRead: 3, cacheWrite: 2 }], phaseLatency: [{ ms: 20 }],
       retrievalQualification: { searches: 1, targetedReads: 0, pageReads: 1, returnedEvidenceBytes: 50 } },
     score: { fields: [] }, integrity: {}, coverage: { appends: 1, rebuilds: 2 } };
@@ -237,18 +240,18 @@ for (const entry of cases) {
   const pairs = buildPairs([left, right]);
   assert.equal(pairs.length, 12);
   assert.deepEqual(pairs[0].differences, {
-    direction: "glm-minus-sonnet", inputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 2,
+    direction: "glm-minus-grok", inputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 2,
     searches: 2, targetedReads: 1, pageReads: 1, elapsedMs: 10, returnedEvidenceBytes: 20,
     appends: 1, rebuilds: 2,
   });
-  assert.equal(pairs.filter((pair) => pair.sonnet === null || pair.glm === null).length, 11, "missing sides remain explicit");
+  assert.equal(pairs.filter((pair) => pair.grok === null || pair.glm === null).length, 11, "missing sides remain explicit");
   right.result.requests[0].cacheWrite = null;
   assert.equal(buildPairs([left, right])[0].differences.cacheWriteTokens, null, "missing usage never becomes zero");
 }
 
 {
   const [enabledRun, readOnlyRun] = (() => {
-    const planned = planRecoveryRuns().filter((run) => run.lane === "sonnet" && run.placement === "early");
+    const planned = planRecoveryRuns().filter((run) => run.lane === "grok" && run.placement === "early");
     return [planned.find((run) => run.retrievalArm === "search-enabled"), planned.find((run) => run.retrievalArm === "read-only")];
   })();
   const record = (run, values) => ({ run, terminal: "pass", result: { requests: [values.usage], phaseLatency: [{ ms: values.elapsed }],
@@ -270,7 +273,39 @@ for (const entry of cases) {
   const historical = parseQualificationReport({ schema: HISTORICAL_REPORT_SCHEMA, runs: Array.from({ length: 16 }, () => ({})) });
   assert.equal(historical.kind, "historical-16-cell-asymmetric");
   assert.equal(historical.currentQualification, false);
-  assert.equal(parseQualificationReport({ schema: REPORT_SCHEMA, completeness: { expected: 24 } }).currentQualification, true);
+  const old24 = parseQualificationReport({ schema: "pi-square.context-memory/continuity-qualification/3", completeness: { expected: 24 } });
+  assert.equal(old24.currentQualification, false, "old requested-only thinking pins never qualify as verified settings");
+  const verifiedOff = parseQualificationReport({ schema: VERIFIED_OFF_THINKING_REPORT_SCHEMA, completeness: { expected: 24 } });
+  assert.equal(verifiedOff.kind, "historical-24-cell-off-thinking");
+  assert.equal(verifiedOff.currentQualification, false, "the prior off experiment is never relabeled as the current per-lane experiment");
+  const historicalLow = parseQualificationReport({ schema: "pi-square.context-memory/continuity-qualification/5" });
+  assert.equal(historicalLow.kind, "historical-24-cell-low-thinking");
+  assert.equal(historicalLow.currentQualification, false);
+  assert.throws(() => parseQualificationReport({ schema: REPORT_SCHEMA, completeness: { expected: 24 } }), /verified thinking pins/);
+  const model = { reasoning: true, thinkingLevelMap: { off: "off", minimal: "minimal", low: "low", high: "high", max: "max" } };
+  assert.equal(thinkingConfiguration(model).requested, "low", "the separate cache experiment keeps its default level");
+  const pins = { models: {
+    grok: { provider: "cpa", id: "grok-4.6" }, glm: { provider: "cpa", id: "glm-5.3-flash" },
+  }, modelThinking: {
+    grok: thinkingConfiguration(model, "high"), glm: thinkingConfiguration(model, "max"),
+  } };
+  const report = { schema: REPORT_SCHEMA, completeness: { expected: 24 }, pins,
+    runs: planRuns().map((run) => ({ run: `${run.scenario}/${run.placement}/${run.lane}/${run.retrievalArm}`, lane: run.lane,
+      model: { provider: MODEL_LANES[run.lane].provider, id: MODEL_LANES[run.lane].id },
+      thinking: { ...pins.modelThinking[run.lane], session: pins.modelThinking[run.lane].requested } })) };
+  assert.equal(parseQualificationReport(report).currentQualification, true);
+  for (const runs of [[], report.runs.slice(1), [...report.runs.slice(1), report.runs[1]]]) {
+    assert.equal(parseQualificationReport({ ...report, runs }).currentQualification, false, "every expected cell needs observed settings");
+  }
+  for (const thinking of [null, { ...report.runs[0].thinking, session: undefined },
+    { ...report.runs[0].thinking, session: "off" }, { ...report.runs[0].thinking, mappingSha256: "b".repeat(64) }]) {
+    const runs = [{ ...report.runs[0], thinking }, ...report.runs.slice(1)];
+    assert.equal(parseQualificationReport({ ...report, runs }).currentQualification, false, "actual session settings must match their model pin");
+  }
+  const wrongModel = { ...report, runs: [{ ...report.runs[0], model: { provider: "cpa", id: "wrong" } }, ...report.runs.slice(1)] };
+  assert.equal(parseQualificationReport(wrongModel).currentQualification, false, "every run records its chosen lane model identity");
+  assert.throws(() => parseQualificationReport({ ...report, pins: { ...pins, models: { ...pins.models, grok: { provider: "cpa", id: "wrong" } } } }),
+    /verified thinking pins/, "the report-level model pin must match its chosen lane");
   assert.throws(() => parseQualificationReport({ schema: "unknown" }), /unsupported continuity report schema/);
 }
 

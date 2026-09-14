@@ -255,7 +255,9 @@ export function createReadMemorySourceToolDefinition(
     description:
       "Read one bounded page of the original conversation behind a Memory block. "
       + "Available only while valid Context Memory exists on the current branch. "
-      + "Use it to recover or verify facts missing or uncertain in a summary; follow page hints only as needed for that evidence. "
+      + "Use it when the task requests original-source verification, or to recover facts that a summary leaves missing or uncertain; "
+      + "follow page hints only as needed for that evidence. "
+      + "A summary or assistant copy never substitutes for requested original-source verification. "
       + "Reading pages does not authorize compression or satisfy SOURCE_NOT_SERVED; do not read or re-read blocks merely to retry a rejected rebuild.",
     parameters: ReadMemorySourceParamsSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -285,8 +287,9 @@ export function createSearchMemorySourceToolDefinition(
       + "other textual clues; try alternative terms when a search is unhelpful. Snippets that "
       + "already carry the needed evidence need no page read; read the indicated page with "
       + "read_memory_source (passing the view token) when qualifiers, scope, or neighboring "
-      + "context are missing. No matches, clipped results, or an unhelpful page never prove a "
-      + "fact is absent from the sources.",
+      + "context are missing. A complete search means only that its bounded term scan finished, "
+      + "not that an excerpt is a complete page or source. No matches, clipped results, or an "
+      + "unhelpful page never prove a fact is absent from the sources.",
     parameters: SearchMemorySourceParamsSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const session = (ctx as { sessionManager?: MemorySessionReader }).sessionManager;

@@ -8,12 +8,13 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import jiti from "jiti";
+import { REQUESTED_THINKING_LEVEL, requireThinkingConfiguration, requireSessionThinking } from "../thinking.mjs";
 
 const load = jiti(import.meta.url, { moduleCache: false });
 const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG } = await load("../../../src/context-memory/format.ts");
 
-const SCHEMA = "pi-square.context-memory/pi-session-cache-sequence/2";
-const MATRIX_SCHEMA = "pi-square.context-memory/pi-session-cache-matrix/2";
+const SCHEMA = "pi-square.context-memory/pi-session-cache-sequence/3";
+const MATRIX_SCHEMA = "pi-square.context-memory/pi-session-cache-matrix/3";
 const DEFAULT_CONTEXT_WINDOW = 100_000;
 const COMPRESSION_THRESHOLD = 3_500;
 const MEMORY_BUDGET_PERCENT = 1;
@@ -120,6 +121,7 @@ function prepareEnvironment(packageRoot, workspaceCount = 1) {
  * native compaction anywhere.
  */
 async function runSequenceInEnvironment({ modelRuntime, model, prompts, environment, cwd }) {
+  const thinking = requireThinkingConfiguration(model);
   if (!Array.isArray(prompts) || prompts.length < 2 || prompts.some((prompt) => typeof prompt !== "string" || prompt.length === 0)) {
     throw new Error("the Pi cache sequence requires at least two non-empty prompts");
   }
@@ -147,9 +149,10 @@ async function runSequenceInEnvironment({ modelRuntime, model, prompts, environm
       sessionManager,
       modelRuntime,
       model: measuredModel,
-      thinkingLevel: "off",
+      thinkingLevel: REQUESTED_THINKING_LEVEL,
     }));
     const extensionErrors = [];
+    requireSessionThinking(session, thinking);
     await session.bindExtensions({
       mode: "print",
       onError: (error) => extensionErrors.push(String(error?.message ?? error)),
@@ -236,13 +239,14 @@ async function runSequenceInEnvironment({ modelRuntime, model, prompts, environm
         retries: "disabled",
       },
       configuration: {
+        thinking: { ...thinking, session: session.thinkingLevel },
         compressionThresholdTokens: COMPRESSION_THRESHOLD,
         memoryBudgetPercent: MEMORY_BUDGET_PERCENT,
         autoCompaction: false,
       },
       prompts: promptRows,
       requests,
-      cache: { all, warm },
+      cache: { basis: "pi-normalized-usage", zeroFieldPresence: "unknown", all, warm },
       session: {
         extensionLoaded: session.extensionRunner.getExtensionPaths().some((path) => path.endsWith("/src/index.ts")),
         memoryStateEntries: stateEntries.length,
@@ -258,6 +262,7 @@ async function runSequenceInEnvironment({ modelRuntime, model, prompts, environm
 
 /** Run one isolated real Pi session sequence. */
 export async function runPiSessionSequence(options) {
+  requireThinkingConfiguration(options.model);
   const environment = prepareEnvironment(options.packageRoot);
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = environment.agentDir;
@@ -275,6 +280,8 @@ export async function runPiSessionMatrix({ packageRoot, modelRuntime, models, pr
   if (!Array.isArray(models) || models.length === 0 || models.length > 3) {
     throw new Error("the Pi cache matrix requires one to three models");
   }
+  // Validate the complete matrix before a supported sibling can start spending.
+  models.forEach((model) => requireThinkingConfiguration(model));
   const environment = prepareEnvironment(packageRoot, models.length);
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = environment.agentDir;
@@ -343,5 +350,6 @@ export function renderPiSessionMatrix(report) {
     lines.push(`${model} ${percent(row.allHitRate).padEnd(10)} ${percent(row.warmHitRate).padEnd(10)} ${String(row.requests).padEnd(9)} ${String(row.memoryStateEntries).padEnd(13)} ${String(row.maximumMemoryBlocks).padEnd(7)} ${row.integrityOk ? "ok" : "FAILED"}`);
   }
   lines.push("rate = cacheRead / (input + cacheRead + cacheWrite); warm excludes only the first request, which is not necessarily cold");
+  lines.push("basis: Pi-normalized usage; zero cache fields do not distinguish provider-reported zero from missing fields, so these rates are not exact raw-provider cache rates");
   return lines.join("\n");
 }

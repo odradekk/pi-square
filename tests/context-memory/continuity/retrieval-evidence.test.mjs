@@ -45,6 +45,21 @@ function searchResult(excerpt = SOURCE, { error = false, view = "sv1-current", c
   };
 }
 
+for (const complete of [false, true]) {
+  const value = collector();
+  const failed = pair("search", {}, searchResult(SOURCE, { error: true }));
+  const retried = pair("search", { terms: ["recovery"] }, searchResult(complete ? SOURCE : SOURCE.replace("legacy checksum is unknown", "legacy checksum")));
+  for (const item of [failed, retried]) {
+    value.toolStart(item.start, memory); value.toolEnd(item.end); value.context(item.messages, memory);
+  }
+  handoff(value);
+  const report = value.finalize("{}").report;
+  assert.equal(report.failedCalls, 1, "a recovered call error remains measurable");
+  assert.equal(report.qualified, complete);
+  assert.equal(report.code, complete ? "qualified-search-snippet" : "source-evidence-incomplete",
+    "an earlier error cannot hide the evidence coverage of an observed successful retry");
+}
+
 {
   const value = collector();
   const item = pair("search", { terms: ["recovery"] }, searchResult(SOURCE, { complete: false }));

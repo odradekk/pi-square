@@ -10,29 +10,48 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
 {
   const runs = planRuns();
   assert.equal(runs.length, 24);
-  assert.equal(runs.filter((run) => run.lane === "sonnet").length, 12);
+  assert.equal(runs.filter((run) => run.lane === "grok").length, 12);
   assert.equal(runs.filter((run) => run.lane === "glm").length, 12);
   for (const scenario of SCENARIOS) {
-    assert.deepEqual(runs.filter((run) => run.scenario === scenario.id && run.lane === "sonnet").map((run) => run.placement), PLACEMENTS);
+    assert.deepEqual(runs.filter((run) => run.scenario === scenario.id && run.lane === "grok").map((run) => run.placement), PLACEMENTS);
     assert.deepEqual(runs.filter((run) => run.scenario === scenario.id && run.lane === "glm").map((run) => run.placement), PLACEMENTS);
   }
   assert.deepEqual(runs.map((run) => run.seed), planRuns().map((run) => run.seed));
   assert.equal(new Set(runs.map((run) => run.seed)).size, 12);
-  assert.deepEqual(runs[0].model, MODEL_LANES.sonnet);
+  assert.deepEqual(runs[0].model, MODEL_LANES.grok);
   assert.deepEqual(runs.at(-1).model, MODEL_LANES.glm);
   assert.equal(RUN_LIMITS.requests, 80);
 }
 
 {
   const run = planRuns()[0];
+  let requestedThinkingLevel;
   const result = await executeRun({
     run,
     runtime: null,
-    sessionRunner: async () => ({ integrity: { ok: false, failures: ["native JSONL was replaced"] }, coverage: { ok: false, failures: ["raw source appeared"], memoryStates: 0, appends: 0, rebuilds: 0 } }),
+    sessionRunner: async ({ thinkingLevel }) => {
+      requestedThinkingLevel = thinkingLevel;
+      return { integrity: { ok: false, failures: ["native JSONL was replaced"] }, coverage: { ok: false, failures: ["raw source appeared"], memoryStates: 0, appends: 0, rebuilds: 0 } };
+    },
   });
+  assert.equal(requestedThinkingLevel, "high", "each Grok cell passes its lane thinking pin to the session runner");
   assert.equal(result.score.result, "inconclusive", "integrity or coverage failure reaches the oracle as inconclusive");
   assert.equal(result.error, null, "a valid terminal native result is not an execution exception");
   assert.ok(result.score.failures.some((failure) => failure.code === "integrity"));
+}
+
+{
+  const run = planRuns()[0];
+  const result = await executeRun({ run, runtime: null, sessionRunner: async () => ({
+    integrity: { ok: false, failures: ["fixture"] }, coverage: {
+      ok: false, failures: ["raw source appeared"], memoryStates: 0, appends: 0, rebuilds: 0,
+      finalContextObserved: true, rawSourceAbsent: false,
+      rawSourceDiagnostic: { detector: "evidence-token", messageIndex: 2, partType: "thinking", field: "thinking", body: "PROJECT-ZEBRA-71" },
+    },
+  }) });
+  assert.deepEqual(result.coverage.rawSourceDiagnostic, { detector: "evidence-token", messageIndex: 2, partType: "thinking", field: "thinking" });
+  assert.equal(JSON.stringify(result.coverage).includes("PROJECT-ZEBRA-71"), false,
+    "runner reports only the closed structural diagnostic projection");
 }
 
 {
@@ -77,7 +96,8 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
 }
 
 {
-  const actual = new Map(Object.entries(MODEL_LANES).map(([arm, pin]) => [arm, { ...pin, api: `${arm}-native-api` }]));
+  const actual = new Map(Object.entries(MODEL_LANES).map(([arm, pin]) => [arm, { ...pin, api: `${arm}-native-api`, reasoning: true,
+    thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" } }]));
   const runtime = {
     getModel(provider, id) { return [...actual.values()].find((model) => model.provider === provider && model.id === id); },
     hasConfiguredAuth() { return false; },
@@ -85,10 +105,33 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
   };
   const resolved = await resolveRunModels(runtime);
   assert.equal(resolved.modelRuntime, runtime);
-  assert.equal(resolved.models.get("sonnet").api, "sonnet-native-api");
-  assert.ok(resolved.exactSecrets.includes("ccr-claude-key"));
+  assert.equal(resolved.models.get("grok").api, "grok-native-api");
+  assert.ok(resolved.exactSecrets.includes("cpa-key"));
+  assert.equal(resolved.thinking.grok.requested, "high");
+  assert.equal(resolved.thinking.grok.effective, "high");
   assert.ok(resolved.exactSecrets.includes("cpa-header"));
+  assert.equal(resolved.thinking.glm.requested, "max");
+  assert.equal(resolved.thinking.glm.effective, "max");
+  assert.match(resolved.thinking.glm.mappingSha256, /^[a-f0-9]{64}$/);
+  await assert.rejects(() => resolveRunModels({ ...runtime,
+    getModel(provider, id) { return id === MODEL_LANES.grok.id
+      ? { ...runtime.getModel(provider, id), thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: "max" } }
+      : runtime.getModel(provider, id); },
+  }), /requested thinking high, but Pi selects max/,
+  "an unsupported Grok high pin rejects every lane before queues start");
+  await assert.rejects(() => resolveRunModels({ ...runtime,
+    getModel(provider, id) { return id === MODEL_LANES.glm.id
+      ? { ...runtime.getModel(provider, id), thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null } }
+      : runtime.getModel(provider, id); },
+  }), /requested thinking max, but Pi selects high/,
+  "an unsupported GLM max pin rejects every lane before queues start");
   await assert.rejects(() => resolveRunModels({ ...runtime, getModel: () => undefined }), /does not define/);
+  for (const identity of [{ id: "wrong-model" }, { provider: undefined }, { id: undefined }]) {
+    await assert.rejects(() => resolveRunModels({ ...runtime,
+      getModel(provider, id) { return { ...runtime.getModel(provider, id), ...identity }; },
+      getAuth() { assert.fail("mismatched model identity must fail before authentication or paid work"); },
+    }), /resolved a different model/);
+  }
 }
 
 {
@@ -207,10 +250,10 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
 {
   assert.equal(selectRerunScope({ kind: "ui" }).runs.length, 0);
   assert.equal(selectRerunScope({ kind: "documentation" }).runs.length, 0);
-  assert.equal(selectRerunScope({ kind: "provider", lanes: ["sonnet"] }).runs.length, 12);
+  assert.equal(selectRerunScope({ kind: "provider", lanes: ["grok"] }).runs.length, 12);
   assert.equal(selectRerunScope({ kind: "defect", scenarios: [SCENARIOS[0].id] }).runs.length, 6);
   assert.equal(selectRerunScope({ kind: "unknown" }).runs.length, 24);
-  assert.equal(runLabel(planRuns()[0]), `${SCENARIOS[0].id}/early/sonnet/search-enabled`);
+  assert.equal(runLabel(planRuns()[0]), `${SCENARIOS[0].id}/early/grok/search-enabled`);
   assert.equal(deriveSeed(planRuns()[0]).length, 16);
 }
 
@@ -221,7 +264,7 @@ import { netInputChangeOf, responseUsage } from "./session.mjs";
   for (const run of planRuns()) {
     const script = buildScript(run.scenario, run.placement);
     const artifact = { ...script.oracle.expected };
-    if (run.scenario === "exact-work" && run.placement === "early" && run.lane === "sonnet") artifact.owner = null;
+    if (run.scenario === "exact-work" && run.placement === "early" && run.lane === "grok") artifact.owner = null;
     records.push(await executeRun({ run, sessionRunner: async () => ({
       artifactText: JSON.stringify(artifact), integrity: { ok: true, failures: [] },
       coverage: { ok: true, failures: [], appends: 1, rebuilds: 2 },

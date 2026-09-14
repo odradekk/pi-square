@@ -8,15 +8,20 @@ import { createJiti } from "jiti";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { CONTINUITY_SESSION_CONFIG } from "./session.mjs";
 import { SEED_MEMORY } from "./scenarios.mjs";
-import { safeNativeReplay } from "./replay-check.mjs";
+import { safeNativeReplay } from "./native-replay.mjs";
+import { safeRawSourceDiagnostic } from "./raw-source-diagnostic.mjs";
 import { safeDiagnosticProjection, safeErrorDiagnostic } from "../qualification/diagnostics.mjs";
+import { requireThinkingConfiguration } from "../thinking.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(HERE, "..", "..", "..");
-export const REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/3";
+export const REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/6";
+export const LOW_THINKING_REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/5";
+export const VERIFIED_OFF_THINKING_REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/4";
 export const HISTORICAL_REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/2";
-export const EVIDENCE_SCHEMA = "pi-square.context-memory/continuity-evidence/3";
-export const RECOVERY_REPORT_SCHEMA = "pi-square.context-memory/recovery-comparison/1";
+export const UNVERIFIED_THINKING_REPORT_SCHEMA = "pi-square.context-memory/continuity-qualification/3";
+export const EVIDENCE_SCHEMA = "pi-square.context-memory/continuity-evidence/4";
+export const RECOVERY_REPORT_SCHEMA = "pi-square.context-memory/recovery-comparison/2";
 // Each native cell retains the pre-#340 2 MiB diagnostic bound. The one
 // owner-only matrix artifact is separately capped at 24 such cells.
 const EVIDENCE_ARTIFACT_MAX_BYTES = 48 * 1024 * 1024;
@@ -33,8 +38,8 @@ export const SCHEDULE_POLICY = Object.freeze({
   note: "the seed renders at exactly half the Memory budget, so the first due maintenance appends and every later one rebuilds, for any model-authored block size",
 });
 export const MODEL_LANES = Object.freeze({
-  sonnet: Object.freeze({ provider: "ccr-claude", id: "claude-sonnet-5" }),
-  glm: Object.freeze({ provider: "cpa", id: "glm-5.3" }),
+  grok: Object.freeze({ provider: "cpa", id: "grok-4.6", thinkingLevel: "high" }),
+  glm: Object.freeze({ provider: "cpa", id: "glm-5.3-flash", thinkingLevel: "max" }),
 });
 
 export function parseQualificationReport(value) {
@@ -42,9 +47,41 @@ export function parseQualificationReport(value) {
   if (value.schema === HISTORICAL_REPORT_SCHEMA) {
     return { kind: "historical-16-cell-asymmetric", currentQualification: false, report: value };
   }
+  if (value.schema === UNVERIFIED_THINKING_REPORT_SCHEMA) {
+    return { kind: "historical-24-cell-unverified-thinking", currentQualification: false, report: value };
+  }
+  if (value.schema === VERIFIED_OFF_THINKING_REPORT_SCHEMA) {
+    return { kind: "historical-24-cell-off-thinking", currentQualification: false, report: value };
+  }
+  if (value.schema === LOW_THINKING_REPORT_SCHEMA) {
+    return { kind: "historical-24-cell-low-thinking", currentQualification: false, report: value };
+  }
   if (value.schema === REPORT_SCHEMA) {
     if (value.completeness?.expected !== 24) throw new Error("current continuity report must declare 24 expected cells");
-    return { kind: "current-24-cell-symmetric", currentQualification: true, report: value };
+    if (!Object.keys(MODEL_LANES).every((lane) => {
+      const thinking = value.pins?.modelThinking?.[lane];
+      const model = value.pins?.models?.[lane];
+      const lanePin = MODEL_LANES[lane];
+      return model?.provider === lanePin.provider && model.id === lanePin.id
+        && thinking?.requested === lanePin.thinkingLevel && thinking.effective === thinking.requested
+        && Array.isArray(thinking.supported) && thinking.supported.includes(thinking.requested)
+        && typeof thinking.mappingSha256 === "string" && /^[a-f0-9]{64}$/.test(thinking.mappingSha256);
+    })) throw new Error("current continuity report requires verified thinking pins for both models");
+    const expected = planRuns();
+    const observed = new Map(Array.isArray(value.runs) ? value.runs.map((run) => [run?.run, run]) : []);
+    const currentQualification = value.runs?.length === expected.length && observed.size === expected.length
+      && expected.every((run) => {
+        const row = observed.get(runLabel(run));
+        const thinking = row?.thinking;
+        const pin = value.pins.modelThinking[run.lane];
+        const lanePin = MODEL_LANES[run.lane];
+        return row?.lane === run.lane && row?.model?.provider === lanePin.provider && row?.model?.id === lanePin.id
+          && thinking?.requested === pin.requested
+          && thinking.effective === pin.effective && thinking.session === pin.requested
+          && thinking.mappingSha256 === pin.mappingSha256
+          && JSON.stringify(thinking.supported) === JSON.stringify(pin.supported);
+      });
+    return { kind: "current-24-cell-symmetric", currentQualification, report: value };
   }
   throw new Error(`unsupported continuity report schema: ${String(value.schema ?? "missing")}`);
 }
@@ -87,9 +124,10 @@ export function planRecoveryRuns() {
 export function runLabel(run) { return `${run.scenario}/${run.placement}/${run.lane}/${run.retrievalArm ?? "search-enabled"}`; }
 function modelMetadata(model, fallback) {
   return {
-    provider: typeof model?.provider === "string" ? model.provider : fallback.provider,
-    id: typeof model?.id === "string" ? model.id : fallback.id,
+    provider: typeof model?.provider === "string" ? model.provider : null,
+    id: typeof model?.id === "string" ? model.id : null,
     api: typeof model?.api === "string" ? model.api : null,
+    thinkingLevel: fallback.thinkingLevel,
   };
 }
 
@@ -103,10 +141,13 @@ function collectExactSecrets(authResult, output) {
 export async function resolveRunModels(runtime) {
   const modelRuntime = runtime ?? await ModelRuntime.create({ allowModelNetwork: false, refreshOnCreate: false });
   const models = new Map();
+  const thinking = {};
   const exactSecrets = new Set();
   for (const [arm, pin] of Object.entries(MODEL_LANES)) {
     const model = modelRuntime.getModel(pin.provider, pin.id);
     if (!model) throw new Error(`Pi model configuration does not define ${pin.provider}/${pin.id}`);
+    if (model.provider !== pin.provider || model.id !== pin.id) throw new Error(`Pi resolved a different model for ${pin.provider}/${pin.id}`);
+    thinking[arm] = requireThinkingConfiguration(model, pin.thinkingLevel);
     // No availability refresh runs here. Resolve auth directly; the cached
     // configured-provider snapshot is empty until Pi refreshes it.
     let authResult;
@@ -116,7 +157,7 @@ export async function resolveRunModels(runtime) {
     collectExactSecrets(authResult, exactSecrets);
     models.set(arm, model);
   }
-  return { modelRuntime, models, exactSecrets: [...exactSecrets] };
+  return { modelRuntime, models, thinking, exactSecrets: [...exactSecrets] };
 }
 
 function git(args) { const result = spawnSync("git", args, { cwd: PACKAGE_ROOT, encoding: "utf8" }); return result.status === 0 ? result.stdout.trim() : null; }
@@ -136,7 +177,7 @@ export function pinEnvironment() {
     executionConfig: {
       nativeCompaction: { enabled: false, keepRecentTokens: CONTINUITY_SESSION_CONFIG.keepRecentTokens },
       retry: { enabled: false, providerMaxRetries: 0 },
-      thinkingLevel: "off",
+      requestedThinkingLevels: Object.fromEntries(Object.entries(MODEL_LANES).map(([lane, pin]) => [lane, pin.thinkingLevel])),
       requestedTools: ["read", "bash", "write", "compact_to_memory_block", "read_memory_source", "search_memory_source"],
       finalDisabledTools: ["bash"],
     },
@@ -180,16 +221,30 @@ function redactText(value, exactSecrets = []) {
 function errorText(error, exactSecrets) { return redactText(error instanceof Error ? error.message : String(error), exactSecrets).slice(0, 1000); }
 function compactCoverage(value = {}) {
   const count = (field) => Number.isSafeInteger(value[field]) && value[field] >= 0 ? value[field] : null;
+  const rawSourceDiagnostic = safeRawSourceDiagnostic(value.rawSourceDiagnostic);
   return {
     ok: value.ok === true,
     failures: Array.isArray(value.failures) ? value.failures.slice(0, 32).map(String) : ["missing coverage"],
     memoryStates: count("memoryStates"), appends: count("appends"), rebuilds: count("rebuilds"),
     multiBlockMemory: value.multiBlockMemory === true,
-    sourceCovered: value.sourceCovered === true, rawSourceAbsent: value.rawSourceAbsent === true,
+    sourceCovered: value.sourceCovered === true, finalContextObserved: value.finalContextObserved === true,
+    rawSourceAbsent: value.rawSourceAbsent === true,
+    ...(rawSourceDiagnostic ? { rawSourceDiagnostic } : {}),
   };
 }
 function compactIntegrity(value = {}) {
   return { ok: value.ok === true, failures: Array.isArray(value.failures) ? value.failures.slice(0, 32).map(String) : ["missing integrity"] };
+}
+function safeThinking(value) {
+  if (!value) return null;
+  const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  return {
+    requested: levels.has(value.requested) ? value.requested : null,
+    effective: levels.has(value.effective) ? value.effective : null,
+    session: levels.has(value.session) ? value.session : null,
+    supported: Array.isArray(value.supported) ? [...new Set(value.supported.filter((level) => levels.has(level)))].slice(0, 7) : [],
+    mappingSha256: typeof value.mappingSha256 === "string" && /^[a-f0-9]{64}$/.test(value.mappingSha256) ? value.mappingSha256 : null,
+  };
 }
 export function safeUsage(requests) {
   return (Array.isArray(requests) ? requests : []).slice(0, RUN_LIMITS.requests).map(({ phase, request, stopReason, input, output, cacheRead, cacheWrite, tools, activeTools, errorPresent, diagnostic }) => {
@@ -235,6 +290,7 @@ export function safeRetrieval(value = {}) {
     bounded: value.bounded === true ? true : value.bounded === false ? false : null,
     code: typeof value.code === "string" ? sanitizeDisplayText(value.code).slice(0, 64) : "missing",
     searches: integerOrMissing("searches"),
+    failedCalls: integerOrMissing("failedCalls"),
     targetedReads: integerOrMissing("targetedReads"),
     pageReads: integerOrMissing("pageReads"),
     returnedEvidenceBytes: integerOrMissing("returnedEvidenceBytes"),
@@ -273,7 +329,8 @@ export async function executeRun({ runtime, model, sessionRunner, run, exactSecr
   if (!scenario) throw new Error(`unknown continuity scenario: ${run.scenario}`);
   const script = buildScript(scenario, run.placement);
   try {
-    const result = await sessionRunner({ packageRoot: PACKAGE_ROOT, modelRuntime: runtime, model: model ?? run.model, script, run, signal });
+    const result = await sessionRunner({ packageRoot: PACKAGE_ROOT, modelRuntime: runtime, model: model ?? run.model, script, run, signal,
+      thinkingLevel: run.model?.thinkingLevel ?? MODEL_LANES[run.lane]?.thinkingLevel });
     if (signal?.aborted || result?.cancelled === true) return cancelledRecord(run, "cancelled", script);
     const integrity = compactIntegrity(result?.integrity); const coverage = compactCoverage(result?.coverage);
     const score = (await oracle()).scoreRun({ run, script, artifactText: result?.artifactText, integrity, coverage, retrievalQualification: result?.retrievalQualification });
@@ -321,7 +378,8 @@ function summary(record) {
   const { score, run, integrity, coverage, result, error } = record;
   return {
     run: runLabel(run), caseKey: run.caseKey, scenario: run.scenario, placement: run.placement, lane: run.lane,
-    retrievalArm: run.retrievalArm, seed: run.seed, scriptDigest: run.scriptDigest, evaluationDigest: run.evaluationDigest, model: run.model,
+    retrievalArm: run.retrievalArm, seed: run.seed, scriptDigest: run.scriptDigest, evaluationDigest: run.evaluationDigest,
+    model: modelMetadata(result?.model, MODEL_LANES[run.lane]),
     retrievalCapabilityDigest: run.retrievalCapabilityDigest,
     status: record.terminal, ok: score.result === "pass", integrity, coverage, error,
     diagnostic: safeDiagnosticProjection(record.diagnostic),
@@ -334,6 +392,7 @@ function summary(record) {
     requests: safeUsage(result?.requests),
     retrieval: safeRetrieval(result?.retrievalQualification),
     measurements: safeMeasurements(result?.measurements),
+    thinking: safeThinking(result?.thinking),
     phaseLatency: safeLatency(result?.phaseLatency),
     elapsedMs: totalIfComplete(result?.phaseLatency, "ms"),
     isolation: result?.isolation && typeof result.isolation === "object"
@@ -354,6 +413,7 @@ function safeMeasurements(value = {}) {
     refusals: value.refusals && typeof value.refusals === "object" ? Object.fromEntries(Object.entries(value.refusals).slice(0, 8).map(([code, count]) => [sanitizeDisplayText(String(code)).slice(0, 48), Number(count) || 0])) : {},
     peakPromptTokens: Number.isFinite(value.peakPromptTokens) ? value.peakPromptTokens : null,
     netInputChange: Number.isInteger(value.netInputChange) ? value.netInputChange : null,
+    inputMeasurementBasis: "native-input-excludes-cache",
     nativeReplay: safeNativeReplay(value.nativeReplay),
     persistence: value.persistence ? Object.fromEntries(["seedBytes", "finalBytes", "peakBytes", "appendedBytes"]
       .map((key) => [key, Number.isSafeInteger(value.persistence[key]) && value.persistence[key] >= 0 ? value.persistence[key] : null])) : null,
@@ -403,29 +463,29 @@ function difference(right, left) {
 export function buildPairs(records) {
   const byCell = new Map(records.map((record) => [`${record.run.lane}\0${record.run.caseKey}`, record]));
   return planCases().map((definition) => {
-    const sonnetRecord = byCell.get(`sonnet\0${definition.caseKey}`);
+    const grokRecord = byCell.get(`grok\0${definition.caseKey}`);
     const glmRecord = byCell.get(`glm\0${definition.caseKey}`);
-    const sonnet = pairCell(sonnetRecord);
+    const grok = pairCell(grokRecord);
     const glm = pairCell(glmRecord);
     return {
       caseKey: definition.caseKey,
       scenario: definition.scenario,
       placement: definition.placement,
       seed: definition.seed,
-      sonnet,
+      grok,
       glm,
       differences: {
-        direction: "glm-minus-sonnet",
-        inputTokens: difference(glm?.usage.input.total, sonnet?.usage.input.total),
-        cacheReadTokens: difference(glm?.usage.cacheRead.total, sonnet?.usage.cacheRead.total),
-        cacheWriteTokens: difference(glm?.usage.cacheWrite.total, sonnet?.usage.cacheWrite.total),
-        searches: difference(glm?.retrieval.searches, sonnet?.retrieval.searches),
-        targetedReads: difference(glm?.retrieval.targetedReads, sonnet?.retrieval.targetedReads),
-        pageReads: difference(glm?.retrieval.pageReads, sonnet?.retrieval.pageReads),
-        elapsedMs: difference(glm?.elapsedMs, sonnet?.elapsedMs),
-        returnedEvidenceBytes: difference(glm?.retrieval.returnedEvidenceBytes, sonnet?.retrieval.returnedEvidenceBytes),
-        appends: difference(glm?.compressionCoverage.appends, sonnet?.compressionCoverage.appends),
-        rebuilds: difference(glm?.compressionCoverage.rebuilds, sonnet?.compressionCoverage.rebuilds),
+        direction: "glm-minus-grok",
+        inputTokens: difference(glm?.usage.input.total, grok?.usage.input.total),
+        cacheReadTokens: difference(glm?.usage.cacheRead.total, grok?.usage.cacheRead.total),
+        cacheWriteTokens: difference(glm?.usage.cacheWrite.total, grok?.usage.cacheWrite.total),
+        searches: difference(glm?.retrieval.searches, grok?.retrieval.searches),
+        targetedReads: difference(glm?.retrieval.targetedReads, grok?.retrieval.targetedReads),
+        pageReads: difference(glm?.retrieval.pageReads, grok?.retrieval.pageReads),
+        elapsedMs: difference(glm?.elapsedMs, grok?.elapsedMs),
+        returnedEvidenceBytes: difference(glm?.retrieval.returnedEvidenceBytes, grok?.retrieval.returnedEvidenceBytes),
+        appends: difference(glm?.compressionCoverage.appends, grok?.compressionCoverage.appends),
+        rebuilds: difference(glm?.compressionCoverage.rebuilds, grok?.compressionCoverage.rebuilds),
       },
     };
   });
@@ -483,10 +543,10 @@ function markdown(report) {
     lines.push(`| ${run.run} | ${run.status} | ${run.integrity.ok ? "ok" : "inconclusive"} | ${run.coverage.ok ? "ok" : "inconclusive"} | ${display(run.coverage.appends)}/${display(run.coverage.rebuilds)} | ${run.score.artifactValid ? "valid" : "invalid"} | ${unknownStatus} | ${run.retrieval.code} | ${display(run.retrieval.searches)}/${display(run.retrieval.targetedReads)}/${display(run.retrieval.pageReads)}/${display(run.retrieval.returnedEvidenceBytes)} | ${display(input)}/${display(cacheRead)}/${display(cacheWrite)} | ${display(run.elapsedMs)} |`);
   }
   lines.push("", "## Corresponding model pairs", "",
-    "Valid numeric differences are GLM minus Sonnet; missing provider measurements remain missing.", "",
-    "| case | Sonnet | GLM | input/cache R/cache W difference | search/targeted read/page read/evidence byte difference | append/rebuild difference | elapsed-ms difference |",
+    "Valid numeric differences are GLM minus Grok; missing provider measurements remain missing.", "",
+    "| case | Grok | GLM | input/cache R/cache W difference | search/targeted read/page read/evidence byte difference | append/rebuild difference | elapsed-ms difference |",
     "| --- | --- | --- | --- | --- | --- | --- |");
-  for (const pair of report.pairs) lines.push(`| ${pair.caseKey} | ${pair.sonnet?.terminal ?? "missing"} | ${pair.glm?.terminal ?? "missing"} | ${display(pair.differences.inputTokens)}/${display(pair.differences.cacheReadTokens)}/${display(pair.differences.cacheWriteTokens)} | ${display(pair.differences.searches)}/${display(pair.differences.targetedReads)}/${display(pair.differences.pageReads)}/${display(pair.differences.returnedEvidenceBytes)} | ${display(pair.differences.appends)}/${display(pair.differences.rebuilds)} | ${display(pair.differences.elapsedMs)} |`);
+  for (const pair of report.pairs) lines.push(`| ${pair.caseKey} | ${pair.grok?.terminal ?? "missing"} | ${pair.glm?.terminal ?? "missing"} | ${display(pair.differences.inputTokens)}/${display(pair.differences.cacheReadTokens)}/${display(pair.differences.cacheWriteTokens)} | ${display(pair.differences.searches)}/${display(pair.differences.targetedReads)}/${display(pair.differences.pageReads)}/${display(pair.differences.returnedEvidenceBytes)} | ${display(pair.differences.appends)}/${display(pair.differences.rebuilds)} | ${display(pair.differences.elapsedMs)} |`);
   lines.push("", "## Per-model totals", "",
     "Bytes are returned evidence bytes, not billed tokens.", "",
     "| model | completed / failed / inconclusive / error / timeout / cancelled / not attempted | requests | input | cache read status/total | cache write status/total | search/read/pages/bytes | states/append/rebuild | elapsed ms |",
@@ -581,6 +641,7 @@ export async function runQualification({ runtime, reportDir, mode = "real", sess
     exactSecrets = resolved.exactSecrets;
     pins = refreshPinDigest({ ...pins,
       models: Object.fromEntries([...resolved.models].map(([arm, model]) => [arm, modelMetadata(model, MODEL_LANES[arm])])),
+      modelThinking: resolved.thinking,
       retrievalCapabilities: { searchMemorySourceEnabled: true },
     });
     appendAttempt(paths.attempts, { at: new Date().toISOString(), attemptId: paths.attemptId, status: "models-resolved", pins: pins.digest });
@@ -664,6 +725,7 @@ export async function runRecoveryComparison({ runtime, reportDir, mode = "real",
     const capabilityPin = { "search-enabled": { searchMemorySourceEnabled: true }, "read-only": { searchMemorySourceEnabled: false } };
     pins = refreshPinDigest({ ...pins,
       models: Object.fromEntries([...resolved.models].map(([lane, model]) => [lane, modelMetadata(model, MODEL_LANES[lane])])),
+      modelThinking: resolved.thinking,
       retrievalCapabilities: { ...capabilityPin, digest: digest(capabilityPin) },
     });
     appendAttempt(paths.attempts, { at: new Date().toISOString(), attemptId: paths.attemptId, status: "models-resolved", pins: pins.digest });

@@ -250,6 +250,10 @@ and returns grouped block/page rows with verbatim snippets under published
 output bounds that report truncation, omission, and scan incompleteness
 truthfully — the complete response, footer and view hint included, stays
 under the published byte cap, and the term bound counts Unicode code points.
+Scan completion is distinct from excerpt completeness: matched terms may
+have omitted values or qualifiers. Tool guidance treats explicitly requested
+original-source verification independently from summary recovery or invited
+maintenance; an assistant copy does not replace the requested original evidence.
 The renderer reports non-crossable source boundaries — every entry join and
 every join where a protocol part was omitted, interrupted calls included —
 and matches and excerpts may not cross them, so no phrase is manufactured

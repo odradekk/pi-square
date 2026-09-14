@@ -3,7 +3,7 @@ import { PLACEMENTS, SCENARIOS, buildScript } from "./scenarios.mjs";
 import { scoreRun, evaluateGates } from "./oracles.mjs";
 
 const verified = { ok: true, failures: [], appends: 1, rebuilds: 2 };
-function scoreArtifact(scenario = "exact-work", placement = "early", lane = "sonnet", artifactText) {
+function scoreArtifact(scenario = "exact-work", placement = "early", lane = "grok", artifactText) {
   const script = buildScript(scenario, placement);
   return scoreRun({
     run: { scenario, placement, lane }, script,
@@ -13,7 +13,7 @@ function scoreArtifact(scenario = "exact-work", placement = "early", lane = "son
   });
 }
 
-const passingMatrix = ["sonnet", "glm"].flatMap((lane) =>
+const passingMatrix = ["grok", "glm"].flatMap((lane) =>
   SCENARIOS.flatMap(({ id }) => PLACEMENTS.map((placement) => scoreArtifact(id, placement, lane))));
 assert.equal(evaluateGates(passingMatrix).result, "pass");
 
@@ -28,7 +28,7 @@ assert.equal(evaluateGates(passingMatrix).result, "pass");
     JSON.stringify({ ...script.oracle.expected, deployment_region: "guessed-region" }),
     JSON.stringify({ ...script.oracle.expected, extra: true }),
   ]) {
-    assert.equal(scoreArtifact("exact-work", "early", "sonnet", artifact).result, "fail");
+    assert.equal(scoreArtifact("exact-work", "early", "grok", artifact).result, "fail");
   }
   const absent = scoreRun({ run: {}, script, artifactText: JSON.stringify(script.oracle.expected) });
   assert.equal(absent.result, "inconclusive", "correct answers without coverage cannot pass");
@@ -50,16 +50,16 @@ assert.equal(evaluateGates(passingMatrix).result, "pass");
 {
   const expected = buildScript("exact-work", "early").oracle.expected;
   const tolerated = [...passingMatrix];
-  tolerated[0] = scoreArtifact("exact-work", "early", "sonnet", JSON.stringify({ ...expected, owner: null }));
+  tolerated[0] = scoreArtifact("exact-work", "early", "grok", JSON.stringify({ ...expected, owner: null }));
   assert.equal(tolerated[0].finalTask, false);
   assert.equal(evaluateGates(tolerated).result, "pass");
 
   const canonicalMiss = [...passingMatrix];
-  canonicalMiss[1] = scoreArtifact("exact-work", "middle", "sonnet", JSON.stringify({ ...expected, owner: null }));
+  canonicalMiss[1] = scoreArtifact("exact-work", "middle", "grok", JSON.stringify({ ...expected, owner: null }));
   assert.equal(evaluateGates(canonicalMiss).result, "fail");
 
   const belowScenarioFloor = [...tolerated];
-  belowScenarioFloor[2] = scoreArtifact("exact-work", "late", "sonnet", JSON.stringify({ ...expected, owner: null, mode: null }));
+  belowScenarioFloor[2] = scoreArtifact("exact-work", "late", "grok", JSON.stringify({ ...expected, owner: null, mode: null }));
   belowScenarioFloor[12] = scoreArtifact("exact-work", "early", "glm", JSON.stringify({ ...expected, mode: null }));
   assert.equal(evaluateGates(belowScenarioFloor).result, "fail");
 }
@@ -68,7 +68,7 @@ assert.equal(evaluateGates(passingMatrix).result, "pass");
 {
   const script = buildScript("source-recovery", "early");
   const incomplete = scoreRun({
-    run: { scenario: script.id, placement: "early", lane: "sonnet" }, script,
+    run: { scenario: script.id, placement: "early", lane: "grok" }, script,
     artifactText: JSON.stringify(script.oracle.expected), integrity: verified, coverage: verified,
     retrievalQualification: { qualified: false, code: "source-evidence-incomplete" },
   });

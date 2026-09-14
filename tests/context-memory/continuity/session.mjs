@@ -13,9 +13,12 @@ const registerContextMemory = (await load("../../../src/context-memory/index.ts"
 const { MEMORY_STATE_CUSTOM_TYPE, MEMORY_STATE_FORMAT_TAG, MEMORY_SUMMARY_WRAPPER, MEMORY_BLOCK_SEPARATOR } = await load("../../../src/context-memory/format.ts");
 const { paginateTranscript, renderSourceTranscript, renderSourceTranscriptWithBoundaries } = await load("../../../src/context-memory/transcript.ts");
 const { createRetrievalEvidenceCollector } = await import("./retrieval-evidence.mjs");
-const { MAX_NATIVE_SESSION_BYTES, measureNativeSessionReplay } = await import("./replay-check.mjs");
+const { MAX_NATIVE_SESSION_BYTES, measureNativeSessionReplay } = await import("./native-replay.mjs");
+const { inspectRawSource } = await import("./raw-source-diagnostic.mjs");
+const { requireThinkingConfiguration, requireSessionThinking } = await import("../thinking.mjs");
 const { safeResponseDiagnostic } = await import("../qualification/diagnostics.mjs");
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
+  thinkingLevel: "max",
   contextWindow: 100_000,
   maxTokens: 4096,
   compressionThresholdTokens: 21_000,
@@ -131,15 +134,6 @@ function createEnvironment(packageRoot, script) {
   }
 }
 
-function containsEvidence(text, script) {
-  if (script.evidenceTokens.some((token) => text.includes(token))) return true;
-  return Object.entries(script.oracle.expected ?? {}).some(([field, value]) => {
-    if (typeof value !== "number" && typeof value !== "boolean") return false;
-    const label = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replaceAll("_", "[\\s_-]+");
-    return new RegExp(`${label}[^\\n]{0,40}\\b${value}\\b`, "i").test(text);
-  });
-}
-
 function withoutThinking(message) {
   return message.role === "assistant"
     ? { ...message, content: message.content.filter((part) => part.type !== "thinking") }
@@ -215,7 +209,9 @@ export function netInputChangeOf(compressions, carrierObservations, requests) {
   return total;
 }
 
-export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run, signal, contextModifierFactory }) {
+export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run, signal, contextModifierFactory,
+  thinkingLevel = CONTINUITY_SESSION_CONFIG.thinkingLevel }) {
+  const thinking = requireThinkingConfiguration(model, thinkingLevel);
   const environment = createEnvironment(packageRoot, script);
   let session;
   let unsubscribe;
@@ -238,6 +234,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
   let finalContextSeen = false;
   let finalContext = null;
   let rawSourceAbsent = false;
+  let rawSourceDiagnostic = null;
   let requestStarts = 0;
   let finalCarrierCount = null;
   let finalRequests = 0;
@@ -289,12 +286,9 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
           // Runs after pi-square's transform; the projection's carrier and
           // maintenance source reinsertion are visible here too. Only the
           // actual Memory carrier may contain facts.
-          const raw = event.messages.filter((message) => message.customType !== "pi-square.context-memory/blocks" && message.role !== "compactionSummary");
-          rawSourceAbsent = !containsEvidence(JSON.stringify(raw), script)
-            && !sourceEntryIds.some((id) => {
-              const entry = sessionManager.getEntry(id);
-              return raw.some((message) => JSON.stringify(message.content) === JSON.stringify(entry?.message?.content));
-            });
+          const rawSource = inspectRawSource(event.messages, script, sourceEntryIds.map((id) => sessionManager.getEntry(id)));
+          rawSourceAbsent = rawSource.absent;
+          rawSourceDiagnostic = rawSource.diagnostic;
         }
       });
       pi.on("tool_execution_start", (event) => {
@@ -411,8 +405,12 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
 
     const measuredModel = { ...model, contextWindow: CONTINUITY_SESSION_CONFIG.contextWindow, maxTokens: Math.min(model.maxTokens ?? 4096, 4096) };
     ({ session } = await createAgentSession({ cwd: environment.cwd, agentDir: environment.agentDir, settingsManager, resourceLoader, sessionManager,
-      modelRuntime, model: measuredModel, thinkingLevel: "off",
+      modelRuntime, model: measuredModel, thinkingLevel,
       tools: ["read", "bash", "write", "compact_to_memory_block", "read_memory_source", "search_memory_source"] }));
+    requireSessionThinking(session, thinking);
+    if (session.model?.provider !== model.provider || session.model?.id !== model.id) {
+      throw new Error("Pi session model does not match the requested continuity model");
+    }
     await session.bindExtensions({ mode: "print", onError: () => failures.add("extension-error") });
     if (resourceLoader.getExtensions().errors.length > 0) failures.add("extension-load-error");
     if (!["compact_to_memory_block", "read_memory_source", "search_memory_source"].every((name) =>
@@ -628,7 +626,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       retrieval: retrievalResult.privateEvidence };
     if (Buffer.byteLength(JSON.stringify(evidence)) > EVIDENCE_MAX_BYTES) { failures.add("evidence-bound-exceeded"); evidence = null; }
     return {
-      run, model: { provider: model.provider, id: model.id, api: model.api }, artifactText, requests, sourceReads,
+      run, model: { provider: session.model?.provider, id: session.model?.id, api: session.model?.api }, thinking: { ...thinking, session: session.thinkingLevel }, artifactText, requests, sourceReads,
       retrievalQualification: retrievalResult.report, measurements, phaseLatency, evidence, cancelled,
       timedOut: failures.has("prompt-timeout"),
       providerError: requests.some((request) => request.errorPresent),
@@ -644,7 +642,8 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
         appends: coverageEvents.filter((entry) => entry.operation === "append").length,
         rebuilds: coverageEvents.filter((entry) => entry.operation === "rebuild").length,
         multiBlockMemory: coverageEvents.some((entry) => entry.blocks >= 2),
-        sourceCovered: preFinalSourceCovered, rawSourceAbsent, prefixStable: measurements.prefixStable },
+        sourceCovered: preFinalSourceCovered, finalContextObserved: finalContextSeen, rawSourceAbsent,
+        ...(rawSourceDiagnostic ? { rawSourceDiagnostic } : {}), prefixStable: measurements.prefixStable },
     };
   } finally {
     unsubscribe?.();
