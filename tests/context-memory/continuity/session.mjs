@@ -15,9 +15,10 @@ const { paginateTranscript, renderSourceTranscript, renderSourceTranscriptWithBo
 const { createRetrievalEvidenceCollector } = await import("./retrieval-evidence.mjs");
 const { MAX_NATIVE_SESSION_BYTES, measureNativeSessionReplay } = await import("./native-replay.mjs");
 const { inspectRawSource } = await import("./raw-source-diagnostic.mjs");
-const { REQUESTED_THINKING_LEVEL, requireThinkingConfiguration, requireSessionThinking } = await import("../thinking.mjs");
+const { requireThinkingConfiguration, requireSessionThinking } = await import("../thinking.mjs");
 const { safeResponseDiagnostic } = await import("../qualification/diagnostics.mjs");
 export const CONTINUITY_SESSION_CONFIG = Object.freeze({
+  thinkingLevel: "max",
   contextWindow: 100_000,
   maxTokens: 4096,
   compressionThresholdTokens: 21_000,
@@ -208,8 +209,9 @@ export function netInputChangeOf(compressions, carrierObservations, requests) {
   return total;
 }
 
-export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run, signal, contextModifierFactory }) {
-  const thinking = requireThinkingConfiguration(model);
+export async function runContinuitySession({ packageRoot, modelRuntime, model, script, run, signal, contextModifierFactory,
+  thinkingLevel = CONTINUITY_SESSION_CONFIG.thinkingLevel }) {
+  const thinking = requireThinkingConfiguration(model, thinkingLevel);
   const environment = createEnvironment(packageRoot, script);
   let session;
   let unsubscribe;
@@ -403,9 +405,12 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
 
     const measuredModel = { ...model, contextWindow: CONTINUITY_SESSION_CONFIG.contextWindow, maxTokens: Math.min(model.maxTokens ?? 4096, 4096) };
     ({ session } = await createAgentSession({ cwd: environment.cwd, agentDir: environment.agentDir, settingsManager, resourceLoader, sessionManager,
-      modelRuntime, model: measuredModel, thinkingLevel: REQUESTED_THINKING_LEVEL,
+      modelRuntime, model: measuredModel, thinkingLevel,
       tools: ["read", "bash", "write", "compact_to_memory_block", "read_memory_source", "search_memory_source"] }));
     requireSessionThinking(session, thinking);
+    if (session.model?.provider !== model.provider || session.model?.id !== model.id) {
+      throw new Error("Pi session model does not match the requested continuity model");
+    }
     await session.bindExtensions({ mode: "print", onError: () => failures.add("extension-error") });
     if (resourceLoader.getExtensions().errors.length > 0) failures.add("extension-load-error");
     if (!["compact_to_memory_block", "read_memory_source", "search_memory_source"].every((name) =>
@@ -621,7 +626,7 @@ export async function runContinuitySession({ packageRoot, modelRuntime, model, s
       retrieval: retrievalResult.privateEvidence };
     if (Buffer.byteLength(JSON.stringify(evidence)) > EVIDENCE_MAX_BYTES) { failures.add("evidence-bound-exceeded"); evidence = null; }
     return {
-      run, model: { provider: model.provider, id: model.id, api: model.api }, thinking: { ...thinking, session: session.thinkingLevel }, artifactText, requests, sourceReads,
+      run, model: { provider: session.model?.provider, id: session.model?.id, api: session.model?.api }, thinking: { ...thinking, session: session.thinkingLevel }, artifactText, requests, sourceReads,
       retrievalQualification: retrievalResult.report, measurements, phaseLatency, evidence, cancelled,
       timedOut: failures.has("prompt-timeout"),
       providerError: requests.some((request) => request.errorPresent),

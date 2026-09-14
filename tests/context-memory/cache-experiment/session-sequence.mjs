@@ -281,7 +281,7 @@ export async function runPiSessionMatrix({ packageRoot, modelRuntime, models, pr
     throw new Error("the Pi cache matrix requires one to three models");
   }
   // Validate the complete matrix before a supported sibling can start spending.
-  models.forEach(requireThinkingConfiguration);
+  models.forEach((model) => requireThinkingConfiguration(model));
   const environment = prepareEnvironment(packageRoot, models.length);
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = environment.agentDir;

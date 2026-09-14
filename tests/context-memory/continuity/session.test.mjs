@@ -40,7 +40,7 @@ try {
   const runtime = await ModelRuntime.create({ authPath: join(runtimeDir, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const provider = fauxProvider({ provider: "continuity-test", api: "continuity-test", models: [{ id: "native", contextWindow: 100_000, maxTokens: 4096 }] });
   Object.assign(provider.getModel(), { reasoning: true,
-    thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: null } });
+    thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: "max" } });
   runtime.registerNativeProvider(provider.provider);
   const contexts = [];
   const providerToolSets = [];
@@ -170,8 +170,10 @@ try {
     artifactPath: "handoff.json", evidenceTokens: ["PROJECT-ZEBRA-71"],
     oracle: { requireOriginalEvidence: true, evidenceRequirements: [{ id: "project", exact: "project identifier PROJECT-ZEBRA-71" }] },
   };
-  const result = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script, run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
-  assert.equal(result.thinking.session, "low", "the native session preserves the requested low thinking setting");
+  const result = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script, run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" }, thinkingLevel: "high" });
+  assert.equal(result.thinking.session, "high", "the native session preserves the explicit Grok high thinking setting");
+  assert.deepEqual(result.model, { provider: provider.getModel().provider, id: provider.getModel().id, api: provider.getModel().api },
+    "the native result records the model observed on the created session");
   assert.equal(result.integrity.ok, true, JSON.stringify({ integrity: result.integrity, requests: result.requests, errors: result.evidence?.entries.filter((entry) => entry.message?.stopReason === "error") }));
   assert.equal(result.coverage.ok, true, JSON.stringify(result.coverage));
   // #325: the seeded half-budget Memory makes the schedule fixture-owned —
@@ -204,7 +206,8 @@ try {
   // whether original retrieval can qualify before the artifact handoff.
   setResponses({ retrievalMode: "search" });
   const searched = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" } });
+  assert.equal(searched.thinking.session, "max", "direct callers retain the configured max thinking default");
   assert.equal(searched.retrievalQualification.code, "qualified-search-snippet",
     JSON.stringify({ qualification: searched.retrievalQualification, retrieval: searched.evidence?.retrieval }));
   assert.equal(searched.retrievalQualification.pageReads, 0, "a sufficient observed snippet needs no redundant page read");
@@ -224,7 +227,7 @@ try {
 
   setResponses({ retrievalMode: "equivalent-path" });
   const equivalentPath = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" } });
   assert.equal(equivalentPath.retrievalQualification.code, "qualified-search-snippet",
     "a native write through ./handoff.json is observed as the canonical handoff target");
 
@@ -238,25 +241,25 @@ try {
   };
   setResponses({ retrievalMode: "search-read" });
   const targeted = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script: targetedScript,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" } });
   assert.equal(targeted.retrievalQualification.code, "qualified-search-targeted-read");
   assert.equal(targeted.retrievalQualification.targetedReads, 1);
 
   setResponses({ retrievalMode: "search" });
   const clipped = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script: targetedScript,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" } });
   assert.equal(clipped.retrievalQualification.code, "source-evidence-incomplete",
     "a clipped search excerpt cannot borrow a missing unknown qualifier from elsewhere");
 
   setResponses({ retrievalMode: "wrong-view" });
   const wrongView = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script: targetedScript,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" } });
   assert.equal(wrongView.retrievalQualification.qualified, false,
     "a failed read with the wrong source view cannot supplement a search excerpt");
 
   setResponses({ retrievalMode: "filtered" });
   const filtered = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" },
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" },
     contextModifierFactory(pi) {
       pi.on("context", (event) => ({ messages: event.messages.filter((message) =>
         !(message.role === "toolResult" && message.toolName === "search_memory_source")) }));
@@ -269,7 +272,7 @@ try {
   let changedView = false;
   let observedSearchResult = false;
   const staleAfterObservation = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" },
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" },
     contextModifierFactory(pi, { sessionManager }) {
       pi.on("context", (event) => {
         const latest = event.messages.at(-1);
@@ -297,7 +300,7 @@ try {
 
   setResponses();
   const readOnly = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "read-only" } });
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "read-only" } });
   const readOnlyFinal = readOnly.requests.filter((row) => row.phase === "final");
   assert.ok(readOnlyFinal.some((row) => row.activeTools.includes("read_memory_source")));
   assert.ok(readOnlyFinal.every((row) => !row.activeTools.includes("search_memory_source")),
@@ -315,7 +318,7 @@ try {
   ]) {
     setResponses({ retrievalMode });
     const rejected = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
-      run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+      run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "search-enabled" } });
     assert.equal(rejected.retrievalQualification.qualified, false, retrievalMode);
     assert.equal(rejected.retrievalQualification.code, expected, retrievalMode);
   }
@@ -324,13 +327,13 @@ try {
   cancelledController.abort();
   setResponses();
   const cancelled = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(), script,
-    run: { scenario: script.id, placement: "early", lane: "sonnet", retrievalArm: "read-only" }, signal: cancelledController.signal });
+    run: { scenario: script.id, placement: "early", lane: "grok", retrievalArm: "read-only" }, signal: cancelledController.signal });
   assert.equal(cancelled.cancelled, true);
   assert.equal(cancelled.requests.length, 0, "a cancelled cell never starts a provider request");
 
   setResponses({ readAll: true });
   const branch = await runContinuitySession({ packageRoot: process.cwd(), modelRuntime: runtime, model: provider.getModel(),
-    script: { ...script, revisionPrompt: "Authoritative revision: PROJECT-ZEBRA-71 is still the project identifier. Retention is still unknown.", abandonedPrompt: "This abandoned branch uses SIBLING-ONLY-93. Acknowledge briefly." }, run: { scenario: "branch-isolation", placement: "early", lane: "sonnet", retrievalArm: "search-enabled" } });
+    script: { ...script, revisionPrompt: "Authoritative revision: PROJECT-ZEBRA-71 is still the project identifier. Retention is still unknown.", abandonedPrompt: "This abandoned branch uses SIBLING-ONLY-93. Acknowledge briefly." }, run: { scenario: "branch-isolation", placement: "early", lane: "grok", retrievalArm: "search-enabled" } });
   assert.equal(branch.integrity.ok, true, JSON.stringify(branch.integrity));
   assert.equal(branch.coverage.ok, true, JSON.stringify(branch.coverage));
   assert.ok(branch.evidence.abandonedEntryIds.length > 0, "the sibling was executed, not merely described");

@@ -622,11 +622,13 @@ projection, wire, arbitration, lifecycle, and the offline instruments) as one
 zero-tolerance sweep; the pre-#319 corpus retired with its protocol.
 Real-model continuity qualification is a separate, credentialed command:
 `npm run qualify:continuity -- --real`. It requires a clean checkout and uses
-native Pi sessions with two concurrently started model queues: Sonnet 5 and
-GLM 5.3 each run the same four scenarios at early, middle, and late placement
+native Pi sessions with two concurrently started model queues: Grok 4.6
+(`cpa/grok-4.6`) and GLM 5.3 Flash (`cpa/glm-5.3-flash`) each run the same four
+scenarios at early, middle, and late placement
 (24 cells and 12 corresponding pairs), while cases and requests stay sequential
-inside each model queue. Continuity and cache runs verify that every model
-supports the requested thinking `low` and that Pi's session preserves it;
+inside each model queue. Grok requests thinking `high` and GLM Flash requests `max`;
+the separate cache experiment retains `low`. Both verify that every model
+supports its requested level and that Pi's session preserves it;
 an automatic adjustment to another level stops the experiment before its
 model queues start. Reports record both requested and effective settings.
 Every run is

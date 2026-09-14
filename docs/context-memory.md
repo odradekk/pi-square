@@ -29,9 +29,10 @@ uses the retired asymmetric 16-cell report schema. Its reader remains available
 only to identify that evidence as historical; it is never regraded as the
 current symmetric 24-cell qualification. Version 3's symmetric reports also
 remain historical: they recorded requested thinking without verifying Pi's
-effective setting. Version 4's verified `off` reports also remain historical;
-they are never relabeled as the current low-thinking experiment. Current
-continuity reports use version 5, their evidence reports use version 4, and
+effective setting. Version 4's verified `off` reports and version 5's `low`
+reports also remain historical; neither is relabeled as the current per-lane
+`high`/`max` experiment. Current continuity reports use version 6, their
+evidence reports use version 4, and
 recovery-comparison reports use version 2; old attempts are never relabeled.
 The reader accepts incomplete current reports for diagnosis, but only marks
 them as current qualification evidence when all 24 expected cells record an
@@ -850,8 +851,8 @@ rewrite existing Memory blocks.
 ### Continuity qualification
 
 `npm run qualify:continuity -- --real` runs the fixed 24-session matrix on a
-clean checkout. Sonnet 5 (`ccr-claude/claude-sonnet-5`) and GLM 5.3
-(`cpa/glm-5.3`) each run the same four scenarios at early, middle, and late
+clean checkout. Grok 4.6 (`cpa/grok-4.6`) and GLM 5.3 Flash
+(`cpa/glm-5.3-flash`) each run the same four scenarios at early, middle, and late
 source placement: 12 cases per model and 12 corresponding pairs. The two model
 queues start concurrently, while cases and native requests remain sequential
 inside each queue. Every cell has its own workspace, agent directory, native
@@ -862,10 +863,11 @@ authentication resolve through Pi's configured runtime. The scenarios cover
 exact work facts, revised constraints, an abandoned sibling branch, and
 original-source recovery.
 
-Both continuity modes and the cache matrix request thinking `low`. Before
-starting any model queue, every model must support that exact level: Pi's
-automatic adjustment (for example, `low` to `minimal` when `thinkingLevelMap.low`
-is null) rejects the experiment configuration instead of silently running it.
+Grok 4.6 requests thinking `high` and GLM 5.3 Flash requests `max`; the separate
+cache matrix retains `low`. Before starting any model queue, every model must
+support its lane's exact level: Pi's automatic adjustment (for example, an
+unsupported `max` becoming `high`)
+rejects the experiment configuration instead of silently running it.
 After session creation, the driver also checks Pi's actual session setting
 before prompting. Reports pin requested/effective levels, supported levels,
 a hash of the provider-specific thinking map, and the observed session level.

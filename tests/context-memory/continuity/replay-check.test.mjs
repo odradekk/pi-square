@@ -59,10 +59,13 @@ try {
   const reportDir = join(root, "report"); mkdirSync(reportDir);
   const attemptId = "synthetic-cli";
   writeFileSync(join(reportDir, `continuity-qualification-${attemptId}.json`), JSON.stringify({
-    schema: "pi-square.context-memory/continuity-qualification/5", attemptId,
-    completeness: { expected: 24 }, pins: { commit: "synthetic", modelThinking: Object.fromEntries(["sonnet", "glm"].map((lane) => [lane, {
-      requested: "low", effective: "low", supported: ["low"], mappingSha256: "a".repeat(64),
-    }])) }, runs: [],
+    schema: "pi-square.context-memory/continuity-qualification/6", attemptId,
+    completeness: { expected: 24 }, pins: { commit: "synthetic", models: {
+      grok: { provider: "cpa", id: "grok-4.6" }, glm: { provider: "cpa", id: "glm-5.3-flash" },
+    }, modelThinking: {
+      grok: { requested: "high", effective: "high", supported: ["high"], mappingSha256: "a".repeat(64) },
+      glm: { requested: "max", effective: "max", supported: ["max"], mappingSha256: "a".repeat(64) },
+    } }, runs: [],
   }));
   writeFileSync(join(reportDir, "attempts.jsonl"), "{}\n");
   const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./replay-check.mjs", import.meta.url)), "--report-dir", reportDir], { encoding: "utf8" });

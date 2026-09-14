@@ -5,11 +5,11 @@ export const REQUESTED_THINKING_LEVEL = "low";
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** Safe reproducibility pins: provider-specific mapping values remain hash-only. */
-export function thinkingConfiguration(model) {
+export function thinkingConfiguration(model, requested = REQUESTED_THINKING_LEVEL) {
   return {
-    requested: REQUESTED_THINKING_LEVEL,
+    requested,
     supported: getSupportedThinkingLevels(model),
-    effective: clampThinkingLevel(model, REQUESTED_THINKING_LEVEL),
+    effective: clampThinkingLevel(model, requested),
     mappingSha256: createHash("sha256").update(JSON.stringify(LEVELS.map((level) =>
       [level, model.thinkingLevelMap?.[level] ?? null, Object.hasOwn(model.thinkingLevelMap ?? {}, level)]))).digest("hex"),
   };
@@ -24,8 +24,8 @@ export class ThinkingConfigurationError extends Error {
 }
 
 /** Validate every lane before starting any paid queue; never silently substitute a level. */
-export function requireThinkingConfiguration(model) {
-  const configuration = thinkingConfiguration(model);
+export function requireThinkingConfiguration(model, requested = REQUESTED_THINKING_LEVEL) {
+  const configuration = thinkingConfiguration(model, requested);
   if (configuration.effective !== configuration.requested) throw new ThinkingConfigurationError(configuration);
   return configuration;
 }
