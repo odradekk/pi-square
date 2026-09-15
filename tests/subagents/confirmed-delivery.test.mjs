@@ -12,6 +12,7 @@ const {
   DEFAULT_MAX_BATCH_RESULTS,
   DEFAULT_MAX_CLAIM_RESERVATIONS,
   DEFAULT_MAX_PENDING_RESULTS,
+  subscribeDeliveryLifecycle,
 } = await load(join(packageRoot, "src", "subagents", "confirmed-delivery.ts"));
 
 /**
@@ -417,6 +418,120 @@ test("the pending bound is total: claimed entries count toward it but are never 
 
 test("the reservation bound default matches the documented wait contract", () => {
   assert.equal(DEFAULT_MAX_CLAIM_RESERVATIONS, 50);
+});
+
+
+// ─── Lifecycle subscription (odradekk/pi-square#369) ──────────────────
+//
+// The registration roots no longer call the lifecycle methods one by one:
+// they hand the core one event source and the core wires every signal in
+// the fixed order below. These tests drive that subscribe entry with a
+// recording event source instead of touching the lifecycle methods.
+
+/** Recording stand-in for the Pi event source the subscribe entry accepts. */
+function eventSource() {
+  const handlers = new Map();
+  return {
+    source: {
+      on(event, handler) {
+        if (!handlers.has(event)) handlers.set(event, []);
+        handlers.get(event).push(handler);
+      },
+    },
+    emit(event, payload) {
+      for (const handler of handlers.get(event) ?? []) {
+        if (payload === undefined) handler();
+        else handler(payload);
+      }
+    },
+    wired: (event) => (handlers.get(event) ?? []).length,
+  };
+}
+
+test("through the subscribe entry, a busy consumer receives results at the next turn boundary", () => {
+  const probe = harness({ idle: false });
+  const events = eventSource();
+  subscribeDeliveryLifecycle(probe.core, events.source);
+  assert.equal(events.wired("agent_start"), 1, "every delivery signal is wired exactly once");
+  assert.equal(events.wired("turn_end"), 1);
+  assert.equal(events.wired("agent_end"), 1);
+  assert.equal(events.wired("agent_settled"), 1);
+  assert.equal(events.wired("message_start"), 1);
+
+  probe.core.enqueue({ id: "r1", value: "v" });
+  assert.equal(probe.sent.length, 0, "nothing is pushed into a running turn");
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(probe.sent.length, 1);
+  assert.deepEqual(probe.last().ids, ["r1"]);
+});
+
+test("through the subscribe entry, a natural settle delivers without waiting for the next turn", () => {
+  const probe = harness({ idle: false });
+  const events = eventSource();
+  subscribeDeliveryLifecycle(probe.core, events.source);
+  probe.core.enqueue({ id: "natural", value: "v" });
+
+  events.emit("agent_end", { messages: [{ stopReason: "endTurn" }] });
+  events.emit("agent_settled");
+  assert.equal(probe.sent.length, 1, "a naturally settled consumer receives the result at once");
+  assert.deepEqual(probe.last().ids, ["natural"]);
+});
+
+test("through the subscribe entry, an interrupted consumer stays silent until its next run starts", () => {
+  const probe = harness({ idle: false });
+  const events = eventSource();
+  subscribeDeliveryLifecycle(probe.core, events.source);
+  probe.core.enqueue({ id: "held", value: "v" });
+
+  events.emit("turn_end", { message: { stopReason: "aborted" } });
+  events.emit("agent_end", { messages: [{ stopReason: "aborted" }] });
+  events.emit("agent_settled");
+  assert.equal(probe.sent.length, 0, "an interrupted consumer receives nothing at settle");
+
+  probe.core.enqueue({ id: "after", value: "v2" });
+  assert.equal(probe.sent.length, 0, "the silence holds across further completions");
+  events.emit("agent_start");
+  events.emit("turn_end", { message: { stopReason: "endTurn" } });
+  assert.equal(probe.sent.length, 1);
+  assert.deepEqual(probe.last().ids, ["held", "after"], "the next run boundary delivers everything held");
+});
+
+test("through the subscribe entry, an unconfirmed result is resent after a natural settle and stops after confirmation", () => {
+  const probe = harness({ idle: false });
+  const events = eventSource();
+  subscribeDeliveryLifecycle(probe.core, events.source);
+  probe.core.enqueue({ id: "lost", value: "v" });
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(probe.sent.length, 1);
+  assert.equal(probe.last().resent, false);
+
+  // No message_start confirmed the delivery: the consumer discarded the
+  // queued message, so the settle must deliver it again.
+  events.emit("agent_settled");
+  assert.equal(probe.sent.length, 2, "the discarded result is delivered again");
+  assert.equal(probe.last().resent, true);
+
+  events.emit("message_start", { message: { kind: "delivery-marker", ids: ["lost"] } });
+  events.emit("agent_settled");
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(probe.sent.length, 2, "a transcript confirmation stops the re-delivery");
+  assert.equal(probe.core.pendingCount(), 0);
+});
+
+test("with caller-forwarded settles, the settled event stays unwired and the handle forwards one settle", () => {
+  const probe = harness({ idle: false });
+  const events = eventSource();
+  const subscription = subscribeDeliveryLifecycle(probe.core, events.source, { subscribeSettled: false });
+  assert.equal(events.wired("agent_settled"), 0, "the caller owns the settled event");
+  probe.core.enqueue({ id: "r1", value: "v" });
+  events.emit("agent_end", { messages: [{ stopReason: "endTurn" }] });
+
+  events.emit("agent_settled");
+  assert.equal(probe.sent.length, 0, "a parked settled event never reaches the lifecycle");
+
+  subscription.settle();
+  assert.equal(probe.sent.length, 1, "the caller's forwarded settle flushes the pending result");
+  assert.deepEqual(probe.last().ids, ["r1"]);
 });
 
 await run();

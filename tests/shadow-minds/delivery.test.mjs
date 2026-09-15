@@ -13,6 +13,7 @@ const {
   shadowNotificationResultIds,
   resolveDeliveryDecision,
   createShadowDeliveryController,
+  subscribeDeliveryLifecycle,
 } = await load(join(packageRoot, "src", "shadow-minds", "delivery.ts"));
 
 // ── resolveDeliveryDecision ────────────────────────────────────────
@@ -471,5 +472,71 @@ function makeHarness(options = {}) {
   const secondIds = sent[1].message.details.results.map((entry) => entry.id);
   assert.equal(controller.confirmQuietDeliveries(secondIds), 2);
   assert.equal(controller.pendingCount(), 0);
+}
+// ── Lifecycle subscription wiring (odradekk/pi-square#369) ─────────
+//
+// The registration root hands the controller to the core's subscribe entry
+// with caller-forwarded settles (the completion gate parks the settled
+// event); these tests drive the controller as the lifecycle sink through a
+// recording event source.
+
+function eventSource() {
+  const handlers = new Map();
+  return {
+    source: {
+      on(event, handler) {
+        if (!handlers.has(event)) handlers.set(event, []);
+        handlers.get(event).push(handler);
+      },
+    },
+    emit(event, payload) {
+      for (const handler of handlers.get(event) ?? []) {
+        if (payload === undefined) handler();
+        else handler(payload);
+      }
+    },
+    wired: (event) => (handlers.get(event) ?? []).length,
+  };
+}
+
+{
+  // Steer delivers at the turn boundary and confirms through the subscribed
+  // wiring; the settled event stays caller-forwarded for the gate.
+  const { controller, sent, storeOps } = makeHarness();
+  const events = eventSource();
+  const lifecycle = subscribeDeliveryLifecycle(controller, events.source, { subscribeSettled: false });
+  assert.equal(events.wired("agent_settled"), 0, "the caller owns the settled event");
+  controller.enqueueResult(makeResult());
+  assert.equal(sent.length, 0, "a busy parent still waits for the boundary");
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(sent.length, 1, "the boundary delivers through the subscribed wiring");
+  assert.equal(storeOps.sent[0], "shr-1", "the store records the pending handoff");
+
+  events.emit("message_start", {
+    message: {
+      customType: SHADOW_NOTIFICATION_TYPE,
+      details: { version: 1, results: [{ id: "shr-1", kind: "result" }] },
+    },
+  });
+  assert.deepEqual(storeOps.delivered, ["shr-1"], "the observation confirms through the subscribed wiring");
+  assert.equal(controller.pendingCount(), 0);
+
+  // Unconfirmed path: the forwarded settle resends, then confirms.
+  const second = makeResult({ id: "shr-2" });
+  controller.enqueueResult(second);
+  events.emit("turn_end", { message: { stopReason: "tool_use" } });
+  assert.equal(sent.length, 2);
+  events.emit("agent_settled");
+  assert.equal(sent.length, 2, "the settled event never reaches the lifecycle directly");
+  lifecycle.settle();
+  assert.equal(sent.length, 3, "the caller's forwarded settle resends the unconfirmed result");
+  assert.match(sent[2].message.content, /\(resent\)/, "the repeat is marked as resent");
+  events.emit("message_start", {
+    message: {
+      customType: SHADOW_NOTIFICATION_TYPE,
+      details: { version: 1, results: [{ id: "shr-2", kind: "result" }] },
+    },
+  });
+  assert.deepEqual(storeOps.delivered, ["shr-1", "shr-2"], "the resent delivery confirms once");
 }
 console.log("shadow-minds delivery tests: OK");
