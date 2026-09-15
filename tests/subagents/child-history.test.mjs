@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ const {
   projectSessionEntries,
 } = await load(join(packageRoot, "src", "subagents", "child-history.ts"));
 const { ensureArtifactsDir, initializeSessionFile, writeRunState } = await load(join(packageRoot, "src", "subagents", "artifacts.ts"));
+const { openChildSessionFile } = await load(join(packageRoot, "src", "subagents", "session-file.ts"));
 const { createPromptSnapshot } = await load(join(packageRoot, "tests", "subagents", "lib", "test-helpers.mjs"));
 
 const ID = "subagent_00000000-0000-4000-8000-000000000001";
@@ -81,30 +82,6 @@ function recursiveListing(directory) {
   return out.sort();
 }
 
-/** Positioned sync read mirroring the production descriptor-bound seam. */
-function realReadRange(file, start, end) {
-  const descriptor = openSync(file, "r");
-  try {
-    const stats = fstatSync(descriptor);
-    const length = Math.max(0, Math.min(end, stats.size) - start);
-    if (length <= 0) {
-      return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: Buffer.alloc(0) };
-    }
-    const buffer = Buffer.alloc(length);
-    let read = 0;
-    while (read < buffer.length) {
-      const bytes = readSync(descriptor, buffer, read, buffer.length - read, start + read);
-      if (bytes <= 0) break;
-      read += bytes;
-    }
-    return {
-      stat: { size: stats.size, dev: stats.dev, ino: stats.ino },
-      data: read === buffer.length ? buffer : buffer.subarray(0, read),
-    };
-  } finally {
-    closeSync(descriptor);
-  }
-}
 
 /** One user/assistant pair with stable per-entry ids. */
 function pair(base, text) {
@@ -387,16 +364,23 @@ test("a transient read failure retries successfully and clears the bounded error
   try {
     writeArtifacts(testRoot, conversation(12));
     let failReads = 1;
-    const io = {
-      readRange: (file, start, end) => {
-        if (failReads > 0 && end < statSync(file).size) {
-          failReads -= 1;
-          throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
-        }
-        return realReadRange(file, start, end);
-      },
+    const openSessionFile = (id, operation) => {
+      const opened = openChildSessionFile(id, operation);
+      return {
+        ...opened,
+        handle: {
+          ...opened.handle,
+          readRange(start, end) {
+            if (failReads > 0 && end < statSync(opened.handle.path).size) {
+              failReads -= 1;
+              throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+            }
+            return opened.handle.readRange(start, end);
+          },
+        },
+      };
     };
-    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600, io });
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 600, openSessionFile });
     assert.equal(pager.snapshot().initialError, undefined);
     assert.equal(pager.loadOlder(), false, "the transient failure fails the page");
     assert.equal(pager.snapshot().olderError, CHILD_HISTORY_READ_ERROR);
@@ -414,14 +398,21 @@ test("a successful newer retry clears its error when it confirms EOF", () => {
   try {
     writeArtifacts(testRoot, conversation(1));
     let reads = 0;
-    const io = {
-      readRange: (file, start, end) => {
-        reads += 1;
-        if (reads === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
-        return realReadRange(file, start, end);
-      },
+    const openSessionFile = (id, operation) => {
+      const opened = openChildSessionFile(id, operation);
+      return {
+        ...opened,
+        handle: {
+          ...opened.handle,
+          readRange(start, end) {
+            reads += 1;
+            if (reads === 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+            return opened.handle.readRange(start, end);
+          },
+        },
+      };
     };
-    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096, io });
+    const pager = createChildHistory(ID, { observedAt: OBSERVED_AT, pageBytes: 4096, openSessionFile });
     assert.equal(pager.loadNewer(), false, "the failed EOF probe is retryable");
     assert.equal(pager.snapshot().newerError, CHILD_HISTORY_READ_ERROR);
     assert.equal(pager.loadNewer(), false, "the successful retry confirms there is no newer page");

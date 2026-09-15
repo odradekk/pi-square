@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { resolveChildSessionFile } from "./artifacts";
+import {
+  openChildSessionFile,
+  type ChildSessionFileHandle,
+  type OpenChildSessionFile,
+  type SessionFileStat,
+} from "./session-file";
 import { clipWithHeadTail } from "./confirmed-delivery";
 import { sanitizeSubagentDisplay } from "./display";
 import { rosterToolArgsDisplay } from "./tool-display";
@@ -10,11 +14,10 @@ import { rosterToolArgsDisplay } from "./tool-display";
  * session history (odradekk/pi-square#305).
  *
  * The pager is the single historical source behind the read-only child
- * transcript overlay. It reads the validated native session file through the
- * same child-artifact identity boundary resume uses — `resolveChildSessionFile`
- * keeps the artifacts directory inside the subagent state root, the run record
- * describing that directory, and the session file inside it, and requires the
- * recorded path to name a regular file directly — and pages that file
+ * transcript overlay. It reads the validated native session file only through
+ * the shared session-file artifact identity boundary (`openChildSessionFile`
+ * in `session-file.ts`, the single implementation of the lstat/open/fstat/
+ * lstat dev/ino protocol that resume also uses) and pages that file
  * tail-first in bounded byte ranges. It creates no second transcript store: no cache file,
  * index, sidecar, writer, lock, journal, migration, or artifact version
  * exists beside the native session file, and every read is stateless against
@@ -531,64 +534,6 @@ export interface ChildHistoryView {
   retryInitial(): boolean;
 }
 
-/**
- * Injectable filesystem seam. One call opens the file once, reads the bytes
- * from that same descriptor, and reports the descriptor's own `fstat`
- * identity. Production binds the pre-open path, opened descriptor, and
- * post-open path to one regular-file identity. The final path component is
- * never followed through a symlink.
- */
-export interface ChildHistoryIo {
-  readRange(
-    file: string,
-    start: number,
-    end: number,
-  ): { stat: { size: number; dev: number; ino: number }; data: Buffer };
-}
-
-const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
-
-const defaultIo: ChildHistoryIo = {
-  readRange(file, start, end) {
-    // O_NOFOLLOW rejects a final symlink where available; O_NONBLOCK prevents
-    // a raced FIFO replacement from hanging the UI. The pre/open/post identity
-    // checks bind fallback platforms to one unchanged regular path.
-    const before = lstatSync(file);
-    if (!before.isFile()) throw new Error("session path is not a regular file");
-    const descriptor = openSync(file, OPEN_FLAGS);
-    try {
-      const stats = fstatSync(descriptor);
-      const after = lstatSync(file);
-      if (
-        !stats.isFile() || !after.isFile()
-        || before.dev !== stats.dev || before.ino !== stats.ino
-        || after.dev !== stats.dev || after.ino !== stats.ino
-      ) {
-        throw new Error("session path changed while opening");
-      }
-      if (end <= start) {
-        return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: EMPTY_BUFFER };
-      }
-      const length = Math.min(end, stats.size) - start;
-      if (length <= 0) {
-        return { stat: { size: stats.size, dev: stats.dev, ino: stats.ino }, data: EMPTY_BUFFER };
-      }
-      const buffer = Buffer.alloc(length);
-      let read = 0;
-      while (read < buffer.length) {
-        const bytes = readSync(descriptor, buffer, read, buffer.length - read, start + read);
-        if (bytes <= 0) break;
-        read += bytes;
-      }
-      return {
-        stat: { size: stats.size, dev: stats.dev, ino: stats.ino },
-        data: read === buffer.length ? buffer : buffer.subarray(0, read),
-      };
-    } finally {
-      closeSync(descriptor);
-    }
-  },
-};
 
 export interface ChildHistoryOptions {
   /** Clock for unresolved tool-call durations; defaults to now. */
@@ -597,8 +542,8 @@ export interface ChildHistoryOptions {
   pageBytes?: number;
   /** Per-entry byte cap override for focused tests; defaults to 1 MiB. */
   maxEntryBytes?: number;
-  /** Filesystem seam override for focused tests. */
-  io?: ChildHistoryIo;
+  /** Session-file opener override for focused tests; defaults to the shared artifact identity boundary. */
+  openSessionFile?: OpenChildSessionFile;
 }
 
 /** Pairing state for one page's window, re-playable across window moves. */
@@ -651,10 +596,10 @@ export class ChildHistoryPager implements ChildHistoryView {
   private readonly id: string;
   private readonly pageBytes: number;
   private readonly maxEntryBytes: number;
-  private readonly io: ChildHistoryIo;
+  private readonly openSessionFile: OpenChildSessionFile;
   private readonly observedAt: number;
 
-  private sessionFile = "";
+  private handle: ChildSessionFileHandle | undefined;
   private identity: { dev: number; ino: number } | undefined;
   private pages: HistoryPage[] = [];
   /** Oldest byte ever read while no parsed page exists yet (starts at the tail read start). */
@@ -672,7 +617,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     this.id = id;
     this.pageBytes = Math.max(16, Math.floor(options.pageBytes ?? DEFAULT_PAGE_BYTES));
     this.maxEntryBytes = Math.max(32, Math.floor(options.maxEntryBytes ?? DEFAULT_MAX_ENTRY_BYTES));
-    this.io = options.io ?? defaultIo;
+    this.openSessionFile = options.openSessionFile ?? openChildSessionFile;
     this.observedAt = options.observedAt ?? Date.now();
     this.loadInitial();
   }
@@ -752,10 +697,12 @@ export class ChildHistoryPager implements ChildHistoryView {
     this.theOlderError = undefined;
     this.theNewerError = undefined;
     this.identity = undefined;
+    this.handle = undefined;
     try {
-      const { details, sessionFile } = resolveChildSessionFile(this.id, "view");
-      this.sessionFile = sessionFile;
-      const headerRead = this.io.readRange(sessionFile, 0, MAX_HEADER_READ_BYTES);
+      const opened = this.openSessionFile(this.id, "view");
+      this.handle = opened.handle;
+      const details = opened.details;
+      const headerRead = this.readRange(0, MAX_HEADER_READ_BYTES);
       if (headerRead.stat.size <= 0) throw new Error("empty session file");
       this.identity = { dev: headerRead.stat.dev, ino: headerRead.stat.ino };
       this.lastSize = headerRead.stat.size;
@@ -769,7 +716,7 @@ export class ChildHistoryPager implements ChildHistoryView {
 
       const size = headerRead.stat.size;
       const tailStart = Math.max(0, size - this.pageBytes);
-      const tailRead = this.io.readRange(sessionFile, tailStart, size);
+      const tailRead = this.readRange(tailStart, size);
       this.verifyDescriptor(tailRead.stat, tailStart);
       const tail = tailRead.data;
       this.walkFloor = tailStart;
@@ -809,6 +756,7 @@ export class ChildHistoryPager implements ChildHistoryView {
       this.walkFloor = 0;
       this.floorUnterminated = false;
       this.identity = undefined;
+      this.handle = undefined;
       this.forwardFragment = EMPTY_BUFFER;
       this.theInitialError = CHILD_HISTORY_READ_ERROR;
     }
@@ -819,12 +767,20 @@ export class ChildHistoryPager implements ChildHistoryView {
   }
 
   /** Verifies a completed read's descriptor identity against the opened one. */
-  private verifyDescriptor(stat: { size: number; dev: number; ino: number }, minLoadedByte: number): void {
+  private verifyDescriptor(stat: SessionFileStat, minLoadedByte: number): void {
     if (this.identity !== undefined && (stat.dev !== this.identity.dev || stat.ino !== this.identity.ino)) {
       throw new Error("session file identity changed");
     }
     if (stat.size < minLoadedByte) throw new Error("session file shrank below the loaded window");
     this.lastSize = stat.size;
+  }
+
+  /**
+   * One verified read through the handle bound by the last successful initial
+   * open; every read re-runs the session-file identity protocol.
+   */
+  private readRange(start: number, end: number): { stat: SessionFileStat; data: Buffer } {
+    return this.handle!.readRange(start, end);
   }
 
   /**
@@ -838,7 +794,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     let fragment = this.forwardFragment;
     let cursor = start + fragment.length;
     for (;;) {
-      const read = this.io.readRange(this.sessionFile, cursor, cursor + this.pageBytes);
+      const read = this.readRange(cursor, cursor + this.pageBytes);
       this.verifyDescriptor(read.stat, start);
       if (read.data.length === 0) {
         // At or past EOF: any fragment is the running child's incomplete
@@ -945,7 +901,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     page: HistoryPage,
     others: readonly HistoryPage[],
   ): { allItems: TranscriptItem[]; entryIds: Set<string>; full: ChildTranscriptProjection } {
-    const read = this.io.readRange(this.sessionFile, page.parsedStart, page.lineEnd);
+    const read = this.readRange(page.parsedStart, page.lineEnd);
     this.verifyDescriptor(read.stat, page.parsedStart);
     const group = this.parseGroup(
       read.data,
@@ -962,7 +918,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     const floor = this.pages[0]!.readStart;
     const stitch = this.pages[0]!.head;
     const target = Math.max(0, floor - this.pageBytes);
-    const read = this.io.readRange(this.sessionFile, target, floor);
+    const read = this.readRange(target, floor);
     this.verifyDescriptor(read.stat, floor);
     const slice = read.data;
 
@@ -1016,7 +972,7 @@ export class ChildHistoryPager implements ChildHistoryView {
     let walked = Math.max(0, this.lastSize - floor);
     for (;;) {
       const target = Math.max(0, floor - this.pageBytes);
-      const read = this.io.readRange(this.sessionFile, target, floor);
+      const read = this.readRange(target, floor);
       this.verifyDescriptor(read.stat, floor);
       const slice = read.data;
       const firstNewline = slice.indexOf(NEWLINE);

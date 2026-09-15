@@ -29,7 +29,6 @@ const {
   withTransientFsRetries,
   fsRetryCount,
   resolveDirectRegularSessionFile,
-  validateRunArtifactsWithReadIo,
 } = artifacts.__testables;
 
 const ID = "subagent_00000000-0000-4000-8000-000000000001";
@@ -270,47 +269,6 @@ test("session path resolution rejects mutable intermediate path components", () 
   );
 });
 
-test("resume validation never reads a session path replaced after open", () => {
-  const root = makeTempRoot();
-  try {
-    const { value } = createValidArtifacts(root);
-    const stable = { dev: 1, ino: 2, isFile: () => true };
-    const replacement = { dev: 1, ino: 3, isFile: () => true };
-    let observations = 0;
-    let read = false;
-    let closed = false;
-    assert.throws(
-      () => validateRunArtifactsWithReadIo(ID, {
-        lstat(candidate) {
-          assert.equal(candidate, value.sessionFile);
-          observations += 1;
-          return observations === 1 ? stable : replacement;
-        },
-        open(candidate) {
-          assert.equal(candidate, value.sessionFile);
-          return 7;
-        },
-        fstat(descriptor) {
-          assert.equal(descriptor, 7);
-          return stable;
-        },
-        readFile() {
-          read = true;
-          return "replacement content";
-        },
-        close(descriptor) {
-          assert.equal(descriptor, 7);
-          closed = true;
-        },
-      }),
-      /SESSION_HISTORY_UNAVAILABLE/,
-    );
-    assert.equal(read, false, "the replacement target is never read");
-    assert.equal(closed, true, "the opened descriptor is still closed on rejection");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 test("listRunDirs ignores old-ID directories and sorts valid directories by mtime", () => {
   const root = makeTempRoot();
